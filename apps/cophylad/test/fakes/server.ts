@@ -146,6 +146,7 @@ export class FakeServer {
   artifacts = new Map<string, Uint8Array>();
   /** A `refresh` failure while set. */
   refuseRefresh = false;
+  private heldUntil = 0;
   /** Accept `auth` only for tokens in `tokens` that are not revoked; when false, every auth is denied (a server that lost its database). */
   acceptTokens = true;
   /** The relay tokens granted, by controller id. */
@@ -446,8 +447,12 @@ export class FakeServer {
     return n;
   }
 
-  /** Drops every link (1012); the daemon reconnects with backoff. */
-  restart(): void {
+  /**
+   * Drops every link (1012); the daemon reconnects with backoff. `holdMs` refuses links that long,
+   * so a test sees the link down however fast the daemon comes back.
+   */
+  restart(holdMs = 0): void {
+    this.heldUntil = Date.now() + holdMs;
     for (const s of [...this.sockets]) s.close(1012, "restart");
     this.sockets.clear();
   }
@@ -465,6 +470,7 @@ export class FakeServer {
     this.http.push({ method: req.method, path: url.pathname, headers });
     const bearer = /^Bearer (.+)$/.exec(headers["authorization"] ?? "")?.[1];
     if (url.pathname === "/ws/link") {
+      if (Date.now() < this.heldUntil) return new Response("restarting", { status: 503 });
       if (server.upgrade(req, { data: { kind: "link" } })) return new Response(null, { status: 101 });
       return new Response("upgrade", { status: 426 });
     }

@@ -221,7 +221,7 @@ describe("push", () => {
     s.d.asks.answer(later.id, { option: "deny" }, { kind: "user", client: "cli_test" });
     await waitFor(() => sends(s.fake, "dismiss").length === 1);
     // the link drops: an ask opened then is not pushed and not queued
-    s.fake.restart();
+    s.fake.restart(1000);
     await waitFor(() => s.d.cloud.hostedAllowed("push") !== undefined);
     const during = openAsk(s.d);
     await sleep(100);

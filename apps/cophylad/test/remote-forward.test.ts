@@ -76,7 +76,8 @@ async function start() {
       noEndpoint: true,
       relayOnly: true,
       home: sh.home,
-      toml: sh.toml + `[node]\nname = "den"\n\n[remote]\nenabled = true\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n`,
+      node: `name = "den"\n`,
+      toml: sh.toml + `[remote]\nenabled = true\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n`,
       heartbeatMs: 1000,
       daemon: {
         cloud: { keys: [fake.publicKey] },

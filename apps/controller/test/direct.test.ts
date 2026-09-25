@@ -215,13 +215,13 @@ describe("the data channel on the phone", () => {
     duplex.send('{"jsonrpc":"2.0","id":"h1","method":"hello"}');
     const big = JSON.stringify({ jsonrpc: "2.0", method: "session.event", params: { text: "x".repeat(50_000) } });
     duplex.send(big);
-    await tick();
-    await tick();
+    // sealing is WebCrypto's, a tick or more a record
+    for (let i = 0; i < 500 && peer.channel.sent.length <= 4; i++) await tick();
     expect(peer.channel.sent.every((m) => m.length <= 16 * 1024)).toBe(true);
     expect(peer.channel.sent.length).toBeGreaterThan(4);
     expect(await received(peer.channel, node.tunnel!)).toEqual(['{"jsonrpc":"2.0","id":"h1","method":"hello"}', big]);
     for (const m of chunk(await node.tunnel!.seal('{"jsonrpc":"2.0","id":"h1","result":{}}'))) peer.channel.onmessage!({ data: m });
-    await tick();
+    for (let i = 0; i < 500 && got.length === 0; i++) await tick();
     expect(got).toEqual(['{"jsonrpc":"2.0","id":"h1","result":{}}']);
     const closes: [number, string][] = [];
     duplex.onclose = (code, reason) => closes.push([code, reason]);

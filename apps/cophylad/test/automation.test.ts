@@ -155,7 +155,8 @@ describe("automation: hooks and triggers", () => {
     expect(fired).toMatchObject({ id, cause: "trigger", event: { name: "my.ping", payload: { branch: "main", n: 1 } } });
     const customs = eventsIn(log, "event.custom");
     expect(customs.map((e) => e["payload"])).toEqual([{ branch: "dev" }, { branch: "main", n: 1 }]);
-    const changed = eventsIn(log, "events.changed");
+    // the rescan's one events.changed goes when its batch ends, which may be after the task is ready
+    const changed = await waitFor(() => eventsIn(log, "events.changed").length > 0 && eventsIn(log, "events.changed"));
     expect(changed).toHaveLength(1);
     const { events } = await c.request<{ events: EventDefinition[] }>("event.list", {});
     expect(events.find((e) => e.name === "my.ping")).toEqual({ name: "my.ping", description: "a ping", payload: { type: "object", properties: { branch: { type: "string" } } }, source: { hook: "pinger" }, node: d.identity.id });
