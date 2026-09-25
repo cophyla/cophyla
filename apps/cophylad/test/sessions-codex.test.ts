@@ -584,7 +584,9 @@ describe("a codex thread the app-server daemon runs", () => {
 });
 
 describe("codex sessions end and resume on evidence", () => {
-  const RECENT_MS = 4000;
+  // Wide enough that a slow start still lists the thread before it falls out of the window.
+  const RECENT_MS = 6000;
+  const MOVED_AGO = 1000;
   let scratch: string;
   let home: string;
   let cwd: string;
@@ -611,12 +613,12 @@ describe("codex sessions end and resume on evidence", () => {
     mkdirSync(cwd, { recursive: true });
     writeFileSync(join(home, "auth.json"), "{}");
     rolloutPath = join(dir, `rollout-2026-09-17T15-05-48-${THREAD}.jsonl`);
-    // One whole turn of history, written an hour ago; the thread store says it moved two seconds ago.
+    // One whole turn of history, written an hour ago; the thread store says it moved a second ago.
     writeFileSync(rolloutPath, lines.slice(0, 10).join("\n") + "\n");
     const hourAgo = new Date(Date.now() - 3600_000);
     utimesSync(rolloutPath, hourAgo, hourAgo);
     setupAt = Date.now();
-    listed(setupAt - 2000);
+    listed(setupAt - MOVED_AGO);
     mini = await start();
   });
   afterAll(async () => {
@@ -627,8 +629,8 @@ describe("codex sessions end and resume on evidence", () => {
   test("history read by a fresh tail does not reset the inactivity clock", async () => {
     expect(mini.sessions.list().map((s) => s.native.id)).toEqual([THREAD]);
     expect(events().filter((e) => e.kind === "user_turn")).toHaveLength(1);
-    // The window runs from the thread store's two seconds ago, not from the read.
-    await sleep(Math.max(0, setupAt + 2500 - Date.now()));
+    // The window runs from the thread store's second ago, not from the read.
+    await sleep(Math.max(0, setupAt - MOVED_AGO + RECENT_MS + 500 - Date.now()));
     await mini.sessions.tick();
     expect(record().status).toBe("ended");
     expect(events().at(-1)?.payload).toEqual({ reason: "inactive" });
