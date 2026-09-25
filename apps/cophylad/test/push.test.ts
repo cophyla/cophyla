@@ -118,6 +118,8 @@ describe("push", () => {
     ]);
     expect(pushed.detail!.length).toBeLessThanOrEqual(200);
     expect(sent["body"]).toBe(pushed.detail);
+    // noted once the server has answered the push, a moment after it saw it
+    await waitFor(() => s.d.push.pushedTo(ask.id).length === 1);
     expect(s.d.push.pushedTo(ask.id)).toEqual([id]);
     // a second broadcast of the same open ask (a state re-send) does not push again
     s.d.bus.emit("ask.state", s.d.asks.get(ask.id)!);
