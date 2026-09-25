@@ -53,6 +53,13 @@ jobs:
           "TEMP=$t" >> $env:GITHUB_ENV
           "TMP=$t" >> $env:GITHUB_ENV
 
+      # Defender scans every file and process the tests make; its stalls outlast the tests'
+      # 200 ms node heartbeats. The runner is thrown away after the job.
+      - name: no real-time scanning
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Set-MpPreference -DisableRealtimeMonitoring $true
+
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       # the daemon tests start whole nodes and take seconds each; the runners are slower than a desk
