@@ -16,6 +16,10 @@ export interface PipeLink {
 interface Conn {
   pipe?: string;
   early: Uint8Array[];
+  /** What the socket has not taken yet: Bun's write takes what fits and leaves the rest to its drain. */
+  out: Uint8Array[];
+  /** The pipe closed: end once `out` is written. */
+  ending?: boolean;
 }
 
 const CHUNK = 48 * 1024;
@@ -43,7 +47,7 @@ export class TestForwarder {
       port: 0,
       socket: {
         open: (s) => {
-          s.data = { early: [] };
+          s.data = { early: [], out: [] };
           void this.link.request("remote.pipe.open", { node: this.node }).then(
             (r) => {
               const pipe = (r as { pipe: string }).pipe;
@@ -63,6 +67,7 @@ export class TestForwarder {
           if (s.data.pipe) this.send(s.data.pipe, bytes);
           else s.data.early.push(bytes);
         },
+        drain: (s) => this.write(s),
         close: (s) => {
           const pipe = s.data.pipe;
           if (!pipe || !this.byPipe.has(pipe)) return;
@@ -93,15 +98,31 @@ export class TestForwarder {
     if (method === "remote.pipe.data" && p.data !== undefined) {
       const bytes = Buffer.from(p.data, "base64");
       this.received += bytes.length;
-      s?.write(bytes);
+      if (s) this.write(s, bytes);
       if (this.holdAcks) this.held.push({ pipe: p.pipe, bytes: bytes.length });
       else this.link.signal("remote.pipe.ack", { pipe: p.pipe, bytes: bytes.length });
       return;
     }
     if (method === "remote.pipe.close" && s) {
       this.byPipe.delete(p.pipe);
-      s.end();
+      s.data.ending = true;
+      this.write(s);
     }
+  }
+
+  /** Writes, in order, what the socket takes; the rest waits for its drain. */
+  private write(s: Socket<Conn>, bytes?: Uint8Array): void {
+    if (bytes) s.data.out.push(bytes);
+    while (s.data.out.length > 0) {
+      const head = s.data.out[0]!;
+      const n = s.write(head);
+      if (n < head.length) {
+        s.data.out[0] = head.subarray(Math.max(n, 0));
+        return;
+      }
+      s.data.out.shift();
+    }
+    if (s.data.ending) s.end();
   }
 
   /** Sends the acks held, and holds no more. */
