@@ -3,10 +3,11 @@
 // looked for at their installers' paths and, with `[remote] install`, fetched through the
 // platform's package manager — winget on Windows, Homebrew casks on macOS, Flatpak on
 // Linux — and never bundled. Apollo installs as `sunshine.exe` under `Apollo\`, so the kind
-// is read off the path, not the file name.
+// is read off the path, not the file name. Windows paths are joined as Windows paths whatever
+// the system, so each list reads the same everywhere.
 
 import { existsSync } from "node:fs";
-import { join } from "node:path";
+import { win32 } from "node:path";
 import type { RemoteConfig } from "../config/schema.ts";
 import type { Exec } from "../sidecars/tts-py.ts";
 import type { HostOs } from "../update/platform.ts";
@@ -28,9 +29,9 @@ export function hostCandidates(os: HostOs, env: Env = process.env): Located[] {
     case "windows": {
       const pf = env["ProgramFiles"] ?? "C:\\Program Files";
       return [
-        { kind: "apollo", path: join(pf, "Apollo", "sunshine.exe") },
-        { kind: "apollo", path: join(pf, "Apollo", "Apollo.exe") },
-        { kind: "sunshine", path: join(pf, "Sunshine", "sunshine.exe") },
+        { kind: "apollo", path: win32.join(pf, "Apollo", "sunshine.exe") },
+        { kind: "apollo", path: win32.join(pf, "Apollo", "Apollo.exe") },
+        { kind: "sunshine", path: win32.join(pf, "Sunshine", "sunshine.exe") },
       ];
     }
     case "macos":
@@ -58,9 +59,9 @@ export function moonlightCandidates(os: HostOs, env: Env = process.env): string[
       const pf = env["ProgramFiles"] ?? "C:\\Program Files";
       const pf86 = env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)";
       return [
-        join(pf, "Moonlight Game Streaming", "Moonlight.exe"),
-        join(pf, "Moonlight Game Streaming Project", "Moonlight", "Moonlight.exe"),
-        join(pf86, "Moonlight Game Streaming", "Moonlight.exe"),
+        win32.join(pf, "Moonlight Game Streaming", "Moonlight.exe"),
+        win32.join(pf, "Moonlight Game Streaming Project", "Moonlight", "Moonlight.exe"),
+        win32.join(pf86, "Moonlight Game Streaming", "Moonlight.exe"),
       ];
     }
     case "macos":
