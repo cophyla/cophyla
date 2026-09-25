@@ -91,8 +91,35 @@ describe("sidecars", () => {
     await sidecar.start();
     await waitFor(() => sidecar.state().restarts >= 1, 8000);
     expect(seen).toContain("restarting");
-    // It comes back up on the same port.
-    await waitFor(() => sidecar.state().status === "ready", 8000);
+    // It comes back up on the same port, for a moment: the new process exits after 300 ms too.
+    await waitFor(() => seen.lastIndexOf("ready") > seen.indexOf("restarting"), 8000);
+  }, 20_000);
+
+  test("a health check still out when the process dies leaves the restart standing", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cophyla-sidecar-"));
+    dirs.push(dir);
+    // Every answer of the first life is held 400 ms, so one is out when it exits at 300 ms and
+    // comes back inside the second's backoff.
+    let hold = false;
+    const held = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const res = await fetch(input, init);
+      if (hold) await Bun.sleep(400);
+      return res;
+    }) as typeof fetch;
+    const s = new Sidecars({ dir, log: silentLogger, fetch: held });
+    running.push(s);
+    const sidecar = s.spawn(spec({ env: { FAKE_SIDECAR_EXIT_MS: "300" }, restart: { backoffMs: 1000, maxMs: 1000, max: 2 } }));
+    const seen: string[] = [];
+    sidecar.onChange((st) => {
+      seen.push(st.status);
+      if (st.status === "restarting") hold = false;
+    });
+    await sidecar.start();
+    hold = true;
+    await waitFor(() => seen.lastIndexOf("ready") > seen.indexOf("restarting") && seen.includes("restarting"), 5000);
+    // the late answer changed nothing: the second life was spawned after the backoff and is ready on its own answer
+    const from = seen.indexOf("restarting");
+    expect(seen.slice(from, from + 3)).toEqual(["restarting", "starting", "ready"]);
   }, 20_000);
 
   test("a process that never answers is failed, and the start rejects", async () => {

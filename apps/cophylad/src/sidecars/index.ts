@@ -247,6 +247,9 @@ export class Sidecar {
 
   private async check(startedAt: number): Promise<void> {
     if (this.stopping) return;
+    // The life this check asks about. An answer that comes back after that life ended says
+    // nothing of the next, and must leave the timer alone: it holds the respawn by then.
+    const proc = this.proc;
     const doFetch = this.deps.fetch ?? fetch;
     let ok = false;
     try {
@@ -261,7 +264,7 @@ export class Sidecar {
     } catch {
       ok = false;
     }
-    if (this.stopping) return;
+    if (this.stopping || this.proc !== proc || this.status === "restarting" || this.status === "failed") return;
     if (ok) {
       this.misses = 0;
       if (this.status !== "ready") {
