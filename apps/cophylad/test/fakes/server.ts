@@ -160,6 +160,8 @@ export class FakeServer {
   readonly pushDevices = new Map<string, { platform: string; token: string }>();
   /** Answers `push.send` with `unavailable` while set. */
   pushUnavailable = false;
+  /** Holds each `push.send` answer this long after it is recorded, as a slow push service would. */
+  pushDelayMs = 0;
   /** The backup: the header with its owner, and the objects verbatim by `kind/key`. */
   backupHeader: { header: Record<string, unknown> & { keyId: string; node: string }; node: string } | undefined;
   readonly backups = new Map<string, { kind: string; key: string; version: number; ciphertext: string; size: number; updatedAt: number }>();
@@ -753,6 +755,7 @@ export class FakeServer {
       case "push.send": {
         if (this.plan !== "pro") throw fail("denied", "the plan has no push");
         this.pushes.push({ method, params: p });
+        if (this.pushDelayMs > 0) await Bun.sleep(this.pushDelayMs);
         if (this.pushUnavailable) throw fail("unavailable", "the push service did not accept the message", { provider: "server" });
         if (!this.pushDevices.has(String(p["peer"]))) throw fail("not_found", `no push device for ${String(p["peer"])}`);
         this.used["push_count"] = (this.used["push_count"] ?? 0) + 1;

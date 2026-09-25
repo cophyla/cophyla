@@ -93,7 +93,8 @@ export class Push {
     if (ask.status === "open") {
       if (this.pushed.has(ask.id) || !ask.answerableBy.includes("user")) return;
       const targets = this.targets(ask);
-      this.pushed.set(ask.id, new Set());
+      const delivered = new Set<string>();
+      this.pushed.set(ask.id, delivered);
       if (targets.length === 0) return;
       const why = this.deps.cloud.hostedAllowed("push");
       if (why) {
@@ -101,19 +102,16 @@ export class Push {
         return;
       }
       const trimmed = trimAsk(ask);
-      for (const t of targets) this.enqueue(ask.id, () => this.send(t.id, "ask", trimmed));
+      for (const t of targets) this.enqueue(ask.id, () => this.send(t.id, "ask", trimmed, delivered));
       return;
     }
     const peers = this.pushed.get(ask.id);
     if (!peers) return;
     this.pushed.delete(ask.id);
-    if (peers.size === 0) {
-      this.chains.delete(ask.id);
-      return;
-    }
     const trimmed = trimAsk(ask);
-    for (const peer of peers) this.enqueue(ask.id, () => this.send(peer, "dismiss", trimmed));
+    // Behind the pushes still out in the chain: who got one is known once they are through.
     this.enqueue(ask.id, async () => {
+      for (const peer of peers) await this.send(peer, "dismiss", trimmed);
       this.chains.delete(ask.id);
     });
   }
@@ -133,11 +131,12 @@ export class Push {
     this.chains.set(askId, next);
   }
 
-  private async send(peer: string, kind: "ask" | "dismiss", ask: PushAsk): Promise<void> {
+  /** Sends one push; an ask's that went through is noted in `delivered`, so its answer dismisses it. */
+  private async send(peer: string, kind: "ask" | "dismiss", ask: PushAsk, delivered?: Set<string>): Promise<void> {
     const body = ask.detail ?? ask.title;
     try {
       await this.deps.cloud.pushRequest("push.send", { title: ask.title, body, peer, kind, ask });
-      if (kind === "ask") this.pushed.get(ask.id)?.add(peer);
+      delivered?.add(peer);
       this.log.info("push sent", { peer, kind, ask: ask.id });
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);

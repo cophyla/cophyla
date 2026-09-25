@@ -136,6 +136,20 @@ describe("push", () => {
     s.d.asks.answer(brainOnly.id, { option: "deny" }, { kind: "brain" });
   });
 
+  test("an ask answered while its push is still out is dismissed once the push is through", async () => {
+    const s = await start();
+    const { id, socket } = await registered(s);
+    socket.close();
+    await waitFor(() => s.d.clients.byController(id).length === 0);
+    s.fake.pushDelayMs = 300;
+    const ask = openAsk(s.d);
+    await waitFor(() => sends(s.fake, "ask").length === 1);
+    // answered before the server has said the push went
+    s.d.asks.answer(ask.id, { option: "deny" }, { kind: "user", client: "cli_test" });
+    await waitFor(() => sends(s.fake, "dismiss").length === 1);
+    expect(sends(s.fake, "dismiss")[0]!.params).toMatchObject({ peer: id, kind: "dismiss", ask: { id: ask.id } });
+  });
+
   test("two phones: the connected one hears the ask on its socket, the other gets the push; a mirrored ask carries the other node", async () => {
     const s = await start();
     const a = await registered(s, "A");
