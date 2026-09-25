@@ -30,12 +30,12 @@ afterEach(async () => {
   fake = undefined;
 });
 
-function signedInHome(f: FakeServer): { home: string; toml: string } {
+function signedInHome(f: FakeServer): { home: string; toml: string; nodes: string } {
   const home = tempHome();
   const p = paths(home);
   mkdirSync(p.data, { recursive: true });
   writeFileSync(p.accountToken, f.mintToken() + "\n", { mode: 0o600 });
-  return { home, toml: `[cloud]\nenabled = true\nurl = "${f.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\nhello_timeout_ms = 3000\n\n[nodes]\nregistry_heartbeat_ms = 150\n\n` };
+  return { home, toml: `[cloud]\nenabled = true\nurl = "${f.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\nhello_timeout_ms = 3000\n\n`, nodes: "registry_heartbeat_ms = 150\n" };
 }
 
 const cloudOf = (f: FakeServer) => ({ cloud: { keys: [f.publicKey] } });
@@ -54,14 +54,14 @@ describe("the role through the registry", () => {
   test("the primary dies: the relayed backup is granted the role after the lease; the old primary returns as a backup through the relay", async () => {
     fake = new FakeServer({ leaseMs: 2000, closeGraceMs: 200 });
     const ph = signedInHome(fake);
-    primary = await startPrimary({ home: ph.home, toml: ph.toml, daemon: cloudOf(fake), noLan: true });
+    primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes, daemon: cloudOf(fake), noLan: true });
     await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
     const epoch0 = primary.d.nodes.epoch();
     expect(fake.primaryOf()?.epoch).toBe(epoch0);
     // the primary renews its lease
     await waitFor(() => fake!.registryLog.some((r) => r.method === "registry.heartbeat" && r.node === primary!.d.identity.id), 3000);
     const sh = signedInHome(fake);
-    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, daemon: cloudOf(fake), failoverMs: 300 });
+    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, nodes: sh.nodes, daemon: cloudOf(fake), failoverMs: 300 });
     await linked(secondary, 10_000);
     expect(secondary.nodes.via()).toBe("relay");
     // the backup holds the replica, the grants with it: what lets it take the old primary back
@@ -84,7 +84,7 @@ describe("the role through the registry", () => {
     store.migrate();
     for (const row of store.nodes.list()) store.nodes.delete(row.id);
     store.close();
-    primary = await startPrimary({ home: oldHome, toml: ph.toml, daemon: cloudOf(fake) });
+    primary = await startPrimary({ home: oldHome, toml: ph.toml, nodes: ph.nodes, daemon: cloudOf(fake) });
     expect(primary.d.identity.id).toBe(oldId);
     await waitFor(() => primary!.d.nodes.linked(), 10_000);
     expect(primary.d.nodes.roleOf()).toBe("secondary");
@@ -102,7 +102,7 @@ describe("the role through the registry", () => {
     fake = new FakeServer({ leaseMs: 60_000 });
     fake.holdLease("node_01ARZ3NDEKTSV4RRFFQ69G5ZZZ", 7);
     const ph = signedInHome(fake);
-    primary = await startPrimary({ home: ph.home, toml: ph.toml + "[nodes]\nreconnect_ms = 100\nreconnect_max_ms = 300\n", daemon: cloudOf(fake) });
+    primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes + "reconnect_ms = 100\nreconnect_max_ms = 300\n", daemon: cloudOf(fake) });
     expect(primary.d.nodes.roleOf()).toBe("secondary");
     expect(primary.d.nodes.epoch()).toBe(7);
     expect(primary.d.brain).toBeUndefined();
@@ -122,10 +122,10 @@ describe("the role through the registry", () => {
     fake = new FakeServer({ leaseMs: 2000, closeGraceMs: 200 });
     const ph = signedInHome(fake);
     // the primary has no LAN listener: on one machine a listener would be reachable and the backup would simply relink there
-    primary = await startPrimary({ home: ph.home, toml: ph.toml, daemon: cloudOf(fake), noLan: true });
+    primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes, daemon: cloudOf(fake), noLan: true });
     await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
     const sh = signedInHome(fake);
-    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, daemon: cloudOf(fake), failoverMs: 300 });
+    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, nodes: sh.nodes, daemon: cloudOf(fake), failoverMs: 300 });
     await linked(secondary, 10_000);
     expect(secondary.nodes.via()).toBe("relay");
     await fake.stop();
@@ -141,10 +141,10 @@ describe("the role through the registry", () => {
   test("milestone 9 kept: a LAN backup that lost its primary with the server gone promotes on its own", async () => {
     fake = new FakeServer({ leaseMs: 2000, closeGraceMs: 200 });
     const ph = signedInHome(fake);
-    primary = await startPrimary({ home: ph.home, toml: ph.toml, daemon: cloudOf(fake) });
+    primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes, daemon: cloudOf(fake) });
     await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
     const sh = signedInHome(fake);
-    secondary = await startSecondary(primary, { backup: true, home: sh.home, toml: sh.toml, daemon: cloudOf(fake), failoverMs: 300 });
+    secondary = await startSecondary(primary, { backup: true, home: sh.home, toml: sh.toml, nodes: sh.nodes, daemon: cloudOf(fake), failoverMs: 300 });
     await linked(secondary, 10_000);
     expect(secondary.nodes.via()).toBe("direct");
     await fake.stop();
@@ -157,10 +157,10 @@ describe("the role through the registry", () => {
   test("node.promote across the relay: the backup claims at the handed epoch, the old primary steps down and rejoins through the relay", async () => {
     fake = new FakeServer({ leaseMs: 60_000 });
     const ph = signedInHome(fake);
-    primary = await startPrimary({ home: ph.home, toml: ph.toml, daemon: cloudOf(fake), noLan: true });
+    primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes, daemon: cloudOf(fake), noLan: true });
     await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
     const sh = signedInHome(fake);
-    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, daemon: cloudOf(fake) });
+    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, backup: true, home: sh.home, toml: sh.toml, nodes: sh.nodes, daemon: cloudOf(fake) });
     await linked(secondary, 10_000);
     const c = await client(primary.d);
     clients.push(c);
