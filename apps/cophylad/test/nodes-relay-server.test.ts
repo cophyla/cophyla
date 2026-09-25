@@ -49,11 +49,12 @@ describe("a node link through the server relay", () => {
   test("the secondary links via the relay, is listed with via relay, and a forwarded spawn lands on it", async () => {
     fake = new FakeServer();
     const ph = signedInHome(fake);
-    primary = await startPrimary({ brain: { script }, noLan: true, home: ph.home, toml: ph.toml, daemon: { cloud: { keys: [fake.publicKey] } } });
+    // Heartbeats at a second, as remote-forward's: each one crosses the relay twice, and a slow runner's stall must not drop the link mid-spawn.
+    primary = await startPrimary({ brain: { script }, noLan: true, heartbeatMs: 1000, home: ph.home, toml: ph.toml, daemon: { cloud: { keys: [fake.publicKey] } } });
     await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
     expect(primary.d.nodes.roleOf()).toBe("primary");
     // No account on the secondary: its grant's relay token is all it needs.
-    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, agent: true, gateRules: { "node:session.spawn": "allow" } });
+    secondary = await startSecondary(primary, { noEndpoint: true, relayOnly: true, agent: true, heartbeatMs: 1000, gateRules: { "node:session.spawn": "allow" } });
     await linked(secondary, 10_000);
     expect(secondary.cloud.signedIn).toBe(false);
     expect(secondary.nodes.via()).toBe("relay");
