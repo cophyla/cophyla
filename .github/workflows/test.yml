@@ -55,7 +55,8 @@ jobs:
 
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
-      - run: bun test
+      # the daemon tests start whole nodes and take seconds each; the runners are slower than a desk
+      - run: bun test --timeout 20000
 
       - name: host page (the shell embeds it)
         run: bun run build:host
