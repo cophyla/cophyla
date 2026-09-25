@@ -1,0 +1,136 @@
+// Cophyla's desktop app: a Tauri 2 shell around one web view. It holds no
+// product logic. It keeps the client-protocol credential and connection on this side,
+// starts cophylad when none is listening and never stops it, hosts views in a sandboxed frame
+// on their own origin, puts asks on OS notifications while it is not in front (and takes
+// them down when it comes to the front), and lives in the tray when the
+// window is closed (on macOS the Dock icon goes with the window: it is there while the
+// window is, and a click on it in the Dock or the Finder shows the window again).
+// Installed, it runs from a version directory behind the launcher and relaunches through
+// it when a newer version waits. See apps/ui/README.md and docs/architecture.md,
+// "Clients".
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod commands;
+mod install;
+mod links;
+mod notify;
+mod cophylad;
+mod stream;
+mod tray;
+mod views;
+
+use tauri::{AppHandle, Manager, RunEvent, Runtime, Theme, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+pub const HIDDEN_FLAG: &str = "--hidden";
+
+/// Shows or hides the app in the Dock (macOS); nothing elsewhere.
+pub fn dock<R: Runtime>(app: &AppHandle<R>, visible: bool) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = app.set_dock_visibility(visible) {
+            log::warn!("dock visibility: {e}");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, visible);
+    }
+}
+
+/// The title bar in the view's own ground (#14121a) on Windows 11; the dark theme alone gives
+/// Windows' grey there, and that is what Windows 10, which does not know the colour, keeps.
+#[cfg(windows)]
+fn caption_color<R: Runtime>(window: &tauri::WebviewWindow<R>) {
+    use windows::Win32::Foundation::{COLORREF, HWND};
+    use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR};
+    let Ok(hwnd) = window.hwnd() else { return };
+    let color = COLORREF(0x001a_1214); // 0x00BBGGRR
+    let size = std::mem::size_of::<COLORREF>() as u32;
+    // SAFETY: the handle is this window's, and the attribute reads one COLORREF from `color`.
+    if let Err(e) = unsafe { DwmSetWindowAttribute(HWND(hwnd.0), DWMWA_CAPTION_COLOR, (&raw const color).cast(), size) } {
+        log::debug!("caption colour: {e}");
+    }
+}
+
+fn hide_window<R: Runtime>(app: &AppHandle<R>) {
+    if let Some(w) = app.get_webview_window(cophylad::HOST_LABEL) {
+        let _ = w.hide();
+    }
+    dock(app, false);
+}
+
+fn main() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    // Before any window: the id a toast is attributed to belongs to the process.
+    notify::set_process_aumid();
+    let hidden = std::env::args().skip(1).any(|a| a == HIDDEN_FLAG);
+    let install = install::Install::detect();
+
+    let app = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| tray::show_window(app)))
+        .manage(cophylad::Link::new())
+        .manage(views::Staged::default())
+        .register_uri_scheme_protocol(views::SCHEME, views::handle)
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, stream::stream_open, stream::stream_close, links::open_link])
+        .setup(move |app| {
+            notify::register(app.handle(), install.as_ref());
+            let dev_origin = views::dev_origin(app.handle());
+            let window = WebviewWindowBuilder::new(app, cophylad::HOST_LABEL, WebviewUrl::App("index.html".into()))
+                .title("Cophyla")
+                .inner_size(1100.0, 760.0)
+                .min_inner_size(640.0, 420.0)
+                // The view is dark, and so is the title bar.
+                .theme(Some(Theme::Dark))
+                .visible(false)
+                // The host page never leaves the app's own origin (or `tauri dev`'s server when
+                // one is configured). A view's frame is governed by the host CSP's frame-src;
+                // WebView2 never shows this callback a frame's navigation, WebKit (macOS,
+                // Linux) does, so the view origin is allowed here too: the frame is sandboxed
+                // without `allow-top-navigation`, so nothing can take the host itself there.
+                .on_navigation(move |url| {
+                    let local = url.scheme() == "tauri"
+                        || url.host_str() == Some("tauri.localhost")
+                        || url.origin().ascii_serialization() == views::ORIGIN
+                        || dev_origin.as_deref().is_some_and(|o| url.origin().ascii_serialization() == o);
+                    if !local {
+                        log::warn!("refused navigation to {url}");
+                    }
+                    local
+                })
+                .build()?;
+            #[cfg(windows)]
+            caption_color(&window);
+            tray::build(app, install.as_ref())?;
+            let handle = app.handle().clone();
+            window.on_window_event(move |event| match event {
+                WindowEvent::CloseRequested { api, .. } => {
+                    api.prevent_close();
+                    hide_window(&handle);
+                }
+                // The user is at the app: its asks are in front of them, and the notifications go.
+                WindowEvent::Focused(true) => notify::clear(),
+                _ => {}
+            });
+            if hidden {
+                dock(app.handle(), false);
+            } else {
+                let _ = window.show();
+            }
+            tauri::async_runtime::spawn(cophylad::run_link(app.handle().clone()));
+            Ok(())
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building the tauri application");
+
+    app.run(|app, event| match &event {
+        // Only Quit (app.exit) ends the process; a closed window (or Cmd+Q) is a hidden one.
+        RunEvent::ExitRequested { code: None, api, .. } => {
+            api.prevent_exit();
+            hide_window(app);
+        }
+        // A click on the Dock icon or the app in the Finder while running.
+        #[cfg(target_os = "macos")]
+        RunEvent::Reopen { .. } => tray::show_window(app),
+        _ => {}
+    });
+}

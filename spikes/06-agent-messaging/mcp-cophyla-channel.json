@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "cophyla": {
+      "command": "node",
+      "args": ["C:/D/orchestrator/spikes/06-agent-messaging/cophyla-mcp.mjs"],
+      "env": { "COPHYLA_CHANNEL": "1" }
+    }
+  }
+}

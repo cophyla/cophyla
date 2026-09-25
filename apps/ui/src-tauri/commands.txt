@@ -1,0 +1,12 @@
+# One app command per line. build.rs declares these in the app manifest, which is what puts
+# them under Tauri's ACL: a #[tauri::command] missing here is callable from every web view.
+# apps/ui/test/manifest.test.ts fails when this list, the Rust sources and the capability
+# files disagree.
+cophylad_attach
+cophylad_send
+view_stage
+notify_ask
+dismiss_ask
+stream_open
+stream_close
+open_link

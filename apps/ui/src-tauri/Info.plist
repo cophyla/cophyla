@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the shell bundle's Info.plist by the Tauri bundler. `session.focus` asks
+	     System Events to bring a terminal forward; macOS shows this text on the Automation
+	     prompt, and only for a process that runs inside a bundle that declares it. -->
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Cophyla raises the terminal that runs a session.</string>
+	<!-- Direct connections: cophyla-net, which cophylad runs from this bundle's version folder,
+	     finds its peers on the local network and answers them there; macOS asks first. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Cophyla connects your phone and your other computers to this one directly when they are on the same network.</string>
+</dict>
+</plist>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Chat</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="view.css" />
+  </head>
+  <body>
+    <main id="app">
+      <header id="railbar"></header>
+      <section id="pinned" aria-label="Prompts waiting for you" hidden></section>
+      <div id="body">
+        <nav id="tabs" aria-label="Chat and sessions"></nav>
+        <div class="rail-scrim" data-action="rail-close"></div>
+        <div id="panes">
+          <section id="stream" aria-label="The conversation"></section>
+          <div id="sessions"></div>
+          <article id="terminal" class="terminal-pane" aria-label="A terminal" hidden></article>
+          <footer id="composer"></footer>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="view.ts"></script>
+  </body>
+</html>

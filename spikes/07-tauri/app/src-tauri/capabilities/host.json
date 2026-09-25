@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "host-only",
+  "description": "Native APIs are granted to the host window only. The view window is deliberately absent from this list, which is the claim under test. The two allow-* entries are app commands, which only come under the ACL because build.rs declares them in the app manifest.",
+  "windows": ["host"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-close",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-title",
+    "notification:default",
+    "autostart:default",
+    "allow-host-ping",
+    "allow-record-cmd"
+  ]
+}

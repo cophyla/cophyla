@@ -1,0 +1,8 @@
+{
+  "name": "spike-pty",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@lydell/node-pty": "^1.1.0"
+  }
+}

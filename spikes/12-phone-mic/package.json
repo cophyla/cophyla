@@ -1,0 +1,9 @@
+{
+  "name": "spike-phone-mic",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "onnxruntime-node": "^1.22.0",
+    "sherpa-onnx-node": "^1.13.8"
+  }
+}

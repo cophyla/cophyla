@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>spike 12: phone mic</title>
+<style>
+  body { font: 15px/1.4 system-ui, sans-serif; margin: 0; padding: 12px; background: #111; color: #eee; }
+  h1 { font-size: 16px; margin: 0 0 8px; }
+  button { font: inherit; padding: 12px 16px; border: 0; border-radius: 8px; background: #2d5; color: #000; margin: 4px 4px 4px 0; }
+  button.ptt { background: #e63; color: #fff; width: 100%; padding: 28px; font-size: 20px; touch-action: none; user-select: none; -webkit-user-select: none; }
+  button.ptt.down { background: #c00; }
+  button.off { background: #555; color: #ccc; }
+  .box { background: #1c1c1c; border-radius: 8px; padding: 8px 10px; margin: 8px 0; white-space: pre-wrap; word-break: break-word; font-family: ui-monospace, monospace; font-size: 12px; }
+  .state { font-size: 22px; font-weight: 600; }
+  .state.listening { color: #4f4; } .state.speaking { color: #4af; } .state.thinking { color: #fc4; } .state.idle { color: #888; }
+  #transcript { font: 18px/1.3 system-ui, sans-serif; min-height: 3em; }
+  #final { color: #4f4; }
+  .flash { animation: f 0.6s; } @keyframes f { from { background: #2d5; } to { background: #1c1c1c; } }
+</style>
+</head>
+<body>
+<h1>spike 12: phone microphone → node</h1>
+<div id="env" class="box">loading…</div>
+<div>
+  <button id="start">Start microphone</button>
+  <button id="always" class="off">Always transcribe: off</button>
+  <button id="beep" class="off">Test speaker</button>
+</div>
+<div class="state idle" id="state">idle</div>
+<div class="box" id="transcript"><span id="partial"></span><div id="final"></div></div>
+<button class="ptt" id="ptt">hold to talk</button>
+<div class="box" id="stats">no audio yet</div>
+<div class="box" id="log"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = (s) => { const el = $('log'); el.textContent = `${new Date().toTimeString().slice(0, 8)} ${s}\n` + el.textContent.split('\n').slice(0, 30).join('\n'); };
+const env = {
+  ua: navigator.userAgent, isSecureContext: window.isSecureContext, origin: location.origin,
+  hasMediaDevices: !!navigator.mediaDevices, hasGetUserMedia: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+  hasAudioWorklet: typeof AudioWorkletNode !== 'undefined', hasWebSocket: typeof WebSocket !== 'undefined',
+};
+$('env').textContent = JSON.stringify(env, null, 1);
+
+let ws, ctx, node, track, playhead = 0, sent = 0, sentChunks = 0, t0 = 0, playQueueMs = 0;
+let firstPlayAt = 0, speakStartedAt = 0;
+
+function connect() {
+  ws = new WebSocket(`wss://${location.host}/ws`);
+  ws.binaryType = 'arraybuffer';
+  ws.onopen = () => { log('socket open'); ws.send(JSON.stringify({ type: 'hello', ...env, track: track && track.getSettings(), contextSampleRate: ctx && ctx.sampleRate, contextState: ctx && ctx.state })); setInterval(() => ws.readyState === 1 && ws.send(JSON.stringify({ type: 'ping', t: performance.now() })), 5000); };
+  ws.onclose = () => log('socket closed');
+  ws.onerror = (e) => log('socket error ' + (e.message || ''));
+  ws.onmessage = (ev) => {
+    if (typeof ev.data !== 'string') { play(new Int16Array(ev.data)); return; }
+    const m = JSON.parse(ev.data);
+    if (m.type === 'stats') {
+      $('stats').textContent = `up ${((performance.now() - t0) / 1000).toFixed(0)} s  sent ${sentChunks} chunks / ${(sent / 32000).toFixed(1)} s audio\n` +
+        `server sees: ${m.samplesPerSecond} samples/s, ${m.chunksPerSecond} chunks/s, max gap ${m.maxGapMs} ms, rms ${m.rms}, peak ${m.peak}\n` +
+        `wake peaks: ${JSON.stringify(m.wakePeak)}  decode p50 ${m.decodeP50Ms ?? '-'} ms  tts ${m.tts ? 'on' : 'off'}\n` +
+        `playback queue ${Math.max(0, Math.round(playQueueMs))} ms, context ${ctx ? ctx.sampleRate + ' Hz ' + ctx.state : '-'}`;
+    } else if (m.type === 'state') { $('state').textContent = m.state; $('state').className = 'state ' + m.state; if (m.state === 'speaking') { speakStartedAt = performance.now(); firstPlayAt = 0; } }
+    else if (m.type === 'transcript') { if (m.final) { $('final').textContent = m.text || '(nothing)'; $('partial').textContent = ''; log(`final (${m.why}): ${m.text}`); } else $('partial').textContent = m.text; }
+    else if (m.type === 'wake') { log(`WAKE ${m.head} ${m.score}`); $('transcript').classList.remove('flash'); void $('transcript').offsetWidth; $('transcript').classList.add('flash'); if (navigator.vibrate) navigator.vibrate(60); }
+    else if (m.type === 'say') log(`say: ${m.text}`);
+    else if (m.type === 'spoken') log(`spoken: first chunk from server after ${m.firstChunkMs} ms, ${m.audioMs} ms of audio`);
+    else if (m.type === 'pong') log(`rtt ${Math.round(performance.now() - m.t)} ms`);
+    else if (m.type === 'hello') log(`server hello, tts ${m.tts}`);
+  };
+}
+
+async function start() {
+  $('start').disabled = true;
+  t0 = performance.now();
+  try {
+    // The context first, inside the tap: iOS only unlocks audio output from a user gesture.
+    ctx = new AudioContext({ sampleRate: 16000 });
+    await ctx.resume();
+  } catch (e) { log(`AudioContext at 16 kHz refused (${e.message}); using default`); ctx = new AudioContext(); await ctx.resume(); }
+  log(`context ${ctx.sampleRate} Hz, ${ctx.state}`);
+  const constraints = { audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false };
+  let stream;
+  try { stream = await navigator.mediaDevices.getUserMedia(constraints); }
+  catch (e) { log(`getUserMedia failed: ${e.name}: ${e.message}`); $('start').disabled = false; return; }
+  track = stream.getAudioTracks()[0];
+  log(`track "${track.label}" ${JSON.stringify(track.getSettings())}`);
+  track.onended = () => log('track ended');
+  track.onmute = () => log('track muted'); track.onunmute = () => log('track unmuted');
+  await ctx.audioWorklet.addModule('/worklet.js');
+  const src = ctx.createMediaStreamSource(stream);
+  node = new AudioWorkletNode(ctx, 'capture');
+  node.port.onmessage = (ev) => { if (ws && ws.readyState === 1) { ws.send(ev.data); sent += ev.data.byteLength; sentChunks++; } };
+  src.connect(node);
+  // Keep the graph alive without hearing yourself: a silent gain to the destination.
+  const mute = ctx.createGain(); mute.gain.value = 0; node.connect(mute); mute.connect(ctx.destination);
+  document.addEventListener('visibilitychange', () => { if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: 'note', text: `visibility ${document.visibilityState}, context ${ctx.state}, track ${track.readyState} muted=${track.muted}` })); log(`visibility ${document.visibilityState}`); });
+  connect();
+}
+
+// Playback of 24 kHz int16 from the server: scheduled buffers, each resampled by the context.
+function play(pcm) {
+  if (!ctx) return;
+  const buf = ctx.createBuffer(1, pcm.length, 24000);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const s = ctx.createBufferSource(); s.buffer = buf; s.connect(ctx.destination);
+  const now = ctx.currentTime;
+  if (playhead < now) playhead = now + 0.05;
+  s.start(playhead);
+  if (!firstPlayAt) { firstPlayAt = performance.now(); log(`first audio played ${Math.round(firstPlayAt - speakStartedAt)} ms after "speaking"`); }
+  playhead += buf.duration;
+  playQueueMs = (playhead - now) * 1000;
+}
+
+$('start').onclick = start;
+$('beep').onclick = () => { if (!ctx) { ctx = new AudioContext(); } const o = ctx.createOscillator(); o.frequency.value = 660; const g = ctx.createGain(); g.gain.value = 0.2; o.connect(g); g.connect(ctx.destination); o.start(); o.stop(ctx.currentTime + 0.2); log('beep'); };
+$('always').onclick = () => { const on = $('always').classList.toggle('off') === false; $('always').textContent = `Always transcribe: ${on ? 'on' : 'off'}`; ws && ws.send(JSON.stringify({ type: 'always', on })); };
+const ptt = $('ptt');
+const down = (e) => { e.preventDefault(); ptt.classList.add('down'); ws && ws.send(JSON.stringify({ type: 'ptt', active: true })); };
+const up = (e) => { e.preventDefault(); if (!ptt.classList.contains('down')) return; ptt.classList.remove('down'); ws && ws.send(JSON.stringify({ type: 'ptt', active: false })); };
+ptt.addEventListener('pointerdown', down); ptt.addEventListener('pointerup', up); ptt.addEventListener('pointercancel', up); ptt.addEventListener('pointerleave', up);
+</script>
+</body>
+</html>

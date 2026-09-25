@@ -1,0 +1,48 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}

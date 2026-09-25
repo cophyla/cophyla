@@ -1,0 +1,31 @@
+{
+  "name": "cophyla",
+  "private": true,
+  "license": "Apache-2.0",
+  "workspaces": [
+    "apps/controller",
+    "apps/installer",
+    "apps/cophylad",
+    "apps/ui",
+    "packages/*",
+    "tether/sdk/typescript"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p packages/protocol && tsc -p tether/sdk/typescript && tsc -p packages/relay && tsc -p packages/wake && tsc -p packages/viewhost && tsc -p apps/cophylad && tsc -p apps/cophylad/views && tsc -p apps/ui && tsc -p apps/controller && tsc -p apps/installer",
+    "cophylad": "bun run apps/cophylad/src/main.ts",
+    "schema": "bun run packages/protocol/scripts/emit-json-schema.ts",
+    "ui": "bun run --cwd apps/ui dev",
+    "release:platform": "bun run apps/installer/scripts/release-platform.ts",
+    "release:brain": "bun run apps/installer/scripts/release-brain.ts",
+    "release:controller": "bun run apps/installer/scripts/release-controller.ts",
+    "release:installer": "bun run apps/installer/scripts/build-installer.ts",
+    "release:feed": "bun run apps/installer/scripts/feed.ts",
+    "release:serve": "bun run apps/installer/scripts/serve-feed.ts",
+    "release:publish": "bun run apps/installer/scripts/publish.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.2",
+    "typescript": "^7.0.2"
+  }
+}

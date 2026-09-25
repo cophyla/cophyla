@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- cophyla-net under the hardened runtime asks for nothing: it runs no JIT and loads no
+	     library of another signature, and a UDP socket needs no entitlement outside the App
+	     Sandbox. Applied by sign.ts through `--entitlements` in place of Bun's set. -->
+</dict>
+</plist>

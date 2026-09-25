@@ -1,0 +1,163 @@
+{
+  "requests": {
+    "auth": { "params": [{ "token": "eyJhbGciOiJFZERTQSJ9.e30.sig", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }], "results": [{ "subject": "usr_123", "expiresAt": 1758283200000 }] },
+    "entitlement.refresh": {
+      "params": [{}],
+      "results": [
+        { "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" },
+        { "token": "eyJhbGciOiJFZERTQSJ9.e30.sig", "usage": { "period": "2026-09", "metrics": { "llm_tokens_in": { "used": 12000, "cap": 2000000 }, "stt_seconds": { "used": 3, "cap": 600 } } } }
+      ]
+    },
+    "llm.complete": {
+      "params": [
+        { "model": { "tier": "fast" }, "system": "You are the orchestrator.", "messages": [{ "role": "user", "content": [{ "type": "text", "text": "what is open" }] }], "maxTokens": 1024 },
+        { "model": { "tier": "smart" }, "messages": [{ "role": "user", "content": [{ "type": "text", "text": "plan the week" }] }], "tools": [{ "name": "Tasks", "description": "List, Read, Create tasks", "schema": { "type": "object" } }] }
+      ],
+      "results": [
+        { "content": [{ "type": "text", "text": "Nothing is open." }], "stopReason": "end", "usage": { "in": 900, "out": 12 }, "model": "gemini/gemini-3.8-flash" },
+        { "content": [], "stopReason": "cancelled", "usage": { "in": 900, "out": 0 }, "model": "gemini/gemini-3.8-flash" }
+      ]
+    },
+    "stt.transcribe": { "params": [{ "audio": "AAAAAAAAAAA=" }, { "audio": "AAAAAAAAAAA=", "language": "en" }], "results": [{ "text": "what is open" }, { "text": "" }] },
+    "tts.speak": { "params": [{ "text": "Nothing is open." }, { "text": "Nothing is open.", "voice": "af_heart" }], "results": [{}] },
+    "cancel": { "params": [{ "id": 12 }, { "id": "req_7" }], "results": [{}] },
+    "registry.register": {
+      "params": [
+        {
+          "epoch": 3,
+          "node": {
+            "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "name": "desk",
+            "role": "primary",
+            "status": "online",
+            "via": "relay",
+            "platform": "windows",
+            "scope": { "kind": "machine" },
+            "capabilities": { "harnesses": ["claude"], "voice": { "wake": false, "stt": false, "tts": false }, "remote": false, "brain": true },
+            "versions": { "platform": "0.1.0", "protocol": 1 },
+            "lastSeen": 1758196800000
+          }
+        }
+      ],
+      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, {}, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }]
+    },
+    "registry.heartbeat": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }, {}]
+    },
+    "registry.claim": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }],
+      "results": [{ "granted": false }, { "granted": true, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "granted": false, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }]
+    },
+    "relay.grant": {
+      "params": [
+        { "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8" },
+        { "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" },
+        { "peer": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1", "kind": "node", "name": "build box", "expiresAt": 1758283200000 },
+        { "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "kind": "controller", "expiresAt": 1758200400000 }
+      ],
+      "results": [{ "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl" }]
+    },
+    "relay.revoke": { "params": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, { "peer": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1" }], "results": [{}] },
+    "backup.status": {
+      "params": [{}],
+      "results": [
+        {},
+        {
+          "header": { "v": 1, "kdf": { "name": "scrypt", "salt": "q3ZkL0m9vW2xY5tC8nR1aQ==", "n": 32768, "r": 8, "p": 1 }, "keyId": "5Yd9kQ2mXo0", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+          "objects": 412,
+          "bytes": 1834902,
+          "updatedAt": 1758196800000
+        }
+      ]
+    },
+    "backup.begin": {
+      "params": [
+        { "header": { "v": 1, "kdf": { "name": "scrypt", "salt": "q3ZkL0m9vW2xY5tC8nR1aQ==", "n": 32768, "r": 8, "p": 1 }, "keyId": "5Yd9kQ2mXo0", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" } },
+        { "header": { "v": 1, "kdf": { "name": "scrypt", "salt": "q3ZkL0m9vW2xY5tC8nR1aQ==", "n": 32768, "r": 8, "p": 1 }, "keyId": "5Yd9kQ2mXo0", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, "replace": true }
+      ],
+      "results": [{}]
+    },
+    "backup.put": { "params": [{ "kind": "memory", "key": "Zk3uQ0cV8yT1mN4bX7wE2r", "ciphertext": "AQAAAAAAAAAAAAAAAAAA", "version": 3 }], "results": [{}] },
+    "backup.delete": { "params": [{ "kind": "workspaces", "key": "Zk3uQ0cV8yT1mN4bX7wE2r" }], "results": [{}] },
+    "backup.list": { "params": [{}, { "kind": "tasks" }], "results": [{ "entries": [{ "kind": "memory", "key": "Zk3uQ0cV8yT1mN4bX7wE2r", "version": 3, "size": 120 }] }, { "entries": [] }] },
+    "backup.get": { "params": [{ "kind": "memory", "key": "Zk3uQ0cV8yT1mN4bX7wE2r" }], "results": [{ "ciphertext": "AQAAAAAAAAAAAAAAAAAA", "version": 3 }] },
+    "backup.pull": {
+      "params": [{ "kind": "chat" }, { "kind": "chat", "after": "Zk3uQ0cV8yT1mN4bX7wE2r", "limit": 200 }],
+      "results": [{ "entries": [{ "key": "Zk3uQ0cV8yT1mN4bX7wE2r", "version": 3, "ciphertext": "AQAAAAAAAAAAAAAAAAAA" }], "next": "Zk3uQ0cV8yT1mN4bX7wE2r" }, { "entries": [] }]
+    },
+    "backup.clear": { "params": [{}], "results": [{}] },
+    "compute.embed": { "params": [{ "texts": ["hello"] }], "results": [{ "vectors": [[0.1, 0.2]], "model": "BAAI/bge-base-en-v1.5" }, { "vectors": [[0.1, 0.2]], "model": "BAAI/bge-base-en-v1.5", "dim": 2 }] },
+    "turn.credentials": {
+      "params": [{}, { "ttl": 86400 }],
+      "results": [
+        {
+          "iceServers": [
+            { "urls": ["stun:stun.cloudflare.com:3478"] },
+            { "urls": ["turn:turn.cloudflare.com:3478?transport=udp", "turn:turn.cloudflare.com:3478?transport=tcp", "turns:turn.cloudflare.com:443?transport=tcp"], "username": "g0a1…", "credential": "b8c2…" }
+          ],
+          "expiresAt": 1758283200000
+        }
+      ]
+    },
+    "direct.report": {
+      "params": [{ "report": { "day": "2026-09-24", "counts": [{ "kind": "client", "path": "srflx", "count": 2 }, { "kind": "node", "path": "host", "count": 1 }] } }],
+      "results": [{}]
+    },
+    "push.register": { "params": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "platform": "android", "token": "fcm-device-token" }], "results": [{}] },
+    "push.unregister": { "params": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
+    "push.send": {
+      "params": [
+        { "title": "Permission needed", "body": "Write x.txt", "device": "phone" },
+        {
+          "title": "Permission needed",
+          "body": "Write x.txt",
+          "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
+          "kind": "ask",
+          "ask": {
+            "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+            "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "title": "Permission needed",
+            "detail": "Write x.txt",
+            "options": [{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }],
+            "expiresAt": 1758197400000
+          }
+        },
+        { "title": "Permission needed", "body": "Write x.txt", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "kind": "dismiss", "ask": { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "title": "Permission needed", "options": [] } }
+      ],
+      "results": [{}]
+    }
+  },
+  "inbound": {
+    "relay.open": {
+      "params": [
+        { "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "kind": "controller", "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=" },
+        { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "kind": "node", "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=", "curve": "x25519" },
+        { "peer": "pair_Hq3m9TzW1vKc0aLx", "kind": "pair", "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=", "subject": "usr_123", "login": "octocat" }
+      ],
+      "results": [{ "epk": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=" }]
+    }
+  },
+  "frames": {
+    "relay": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "frame": "AAAA" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "frame": "AAAAAAAAAAEbW2hd…" }],
+    "relay.close": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "reason": "unauthorized" }],
+    "registry.primary": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }],
+    "entitlement.updated": [{ "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }],
+    "llm.delta": [
+      { "id": 12, "delta": { "type": "text", "text": "Nothing " } },
+      { "id": 12, "delta": { "type": "tool_use", "id": "tu_1", "name": "Tasks", "inputJson": "{\"action\":\"List\"}" } }
+    ],
+    "tts.delta": [{ "id": 13, "chunk": "AAAAAAAAAAA=" }]
+  },
+  "auth": {
+    "auth.device": {
+      "params": [{}, { "node": "desk" }],
+      "results": [{ "deviceCode": "3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKlZxCvBnM", "userCode": "BCDF-GHJK", "verificationUrl": "https://orc.example/login?code=BCDF-GHJK", "expiresAt": 1758197700000, "intervalMs": 3000 }]
+    },
+    "auth.token": {
+      "params": [{ "deviceCode": "3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKlZxCvBnM" }],
+      "results": [{ "token": "tok_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKlZxCvBnM", "subject": "usr_123", "expiresAt": 1789732800000 }]
+    },
+    "auth.revoke": { "params": [{}], "results": [{}] }
+  }
+}

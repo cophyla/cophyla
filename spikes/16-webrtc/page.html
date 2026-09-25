@@ -1,0 +1,291 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>spike 16: webrtc</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 12px; background: #14121a; color: #e8e4f0; }
+  button { font-size: 16px; padding: 10px 14px; margin: 4px 4px 4px 0; }
+  pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; background: #1d1a25; padding: 8px; }
+</style>
+</head>
+<body>
+<div>
+  <button id="bench">Bench (this network)</button>
+  <button id="cross">Cross (cellular while on Wi-Fi)</button>
+  <button id="nat">NAT only</button>
+  <button id="send">Send saved results</button>
+</div>
+<pre id="out">loading…</pre>
+<script>
+// The page's side: the offering peer. Modes: bench (connect, ping, bulk down and up, a burst
+// of small messages), cross (the same, keeping only this device's candidates that do not go
+// out through the node's own public address and only the node's srflx, so a phone on Wi-Fi
+// with mobile data kept up is forced over the carrier), and nat (no node at all: gather
+// against several STUN servers and read the mapping behaviour off the srflx ports).
+const q = new URLSearchParams(location.search);
+const out = document.getElementById("out");
+const lines = [];
+const log = (s) => { lines.push(s); out.textContent = lines.join("\n"); };
+const pct = (a, p) => a[Math.min(a.length - 1, Math.floor((a.length - 1) * p))];
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const typ = (c) => (/ typ (\w+)/.exec(c) || [])[1];
+const flipFp = (sdp) => sdp.replace(/(a=fingerprint:sha-256 )([0-9A-F]{2})/, (_, a, b) => a + (b === "00" ? "01" : "00"));
+const addrOf = (c) => { const f = c.split(" "); return { ip: f[4], port: Number(f[5]), typ: typ(c) }; };
+let config;
+
+async function report(obj) {
+  const all = JSON.parse(localStorage.getItem("spike16") || "[]");
+  all.push(obj);
+  localStorage.setItem("spike16", JSON.stringify(all));
+  await sendSaved();
+}
+async function sendSaved() {
+  const all = JSON.parse(localStorage.getItem("spike16") || "[]");
+  const left = [];
+  for (const r of all) {
+    try { await fetch("/report", { method: "POST", body: JSON.stringify(r) }); } catch { left.push(r); }
+  }
+  localStorage.setItem("spike16", JSON.stringify(left));
+  log(left.length ? `${left.length} result(s) saved on the device; press Send when back on the node's Wi-Fi` : "results sent to the node");
+}
+
+function env() {
+  const c = navigator.connection || {};
+  return { ua: navigator.userAgent, connection: { type: c.type, effectiveType: c.effectiveType, rtt: c.rtt, downlink: c.downlink } };
+}
+
+async function nat() {
+  lines.length = 0;
+  log(`nat: ${JSON.stringify(env().connection)}`);
+  const servers = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478", "stun:global.stun.twilio.com:3478", "stun:stun.nextcloud.com:443", "stun:stun.ekiga.net:3478"];
+  const rounds = [];
+  for (let round = 0; round < 3; round++) {
+    const pc = new RTCPeerConnection({ iceServers: servers.map((urls) => ({ urls })) });
+    pc.createDataChannel("x");
+    const cands = [];
+    const t0 = performance.now();
+    const done = new Promise((resolve) => {
+      pc.onicecandidate = (e) => { if (e.candidate && e.candidate.candidate) cands.push(e.candidate.candidate); else resolve(); };
+      setTimeout(resolve, 8000);
+    });
+    await pc.setLocalDescription(await pc.createOffer());
+    await done;
+    pc.close();
+    const srflx = cands.filter((c) => typ(c) === "srflx").map(addrOf);
+    const byIp = {};
+    for (const s of srflx) (byIp[s.ip] ||= new Set()).add(s.port);
+    rounds.push({ ms: Math.round(performance.now() - t0), srflx: Object.fromEntries(Object.entries(byIp).map(([ip, ports]) => [ip, [...ports]])), types: cands.map(typ) });
+    log(`round ${round}: ${JSON.stringify(rounds[round].srflx)} in ${rounds[round].ms} ms`);
+  }
+  // one socket's mapping, per public address: one port for every server is endpoint-independent
+  const verdict = {};
+  for (const r of rounds) for (const [ip, ports] of Object.entries(r.srflx)) (verdict[ip] ||= []).push(ports.length);
+  const summary = Object.fromEntries(Object.entries(verdict).map(([ip, counts]) => [ip, counts.every((n) => n === 1) ? "endpoint-independent" : "endpoint-dependent (symmetric)"]));
+  log(`verdict: ${JSON.stringify(summary)}`);
+  await report({ kind: "nat", at: new Date().toISOString(), ...env(), rounds, summary });
+}
+
+async function cycles() {
+  // connect, one ping, close, again: the phone going to the background and back, many times
+  lines.length = 0;
+  const n = Number(q.get("n") || 30);
+  const times = [];
+  for (let i = 0; i < n; i++) {
+    const r = await bench("cycle");
+    times.push(r.open);
+  }
+  times.sort((a, b) => a - b);
+  lines.length = 0;
+  const rss = await (await fetch("/rss")).json();
+  log(`cycles ${n}: open ms p50 ${pct(times, 0.5)} p95 ${pct(times, 0.95)} max ${times[times.length - 1]}; node after ${JSON.stringify(rss)}`);
+  await report({ kind: "cycles", n, openMs: times, at: new Date().toISOString(), nodeAfter: rss });
+}
+
+async function bench(mode) {
+  if (mode !== "cycle") lines.length = 0;
+  config = await (await fetch("/config")).json();
+  const cross = mode === "cross";
+  // off the LAN (a phone through a tunnel) the transfers are small: mobile data is metered
+  const far = cross || location.protocol === "https:" || (navigator.connection || {}).type === "cellular";
+  const mb = Number(q.get("mb") || (far ? 4 : 32));
+  const ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
+  const iceServers = config.stun || cross || config.only === "srflx" ? config.stunServers.map((s) => ({ urls: `stun:${s}` })) : [];
+  const only = cross ? "srflx" : q.get("only") || config.only;
+  log(`${mode}: node ${config.lib}, node keeps ${config.only}, page keeps ${only}${cross ? ` not via ${config.publicIp}` : ""}, ${JSON.stringify(env().connection)}`);
+  const t0 = performance.now();
+  const at = () => Math.round(performance.now() - t0);
+  const marks = {};
+  const pc = new RTCPeerConnection({ iceServers });
+  const dc = pc.createDataChannel("rpc");
+  dc.binaryType = "arraybuffer";
+  const gathered = [], sentCands = [], got = [], early = [];
+  pc.onicecandidate = (e) => {
+    if (!e.candidate || !e.candidate.candidate) { marks.gathered = at(); return; }
+    const c = e.candidate.candidate;
+    gathered.push(c);
+    const a = addrOf(c);
+    const keepIt = only === "any" || a.typ === only;
+    if (!keepIt || (cross && a.ip === config.publicIp)) return;
+    sentCands.push(`${a.typ} ${a.ip}`);
+    ws.send(JSON.stringify({ t: "cand", c, mid: e.candidate.sdpMid }));
+  };
+  pc.onconnectionstatechange = () => { marks[`state:${pc.connectionState}`] = at(); };
+  ws.onmessage = async (ev) => {
+    const m = JSON.parse(ev.data);
+    // the node may trickle candidates before its answer: hold them until the answer is in
+    if (m.t === "answer") {
+      marks.answer = at();
+      await pc.setRemoteDescription({ type: "answer", sdp: q.get("tamper") === "answer" ? flipFp(m.sdp) : m.sdp });
+      for (const c of early.splice(0)) await pc.addIceCandidate(c).catch((e) => log(`addIceCandidate: ${e}`));
+    } else if (m.t === "cand") {
+      got.push(typ(m.c));
+      const c = { candidate: m.c, sdpMid: m.mid };
+      if (!pc.remoteDescription) early.push(c);
+      else await pc.addIceCandidate(c).catch((e) => log(`addIceCandidate: ${e}`));
+    }
+    else if (m.t === "marks") marks.node = m.node;
+  };
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  const offerSdp = offer.sdp.split("\r\n").filter((l) => !l.startsWith("a=candidate:")).join("\r\n");
+  // `tamper`: one hex digit of the DTLS fingerprint flipped in the offer as sent or the answer as taken
+  ws.send(JSON.stringify({ t: "offer", sdp: q.get("tamper") === "offer" ? flipFp(offerSdp) : offerSdp }));
+  marks.offerSent = at();
+  const opened = await Promise.race([new Promise((r) => (dc.onopen = () => r(true))), sleep(20000).then(() => false)]);
+  if (!opened) {
+    log(`no channel after 20 s: state ${pc.connectionState}, sent ${sentCands.join(", ")}, got ${got.join(", ")}`);
+    // every pair ICE tried: which way the checks got through, if either
+    const pairs = [];
+    const st = await pc.getStats();
+    st.forEach((r) => {
+      if (r.type !== "candidate-pair") return;
+      const l = st.get(r.localCandidateId) || {}, rm = st.get(r.remoteCandidateId) || {};
+      pairs.push({ state: r.state, nominated: r.nominated, local: `${l.candidateType} ${l.address || l.ip}:${l.port}`, remote: `${rm.candidateType} ${rm.address || rm.ip}:${rm.port}`, requestsSent: r.requestsSent, responsesReceived: r.responsesReceived, requestsReceived: r.requestsReceived, responsesSent: r.responsesSent });
+    });
+    for (const p of pairs) log(`pair ${p.state} ${p.local} -> ${p.remote} req ${p.requestsSent}/${p.responsesReceived} in ${p.requestsReceived}/${p.responsesSent}`);
+    await report({ kind: mode, ok: false, at: new Date().toISOString(), ...env(), marks, gathered, sentCands, got, pairs });
+    return;
+  }
+  marks.open = at();
+  log(`open at ${marks.open} ms (connected ${marks["state:connected"]} ms)`);
+  if (mode === "cycle") {
+    const pong = new Promise((r) => (dc.onmessage = r));
+    dc.send(JSON.stringify({ op: "ping" }));
+    await pong;
+    dc.close(); pc.close(); ws.close();
+    return { open: marks.open };
+  }
+
+  // the reply stream: JSON over the channel
+  const inbox = [];
+  let wake;
+  let downBytes = 0, downEnd = 0, msgCount = 0, msgEnd = 0, msgBytes = 0;
+  let downTarget = Infinity, msgTarget = Infinity;
+  dc.onmessage = (e) => {
+    if (typeof e.data !== "string") { downBytes += e.data.byteLength; if (downBytes >= downTarget) { downEnd = performance.now(); wake && wake(); } return; }
+    if (e.data.startsWith('{"jsonrpc"')) { msgCount++; msgBytes += e.data.length; if (msgCount >= msgTarget) { msgEnd = performance.now(); wake && wake(); } return; }
+    inbox.push(JSON.parse(e.data)); wake && wake();
+  };
+  const next = async (op) => { for (;;) { const i = inbox.findIndex((m) => m.op === op); if (i >= 0) return inbox.splice(i, 1)[0]; await new Promise((r) => (wake = r)); } };
+  const until = async (cond) => { while (!cond()) await new Promise((r) => (wake = r)); };
+
+  if (mode === "steady") {
+    // an idle connection, then a chat-sized stream, then a video-sized one: the node's CPU for each
+    const steady = {};
+    dc.send(JSON.stringify({ op: "hold", seconds: 60 }));
+    steady.idle60s = (await next("hold-done")).node;
+    log(`idle ${JSON.stringify(steady.idle60s)}`);
+    dc.send(JSON.stringify({ op: "rate", bytesPerSec: 20000, seconds: 20, text: true }));
+    steady.chat20kBps = (await next("rate-done")).node;
+    log(`chat 20 kB/s ${JSON.stringify(steady.chat20kBps)}`);
+    dc.send(JSON.stringify({ op: "rate", bytesPerSec: 2500000, seconds: 20 }));
+    steady.video2500kBps = (await next("rate-done")).node;
+    log(`video 2.5 MB/s ${JSON.stringify(steady.video2500kBps)}`);
+    await report({ kind: "steady", at: new Date().toISOString(), lib: config.lib, ...steady });
+    dc.close(); pc.close(); ws.close();
+    return;
+  }
+
+  // round trips: 200 sequential pings of ~100 bytes
+  const rtts = [];
+  for (let i = 0; i < 200; i++) {
+    const s = performance.now();
+    dc.send(JSON.stringify({ op: "ping", i, pad: "p".repeat(80) }));
+    await next("ping");
+    rtts.push(performance.now() - s);
+  }
+  rtts.sort((a, b) => a - b);
+  const rtt = { p50: +pct(rtts, 0.5).toFixed(2), p95: +pct(rtts, 0.95).toFixed(2), max: +rtts[rtts.length - 1].toFixed(2) };
+  log(`rtt ms ${JSON.stringify(rtt)}`);
+
+  // node → page bulk, 64 KB binary chunks
+  const bytes = mb * 1024 * 1024;
+  downTarget = bytes;
+  let s = performance.now();
+  dc.send(JSON.stringify({ op: "down", bytes, chunk: 65536 }));
+  await until(() => downEnd > 0);
+  const downSent = await next("down-sent");
+  const down = { mb, MBps: +(bytes / 1048576 / ((downEnd - s) / 1000)).toFixed(1), node: downSent.node };
+  log(`down ${JSON.stringify(down)}`);
+
+  // node → page burst of small JSON messages, like a session stream
+  const count = far ? 2000 : 20000;
+  msgTarget = count;
+  s = performance.now();
+  dc.send(JSON.stringify({ op: "msgs", count, size: 200 }));
+  await until(() => msgEnd > 0);
+  const msgsSent = await next("msgs-sent");
+  const msgs = { count, perSec: Math.round(count / ((msgEnd - s) / 1000)), node: msgsSent.node };
+  log(`msgs ${JSON.stringify(msgs)}`);
+
+  // page → node bulk
+  dc.send(JSON.stringify({ op: "up", bytes }));
+  await next("up-ready");
+  s = performance.now();
+  const chunk = new Uint8Array(65536);
+  dc.bufferedAmountLowThreshold = 256 * 1024;
+  let sentUp = 0;
+  while (sentUp < bytes) {
+    while (sentUp < bytes && dc.bufferedAmount < 1 << 20) { dc.send(chunk); sentUp += chunk.byteLength; }
+    if (sentUp < bytes) await new Promise((r) => (dc.onbufferedamountlow = r));
+  }
+  const upDone = await next("up-done");
+  const up = { mb, MBps: +(bytes / 1048576 / ((performance.now() - s) / 1000)).toFixed(1), node: upDone.node };
+  log(`up ${JSON.stringify(up)}`);
+
+  // what ICE chose, from both sides
+  dc.send(JSON.stringify({ op: "info" }));
+  const info = await next("info");
+  const stats = await pc.getStats();
+  let pair;
+  stats.forEach((r) => { if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded") pair = r; });
+  const local = pair && stats.get(pair.localCandidateId), remote = pair && stats.get(pair.remoteCandidateId);
+  const chosen = pair && { local: `${local.candidateType} ${local.address || local.ip}:${local.port} ${local.networkType || ""}`, remote: `${remote.candidateType} ${remote.address || remote.ip}:${remote.port}`, rttMs: pair.currentRoundTripTime * 1000 };
+  log(`chosen ${JSON.stringify(chosen)}`);
+  // the relay's way round for comparison: this device to the relay server (HTTPS on a warm connection)
+  const relayMs = [];
+  for (let i = 0; i < 6; i++) {
+    const t = performance.now();
+    try { await fetch("https://api.getcophyla.com/healthz", { mode: "no-cors", cache: "no-store" }); relayMs.push(Math.round(performance.now() - t)); } catch { relayMs.push(-1); }
+  }
+  log(`this device to the relay server, ms: ${relayMs.join(" ")}`);
+  ws.send(JSON.stringify({ t: "marks" }));
+  await sleep(300);
+  const result = { kind: mode, ok: true, at: new Date().toISOString(), lib: config.lib, nodeOnly: config.only, pageOnly: only, ...env(), marks, rtt, down, msgs, up, chosen, relayMs, nodeSelected: info.selected, nodeRssMb: info.rssMb, sentCands, got, gatheredTypes: gathered.map(typ) };
+  window.__result = result;
+  await report(result);
+  dc.close(); pc.close(); ws.close();
+}
+
+document.getElementById("bench").onclick = () => bench("bench").catch((e) => log(`error: ${e}`));
+document.getElementById("cross").onclick = () => bench("cross").catch((e) => log(`error: ${e}`));
+document.getElementById("nat").onclick = () => nat().catch((e) => log(`error: ${e}`));
+document.getElementById("send").onclick = () => sendSaved();
+log(`ready. ${JSON.parse(localStorage.getItem("spike16") || "[]").length} unsent result(s).`);
+window.__run = (mode) => (mode === "nat" ? nat() : mode === "cycles" ? cycles() : bench(mode));
+</script>
+</body>
+</html>

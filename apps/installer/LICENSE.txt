@@ -1,0 +1,14 @@
+Cophyla
+
+The platform (the daemon, the desktop app, the launcher, the protocol package and the
+built-in views) is open source under the Apache License, Version 2.0:
+https://www.apache.org/licenses/LICENSE-2.0 - see LICENSE and NOTICE in the source tree
+at https://github.com/cophyla/cophyla.
+
+The brain (brain.exe, installed under this directory and updated from the release feed) is
+a closed component distributed as a signed binary under its own end-user licence agreement.
+By installing or updating the brain you accept that agreement, published with each brain
+release. It is not covered by the Apache License.
+
+The Bun runtime (bun.exe) is distributed under the MIT License, Copyright Oven, Inc.
+Third-party packages in cophylad's node_modules carry their own licences, kept beside them.

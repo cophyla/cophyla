@@ -1,0 +1,823 @@
+{
+  "Node": [
+    {
+      "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "name": "desk",
+      "role": "primary",
+      "status": "online",
+      "via": "direct",
+      "platform": "windows",
+      "scope": { "kind": "machine" },
+      "capabilities": {
+        "harnesses": ["claude", "codex"],
+        "voice": { "wake": false, "stt": false, "tts": false },
+        "remote": false,
+        "brain": true
+      },
+      "versions": { "platform": "0.1.0", "protocol": 1 },
+      "lastSeen": 1758196800000
+    },
+    {
+      "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      "name": "laptop",
+      "role": "secondary",
+      "backup": true,
+      "status": "degraded",
+      "via": "relay",
+      "platform": "macos",
+      "scope": { "kind": "workspaces", "paths": ["/Users/me/src/app"] },
+      "capabilities": {
+        "harnesses": ["claude"],
+        "voice": { "wake": true, "stt": true, "tts": false },
+        "remote": true,
+        "brain": false
+      },
+      "versions": { "platform": "0.1.0", "protocol": 1, "brain": "0.1.0" },
+      "lastSeen": 1758196800000
+    }
+  ],
+  "Workspace": [
+    {
+      "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "path": "C:\\D\\orchestrator",
+      "name": "orchestrator",
+      "origin": "discovered",
+      "repo": { "root": "C:\\D\\orchestrator", "remote": "git@github.com:cophyla/cophyla.git" },
+      "summary": "the orchestrator monorepo",
+      "tags": ["orchestrator", "typescript"],
+      "lastActivity": 1758196800000
+    },
+    {
+      "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "path": "C:\\Users\\me\\.cophyla",
+      "name": "~/.cophyla",
+      "origin": "scope",
+      "tags": [],
+      "lastActivity": 1758196800000
+    }
+  ],
+  "HarnessKind": ["claude", "codex", "acp", "muse"],
+  "HarnessCapabilities": [
+    { "attach": true, "inject": true, "hooks": true, "spawn": true, "answerAsks": true },
+    { "attach": false, "inject": true, "hooks": false, "spawn": true, "answerAsks": true }
+  ],
+  "HarnessProfile": [
+    {
+      "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "name": "default",
+      "configDir": "C:\\Users\\me\\.claude",
+      "env": {},
+      "origin": "discovered",
+      "default": true,
+      "defaultBy": "recent",
+      "automatic": "recent",
+      "status": "ok",
+      "launch": { "mode": "auto", "args": ["--settings", "C:\\Users\\me\\.claude\\settings.json"], "source": "mirrored", "at": 1758196000000 }
+    },
+    {
+      "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB9",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "name": "work",
+      "configDir": "C:\\Users\\me\\.claude-accounts\\work",
+      "exec": { "command": "claude", "args": [] },
+      "env": { "CLAUDE_CONFIG_DIR": "C:\\Users\\me\\.claude-accounts\\work" },
+      "origin": "user",
+      "status": "unauthenticated",
+      "launch": { "args": ["--effort", "high"], "source": "config" }
+    },
+    {
+      "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FBA",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "codex",
+      "name": "default",
+      "configDir": "C:\\Users\\me\\.codex",
+      "env": {},
+      "origin": "discovered",
+      "default": true,
+      "status": "missing"
+    },
+    {
+      "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FBB",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "muse",
+      "name": "work",
+      "configDir": "C:\\Users\\me\\.muse-work\\config\\muse",
+      "env": { "XDG_CONFIG_HOME": "C:\\Users\\me\\.muse-work\\config", "XDG_DATA_HOME": "C:\\Users\\me\\.muse-work\\data" },
+      "origin": "user",
+      "default": true,
+      "defaultBy": "config",
+      "status": "ok"
+    }
+  ],
+  "Session": [
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "native": { "id": "3f0c1b2a-7a2e-4c1e-9f0e-1c2d3e4f5a6b", "pid": 41232, "transport": "pipe" },
+      "origin": "user",
+      "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "cwd": "C:\\D\\orchestrator",
+      "title": "fix the gate tests",
+      "intent": "make the gate test pass on Windows",
+      "tags": [],
+      "status": "needs_permission",
+      "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000,
+      "stats": {
+        "turns": 4,
+        "cost": 0.12,
+        "tokens": { "in": 1200, "out": 800, "cacheRead": 45000, "cacheWrite": 3000 },
+        "context": { "used": 51000, "limit": 200000 },
+        "model": "claude-sonnet-5"
+      },
+      "transcript": { "path": "C:\\Users\\me\\.claude\\projects\\C--D-orchestrator\\3f0c1b2a.jsonl" }
+    },
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "acp",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "native": { "id": "acp-7", "transport": "acp" },
+      "origin": "orchestrator",
+      "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      "cwd": "C:\\D\\orchestrator",
+      "tags": ["done"],
+      "summary": "wrote the store migration",
+      "status": "ended",
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000,
+      "endedAt": 1758196800000
+    },
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "native": { "id": "9d1e2f3a-4b5c-4d6e-8f70-81a2b3c4d5e6", "pid": 41232, "transport": "pipe", "terminal": { "host": "a1b2c3d4e5f60718", "id": "5f2a9c01d4e7" } },
+      "origin": "orchestrator",
+      "cwd": "C:\\D\\orchestrator",
+      "tags": [],
+      "status": "idle",
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000
+    },
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB9",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "muse",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FBB",
+      "native": { "id": "01a0d767-823b-74e2-af14-2d2626a0d3e6", "pid": 49200, "transport": "msp", "terminal": { "host": "a1b2c3d4e5f60718", "id": "6a3b8d12e5f0" } },
+      "origin": "user",
+      "cwd": "C:\\D\\orchestrator",
+      "title": "run the tests",
+      "tags": [],
+      "status": "busy",
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000,
+      "stats": { "turns": 1, "cost": 0, "tokens": { "in": 47653, "out": 235 }, "context": { "used": 24006, "limit": 1007997 }, "model": "muse-spark-1.3" },
+      "transcript": { "path": "C:\\Users\\me\\.local\\share\\muse\\sessions\\2026\\09\\25\\01a0d767-823b-74e2-af14-2d2626a0d3e6\\session.jsonl" }
+    },
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB4",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "native": { "id": "5014f6d1-e9c1-48c8-b5be-83cdb0952d6b", "pid": 8232, "transport": "pipe", "job": "5014f6d1" },
+      "origin": "user",
+      "cwd": "C:\\D\\orchestrator",
+      "tags": [],
+      "status": "idle",
+      "waiting": { "on": "shell" },
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000
+    },
+    {
+      "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "harness": "claude",
+      "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "native": { "id": "20aeb950-4d28-40d2-8516-ffc1e11b4961", "pid": 68324, "transport": "pipe" },
+      "origin": "user",
+      "cwd": "C:\\D\\orchestrator",
+      "tags": [],
+      "status": "idle",
+      "waiting": { "on": "user", "detail": "dialog open" },
+      "startedAt": 1758196000000,
+      "lastActivity": 1758196800000
+    }
+  ],
+  "Terminal": [
+    { "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 },
+    { "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "name": "build", "argv0": "pwsh.exe", "cwd": "C:\\D\\orchestrator", "cols": 100, "rows": 30, "status": "exited", "exitCode": 0, "windows": 0, "startedAt": 1758196000000 },
+    { "id": "7d31c0a9e2b4", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "pwsh.exe", "cwd": "C:\\D\\orchestrator", "pid": 72556, "cols": 120, "rows": 32, "title": "claude agents", "status": "running", "agents": "claude", "windows": 1, "startedAt": 1758196000000 }
+  ],
+  "SessionEvent": [
+    {
+      "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+      "seq": 12,
+      "at": 1758196800000,
+      "kind": "tool_call",
+      "payload": { "tool": "Write", "input": { "file_path": "C:\\D\\orchestrator\\x.txt" } },
+      "raw": { "hook_event_name": "PreToolUse", "tool_name": "Write" }
+    },
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 13, "at": 1758196800100, "kind": "status", "payload": { "status": "busy" } }
+  ],
+  "Task": [
+    {
+      "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      "title": "Add the store migration",
+      "detail": "one table per entity, WAL on",
+      "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "createdBy": { "kind": "brain" },
+      "status": "blocked",
+      "priority": "normal",
+      "blocker": { "kind": "ask", "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5" },
+      "sessions": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB2"],
+      "createdAt": 1758196000000,
+      "updatedAt": 1758196800000
+    },
+    {
+      "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "title": "Morning summary",
+      "createdBy": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
+      "status": "pending",
+      "priority": "low",
+      "trigger": { "kind": "cron", "expr": "0 9 * * 1-5", "tz": "Europe/Istanbul" },
+      "recurring": true,
+      "sessions": [],
+      "result": { "summary": "3 open tasks, 1 ask" },
+      "createdAt": 1758196000000,
+      "updatedAt": 1758196800000,
+      "completedAt": 1758196700000
+    },
+    {
+      "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB4",
+      "title": "Rerun CI when it fails",
+      "parent": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "createdBy": { "kind": "system" },
+      "status": "pending",
+      "priority": "high",
+      "trigger": { "kind": "event", "name": "my.ci_failed", "match": { "branch": "main" } },
+      "sessions": [],
+      "createdAt": 1758196000000,
+      "updatedAt": 1758196000000
+    },
+    {
+      "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+      "title": "Remind me at noon",
+      "createdBy": { "kind": "node", "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" },
+      "status": "done",
+      "priority": "normal",
+      "trigger": { "kind": "at", "at": 1758200400000 },
+      "blocker": { "kind": "user" },
+      "sessions": [],
+      "createdAt": 1758196000000,
+      "updatedAt": 1758196000000
+    }
+  ],
+  "Thread": [
+    {
+      "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "topic": "the gate tests",
+      "startedAt": 1758196000000,
+      "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "tags": [],
+      "sessions": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"]
+    },
+    {
+      "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB4",
+      "startedAt": 1758190000000,
+      "endedAt": 1758196000000,
+      "summary": "decided on JSON-RPC for the client protocol",
+      "tags": ["protocol", "decision"],
+      "sessions": []
+    }
+  ],
+  "Message": [
+    {
+      "id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4",
+      "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "at": 1758196800000,
+      "role": "orchestrator",
+      "source": "brain",
+      "content": [
+        { "type": "text", "text": "The agent is waiting on a permission prompt:" },
+        {
+          "type": "quote",
+          "text": "Do you want to create x.txt?",
+          "source": { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": [12, 12] }
+        },
+        { "type": "ref", "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5" },
+        { "type": "ref", "file": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator\\x.txt", "line": 1 } }
+      ]
+    },
+    {
+      "id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+      "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "at": 1758196700000,
+      "role": "user",
+      "source": "voice",
+      "content": [{ "type": "audio" }, { "type": "text", "text": "what is the agent doing" }],
+      "streaming": false
+    }
+  ],
+  "Source": [
+    { "kind": "file", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator\\.docs\\brain.md", "lines": [10, 20] },
+    { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+    { "kind": "thread", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" },
+    { "kind": "memory", "name": "user-prefers-short-answers", "lines": [1, 3] }
+  ],
+  "Hit": [
+    {
+      "corpus": "session",
+      "source": { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": [12, 12] },
+      "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "at": 1758196800000,
+      "snippet": "Do you want to create x.txt?",
+      "tags": ["permission"],
+      "score": 0.87
+    },
+    {
+      "corpus": "thread",
+      "source": { "kind": "thread", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" },
+      "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+      "at": 1758196800000,
+      "snippet": "the deploy step runs after the gate tests pass",
+      "tags": ["deploy"],
+      "score": 0.93
+    },
+    {
+      "corpus": "memory",
+      "source": { "kind": "memory", "name": "deploy-after-tests", "lines": [3, 5] },
+      "at": 1758100000000,
+      "snippet": "## Decision\nDeploy only after the gate tests pass.",
+      "tags": ["deploy", "decision"],
+      "score": 0.51
+    }
+  ],
+  "Ask": [
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "permission",
+      "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+      "title": "Write C:\\D\\orchestrator\\x.txt",
+      "detail": "Create x.txt with 3 lines",
+      "options": [
+        { "id": "allow", "label": "Allow", "style": "primary" },
+        { "id": "deny", "label": "Deny", "style": "danger" }
+      ],
+      "answerableBy": ["user", "brain"],
+      "status": "open",
+      "createdAt": 1758196800000,
+      "expiresAt": 1758204000000
+    },
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "permission",
+      "source": { "kind": "gate", "action": "session.send", "principal": { "kind": "brain" } },
+      "title": "Allow the brain to send to a session?",
+      "options": [{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }],
+      "answerableBy": ["user"],
+      "status": "answered",
+      "answer": { "option": "allow", "by": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" }, "at": 1758196900000 },
+      "remember": "always",
+      "createdAt": 1758196800000
+    },
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "choice",
+      "source": { "kind": "brain", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" },
+      "title": "Nothing found. Start an agent to research it?",
+      "options": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "label": "in orchestrator" }, { "id": "no", "label": "No" }],
+      "allowsText": true,
+      "answerableBy": ["user"],
+      "status": "expired",
+      "createdAt": 1758196800000
+    },
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "choice",
+      "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+      "title": "Which auth methods should the API accept?",
+      "detail": "Auth method · 2 of 3",
+      "options": [
+        { "id": "Session cookie", "label": "Session cookie", "description": "Server-side session, httpOnly cookie" },
+        { "id": "Bearer token", "label": "Bearer token", "description": "JWT in the Authorization header" },
+        { "id": "API key", "label": "API key", "description": "Static key per client" }
+      ],
+      "multiple": true,
+      "allowsText": true,
+      "answerableBy": ["user", "brain"],
+      "status": "open",
+      "createdAt": 1758196800000,
+      "expiresAt": 1758204000000
+    },
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB9",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "choice",
+      "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+      "title": "Which linters should run in CI?",
+      "detail": "Tools · 3 of 3",
+      "options": [{ "id": "ESLint", "label": "ESLint" }, { "id": "Prettier", "label": "Prettier" }, { "id": "Biome", "label": "Biome" }],
+      "multiple": true,
+      "allowsText": true,
+      "answerableBy": ["user", "brain"],
+      "status": "answered",
+      "answer": { "option": "ESLint", "options": ["ESLint", "Prettier"], "by": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" }, "at": 1758196900000 },
+      "createdAt": 1758196800000
+    },
+    {
+      "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FC0",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "type": "choice",
+      "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+      "title": "Which cache?",
+      "detail": "Cache",
+      "options": [{ "id": "Redis", "label": "Redis" }, { "id": "Memcached", "label": "Memcached" }],
+      "allowsText": true,
+      "answerableBy": ["user", "brain"],
+      "status": "answered",
+      "answer": { "option": "text", "text": "Valkey", "by": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" }, "at": 1758196900000 },
+      "createdAt": 1758196800000
+    }
+  ],
+  "AuditEntry": [
+    {
+      "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "at": 1758196800000,
+      "principal": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
+      "via": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+      "action": "node.list",
+      "args": {},
+      "decision": "allow",
+      "outcome": "ok",
+      "result": {
+        "summary": "{\"nodes\":[{\"id\":\"node_01ARZ3NDEKTSV4RRFFQ69G5FAV\"…",
+        "bytes": 412,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "body": { "nodes": [] }
+      },
+      "durationMs": 3
+    },
+    {
+      "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "at": 1758196800000,
+      "principal": { "kind": "brain" },
+      "action": "session.send",
+      "target": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+      "args": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" },
+      "decision": "ask",
+      "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+      "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      "correlation": "turn-18"
+    },
+    {
+      "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "at": 1758196800000,
+      "principal": { "kind": "node", "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" },
+      "action": "tool.run",
+      "target": "fs.read",
+      "args": { "name": "fs.read", "args": { "path": ".docs/brain.md" } },
+      "decision": "deny",
+      "outcome": "denied",
+      "durationMs": 0
+    }
+  ],
+  "MetricsSample": [
+    {
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "at": 1758196800000,
+      "cpu": 23.5,
+      "memory": { "used": 17179869184, "total": 68719476736 },
+      "gpu": [{ "name": "NVIDIA RTX 4090", "util": 4, "vramUsed": 2147483648, "vramTotal": 25769803776 }],
+      "processes": [
+        { "pid": 41232, "parent": 1200, "name": "claude.exe", "cpu": 12.1, "memory": 524288000, "owner": { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" } },
+        { "pid": 900, "parent": 1, "name": "bun.exe", "cpu": 0.4, "memory": 90000000, "owner": { "kind": "platform" } },
+        { "pid": 901, "parent": 900, "name": "brain.exe", "cpu": 0.1, "memory": 60000000, "owner": { "kind": "brain" } },
+        { "pid": 902, "parent": 900, "name": "python.exe", "cpu": 0, "memory": 2000000000, "vram": 1500000000, "owner": { "kind": "sidecar", "name": "tts-py" } },
+        { "pid": 77, "parent": 1, "name": "explorer.exe", "cpu": 0, "memory": 100000000, "owner": { "kind": "other" } }
+      ],
+      "llm": { "gemini/flash": { "in": 12000, "out": 900 } },
+      "profiles": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "in": 1200, "out": 800, "cached": 45000, "cost": 0.12 } },
+      "limits": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "at": 1758196790000, "session": { "percent": 4, "resetsAt": 1758211200000 }, "weekly": { "percent": 55, "resetsAt": 1758528000000 } } }
+    }
+  ],
+  "ProfileTokens": [{ "in": 5200, "out": 810, "cached": 40000, "cost": 0.42 }, { "in": 12, "out": 3, "cached": 0 }],
+  "ProfileLimits": [
+    { "at": 1758196790000, "session": { "percent": 4, "resetsAt": 1758211200000 }, "weekly": { "percent": 55, "resetsAt": 1758528000000 } },
+    { "at": 1758196790000, "weekly": { "percent": 1 } },
+    { "at": 1758196790000 }
+  ],
+  "SpendTotals": [
+    { "at": 1758196800000, "profiles": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "in": 5200, "out": 810, "cached": 40000, "cost": 0.42 } } },
+    { "at": 0, "profiles": {} }
+  ],
+  "ProcessOwner": [
+    { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+    { "kind": "platform" },
+    { "kind": "brain" },
+    { "kind": "sidecar", "name": "tts-py" },
+    { "kind": "other" }
+  ],
+  "ToolDefinition": [
+    {
+      "name": "fs.read",
+      "description": "Read a file whole or from an offset for a number of lines",
+      "schema": { "type": "object", "properties": { "path": { "type": "string" }, "offset": { "type": "integer" }, "lines": { "type": "integer" } }, "required": ["path"] },
+      "source": "builtin",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "risk": "read"
+    },
+    {
+      "name": "my.deploy",
+      "description": "Deploy the current branch to staging",
+      "schema": { "type": "object" },
+      "source": "editable",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "risk": "exec"
+    }
+  ],
+  "EventDefinition": [
+    { "name": "session.ask", "description": "an agent needs a permission, an input or a choice", "source": "builtin", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" },
+    {
+      "name": "my.ci_failed",
+      "description": "CI failed on a watched branch",
+      "payload": { "type": "object", "properties": { "branch": { "type": "string" } } },
+      "source": { "hook": "ci-watch" },
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV"
+    }
+  ],
+  "Prompt": [
+    {
+      "name": "review",
+      "description": "Review a diff for correctness",
+      "tags": ["review"],
+      "variables": ["diff"],
+      "body": "Review this diff for bugs:\n\n{{diff}}",
+      "updatedAt": 1758196800000
+    }
+  ],
+  "Memory": [
+    {
+      "name": "user-prefers-short-answers",
+      "description": "The user wants one-line answers by voice",
+      "kind": "preference",
+      "tags": ["voice"],
+      "body": "By voice, answer in one sentence unless asked for more.",
+      "updatedAt": 1758196800000
+    }
+  ],
+  "ViewManifest": [
+    { "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" },
+    { "id": "board", "name": "Task board", "entry": "index.html", "default": false, "source": "editable", "scopes": ["tasks:read", "tasks:write"], "version": "3" }
+  ],
+  "Principal": [
+    { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
+    { "kind": "brain" },
+    { "kind": "node", "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" },
+    { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+    { "kind": "system" }
+  ],
+  "Client": [
+    {
+      "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+      "kind": "ui",
+      "name": "desktop on desk",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "scopes": ["chat", "sessions:read", "sessions:write", "tasks:read", "tasks:write", "asks:answer", "views", "nodes", "audit:read", "metrics:read", "account", "updates", "remote"],
+      "via": "direct",
+      "audio": { "in": false, "out": false },
+      "connectedAt": 1758196800000
+    },
+    {
+      "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+      "kind": "controller",
+      "name": "Pixel 8",
+      "controller": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
+      "scopes": ["chat", "voice", "asks:answer"],
+      "via": "relay",
+      "audio": { "in": true, "out": true },
+      "connectedAt": 1758196800000
+    },
+    {
+      "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9",
+      "kind": "controller",
+      "name": "Pixel 8",
+      "controller": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
+      "scopes": ["chat", "voice", "asks:answer"],
+      "via": "relay",
+      "path": "turn",
+      "audio": { "in": true, "out": true },
+      "connectedAt": 1758196800000
+    },
+    {
+      "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FBA",
+      "kind": "controller",
+      "name": "Pixel 9",
+      "controller": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
+      "scopes": ["chat", "voice"],
+      "via": "relay",
+      "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true },
+      "connectedAt": 1758196800000
+    }
+  ],
+  "Controller": [
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "lastSeen": 1758196900000, "connected": true },
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC2", "name": "iPad", "pairedAt": 1758100000000, "connected": false },
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC3", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false, "relay": true, "push": { "platform": "android", "registeredAt": 1758196900000 } },
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC4", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": true, "relay": true, "account": "octocat" },
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": true, "relay": true, "path": "direct" },
+    {
+      "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC6",
+      "name": "Work phone",
+      "pairedAt": 1758196800000,
+      "connected": false,
+      "access": { "scopes": ["sessions:read", "sessions:write", "asks:answer", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" },
+      "expiresAt": 1758801600000
+    }
+  ],
+  "Access": [
+    { "scopes": ["chat", "sessions:read", "sessions:write", "tasks:read", "tasks:write", "asks:answer", "voice", "views", "controllers", "nodes", "audit:read", "metrics:read", "account", "updates", "remote", "terminal"], "messages": "send" },
+    { "scopes": ["sessions:read", "views"], "nodes": ["node_01ARZ3NDEKTSV4RRFFQ69G5FAV"], "messages": "none" },
+    { "scopes": ["sessions:read", "sessions:write"], "paths": ["C:\\src\\app"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "reply" }
+  ],
+  "MessagesRule": ["none", "reply", "send"],
+  "Grant": [
+    {
+      "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1",
+      "kind": "node",
+      "name": "build box",
+      "access": { "scopes": ["chat", "sessions:read"], "messages": "send" },
+      "status": "active",
+      "role": "hands",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+      "createdAt": 1758196800000,
+      "expiresAt": 1758283200000,
+      "lastSeen": 1758196900000,
+      "connected": true,
+      "relay": true
+    },
+    { "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD2", "kind": "node", "name": "laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "role": "full", "createdAt": 1758196800000, "inviteExpiresAt": 1758200400000, "connected": false },
+    {
+      "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5",
+      "kind": "controller",
+      "name": "Work phone",
+      "access": { "scopes": ["sessions:read", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" },
+      "status": "active",
+      "createdAt": 1758196800000,
+      "connected": false,
+      "push": { "platform": "android", "registeredAt": 1758196900000 },
+      "local": true
+    },
+    { "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD3", "kind": "node", "name": "old backup", "access": { "scopes": ["chat"], "messages": "send" }, "status": "reinvite", "role": "full", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAZ", "createdAt": 1758100000000, "connected": false }
+  ],
+  "GrantKind": ["controller", "node"],
+  "GrantRole": ["full", "hands"],
+  "GrantStatus": ["pending", "active", "reinvite"],
+  "PushPlatform": ["android", "ios"],
+  "Scope": ["chat", "sessions:read", "asks:answer", "remote", "controllers"],
+  "Entitlement": [
+    {
+      "subject": "usr_123",
+      "plan": "pro",
+      "issuedAt": 1758196800000,
+      "expiresAt": 1758283200000,
+      "graceSeconds": 604800,
+      "limits": { "sessions": 8, "nodes": 10, "memoryTier": "deep", "planning": ["goals", "schedules"] },
+      "hosted": { "llm": true, "voice": true, "compute": true, "relay": true, "push": true },
+      "brainChannel": "beta"
+    },
+    {
+      "subject": "usr_123",
+      "plan": "pro",
+      "issuedAt": 1758196800000,
+      "expiresAt": 1758283200000,
+      "graceSeconds": 604800,
+      "limits": { "sessions": 8, "nodes": 10, "memoryTier": "deep", "planning": ["goals", "schedules"], "backupBytes": 268435456 },
+      "hosted": { "llm": true, "voice": true, "compute": true, "relay": true, "push": true, "backup": true },
+      "brainChannel": "stable"
+    },
+    {
+      "subject": "usr_123",
+      "plan": "pro",
+      "issuedAt": 1758196800000,
+      "expiresAt": 1758283200000,
+      "graceSeconds": 604800,
+      "limits": { "sessions": 8, "nodes": 10, "memoryTier": "deep", "planning": ["goals", "schedules"], "backupBytes": 268435456 },
+      "hosted": { "llm": true, "voice": true, "compute": true, "relay": true, "push": true, "backup": true, "direct": true },
+      "brainChannel": "stable"
+    }
+  ],
+  "Usage": [
+    { "period": "2026-09", "metrics": { "llm_tokens_in": { "used": 120000, "cap": 5000000 }, "tts_chars": { "used": 900, "cap": 100000 } } },
+    { "period": "2026-09", "metrics": { "relay_messages": { "used": 41200, "cap": 2000000 }, "push_count": { "used": 12, "cap": 2000 }, "relayed_nodes": { "used": 1, "cap": 5 } } },
+    { "period": "2026-09", "metrics": { "embed_tokens": { "used": 48211, "cap": 10000000 }, "backup_bytes": { "used": 1834902, "cap": 268435456 } } }
+  ],
+  "BackupState": [
+    { "enabled": false, "state": "idle" },
+    { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "idle", "lastSyncAt": 1758196800000, "bytes": 1834902, "limit": 268435456 },
+    { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "syncing", "pending": 12, "bytes": 1834902, "limit": 268435456 },
+    { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "conflict", "error": "another node owns the backup" },
+    { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "full", "bytes": 268435456, "limit": 268435456 },
+    { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "restoring", "progress": { "done": 120, "total": 412 } },
+    { "enabled": false, "state": "idle", "remote": { "objects": 412, "bytes": 1834902, "updatedAt": 1758196800000, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" } }
+  ],
+  "IceServer": [
+    { "urls": "stun:stun.cloudflare.com:3478" },
+    { "urls": ["turn:turn.cloudflare.com:3478?transport=udp", "turns:turn.cloudflare.com:443?transport=tcp"], "username": "g0a1…", "credential": "b8c2…" }
+  ],
+  "DirectState": [
+    { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "state": "starting", "peers": [] },
+    { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "state": "ready", "port": 51820, "mapping": { "status": "none" }, "ipv6": true, "peers": [{ "kind": "controller", "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "path": "relay", "since": 1758196800000 }] }
+  ],
+  "DirectReport": [
+    { "day": "2026-09-24", "counts": [{ "kind": "client", "path": "predicted", "count": 3 }, { "kind": "client", "path": "relay", "count": 5 }, { "kind": "node", "path": "srflx", "count": 1 }, { "kind": "client", "path": "failed", "count": 1 }] },
+    { "day": "2026-09-25", "counts": [] }
+  ],
+  "Release": [
+    {
+      "component": "platform",
+      "version": "0.2.0",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": { "min": 1, "max": 1 },
+      "url": "https://releases.example.com/platform/0.2.0/windows-x64.zip",
+      "size": 48000000,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "ed25519:base64…",
+      "publishedAt": 1758196800000
+    },
+    {
+      "component": "model",
+      "name": "wake-word",
+      "version": "1",
+      "channel": "stable",
+      "url": "https://releases.example.com/models/wake-word-1.onnx",
+      "size": 1200000,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "signature": "ed25519:base64…",
+      "publishedAt": 1758196800000
+    }
+  ],
+  "ReleaseFeed": [
+    {
+      "generatedAt": 1758196800000,
+      "releases": [
+        {
+          "component": "platform",
+          "name": "platform-0.1.1-windows-x64.tar.gz",
+          "version": "0.1.1",
+          "channel": "stable",
+          "os": "windows",
+          "arch": "x64",
+          "protocol": { "min": 1, "max": 1 },
+          "url": "https://github.com/example/cophyla/releases/download/platform-v0.1.1/platform-0.1.1-windows-x64.tar.gz",
+          "size": 150000000,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "signature": "ed25519:base64…",
+          "publishedAt": 1758196800000
+        },
+        {
+          "component": "brain",
+          "name": "brain-0.1.2-windows-x64.exe",
+          "version": "0.1.2",
+          "channel": "stable",
+          "os": "windows",
+          "arch": "x64",
+          "protocol": { "min": 1, "max": 1 },
+          "url": "https://github.com/example/cophyla/releases/download/brain-v0.1.2/brain-0.1.2-windows-x64.exe",
+          "size": 99000000,
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+          "signature": "ed25519:base64…",
+          "publishedAt": 1758196800000
+        }
+      ]
+    },
+    { "releases": [] }
+  ],
+  "Error": [
+    { "code": "denied", "message": "policy: brain may not session.send", "retryable": false },
+    { "code": "quota_exceeded", "message": "llm tokens", "data": { "metric": "llm_tokens_in", "resets_at": 1758283200000 }, "retryable": true }
+  ],
+  "ModelRef": [{ "tier": "tiny" }, { "tier": "fast" }, { "tier": "local" }, { "model": "anthropic/claude-sonnet-5" }],
+  "VoiceState": ["idle", "listening", "transcribing", "thinking", "speaking"]
+}

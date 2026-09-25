@@ -1,0 +1,2070 @@
+// The default view's renderer: keyed DOM reconciliation over the model's selectors. Every
+// element is created once and updated in place, keyed on `data-key`, so inputs keep focus
+// and the frame does not flicker. The rail on the left holds, on the desktop, a dot for the
+// line to cophylad at the very top, one tab for the chat, fixed,
+// and under it one tab per open session, the agent's mark and its name, grouped under the
+// folder they work in, then a card per node with its machine's bars, its processes folded
+// away, and its desktop (the host's state, its viewers, and Connect, a PIN or a phone code),
+// each login's plan limits and spend, and the account, its details folded away;
+// the chat stream and every session pane stay in the DOM and only the selected one shows,
+// so the chat keeps its place when the user comes back, and a session's pane holds rows
+// only while its tab is open. Above a timeline, and at the top of the chat, a button loads
+// history a page earlier per press, and reads Load history while none is loaded, as on a
+// phone or the web app, which load nothing unasked. Under the sessions, a tab per bare
+// terminal (a shell started here) and New terminal, which opens a menu of the node's recent
+// workspaces and its home folder to start one in; a session that runs in a terminal the node
+// holds shows it in its pane, its timeline a click away (the screen itself is terminal.ts's), and
+// a pane's head ends with Kill session, which asks in place before it ends anything. The
+// input sits under the pane, the chat's or a timeline's, and there is none under a terminal,
+// which takes the typing itself. Over it all the prompts waiting for the user are pinned,
+// floating over the top middle of the frame and taking no room from it, under a bar that
+// folds them to one line; a session's own leave them while its pane shows its terminal,
+// where the harness asks them itself. On a phone's width the rail is put
+// away and slides in over the pane from a menu button: the host's, on the bar under the
+// frame, or on a host with none the view's own, in a thin bar over the pane beside the name
+// of what it shows. Text is set with
+// `textContent` only: nothing from a session, a message, an ask or an audit row is ever
+// parsed as HTML. What a model wrote, Cophyla's messages and a session's replies, is drawn as
+// markdown by building its elements (markdown.ts); what the user typed shows as typed.
+// Under the machines and the phones, the grants: Add a machine and Invite a phone mint an
+// invite and show it (its text to copy, its QR code, how long it holds) until Done or until it
+// is used; the invites still open, each with Cancel; each machine's role (hands or a full
+// member) and its end, and Remove, asked in place; and on the desktop, for this node itself,
+// Join another computer while it is alone and Leave once it joined one.
+
+import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { renderBlocks } from "./blocks.ts";
+import { renderText } from "./markdown.ts";
+import { qrModules, qrPath } from "./qr.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, GRANT_ENDS, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
+
+/** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
+export const processesKey = (node: string): string => `node:${node}/processes`;
+export const ACCOUNT_KEY = "account/details";
+
+export interface UiState {
+  /** Collapsibles the user opened: `<card key>/<row key>`, and the rail's folds. */
+  expanded: Set<string>;
+  /** The session whose tab is selected; undefined is the chat, unless a bare terminal's is. */
+  selected?: string;
+  /** The bare terminal whose tab is selected. */
+  terminal?: string;
+  /** What the user chose a session's pane to show, when it runs in a terminal; the terminal until they choose (`paneMode`). */
+  modes: Map<string, "timeline" | "terminal">;
+  /** Terminals shown here are sized to the pane ("Fit to this window") rather than followed. */
+  fit: boolean;
+  /** The font they are sized at, in percent of the default: − and + step it, and drive them. */
+  scale: number;
+  /** The rail's folder groups the user folded away, by group key. */
+  folded: Set<string>;
+  /** The user was working in the pinned prompts: when its ask is replaced by the next one, the focus follows. */
+  pinnedFocus: boolean;
+  /** The user folded the pinned prompts away to their bar's one line. */
+  pinnedFolded?: boolean;
+  /** A session being killed from its pane: the user is asked to confirm, then it is on its way until the session ends. */
+  kill?: { session: string; phase: "asking" | "killing" };
+  /** New terminal's menu is open. */
+  newTerminal?: TerminalMenu;
+  /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
+  railMenu?: { note?: string };
+  /** A bare terminal being ended from its bar: the user is asked to confirm, then it is on its way until it exits. */
+  end?: { terminal: string; phase: "asking" | "ending" };
+  /** This node's restart: asked, refused while busy with the reasons, or under way until the line is back. */
+  restart?: { phase: "asking" | "busy" | "restarting"; reasons?: string[] };
+  /** Nodes whose Connect is on its way: a viewer pairing can wait on an ask. */
+  opening: Set<string>;
+  /** The user showed or put away the rail; undefined is the width's own: beside the pane on a desk, away on a phone, where it slides in over the pane. */
+  rail?: "open" | "closed";
+  /** The backup's passphrase form is open, for turning it on (`replace` starting over) or restoring. */
+  backupForm?: "enable" | "replace" | "restore";
+  /** A backup request is on its way: the buttons wait for its answer. */
+  backupBusy?: boolean;
+  /** Nodes whose direct connections are being switched: their button waits for the answer. */
+  directBusy?: Set<string>;
+  /** The grant form open under the machines or the phones: Add a machine, Join another computer, Invite a phone. */
+  grantForm?: "node" | "join" | "phone";
+  /** A grant request on its way: the forms' buttons wait for its answer. */
+  grantBusy?: boolean;
+  /** A machine being removed from its card: asked in place, then on its way. */
+  removing?: { node: string; phase: "asking" | "removing" };
+  /** This node leaving the primary it joined: asked in place, then on its way. */
+  leaving?: "asking" | "leaving";
+  /** Whether Copy put the invite's text on the clipboard, for the invite it was pressed on. */
+  copied?: { grant: string; ok: boolean };
+  /** The invite's QR code shows large, over the view, for a camera across the desk. */
+  qrZoom?: boolean;
+}
+
+/** New terminal's menu: the node's recent workspaces once it listed them, and the place a shell is starting in (`HOME_PLACE` for the home folder). */
+export interface TerminalMenu {
+  workspaces?: Workspace[];
+  starting?: string;
+}
+
+export interface RenderOptions {
+  /** Keep the viewport anchored to what it showed: content was inserted above it. */
+  anchor?: boolean;
+  /** The rail shows at this width, as the user left it or by the width's own. */
+  railShown?: boolean;
+}
+
+export interface Roots {
+  /** The whole view: it carries whether the rail is shown and whether the host has the button for it. */
+  app: HTMLElement;
+  /** On a phone's width with no host button: the rail's own button and where the pane is. */
+  railbar: HTMLElement;
+  pinned: HTMLElement;
+  tabs: HTMLElement;
+  stream: HTMLElement;
+  sessions: HTMLElement;
+  /** The pane a bare terminal shows in. */
+  terminal: HTMLElement;
+  composer: HTMLElement;
+}
+
+// --- helpers ---------------------------------------------------------------------------------
+
+function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
+  const e = document.createElement(tag);
+  if (className) e.className = className;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function setText(node: Element, text: string): void {
+  if (node.textContent !== text) node.textContent = text;
+}
+
+function setHidden(node: HTMLElement, hidden: boolean): void {
+  if (node.hidden !== hidden) node.hidden = hidden;
+}
+
+function setData(node: HTMLElement, name: string, value: string): void {
+  if (node.dataset[name] !== value) node.dataset[name] = value;
+}
+
+/** Keeps `container`'s children in step with `items`, keyed, creating and moving as needed. */
+export function reconcile<T>(container: HTMLElement, items: T[], key: (t: T) => string, create: (t: T) => HTMLElement, update: (e: HTMLElement, t: T) => void): void {
+  const existing = new Map<string, HTMLElement>();
+  for (const child of Array.from(container.children)) {
+    const k = (child as HTMLElement).dataset["key"];
+    if (k !== undefined) existing.set(k, child as HTMLElement);
+  }
+  let cursor: Element | null = container.firstElementChild;
+  for (const item of items) {
+    const k = key(item);
+    let node = existing.get(k);
+    if (node) {
+      existing.delete(k);
+    } else {
+      node = create(item);
+      node.dataset["key"] = k;
+    }
+    update(node, item);
+    if (node !== cursor) container.insertBefore(node, cursor);
+    else cursor = cursor.nextElementSibling;
+  }
+  for (const stale of existing.values()) stale.remove();
+}
+
+const timeFormat = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+const dateFormat = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
+
+export function clock(at: number): string {
+  const d = new Date(at);
+  const today = new Date();
+  const sameDay = d.getFullYear() === today.getFullYear() && d.getMonth() === today.getMonth() && d.getDate() === today.getDate();
+  return sameDay ? timeFormat.format(d) : dateFormat.format(d);
+}
+
+function pretty(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value === undefined) return "";
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function firstLine(value: unknown, max = 120): string {
+  const text = typeof value === "string" ? value : pretty(value);
+  const line = text.split(/\r?\n/).find((l) => l.trim() !== "") ?? "";
+  return line.length > max ? line.slice(0, max - 1) + "…" : line;
+}
+
+const STATUS_WORD: Record<Session["status"], string> = {
+  idle: "idle",
+  busy: "working",
+  needs_input: "waiting for input",
+  needs_permission: "waiting for permission",
+  ended: "ended",
+};
+
+/** A status in words, with what an idle session waits on: its own shells, or a dialog in its terminal. */
+function statusWord(s: { status: Session["status"]; waiting?: Session["waiting"] | undefined }): string {
+  if (s.status === "idle" && s.waiting?.on === "shell") return "waiting on its shell";
+  if (s.status === "idle" && s.waiting?.on === "user") return s.waiting.detail ? `waiting for you: ${s.waiting.detail}` : "waiting for you";
+  return STATUS_WORD[s.status] ?? String(s.status);
+}
+
+/** The chip's dot: a status, or what an idle session waits on. */
+function dotStatus(s: Session): string {
+  if (s.status === "idle" && s.waiting) return s.waiting.on === "shell" ? "shell" : "waiting";
+  return s.status;
+}
+
+// --- asks --------------------------------------------------------------------------------------
+
+function askSource(ask: Ask, state: ViewState): string {
+  switch (ask.source.kind) {
+    case "harness": {
+      const card = state.sessions.get(ask.source.session);
+      return card ? `${card.session.harness} in ${card.session.title ?? card.session.intent ?? card.session.cwd}` : "a session";
+    }
+    case "gate":
+      return `the gate, on ${ask.source.action}`;
+    case "brain":
+      return "the brain";
+  }
+}
+
+/** An ask is a form: a single choice answers on the click, a multiple one or a bare field on Answer (or Enter). */
+function createAsk(): HTMLElement {
+  const root = el("article", "ask");
+  const form = el("form", "ask-form");
+  form.append(el("div", "ask-options"), el("div", "ask-extra"));
+  root.append(el("div", "ask-head"), el("pre", "ask-detail"), form, el("p", "ask-note"));
+  const head = root.querySelector(".ask-head")!;
+  head.append(el("span", "ask-title"), el("span", "ask-source"));
+  return root;
+}
+
+/** What the user has picked and typed on an ask's form; `clicked` stands in for the pick on a single choice. */
+export function draftOf(form: HTMLFormElement, clicked?: string): AskDraft {
+  const selected = clicked !== undefined ? [clicked] : Array.from(form.querySelectorAll<HTMLInputElement>("input.ask-check:checked")).map((i) => i.dataset["option"] ?? "");
+  const text = form.querySelector<HTMLInputElement>("input.ask-text")?.value ?? "";
+  const remember = form.querySelector<HTMLSelectElement>("select.ask-remember")?.value;
+  return { selected, text, ...(remember !== undefined ? { remember } : {}) };
+}
+
+/** The Answer button follows the draft: enabled once it makes an answer. */
+export function refreshAskForm(form: HTMLFormElement, state: ViewState): void {
+  const ask = form.dataset["ask"] ? state.asks.get(form.dataset["ask"]) : undefined;
+  const button = form.querySelector<HTMLButtonElement>("button.ask-answer");
+  if (!ask || !button) return;
+  const answerable = ask.status === "open" && ask.answerableBy.includes("user") && state.connected;
+  button.disabled = !answerable || answerParams(ask, draftOf(form)) === undefined;
+}
+
+/**
+ * The pinned prompts, floating over the frame: a bar saying how many wait, which folds them
+ * away to that one line (then naming what they ask) and back, and the prompts under it.
+ */
+function renderPinned(root: HTMLElement, asks: Ask[], state: ViewState, ui: UiState): void {
+  let bar = root.querySelector<HTMLButtonElement>(".pinned-fold");
+  let list = root.querySelector<HTMLElement>(".pinned-list");
+  if (!bar || !list) {
+    bar = actionButton("fold pinned-fold", "", "pinned-fold");
+    bar.append(el("span", "pinned-count"), el("span", "pinned-titles"));
+    list = el("div", "pinned-list");
+    root.append(bar, list);
+  }
+  setHidden(root, asks.length === 0);
+  const folded = ui.pinnedFolded === true;
+  bar.setAttribute("aria-expanded", folded ? "false" : "true");
+  bar.title = folded ? "Show the prompts" : "Fold the prompts away";
+  setText(bar.querySelector(".pinned-count")!, `${asks.length} ${asks.length === 1 ? "prompt" : "prompts"} waiting`);
+  const titles = bar.querySelector<HTMLElement>(".pinned-titles")!;
+  setText(titles, folded ? asks.map((a) => a.title).join(" · ") : "");
+  setHidden(titles, !folded);
+  setHidden(list, folded);
+  reconcile(list, asks, (a) => `ask:${a.id}`, createAsk, (node, ask) => updateAsk(node, ask, state));
+  // The ask the user was answering gave way to the next one of its sequence: the focus follows.
+  if (!folded && ui.pinnedFocus && !root.contains(document.activeElement)) {
+    list.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
+  }
+}
+
+function textPlaceholder(ask: Ask): string {
+  if (ask.type === "permission") return "Add a note with your answer";
+  if (ask.type === "input") return "Type your answer";
+  return "Or type another answer";
+}
+
+function updateAsk(node: HTMLElement, ask: Ask, state: ViewState): void {
+  setData(node, "ask", ask.id);
+  setData(node, "status", ask.status);
+  setData(node, "type", ask.type);
+  setData(node, "multiple", ask.multiple ? "1" : "0");
+  setText(node.querySelector(".ask-title")!, ask.title);
+  setText(node.querySelector(".ask-source")!, askSource(ask, state));
+  const detail = node.querySelector<HTMLElement>(".ask-detail")!;
+  setText(detail, ask.detail ?? "");
+  setHidden(detail, !ask.detail);
+
+  const answerable = ask.status === "open" && ask.answerableBy.includes("user") && state.connected;
+  const form = node.querySelector<HTMLFormElement>("form.ask-form")!;
+  setData(form, "ask", ask.id);
+  const options = node.querySelector<HTMLElement>(".ask-options")!;
+  const described = ask.options.some((o) => o.description);
+  setData(options, "layout", described || ask.multiple ? "column" : "row");
+  if (ask.multiple) {
+    // Ticks live in the DOM: the reconcile keeps them across renders.
+    reconcile(
+      options,
+      ask.options,
+      (o) => `check:${o.id}`,
+      () => {
+        const label = el("label", "ask-choice");
+        const check = el("input", "ask-check");
+        check.type = "checkbox";
+        const text = el("span", "option-text");
+        text.append(el("span", "option-label"), el("span", "option-desc"));
+        label.append(check, text);
+        return label;
+      },
+      (l, o) => {
+        const check = l.querySelector<HTMLInputElement>("input.ask-check")!;
+        setData(check, "option", o.id);
+        check.disabled = !answerable;
+        setText(l.querySelector(".option-label")!, o.label);
+        const desc = l.querySelector<HTMLElement>(".option-desc")!;
+        setText(desc, o.description ?? "");
+        setHidden(desc, !o.description);
+      },
+    );
+  } else {
+    reconcile(
+      options,
+      ask.options,
+      (o) => `button:${o.id}`,
+      () => {
+        const button = el("button", "option");
+        button.type = "button";
+        button.append(el("span", "option-label"), el("span", "option-desc"));
+        return button;
+      },
+      (b, o) => {
+        const button = b as HTMLButtonElement;
+        setData(button, "action", "answer");
+        setData(button, "ask", ask.id);
+        setData(button, "option", o.id);
+        setData(button, "style", o.style ?? "default");
+        setText(button.querySelector(".option-label")!, o.label);
+        const desc = button.querySelector<HTMLElement>(".option-desc")!;
+        setText(desc, o.description ?? "");
+        setHidden(desc, !o.description);
+        button.disabled = !answerable;
+      },
+    );
+  }
+
+  const extra = node.querySelector<HTMLElement>(".ask-extra")!;
+  const wantText = ask.allowsText === true && ask.status === "open";
+  const wantRemember = ask.source.kind === "gate" && ask.status === "open";
+  const wantAnswer = ask.status === "open" && (ask.multiple === true || ask.options.length === 0);
+  let text = extra.querySelector<HTMLInputElement>("input.ask-text");
+  if (wantText && !text) {
+    text = el("input", "ask-text");
+    text.type = "text";
+    text.dataset["ask"] = ask.id;
+    extra.prepend(text);
+  } else if (!wantText && text) {
+    text.remove();
+    text = null;
+  }
+  if (text) {
+    if (text.placeholder !== textPlaceholder(ask)) text.placeholder = textPlaceholder(ask);
+    text.disabled = !answerable;
+  }
+  let remember = extra.querySelector<HTMLSelectElement>("select.ask-remember");
+  if (wantRemember && !remember) {
+    remember = el("select", "ask-remember");
+    remember.dataset["ask"] = ask.id;
+    for (const [value, label] of [
+      ["once", "Just this once"],
+      ["session", "For this session"],
+      ["always", "Always"],
+    ]) {
+      const o = el("option", undefined, label);
+      o.value = value!;
+      remember.append(o);
+    }
+    extra.append(remember);
+  } else if (!wantRemember && remember) {
+    remember.remove();
+  }
+  let answer = extra.querySelector<HTMLButtonElement>("button.ask-answer");
+  if (wantAnswer && !answer) {
+    answer = el("button", "ask-answer", "Answer");
+    answer.type = "submit";
+    extra.append(answer);
+  } else if (!wantAnswer && answer) {
+    answer.remove();
+    answer = null;
+  }
+  if (answer) refreshAskForm(form, state);
+  setHidden(extra, !wantText && !wantRemember && !wantAnswer);
+
+  const note = node.querySelector<HTMLElement>(".ask-note")!;
+  let noteText = "";
+  if (ask.status === "open" && ask.answerableBy.length === 0) noteText = "Answer this one in the terminal.";
+  else if (ask.status === "open" && !state.connected) noteText = "Reconnecting to cophylad before this can be answered.";
+  else if (ask.status === "answered" && ask.answer) noteText = `Answered ${answerWords(ask, ask.answer)}`;
+  else if (ask.status === "expired") noteText = "Expired unanswered.";
+  else if (ask.status === "cancelled") noteText = "Closed: answered in the terminal or no longer needed.";
+  setText(note, noteText);
+  setHidden(note, noteText === "");
+}
+
+// --- tabs ------------------------------------------------------------------------------------
+
+const TONE_WORD: Record<ReturnType<typeof tabTone>, string> = { ask: "waiting for you", active: "working", shell: "waiting on its shell", done: "done, not looked at yet", quiet: "idle" };
+
+/**
+ * A tab is one line: the agent's mark and the name. The mark is in colour or grey, with a
+ * dot or none, by what the session is doing (`tabTone`), and sits in a black terminal window
+ * when the session runs in a terminal tether holds; a bare terminal is that window with a
+ * prompt in it.
+ */
+function createTab(): HTMLElement {
+  const tab = el("button", "tab");
+  tab.type = "button";
+  tab.dataset["action"] = "select";
+  const icon = el("span", "agent-icon");
+  icon.setAttribute("role", "img");
+  icon.append(el("span", "agent-mark"));
+  tab.append(icon, el("span", "tab-title"));
+  return tab;
+}
+
+function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: UiState): void {
+  const s = card.session;
+  setData(tab, "session", s.id);
+  setData(tab, "status", s.status);
+  tab.setAttribute("aria-current", ui.selected === s.id ? "true" : "false");
+  const tone = tabTone(card);
+  const icon = tab.querySelector<HTMLElement>(".agent-icon")!;
+  setData(icon, "harness", s.harness);
+  setData(icon, "tone", tone);
+  setData(icon, "tether", inTether(s) ? "1" : "0");
+  const where = s.native.job !== undefined ? " background job" : inTether(s) ? " in a terminal" : "";
+  const toneWord = tone === "ask" && s.waiting?.on === "user" && s.waiting.detail ? `${TONE_WORD.ask}: ${s.waiting.detail}` : TONE_WORD[tone];
+  const words = `${s.harness}${where}, ${toneWord}`;
+  icon.setAttribute("aria-label", words);
+  setText(tab.querySelector(".tab-title")!, sessionLabel(s));
+  const ws = workspaceName(state, s);
+  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}`;
+}
+
+/** A folder's heading and its sessions' tabs. */
+function createGroup(): HTMLElement {
+  const group = el("div", "tab-group");
+  // The name folds the group's tabs away and back.
+  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"));
+  return group;
+}
+
+function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, ui: UiState): void {
+  const name = node.querySelector<HTMLElement>(".tab-group-name")!;
+  const folded = ui.folded.has(group.key);
+  setText(name, group.name);
+  name.title = group.path;
+  setData(name, "group", group.key);
+  name.setAttribute("aria-expanded", folded ? "false" : "true");
+  const list = node.querySelector<HTMLElement>(".tab-group-list")!;
+  setHidden(list, folded);
+  reconcile(list, group.sessions, (c) => c.session.id, createTab, (tab, c) => updateTab(tab, c, state, ui));
+}
+
+function createTermTab(): HTMLElement {
+  const tab = createTab();
+  tab.classList.add("term-tab");
+  tab.dataset["action"] = "select-terminal";
+  return tab;
+}
+
+function updateTermTab(tab: HTMLElement, t: Terminal, ui: UiState): void {
+  setData(tab, "terminal", t.id);
+  setData(tab, "status", t.status === "running" ? "idle" : "ended");
+  tab.setAttribute("aria-current", ui.terminal === t.id ? "true" : "false");
+  const icon = tab.querySelector<HTMLElement>(".agent-icon")!;
+  const mark = terminalMark(t);
+  setData(icon, "harness", mark.harness);
+  setData(icon, "tone", "quiet");
+  // The same black window a session in a terminal has its mark in, with a prompt for a plain program.
+  setData(icon, "tether", "1");
+  icon.setAttribute("aria-label", t.status === "running" ? mark.kind : `${mark.kind}, ended`);
+  setText(tab.querySelector(".tab-title")!, terminalLabel(t));
+  tab.title = `${t.argv0} in ${t.cwd}${t.status === "running" ? "" : ", ended"}${t.windows > 0 ? `, ${t.windows} window${t.windows === 1 ? "" : "s"} open` : ""}`;
+}
+
+/** One paired phone: its name, whether it is here, and the button that forgets it. */
+function createController(): HTMLElement {
+  const row = el("div", "controller");
+  const main = el("span", "controller-main");
+  main.append(el("span", "controller-name"), el("span", "controller-sub"));
+  const revoke = el("button", "controller-revoke", "Forget");
+  revoke.type = "button";
+  revoke.dataset["action"] = "controller-revoke";
+  row.append(el("span", "dot"), main, revoke);
+  return row;
+}
+
+function updateController(node: HTMLElement, controller: Controller, state: ViewState): void {
+  setData(node, "controller", controller.id);
+  setData(node.querySelector<HTMLElement>(".dot")!, "status", controller.connected ? "connected" : "gone");
+  setText(node.querySelector(".controller-name")!, controller.name);
+  const now = Date.now();
+  const access = accessWords(controller.access, state);
+  setText(node.querySelector(".controller-sub")!, [controllerWords(controller, now), access === "everything" ? "" : access, endWords(controller.expiresAt, now) ?? ""].filter(Boolean).join(" · "));
+  const revoke = node.querySelector<HTMLButtonElement>(".controller-revoke")!;
+  revoke.dataset["controller"] = controller.id;
+  revoke.disabled = !state.connected;
+}
+
+// --- nodes: one card per machine, and the spend ---------------------------------------------
+
+function createBar(): HTMLElement {
+  const bar = el("div", "bar");
+  const track = el("span", "bar-track");
+  track.append(el("span", "bar-fill"));
+  bar.append(el("span", "bar-label"), track, el("span", "bar-value"));
+  return bar;
+}
+
+function updateBar(node: HTMLElement, bar: NodeBar): void {
+  setText(node.querySelector(".bar-label")!, bar.label);
+  setText(node.querySelector(".bar-value")!, bar.words);
+  const fill = node.querySelector<HTMLElement>(".bar-fill")!;
+  const width = bar.percent === undefined ? "0%" : `${bar.percent}%`;
+  if (fill.style.width !== width) fill.style.width = width;
+  setData(node, "level", bar.percent === undefined ? "none" : bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal");
+}
+
+function createOwner(): HTMLElement {
+  const row = el("div", "node-session");
+  row.append(el("span", "node-session-name"), el("span", "node-session-cpu"), el("span", "node-session-mem"));
+  return row;
+}
+
+function updateOwner(node: HTMLElement, owner: OwnerRow): void {
+  setData(node, "kind", owner.kind);
+  setText(node.querySelector(".node-session-name")!, owner.label);
+  setText(node.querySelector(".node-session-cpu")!, percentWords(owner.cpu));
+  setText(node.querySelector(".node-session-mem")!, bytesWords(owner.memory));
+}
+
+/** A fold's switch: its label, and the arrow the stylesheet draws from `aria-expanded`. */
+function createFold(className: string): HTMLButtonElement {
+  const b = actionButton(`fold ${className}`, "", "toggle");
+  b.append(el("span", "fold-label"));
+  return b;
+}
+
+function updateFold(b: HTMLElement, key: string, label: string, open: boolean): void {
+  setData(b, "target", key);
+  setText(b.querySelector(".fold-label")!, label);
+  b.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+/** A machine's card: its bars, its processes folded under a switch until the user opens them, its desktop, and Restart. */
+function createNodeCard(): HTMLElement {
+  const card = el("div", "node-card");
+  const head = el("div", "node-head");
+  head.append(el("span", "dot"), el("span", "node-name"), el("span", "node-badge"), el("span", "node-sub"));
+  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createRestart(), createNodeGrant());
+  return card;
+}
+
+/** A machine's grant on its card: Remove, asked in place; on this node, once it joined another, Leave. */
+function createNodeGrant(): HTMLElement {
+  const block = el("div", "node-grant");
+  const buttons = el("div", "node-grant-buttons");
+  buttons.append(
+    actionButton("node-remove", "Remove", "node-remove"),
+    actionButton("node-remove-confirm", "Remove", "node-remove-confirm"),
+    actionButton("node-leave", "Leave", "node-leave"),
+    actionButton("node-leave-confirm", "Leave", "node-leave-confirm"),
+    actionButton("node-grant-cancel", "Cancel", "node-grant-cancel"),
+  );
+  const line = el("div", "node-grant-line");
+  line.append(el("span", "node-grant-words"), buttons);
+  block.append(el("p", "node-grant-ask"), line);
+  return block;
+}
+
+function updateNodeGrant(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState, words: ReturnType<typeof nodeGrantWords>): void {
+  const self = card.node.id === state.node;
+  const leaving = self && membershipOffer(state) === "leave";
+  const removing = ui.removing?.node === card.node.id ? ui.removing : undefined;
+  const said = [words.end ?? "", words.reinvite ? "its key went with a removed machine: invite it again" : ""].filter(Boolean).join(" · ");
+  setHidden(block, !(words.removable || leaving || said));
+  if (block.hidden) return;
+  setText(block.querySelector(".node-grant-words")!, said);
+  const asking = removing?.phase === "asking" || (leaving && ui.leaving === "asking");
+  const ask = block.querySelector<HTMLElement>(".node-grant-ask")!;
+  const primary = [...state.nodes.values()].find((n) => n.role === "primary")?.name ?? "the primary";
+  setText(ask, removing ? words.removeWords : leaving ? `Leave ${primary}? It can no longer see or use this computer, and this computer forgets it.` : "");
+  setHidden(ask, !asking);
+  const remove = block.querySelector<HTMLButtonElement>(".node-remove")!;
+  setHidden(remove, !words.removable || removing !== undefined);
+  remove.dataset["node"] = card.node.id;
+  remove.title = `Take ${card.node.name}'s key away: it can no longer reach this node`;
+  const confirm = block.querySelector<HTMLButtonElement>(".node-remove-confirm")!;
+  setHidden(confirm, removing === undefined);
+  confirm.dataset["node"] = card.node.id;
+  setText(confirm, removing?.phase === "removing" ? "Removing…" : "Remove");
+  confirm.disabled = !state.connected || removing?.phase === "removing";
+  const leave = block.querySelector<HTMLButtonElement>(".node-leave")!;
+  setHidden(leave, !leaving || ui.leaving !== undefined);
+  leave.title = `Stop sharing this computer with ${primary}`;
+  const leaveConfirm = block.querySelector<HTMLButtonElement>(".node-leave-confirm")!;
+  setHidden(leaveConfirm, !leaving || ui.leaving === undefined);
+  setText(leaveConfirm, ui.leaving === "leaving" ? "Leaving…" : "Leave");
+  leaveConfirm.disabled = !state.connected || ui.leaving === "leaving";
+  setHidden(block.querySelector<HTMLElement>(".node-grant-cancel")!, !asking);
+  for (const b of [remove, leave]) b.disabled = !state.connected;
+}
+
+function updateNodeCard(node: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
+  setData(node, "node", card.node.id);
+  setData(node, "status", card.node.status);
+  setData(node.querySelector<HTMLElement>(".dot")!, "status", card.node.status === "online" ? "connected" : "gone");
+  setText(node.querySelector(".node-name")!, card.node.name);
+  const grant = nodeGrantWords(state, card.node, Date.now());
+  const badge = node.querySelector<HTMLElement>(".node-badge")!;
+  setText(badge, grant.badge ?? "");
+  setData(badge, "role", grant.badge ?? "");
+  setHidden(badge, grant.badge === undefined);
+  badge.title = grant.badge === "hands" ? "Hands: this node runs what the primary asks, and reaches no other machine" : grant.badge === "full" ? "A full member: it can take over when the primary is off" : "";
+  setText(node.querySelector(".node-sub")!, card.sub);
+  node.title = `${card.node.name} (${card.node.platform}) · ${[card.sub, grant.end ?? ""].filter(Boolean).join(" · ") || "online"}`;
+  reconcile(node.querySelector<HTMLElement>(".node-bars")!, card.bars, (b) => b.label, createBar, updateBar);
+  const key = processesKey(card.node.id);
+  const open = ui.expanded.has(key);
+  const fold = node.querySelector<HTMLElement>(".node-processes")!;
+  updateFold(fold, key, `Processes (${card.owners.length})`, open);
+  setHidden(fold, card.owners.length === 0);
+  const owners = node.querySelector<HTMLElement>(".node-sessions")!;
+  setHidden(owners, !open);
+  reconcile(owners, open ? card.owners : [], (o) => o.key, createOwner, updateOwner);
+  updateRemote(node.querySelector<HTMLElement>(".node-remote")!, selectRemote(state, card.node), state, ui);
+  updateRestart(node.querySelector<HTMLElement>(".node-restart")!, card, state, ui);
+  updateNodeGrant(node.querySelector<HTMLElement>(".node-grant")!, card, state, ui, grant);
+}
+
+// --- restarting cophylad on this node ---------------------------------------------------------
+
+function createRestart(): HTMLElement {
+  const block = el("div", "node-restart");
+  const buttons = el("div", "node-restart-buttons");
+  buttons.append(actionButton("node-restart-start", "Restart cophylad", "node-restart"), actionButton("node-restart-force", "Restart anyway", "node-restart-force"), actionButton("node-restart-cancel", "Cancel", "node-restart-cancel"));
+  block.append(el("p", "node-restart-busy"), buttons);
+  return block;
+}
+
+/** The node this app is connected to: Restart, or, when the node is busy, what it would cut off and Restart anyway. */
+function updateRestart(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
+  const shown = restartable(state, card.node);
+  setHidden(block, !shown);
+  if (!shown) return;
+  const r = ui.restart;
+  const refused = r?.phase === "busy";
+  const start = block.querySelector<HTMLButtonElement>(".node-restart-start")!;
+  setHidden(start, refused);
+  setText(start, r === undefined ? "Restart cophylad" : "Restarting…");
+  start.title = "Stop the daemon on this machine and start it again";
+  start.disabled = !state.connected || r !== undefined;
+  const busy = block.querySelector<HTMLElement>(".node-restart-busy")!;
+  setHidden(busy, !refused);
+  setText(busy, refused ? restartWords(r.reasons ?? []) : "");
+  const force = block.querySelector<HTMLButtonElement>(".node-restart-force")!;
+  setHidden(force, !refused);
+  force.disabled = !state.connected;
+  setHidden(block.querySelector<HTMLElement>(".node-restart-cancel")!, !refused);
+}
+
+// --- a node's desktop: its host, who views it, and the ways in ------------------------------
+
+function actionButton(className: string, text: string, action: string): HTMLButtonElement {
+  const b = el("button", className, text);
+  b.type = "button";
+  b.dataset["action"] = action;
+  return b;
+}
+
+function createRemote(): HTMLElement {
+  const block = el("div", "node-remote");
+  const head = el("div", "remote-head");
+  head.append(el("span", "remote-label", "Desktop"), el("span", "remote-words"), actionButton("remote-connect", "Connect", "remote-open"));
+  const actions = el("div", "remote-actions");
+  actions.append(actionButton("remote-pin-start", "Pair by PIN", "remote-pin"), actionButton("remote-invite-start", "Invite a phone", "remote-invite"));
+  // The PIN a viewer shows when it is added: Moonlight on another machine, or Artemis without an invite.
+  const form = el("form", "remote-pin-form");
+  const pin = el("input", "remote-pin-code");
+  pin.type = "text";
+  pin.inputMode = "numeric";
+  pin.autocomplete = "off";
+  pin.maxLength = 4;
+  pin.pattern = "\\d{4}";
+  pin.required = true;
+  pin.placeholder = "PIN";
+  pin.setAttribute("aria-label", "the PIN the viewer shows");
+  const name = el("input", "remote-pin-name");
+  name.type = "text";
+  name.autocomplete = "off";
+  name.maxLength = 40;
+  name.placeholder = "its name";
+  name.setAttribute("aria-label", "a name for the viewer");
+  const submit = el("button", "remote-pin-submit", "Pair");
+  submit.type = "submit";
+  form.append(pin, name, submit, actionButton("remote-pin-cancel", "Cancel", "remote-pin-cancel"));
+  const invite = el("div", "remote-invite");
+  const buttons = el("div", "remote-invite-buttons");
+  buttons.append(actionButton("remote-invite-open", "Open in Artemis", "remote-invite-open"), actionButton("remote-invite-done", "Done", "remote-invite-close"));
+  invite.append(el("p", "remote-invite-hint", "In Artemis on the phone, add this PC and pair with:"), el("p", "remote-invite-code"), el("p", "remote-invite-pass"), el("p", "remote-invite-left"), buttons);
+  block.append(head, el("div", "remote-viewers"), actions, form, invite);
+  return block;
+}
+
+function createViewer(): HTMLElement {
+  const row = el("div", "remote-viewer");
+  const main = el("div", "remote-viewer-main");
+  main.append(el("span", "remote-viewer-name"), el("span", "remote-viewer-sub"));
+  row.append(main, actionButton("remote-viewer-forget", "Forget", "remote-revoke"));
+  return row;
+}
+
+function updateViewer(node: HTMLElement, viewer: RemoteViewer, remote: RemoteCard, state: ViewState): void {
+  setData(node, "kind", viewer.kind);
+  setData(node, "connected", viewer.connected ? "1" : "0");
+  setText(node.querySelector(".remote-viewer-name")!, viewer.name ?? viewer.id.slice(0, 8));
+  setText(node.querySelector(".remote-viewer-sub")!, viewerWords(viewer, Date.now()));
+  const forget = node.querySelector<HTMLButtonElement>(".remote-viewer-forget")!;
+  // A browser's session ends; a paired app is unpaired and has to pair again.
+  setText(forget, viewer.kind === "web" ? "End" : "Forget");
+  forget.dataset["node"] = remote.node;
+  forget.dataset["viewer"] = viewer.id;
+  forget.disabled = !state.connected;
+}
+
+/** The desktop block: hidden when the node has no host to show; the PIN form and the phone code open in place. */
+function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state: ViewState, ui: UiState): void {
+  setHidden(block, remote === undefined);
+  if (!remote) return;
+  setData(block, "status", remote.host.status);
+  setData(block, "streaming", remote.streaming ? "1" : "0");
+  const words = block.querySelector<HTMLElement>(".remote-words")!;
+  setText(words, remote.words);
+  words.title = `${remote.host.kind === "none" ? "no host" : remote.host.kind} · ${remote.words}`;
+  const opening = ui.opening.has(remote.node);
+  const connect = block.querySelector<HTMLButtonElement>(".remote-connect")!;
+  setHidden(connect, !remote.connect);
+  setText(connect, opening ? "Connecting…" : "Connect");
+  connect.dataset["node"] = remote.node;
+  connect.disabled = !state.connected || opening;
+  reconcile(block.querySelector<HTMLElement>(".remote-viewers")!, remote.viewers, (v) => v.id, createViewer, (node, v) => updateViewer(node, v, remote, state));
+
+  const pinOpen = state.remotePin === remote.node && remote.pair;
+  const invite = state.remoteInvite?.node === remote.node ? state.remoteInvite : undefined;
+  const pinStart = block.querySelector<HTMLButtonElement>(".remote-pin-start")!;
+  const inviteStart = block.querySelector<HTMLButtonElement>(".remote-invite-start")!;
+  const noPin = !remote.pair || pinOpen;
+  const noInvite = !remote.invite || invite !== undefined;
+  setHidden(pinStart, noPin);
+  setHidden(inviteStart, noInvite);
+  for (const b of [pinStart, inviteStart]) {
+    b.dataset["node"] = remote.node;
+    b.disabled = !state.connected;
+  }
+  setHidden(block.querySelector<HTMLElement>(".remote-actions")!, noPin && noInvite);
+  const form = block.querySelector<HTMLFormElement>(".remote-pin-form")!;
+  setHidden(form, !pinOpen);
+  form.dataset["node"] = remote.node;
+  form.querySelector<HTMLButtonElement>(".remote-pin-submit")!.disabled = !state.connected;
+
+  const panel = block.querySelector<HTMLElement>(".remote-invite")!;
+  setHidden(panel, invite === undefined);
+  if (!invite) return;
+  const w = inviteWords(invite, Date.now());
+  setText(panel.querySelector(".remote-invite-code")!, w.code);
+  const pass = panel.querySelector<HTMLElement>(".remote-invite-pass")!;
+  setText(pass, `passphrase ${w.passphrase}`);
+  setHidden(pass, w.passphrase === "");
+  const left = panel.querySelector<HTMLElement>(".remote-invite-left")!;
+  setText(left, w.expired ? "that code has run out" : w.left ? `good for ${w.left}` : "");
+  setHidden(left, !w.expired && w.left === "");
+  // The link opens the app on the phone this view runs on; the desktop has nothing to open it with.
+  setHidden(panel.querySelector<HTMLElement>(".remote-invite-open")!, state.client?.kind !== "controller" || !invite.link || w.expired);
+}
+
+/** One login's row: its session and weekly limits, as a share used, and what its sessions spent today. */
+function createSpend(): HTMLElement {
+  const row = el("div", "spend-row");
+  row.append(el("span", "spend-name"), el("span", "spend-limit spend-session"), el("span", "spend-limit spend-weekly"), el("span", "spend-cost"));
+  return row;
+}
+
+function updateSpend(node: HTMLElement, row: SpendRow): void {
+  setData(node, "profile", row.profile);
+  setText(node.querySelector(".spend-name")!, row.name);
+  for (const [cls, w] of [
+    [".spend-session", row.limits?.session],
+    [".spend-weekly", row.limits?.weekly],
+  ] as const) {
+    const cell = node.querySelector<HTMLElement>(cls)!;
+    setText(cell, limitWords(w));
+    setData(cell, "level", limitLevel(w));
+  }
+  setText(node.querySelector(".spend-cost")!, costWords(row.spend.cost));
+  node.title = spendTitle(row, Date.now());
+}
+
+/** The nodes block: hidden without `metrics:read`; each card's bars, owners and desktop, then each login's limits and spend today. */
+function renderNodes(root: HTMLElement, state: ViewState, ui: UiState): void {
+  setHidden(root, !state.scopes.includes("metrics:read"));
+  if (root.hidden) return;
+  reconcile(root.querySelector<HTMLElement>(".node-cards")!, selectNodes(state), (c) => c.node.id, createNodeCard, (node, c) => updateNodeCard(node, c, state, ui));
+  renderNodeTools(root.querySelector<HTMLElement>(".node-tools")!, state, ui);
+  const spend = selectSpend(state);
+  const list = root.querySelector<HTMLElement>(".spend")!;
+  reconcile(list.querySelector<HTMLElement>(".spend-rows")!, spend, (r) => r.profile, createSpend, updateSpend);
+  setHidden(list, spend.length === 0);
+}
+
+function createAccountBar(): HTMLElement {
+  const bar = el("div", "bar");
+  const track = el("span", "bar-track");
+  track.append(el("span", "bar-fill"));
+  bar.append(el("span", "bar-label"), track, el("span", "bar-value"));
+  return bar;
+}
+
+function updateAccountBar(node: HTMLElement, bar: AccountBar): void {
+  setText(node.querySelector(".bar-label")!, bar.label);
+  setText(node.querySelector(".bar-value")!, bar.words);
+  const fill = node.querySelector<HTMLElement>(".bar-fill")!;
+  const width = `${bar.percent}%`;
+  if (fill.style.width !== width) fill.style.width = width;
+  setData(node, "level", bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal");
+}
+
+/** The backup row's passphrase form: the passphrase, typed twice when it is being set, and what the submit does. */
+function createBackupForm(): HTMLFormElement {
+  const form = el("form", "backup-form");
+  const pass = el("input", "backup-pass");
+  pass.type = "password";
+  pass.name = "passphrase";
+  pass.autocomplete = "off";
+  pass.required = true;
+  pass.minLength = 8;
+  pass.placeholder = "passphrase";
+  pass.setAttribute("aria-label", "the backup's passphrase");
+  const again = el("input", "backup-pass-again");
+  again.type = "password";
+  again.name = "again";
+  again.autocomplete = "off";
+  again.placeholder = "again";
+  again.setAttribute("aria-label", "the passphrase again");
+  const submit = el("button", "backup-submit", "Turn on");
+  submit.type = "submit";
+  form.append(el("p", "backup-form-hint"), pass, again, submit, actionButton("backup-cancel", "Cancel", "backup-cancel"), actionButton("backup-replace", "Start over instead…", "backup-replace"));
+  return form;
+}
+
+/**
+ * The account card in the rail: signed out with a Sign in button; a login open with the
+ * address, the code and a countdown; signed in with the subject and the link's dot. Its
+ * head is a switch: the plan, the usage bars, the backup row and Sign out stay folded until
+ * the user opens them. Direct connections sit under the backup, a line and a switch per node.
+ */
+function renderAccount(root: HTMLElement, state: ViewState, ui: UiState): void {
+  if (!root.querySelector(".account-head")) {
+    const head = actionButton("fold account-head", "", "toggle");
+    head.append(el("span", "dot"), el("span", "fold-label account-title"));
+    const signIn = actionButton("account-login", "Sign in", "account-login");
+    const signOut = actionButton("account-logout", "Sign out", "account-logout");
+    const open = actionButton("account-open", "Open the page", "account-open");
+    const close = actionButton("account-login-close", "Cancel", "account-login-close");
+    const panel = el("div", "account-login-panel");
+    panel.append(el("p", "account-url"), el("p", "account-code"), el("p", "account-left"), open, close);
+    const backup = el("div", "backup-row");
+    const backupHead = el("div", "backup-head");
+    backupHead.append(el("span", "backup-label", "Backup"), el("span", "backup-words"));
+    const buttons = el("div", "backup-buttons");
+    buttons.append(
+      actionButton("backup-on", "Turn on…", "backup-on"),
+      actionButton("backup-restore", "Restore…", "backup-restore"),
+      actionButton("backup-takeover", "Take over…", "backup-on"),
+      actionButton("backup-off", "Turn off", "backup-off"),
+    );
+    const progress = el("div", "backup-progress");
+    progress.append(el("div", "backup-progress-fill"));
+    backup.append(backupHead, progress, buttons, createBackupForm());
+    const direct = el("div", "direct-row");
+    const directHead = el("div", "direct-head");
+    directHead.append(el("span", "direct-label", "Direct"), el("span", "direct-words"));
+    direct.append(directHead, el("div", "direct-lines"));
+    const details = el("div", "account-details");
+    details.append(el("p", "account-sub"), el("div", "account-bars"), backup, direct, signOut);
+    root.append(head, details, panel, signIn);
+  }
+  setHidden(root, !state.scopes.includes("account"));
+  const card = selectAccount(state);
+  renderBackup(root.querySelector<HTMLElement>(".backup-row")!, card.backup, state, ui);
+  renderDirect(root.querySelector<HTMLElement>(".direct-row")!, card.direct, state, ui);
+  setData(root, "kind", card.kind);
+  const open = ui.expanded.has(ACCOUNT_KEY);
+  updateFold(root.querySelector<HTMLElement>(".account-head")!, ACCOUNT_KEY, card.title, open);
+  setHidden(root.querySelector<HTMLElement>(".account-details")!, !open);
+  const dot = root.querySelector<HTMLElement>(".dot")!;
+  setHidden(dot, card.kind !== "in");
+  setData(dot, "status", card.connected ? "connected" : "gone");
+  dot.title = card.connected ? "linked to the server" : "the server link is down";
+  setText(root.querySelector(".account-sub")!, card.sub);
+  reconcile(root.querySelector<HTMLElement>(".account-bars")!, card.bars, (b) => b.label, createAccountBar, updateAccountBar);
+  const panel = root.querySelector<HTMLElement>(".account-login-panel")!;
+  setHidden(panel, card.kind !== "login");
+  if (state.login) {
+    const words = loginWords(state.login, Date.now());
+    setText(panel.querySelector(".account-url")!, state.login.verificationUrl.replace(/\?code=.*$/, ""));
+    setText(panel.querySelector(".account-code")!, words.code);
+    setText(panel.querySelector(".account-left")!, words.expired ? "that code has run out" : `good for ${words.left}`);
+  }
+  const signIn = root.querySelector<HTMLButtonElement>(".account-login")!;
+  setHidden(signIn, card.kind !== "out");
+  signIn.disabled = !state.connected;
+  const signOut = root.querySelector<HTMLButtonElement>(".account-logout")!;
+  setHidden(signOut, card.kind !== "in");
+  signOut.disabled = !state.connected;
+}
+
+/** The backup row: its words, the buttons its kind offers, the passphrase form when open, a restore's progress. */
+function renderBackup(row: HTMLElement, backup: BackupRow | undefined, state: ViewState, ui: UiState): void {
+  setHidden(row, backup === undefined);
+  if (!backup) return;
+  setData(row, "kind", backup.kind);
+  setData(row, "state", backup.state ?? "");
+  setText(row.querySelector(".backup-words")!, backup.words);
+  const busy = ui.backupBusy === true || !state.connected;
+  const formOpen = ui.backupForm !== undefined;
+  const on = row.querySelector<HTMLButtonElement>(".backup-on")!;
+  setHidden(on, !(backup.kind === "off" || backup.kind === "available") || formOpen);
+  on.disabled = busy;
+  const restore = row.querySelector<HTMLButtonElement>(".backup-restore")!;
+  setHidden(restore, backup.kind !== "available" || formOpen);
+  restore.disabled = busy;
+  const takeover = row.querySelector<HTMLButtonElement>(".backup-takeover")!;
+  setHidden(takeover, !(backup.kind === "on" && backup.state === "conflict") || formOpen);
+  takeover.disabled = busy;
+  const off = row.querySelector<HTMLButtonElement>(".backup-off")!;
+  setHidden(off, backup.kind !== "on" || formOpen);
+  off.disabled = busy;
+  const progress = row.querySelector<HTMLElement>(".backup-progress")!;
+  setHidden(progress, backup.kind !== "restoring");
+  progress.querySelector<HTMLElement>(".backup-progress-fill")!.style.width = `${backup.progress ?? 0}%`;
+  const form = row.querySelector<HTMLFormElement>(".backup-form")!;
+  const mode = ui.backupForm;
+  setHidden(form, mode === undefined || backup.kind === "restoring" || backup.kind === "plan");
+  if (mode === undefined) return;
+  setData(form, "mode", mode);
+  const again = form.querySelector<HTMLInputElement>(".backup-pass-again")!;
+  setHidden(again, mode === "restore");
+  again.required = mode !== "restore";
+  const hint = form.querySelector<HTMLElement>(".backup-form-hint")!;
+  const submit = form.querySelector<HTMLButtonElement>(".backup-submit")!;
+  if (mode === "restore") {
+    setText(hint, "The passphrase the backup was made with. What is on this computer is replaced by it.");
+    setText(submit, "Restore");
+  } else if (mode === "replace") {
+    setText(hint, "A new passphrase. The backup on the server is dropped and made again from this computer.");
+    setText(submit, "Start over");
+  } else if (backup.kind === "available" || backup.state === "conflict") {
+    setText(hint, "The backup's passphrase: this computer carries it on from here.");
+    setText(submit, backup.state === "conflict" ? "Take over" : "Turn on");
+  } else {
+    setText(hint, "A passphrase only you know: the backup cannot be read without it, and it cannot be recovered.");
+    setText(submit, "Turn on");
+  }
+  submit.disabled = busy;
+  // turning on while the server holds a backup: the other way is to drop it and start over
+  setHidden(form.querySelector<HTMLElement>(".backup-replace")!, !(mode === "enable" && backup.kind === "available" && backup.canReplace));
+}
+
+/** The direct connections row: the plan's refusal, or each node's line with its switch; the node's name only when there are several. */
+function renderDirect(row: HTMLElement, direct: DirectRow | undefined, state: ViewState, ui: UiState): void {
+  setHidden(row, direct === undefined);
+  if (!direct) return;
+  setData(row, "kind", direct.kind);
+  setText(row.querySelector(".direct-words")!, direct.kind === "plan" || direct.lines.length === 0 ? direct.words : "");
+  const named = direct.lines.length > 1;
+  reconcile(row.querySelector<HTMLElement>(".direct-lines")!, direct.lines, (l) => l.node, createDirectLine, (e, l) => updateDirectLine(e, l, named, !state.connected || ui.directBusy?.has(l.node) === true));
+}
+
+function createDirectLine(): HTMLElement {
+  const line = el("div", "direct-line");
+  line.append(el("span", "direct-name"), el("span", "direct-state"), actionButton("direct-switch", "", "direct-switch"));
+  return line;
+}
+
+function updateDirectLine(line: HTMLElement, l: DirectLine, named: boolean, busy: boolean): void {
+  setData(line, "state", l.state);
+  const name = line.querySelector<HTMLElement>(".direct-name")!;
+  setHidden(name, !named);
+  setText(name, l.name);
+  setText(line.querySelector(".direct-state")!, l.words);
+  const button = line.querySelector<HTMLButtonElement>(".direct-switch")!;
+  button.dataset["node"] = l.node;
+  button.dataset["on"] = l.on ? "1" : "0";
+  setText(button, l.on ? "Turn off" : "Turn on");
+  button.disabled = busy;
+}
+
+// --- grants: the invites a machine or a phone is let in with ---------------------------------
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** An invite's QR code as an SVG that scales to its box: dark modules on white, the quiet zone within. */
+function qrSvg(text: string, label: string): SVGSVGElement {
+  const modules = qrModules(text);
+  const n = modules.length;
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", `0 0 ${n} ${n}`);
+  svg.setAttribute("shape-rendering", "crispEdges");
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", label);
+  const light = document.createElementNS(SVG_NS, "rect");
+  light.setAttribute("width", String(n));
+  light.setAttribute("height", String(n));
+  light.setAttribute("fill", "#fff");
+  const dark = document.createElementNS(SVG_NS, "path");
+  dark.setAttribute("d", qrPath(modules));
+  dark.setAttribute("fill", "#000");
+  svg.append(light, dark);
+  return svg;
+}
+
+function option(value: string, label: string): HTMLOptionElement {
+  const o = el("option", undefined, label);
+  o.value = value;
+  return o;
+}
+
+function endSelect(): HTMLSelectElement {
+  const end = el("select", "grant-end");
+  end.name = "end";
+  end.setAttribute("aria-label", "How long it lasts");
+  for (const e of GRANT_ENDS) end.append(option(e.key, e.key === "never" ? "Lasts until removed" : `Lasts ${e.label}`));
+  end.value = "never";
+  return end;
+}
+
+function nameInput(placeholder: string, label: string): HTMLInputElement {
+  const name = el("input", "grant-name");
+  name.name = "name";
+  name.required = true;
+  name.maxLength = 64;
+  name.autocomplete = "off";
+  name.placeholder = placeholder;
+  name.setAttribute("aria-label", label);
+  return name;
+}
+
+/** Add a machine: its name, hands or a full member, how long it lasts. */
+function createNodeInviteForm(): HTMLFormElement {
+  const form = el("form", "grant-form node-invite-form");
+  const role = el("select", "grant-role");
+  role.name = "role";
+  role.setAttribute("aria-label", "What the machine may be");
+  role.append(option("hands", "Hands: it runs what this computer asks, and reaches no other machine"), option("full", "Full member: it can take over when this computer is off"));
+  const submit = el("button", "grant-submit", "Make the invite");
+  submit.type = "submit";
+  form.append(el("p", "grant-form-head", "Add a machine"), nameInput("what to call it", "What to call the machine"), role, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
+  return form;
+}
+
+/** Join another computer: the invite it made for this one, the folders it may use here, and whose prompts are whose. */
+function createJoinForm(): HTMLFormElement {
+  const form = el("form", "grant-form node-join-form");
+  const invite = el("textarea", "join-invite");
+  invite.name = "invite";
+  invite.required = true;
+  invite.rows = 3;
+  invite.spellcheck = false;
+  invite.placeholder = "cophyla-invite:…";
+  invite.setAttribute("aria-label", "The invite");
+  const paths = el("textarea", "join-paths");
+  paths.name = "paths";
+  paths.rows = 2;
+  paths.spellcheck = false;
+  paths.placeholder = "Folders it may use, one per line; none shares all of this computer";
+  paths.setAttribute("aria-label", "The folders it may use here");
+  const here = el("label", "join-here");
+  const box = el("input");
+  box.type = "checkbox";
+  box.name = "answerHere";
+  here.append(box, el("span", undefined, "Prompts raised here are answered here only"));
+  const submit = el("button", "grant-submit", "Join");
+  submit.type = "submit";
+  form.append(
+    el("p", "grant-form-head", "Join another computer"),
+    el("p", "grant-form-hint", "Paste the invite that computer made for this one. It sees and uses the folders you name here, or all of this computer if you name none."),
+    invite,
+    paths,
+    here,
+    submit,
+    actionButton("grant-form-cancel", "Cancel", "grant-form-close"),
+  );
+  return form;
+}
+
+/** Invite a phone: its name, what it may do, perhaps kept to one machine or workspace, and how long it lasts. */
+function createPhoneInviteForm(): HTMLFormElement {
+  const form = el("form", "grant-form phone-invite-form");
+  const preset = el("select", "grant-preset");
+  preset.name = "preset";
+  preset.setAttribute("aria-label", "What the phone may do");
+  for (const key of Object.keys(PHONE_PRESETS)) preset.append(option(key, key === "full" ? "Everything this app does" : key === "sessions" ? "Its sessions: read, answer and send" : "Look only: read the sessions"));
+  const limit = el("select", "grant-limit");
+  limit.name = "limit";
+  limit.setAttribute("aria-label", "Where it may do it");
+  const submit = el("button", "grant-submit", "Make the invite");
+  submit.type = "submit";
+  form.append(el("p", "grant-form-head", "Invite a phone"), nameInput("what to call the phone", "What to call the phone"), preset, limit, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
+  return form;
+}
+
+/** The phone form's limits: anywhere, or one machine or one workspace, kept as chosen while the choices stay. */
+function updateLimits(select: HTMLSelectElement, state: ViewState): void {
+  const choices = [{ key: "", label: "Anywhere it may" }, ...limitChoices(state)];
+  const key = choices.map((c) => c.key).join("|");
+  if (select.dataset["choices"] === key) return;
+  const chosen = select.value;
+  select.replaceChildren(...choices.map((c) => option(c.key, c.label)));
+  select.dataset["choices"] = key;
+  select.value = choices.some((c) => c.key === chosen) ? chosen : "";
+}
+
+/** The invite just minted, where it was asked for: its text and Copy, its QR code, how long it holds, and Done. */
+function renderInvitePanel(slot: HTMLElement, state: ViewState, ui: UiState, kind: GrantKind): void {
+  const invite = state.invite?.kind === kind ? state.invite : undefined;
+  let panel = slot.querySelector<HTMLElement>(".invite-panel");
+  if (panel && panel.dataset["grant"] !== invite?.grant) {
+    panel.remove();
+    panel = null;
+  }
+  if (!invite) return;
+  if (!panel) {
+    panel = el("div", "invite-panel");
+    panel.dataset["grant"] = invite.grant;
+    // a button: the rail's width is small for a camera, so a press shows it large over the view
+    const qr = actionButton("invite-qr", "", "invite-qr-zoom");
+    qr.append(qrSvg(invite.link, `The invite for ${invite.name}, as a QR code`));
+    const text = el("textarea", "invite-text");
+    text.readOnly = true;
+    text.rows = 3;
+    text.spellcheck = false;
+    text.value = invite.text;
+    text.setAttribute("aria-label", "The invite");
+    const buttons = el("div", "invite-buttons");
+    buttons.append(actionButton("invite-copy", "Copy", "invite-copy"), actionButton("invite-done", "Done", "invite-done"));
+    panel.append(el("p", "invite-head"), el("p", "invite-hint"), qr, text, el("p", "invite-left"), buttons);
+    slot.append(panel);
+  }
+  setText(panel.querySelector(".invite-head")!, `The invite for ${invite.name}`);
+  setText(
+    panel.querySelector(".invite-hint")!,
+    kind === "node"
+      ? "On that machine, give it to cophylad join, or paste it under Join another computer in its Cophyla app. It works once."
+      : "Scan it with the phone's camera to open it in Cophyla, or paste the text in the app. It works once.",
+  );
+  const qr = panel.querySelector<HTMLButtonElement>(".invite-qr")!;
+  setData(qr, "zoom", ui.qrZoom ? "1" : "0");
+  qr.title = ui.qrZoom ? "Show it smaller (Esc)" : "Show it larger";
+  const words = issuedWords(invite, Date.now());
+  const copied = ui.copied?.grant === invite.grant ? ui.copied : undefined;
+  setText(panel.querySelector(".invite-left")!, [words.expired ? "this invite has run out" : `good for ${words.left}`, copied ? (copied.ok ? "copied" : "select the text and copy it") : ""].filter(Boolean).join(" · "));
+  setData(panel, "expired", words.expired ? "1" : "0");
+}
+
+/** The invites still open for machines or phones, less the one on show, each with how long it holds and Cancel. */
+function renderPending(list: HTMLElement, state: ViewState, kind: GrantKind): void {
+  const now = Date.now();
+  const rows = selectPendingInvites(state, now).filter((p) => p.grant.kind === kind && p.grant.id !== state.invite?.grant);
+  if (!list.firstChild) list.append(el("p", "invites-head", kind === "node" ? "Invited, not joined yet" : "Invited, not paired yet"), el("div", "invites-rows"));
+  reconcile(
+    list.querySelector<HTMLElement>(".invites-rows")!,
+    rows,
+    (p) => p.grant.id,
+    () => {
+      const row = el("div", "invite-pending");
+      row.append(el("span", "invite-pending-name"), el("span", "invite-pending-left"), actionButton("invite-pending-cancel", "Cancel", "grant-cancel"));
+      return row;
+    },
+    (row, p) => {
+      setText(row.querySelector(".invite-pending-name")!, p.grant.name);
+      setText(row.querySelector(".invite-pending-left")!, p.expired ? "ran out" : p.left);
+      row.title = p.expired ? `The invite for ${p.grant.name} ran out` : `The invite for ${p.grant.name} holds for ${p.left} more`;
+      const cancel = row.querySelector<HTMLButtonElement>(".invite-pending-cancel")!;
+      cancel.dataset["grant"] = p.grant.id;
+      cancel.disabled = !state.connected;
+      cancel.title = `Cancel the invite for ${p.grant.name}`;
+    },
+  );
+  setHidden(list, rows.length === 0);
+}
+
+function setFormBusy(form: HTMLFormElement, state: ViewState, ui: UiState): void {
+  for (const b of form.querySelectorAll<HTMLButtonElement>("button")) b.disabled = !state.connected || ui.grantBusy === true;
+}
+
+/** Under the machines' cards: Add a machine and its invite, the invites still open, and Join another computer. */
+function renderNodeTools(tools: HTMLElement, state: ViewState, ui: UiState): void {
+  if (!tools.firstChild) {
+    const buttons = el("div", "node-tools-buttons");
+    buttons.append(actionButton("node-add", "Add a machine", "grant-form-node"), actionButton("node-join", "Join another computer", "grant-form-join"));
+    tools.append(buttons, createNodeInviteForm(), createJoinForm(), el("div", "invite-slot"), el("div", "invites-pending"));
+  }
+  // a hands node reaches no other machine, and lets none in
+  const hands = state.node !== undefined && state.nodes.get(state.node)?.hands === true;
+  const canInvite = state.scopes.includes("controllers") && state.scopes.includes("nodes") && !hands;
+  const joining = membershipOffer(state) === "join";
+  setHidden(tools, !canInvite && !joining);
+  if (tools.hidden) return;
+  const add = tools.querySelector<HTMLButtonElement>(".node-add")!;
+  setHidden(add, !canInvite || ui.grantForm === "node");
+  add.disabled = !state.connected;
+  add.title = "Let another computer join this one, with an invite it redeems once";
+  const join = tools.querySelector<HTMLButtonElement>(".node-join")!;
+  setHidden(join, !joining || ui.grantForm === "join");
+  join.disabled = !state.connected;
+  join.title = "Let another computer use this one, with the invite it made for it";
+  const nodeForm = tools.querySelector<HTMLFormElement>(".node-invite-form")!;
+  setHidden(nodeForm, ui.grantForm !== "node");
+  setFormBusy(nodeForm, state, ui);
+  const joinForm = tools.querySelector<HTMLFormElement>(".node-join-form")!;
+  setHidden(joinForm, ui.grantForm !== "join");
+  setFormBusy(joinForm, state, ui);
+  renderInvitePanel(tools.querySelector<HTMLElement>(".invite-slot")!, state, ui, "node");
+  renderPending(tools.querySelector<HTMLElement>(".invites-pending")!, state, "node");
+}
+
+/** The pairing panel: the URL to open, the code in two groups, and how long it holds. */
+function renderPairing(root: HTMLElement, state: ViewState): void {
+  let panel = root.querySelector<HTMLElement>(".pair-panel");
+  if (!panel) {
+    panel = el("div", "pair-panel");
+    const done = el("button", "pair-done", "Done");
+    done.type = "button";
+    done.dataset["action"] = "pair-close";
+    panel.append(el("p", "pair-hint", "Open this on the phone and type the code:"), el("p", "pair-url"), el("p", "pair-code"), el("p", "pair-left"), done);
+    root.append(panel);
+  }
+  setHidden(panel, state.pairing === undefined);
+  if (!state.pairing) return;
+  const words = pairingWords(state.pairing, Date.now());
+  setText(panel.querySelector(".pair-url")!, state.pairing.url.replace(/\?code=\d+$/, ""));
+  setText(panel.querySelector(".pair-code")!, words.code);
+  setText(panel.querySelector(".pair-left")!, words.expired ? "that code has run out" : `good for ${words.left}`);
+}
+
+function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
+  let chat = root.querySelector<HTMLButtonElement>(".tab.chat");
+  if (!chat) {
+    // The chat's row: its tab, and at its right the view's ⋮ menu.
+    const top = el("div", "rail-top");
+    chat = el("button", "tab chat");
+    chat.type = "button";
+    chat.dataset["action"] = "select";
+    // At its very right, the line to cophylad: a dot.
+    const dot = el("span", "dot link-dot");
+    dot.setAttribute("role", "img");
+    chat.append(el("span", "tab-title", "Cophyla Chat"), el("span", "pulse"), dot);
+    const more = actionButton("rail-more", "", "rail-more");
+    more.setAttribute("aria-haspopup", "menu");
+    more.setAttribute("aria-label", "More");
+    more.title = "More";
+    more.append(el("span", "dots-mark"));
+    // Change view opens the host's picker over the view, Settings the host's settings: every view must offer both somewhere.
+    const moreMenu = el("div", "rail-menu");
+    moreMenu.setAttribute("role", "menu");
+    const change = actionButton("rail-menu-item", "Change view", "change-view");
+    change.setAttribute("role", "menuitem");
+    change.title = "Show another view in this app";
+    const settings = actionButton("rail-menu-item", "Settings", "settings");
+    settings.setAttribute("role", "menuitem");
+    settings.title = "Which account agents start under, and with what";
+    moreMenu.append(change, settings, el("p", "rail-menu-note"));
+    top.append(chat, more, moreMenu);
+    const list = el("div", "tab-sessions");
+    const newTerminal = el("button", "tab-new-terminal", "New terminal");
+    newTerminal.type = "button";
+    newTerminal.dataset["action"] = "new-terminal";
+    newTerminal.title = "Start a shell on this computer, in a folder you pick, shown here";
+    newTerminal.setAttribute("aria-haspopup", "true");
+    // Under it, once pressed: where to start the shell.
+    const menu = el("div", "new-terminal-menu");
+    menu.append(el("p", "new-terminal-head", "Open a terminal in"), el("p", "new-terminal-loading", "Loading workspaces…"), el("div", "new-terminal-places"));
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), el("div", "tab-terminals"), newTerminal, menu);
+    // Under the sessions: the machines, what they are doing, and each login's limits and spend.
+    const nodes = el("div", "rail-nodes");
+    const spend = el("div", "spend");
+    const spendHead = el("div", "spend-row spend-head");
+    spendHead.append(el("span", "spend-title", "Usage"), el("span", "spend-limit", "session"), el("span", "spend-limit", "week"), el("span", "spend-cost", "today"));
+    spendHead.title = "Each login's share of its session (five-hour) and weekly limits, and what its sessions spent today";
+    spend.append(spendHead, el("div", "spend-rows"));
+    nodes.append(el("div", "node-cards"), el("div", "node-tools"), spend);
+    // Then the account, then the phones this node talks to.
+    const account = el("div", "account-card");
+    const foot = el("div", "rail-foot");
+    const pair = el("button", "pair-start", "Pair a phone");
+    pair.type = "button";
+    pair.dataset["action"] = "pair";
+    const invitePhone = actionButton("phone-invite", "Invite a phone", "grant-form-phone");
+    invitePhone.title = "An invite the phone scans or pastes, with what it may do and for how long";
+    const buttons = el("div", "rail-foot-buttons");
+    buttons.append(pair, invitePhone);
+    foot.append(el("div", "controllers"), buttons, createPhoneInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
+    // They share one scroll under the sessions.
+    const cards = el("div", "rail-cards");
+    cards.append(nodes, account, foot);
+    root.append(top, list, cards);
+  }
+  const link = linkWords(state);
+  const dot = chat.querySelector<HTMLElement>(".link-dot")!;
+  setHidden(dot, link === undefined);
+  if (link) {
+    setData(dot, "status", link.status);
+    dot.title = link.title;
+    dot.setAttribute("aria-label", link.title);
+  }
+  chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
+  renderRailMenu(root, state, ui);
+  // The chat tab pulses while a reply streams, and while a phone is in a conversation.
+  setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && !voiceBusy(state));
+
+  const groups = selectGroups(state);
+  reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
+  setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
+  const canTerminal = state.scopes.includes("terminal");
+  reconcile(root.querySelector<HTMLElement>(".tab-terminals")!, canTerminal ? selectTerminalTabs(state, ui.terminal) : [], (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, ui));
+  const newTerminal = root.querySelector<HTMLButtonElement>(".tab-new-terminal")!;
+  setHidden(newTerminal, !canTerminal);
+  newTerminal.disabled = !state.connected;
+  renderNewTerminal(root.querySelector<HTMLElement>(".new-terminal-menu")!, newTerminal, state, ui, canTerminal);
+
+  renderNodes(root.querySelector<HTMLElement>(".rail-nodes")!, state, ui);
+  renderAccount(root.querySelector<HTMLElement>(".account-card")!, state, ui);
+
+  const foot = root.querySelector<HTMLElement>(".rail-foot")!;
+  const controllers = selectControllers(state);
+  reconcile(foot.querySelector<HTMLElement>(".controllers")!, controllers, (c) => c.id, createController, (node, c) => updateController(node, c, state));
+  const pair = foot.querySelector<HTMLButtonElement>(".pair-start")!;
+  pair.disabled = !state.connected || !state.scopes.includes("controllers");
+  setHidden(pair, state.pairing !== undefined);
+  setHidden(foot, !state.scopes.includes("controllers"));
+  renderPairing(foot, state);
+  const invitePhone = foot.querySelector<HTMLButtonElement>(".phone-invite")!;
+  setHidden(invitePhone, ui.grantForm === "phone");
+  invitePhone.disabled = !state.connected;
+  const phoneForm = foot.querySelector<HTMLFormElement>(".phone-invite-form")!;
+  setHidden(phoneForm, ui.grantForm !== "phone");
+  updateLimits(phoneForm.querySelector<HTMLSelectElement>(".grant-limit")!, state);
+  setFormBusy(phoneForm, state, ui);
+  renderInvitePanel(foot.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui, "controller");
+  renderPending(foot.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller");
+}
+
+/** The ⋮ menu beside the chat's tab: Change view and Settings, and why one did not open when it could not. */
+function renderRailMenu(root: HTMLElement, state: ViewState, ui: UiState): void {
+  const more = root.querySelector<HTMLButtonElement>(".rail-more")!;
+  more.setAttribute("aria-expanded", ui.railMenu ? "true" : "false");
+  const menu = root.querySelector<HTMLElement>(".rail-menu")!;
+  setHidden(menu, !ui.railMenu);
+  for (const item of menu.querySelectorAll<HTMLButtonElement>(".rail-menu-item")) item.disabled = !state.connected;
+  const note = menu.querySelector<HTMLElement>(".rail-menu-note")!;
+  setText(note, ui.railMenu?.note ?? "");
+  setHidden(note, !ui.railMenu?.note);
+}
+
+/** The rail's own button, for a phone's width on a host with none, and the name of what the pane shows beside it. */
+function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: boolean): void {
+  let toggle = root.querySelector<HTMLButtonElement>(".rail-toggle");
+  if (!toggle) {
+    toggle = el("button", "rail-toggle");
+    toggle.type = "button";
+    toggle.dataset["action"] = "rail-toggle";
+    toggle.setAttribute("aria-label", "Sessions and machines");
+    toggle.title = "Sessions and machines";
+    toggle.append(el("span", "menu-mark"));
+    root.append(toggle, el("span", "railbar-title"));
+  }
+  toggle.setAttribute("aria-expanded", shown ? "true" : "false");
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
+  setText(root.querySelector(".railbar-title")!, card ? sessionLabel(card.session) : bare ? terminalLabel(bare) : "Cophyla Chat");
+}
+
+/** New terminal's row for the user's home folder, beside the workspaces' ids. */
+export const HOME_PLACE = "home";
+
+/** A row of New terminal's menu: a workspace, or the home folder. */
+interface Place {
+  key: string;
+  name: string;
+  path?: string;
+}
+
+/** New terminal's menu, open once pressed: the recent workspaces when the node listed them, then the home folder; Starting… on the one picked. */
+function renderNewTerminal(menu: HTMLElement, button: HTMLButtonElement, state: ViewState, ui: UiState, canTerminal: boolean): void {
+  const m = canTerminal && state.connected ? ui.newTerminal : undefined;
+  button.setAttribute("aria-expanded", m ? "true" : "false");
+  setHidden(menu, !m);
+  if (!m) return;
+  setHidden(menu.querySelector<HTMLElement>(".new-terminal-loading")!, m.workspaces !== undefined);
+  const places: Place[] = m.workspaces ? [...m.workspaces.map((w) => ({ key: w.id, name: w.name, path: w.path })), { key: HOME_PLACE, name: "Home folder" }] : [];
+  reconcile(menu.querySelector<HTMLElement>(".new-terminal-places")!, places, (p) => p.key, createPlace, (b, p) => updatePlace(b as HTMLButtonElement, p, m.starting));
+}
+
+function createPlace(): HTMLElement {
+  const b = actionButton("new-terminal-place", "", "new-terminal-in");
+  b.append(el("span", "place-name"), el("span", "place-path"));
+  return b;
+}
+
+function updatePlace(b: HTMLButtonElement, p: Place, starting: string | undefined): void {
+  setData(b, "place", p.key);
+  setText(b.querySelector(".place-name")!, p.name);
+  const path = b.querySelector<HTMLElement>(".place-path")!;
+  setText(path, starting === p.key ? "Starting…" : (p.path ?? ""));
+  setHidden(path, starting !== p.key && p.path === undefined);
+  b.title = p.path ?? "Your home folder";
+  b.disabled = starting !== undefined;
+}
+
+/** A workspace's path as a hover title on the chips that name it. */
+function workspaceTitle(w: Workspace | undefined): string {
+  return w?.path ?? "";
+}
+
+// --- session panes -----------------------------------------------------------------------
+
+function createPane(): HTMLElement {
+  const root = el("article", "session");
+  const head = el("header", "session-head");
+  const chip = el("button", "chip");
+  chip.type = "button";
+  chip.dataset["action"] = "focus";
+  chip.title = "Raise the terminal";
+  chip.append(el("span", "dot"), el("span", "chip-harness"), el("span", "chip-profile"));
+  // Timeline | Terminal, when the session runs in a terminal the node holds.
+  const modes = el("div", "pane-mode");
+  modes.setAttribute("role", "group");
+  modes.setAttribute("aria-label", "Show");
+  for (const [mode, label] of [["timeline", "Timeline"], ["terminal", "Terminal"]] as const) {
+    const b = el("button", `pane-mode-${mode}`, label);
+    b.type = "button";
+    b.dataset["action"] = "pane-mode";
+    b.dataset["mode"] = mode;
+    modes.append(b);
+  }
+  // Kill session, at the far end: a second press confirms it, since a session's process does not come back.
+  const kill = el("div", "session-kill");
+  kill.append(
+    actionButton("session-kill-start", "Kill session", "session-kill"),
+    el("span", "session-kill-ask", "Kill this session?"),
+    actionButton("session-kill-confirm", "Kill", "session-kill-confirm"),
+    actionButton("session-kill-cancel", "Cancel", "session-kill-cancel"),
+  );
+  const actions = el("div", "session-actions");
+  actions.append(modes, kill);
+  head.append(chip, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions);
+  const body = el("div", "session-body");
+  const earlier = el("button", "earlier", "Show earlier");
+  earlier.type = "button";
+  earlier.dataset["action"] = "earlier";
+  body.append(earlier, el("ol", "timeline"));
+  root.append(head, body);
+  return root;
+}
+
+function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: UiState): void {
+  const s = card.session;
+  setData(node, "session", s.id);
+  setData(node, "status", s.status);
+  setHidden(node, ui.selected !== s.id);
+  const terminal = sessionTerminal(state, s);
+  const mode = paneMode(ui.modes.get(s.id), terminal !== undefined);
+  setData(node, "mode", mode);
+  const modes = node.querySelector<HTMLElement>(".pane-mode")!;
+  setHidden(modes, terminal === undefined);
+  for (const b of Array.from(modes.querySelectorAll<HTMLButtonElement>("button"))) {
+    setData(b, "session", s.id);
+    b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
+  }
+  updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
+  const chip = node.querySelector<HTMLElement>(".chip")!;
+  setData(chip, "session", s.id);
+  // A background job has no window of its own: the chip opens one on it.
+  const attach = s.native.job !== undefined && s.native.terminal === undefined;
+  chip.setAttribute("aria-label", `${s.harness}, ${statusWord(s)}; ${attach ? "open it in a terminal" : "raise the terminal"}`);
+  chip.title = attach ? `Open in a terminal (claude attach ${s.native.job})` : "";
+  setText(chip.querySelector(".chip-harness")!, s.harness);
+  setText(chip.querySelector(".chip-profile")!, profileName(state, s));
+  const dot = chip.querySelector<HTMLElement>(".dot")!;
+  setData(dot, "status", dotStatus(s));
+  dot.title = statusWord(s);
+  setText(node.querySelector(".session-intent")!, s.intent ?? s.title ?? "");
+  const ws = workspaceName(state, s);
+  const wsEl = node.querySelector<HTMLElement>(".session-workspace")!;
+  setText(wsEl, ws ?? "");
+  setHidden(wsEl, ws === undefined);
+  wsEl.title = workspaceTitle(s.workspace ? state.workspaces.get(s.workspace) : undefined);
+  setText(node.querySelector(".session-cwd")!, s.cwd);
+  const stats = node.querySelector<HTMLElement>(".session-stats")!;
+  const st = s.stats;
+  setText(stats, st ? `${st.turns} turn${st.turns === 1 ? "" : "s"}, ${countWords(st.tokens.in)} in, ${countWords(st.tokens.out)} out` : "");
+  setHidden(stats, !st);
+
+  const earlier = node.querySelector<HTMLButtonElement>(".earlier")!;
+  const button = earlierButton(state, card);
+  setData(earlier, "session", s.id);
+  setHidden(earlier, button === undefined);
+  if (button) {
+    earlier.disabled = button.disabled;
+    setText(earlier, button.label);
+  }
+
+  const timeline = node.querySelector<HTMLElement>(".timeline")!;
+  const cardKey = `session:${s.id}`;
+  reconcile(timeline, selectTimeline(state, card), (r) => r.key, createRow, (li, row) => updateRow(li, row, cardKey, ui));
+}
+
+/** Kill session, or, once pressed, the question and its Kill and Cancel; Killing… until the session ends. */
+function updateKill(block: HTMLElement, s: Session, state: ViewState, ui: UiState): void {
+  const shown = stoppable(state, s);
+  setHidden(block, !shown);
+  if (!shown) return;
+  const phase = ui.kill?.session === s.id ? ui.kill.phase : undefined;
+  for (const b of Array.from(block.querySelectorAll<HTMLButtonElement>("button"))) setData(b, "session", s.id);
+  const start = block.querySelector<HTMLButtonElement>(".session-kill-start")!;
+  setHidden(start, phase !== undefined);
+  start.disabled = !state.connected;
+  start.title = s.origin === "orchestrator" && s.native.terminal ? "End this session and the terminal it runs in" : "End this session's process";
+  setHidden(block.querySelector<HTMLElement>(".session-kill-ask")!, phase !== "asking");
+  const confirm = block.querySelector<HTMLButtonElement>(".session-kill-confirm")!;
+  setHidden(confirm, phase === undefined);
+  setText(confirm, phase === "killing" ? "Killing…" : "Kill");
+  confirm.disabled = !state.connected || phase === "killing";
+  setHidden(block.querySelector<HTMLElement>(".session-kill-cancel")!, phase !== "asking");
+}
+
+function createRow(): HTMLElement {
+  const li = el("li", "row");
+  const main = el("span", "row-main");
+  main.append(el("span", "row-label"), el("span", "row-text"));
+  li.append(el("span", "row-time"), main, el("button", "row-toggle"), el("pre", "row-body"));
+  const toggle = li.querySelector<HTMLButtonElement>(".row-toggle")!;
+  toggle.type = "button";
+  toggle.dataset["action"] = "toggle";
+  return li;
+}
+
+function sendWord(state: PendingSend["state"]): string {
+  switch (state) {
+    case "queued":
+      return "queued";
+    case "held":
+      return "held until the session is idle";
+    case "delivered":
+      return "delivered";
+    case "withdrawn":
+      return "withdrawn: the session never picked it up";
+    case "unconfirmed":
+      return "unconfirmed: the session ended first";
+  }
+}
+
+interface RowView {
+  kind: string;
+  label: string;
+  text: string;
+  /** A model wrote `text`: it is drawn as markdown. */
+  md?: boolean;
+  body?: string;
+  error?: boolean;
+  at?: number;
+}
+
+function describe(row: TimelineRow): RowView {
+  if (row.kind === "send") {
+    return { kind: "send", label: "you", text: row.send.text, body: sendWord(row.send.state), at: row.send.at };
+  }
+  const e: SessionEvent = row.event;
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  switch (e.kind) {
+    case "status":
+      return { kind: "status", label: "", text: statusWord({ status: (p["status"] as Session["status"]) ?? "idle", waiting: p["waiting"] as Session["waiting"] }), at: e.at };
+    case "user_turn": {
+      const peer = p["source"] === "peer";
+      return { kind: "user", label: peer ? "another agent" : "you", text: String(p["text"] ?? ""), md: peer, at: e.at };
+    }
+    case "assistant_text":
+      return { kind: "assistant", label: "assistant", text: String(p["text"] ?? ""), md: true, at: e.at };
+    case "tool_call":
+      return { kind: "call", label: String(p["tool"] ?? "tool"), text: firstLine(p["args"]), body: pretty(p["args"]) + (p["truncated"] ? "\n…" : ""), at: e.at };
+    case "tool_result":
+      return {
+        kind: "result",
+        label: String(p["tool"] ?? "result"),
+        text: firstLine(p["result"]),
+        body: pretty(p["result"]) + (p["truncated"] ? "\n…" : ""),
+        error: p["isError"] === true,
+        at: e.at,
+      };
+    case "ask": {
+      const { label, text } = askEventText(p, row.ask);
+      return { kind: "ask", label, text, at: e.at };
+    }
+    case "notification": {
+      const type = String(p["type"] ?? "notification");
+      if (type === "message") {
+        const text = row.send?.text ?? String(p["text"] ?? "");
+        const state = (p["state"] as PendingSend["state"]) ?? "delivered";
+        // Over the pipe, a Claude session in a terminal reads it as another agent's message.
+        const body = row.asPeer && state === "delivered" ? "delivered, as another agent's message" : sendWord(state);
+        return { kind: "send", label: "you", text, body, at: e.at };
+      }
+      if (type === "queued") return { kind: "note", label: "queued", text: String(p["text"] ?? ""), at: e.at };
+      if (type === "session_end") return { kind: "note", label: "session", text: `ending (${String(p["reason"] ?? "")})`, at: e.at };
+      if (type === "backgrounded") return { kind: "note", label: "session", text: "sent to the background: it goes on as a background job", at: e.at };
+      return { kind: "note", label: type.replace(/_/g, " "), text: String(p["message"] ?? ""), at: e.at };
+    }
+    case "ended":
+      return { kind: "ended", label: "", text: `session ended${p["reason"] ? ` (${String(p["reason"])})` : ""}`, at: e.at };
+  }
+}
+
+function updateRow(li: HTMLElement, row: TimelineRow, cardKey: string, ui: UiState): void {
+  const v = describe(row);
+  setData(li, "kind", v.kind);
+  setData(li, "error", v.error ? "1" : "0");
+  setData(li, "md", v.md ? "1" : "0");
+  setText(li.querySelector(".row-time")!, v.at !== undefined ? clock(v.at) : "");
+  const label = li.querySelector<HTMLElement>(".row-label")!;
+  setText(label, v.label);
+  setHidden(label, v.label === "");
+  renderText(li.querySelector<HTMLElement>(".row-text")!, v.text, v.md === true);
+  const toggle = li.querySelector<HTMLButtonElement>(".row-toggle")!;
+  const body = li.querySelector<HTMLElement>(".row-body")!;
+  const key = `${cardKey}/${row.key}`;
+  const collapsible = v.body !== undefined && v.body !== "" && v.kind !== "send";
+  const open = ui.expanded.has(key);
+  setHidden(toggle, !collapsible);
+  setData(toggle, "target", key);
+  setText(toggle, open ? "Hide" : "Show");
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  if (v.kind === "send") {
+    setText(body, v.body ?? "");
+    setHidden(body, false);
+    setData(body, "receipt", "1");
+  } else {
+    setText(body, open ? (v.body ?? "") : "");
+    setHidden(body, !(collapsible && open));
+    setData(body, "receipt", "0");
+  }
+}
+
+// --- audit rows ------------------------------------------------------------------------------
+
+function principalWord(e: AuditEntry, state: ViewState): string {
+  const p = e.principal;
+  switch (p.kind) {
+    case "user":
+      return state.client && p.client === state.client.id ? "you" : `a client (${p.client.replace(/^cli_/, "").slice(0, 6)})`;
+    case "brain":
+      return "the brain";
+    case "node":
+      return `node ${p.id.replace(/^node_/, "").slice(0, 6)}`;
+    case "harness":
+      return `session ${p.session.replace(/^sess_/, "").slice(0, 6)}`;
+    case "system":
+      return "cophylad";
+  }
+}
+
+function createAudit(): HTMLElement {
+  const root = el("div", "audit");
+  const line = el("div", "audit-line");
+  line.append(el("span", "audit-time"), el("span", "audit-who"), el("span", "audit-action"), el("span", "audit-target"), el("span", "audit-outcome"), el("span", "audit-duration"), el("button", "audit-toggle"));
+  const toggle = line.querySelector<HTMLButtonElement>(".audit-toggle")!;
+  toggle.type = "button";
+  toggle.dataset["action"] = "toggle";
+  root.append(line, el("pre", "audit-args"));
+  return root;
+}
+
+function updateAudit(node: HTMLElement, entry: AuditEntry, state: ViewState, ui: UiState): void {
+  setData(node, "decision", entry.decision);
+  setData(node, "outcome", entry.outcome ?? "pending");
+  setText(node.querySelector(".audit-time")!, clock(entry.at));
+  setText(node.querySelector(".audit-who")!, principalWord(entry, state));
+  setText(node.querySelector(".audit-action")!, entry.action);
+  const target = node.querySelector<HTMLElement>(".audit-target")!;
+  setText(target, entry.target ?? "");
+  setHidden(target, entry.target === undefined);
+  const outcome = entry.outcome ?? (entry.decision === "ask" ? "waiting for an answer" : "running");
+  const decision = entry.decision === "allow" ? "" : `${entry.decision} → `;
+  const summary = entry.result?.summary && entry.outcome === "error" ? `: ${firstLine(entry.result.summary, 80)}` : "";
+  setText(node.querySelector(".audit-outcome")!, `${decision}${outcome}${summary}`);
+  setText(node.querySelector(".audit-duration")!, entry.durationMs !== undefined ? `${entry.durationMs} ms` : "");
+  const key = `audit:${entry.id}/args`;
+  const open = ui.expanded.has(key);
+  const args = pretty(entry.args);
+  const toggle = node.querySelector<HTMLButtonElement>(".audit-toggle")!;
+  const hasArgs = args !== "" && args !== "{}" && args !== "null";
+  setHidden(toggle, !hasArgs);
+  setData(toggle, "target", key);
+  setText(toggle, open ? "Hide" : "Show");
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  const pre = node.querySelector<HTMLElement>(".audit-args")!;
+  setText(pre, open ? args : "");
+  setHidden(pre, !open);
+}
+
+// --- the conversation --------------------------------------------------------------------
+
+function createThread(): HTMLElement {
+  const root = el("div", "thread");
+  const line = el("div", "thread-line");
+  line.append(el("span", "thread-time"), el("span", "thread-topic"), el("span", "thread-workspace"));
+  root.append(line);
+  return root;
+}
+
+function updateThread(node: HTMLElement, thread: Thread, state: ViewState): void {
+  setData(node, "thread", thread.id);
+  setData(node, "open", thread.endedAt === undefined ? "1" : "0");
+  setText(node.querySelector(".thread-time")!, clock(thread.startedAt));
+  setText(node.querySelector(".thread-topic")!, thread.topic ?? "New thread");
+  const w = thread.workspace ? state.workspaces.get(thread.workspace) : undefined;
+  const wsEl = node.querySelector<HTMLElement>(".thread-workspace")!;
+  setText(wsEl, w?.name ?? "");
+  setHidden(wsEl, w === undefined);
+  wsEl.title = workspaceTitle(w);
+}
+
+function createMessage(): HTMLElement {
+  const root = el("article", "message");
+  const head = el("header", "message-head");
+  head.append(el("span", "message-who"), el("span", "message-time"));
+  root.append(head, el("div", "message-body"));
+  return root;
+}
+
+const ROLE_WORD: Record<Message["role"], string> = { user: "you", orchestrator: "Cophyla", system: "system" };
+
+function updateMessage(node: HTMLElement, message: Message, state: ViewState): void {
+  // A reply that streamed keeps its element under the same key: it stops being a stream here.
+  if (node.classList.contains("streaming")) {
+    node.classList.remove("streaming");
+    node.querySelector(".message-head .pulse")?.remove();
+  }
+  setData(node, "message", message.id);
+  setData(node, "role", message.role);
+  setData(node, "source", message.source);
+  setText(node.querySelector(".message-who")!, ROLE_WORD[message.role]);
+  setText(node.querySelector(".message-time")!, clock(message.at));
+  renderBlocks(node.querySelector<HTMLElement>(".message-body")!, message.content, state, message.role !== "user");
+}
+
+/** A reply while it streams: a message's element with a pulse for the time, so the final message can take it over. */
+function createStreaming(): HTMLElement {
+  const root = el("article", "message streaming");
+  const head = el("header", "message-head");
+  head.append(el("span", "message-who", "Cophyla"), el("span", "message-time"), el("span", "pulse"));
+  root.append(head, el("div", "message-body"));
+  return root;
+}
+
+function updateStreaming(node: HTMLElement, streaming: Streaming, state: ViewState): void {
+  setData(node, "message", streaming.id);
+  setData(node, "role", "orchestrator");
+  renderBlocks(node.querySelector<HTMLElement>(".message-body")!, streaming.blocks.filter((b) => b !== undefined), state, true);
+}
+
+function createTask(): HTMLElement {
+  const root = el("div", "task");
+  root.append(el("span", "task-status"), el("span", "task-title"), el("span", "task-trigger"), el("span", "task-blocker"), el("span", "task-workspace"), el("span", "task-actions"));
+  return root;
+}
+
+const TASK_ACTION_LABEL: Record<TaskAction, string> = { pause: "pause", resume: "resume", complete: "done" };
+
+function blockerWord(task: Task, state: ViewState): string {
+  const b = task.blocker;
+  if (!b) return "";
+  switch (b.kind) {
+    case "user":
+      return "waiting on you";
+    case "ask": {
+      const ask = state.asks.get(b.ask);
+      return ask ? `waiting on: ${ask.title}` : "waiting on a prompt";
+    }
+    case "task":
+      return `after ${state.tasks.get(b.task)?.title ?? "another task"}`;
+    case "session": {
+      const card = state.sessions.get(b.session);
+      const name = card ? (card.session.title ?? card.session.intent) : undefined;
+      return card ? `with ${card.session.harness}${name ? `: ${name}` : ""}` : "with an agent";
+    }
+  }
+}
+
+function updateTask(node: HTMLElement, task: Task, state: ViewState): void {
+  setData(node, "task", task.id);
+  setData(node, "status", task.status);
+  setData(node, "priority", task.priority);
+  setText(node.querySelector(".task-status")!, task.status);
+  setText(node.querySelector(".task-title")!, task.title);
+  const blocker = node.querySelector<HTMLElement>(".task-blocker")!;
+  const word = blockerWord(task, state);
+  setText(blocker, word);
+  setHidden(blocker, word === "");
+  const ws = task.workspace ? state.workspaces.get(task.workspace)?.name : undefined;
+  const wsEl = node.querySelector<HTMLElement>(".task-workspace")!;
+  setText(wsEl, ws ?? "");
+  setHidden(wsEl, ws === undefined);
+  const trigger = node.querySelector<HTMLElement>(".task-trigger")!;
+  const when = triggerWords(task);
+  setText(trigger, when);
+  setHidden(trigger, when === "");
+  const actions = node.querySelector<HTMLElement>(".task-actions")!;
+  const wanted = taskActions(task, state.scopes);
+  const have = [...actions.querySelectorAll<HTMLButtonElement>("button")].map((b) => b.dataset["action"]?.replace(/^task-/, ""));
+  if (have.join(",") !== wanted.join(",")) {
+    actions.replaceChildren(
+      ...wanted.map((action) => {
+        const button = el("button", "task-action", TASK_ACTION_LABEL[action]) as HTMLButtonElement;
+        button.type = "button";
+        button.dataset["action"] = `task-${action}`;
+        button.dataset["task"] = task.id;
+        return button;
+      }),
+    );
+  }
+  setHidden(actions, wanted.length === 0);
+}
+
+// --- the stream ------------------------------------------------------------------------------
+
+function createItem(item: StreamItem): HTMLElement {
+  switch (item.kind) {
+    case "ask":
+      return createAsk();
+    case "audit":
+      return createAudit();
+    case "thread":
+      return createThread();
+    case "message":
+      return createMessage();
+    case "streaming":
+      return createStreaming();
+    case "task":
+      return createTask();
+  }
+}
+
+function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: UiState): void {
+  switch (item.kind) {
+    case "ask":
+      return updateAsk(node, item.ask, state);
+    case "audit":
+      return updateAudit(node, item.entry, state, ui);
+    case "thread":
+      return updateThread(node, item.thread, state);
+    case "message":
+      return updateMessage(node, item.message, state);
+    case "streaming":
+      return updateStreaming(node, item.streaming, state);
+    case "task":
+      return updateTask(node, item.task, state);
+  }
+}
+
+function ensureEmpty(stream: HTMLElement, state: ViewState): void {
+  let empty = stream.querySelector<HTMLElement>(".empty");
+  const show = state.audit.size === 0 && state.messages.size === 0 && state.streaming.size === 0 && state.tasks.size === 0;
+  if (show && !empty) {
+    empty = el("p", "empty");
+    stream.prepend(empty);
+  }
+  if (empty) {
+    setHidden(empty, !show);
+    setText(empty, state.connected ? "Nothing yet. Ask about the work below." : "Waiting for cophylad.");
+  }
+}
+
+/** The button at the top of the chat: Load history on a phone before anything is loaded, then Earlier; its action follows. */
+function ensureEarlier(stream: HTMLElement, state: ViewState): void {
+  let earlier = stream.querySelector<HTMLButtonElement>(".threads-earlier");
+  if (!earlier) {
+    earlier = el("button", "threads-earlier", "Earlier");
+    earlier.type = "button";
+    earlier.dataset["action"] = "threads-earlier";
+    stream.prepend(earlier);
+  }
+  const button = chatButton(state);
+  setHidden(earlier, button === undefined);
+  if (!button) return;
+  setData(earlier, "action", button.action);
+  earlier.disabled = button.disabled;
+  setText(earlier, button.label);
+}
+
+/** What the phone is doing, over the composer: the dot, the word and whose phone it is. */
+function renderVoice(root: HTMLElement, state: ViewState): void {
+  let row = root.querySelector<HTMLElement>(".voice-row");
+  if (!row) {
+    row = el("div", "voice-row");
+    row.append(el("span", "dot"), el("span", "voice-words"));
+    root.prepend(row);
+  }
+  const words = voiceWords(state);
+  setHidden(row, words === "");
+  if (words === "") return;
+  setData(row.querySelector<HTMLElement>(".dot")!, "status", state.setup ? "setup" : (state.voice?.state ?? "idle"));
+  setText(row.querySelector(".voice-words")!, words);
+}
+
+/** The session whose pane shows its terminal, if the selected one's does. */
+function terminalSession(state: ViewState, ui: UiState): string | undefined {
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  return card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined) === "terminal" ? card.session.id : undefined;
+}
+
+/** A terminal fills the pane: a bare one's tab, or a session's shown on its terminal. */
+function terminalShown(state: ViewState, ui: UiState): boolean {
+  return ui.terminal !== undefined || terminalSession(state, ui) !== undefined;
+}
+
+/** The input under the pane: the chat's, or the selected session's send when its timeline shows. */
+function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void {
+  let form = root.querySelector<HTMLFormElement>("form.composer-form");
+  if (!form) {
+    form = el("form", "composer-form");
+    const quick = el("button", "quick", "Quick");
+    quick.type = "button";
+    quick.dataset["action"] = "quick";
+    quick.title = "Answer from what Cophyla already knows, with no tool calls";
+    const input = el("input", "composer-text");
+    input.type = "text";
+    input.name = "text";
+    input.autocomplete = "off";
+    input.placeholder = "Ask about the work";
+    const button = el("button", "composer-button", "Send");
+    button.type = "submit";
+    form.append(quick, input, button);
+    root.append(form);
+  }
+  // Under a terminal there is no input at all: the terminal takes the typing.
+  setHidden(root, terminalShown(state, ui));
+  setHidden(form, ui.selected !== undefined || ui.terminal !== undefined);
+  const canChat = state.connected && state.scopes.includes("chat");
+  const input = form.querySelector<HTMLInputElement>(".composer-text")!;
+  input.disabled = !canChat;
+  input.placeholder = canChat ? (state.quick ? "Quick question" : "Ask about the work") : state.connected ? "This view may not chat" : "Waiting for cophylad";
+  form.querySelector<HTMLButtonElement>(".composer-button")!.disabled = !canChat;
+  const quick = form.querySelector<HTMLButtonElement>(".quick")!;
+  quick.disabled = !canChat;
+  quick.setAttribute("aria-pressed", state.quick ? "true" : "false");
+  renderSend(root, state, ui);
+  renderVoice(root, state);
+  const errors = state.errors.slice(-1)[0];
+  let err = root.querySelector<HTMLElement>(".composer-error");
+  if (errors && !err) {
+    err = el("p", "composer-error");
+    root.append(err);
+  }
+  if (err) {
+    setText(err, errors ?? "");
+    setHidden(err, !errors);
+  }
+}
+
+/** One send form for whichever session is selected; the draft lives in the model, so the form swaps with the tab. */
+function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
+  let form = root.querySelector<HTMLFormElement>("form.send");
+  if (!form) {
+    form = el("form", "send");
+    const input = el("input", "send-text");
+    input.type = "text";
+    input.name = "text";
+    input.placeholder = "Message this session";
+    input.autocomplete = "off";
+    const button = el("button", "send-button", "Send");
+    button.type = "submit";
+    form.append(input, button);
+    root.prepend(form);
+  }
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  setHidden(form, card === undefined);
+  if (!card) return;
+  const s = card.session;
+  const switched = form.dataset["session"] !== s.id;
+  setData(form, "session", s.id);
+  const input = form.querySelector<HTMLInputElement>(".send-text")!;
+  if (switched || (document.activeElement !== input && input.value !== card.draft)) input.value = card.draft;
+  const canSend = state.connected && s.status !== "ended";
+  input.disabled = !canSend;
+  input.placeholder = canSend ? `Message ${s.harness}` : s.status === "ended" ? "This session has ended" : "Waiting for cophylad";
+  form.querySelector<HTMLButtonElement>(".send-button")!.disabled = !canSend;
+}
+
+/** The pane that shows: the chat stream or the selected session's. */
+export function activePane(roots: Roots): HTMLElement | undefined {
+  if (!roots.stream.hidden) return roots.stream;
+  for (const child of Array.from(roots.sessions.children) as HTMLElement[]) if (!child.hidden) return child;
+  return undefined;
+}
+
+export function render(roots: Roots, state: ViewState, ui: UiState, opts: RenderOptions = {}): void {
+  if (ui.selected !== undefined && !state.sessions.has(ui.selected)) ui.selected = undefined;
+  if (ui.terminal !== undefined && (!state.terminals.has(ui.terminal) || !state.scopes.includes("terminal"))) ui.terminal = undefined;
+  const before = activePane(roots);
+  const atBottom = before !== undefined && before.scrollHeight - before.scrollTop - before.clientHeight < 8;
+  const heightBefore = before?.scrollHeight ?? 0;
+  const topBefore = before?.scrollTop ?? 0;
+
+  const { pinned, items } = selectStream(state, terminalSession(state, ui));
+  renderPinned(roots.pinned, pinned, state, ui);
+  // The rail is put away or shown only where the user did it; the CSS keeps each width's own otherwise.
+  if (ui.rail) setData(roots.app, "rail", ui.rail);
+  else delete roots.app.dataset["rail"];
+  setData(roots.app, "menu", state.hostMenu ? "host" : "view");
+  renderRailbar(roots.railbar, state, ui, opts.railShown ?? false);
+  renderTabs(roots.tabs, state, ui);
+  setHidden(roots.stream, ui.selected !== undefined || ui.terminal !== undefined);
+  setHidden(roots.terminal, ui.terminal === undefined);
+  ensureEmpty(roots.stream, state);
+  ensureEarlier(roots.stream, state);
+  // Keyed children live in their own holder, so the empty-state paragraph never moves them.
+  let holder = roots.stream.querySelector<HTMLElement>(".items");
+  if (!holder) {
+    holder = el("div", "items");
+    roots.stream.append(holder);
+  }
+  reconcile(holder, items, keyOf, createItem, (node, item) => updateItem(node, item, state, ui));
+  reconcile(roots.sessions, [...state.sessions.values()], (c) => c.session.id, createPane, (node, c) => updatePane(node, c, state, ui));
+  renderComposer(roots.composer, state, ui);
+
+  // A pane just switched to opens at its newest; one that stayed keeps the user's place.
+  const after = activePane(roots);
+  if (!after) return;
+  if (after !== before) after.scrollTop = after.scrollHeight;
+  else if (opts.anchor) after.scrollTop = topBefore + (after.scrollHeight - heightBefore);
+  else if (atBottom) after.scrollTop = after.scrollHeight;
+}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Cophyla",
+  "version": "0.11.0",
+  "identifier": "com.fareaststudios.cophyla.desktop",
+  "mainBinaryName": "Cophyla",
+  "build": {
+    "frontendDist": "../frontend"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Cophyla",
+    "category": "DeveloperTool",
+    "shortDescription": "Cophyla's desktop app",
+    "longDescription": "Cophyla runs its daemon and its desktop app on this machine; this package installs the launcher, the first version and the bundled brain, and every release after it arrives through the app's own update feed.",
+    "icon": [
+      "../../ui/src-tauri/icons/32x32.png",
+      "../../ui/src-tauri/icons/128x128.png",
+      "../../ui/src-tauri/icons/128x128@2x.png",
+      "../../ui/src-tauri/icons/icon.icns",
+      "../../ui/src-tauri/icons/icon.ico"
+    ],
+    "licenseFile": "../LICENSE.txt",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "../hooks.nsh",
+        "displayLanguageSelector": false
+      },
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    },
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libayatana-appindicator3-1"],
+        "desktopTemplate": "../cophyla.desktop.hbs"
+      }
+    }
+  }
+}

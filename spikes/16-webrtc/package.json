@@ -1,0 +1,9 @@
+{
+  "name": "spike-16-webrtc",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "node-datachannel": "^0.33.4",
+    "werift": "^0.24.4"
+  }
+}

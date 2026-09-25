@@ -1,0 +1,64 @@
+{
+  "hooks": {
+    "PermissionRequest": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/03-hook-coexistence/other-tool-hook.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/03-hook-coexistence/other-tool-hook.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/03-hook-coexistence/other-tool-hook.mjs"
+          }
+        ]
+      },
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node C:/D/orchestrator/spikes/02-permission-hook/hook-shim.mjs"
+          }
+        ]
+      }
+    ]
+  }
+}

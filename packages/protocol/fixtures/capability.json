@@ -1,0 +1,380 @@
+{
+  "hello": [
+    { "protocolVersion": 1, "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary" },
+    { "protocolVersion": 1, "platformVersion": "0.1.3", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary", "tz": "Europe/Istanbul" },
+    { "protocolVersion": 1, "protocolRange": { "min": 1, "max": 1 }, "brainVersion": "0.1.0", "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "brain" },
+    { "protocolVersion": 1, "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "role": "secondary" }
+  ],
+  "events": {
+    "session.discovered": [
+      {
+        "at": 1758196800000,
+        "session": {
+          "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "harness": "claude",
+          "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+          "native": { "id": "3f0c1b2a", "pid": 41232, "transport": "pipe" },
+          "origin": "user",
+          "cwd": "C:\\D\\orchestrator",
+          "tags": [],
+          "status": "idle",
+          "startedAt": 1758196000000,
+          "lastActivity": 1758196800000
+        }
+      }
+    ],
+    "session.updated": [
+      {
+        "at": 1758196800000,
+        "session": {
+          "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "harness": "claude",
+          "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+          "native": { "id": "3f0c1b2a", "transport": "pipe" },
+          "origin": "user",
+          "cwd": "C:\\D\\orchestrator",
+          "tags": [],
+          "status": "busy",
+          "startedAt": 1758196000000,
+          "lastActivity": 1758196800000
+        },
+        "event": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 3, "at": 1758196800000, "kind": "status", "payload": { "status": "busy" } }
+      },
+      {
+        "at": 1758196900000,
+        "session": {
+          "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "harness": "claude",
+          "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+          "native": { "id": "3f0c1b2a", "transport": "pipe" },
+          "origin": "user",
+          "cwd": "C:\\D\\orchestrator",
+          "summary": "fixed the gate tests",
+          "tags": ["gate"],
+          "status": "idle",
+          "startedAt": 1758196000000,
+          "lastActivity": 1758196800000
+        }
+      }
+    ],
+    "session.ask": [
+      {
+        "at": 1758196800000,
+        "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        "ask": {
+          "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "type": "permission",
+          "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+          "title": "Write x.txt",
+          "options": [{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }],
+          "answerableBy": ["user", "brain"],
+          "status": "open",
+          "createdAt": 1758196800000
+        }
+      },
+      {
+        "at": 1758196800000,
+        "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        "ask": {
+          "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "type": "choice",
+          "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+          "title": "Which auth methods should the API accept?",
+          "detail": "Auth method · 2 of 3",
+          "options": [
+            { "id": "Session cookie", "label": "Session cookie", "description": "Server-side session, httpOnly cookie" },
+            { "id": "Bearer token", "label": "Bearer token", "description": "JWT in the Authorization header" }
+          ],
+          "multiple": true,
+          "allowsText": true,
+          "answerableBy": ["user", "brain"],
+          "status": "open",
+          "createdAt": 1758196800000,
+          "expiresAt": 1758204000000
+        }
+      }
+    ],
+    "session.ended": [
+      {
+        "at": 1758196800000,
+        "session": {
+          "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "harness": "claude",
+          "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+          "native": { "id": "3f0c1b2a", "transport": "pipe" },
+          "origin": "user",
+          "cwd": "C:\\D\\orchestrator",
+          "tags": [],
+          "status": "ended",
+          "startedAt": 1758196000000,
+          "lastActivity": 1758196800000,
+          "endedAt": 1758196800000
+        }
+      }
+    ],
+    "user.message": [
+      { "at": 1758196800000, "text": "what is the agent doing", "source": "ui", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3" },
+      { "at": 1758196800000, "text": "/quick how many tasks are open", "source": "voice", "mode": "quick" }
+    ],
+    "user.activity": [
+      { "at": 1758196800000, "state": "typing", "source": "ui" },
+      { "at": 1758196800000, "state": "idle", "source": "controller" }
+    ],
+    "voice.transcript": [{ "at": 1758196800000, "text": "what is the agent" }],
+    "task.ready": [
+      { "at": 1758196800000, "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "cause": "unblocked" },
+      { "at": 1758196800000, "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3", "cause": "trigger" },
+      { "at": 1758196800000, "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3", "cause": "trigger", "event": { "name": "my.ci_failed", "payload": { "branch": "main", "run": 42 } } }
+    ],
+    "task.updated": [{ "at": 1758196800000, "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],
+    "thread.updated": [{ "at": 1758196800000, "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3" }],
+    "workspace.updated": [{ "at": 1758196800000, "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0" }],
+    "event.custom": [{ "at": 1758196800000, "name": "my.ci_failed", "payload": { "branch": "main", "run": 42 } }],
+    "node.joined": [
+      {
+        "at": 1758196800000,
+        "node": {
+          "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+          "name": "laptop",
+          "role": "secondary",
+          "status": "online",
+          "via": "direct",
+          "platform": "linux",
+          "scope": { "kind": "machine" },
+          "capabilities": { "harnesses": ["codex"], "voice": { "wake": false, "stt": false, "tts": false }, "remote": false, "brain": false },
+          "versions": { "platform": "0.1.0", "protocol": 1 },
+          "lastSeen": 1758196800000
+        }
+      }
+    ],
+    "node.left": [{ "at": 1758196800000, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }],
+    "node.pressure": [{ "at": 1758196800000, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "resource": "memory", "level": "warn" }],
+    "tools.changed": [{ "at": 1758196800000 }, { "at": 1758196800000, "problems": [{ "file": "tools/my.deploy.ts", "message": "my.deploy.ts: Unexpected token" }] }],
+    "prompts.changed": [{ "at": 1758196800000 }],
+    "memory.changed": [{ "at": 1758196800000 }],
+    "events.changed": [{ "at": 1758196800000 }, { "at": 1758196800000, "problems": [{ "file": "hooks/ci-watch.ts", "message": "ci-watch.ts: on must be an object" }] }],
+    "entitlement.updated": [{ "at": 1758196800000, "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }]
+  },
+  "requests": {
+    "node.list": { "params": [{}], "results": [{ "nodes": [] }] },
+    "profile.list": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [
+        { "profiles": [] },
+        {
+          "profiles": [
+            {
+              "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+              "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+              "harness": "claude",
+              "name": "default",
+              "configDir": "C:\\Users\\me\\.claude",
+              "env": {},
+              "origin": "discovered",
+              "default": true,
+              "status": "ok"
+            }
+          ]
+        }
+      ]
+    },
+    "profile.limits": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [
+        { "limits": {} },
+        { "limits": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "at": 1758196800000, "session": { "percent": 41, "resetsAt": 1758200400000 }, "weekly": { "percent": 93 } } } }
+      ]
+    },
+    "session.list": {
+      "params": [{}, { "filter": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "harness": "claude", "status": ["idle", "busy"] } }],
+      "results": [{ "sessions": [] }]
+    },
+    "session.history": {
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "around": 12, "limit": 20 }],
+      "results": [{ "events": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 1, "at": 1758196800000, "kind": "user_turn", "payload": { "text": "hi" } }] }]
+    },
+    "session.send": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" }], "results": [{ "status": "queued", "ref": "cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0" }, { "status": "held", "ref": "cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC1" }, { "status": "queued" }] },
+    "session.spawn": {
+      "params": [
+        { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "add the store migration", "model": { "tier": "smart" }, "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" },
+        { "harness": "acp", "agent": "gemini", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "write a tool" },
+        { "harness": "codex", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "run the tests", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FBA" }
+      ],
+      "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }]
+    },
+    "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "as": "user" }], "results": [{}] },
+    "ask.answer": { "params": [{ "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5", "option": "allow" }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "no", "text": "not now" }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB8", "option": "Session cookie", "options": ["Session cookie", "Bearer token"] }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FC0", "option": "text", "text": "Valkey" }], "results": [{}] },
+    "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
+    "workspace.put": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\other", "name": "other" }, { "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator", "name": "cophyla" }],
+      "results": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0" }]
+    },
+    "annotate": {
+      "params": [
+        { "on": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "intent": "fix the gate tests" },
+        { "on": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "topic": "the gate tests", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "summary": "fixed", "tags": ["gate"] }
+      ],
+      "results": [{}]
+    },
+    "task.list": { "params": [{}, { "filter": { "status": ["blocked"], "blocker": "user" } }], "results": [{ "tasks": [] }] },
+    "task.get": {
+      "params": [{ "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],
+      "results": [{ "task": { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "title": "x", "createdBy": { "kind": "brain" }, "status": "ready", "priority": "normal", "sessions": [], "createdAt": 1, "updatedAt": 1 } }]
+    },
+    "task.create": {
+      "params": [{ "title": "Morning summary", "priority": "low", "trigger": { "kind": "cron", "expr": "0 9 * * *", "tz": "UTC" }, "recurring": true }, { "title": "Every morning: what is open", "detail": "List the open tasks", "trigger": { "kind": "cron", "expr": "0 9 * * *" }, "recurring": true }, { "title": "Report back", "blocker": { "kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" } }],
+      "results": [{ "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3" }]
+    },
+    "task.update": {
+      "params": [{ "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "patch": { "status": "done", "result": { "summary": "migration added" } } }, { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "patch": { "blocker": null, "trigger": null } }],
+      "results": [{}]
+    },
+    "prompt.list": { "params": [{}], "results": [{ "prompts": [{ "name": "review", "tags": [], "updatedAt": 1758196800000 }] }] },
+    "prompt.search": { "params": [{ "query": "review" }], "results": [{ "prompts": [] }] },
+    "prompt.read": { "params": [{ "name": "review" }], "results": [{ "prompt": { "name": "review", "tags": [], "body": "Review {{diff}}", "variables": ["diff"], "updatedAt": 1758196800000 } }] },
+    "prompt.write": { "params": [{ "name": "review", "description": "Review a diff", "tags": ["review"], "variables": ["diff"], "body": "Review {{diff}}" }], "results": [{}] },
+    "prompt.delete": { "params": [{ "name": "review" }], "results": [{}] },
+    "memory.list": { "params": [{}], "results": [{ "memories": [{ "name": "user-prefers-short-answers", "kind": "preference", "tags": [], "updatedAt": 1758196800000 }] }] },
+    "memory.read": { "params": [{ "name": "user-prefers-short-answers" }], "results": [{ "memory": { "name": "user-prefers-short-answers", "tags": [], "body": "one line", "updatedAt": 1758196800000 } }] },
+    "memory.write": { "params": [{ "name": "user-prefers-short-answers", "kind": "preference", "body": "one line by voice" }], "results": [{}] },
+    "memory.delete": { "params": [{ "name": "user-prefers-short-answers" }], "results": [{}] },
+    "event.list": { "params": [{}], "results": [{ "events": [{ "name": "session.ask", "description": "an agent asks", "source": "builtin", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }] }] },
+    "event.history": {
+      "params": [{}, { "name": "my.ci_failed", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "range": { "from": 1758100000000 } }],
+      "results": [{ "events": [{ "name": "my.ci_failed", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "at": 1758196800000, "payload": { "branch": "main" } }] }]
+    },
+    "tool.list": { "params": [{}], "results": [{ "tools": [] }] },
+    "tool.run": {
+      "params": [{ "name": "fs.read", "args": { "path": ".docs/brain.md", "offset": 10, "lines": 40 } }, { "name": "my.deploy", "args": {}, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }],
+      "results": [{ "result": "10\t# Brain\n11\t" }]
+    },
+    "recall": {
+      "params": [
+        { "query": "gate tests" },
+        { "query": "migration", "in": ["session", "memory"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "since": 1758100000000, "tags": ["store"], "limit": 5 },
+        {
+          "query": "the deploy step",
+          "in": ["thread", "session", "memory"],
+          "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "harness": "claude",
+          "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+          "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+          "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+          "since": 1758100000000,
+          "until": 1758200000000,
+          "tags": ["deploy"],
+          "limit": 10
+        }
+      ],
+      "results": [
+        { "hits": [] },
+        {
+          "hits": [
+            {
+              "corpus": "thread",
+              "source": { "kind": "thread", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" },
+              "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+              "at": 1758196800000,
+              "snippet": "the deploy step runs after the gate tests pass",
+              "tags": ["deploy"],
+              "score": 0.93
+            },
+            {
+              "corpus": "memory",
+              "source": { "kind": "memory", "name": "deploy-after-tests", "lines": [3, 5] },
+              "at": 1758100000000,
+              "snippet": "## Decision\nDeploy only after the gate tests pass.",
+              "tags": ["deploy", "decision"],
+              "score": 0.51
+            }
+          ]
+        }
+      ]
+    },
+    "voice.speak": {
+      "params": [{ "blocks": [{ "type": "text", "text": "The agent said:" }, { "type": "quote", "cite": { "request": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6", "lines": [3, 5] } }], "interrupt": false }],
+      "results": [{}]
+    },
+    "ui.say": {
+      "params": [
+        {
+          "blocks": [
+            { "type": "text", "text": "Here is what it said:" },
+            { "type": "quote", "cite": { "request": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6" } },
+            { "type": "quote", "text": "you said: run it" },
+            { "type": "ref", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }
+          ]
+        },
+        {"blocks": [{"type": "text", "text": "The agent said:"}, {"type": "quote", "cite": {"request": "r12", "lines": [3, 9]}}, {"type": "ref", "file": {"node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator\\.docs\\plan.md", "line": 3}}]}
+      ],
+      "results": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" }]
+    },
+    "ui.ask": {
+      "params": [{ "question": "Start an agent to research it?", "options": [{ "id": "yes", "label": "Yes, in orchestrator" }, { "id": "no", "label": "No" }], "allowsText": true, "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],
+      "results": [{ "answer": { "option": "yes", "by": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" }, "at": 1758196900000 } }]
+    },
+    "thread.start": { "params": [{}, { "topic": "the gate tests", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0" }], "results": [{ "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3" }] },
+    "thread.list": { "params": [{}, { "filter": { "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "since": 1758100000000, "open": true } }], "results": [{ "threads": [] }] },
+    "thread.history": { "params": [{ "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "before": 40, "limit": 20 }], "results": [{ "messages": [] }] },
+    "llm.complete": {
+      "params": [
+        {
+          "model": { "tier": "fast" },
+          "system": "You are the orchestrator.",
+          "messages": [
+            { "role": "user", "content": [{ "type": "text", "text": "what is open" }, { "type": "image", "mime": "image/png", "base64": "iVBORw0KGgo=" }] },
+            { "role": "assistant", "content": [{ "type": "tool_use", "id": "tu_1", "name": "Tasks", "input": { "action": "List" } }] },
+            { "role": "user", "content": [{ "type": "tool_result", "toolUseId": "tu_1", "content": "[]" }] }
+          ],
+          "tools": [{ "name": "Tasks", "description": "List, Read, Create tasks", "schema": { "type": "object" } }],
+          "maxTokens": 1024,
+          "temperature": 0.2,
+          "reply": true
+        },
+        {"model": {"model": "gemini/gemini-3.8-flash"}, "messages": [{"role": "user", "content": [{"type": "text", "text": "read the plan"}]}, {"role": "assistant", "content": [{"type": "text", "text": "Reading.", "signature": "c2ln"}, {"type": "tool_use", "id": "tu_2", "name": "files", "input": {"action": "Read", "path": ".docs/plan.md"}, "signature": "c2lnMg=="}]}, {"role": "user", "content": [{"type": "tool_result", "toolUseId": "tu_2", "content": "1\t# Plan", "isError": false}]}]}
+      ],
+      "results": [{ "content": [{ "type": "text", "text": "Nothing is open." }], "stopReason": "end", "usage": { "in": 900, "out": 12 }, "model": "gemini/flash" },
+        {"content": [{"type": "text", "text": "Here.", "signature": "c2ln"}, {"type": "tool_use", "id": "tu_3", "name": "files", "input": {"action": "Locate", "query": "plan"}, "signature": "c2lnMw=="}], "stopReason": "tool_use", "usage": {"in": 120, "out": 30, "cacheRead": 0}, "model": "gemini-3.8-flash"}
+      ]
+    },
+    "compute.embed": { "params": [{ "texts": ["hello"] }], "results": [{ "vectors": [[0.1, 0.2]], "model": "local/minilm" }] },
+    "store.get": { "params": [{ "ns": "wake", "key": "rules" }], "results": [{ "value": { "session.updated": "batch" } }, { "value": null }] },
+    "store.put": { "params": [{ "ns": "wake", "key": "rules", "value": { "session.updated": "batch" } }], "results": [{}] },
+    "store.delete": { "params": [{ "ns": "wake", "key": "rules" }], "results": [{}] },
+    "store.list": { "params": [{ "ns": "wake" }, { "ns": "wake", "prefix": "ru" }], "results": [{ "keys": ["rules"] }] },
+    "metrics.query": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "range": { "from": 1758100000000, "to": 1758196800000 } }], "results": [{ "samples": [] }] },
+    "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "study web" }], "results": [{}] },
+    "remote.screenshot": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "display": 0 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "image": { "mime": "image/jpeg", "base64": "/9j/4AAQSkZJRg==" }, "width": 1280, "height": 800, "display": 0, "at": 1758196800000 }] },
+    "cancel": { "params": [{ "id": 7 }, { "id": "req-9" }], "results": [{}] }
+  },
+  "notices": {
+    "pending": [
+      {
+        "id": "req-9",
+        "ask": {
+          "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "type": "permission",
+          "source": { "kind": "gate", "action": "session.send", "principal": { "kind": "brain" } },
+          "title": "Allow the brain to send to a session?",
+          "options": [{ "id": "allow", "label": "Allow" }, { "id": "deny", "label": "Deny" }],
+          "answerableBy": ["user"],
+          "status": "open",
+          "createdAt": 1758196800000
+        }
+      },
+      {"id": "r7", "at": 1758196800000, "ask": {"id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "choice", "source": {"kind": "brain", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2"}, "title": "Start an agent to research it?", "options": [{"id": "yes", "label": "Yes, in orchestrator"}, {"id": "no", "label": "No"}], "answerableBy": ["user"], "status": "open", "createdAt": 1758196800000}}
+    ],
+    "llm.delta": [
+      { "id": 12, "delta": { "type": "text", "text": "Nothing " } },
+      { "id": 12, "delta": { "type": "tool_use", "id": "tu_1", "name": "Tasks", "inputJson": "{\"action\":\"List\"}" } }
+    ]
+  }
+}

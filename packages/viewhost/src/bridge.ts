@@ -1,0 +1,258 @@
+// One view's share of the host's connection. A view speaks the client protocol to the host
+// by postMessage in an envelope; the bridge validates each request, refuses the host's
+// own (`hello`, `pair.claim`, `pair.account`, `relay.info`: the ones with no scope, since they hand out
+// credentials), unknown methods and anything outside the view's scopes, remaps ids into its own
+// namespace, forwards, and restores ids on the way back. A signal (a frame with a method
+// and no id, such as `chat.typing`) is forwarded unchanged when its scope is the view's.
+// Notifications reach the view only within its scopes. Signals and notifications with no
+// scope (a data channel's signalling, a stream's pipes) are the host's alone: a view never
+// sends or hears them. The manifest's `scopes` narrow the
+// connection's; a manifest that lists none lets the view send nothing. A `host.*` request
+// is the host's own, never cophylad's: `host.open` shows a URL `remote.open` answered (a stream
+// page, an invite link), allowed only to a view holding the `remote` scope and only where
+// the host has the seam; `host.chooseView` shows the host's view picker and `host.settings`
+// the host's settings, to any view, since what is picked or set there is the user's doing and
+// never the view's; `host.openLink` opens a web page the user clicked (a URL in a terminal) in
+// their browser, to any view, only http and https and never with credentials in it, and only
+// where the host has the seam. The host tells the view
+// things of its own as notifications, never scoped: `host.ready` and `host.state`, and
+// `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
+// pressed. DOM-free.
+
+import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
+import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
+import type { HelloResult } from "./connection.ts";
+
+export const ENVELOPE = "cophyla.view/1";
+
+export interface Envelope {
+  cophyla: typeof ENVELOPE;
+  frame: RpcMessage;
+}
+
+export function envelope(frame: RpcMessage): Envelope {
+  return { cophyla: ENVELOPE, frame };
+}
+
+export function isEnvelope(data: unknown): data is { cophyla: typeof ENVELOPE; frame: unknown } {
+  return typeof data === "object" && data !== null && (data as { cophyla?: unknown }).cophyla === ENVELOPE && "frame" in data;
+}
+
+export interface HostReady {
+  client: HelloResult["client"];
+  node: HelloResult["node"];
+  protocolVersion: number;
+  platformVersion: string;
+  view: ViewManifest;
+  scopes: Scope[];
+  /** The host has a menu button of its own and says `host.menu` when it is pressed. */
+  menu?: boolean;
+}
+
+export interface BridgeConfig {
+  manifest: ViewManifest;
+  clientScopes: Scope[];
+  /** Distinguishes this mount from any other in the same host, so ids never collide. */
+  instance: number;
+  /** The host's own requests (`host.open`); absent, they answer `unsupported`. */
+  host?: HostRequests;
+  /** The host has a menu button of its own (`host.menu`). */
+  menu?: boolean;
+  /** Shows the host's view picker (`host.chooseView`); absent, it answers `unsupported`. */
+  chooseView?: () => void;
+  /** Shows the host's settings (`host.settings`); absent, it answers `unsupported`. */
+  openSettings?: () => void;
+  /** Opens a web page in the user's browser (`host.openLink`); absent, it answers `unsupported`. */
+  openLink?: (url: string) => Promise<void>;
+}
+
+/** The requests a view may make of the host itself, by method. */
+export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
+
+/** The host requests a view may make, and the scope each needs; `null` is none. */
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null };
+
+/** The page a `host.openLink` names, if it may open: an http or https URL with a host and no credentials. */
+export function webLink(params: unknown): string {
+  const raw = (params as { url?: unknown } | null)?.url;
+  if (typeof raw !== "string" || raw.length > 8192) throw new Error("host.openLink needs a url");
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    throw new Error("that link cannot be opened");
+  }
+  if ((url.protocol !== "http:" && url.protocol !== "https:") || url.hostname === "" || url.username !== "" || url.password !== "") {
+    throw new Error("only a web page opens");
+  }
+  return url.href;
+}
+
+export interface BridgeIo {
+  toCophylad(frame: RpcRequest | RpcNotification): void;
+  toView(frame: RpcMessage): void;
+}
+
+export class Bridge {
+  readonly scopes: Scope[];
+  readonly manifest: ViewManifest;
+  private io: BridgeIo;
+  private instance: number;
+  private host?: HostRequests;
+  private hasMenu: boolean;
+  /** `host.chooseView`: the picker shows, and the answer is that it did. */
+  private chooser?: HostRequests;
+  /** `host.settings`: the same for the settings. */
+  private settings?: HostRequests;
+  /** `host.openLink`: the page opens, once it is one that may. */
+  private links?: HostRequests;
+  private n = 0;
+  /** wire id → the view's own id and method. */
+  private pending = new Map<string, { id: RpcId; method: string }>();
+
+  constructor(cfg: BridgeConfig, io: BridgeIo) {
+    this.manifest = cfg.manifest;
+    const wanted = new Set(cfg.manifest.scopes ?? []);
+    this.scopes = cfg.clientScopes.filter((s) => wanted.has(s));
+    this.instance = cfg.instance;
+    if (cfg.host) this.host = cfg.host;
+    this.hasMenu = cfg.menu === true;
+    const show = cfg.chooseView;
+    if (show) {
+      this.chooser = async () => {
+        show();
+        return {};
+      };
+    }
+    const settings = cfg.openSettings;
+    if (settings) {
+      this.settings = async () => {
+        settings();
+        return {};
+      };
+    }
+    const open = cfg.openLink;
+    if (open) {
+      this.links = async (_method, params) => {
+        await open(webLink(params));
+        return {};
+      };
+    }
+    this.io = io;
+  }
+
+  get pendingCount(): number {
+    return this.pending.size;
+  }
+
+  /** A message from the frame. Anything that is not an enveloped request or signal is dropped. */
+  fromView(data: unknown): void {
+    if (!isEnvelope(data)) return;
+    const frame = data.frame as { id?: unknown; method?: unknown } | null;
+    if (frame && typeof frame === "object" && frame.id === undefined && typeof frame.method === "string") {
+      const signal = RpcNotification.safeParse(frame);
+      if (!signal.success) return;
+      const scope = signalScope(signal.data.method);
+      if (scope !== undefined && scope !== null && this.scopes.includes(scope)) this.io.toCophylad(signal.data);
+      return;
+    }
+    const parsed = RpcRequest.safeParse(data.frame);
+    if (!parsed.success) {
+      const id = idOf(data.frame);
+      if (id !== undefined) this.io.toView(failure(id, protocolError("invalid", "frame is not a JSON-RPC request")));
+      return;
+    }
+    const req = parsed.data;
+    if (req.method.startsWith("host.")) {
+      this.hostRequest(req);
+      return;
+    }
+    const needs = requestScope(req.method);
+    if (needs === undefined) {
+      this.io.toView(failure(req.id, protocolError("unsupported", `unknown method ${req.method}`)));
+      return;
+    }
+    // The scope-less requests establish or hand out credentials: the host's alone.
+    if (needs === null) {
+      this.io.toView(failure(req.id, protocolError("unsupported", `${req.method} is the host's alone`)));
+      return;
+    }
+    if (!this.scopes.includes(needs)) {
+      this.io.toView(failure(req.id, protocolError("denied", `view ${this.manifest.id} lacks scope ${needs}`)));
+      return;
+    }
+    const wire = `v${this.instance}-${++this.n}`;
+    this.pending.set(wire, { id: req.id, method: req.method });
+    this.io.toCophylad({ ...req, id: wire });
+  }
+
+  /** A request the host answers itself, within the view's scopes. */
+  private hostRequest(req: RpcRequest): void {
+    const needs = HOST_METHODS[req.method];
+    const handler = req.method === "host.chooseView" ? this.chooser : req.method === "host.settings" ? this.settings : req.method === "host.openLink" ? this.links : this.host;
+    if (needs === undefined || !handler) {
+      this.io.toView(failure(req.id, protocolError("unsupported", `this host has no ${req.method}`)));
+      return;
+    }
+    if (needs !== null && !this.scopes.includes(needs)) {
+      this.io.toView(failure(req.id, protocolError("denied", `view ${this.manifest.id} lacks scope ${needs}`)));
+      return;
+    }
+    handler(req.method, req.params ?? {}).then(
+      (result) => this.io.toView({ jsonrpc: "2.0", id: req.id, result: result ?? {} } as RpcResponse),
+      (e: unknown) => this.io.toView(failure(req.id, protocolError("invalid", e instanceof Error ? e.message : String(e)))),
+    );
+  }
+
+  /** A frame from cophylad. Responses to this bridge's requests go back with their ids restored. */
+  fromCophylad(frame: RpcMessage): void {
+    if ("method" in frame) {
+      if ("id" in frame) return;
+      const needs = notificationScope(frame.method);
+      if (needs === undefined || needs === null || !this.scopes.includes(needs)) return;
+      this.io.toView(frame);
+      return;
+    }
+    if (typeof frame.id !== "string") return;
+    const p = this.pending.get(frame.id);
+    if (!p) return;
+    this.pending.delete(frame.id);
+    this.io.toView({ ...frame, id: p.id } as RpcResponse);
+  }
+
+  /** Tells the view who it is talking to, then that the line is open. */
+  ready(hello: HelloResult): void {
+    const params: HostReady = {
+      client: hello.client,
+      node: hello.node,
+      protocolVersion: hello.protocolVersion,
+      platformVersion: hello.platformVersion,
+      view: this.manifest,
+      scopes: this.scopes,
+    };
+    if (this.hasMenu) params.menu = true;
+    this.io.toView(notification("host.ready", params));
+    this.io.toView(notification("host.state", { connected: true }));
+  }
+
+  /** The host's menu button was pressed: what it shows or hides is the view's. */
+  menu(): void {
+    if (this.hasMenu) this.io.toView(notification("host.menu", {}));
+  }
+
+  /** Fails every request in flight and tells the view the line is down. */
+  disconnected(): void {
+    for (const [wire, p] of this.pending) {
+      this.pending.delete(wire);
+      this.io.toView(failure(p.id, protocolError("unavailable", `${p.method}: not connected to cophylad`)));
+    }
+    this.io.toView(notification("host.state", { connected: false }));
+  }
+}
+
+function idOf(frame: unknown): RpcId | undefined {
+  if (typeof frame !== "object" || frame === null) return undefined;
+  const id = (frame as { id?: unknown }).id;
+  return typeof id === "string" || (typeof id === "number" && Number.isInteger(id)) ? id : undefined;
+}
+

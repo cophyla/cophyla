@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+    <meta
+      http-equiv="content-security-policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; frame-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="theme-color" content="#14121a" />
+    <title>Cophyla</title>
+    <link rel="stylesheet" href="controller.css" />
+    <link rel="stylesheet" href="chooser.css" />
+    <link rel="stylesheet" href="settings.css" />
+  </head>
+  <body>
+    <main id="app">
+      <section id="pair" aria-label="Pair this phone">
+        <h1>Pair this phone</h1>
+        <button type="button" id="pair-account" hidden>Sign in with GitHub</button>
+        <p class="hint" id="pair-or" hidden>From anywhere, with the account your computer is signed in to. Or, on the same network:</p>
+        <p class="hint">Open <strong>Pair a phone</strong> on the desktop app and type the six digits it shows.</p>
+        <form id="pair-form">
+          <input id="pair-address" hidden inputmode="url" autocapitalize="off" autocorrect="off" maxlength="128" placeholder="192.168.1.44:4818" aria-label="The node's address" />
+          <input id="pair-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000" aria-label="Pairing code" />
+          <input id="pair-name" maxlength="64" placeholder="this phone" aria-label="What to call this phone" />
+          <button type="submit" id="pair-submit">Pair</button>
+        </form>
+        <p class="hint" id="invite-or">Or paste an invite the desktop made for this phone:</p>
+        <form id="invite-form">
+          <input id="invite-text" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="cophyla-invite:…" aria-label="An invite from the desktop" />
+          <button type="submit" id="invite-read">Use the invite</button>
+        </form>
+        <div id="invite-confirm" hidden>
+          <p>Join <strong id="invite-node"></strong> with this phone?</p>
+          <div class="buttons">
+            <button type="button" id="invite-join">Join</button>
+            <button type="button" id="invite-cancel">Cancel</button>
+          </div>
+        </div>
+        <p class="hint" id="pair-status" role="status" hidden></p>
+        <p class="error" id="pair-error" hidden></p>
+      </section>
+
+      <section id="gate" aria-label="Start" hidden>
+        <h1>Cophyla</h1>
+        <p class="hint">The microphone and the speaker start when you tap, and not before.</p>
+        <button id="start" class="big">Start</button>
+        <p class="error" id="gate-error" hidden></p>
+      </section>
+
+      <div id="main" hidden>
+        <div id="view" aria-label="View"></div>
+        <footer id="bar">
+          <button id="rail" class="icon" aria-label="Sessions and machines" title="Sessions and machines">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
+          <button id="ptt" class="ptt" data-status="offline">
+            <span class="ptt-pill">
+              <svg class="mic" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" /></svg>
+              <span id="ptt-label">Hold to talk</span>
+            </span>
+          </button>
+          <div class="bar-end">
+            <button id="mute" class="icon" aria-pressed="false" aria-label="Mute the speaker" title="Mute the speaker">
+              <svg class="speaker-on" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z" /><path d="M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11" /></svg>
+              <svg class="speaker-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5h3.5L12 6v12l-4.5-3.5H4z" /><path d="M16 9.5l5 5M21 9.5l-5 5" /></svg>
+            </button>
+            <div class="menu-wrap">
+              <button id="more" class="icon" aria-haspopup="menu" aria-expanded="false" aria-controls="menu" aria-label="More" title="More">
+                <svg class="dots" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" /></svg>
+              </button>
+              <div id="menu" hidden>
+                <p id="status" role="status"><span class="dot" data-status="offline"></span><span id="status-text">connecting…</span></p>
+                <div role="menu" aria-label="More">
+                  <button id="listen" role="menuitemcheckbox" aria-checked="true"><span>Listen for the wake word</span><span class="switch" aria-hidden="true"></span></button>
+                  <button id="forget" role="menuitem">Forget this phone</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </footer>
+      </div>
+    </main>
+    <script type="module" src="main.js"></script>
+  </body>
+</html>

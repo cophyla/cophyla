@@ -1,0 +1,21 @@
+[package]
+name = "cophyla-net"
+description = "cophylad's helper for direct connections: WebRTC data channels on one UDP port"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[[bin]]
+name = "cophyla-net"
+path = "src/main.rs"
+
+[dependencies]
+net-proto.workspace = true
+net-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+portmapper.workspace = true

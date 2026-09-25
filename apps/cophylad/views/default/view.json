@@ -1,0 +1,22 @@
+{
+  "id": "default",
+  "name": "Chat",
+  "entry": "index.html",
+  "scopes": [
+    "sessions:read",
+    "sessions:write",
+    "asks:answer",
+    "audit:read",
+    "views",
+    "nodes",
+    "chat",
+    "tasks:read",
+    "tasks:write",
+    "voice",
+    "controllers",
+    "metrics:read",
+    "remote",
+    "account",
+    "terminal"
+  ]
+}

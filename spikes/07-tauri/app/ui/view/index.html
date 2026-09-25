@@ -1,0 +1,101 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>cophyla spike 07 — view</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; background: #1a1210; color: #e6edf3; padding: 20px; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      .tag { display: inline-block; background: #bb4b00; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+      pre { background: #0b0e11; border: 1px solid #3a2a22; border-radius: 6px; padding: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>cophyla spike 07 — <span class="tag">view (untrusted)</span></h1>
+    <p>Stands in for a view the harness wrote. Same origin as the host page, different
+    window label, absent from <code>capabilities/host.json</code>. It should reach the
+    client protocol (the collector) and nothing else.</p>
+    <pre id="log">running…</pre>
+
+    <script>
+      const COLLECTOR = "http://127.0.0.1:8777/report";
+      const el = document.getElementById("log");
+      const lines = [];
+      const say = (k, v) => { lines.push(k.padEnd(26) + " " + v); el.textContent = lines.join("\n"); };
+
+      // The view is loaded a moment after the host, but give the host page time to seed
+      // its storage before we try to read it.
+      await0();
+      async function await0() { await new Promise((r) => setTimeout(r, 1500)); run(); }
+
+      async function run() {
+        const r = { round: 2 };
+        r.origin = location.origin;
+        r.href = location.href;
+        r.hasGlobalTauri = typeof window.__TAURI__ !== "undefined";
+
+        say("location", r.href);
+        say("window.__TAURI__", r.hasGlobalTauri ? "PRESENT" : "absent");
+
+        // The claim under test: a view cannot reach a native API.
+        try {
+          r.invoke = await window.__TAURI__.core.invoke("host_ping");
+          r.invokeOk = true;
+          say("invoke host_ping", "*** ALLOWED -> " + r.invoke + " ***");
+        } catch (e) {
+          r.invokeOk = false; r.invokeErr = String(e);
+          say("invoke host_ping", "denied -> " + r.invokeErr);
+        }
+
+        try {
+          await window.__TAURI__.core.invoke("record_cmd", { step: "view_tried_record", data: {} });
+          r.recordOk = true;
+          say("invoke record_cmd", "*** ALLOWED ***");
+        } catch (e) {
+          r.recordOk = false; r.recordErr = String(e);
+          say("invoke record_cmd", "denied -> " + r.recordErr);
+        }
+
+        try {
+          const w = window.__TAURI__.window.getCurrentWindow();
+          await w.setTitle("view took the native window API");
+          r.windowApiOk = true;
+          say("window.setTitle", "*** ALLOWED ***");
+        } catch (e) {
+          r.windowApiOk = false; r.windowApiErr = String(e);
+          say("window.setTitle", "denied -> " + r.windowApiErr);
+        }
+
+        // Same origin as the host page. Does that hand the view the host's secrets?
+        r.stolenToken = localStorage.getItem("cophyla.session.token");
+        r.stolenCookie = document.cookie;
+        say("host localStorage", r.stolenToken ? "*** READABLE -> " + r.stolenToken + " ***" : "empty");
+        say("host cookie", r.stolenCookie ? "*** READABLE -> " + r.stolenCookie + " ***" : "empty");
+
+        // Can it escape the asset root and read files off the machine?
+        try {
+          const res = await fetch("/../src-tauri/tauri.conf.json");
+          const body = res.ok ? await res.text() : "";
+          r.traversalStatus = res.status;
+          r.traversalGotConfig = body.includes("dev.cophyla.spike07");
+          r.traversalFirst40 = body.slice(0, 40);
+          say("path traversal", r.traversalGotConfig
+            ? "*** ESCAPED -> read tauri.conf.json ***"
+            : "contained -> status " + res.status + ", served app asset instead");
+        } catch (e) {
+          r.traversalErr = String(e);
+          say("path traversal", "blocked -> " + r.traversalErr);
+        }
+
+        // The one channel it is supposed to have.
+        try {
+          await fetch(COLLECTOR, { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ who: "view", test: "view-isolation", result: r }) });
+          say("collector (loopback)", "reached");
+        } catch (e) {
+          say("collector (loopback)", "UNREACHABLE -> " + e.message);
+        }
+      }
+    </script>
+  </body>
+</html>

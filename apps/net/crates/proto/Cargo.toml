@@ -1,0 +1,13 @@
+[package]
+name = "net-proto"
+description = "cophyla-net's stdio protocol: what cophylad asks and what the helper reports"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

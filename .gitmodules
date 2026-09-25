@@ -1,0 +1,3 @@
+[submodule "tether"]
+	path = tether
+	url = https://github.com/FeritMelih/tether.git

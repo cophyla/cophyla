@@ -1,0 +1,74 @@
+/* The host page owns nothing but the frame, dark like the view, and until a view is up one
+   line in the middle of it saying where the link is: the view shows the link after that. */
+:root {
+  color-scheme: dark;
+  --paper: #14121a;
+  --ink: #ece9f2;
+  --muted: #9a94a8;
+  --moss: #62c08e;
+  --rust: #ef7259;
+  --amber: #e2ae4d;
+}
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  background: var(--paper);
+  color: var(--ink);
+  font: 12px/1.4 "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+}
+
+#view {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+#view iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: var(--paper);
+}
+
+#status {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+#status[hidden] {
+  display: none;
+}
+
+#status::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  margin-right: 8px;
+  border-radius: 50%;
+  background: var(--amber);
+}
+
+#status[data-state="connected"]::before {
+  background: var(--moss);
+}
+
+#status[data-state="disconnected"]::before,
+#status[data-state="unauthorized"]::before {
+  background: var(--rust);
+}

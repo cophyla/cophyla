@@ -1,0 +1,19 @@
+{
+  "name": "@cophyla/viewhost",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./chooser.css": "./src/chooser.css",
+    "./settings.css": "./src/settings.css"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@cophyla/protocol": "workspace:*"
+  }
+}

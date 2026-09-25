@@ -1,0 +1,9 @@
+{
+  "name": "spike-stt-tts",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@picovoice/pvrecorder-node": "^1.2.9",
+    "sherpa-onnx-node": "^1.13.8"
+  }
+}

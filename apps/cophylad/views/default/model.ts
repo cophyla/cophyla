@@ -1,0 +1,1902 @@
+// The default view's state and its reducer, pure: no DOM, no rpc. `apply` folds what the
+// host says (notifications, host.ready, host.state) and what the user does (the tab opened,
+// drafts, sends, history pages) into one `ViewState`; the selectors below shape it for
+// rendering, and the few decisions the view makes on the host's line (which session to
+// watch, whether to load history unasked) are small functions here too. A session's card
+// holds a timeline only while its tab is open: the events streamed since, and the pages
+// loaded; a session that ends leaves, card and all. The rail groups the live sessions by the
+// folder they work in. A node's spend is the node's own totals for the day, with the live
+// samples added, beside each login's plan limits as the node's latest sample carries them.
+// The node's terminals are rows too: a session's own is reached from its pane, and the bare
+// ones (a shell the user started here, in a workspace they picked) get tabs of their own.
+// The grants are rows too: each phone and node with its access and its end, an invite just
+// minted while its panel shows, the ones still pending, and what the desktop offers this node
+// (Join a primary while it is alone, Leave once it joined one).
+// Types come from the protocol package; nothing else does, so the file runs in the frame as is.
+
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+
+/** The conversation on a controller, as the view last heard it. */
+export interface VoiceRow {
+  state: VoiceState;
+  /** The controller it belongs to, when the platform named one. */
+  client?: string;
+  at: number;
+}
+
+export type VoiceSetup = ClientNotificationParams<"voice.setup">;
+
+/** The account as the node sees it: `account.state`. */
+export type AccountState = ClientNotificationParams<"account.state">;
+/** A node's direct connections: `direct.state`. */
+export type DirectState = ClientNotificationParams<"direct.state">;
+
+/** A login the user started, with the code to type on the page, until it is used or runs out. */
+export interface LoginOffer {
+  userCode: string;
+  verificationUrl: string;
+  expiresAt: number;
+}
+
+/** A pairing window the user opened, with the code the phone must type. */
+export interface PairingOffer {
+  code: string;
+  url: string;
+  expiresAt: number;
+}
+
+/** A code a node's desktop host minted for a phone, shown until it runs out or is closed. */
+export interface RemoteInvite {
+  node: NodeId;
+  otp: string;
+  link?: string;
+  passphrase?: string;
+  expiresAt?: number;
+}
+
+/** Tokens and cost, summed. */
+export interface Spend {
+  in: number;
+  out: number;
+  cached: number;
+  cost: number;
+}
+
+/** A sample's time and token deltas: all the spend needs of it. */
+export type SpendDelta = Pick<MetricsSample, "at" | "profiles">;
+
+/**
+ * What one node's sessions have spent per profile, and the newest sample counted, so a
+ * sample the node's totals already hold, or a replayed frame, counts once.
+ */
+export interface NodeSpend {
+  seen: number;
+  byProfile: Map<string, Spend>;
+  /**
+   * While the node's totals are awaited after a subscription, the samples that land meanwhile:
+   * counted once the totals arrive, those they do not already hold. `byProfile` shows what it
+   * showed until then.
+   */
+  held?: SpendDelta[];
+}
+
+export type SendState = "queued" | "held" | "delivered" | "withdrawn" | "unconfirmed";
+
+export interface PendingSend {
+  ref: string;
+  text: string;
+  at: number;
+  state: SendState;
+}
+
+export interface SessionCard {
+  session: Session;
+  /**
+   * The tab is open: the node streams its events here, and its history pages back from
+   * `oldestSeq`. A closed tab's card holds no timeline and no pending sends, only its draft.
+   */
+  open: boolean;
+  /** Counts the tab's openings: a history page asked for under an earlier one is dropped. */
+  opened: number;
+  events: Map<number, SessionEvent>;
+  /** The lowest seq loaded; `session.history {before}` pages from here. */
+  oldestSeq?: number;
+  /** A page came back short: there is nothing earlier. */
+  exhausted: boolean;
+  loading: boolean;
+  draft: string;
+  sends: Map<string, PendingSend>;
+  /** It finished its work (went idle) while its tab was not open, and the tab has not been opened since. */
+  unseen: boolean;
+}
+
+export interface HostReady {
+  client: Client;
+  node: NodeId;
+  protocolVersion: number;
+  platformVersion: string;
+  view: ViewManifest;
+  scopes: Scope[];
+  /** The host has a menu button of its own, under the frame, that sends `host.menu`: the phone's bar. */
+  menu?: boolean;
+}
+
+/** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
+export interface Streaming {
+  id: string;
+  at: number;
+  blocks: ContentBlock[];
+}
+
+export interface ViewState {
+  client?: Client;
+  node?: NodeId;
+  platformVersion?: string;
+  /** The host's own button shows and hides the rail (`host.menu`), so the view draws none. */
+  hostMenu: boolean;
+  connected: boolean;
+  scopes: Scope[];
+  sessions: Map<string, SessionCard>;
+  /** The node's terminals, from `terminal.list` and `terminal.state`, while connected. */
+  terminals: Map<string, Terminal>;
+  asks: Map<string, Ask>;
+  /** The newest AUDIT_KEEP entries by `at`. */
+  audit: Map<string, AuditEntry>;
+  workspaces: Map<string, Workspace>;
+  profiles: Map<string, HarnessProfile>;
+  threads: Map<string, Thread>;
+  messages: Map<string, Message>;
+  streaming: Map<string, Streaming>;
+  tasks: Map<string, Task>;
+  /** What voice is doing now; absent when nothing is. */
+  voice?: VoiceRow;
+  /** An engine being set up on the node, while it runs. */
+  setup?: VoiceSetup;
+  /** The pairing window, while it is open. */
+  pairing?: PairingOffer;
+  controllers: Map<string, Controller>;
+  /** Every grant this node keeps, from `grant.list`: its phones and nodes, the pending ones among them. */
+  grants: Map<string, Grant>;
+  /** The invite just minted, while its panel shows. */
+  invite?: IssuedInvite;
+  /** Every node of the user, from `node.list` and `node.state`. */
+  nodes: Map<NodeId, Node>;
+  /** The latest sample per node, while connected. */
+  metrics: Map<NodeId, MetricsSample>;
+  /** Spend per node over the day: the node's totals, then each live sample; kept across a disconnect until the next totals replace it. */
+  spend: Map<NodeId, NodeSpend>;
+  /** Each node's desktop host and its viewers, from `remote.state`, while connected. */
+  remote: Map<NodeId, RemoteState>;
+  /** Each node's direct connections, from `direct.state`, while connected. */
+  direct: Map<NodeId, DirectState>;
+  /** The phone code the user asked a node for, while it is shown. */
+  remoteInvite?: RemoteInvite;
+  /** The node whose PIN form is open. */
+  remotePin?: NodeId;
+  /** The account: signed out until the node says otherwise. */
+  account?: AccountState;
+  /** The login in progress, while its code is shown. */
+  login?: LoginOffer;
+  /** The composer's quick toggle: the next message goes out with `mode: quick`. */
+  quick: boolean;
+  /** `chat.load` has answered once since connecting. */
+  chatLoaded: boolean;
+  /** The earliest thread loaded; `chat.load {before}` pages from here. */
+  oldestThread?: string;
+  /** A page came back short: there is no earlier thread. */
+  threadsExhausted: boolean;
+  chatLoading: boolean;
+  errors: string[];
+}
+
+export type Action =
+  | { type: "host.ready"; params: HostReady }
+  | { type: "host.state"; params: { connected: boolean } }
+  | { type: "session.state"; params: Session }
+  | { type: "session.event"; params: SessionEvent }
+  | { type: "terminal.state"; params: Terminal }
+  | { type: "terminals"; terminals: Terminal[] }
+  | { type: "workspace.state"; params: Workspace }
+  | { type: "ask.state"; params: Ask }
+  | { type: "audit.entry"; params: AuditEntry }
+  | { type: "profiles"; profiles: HarnessProfile[] }
+  /** The tab the user is on, the chat when `session` is absent: it opens afresh, and every other card drops its timeline. */
+  | { type: "tab.open"; session?: string }
+  | { type: "history.loading"; session: string }
+  /** A page of a tab's history, asked for under its opening `opened`. */
+  | { type: "history"; session: string; opened: number; events: SessionEvent[]; limit: number }
+  | { type: "draft"; session: string; text: string }
+  | { type: "send.result"; session: string; ref: string; text: string; at: number; status: "queued" | "held" }
+  | { type: "chat.message"; params: { message: Message } }
+  | { type: "chat.delta"; params: { message: string; block: number; delta: ContentBlock } }
+  /** A provisional reply was abandoned: its placeholder goes. */
+  | { type: "chat.retract"; params: { message: string } }
+  | { type: "chat.loading" }
+  /** A load that failed: nothing is marked loaded, so the button that asked for it asks again. */
+  | { type: "chat.failed" }
+  | { type: "chat.loaded"; threads: Thread[]; messages: Message[]; limit: number }
+  | { type: "task.state"; params: Task }
+  /** A thread's row changed: opened, closed, or given a topic or a workspace. Its messages stay. */
+  | { type: "thread.state"; params: Thread }
+  | { type: "voice.state"; params: { state: VoiceState; client?: string } }
+  | { type: "voice.setup"; params: VoiceSetup }
+  | { type: "pairing"; offer?: PairingOffer }
+  | { type: "controllers"; controllers: Controller[] }
+  | { type: "controller.removed"; id: string }
+  | { type: "grants"; grants: Grant[] }
+  /** A grant was revoked or cancelled here: its row goes, and its invite's panel with it. */
+  | { type: "grant.removed"; id: string }
+  /** An invite came back from `grant.invite`, or its panel closed. */
+  | { type: "invite"; invite?: IssuedInvite }
+  | { type: "quick.toggle"; quick?: boolean }
+  | { type: "nodes"; nodes: Node[] }
+  | { type: "node.state"; params: Node }
+  | { type: "metrics.sample"; params: MetricsSample }
+  /** A node's samples are being subscribed to: their spend waits for the node's totals. */
+  | { type: "spend.loading"; node: NodeId }
+  /** A node's totals over the day, the base its spend is rebuilt on; absent when they could not be had, and the samples held count on from what is shown. */
+  | { type: "metrics.spend"; node: NodeId; totals?: SpendTotals }
+  | { type: "remote.state"; params: RemoteState }
+  /** A code came back from `remote.invite`, or the panel closed. */
+  | { type: "remote.invite"; invite?: RemoteInvite }
+  /** The PIN form opened on a node's card, or closed. */
+  | { type: "remote.pin"; node?: NodeId }
+  | { type: "account.state"; params: AccountState }
+  | { type: "direct.state"; params: DirectState }
+  /** A code came back from `account.login`, or the panel closed. */
+  | { type: "login"; offer?: LoginOffer }
+  | { type: "error"; message: string };
+
+export const AUDIT_KEEP = 200;
+export const ERRORS_KEEP = 20;
+export const HISTORY_PAGE = 50;
+export const THREAD_PAGE = 1;
+
+/** How far back the spend reaches: the node's totals over this window are its base. */
+export const SPEND_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function initialState(): ViewState {
+  return {
+    hostMenu: false,
+    connected: false,
+    scopes: [],
+    sessions: new Map(),
+    terminals: new Map(),
+    asks: new Map(),
+    audit: new Map(),
+    workspaces: new Map(),
+    profiles: new Map(),
+    threads: new Map(),
+    messages: new Map(),
+    streaming: new Map(),
+    tasks: new Map(),
+    controllers: new Map(),
+    grants: new Map(),
+    nodes: new Map(),
+    metrics: new Map(),
+    spend: new Map(),
+    remote: new Map(),
+    direct: new Map(),
+    quick: false,
+    chatLoaded: false,
+    threadsExhausted: false,
+    chatLoading: false,
+    errors: [],
+  };
+}
+
+export type TerminalOutput = ClientNotificationParams<"terminal.output">;
+
+/** The smallest font a followed terminal is drawn at, and a driven one's. */
+export const FONT_MIN = 9;
+export const FONT_DRIVE = 13;
+
+export interface Size {
+  width: number;
+  height: number;
+}
+
+/**
+ * The font size, in half points, at which a terminal drawn `drawn` big at `font` fills `room`
+ * as far as its shape allows: its cells grow with the font, so it scales as a picture does.
+ */
+export function followFont(room: Size, drawn: Size, font: number): number {
+  if (room.width <= 0 || room.height <= 0 || drawn.width <= 0 || drawn.height <= 0 || font <= 0) return font;
+  const scale = Math.min(room.width / drawn.width, room.height / drawn.height);
+  return Math.max(FONT_MIN, Math.floor(font * scale * 2) / 2);
+}
+
+/** The scales − and + step a terminal through, in percent of the driven font; the first stays above the floor. */
+export const SCALES = [70, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300];
+
+/** A font's scale, in whole percent of the driven font: what the bar shows between − and +. */
+export function fontScale(font: number): number {
+  return Math.round((font / FONT_DRIVE) * 100);
+}
+
+/** The font a driven terminal is drawn at, at `scale` percent. */
+export function scaleFont(scale: number): number {
+  return (FONT_DRIVE * scale) / 100;
+}
+
+/**
+ * The next scale up (`1`) or down (`-1`) from `scale`, which may sit between two (a followed
+ * terminal's); `undefined` past either end.
+ */
+export function stepScale(scale: number, dir: 1 | -1): number | undefined {
+  return dir === 1 ? SCALES.find((s) => s > scale) : SCALES.filter((s) => s < scale).pop();
+}
+
+/** The output that came before a terminal's open was answered, kept when it goes past the repaint. */
+export function pastRepaint(seq: number, held: TerminalOutput[]): TerminalOutput[] {
+  return held.filter((o) => o.reset === true || o.seq > seq);
+}
+
+/** What Shift+Enter sends: ESC CR, as the binding Claude Code's `/terminal-setup` gives VS Code, so a prompt takes a new line. */
+export const SHIFT_ENTER = "\x1b\r";
+
+/** How much of the mouse a terminal reports, least first, by xterm.js's names. */
+export type MouseTracking = "none" | "x10" | "vt200" | "drag" | "any";
+const TRACKING: MouseTracking[] = ["none", "x10", "vt200", "drag", "any"];
+/** The DECSET modes that set it: X10, normal, button-event and any-event tracking. */
+const TRACKING_MODES: Record<number, MouseTracking> = { 9: "x10", 1000: "vt200", 1002: "drag", 1003: "any" };
+
+/**
+ * Whether a DECSET (`CSI ? … h`) only asks again for mouse tracking the terminal already
+ * reports as much of: every mode in it is a tracking mode no wider than `active`. Such a set is
+ * dropped. Claude re-sends all its modes, narrowest first, as a drag starts; xterm.js keeps
+ * one tracking mode, so the narrowest would take the drag's reports away, and the widest, set
+ * right after, gives them back only from the next press.
+ */
+export function repeatsTracking(params: (number | number[])[], active: MouseTracking): boolean {
+  return params.length > 0 && params.every((p) => typeof p === "number" && TRACKING_MODES[p] !== undefined && TRACKING.indexOf(TRACKING_MODES[p]) <= TRACKING.indexOf(active));
+}
+
+/**
+ * The text an OSC 52 puts on the clipboard (its data after `52;`: the selections, `;`, the
+ * text in base64), or undefined: a query (`?`), which is never answered, a clear, or only
+ * X11's primary or secondary selection, which are not the clipboard.
+ */
+export function clipboardWrite(data: string): string | undefined {
+  const i = data.indexOf(";");
+  if (i < 0) return undefined;
+  const selections = data.slice(0, i);
+  const payload = data.slice(i + 1);
+  if (payload === "" || payload === "?" || (selections !== "" && !/[cs0-7]/.test(selections))) return undefined;
+  try {
+    return new TextDecoder().decode(Uint8Array.from(atob(payload), (c) => c.charCodeAt(0)));
+  } catch {
+    return undefined;
+  }
+}
+
+/** The composer's text as `chat.send` params: a `/quick ` prefix, or the toggle, sets the mode. */
+export function parseComposer(text: string, quick: boolean): { text: string; mode?: "quick" } | undefined {
+  const m = /^\/quick\b\s*/i.exec(text);
+  const body = (m ? text.slice(m[0].length) : text).trim();
+  if (!body) return undefined;
+  return m || quick ? { text: body, mode: "quick" } : { text: body };
+}
+
+function card(state: ViewState, session: Session): SessionCard {
+  let c = state.sessions.get(session.id);
+  if (!c) {
+    c = { session, open: false, opened: 0, events: new Map(), exhausted: false, loading: false, draft: "", sends: new Map(), unseen: false };
+    state.sessions.set(session.id, c);
+  } else {
+    c.session = session;
+  }
+  return c;
+}
+
+function addEvent(c: SessionCard, e: SessionEvent): void {
+  c.events.set(e.seq, e);
+  if (c.oldestSeq === undefined || e.seq < c.oldestSeq) c.oldestSeq = e.seq;
+  if (e.kind === "notification") {
+    const p = e.payload as { type?: string; ref?: string; state?: SendState } | undefined;
+    if (p && p.type === "message" && typeof p.ref === "string" && p.state) {
+      const send = c.sends.get(p.ref);
+      if (send) send.state = p.state;
+    }
+  }
+  // A send typed into the session's terminal lands as the user's own turn, under the send's ref.
+  if (e.kind === "user_turn") {
+    const p = e.payload as { ref?: string } | undefined;
+    const send = p && typeof p.ref === "string" ? c.sends.get(p.ref) : undefined;
+    if (send) send.state = "delivered";
+  }
+}
+
+/** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
+export function apply(state: ViewState, action: Action): ViewState {
+  switch (action.type) {
+    case "host.ready": {
+      const p = action.params;
+      state.client = p.client;
+      state.node = p.node;
+      state.platformVersion = p.platformVersion;
+      state.scopes = p.scopes;
+      state.hostMenu = p.menu === true;
+      return state;
+    }
+    case "host.state":
+      state.connected = action.params.connected;
+      if (!state.connected) {
+        for (const c of state.sessions.values()) c.loading = false;
+        state.streaming.clear();
+        state.chatLoading = false;
+        state.chatLoaded = false;
+        // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
+        delete state.voice;
+        delete state.setup;
+        delete state.pairing;
+        for (const [id, controller] of state.controllers) state.controllers.set(id, { ...controller, connected: false });
+        state.metrics.clear();
+        // The hosts' states come again after the next hello; a code or a form from before is for a line that is gone.
+        state.remote.clear();
+        state.direct.clear();
+        delete state.remoteInvite;
+        delete state.remotePin;
+        // Every terminal comes again with the next `terminal.list`.
+        state.terminals.clear();
+      }
+      return state;
+    case "session.state": {
+      const s = action.params;
+      // A session whose process closed leaves the rail, and its tab with it.
+      if (s.status === "ended") {
+        state.sessions.delete(s.id);
+        return state;
+      }
+      const was = state.sessions.get(s.id)?.session;
+      const c = card(state, s);
+      // Work that finished while its tab was closed waits to be looked at; at work again, it waits
+      // no more. Idle while its shells run or a dialog is open is not finished.
+      if (atWork(s)) c.unseen = false;
+      else if (was !== undefined && atWork(was)) c.unseen = !c.open;
+      return state;
+    }
+    case "session.event": {
+      const e = action.params;
+      const c = state.sessions.get(e.session);
+      // One still on its way when its tab closed has nowhere to go.
+      if (!c || !c.open) return state;
+      addEvent(c, e);
+      return state;
+    }
+    case "terminal.state":
+      state.terminals.set(action.params.id, action.params);
+      return state;
+    case "terminals":
+      state.terminals.clear();
+      for (const t of action.terminals) state.terminals.set(t.id, t);
+      return state;
+    case "workspace.state":
+      state.workspaces.set(action.params.id, action.params);
+      return state;
+    case "ask.state":
+      state.asks.set(action.params.id, action.params);
+      return state;
+    case "audit.entry": {
+      const e = action.params;
+      state.audit.set(e.id, e);
+      if (state.audit.size > AUDIT_KEEP) {
+        const sorted = [...state.audit.values()].sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
+        for (const old of sorted.slice(0, state.audit.size - AUDIT_KEEP)) state.audit.delete(old.id);
+      }
+      return state;
+    }
+    case "profiles":
+      for (const p of action.profiles) state.profiles.set(p.id, p);
+      return state;
+    case "tab.open":
+      for (const c of state.sessions.values()) {
+        const open = c.session.id === action.session;
+        if (!open && !c.open) continue;
+        // Whatever the tab showed goes: a closed tab holds nothing, and one opened again starts
+        // from what streams and loads from here, so no stretch of it is missing unsaid.
+        c.events.clear();
+        delete c.oldestSeq;
+        c.exhausted = false;
+        c.loading = false;
+        c.sends.clear();
+        c.open = open;
+        if (open) {
+          c.opened++;
+          // Opening the tab is looking at what it did.
+          c.unseen = false;
+        }
+      }
+      return state;
+    case "history.loading": {
+      const c = state.sessions.get(action.session);
+      if (c?.open) c.loading = true;
+      return state;
+    }
+    case "history": {
+      const c = state.sessions.get(action.session);
+      if (!c || !c.open || c.opened !== action.opened) return state;
+      c.loading = false;
+      for (const e of action.events) addEvent(c, e);
+      if (action.events.length < action.limit) c.exhausted = true;
+      return state;
+    }
+    case "draft": {
+      const c = state.sessions.get(action.session);
+      if (c) c.draft = action.text;
+      return state;
+    }
+    case "send.result": {
+      const c = state.sessions.get(action.session);
+      if (!c) return state;
+      if (c.open) c.sends.set(action.ref, { ref: action.ref, text: action.text, at: action.at, state: action.status });
+      c.draft = "";
+      return state;
+    }
+    case "chat.message": {
+      const m = action.params.message;
+      state.messages.set(m.id, m);
+      state.streaming.delete(m.id);
+      if (!state.threads.has(m.thread)) state.threads.set(m.thread, { id: m.thread, startedAt: m.at, sessions: [] });
+      return state;
+    }
+    case "chat.delta": {
+      const p = action.params;
+      if (state.messages.has(p.message)) return state;
+      let s = state.streaming.get(p.message);
+      if (!s) {
+        s = { id: p.message, at: Date.now(), blocks: [] };
+        state.streaming.set(p.message, s);
+      }
+      const existing = s.blocks[p.block];
+      if (existing && existing.type === "text" && p.delta.type === "text") existing.text += p.delta.text;
+      else s.blocks[p.block] = p.delta;
+      return state;
+    }
+    case "chat.retract":
+      state.streaming.delete(action.params.message);
+      return state;
+    case "chat.loading":
+      state.chatLoading = true;
+      return state;
+    case "chat.failed":
+      state.chatLoading = false;
+      return state;
+    case "chat.loaded": {
+      state.chatLoading = false;
+      state.chatLoaded = true;
+      // What streamed in before the load is keyed as the load is: a thread's row replaces the
+      // bare divider a live message made, a message replaces itself, and a reply the load
+      // holds finished stops streaming here.
+      for (const t of action.threads) state.threads.set(t.id, t);
+      for (const m of action.messages) {
+        state.messages.set(m.id, m);
+        state.streaming.delete(m.id);
+      }
+      // The next page starts before the earliest thread a page brought. A thread known only
+      // from its state or a live message has no messages loaded, so the pages pass over it
+      // in their turn rather than start behind it.
+      const cursor = state.oldestThread !== undefined ? state.threads.get(state.oldestThread) : undefined;
+      const oldest = [...action.threads, ...(cursor ? [cursor] : [])].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1))[0];
+      if (oldest) state.oldestThread = oldest.id;
+      if (action.threads.length < action.limit) state.threadsExhausted = true;
+      return state;
+    }
+    case "task.state": {
+      const t = action.params;
+      if (t.status === "done" || t.status === "cancelled") state.tasks.delete(t.id);
+      else state.tasks.set(t.id, t);
+      return state;
+    }
+    case "thread.state":
+      state.threads.set(action.params.id, action.params);
+      return state;
+    case "voice.state": {
+      const { state: voice, client } = action.params;
+      if (voice === "idle") delete state.voice;
+      else state.voice = { state: voice, ...(client !== undefined ? { client } : {}), at: Date.now() };
+      return state;
+    }
+    case "voice.setup":
+      // A step that ended says so once and then there is nothing to show.
+      if (action.params.step === "ready" || action.params.step === "failed") delete state.setup;
+      else state.setup = action.params;
+      return state;
+    case "pairing":
+      if (action.offer) state.pairing = action.offer;
+      else delete state.pairing;
+      return state;
+    case "controllers":
+      state.controllers = new Map(action.controllers.map((c) => [c.id, c]));
+      return state;
+    case "controller.removed":
+      state.controllers.delete(action.id);
+      return state;
+    case "grants": {
+      state.grants = new Map(action.grants.map((g) => [g.id, g]));
+      // the invite on show was used: its panel has done its job
+      const shown = state.invite ? state.grants.get(state.invite.grant) : undefined;
+      if (shown && shown.status !== "pending") delete state.invite;
+      return state;
+    }
+    case "grant.removed":
+      state.grants.delete(action.id);
+      state.controllers.delete(action.id);
+      if (state.invite?.grant === action.id) delete state.invite;
+      return state;
+    case "invite":
+      if (action.invite) state.invite = action.invite;
+      else delete state.invite;
+      return state;
+    case "quick.toggle":
+      state.quick = action.quick ?? !state.quick;
+      return state;
+    case "nodes":
+      state.nodes = new Map(action.nodes.map((n) => [n.id, n]));
+      return state;
+    case "node.state":
+      state.nodes.set(action.params.id, action.params);
+      return state;
+    case "metrics.sample": {
+      const s = action.params;
+      const previous = state.metrics.get(s.node);
+      if (previous && previous.at > s.at) return state;
+      state.metrics.set(s.node, s);
+      const held = state.spend.get(s.node)?.held;
+      if (held) held.push({ at: s.at, profiles: s.profiles });
+      else countSpend(state, s.node, [s]);
+      return state;
+    }
+    case "spend.loading": {
+      const spend = state.spend.get(action.node);
+      if (spend) spend.held = [];
+      else state.spend.set(action.node, { seen: 0, byProfile: new Map(), held: [] });
+      return state;
+    }
+    case "metrics.spend": {
+      const spend: NodeSpend = state.spend.get(action.node) ?? { seen: 0, byProfile: new Map() };
+      const held = spend.held ?? [];
+      delete spend.held;
+      if (action.totals) {
+        spend.seen = action.totals.at;
+        spend.byProfile = new Map(Object.entries(action.totals.profiles).map(([profile, t]) => [profile, { in: t.in, out: t.out, cached: t.cached, cost: t.cost ?? 0 }]));
+      }
+      state.spend.set(action.node, spend);
+      // What landed while the totals were on their way: the samples they hold are skipped.
+      countSpend(state, action.node, held);
+      return state;
+    }
+    case "remote.state":
+      state.remote.set(action.params.node, action.params);
+      // A host that stopped serving takes its open code and form with it.
+      if (action.params.host.status !== "ready") {
+        if (state.remoteInvite?.node === action.params.node) delete state.remoteInvite;
+        if (state.remotePin === action.params.node) delete state.remotePin;
+      }
+      return state;
+    case "remote.invite":
+      if (action.invite) state.remoteInvite = action.invite;
+      else delete state.remoteInvite;
+      return state;
+    case "account.state":
+      state.account = action.params;
+      // a plan arriving with a subject means the login went through: the code panel is done
+      if (action.params.subject !== undefined) delete state.login;
+      return state;
+    case "direct.state":
+      state.direct.set(action.params.node, action.params);
+      return state;
+    case "login":
+      if (action.offer) state.login = action.offer;
+      else delete state.login;
+      return state;
+    case "remote.pin":
+      if (action.node) state.remotePin = action.node;
+      else delete state.remotePin;
+      return state;
+    case "error":
+      state.errors.push(action.message);
+      if (state.errors.length > ERRORS_KEEP) state.errors.splice(0, state.errors.length - ERRORS_KEEP);
+      return state;
+  }
+}
+
+/** Adds the samples' per-profile deltas to a node's spend, each sample once: only what is newer than the last counted. */
+function countSpend(state: ViewState, node: NodeId, samples: SpendDelta[]): void {
+  let spend = state.spend.get(node);
+  if (!spend) {
+    spend = { seen: 0, byProfile: new Map() };
+    state.spend.set(node, spend);
+  }
+  for (const s of [...samples].sort((a, b) => a.at - b.at)) {
+    if (s.at <= spend.seen) continue;
+    spend.seen = s.at;
+    for (const [profile, p] of Object.entries(s.profiles ?? {})) {
+      const cur = spend.byProfile.get(profile) ?? { in: 0, out: 0, cached: 0, cost: 0 };
+      cur.in += p.in;
+      cur.out += p.out;
+      cur.cached += p.cached;
+      cur.cost += p.cost ?? 0;
+      spend.byProfile.set(profile, cur);
+    }
+  }
+}
+
+// --- what streams, and what loads ------------------------------------------------------------
+
+/**
+ * Whether this client loads history unasked: the desktop app does, a tab's newest page as
+ * it opens and the chat's newest thread on connect. A phone or the web app (a controller)
+ * shows what streams from the moment it looks, and loads history a page per press.
+ */
+export function loadsHistory(state: ViewState): boolean {
+  return state.client?.kind !== "controller";
+}
+
+/** The `session.watch` params for the tab shown, none for the chat; undefined while the view may not send it: offline, or without `sessions:read`. */
+export function watchParams(state: ViewState, selected: string | undefined): { ids: string[] } | undefined {
+  if (!state.connected || !state.scopes.includes("sessions:read")) return undefined;
+  return { ids: selected !== undefined && state.sessions.has(selected) ? [selected] : [] };
+}
+
+/** A button that loads history: what it says, and whether it can be pressed now. */
+export interface HistoryButton {
+  label: string;
+  disabled: boolean;
+}
+
+/** The button above a tab's timeline: Load history while nothing is loaded, Show earlier after; none once the start is reached. */
+export function earlierButton(state: ViewState, card: SessionCard): HistoryButton | undefined {
+  if (card.exhausted) return undefined;
+  const label = card.loading ? "Loading…" : card.events.size === 0 ? "Load history" : "Show earlier";
+  return { label, disabled: card.loading || !state.connected };
+}
+
+/**
+ * The button at the top of the chat. Before a thread is loaded, a client that loads history
+ * only when asked offers Load history (`chat-history`); the desktop offers nothing, since it
+ * loads the newest thread itself. Once one is loaded, Earlier (`threads-earlier`) pages back
+ * a thread at a time while there is an earlier one.
+ */
+export function chatButton(state: ViewState): (HistoryButton & { action: "chat-history" | "threads-earlier" }) | undefined {
+  const disabled = state.chatLoading || !state.connected;
+  if (!state.chatLoaded) {
+    if (loadsHistory(state) || !state.scopes.includes("chat")) return undefined;
+    return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Load history", disabled };
+  }
+  if (state.threadsExhausted || state.oldestThread === undefined) return undefined;
+  return { action: "threads-earlier", label: state.chatLoading ? "Loading…" : "Earlier", disabled };
+}
+
+// --- selectors -----------------------------------------------------------------------------
+
+export type StreamItem =
+  | { kind: "ask"; at: number; ask: Ask }
+  | { kind: "audit"; at: number; entry: AuditEntry }
+  | { kind: "thread"; at: number; thread: Thread }
+  | { kind: "message"; at: number; message: Message }
+  | { kind: "streaming"; at: number; streaming: Streaming }
+  | { kind: "task"; at: number; task: Task };
+
+export function openAsks(state: ViewState): Ask[] {
+  return [...state.asks.values()].filter((a) => a.status === "open").sort((a, b) => a.createdAt - b.createdAt);
+}
+
+/**
+ * The asks pinned over the pane: every open one, but a session's own while its terminal is on
+ * screen (`onScreen`), where the harness asks the same question itself.
+ */
+export function pinnedAsks(state: ViewState, onScreen?: string): Ask[] {
+  return openAsks(state).filter((a) => onScreen === undefined || a.source.kind !== "harness" || a.source.session !== onScreen);
+}
+
+/**
+ * The asks pinned, then thread dividers, messages, open tasks and audit rows in time order,
+ * oldest at the top. `onScreen` is the session whose terminal the pane shows, if any.
+ */
+export function selectStream(state: ViewState, onScreen?: string): { pinned: Ask[]; items: StreamItem[] } {
+  const items: StreamItem[] = [];
+  for (const thread of state.threads.values()) items.push({ kind: "thread", at: thread.startedAt, thread });
+  for (const message of state.messages.values()) items.push({ kind: "message", at: message.at, message });
+  for (const streaming of state.streaming.values()) items.push({ kind: "streaming", at: streaming.at, streaming });
+  for (const task of state.tasks.values()) items.push({ kind: "task", at: task.createdAt, task });
+  for (const entry of state.audit.values()) items.push({ kind: "audit", at: entry.at, entry });
+  items.sort((a, b) => a.at - b.at || rank(a) - rank(b) || keyOf(a).localeCompare(keyOf(b)));
+  return { pinned: pinnedAsks(state, onScreen), items };
+}
+
+/** At one instant a thread's divider precedes its messages, and a reply follows what it answers. */
+function rank(item: StreamItem): number {
+  switch (item.kind) {
+    case "thread":
+      return 0;
+    case "message":
+      return item.message.role === "user" ? 1 : 2;
+    case "streaming":
+      return 3;
+    default:
+      return 4;
+  }
+}
+
+export function keyOf(item: StreamItem): string {
+  switch (item.kind) {
+    case "ask":
+      return `ask:${item.ask.id}`;
+    case "audit":
+      return `audit:${item.entry.id}`;
+    case "thread":
+      return `thread:${item.thread.id}`;
+    case "message":
+      return `message:${item.message.id}`;
+    case "streaming":
+      return `message:${item.streaming.id}`;
+    case "task":
+      return `task:${item.task.id}`;
+  }
+}
+
+/** The folder a group of tabs stands for, and its live sessions in the order they started. */
+export interface SessionGroup {
+  key: string;
+  /** The workspace's name, or the folder's; with the machine's when it is another node's. */
+  name: string;
+  path: string;
+  sessions: SessionCard[];
+}
+
+/** A path as the node's filesystem compares it: forward slashes, no trailing one, case-folded on Windows and macOS. */
+export function placeKey(path: string, platform?: Platform): string {
+  const p = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const folded = platform === "windows" || platform === "macos" || (platform === undefined && /^[a-z]:\//i.test(p));
+  return folded ? p.toLowerCase() : p;
+}
+
+/**
+ * The rail's tabs grouped by folder, the groups by name and the tabs in each in the order
+ * their sessions started, so nothing moves as sessions work. A session's
+ * folder is its workspace's, or its own cwd without one; a folder inside another that a live
+ * session works in (a worktree under its repository, a subfolder) joins that one, so each
+ * group is the outermost folder of a node where a session is open.
+ */
+export function selectGroups(state: ViewState): SessionGroup[] {
+  interface Place {
+    node: string;
+    key: string;
+    path: string;
+    name: string;
+  }
+  const places = new Map<string, Place>();
+  const own = new Map<SessionCard, Place>();
+  for (const card of state.sessions.values()) {
+    const s = card.session;
+    if (s.status === "ended") continue;
+    const w = s.workspace ? state.workspaces.get(s.workspace) : undefined;
+    const path = w?.path ?? s.cwd;
+    const key = placeKey(path, state.nodes.get(s.node)?.platform);
+    const id = `${s.node}\n${key}`;
+    let place = places.get(id);
+    if (!place) {
+      place = { node: s.node, key, path, name: w?.name ?? lastPart(path) };
+      places.set(id, place);
+    }
+    own.set(card, place);
+  }
+  const within = (inner: string, outer: string) => inner === outer || inner.startsWith(outer + "/");
+  const groups = new Map<Place, SessionGroup>();
+  for (const [card, place] of own) {
+    let root = place;
+    for (const p of places.values()) if (p.node === place.node && p.key.length < root.key.length && within(place.key, p.key)) root = p;
+    let group = groups.get(root);
+    if (!group) {
+      const other = root.node !== state.node ? state.nodes.get(root.node)?.name : undefined;
+      group = { key: `${root.node}\n${root.key}`, name: other ? `${root.name} · ${other}` : root.name, path: root.path, sessions: [] };
+      groups.set(root, group);
+    }
+    group.sessions.push(card);
+  }
+  const byStart = (a: SessionCard, b: SessionCard) => a.session.startedAt - b.session.startedAt || (a.session.id < b.session.id ? -1 : 1);
+  const out = [...groups.values()];
+  for (const g of out) g.sessions.sort(byStart);
+  return out.sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+function lastPart(path: string): string {
+  return path.split(/[\\/]/).filter((p) => p !== "").pop() ?? path;
+}
+
+/**
+ * The bare terminals' tabs: the ones no session runs in, newest first. One that ended drops
+ * out of the rail unless it is the one shown, which says it ended.
+ */
+export function selectTerminalTabs(state: ViewState, shown?: string): Terminal[] {
+  const out = [...state.terminals.values()].filter((t) => (t.session === undefined || !state.sessions.has(t.session)) && (t.status === "running" || t.id === shown));
+  return out.sort((a, b) => b.startedAt - a.startedAt || (a.id < b.id ? -1 : 1));
+}
+
+/** What a terminal is called on its tab: its name, Claude's agents when it shows their screen, the title its program set, or the program. */
+export function terminalLabel(t: Terminal): string {
+  return t.name || (t.agents === "claude" ? "Claude agents" : undefined) || t.title || t.argv0;
+}
+
+/**
+ * The mark a bare terminal's tab has: the harness whose agents screen it shows, or whose CLI
+ * runs in it before a session stands for it (a Codex or Muse CLI before its first prompt); any other
+ * program's is a prompt. With it, how the tab reads aloud.
+ */
+export function terminalMark(t: Terminal): { harness: string; kind: string } {
+  if (t.agents) return { harness: t.agents, kind: `${t.agents} agents` };
+  if (t.harness) return { harness: t.harness, kind: `${t.harness} in a terminal` };
+  return { harness: "terminal", kind: "terminal" };
+}
+
+/** How many workspaces New terminal offers. */
+export const RECENT_WORKSPACES = 8;
+
+/**
+ * The workspaces New terminal offers to start a shell in, the one worked in last first. A
+ * terminal starts on the node the view is connected to, so another node's are left out.
+ */
+export function recentWorkspaces(workspaces: Iterable<Workspace>, node: string | undefined, limit = RECENT_WORKSPACES): Workspace[] {
+  const mine = [...workspaces].filter((w) => w.node === node);
+  return mine.sort((a, b) => b.lastActivity - a.lastActivity || a.name.localeCompare(b.name)).slice(0, limit);
+}
+
+/** The terminal a session runs in, when this node holds it and the view may open it. */
+export function sessionTerminal(state: ViewState, session: Session): Terminal | undefined {
+  const ref = session.native.terminal;
+  if (!ref || !state.scopes.includes("terminal")) return undefined;
+  const t = state.terminals.get(ref.id);
+  return t && t.host === ref.host ? t : undefined;
+}
+
+/** What a session's pane shows: the terminal it runs in, when the view can open one, unless the user chose the timeline. */
+export function paneMode(chosen: "timeline" | "terminal" | undefined, hasTerminal: boolean): "timeline" | "terminal" {
+  return hasTerminal ? (chosen ?? "terminal") : "timeline";
+}
+
+/**
+ * Whether the user can kill a session from its pane: one still running whose end the node can
+ * bring about, a child it spawned, a terminal it started, a session it runs on a harness's own
+ * host, or a process it knows.
+ */
+export function stoppable(state: ViewState, session: Session): boolean {
+  if (session.status === "ended" || !state.scopes.includes("sessions:write")) return false;
+  const n = session.native;
+  return n.transport === "acp" || n.pid !== undefined || (session.origin === "orchestrator" && (n.terminal !== undefined || n.transport === "msp"));
+}
+
+/**
+ * How a tab's mark shows the session: `active` while it works (its own colours), `ask` while
+ * it waits on the user, an ask or a dialog open in its terminal (its colours and a yellow dot),
+ * `shell` while its turn is over but its own shells still run, and will wake it (its colours
+ * and a hollow ring), `done` once it finished work the user has not looked at (grey and a
+ * green dot), and `quiet` otherwise (grey).
+ */
+export type TabTone = "ask" | "active" | "shell" | "done" | "quiet";
+
+export function tabTone(card: SessionCard): TabTone {
+  const s = card.session;
+  if (s.status === "needs_input" || s.status === "needs_permission" || s.ask !== undefined || s.waiting?.on === "user") return "ask";
+  if (s.status === "busy") return "active";
+  if (s.waiting?.on === "shell") return "shell";
+  return card.unseen ? "done" : "quiet";
+}
+
+/** A session still at its work: running, asking, or idle while its shells run or a dialog is open. */
+export function atWork(s: Session): boolean {
+  return s.status !== "idle" || s.waiting !== undefined;
+}
+
+/** The session runs in a terminal a tether host holds: its mark is framed as one. */
+export function inTether(session: Session): boolean {
+  return session.native.terminal !== undefined;
+}
+
+/** What a session is called on its tab: its title (the harness's own name for it), its intent, or the last part of its cwd. */
+export function sessionLabel(session: Session): string {
+  if (session.title) return session.title;
+  if (session.intent) return session.intent;
+  return lastPart(session.cwd);
+}
+
+export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean } | { kind: "send"; key: string; send: PendingSend };
+
+/**
+ * Events by seq, ask events joined to their ask, message receipts and typed turns joined to the
+ * send, then sends not yet receipted. A message a Claude session in a terminal got over its
+ * pipe reached it as another agent's (`asPeer`); one typed into its terminal is the user's turn.
+ */
+export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow[] {
+  const rows: TimelineRow[] = [];
+  const receipted = new Set<string>();
+  const piped = card.session.harness === "claude" && card.session.native.transport === "pipe";
+  const events = [...card.events.values()].sort((a, b) => a.seq - b.seq);
+  for (const event of events) {
+    const row: TimelineRow = { kind: "event", key: `e${event.seq}`, event };
+    if (event.kind === "ask") {
+      const p = event.payload as { ask?: string } | undefined;
+      const ask = p && typeof p.ask === "string" ? state.asks.get(p.ask) : undefined;
+      if (ask) row.ask = ask;
+    } else if (event.kind === "notification") {
+      const p = event.payload as { type?: string; ref?: string } | undefined;
+      if (p && p.type === "message" && typeof p.ref === "string") {
+        const send = card.sends.get(p.ref);
+        if (send) {
+          row.send = send;
+          receipted.add(p.ref);
+        }
+      }
+      if (p && p.type === "message" && piped) row.asPeer = true;
+    } else if (event.kind === "user_turn") {
+      const p = event.payload as { ref?: string } | undefined;
+      const send = p && typeof p.ref === "string" ? card.sends.get(p.ref) : undefined;
+      if (send) {
+        row.send = send;
+        receipted.add(send.ref);
+      }
+    }
+    rows.push(row);
+  }
+  const pending = [...card.sends.values()].filter((s) => !receipted.has(s.ref)).sort((a, b) => a.at - b.at);
+  for (const send of pending) rows.push({ kind: "send", key: `s${send.ref}`, send });
+  return rows;
+}
+
+export function workspaceName(state: ViewState, session: Session): string | undefined {
+  return session.workspace ? state.workspaces.get(session.workspace)?.name : undefined;
+}
+
+// --- voice and controllers ---------------------------------------------------------------------
+
+/** A conversation is running, or an engine is being set up: the chat tab pulses. */
+export function voiceBusy(state: ViewState): boolean {
+  return state.voice !== undefined || state.setup !== undefined;
+}
+
+/** What the voice row says: the state, the phone it belongs to, or the setup step. */
+export function voiceWords(state: ViewState): string {
+  if (state.setup) {
+    const percent = state.setup.progress === undefined ? "" : ` ${Math.round(state.setup.progress * 100)}%`;
+    const step = SETUP_WORD[state.setup.step] ?? state.setup.step;
+    return `${state.setup.engine}: ${step}${percent}`;
+  }
+  if (!state.voice) return "";
+  const who = state.voice.client ? namedController(state) : undefined;
+  return who ? `${state.voice.state} · ${who}` : state.voice.state;
+}
+
+/**
+ * The phone a conversation is on, when the view can say which. `voice.state` names the
+ * client, and `controller.list` is keyed by controller, and a view holds no list of clients
+ * to join them on — so the name is shown only while one controller is connected, which is
+ * the usual case and the one where a name helps.
+ */
+export function namedController(state: ViewState): string | undefined {
+  const connected = [...state.controllers.values()].filter((c) => c.connected);
+  return connected.length === 1 ? connected[0]!.name : undefined;
+}
+
+const SETUP_WORD: Record<string, string> = {
+  uv: "fetching the package tool",
+  venv: "making the environment",
+  deps: "installing",
+  weights: "fetching the weights",
+  starting: "starting",
+  ready: "ready",
+  failed: "failed",
+};
+
+/** The code in two groups and the time left, for the pairing panel. */
+export function pairingWords(offer: PairingOffer, now: number): { code: string; left: string; expired: boolean } {
+  return { code: `${offer.code.slice(0, 3)} ${offer.code.slice(3)}`, ...leftWords(offer.expiresAt, now) };
+}
+
+/** The login code as the page wants it and the time left, for the account card. */
+export function loginWords(offer: LoginOffer, now: number): { code: string; left: string; expired: boolean } {
+  return { code: offer.userCode, ...leftWords(offer.expiresAt, now) };
+}
+
+// --- the account ------------------------------------------------------------------------------
+
+export interface AccountBar {
+  label: string;
+  percent: number;
+  words: string;
+}
+
+/**
+ * The backup row under the bars. `plan`: the plan has none. `off`: nothing on the server,
+ * Turn on offered. `available`: the server holds a backup this node has no key for (a
+ * fresh install), Restore and Turn on offered, the latter able to start over. `on`: this
+ * node keeps it, `state` how the sender is doing, Turn off offered (and Take over when
+ * another node owns it). `restoring`: the progress, nothing offered.
+ */
+export interface BackupRow {
+  kind: "plan" | "off" | "available" | "on" | "restoring";
+  /** The line that says how it stands. */
+  words: string;
+  state?: BackupState["state"];
+  /** What the server holds, in words: when, how many, how big. */
+  remote?: string;
+  /** The turn-on form may offer to start over: the server holds a backup already. */
+  canReplace: boolean;
+  /** A restore's progress, 0 to 100. */
+  progress?: number;
+}
+
+export interface AccountCard {
+  /** Signed out, a login open, or signed in. */
+  kind: "out" | "login" | "in";
+  title: string;
+  /** The plan and what it grants, in a line. */
+  sub: string;
+  /** The link, when signed in. */
+  connected?: boolean;
+  /** One bar per metered metric with a cap; nothing while the caps are unknown. */
+  bars: AccountBar[];
+  /** The cloud backup, once signed in. */
+  backup?: BackupRow;
+  /** Direct connections, once signed in. */
+  direct?: DirectRow;
+}
+
+/** One node's direct connections on the account card: its switch and how it stands. */
+export interface DirectLine {
+  node: NodeId;
+  name: string;
+  on: boolean;
+  state: DirectState["state"];
+  words: string;
+}
+
+/** The direct connections row: `plan` when the plan has none, else a line per node that said where it stands. */
+export interface DirectRow {
+  kind: "plan" | "nodes";
+  words: string;
+  lines: DirectLine[];
+}
+
+const METRIC_LABELS: Record<string, string> = { llm_tokens_in: "tokens in", llm_tokens_out: "tokens out", stt_seconds: "speech in", tts_chars: "speech out", embed_tokens: "embeddings", relay_messages: "relay", push_count: "pushes", relayed_nodes: "relayed nodes", backup_bytes: "backup" };
+
+function compact(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n % 1000 === 0 ? 0 : 1)}k`;
+  return String(Math.round(n));
+}
+
+/** How long ago, in words: just now, 3 min ago, 2 h ago, 4 d ago. */
+export function agoWords(at: number, now: number): string {
+  const s = Math.max(0, Math.round((now - at) / 1000));
+  if (s < 60) return "just now";
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+}
+
+/** The backup row from the account's backup state and the plan. */
+export function selectBackup(a: AccountState, now: number): BackupRow | undefined {
+  const b = a.backup;
+  if (!b) return undefined;
+  const hosted = (a.limits as { hosted?: { backup?: boolean } }).hosted;
+  const remote = b.remote ? `a backup${b.remote.updatedAt !== undefined ? ` from ${new Date(b.remote.updatedAt).toLocaleDateString()}` : ""}, ${b.remote.objects} items, ${bytesWords(b.remote.bytes)}` : undefined;
+  if (b.state === "restoring") {
+    const p = b.progress;
+    return { kind: "restoring", words: p && p.total > 0 ? `Restoring, ${p.done} of ${p.total}` : "Restoring…", state: b.state, canReplace: false, progress: p && p.total > 0 ? Math.min(100, Math.round((p.done / p.total) * 100)) : 0 };
+  }
+  if (!hosted?.backup) return { kind: "plan", words: "Not on this plan.", canReplace: false };
+  if (!b.enabled) {
+    if (remote) return { kind: "available", words: `The server holds ${remote}.`, remote, canReplace: true };
+    return { kind: "off", words: "Off. Memory, prompts, the chat and tasks stay on this computer alone.", canReplace: false };
+  }
+  let words: string;
+  switch (b.state) {
+    case "syncing":
+      words = `Syncing${b.pending !== undefined ? `, ${b.pending} to go` : "…"}`;
+      break;
+    case "conflict":
+      words = "Another computer keeps the backup now.";
+      break;
+    case "full":
+      words = "The plan's backup space is full.";
+      break;
+    case "paused":
+      words = `Paused${b.error ? `: ${b.error}` : ""}`;
+      break;
+    default:
+      words = `Synced${b.bytes !== undefined ? `, ${bytesWords(b.bytes)}` : ""}${b.lastSyncAt !== undefined ? `, ${agoWords(b.lastSyncAt, now)}` : ""}`;
+  }
+  return { kind: "on", words, state: b.state, ...(remote !== undefined ? { remote } : {}), canReplace: true };
+}
+
+/** The account card: signed out, the login's code, or the subject, plan, link and usage. */
+export function selectAccount(state: ViewState, now = Date.now()): AccountCard {
+  const a = state.account;
+  if (state.login) return { kind: "login", title: "Sign in on the page that opened", sub: "or open the address below and type the code", bars: [] };
+  if (!a || a.subject === undefined) return { kind: "out", title: "Not signed in", sub: "The free plan: your own model key, up to 2 agents at once.", bars: [] };
+  const limits = a.limits as { sessions?: number; memoryTier?: string; hosted?: { llm?: boolean; voice?: boolean; relay?: boolean; push?: boolean } };
+  const hosted = [limits.hosted?.llm ? "hosted model" : "", limits.hosted?.voice ? "hosted voice" : "", limits.hosted?.relay ? "relay" : "", limits.hosted?.push ? "push" : ""].filter(Boolean).join(", ");
+  const sub = `${a.plan}${hosted ? ` · ${hosted}` : ""}${limits.sessions !== undefined ? ` · ${limits.sessions} agents` : ""}${limits.memoryTier ? ` · memory ${limits.memoryTier}` : ""}`;
+  const bars: AccountBar[] = [];
+  for (const [metric, m] of Object.entries(a.usage?.metrics ?? {})) {
+    if (!(m.cap > 0)) continue;
+    bars.push({ label: METRIC_LABELS[metric] ?? metric, percent: Math.min(100, Math.round((m.used / m.cap) * 100)), words: `${compact(m.used)} / ${compact(m.cap)}` });
+  }
+  const backup = selectBackup(a, now);
+  const direct = selectDirect(state);
+  return { kind: "in", title: a.subject, sub, connected: a.connected ?? false, bars, ...(backup ? { backup } : {}), ...(direct ? { direct } : {}) };
+}
+
+const MAPPING_NAMES: Record<string, string> = { upnp: "UPnP", pcp: "PCP", "nat-pmp": "NAT-PMP" };
+
+/** How a node's direct connections stand, in a line: off, starting, why not, or on with the router's mapping and each channel open now. */
+export function directWords(s: DirectState, state: Pick<ViewState, "controllers" | "nodes">): string {
+  switch (s.state) {
+    case "off":
+      return "Off: away from home, phones and other computers go through the relay.";
+    case "starting":
+      return s.reason ? `Starting: ${s.reason}` : "Starting…";
+    case "unavailable":
+      return s.reason ? `Unavailable: ${s.reason}` : "Unavailable";
+    case "ready": {
+      const parts = ["On"];
+      if (s.mapping?.status === "mapped") parts.push(`the router maps its port${s.mapping.protocols?.length ? ` (${s.mapping.protocols.map((p) => MAPPING_NAMES[p] ?? p).join(", ")})` : ""}`);
+      else if (s.mapping?.status === "probing") parts.push("asking the router for a port");
+      for (const p of s.peers) {
+        const name = p.kind === "controller" ? (state.controllers.get(p.id)?.name ?? "a phone") : (state.nodes.get(p.id)?.name ?? "a computer");
+        parts.push(`${name} ${p.path === "relay" ? "through TURN" : "direct"}${p.rttMs !== undefined ? `, ${Math.round(p.rttMs)} ms` : ""}`);
+      }
+      return parts.join(" · ");
+    }
+  }
+}
+
+/** The direct connections row: nothing while signed out, the plan's refusal, or a line per node, this one first. */
+export function selectDirect(state: ViewState): DirectRow | undefined {
+  const a = state.account;
+  if (!a || a.subject === undefined) return undefined;
+  const hosted = (a.limits as { hosted?: { direct?: boolean } }).hosted;
+  if (!hosted?.direct) return { kind: "plan", words: "Not on this plan.", lines: [] };
+  const self = state.node;
+  const lines = [...state.direct.values()]
+    .map((s): DirectLine => ({ node: s.node, name: state.nodes.get(s.node)?.name ?? s.node, on: s.state !== "off", state: s.state, words: directWords(s, state) }))
+    .sort((x, y) => Number(y.node === self) - Number(x.node === self) || x.name.localeCompare(y.name));
+  return { kind: "nodes", words: "Phones and computers on other networks reach a node straight, not through the relay.", lines };
+}
+
+/** The time until `expiresAt` as m:ss, and whether it has passed. */
+function leftWords(expiresAt: number, now: number): { left: string; expired: boolean } {
+  const left = Math.max(0, expiresAt - now);
+  const seconds = Math.floor(left / 1000);
+  return { left: `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`, expired: left <= 0 };
+}
+
+// --- grants: invites, phones' access, nodes' roles ------------------------------------------------
+
+/** An invite just minted, as its panel shows it: whose, the text to paste, the link its QR code holds, until when. */
+export interface IssuedInvite {
+  grant: string;
+  kind: GrantKind;
+  name: string;
+  text: string;
+  link: string;
+  expiresAt: number;
+}
+
+/** What a phone may be given: everything, its sessions, or a look. The protocol's presets (`ACCESS_PRESETS`); the frame imports types only. */
+export const PHONE_PRESETS = {
+  full: { label: "Everything", scopes: ["chat", "sessions:read", "sessions:write", "tasks:read", "tasks:write", "asks:answer", "voice", "views", "controllers", "nodes", "audit:read", "metrics:read", "account", "updates", "remote", "terminal"] },
+  sessions: { label: "Its sessions", scopes: ["sessions:read", "sessions:write", "asks:answer", "views", "metrics:read"] },
+  view: { label: "Look only", scopes: ["sessions:read", "views", "metrics:read"] },
+} as const satisfies Record<string, { label: string; scopes: readonly Scope[] }>;
+export type PhonePreset = keyof typeof PHONE_PRESETS;
+
+/** How long a new grant lasts: an hour, a day, a week, a month, or until it is removed. */
+export const GRANT_ENDS = [
+  { key: "1h", label: "1 hour", ms: 3_600_000 },
+  { key: "1d", label: "1 day", ms: 86_400_000 },
+  { key: "7d", label: "1 week", ms: 7 * 86_400_000 },
+  { key: "30d", label: "30 days", ms: 30 * 86_400_000 },
+  { key: "never", label: "No end" },
+] as const;
+export type GrantEnd = (typeof GRANT_ENDS)[number]["key"];
+
+/** What a phone's invite asks for: a preset, perhaps kept to one node or one workspace, and an end. */
+export interface PhoneInviteForm {
+  name: string;
+  preset: PhonePreset;
+  /** `node:<id>` or `workspace:<id>`; the whole of what the preset reaches when absent. */
+  limit?: string;
+  end: GrantEnd;
+}
+
+/**
+ * The `grant.invite` params a phone's form gives. Everything cannot be kept to a node or a
+ * workspace (limited access holds no global scope), so a limit on it is refused here, as the
+ * node would refuse it.
+ */
+export function phoneInviteParams(form: PhoneInviteForm): { kind: "controller"; name: string; access: Access; expiresIn?: number } | { error: string } {
+  const name = form.name.trim();
+  if (!name) return { error: "name the phone" };
+  const preset = PHONE_PRESETS[form.preset];
+  const access: Access = { scopes: [...preset.scopes], messages: form.preset === "full" ? "send" : "none" };
+  if (form.limit) {
+    if (form.preset === "full") return { error: "everything reaches every node: pick its sessions or a look to keep it to one" };
+    const [kind, id] = [form.limit.slice(0, form.limit.indexOf(":")), form.limit.slice(form.limit.indexOf(":") + 1)];
+    if (kind === "node") access.nodes = [id as NodeId];
+    else if (kind === "workspace") access.workspaces = [id as Workspace["id"]];
+    else return { error: "no such limit" };
+  }
+  const end = GRANT_ENDS.find((e) => e.key === form.end);
+  return { kind: "controller", name, access, ...(end && "ms" in end ? { expiresIn: end.ms } : {}) };
+}
+
+/** What a node's invite asks for: a name, whether the node is hands or a full member, and an end. */
+export interface NodeInviteForm {
+  name: string;
+  role: GrantRole;
+  end: GrantEnd;
+}
+
+export function nodeInviteParams(form: NodeInviteForm): { kind: "node"; name: string; role: GrantRole; expiresIn?: number } | { error: string } {
+  const name = form.name.trim();
+  if (!name) return { error: "name the machine" };
+  const end = GRANT_ENDS.find((e) => e.key === form.end);
+  return { kind: "node", name, role: form.role, ...(end && "ms" in end ? { expiresIn: end.ms } : {}) };
+}
+
+/** What a phone may be kept to: this node and the others, and each workspace, by name. */
+export function limitChoices(state: ViewState): { key: string; label: string }[] {
+  const nodes = [...state.nodes.values()].sort((a, b) => Number(b.id === state.node) - Number(a.id === state.node) || a.name.localeCompare(b.name));
+  const workspaces = [...state.workspaces.values()].sort((a, b) => a.name.localeCompare(b.name));
+  const nodeName = (id: NodeId) => state.nodes.get(id)?.name ?? id;
+  return [
+    ...nodes.map((n) => ({ key: `node:${n.id}`, label: `only ${n.name}` })),
+    ...workspaces.map((w) => ({ key: `workspace:${w.id}`, label: `only ${w.name}${nodes.length > 1 ? ` on ${nodeName(w.node)}` : ""}` })),
+  ];
+}
+
+/** An access in words, as a phone's row says it: the preset it matches, and what it is kept to. */
+export function accessWords(access: Access | undefined, state: ViewState): string {
+  if (!access) return "everything";
+  const has = (scopes: readonly string[]) => scopes.length === access.scopes.length && scopes.every((s) => access.scopes.includes(s as Scope));
+  const preset = (Object.keys(PHONE_PRESETS) as PhonePreset[]).find((k) => has(PHONE_PRESETS[k].scopes));
+  const what = preset === "full" ? "everything" : preset === "sessions" ? "its sessions" : preset === "view" ? "look only" : `${access.scopes.length} scope${access.scopes.length === 1 ? "" : "s"}`;
+  const kept = [
+    ...(access.nodes ?? []).map((n) => state.nodes.get(n)?.name ?? n),
+    ...(access.workspaces ?? []).map((w) => state.workspaces.get(w)?.name ?? w),
+    ...(access.paths ?? []),
+  ];
+  return kept.length > 0 ? `${what} · only ${kept.join(", ")}` : what;
+}
+
+/** When a grant ends, in words: in how long, or that it has; nothing for one with no end. */
+export function endWords(expiresAt: number | undefined, now: number): string | undefined {
+  if (expiresAt === undefined) return undefined;
+  const left = expiresAt - now;
+  if (left <= 0) return "ended";
+  const minutes = Math.ceil(left / 60_000);
+  if (minutes < 60) return `ends in ${minutes}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 48) return `ends in ${hours}h`;
+  return `ends in ${Math.round(hours / 24)}d`;
+}
+
+/** The invites still waiting to be redeemed, the soonest to run out first, with how long each holds. */
+export function selectPendingInvites(state: ViewState, now: number): { grant: Grant; left: string; expired: boolean }[] {
+  return [...state.grants.values()]
+    .filter((g) => g.status === "pending")
+    .sort((a, b) => (a.inviteExpiresAt ?? Infinity) - (b.inviteExpiresAt ?? Infinity) || a.name.localeCompare(b.name))
+    .map((grant) => ({ grant, ...leftWords(grant.inviteExpiresAt ?? now, now) }));
+}
+
+/** The invite panel's words: how long it holds. */
+export function issuedWords(invite: IssuedInvite, now: number): { left: string; expired: boolean } {
+  return leftWords(invite.expiresAt, now);
+}
+
+/** A node's grant: the row its invite was redeemed into, bound to it. */
+export function nodeGrant(state: ViewState, node: NodeId): Grant | undefined {
+  for (const g of state.grants.values()) if (g.kind === "node" && g.node === node) return g;
+  return undefined;
+}
+
+/**
+ * What a node's card says of its grant: hands or a full member, when it ends, and whether it
+ * must be invited again; and whether the desktop may remove it (any node but this one, whose
+ * grant this node keeps), with what removing it would do.
+ */
+export function nodeGrantWords(state: ViewState, node: Node, now: number): { badge?: GrantRole; end?: string; reinvite: boolean; removable: boolean; removeWords: string } {
+  const grant = nodeGrant(state, node.id);
+  const badge = node.hands ? "hands" : grant?.role;
+  const end = endWords(grant?.expiresAt, now);
+  const removable = grant !== undefined && node.id !== state.node && state.scopes.includes("controllers");
+  const removeWords = node.backup ? `Remove ${node.name}? It can no longer reach this node, and the other nodes get new keys, since it held them all.` : `Remove ${node.name}? It can no longer reach this node.`;
+  return { ...(badge ? { badge } : {}), ...(end ? { end } : {}), reinvite: grant?.status === "reinvite", removable, removeWords };
+}
+
+/**
+ * What the desktop offers this node itself: Join a primary while it is alone (no other node in
+ * the list), Leave once it is a secondary. A phone is never offered either: joining and leaving
+ * are asked on the machine itself.
+ */
+export function membershipOffer(state: ViewState): "join" | "leave" | undefined {
+  if (state.client?.kind !== "ui" || !state.scopes.includes("nodes") || state.node === undefined) return undefined;
+  const self = state.nodes.get(state.node);
+  if (!self) return undefined;
+  if (self.role === "secondary" && [...state.nodes.values()].some((n) => n.role === "primary" && n.id !== self.id)) return "leave";
+  if ([...state.nodes.keys()].every((id) => id === self.id)) return "join";
+  return undefined;
+}
+
+/** The folders a join shares, one per line as typed: blank lines and stray spaces dropped. */
+export function joinPaths(text: string): string[] {
+  return text
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+}
+
+/** The paired controllers, the connected ones first, then by when they were paired. */
+export function selectControllers(state: ViewState): Controller[] {
+  return [...state.controllers.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.pairedAt - a.pairedAt);
+}
+
+/** When a controller was last seen, in words. */
+export function controllerWords(controller: Controller, now: number): string {
+  const seen = controller.connected ? "connected" : controller.lastSeen === undefined ? "never connected" : `last seen ${ago(controller.lastSeen, now)}`;
+  // what the phone can do from elsewhere: reach this node through the relay, and be told of an ask by a push
+  const can = [controller.relay ? "relay" : "", controller.push ? `push (${controller.push.platform})` : ""].filter(Boolean).join(" · ");
+  // and how it came to be paired, when that was the account rather than a code
+  const how = controller.account !== undefined ? `paired through ${controller.account}` : "";
+  return [seen, can, how].filter(Boolean).join(" · ");
+}
+
+function ago(at: number, now: number): string {
+  const minutes = Math.floor(Math.max(0, now - at) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 48) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+// --- asks ------------------------------------------------------------------------------------
+
+/** The reserved option id of a free-text answer (`ASK_TEXT_OPTION` in the protocol; the view imports types only). */
+const TEXT_OPTION = "text";
+
+/** What the user has picked and typed on an ask's form. */
+export interface AskDraft {
+  selected: string[];
+  text: string;
+  remember?: string;
+}
+
+export interface AnswerParams {
+  id: string;
+  option: string;
+  options?: string[];
+  text?: string;
+  remember?: "session" | "always";
+}
+
+/**
+ * The `ask.answer` params a draft makes, or `undefined` when there is nothing to send: a
+ * clicked or ticked option (every one on a `multiple` ask), else the text alone under the
+ * reserved `text` id when the ask allows it. Text beside a pick rides along as a note.
+ */
+export function answerParams(ask: Ask, draft: AskDraft): AnswerParams | undefined {
+  const declared = new Set(ask.options.map((o) => o.id));
+  const selected = [...new Set(draft.selected)].filter((id) => declared.has(id));
+  const text = draft.text.trim();
+  const params: AnswerParams = { id: ask.id, option: "" };
+  if (selected.length > 0) {
+    params.option = selected[0]!;
+    if (ask.multiple) params.options = selected;
+  } else if (text && ask.allowsText === true) {
+    params.option = TEXT_OPTION;
+  } else {
+    return undefined;
+  }
+  if (text) params.text = text;
+  if (draft.remember === "session" || draft.remember === "always") params.remember = draft.remember;
+  return params;
+}
+
+/** An answer in words: the labels of what was chosen, the text quoted when it is the answer, else appended as a note. */
+export function answerWords(ask: Ask, answer: AskAnswer): string {
+  const labels: string[] = [];
+  for (const id of answer.options ?? [answer.option]) {
+    const declared = ask.options.find((o) => o.id === id);
+    if (declared) labels.push(declared.label);
+    else if (id !== TEXT_OPTION) labels.push(id);
+  }
+  const text = answer.text?.trim();
+  if (labels.length === 0) return text ? `“${text}”` : answer.option;
+  return labels.join(", ") + (text ? `: ${text}` : "");
+}
+
+/** The words of an `ask` event on a timeline: a question or a prompt, and what became of it. */
+export function askEventText(payload: Record<string, unknown>, ask: Ask | undefined): { label: "question" | "prompt"; text: string } {
+  const phase = String(payload["phase"] ?? "");
+  const question = ask ? ask.type !== "permission" : payload["tool"] === "AskUserQuestion" || payload["question"] !== undefined;
+  const title = ask?.title ?? (question ? "a question" : payload["tool"] ? `${String(payload["tool"])} permission` : "a prompt");
+  let text = title;
+  if (phase === "opened") text = `${title}: waiting`;
+  else if (phase === "answered") {
+    const answer = (payload["answer"] as AskAnswer | undefined) ?? ask?.answer;
+    let words = "answered";
+    if (answer && ask) words = answerWords(ask, answer);
+    else if (answer) words = answer.option === TEXT_OPTION && answer.text ? `“${answer.text.trim()}”` : (answer.options ?? [answer.option]).join(", ");
+    text = `${title}: ${words}`;
+  } else if (phase === "closed") text = `${title}: closed${payload["reason"] ? ` (${String(payload["reason"])})` : ""}`;
+  return { label: question ? "question" : "prompt", text };
+}
+
+/** The words of a message's blocks, for a list. */
+export function messageText(blocks: ContentBlock[]): string {
+  return blocks.map((b) => (b.type === "text" || b.type === "quote" ? b.text : "")).join(" ").trim();
+}
+
+/** The profile's label, or a short form of its id until `profile.list` has answered. */
+export function profileName(state: ViewState, session: Session): string {
+  return state.profiles.get(session.profile)?.name ?? session.profile.replace(/^prof_/, "").slice(0, 6);
+}
+
+export type TaskAction = "pause" | "resume" | "complete";
+
+/**
+ * What the user may do to an open task from the stream, given the view's scopes: pause a
+ * scheduled task that waits or is ready, resume a paused one, and mark any open task done.
+ */
+export function taskActions(task: Task, scopes: Scope[]): TaskAction[] {
+  if (!scopes.includes("tasks:write")) return [];
+  const out: TaskAction[] = [];
+  if (task.trigger && (task.status === "pending" || task.status === "ready")) out.push("pause");
+  if (task.status === "paused") out.push("resume");
+  if (task.status !== "done" && task.status !== "cancelled") out.push("complete");
+  return out;
+}
+
+// --- nodes and metrics ---------------------------------------------------------------------
+
+export interface NodeBar {
+  /** cpu, memory, or a GPU's name. */
+  label: string;
+  /** 0–100, or undefined when there is no reading. */
+  percent?: number;
+  /** The reading in words: a percentage, or used of total. */
+  words: string;
+}
+
+/** The processes of one owner summed: a session named as its tab is, the platform, the brain, a sidecar, or the rest. */
+export interface OwnerRow {
+  key: string;
+  label: string;
+  kind: ProcessOwner["kind"];
+  cpu: number;
+  memory: number;
+}
+
+export interface NodeCard {
+  node: Node;
+  /** The node's role and state in words, beside its name. */
+  sub: string;
+  sample?: MetricsSample;
+  bars: NodeBar[];
+  owners: OwnerRow[];
+}
+
+/**
+ * Whether a node's card offers Restart: the node this client is connected to, from the
+ * desktop app. A phone's host does not know the request, and a machine seen through the
+ * primary is not the one this client would restart.
+ */
+export function restartable(state: ViewState, node: Node): boolean {
+  return node.id === state.node && state.client?.kind === "ui" && state.scopes.includes("nodes");
+}
+
+/** What a restart would cut off, when the node refused it for that. */
+export function restartWords(reasons: string[]): string {
+  return reasons.length === 0 ? "Busy." : `Busy: ${reasons.join(", ")}. Restarting now cuts ${reasons.length === 1 ? "it" : "them"} off.`;
+}
+
+/**
+ * The dot at the right of the chat tab: green while the line to cophylad is open, a ring while it is
+ * not, the node and its platform on hover. The desktop app has no status line of its own; a
+ * phone's chrome shows the line itself, so there is none there.
+ */
+export function linkWords(state: ViewState): { status: "connected" | "gone"; title: string } | undefined {
+  if (state.client?.kind === "controller") return undefined;
+  if (!state.connected) return { status: "gone", title: "Not connected to cophylad" };
+  const name = state.node !== undefined ? (state.nodes.get(state.node)?.name ?? state.node) : undefined;
+  const about = [name, state.platformVersion !== undefined ? `platform ${state.platformVersion}` : undefined].filter(Boolean).join(" · ");
+  return { status: "connected", title: about ? `Connected to cophylad — ${about}` : "Connected to cophylad" };
+}
+
+/** One card per node, this one first, then by name: its bars from the latest sample and its processes summed by owner. */
+export function selectNodes(state: ViewState): NodeCard[] {
+  const nodes = [...state.nodes.values()].sort((a, b) => Number(b.id === state.node) - Number(a.id === state.node) || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  return nodes.map((node) => {
+    const sample = state.metrics.get(node.id);
+    const sub = [node.role, node.backup ? "backup" : "", node.via === "relay" ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
+    const card: NodeCard = { node, sub, bars: [], owners: [] };
+    if (!sample) {
+      card.bars.push({ label: "cpu", words: "—" }, { label: "memory", words: "—" });
+      return card;
+    }
+    card.sample = sample;
+    card.bars.push({ label: "cpu", percent: clamp(sample.cpu), words: percentWords(sample.cpu) });
+    const memoryPct = sample.memory.total > 0 ? (sample.memory.used / sample.memory.total) * 100 : 0;
+    card.bars.push({ label: "memory", percent: clamp(memoryPct), words: usedWords(sample.memory.used, sample.memory.total) });
+    for (const gpu of sample.gpu ?? []) {
+      const vram = gpu.vramTotal > 0 ? ` · ${usedWords(gpu.vramUsed, gpu.vramTotal)}` : "";
+      card.bars.push({ label: gpu.name, percent: clamp(gpu.util), words: `${percentWords(gpu.util)}${vram}` });
+    }
+    const owners = new Map<string, OwnerRow>();
+    for (const p of sample.processes) {
+      const key = ownerKey(p.owner);
+      let row = owners.get(key);
+      if (!row) {
+        row = { key, label: ownerLabel(state, p.owner), kind: p.owner.kind, cpu: 0, memory: 0 };
+        owners.set(key, row);
+      }
+      row.cpu += p.cpu;
+      row.memory += p.memory;
+    }
+    card.owners = [...owners.values()].sort((a, b) => b.cpu - a.cpu || b.memory - a.memory || a.label.localeCompare(b.label));
+    return card;
+  });
+}
+
+function clamp(percent: number): number {
+  return Math.max(0, Math.min(100, percent));
+}
+
+function ownerKey(owner: ProcessOwner): string {
+  switch (owner.kind) {
+    case "session":
+      return `session:${owner.session}`;
+    case "sidecar":
+      return `sidecar:${owner.name}`;
+    default:
+      return owner.kind;
+  }
+}
+
+function ownerLabel(state: ViewState, owner: ProcessOwner): string {
+  switch (owner.kind) {
+    case "session": {
+      const card = state.sessions.get(owner.session);
+      return card ? sessionLabel(card.session) : owner.session.replace(/^sess_/, "").slice(0, 6);
+    }
+    case "platform":
+      return "cophylad";
+    case "brain":
+      return "brain";
+    case "sidecar":
+      return owner.name;
+    case "other":
+      return "everything else";
+  }
+}
+
+export interface SpendRow {
+  profile: string;
+  name: string;
+  spend: Spend;
+  /** The login's plan limits, from its node's latest sample. */
+  limits?: ProfileLimits;
+}
+
+/**
+ * Spend per profile summed over every node, with each login's plan limits beside it, the
+ * costliest first; a profile with limits and nothing spent has a row too. Profiles named as
+ * `profile.list` has them.
+ */
+export function selectSpend(state: ViewState): SpendRow[] {
+  const total = new Map<string, Spend>();
+  for (const node of state.spend.values()) {
+    for (const [profile, s] of node.byProfile) {
+      const cur = total.get(profile) ?? { in: 0, out: 0, cached: 0, cost: 0 };
+      cur.in += s.in;
+      cur.out += s.out;
+      cur.cached += s.cached;
+      cur.cost += s.cost;
+      total.set(profile, cur);
+    }
+  }
+  const limits = new Map<string, ProfileLimits>();
+  for (const sample of state.metrics.values()) for (const [profile, l] of Object.entries(sample.limits ?? {})) limits.set(profile, l);
+  const rows: SpendRow[] = [];
+  for (const profile of new Set([...total.keys(), ...limits.keys()])) {
+    const spend = total.get(profile) ?? { in: 0, out: 0, cached: 0, cost: 0 };
+    const l = limits.get(profile);
+    if (spend.in + spend.out + spend.cached + spend.cost === 0 && !l?.session && !l?.weekly) continue;
+    rows.push({ profile, name: state.profiles.get(profile)?.name ?? profile.replace(/^prof_/, "").slice(0, 6), spend, ...(l ? { limits: l } : {}) });
+  }
+  return rows.sort((a, b) => b.spend.cost - a.spend.cost || b.spend.in + b.spend.out - (a.spend.in + a.spend.out) || a.name.localeCompare(b.name));
+}
+
+// --- remote desktop ------------------------------------------------------------------------
+
+/** The desktop block of a node's card: the host's state and what this client may do with it. */
+export interface RemoteCard {
+  node: NodeId;
+  host: RemoteHost;
+  /** The host's state in words: what it is doing, or why it cannot serve. */
+  words: string;
+  streaming: boolean;
+  /** This client can open a viewer on the node: the host serves, and it is not the desktop the app runs on. */
+  connect: boolean;
+  /** The host takes a viewer's PIN. */
+  pair: boolean;
+  /** The host mints a code for a phone; only Apollo does. */
+  invite: boolean;
+  /** Watching first, then the newest. */
+  viewers: RemoteViewer[];
+}
+
+/**
+ * A node's desktop block, or undefined when there is none to show: without the `remote`
+ * scope, for a node that is not online, or one whose host is off. A controller opens any
+ * node's desktop in a page; the desktop app opens a window, and never onto the desktop it
+ * runs on.
+ */
+export function selectRemote(state: ViewState, node: Node): RemoteCard | undefined {
+  if (!state.scopes.includes("remote") || node.status !== "online") return undefined;
+  const remote = state.remote.get(node.id);
+  if (!remote || remote.host.status === "off") return undefined;
+  const ready = remote.host.status === "ready";
+  const client = state.client;
+  const viewer = client?.kind === "controller" || (client?.kind === "ui" && client.node !== undefined && client.node !== node.id);
+  return {
+    node: node.id,
+    host: remote.host,
+    words: remoteWords(remote.host, remote.streaming),
+    streaming: remote.streaming,
+    connect: ready && viewer,
+    pair: ready,
+    invite: ready && remote.host.kind === "apollo",
+    viewers: [...remote.viewers].sort((a, b) => Number(b.connected === true) - Number(a.connected === true) || b.since - a.since),
+  };
+}
+
+/** What a desktop host is doing, in words. */
+export function remoteWords(host: RemoteHost, streaming: boolean): string {
+  switch (host.status) {
+    case "off":
+      return "off";
+    case "installing":
+    case "starting": {
+      const percent = host.progress === undefined ? "" : ` ${Math.round(host.progress * 100)}%`;
+      return `${host.step ?? host.status}${percent}`;
+    }
+    case "ready":
+      return streaming ? "being viewed" : "ready";
+    case "unavailable":
+      return host.reason ? `unavailable: ${host.reason}` : "unavailable";
+  }
+}
+
+/**
+ * Why Connect opened no desktop, in words to act on: away from the node's LAN a phone reaches
+ * a desktop only with Direct connections on; the node's own words otherwise.
+ */
+export function connectWords(code: string | undefined, message: string): string {
+  if (code === "unsupported" && message.includes("over the relay")) return "a desktop opens on the node's Wi-Fi, or from anywhere once Direct connections is on in the account card";
+  if (code === "unavailable" && /direct connections/i.test(message)) return `${message}: turn Direct connections on in the host's account card`;
+  // a shell from before streams went through its own window
+  if (code === "unsupported" && message.includes("has no host.open")) return "this app cannot show a desktop it has no route to: update the app";
+  return message;
+}
+
+/** A viewer's second line: watching now, or since when it has been paired or open. */
+export function viewerWords(viewer: RemoteViewer, now: number): string {
+  if (viewer.kind === "web") return viewer.connected ? "watching in a browser" : `browser, opened ${ago(viewer.since, now)}`;
+  return viewer.connected ? "watching" : `paired ${ago(viewer.since, now)}`;
+}
+
+/** The phone code in words: the code, the passphrase to type beside it, and the time left. */
+export function inviteWords(invite: RemoteInvite, now: number): { code: string; passphrase: string; left: string; expired: boolean } {
+  const time = invite.expiresAt === undefined ? { left: "", expired: false } : leftWords(invite.expiresAt, now);
+  return { code: invite.otp, passphrase: invite.passphrase ?? "", ...time };
+}
+
+/** Used of total, short: both in GB when the total is, else each in its own unit. */
+export function usedWords(used: number, total: number): string {
+  if (total >= 1024 ** 3) return `${(used / 1024 ** 3).toFixed(1)}/${(total / 1024 ** 3).toFixed(1)} GB`;
+  return `${bytesWords(used)}/${bytesWords(total)}`;
+}
+
+/** Bytes in words: whole KB and MB, GB to one place. */
+export function bytesWords(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${Math.round(n)} B`;
+}
+
+/** A percentage to the nearest whole, and to one place under ten. */
+export function percentWords(n: number): string {
+  const v = Math.max(0, n);
+  return v > 0 && v < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`;
+}
+
+/** A cost in dollars: cents when there are some, a fraction of a cent when that is all. */
+export function costWords(usd: number): string {
+  if (usd <= 0) return "$0";
+  if (usd < 0.01) return "<$0.01";
+  return `$${usd.toFixed(2)}`;
+}
+
+/** A plan window's share used, whole; a dash while it is not known. */
+export function limitWords(w: LimitWindow | undefined): string {
+  return w ? `${Math.round(w.percent)}%` : "—";
+}
+
+/** How close a window is to its cap, for its colour, at a machine's bars' thresholds. */
+export function limitLevel(w: LimitWindow | undefined): "none" | "normal" | "warn" | "critical" {
+  if (!w) return "none";
+  return w.percent >= 95 ? "critical" : w.percent >= 80 ? "warn" : "normal";
+}
+
+/** A spend row's hover title: each limit with when it starts over, then the day's cost and tokens. */
+export function spendTitle(row: SpendRow, now: number): string {
+  const window = (label: string, w: LimitWindow | undefined) => {
+    if (!w) return `${label}: not known`;
+    const left = w.resetsAt !== undefined && w.resetsAt > now ? `, starts over in ${durationWords(w.resetsAt - now)}` : "";
+    return `${label}: ${Math.round(w.percent)}% used${left}`;
+  };
+  const lines = [row.name];
+  if (row.limits) lines.push(window("Session limit", row.limits.session), window("Weekly limit", row.limits.weekly));
+  lines.push(`Today: ${costWords(row.spend.cost)}, ${countWords(row.spend.in)} in, ${countWords(row.spend.out)} out, ${countWords(row.spend.cached)} cached`);
+  return lines.join("\n");
+}
+
+/** A span in words, its two largest units: 3 d 4 h, 2 h 40 min, 12 min. */
+export function durationWords(ms: number): string {
+  const minutes = Math.max(1, Math.round(ms / 60000));
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+  return hours % 24 ? `${Math.floor(hours / 24)} d ${hours % 24} h` : `${Math.floor(hours / 24)} d`;
+}
+
+/** A count, short: 1.2k, 34k, 1.5M. */
+export function countWords(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1_000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const pad2 = (n: number | string) => String(n).padStart(2, "0");
+
+/** A trigger in words: when a task runs, or what it waits for; empty for a task with none. */
+export function triggerWords(task: Task): string {
+  const t = task.trigger;
+  if (!t) return "";
+  switch (t.kind) {
+    case "at": {
+      const d = new Date(t.at);
+      return `at ${WEEKDAYS[d.getDay()]} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+    case "cron": {
+      const expr = t.expr.trim();
+      const zone = t.tz ? ` (${t.tz})` : "";
+      if (expr === "* * * * *") return `every minute${zone}`;
+      const [minute, hour, dom, month, dow] = expr.split(/\s+/);
+      if (minute !== undefined && hour !== undefined && /^\d+$/.test(minute) && /^\d+$/.test(hour) && dom === "*" && month === "*") {
+        const time = `${pad2(hour)}:${pad2(minute)}`;
+        if (dow === "*") return `${task.recurring ? "daily" : "at"} ${time}${zone}`;
+        if (dow === "1-5") return `weekdays ${time}${zone}`;
+      }
+      return `cron ${expr}${zone}`;
+    }
+    case "event":
+      return `on ${t.name}`;
+  }
+}

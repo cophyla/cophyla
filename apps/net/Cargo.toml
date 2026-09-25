@@ -1,0 +1,36 @@
+# cophyla-net: the node's helper for direct connections. It holds WebRTC data channels to
+# phones and to other nodes on one UDP port, gathers its own candidates (every usable
+# address, STUN's reflexive one, a mapping on the router), predicts the ports a sequential
+# NAT will use, and tells cophylad which path each peer took. It speaks NDJSON JSON-RPC on its
+# stdio and never sees plaintext: cophylad seals every frame before it gets here.
+
+[workspace]
+resolver = "2"
+members = ["crates/proto", "crates/core", "crates/cli"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "Apache-2.0"
+authors = ["feritmelih"]
+
+[workspace.dependencies]
+net-proto = { path = "crates/proto" }
+net-core = { path = "crates/core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt", "net", "io-util", "io-std", "sync", "time", "macros"] }
+bytes = "1"
+# Pinned: the sans-IO WebRTC core is young, and a minor release may break its API.
+rtc = "=0.21.0"
+portmapper = { version = "=0.19.3", default-features = false }
+netwatch = "=0.19.3"
+rand = "0.9"
+socket2 = "0.6"
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "thin"
+codegen-units = 1

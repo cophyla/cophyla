@@ -1,0 +1,33 @@
+# cargo-deny: licences, advisories and sources for everything cophyla-net links. The allow
+# list is tether's; the one MPL-2.0 crate is let in by name, never by the list.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+  # a macro crate its author archived, built into netlink's (Linux) packet types through netwatch; unmaintained, with no advisory against its code
+  { id = "RUSTSEC-2024-0436", reason = "paste: unmaintained, no vulnerability; reached only through netwatch's netlink crates" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib"]
+exceptions = [
+  # the HTTP client igd-next speaks UPnP with, linked unmodified (portmapper)
+  { allow = ["MPL-2.0"], crate = "attohttpc" },
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+# the workspace's own crates name each other by path; none is published
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

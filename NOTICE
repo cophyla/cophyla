@@ -1,0 +1,46 @@
+Cophyla
+Copyright 2026 feritmelih
+
+This product includes software developed as part of the Cophyla project
+(https://github.com/cophyla/cophyla).
+
+Licensed under the Apache License, Version 2.0. See LICENSE.
+
+The brain package is not covered by this license. It is distributed as a
+closed, signed binary under its own end-user license agreement.
+
+The controller app carries third-party files under its `wake/` directory, shipped
+unmodified, so the phone can hear the wake word itself:
+
+  ONNX Runtime Web 1.30.0 (ort-wasm-simd-threaded.wasm)
+  https://github.com/microsoft/onnxruntime
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+
+  openWakeWord v0.5.1 feature models (melspectrogram.onnx, embedding_model.onnx)
+  https://github.com/dscripka/openWakeWord
+  Copyright (c) 2022 David Scripka. Licensed under the Apache License, Version 2.0.
+
+  openWakeWord v0.5.1 pre-trained "hey jarvis" model (hey_jarvis_v0.1.onnx)
+  https://github.com/dscripka/openWakeWord
+  Copyright (c) 2022 David Scripka. Licensed under the Creative Commons
+  Attribution-NonCommercial-ShareAlike 4.0 International License (CC BY-NC-SA 4.0),
+  https://creativecommons.org/licenses/by-nc-sa/4.0/
+
+tether (`tether/`), the pseudo-terminal host the daemon runs sessions in, is a project of its
+own under the same licence, with its own NOTICE in `tether/NOTICE`.
+
+The default view carries xterm.js and marked under `apps/cophylad/views/default/vendor/`,
+shipped unmodified (pinned by sha256 in `apps/cophylad/scripts/vendor-view.ts`), to draw
+terminals in the app and to read the markdown a model writes:
+
+  xterm.js 6.0.0 (@xterm/xterm), with @xterm/addon-fit 0.11.0 and @xterm/addon-unicode11 0.9.0
+  https://github.com/xtermjs/xterm.js
+  Copyright (c) 2017-2019, The xterm.js authors; Copyright (c) 2014-2016, SourceLair Private
+  Company; Copyright (c) 2012-2013, Christopher Jeffrey. Licensed under the MIT License
+  (vendor/xterm-LICENSE.txt).
+
+  marked 18.0.14
+  https://github.com/markedjs/marked
+  Copyright (c) 2018+, MarkedJS; Copyright (c) 2011-2018, Christopher Jeffrey. Licensed
+  under the MIT License (vendor/marked-LICENSE.txt), which also carries the BSD-style
+  licence of John Gruber's Markdown (Copyright (c) 2004, John Gruber) it derives from.

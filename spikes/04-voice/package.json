@@ -1,0 +1,14 @@
+{
+  "name": "spike-voice",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@picovoice/pvrecorder-node": "^1.2.9",
+    "audify": "^1.10.1",
+    "onnxruntime-node": "^1.22.0",
+    "onnxruntime-web": "^1.30.0"
+  },
+  "trustedDependencies": [
+    "audify"
+  ]
+}

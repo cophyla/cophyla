@@ -1,0 +1,52 @@
+[package]
+name = "cophyla"
+version = "0.11.0"
+description = "Cophyla's desktop app: a Tauri 2 shell that hosts views and starts cophylad"
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.82"
+
+# The shell is `cophyla-ui` inside `versions/<v>/` (`cophyla-ui.exe`, `Cophyla.app/Contents/MacOS/cophyla-ui`);
+# `Cophyla` is the launcher (apps/installer).
+[[bin]]
+name = "cophyla-ui"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-single-instance = "2"
+# Launch at login points at the launcher when installed; the autostart plugin hard-codes current_exe().
+auto-launch = "0.5"
+tokio = { version = "1", features = ["sync", "time", "macros", "net", "rt-multi-thread"] }
+tokio-tungstenite = "0.30"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+dirs = "6"
+log = "0.4"
+env_logger = "0.11"
+percent-encoding = "2"
+base64 = "0.22"
+
+[target.'cfg(windows)'.dependencies]
+winreg = "0.56"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Foundation", "Data_Xml_Dom", "UI_Notifications"] }
+
+# Notifications with buttons: D-Bus actions on Linux, UNUserNotificationCenter on macOS.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4.18"
+# A stream's window switches WebKitGTK's WebRTC on: the versions Tauri's own web view uses.
+webkit2gtk = "2.0"
+glib = "0.18"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+notify-rust = { version = "4.18", features = ["preview-macos-un"] }
+# The backend itself, for taking a delivered notification down by its identifier.
+mac-usernotifications = "0.3.1"
+
+[profile.dev]
+incremental = true

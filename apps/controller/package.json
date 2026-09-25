@@ -1,0 +1,32 @@
+{
+  "name": "@cophyla/controller",
+  "version": "0.11.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "bun run scripts/build.ts",
+    "dev": "bun run scripts/dev-serve.ts",
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@capacitor/app": "^6",
+    "@capacitor/app-launcher": "^6",
+    "@capacitor/core": "^6",
+    "@capacitor/filesystem": "^6",
+    "@capacitor/network": "^6",
+    "@capacitor/preferences": "^6",
+    "@capacitor/push-notifications": "^6",
+    "@cophyla/protocol": "workspace:*",
+    "@cophyla/relay": "workspace:*",
+    "@cophyla/viewhost": "workspace:*",
+    "@cophyla/wake": "workspace:*",
+    "onnxruntime-web": "1.30.0"
+  },
+  "devDependencies": {
+    "@capacitor/android": "^6",
+    "@capacitor/cli": "^6",
+    "@capacitor/ios": "^6"
+  }
+}

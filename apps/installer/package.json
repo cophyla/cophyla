@@ -1,0 +1,27 @@
+{
+  "name": "@cophyla/installer",
+  "version": "0.11.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "keygen": "bun run scripts/keygen.ts",
+    "version": "bun run scripts/version.ts",
+    "stage:platform": "bun run scripts/stage-platform.ts",
+    "stage:brain": "bun run scripts/stage-brain.ts",
+    "pack:platform": "bun run scripts/pack-platform.ts",
+    "sign-release": "bun run scripts/sign-release.ts",
+    "build": "bun run scripts/build-installer.ts",
+    "feed": "bun run scripts/feed.ts",
+    "serve-feed": "bun run scripts/serve-feed.ts",
+    "publish": "bun run scripts/publish.ts",
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@cophyla/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

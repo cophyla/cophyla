@@ -1,0 +1,16 @@
+{
+  "requests": {
+    "relay.auth": {
+      "params": [{ "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl" }, { "grant": "prg_Zk3uQ0cV8yT1mN4bX7wE2rA5sD9fG6hJ", "verifier": "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk" }],
+      "results": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, { "peer": "pair_Hq3m9TzW1vKc0aLx", "subject": "usr_123", "login": "octocat" }]
+    },
+    "relay.open": {
+      "params": [{ "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=" }, { "epk": "BLgz…", "curve": "p256" }, { "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [{ "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epk": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epk": "3p7bfXt9wbTTW2HC7OQ1Nz+DQ8hbeGdNrfx+FG+IK08=", "name": "desk" }]
+    }
+  },
+  "frames": {
+    "relay": [{ "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "frame": "AAAAAAAAAAEbW2hd…" }],
+    "relay.close": [{ "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "reason": "backpressure" }]
+  }
+}

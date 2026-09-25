@@ -1,0 +1,11 @@
+{
+  "chunkMax": 16384,
+  "vectors": [
+    { "why": "a short record goes whole", "max": 16384, "record": "AAEC", "messages": ["=AAEC"] },
+    { "why": "an empty record is one empty last piece", "max": 16384, "record": "", "messages": ["="] },
+    { "why": "a record that fills one message exactly", "max": 5, "record": "abcd", "messages": ["=abcd"] },
+    { "why": "one character over is two messages", "max": 5, "record": "abcde", "messages": ["+abcd", "=e"] },
+    { "why": "several pieces, the last one short", "max": 4, "record": "0123456789", "messages": ["+012", "+345", "+678", "=9"] },
+    { "why": "several pieces, the last one full", "max": 4, "record": "012345", "messages": ["+012", "=345"] }
+  ]
+}

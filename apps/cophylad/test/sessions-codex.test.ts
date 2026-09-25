@@ -1,0 +1,676 @@
+// The Codex adapter in pieces: the rollout parser over a redacted capture, the app-server
+// client against the fake stdio child, the hooks installer and the trust grant, the
+// injection bookkeeping with an injected clock, and the adapter over the fake: listing,
+// tailing, sending, withdrawing after the receipt window and holding while busy; then an
+// ended thread over a store file: history not resetting the inactivity clock, a listing with
+// nothing new leaving it ended, a grown rollout resuming it with only the new lines recorded,
+// and a restart tailing again without adding events. A profile that comes after start gets its
+// app-server and hooks, a new login restarts the app-server, a quit before the first prompt
+// leaves no session, and a thread the app-server daemon runs takes its CLI's terminal.
+
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { CodexHookEvent, SessionEvent } from "@cophyla/protocol";
+import { TetherClient } from "@tether-pty/client";
+import { createLogger, silentLogger } from "../src/log.ts";
+import { CodexAdapter, isManagedDaemon } from "../src/sessions/codex/adapter.ts";
+import { CodexAppServer } from "../src/sessions/codex/appserver.ts";
+import { installCodexHooks, isCophyladCodexGroup, readHooksFile, trustCodexHooks, trustEdit, uninstallCodexHooks } from "../src/sessions/codex/hooks.ts";
+import { applyCodexRow, findRollout, newCodexState, readSessionIndex, statsFor } from "../src/sessions/codex/rollout.ts";
+import type { CodexItem } from "../src/sessions/codex/rollout.ts";
+import { Injections } from "../src/sessions/injections.ts";
+import type { PendingSend } from "../src/sessions/injections.ts";
+import type { ProcessRow } from "../src/sessions/tether/cli.ts";
+import { Tether } from "../src/sessions/tether/index.ts";
+import { FakeTether } from "./fakes/tether.ts";
+import { FAKE_CODEX, miniSessions, removeHome, sleep, tempHome, tomlString, waitFor } from "./helpers.ts";
+import type { Mini } from "./helpers.ts";
+
+const FIXTURE = join(import.meta.dir, "fixtures", "codex-rollout.jsonl");
+const THREAD = "01a0af79-2976-7752-8597-4e480c5860cd";
+
+function fakeServer(home: string, extraEnv: Record<string, string> = {}): CodexAppServer {
+  const log = process.env["COPHYLA_TEST_DEBUG"] ? createLogger("debug") : silentLogger;
+  return new CodexAppServer({ command: process.execPath, args: [FAKE_CODEX], env: { ...process.env, CODEX_HOME: home, ...extraEnv }, log, version: "0.1.0" });
+}
+
+const readJson = <T>(path: string, fallback: T): T => (existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as T) : fallback);
+
+describe("codex rollout parser", () => {
+  const state = newCodexState();
+  const items: CodexItem[] = [];
+  for (const line of readFileSync(FIXTURE, "utf8").split("\n")) {
+    if (line.trim()) items.push(...applyCodexRow(state, JSON.parse(line)));
+  }
+
+  test("yields the session meta, turns, typed and queued user messages, tool calls and results, assistant text", () => {
+    expect(items.map((i) => i.kind)).toEqual([
+      "meta",
+      "task_started",
+      "turn_context",
+      "user_message",
+      "assistant_text",
+      "task_complete",
+      "task_started",
+      "user_message",
+      "tool_call",
+      "tool_result",
+      "tool_call",
+      "tool_result",
+      "assistant_text",
+      "task_complete",
+    ]);
+    const meta = items[0]!;
+    expect(meta.kind === "meta" && meta.sessionId).toBe(THREAD);
+    expect(meta.kind === "meta" && meta.cwd).toBe("C:\\D\\orchestrator\\spikes\\05-codex\\target");
+    const typed = items[3]!;
+    expect(typed.kind === "user_message" && typed.text).toBe("reply with the single word ok");
+    expect(typed.kind === "user_message" && typed.clientId).toBeUndefined();
+    const queued = items[7]!;
+    expect(queued.kind === "user_message" && queued.clientId).toBe("cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0");
+    const shell = items[8]!;
+    expect(shell.kind === "tool_call" && shell.name).toBe("shell");
+    expect(shell.kind === "tool_call" && shell.input).toEqual({ command: ["bun", "test"] });
+    const shellOut = items[9]!;
+    expect(shellOut.kind === "tool_result" && shellOut.name).toBe("shell");
+    expect(shellOut.kind === "tool_result" && (shellOut.output as { output: string }).output).toBe("ok");
+    const done = items[13]!;
+    expect(done.kind === "task_complete" && done.lastMessage).toBe("Tests pass.");
+    expect(state.busyTurn).toBeUndefined();
+    expect(state.model).toBe("gpt-5.6-luna");
+  });
+
+  test("stats come from the cumulative token_count, with the window from the last usage", () => {
+    expect(statsFor(state)).toEqual({ turns: 1, cost: 0, tokens: { in: 30000, out: 50, cacheRead: 20000, cacheWrite: 100 }, context: { used: 12545, limit: 258400 }, model: "gpt-5.6-luna" });
+  });
+
+  test("finds a rollout by thread id and reads the session index", () => {
+    const home = tempHome();
+    const dir = join(home, "sessions", "2026", "09", "17");
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, `rollout-2026-09-17T15-05-48-${THREAD}.jsonl`);
+    writeFileSync(path, "");
+    expect(findRollout(home, THREAD)).toBe(path);
+    expect(findRollout(home, "nope")).toBeUndefined();
+    writeFileSync(join(home, "session_index.jsonl"), `{"id":"${THREAD}","thread_name":"first","updated_at":"x"}\n{"id":"${THREAD}","thread_name":"renamed","updated_at":"y"}\n{"id":"other","thread_name":"o","updated_at":"z"}\n{"id":"part`);
+    const names = readSessionIndex(home);
+    expect(names.get(THREAD)).toBe("renamed");
+    expect(names.size).toBe(2);
+  });
+});
+
+describe("codex app-server client against the fake", () => {
+  let home: string;
+  beforeAll(() => {
+    home = tempHome();
+    const threads = Array.from({ length: 120 }, (_, i) => ({ id: `t-${i}`, sessionId: `t-${i}`, cwd: "C:\\D\\x", name: `thread ${i}`, preview: `preview ${i}`, path: null, createdAt: 1789650000 + i, updatedAt: 1789650000 + i, status: { type: "notLoaded" } }));
+    writeFileSync(join(home, "threads.json"), JSON.stringify(threads));
+  });
+
+  test("initializes, pages thread/list by cursor, queues and deletes", async () => {
+    const server = fakeServer(home);
+    try {
+      const init = await server.start();
+      expect(init.codexHome).toBe(home);
+      expect(server.alive).toBe(true);
+      const seen: string[] = [];
+      let cursor: string | null | undefined;
+      let pages = 0;
+      do {
+        const r = await server.call<{ data: { id: string }[]; nextCursor: string | null }>("thread/list", { limit: 50, ...(cursor ? { cursor } : {}), sortKey: "updated_at", sortDirection: "desc", useStateDbOnly: true });
+        seen.push(...r.data.map((t) => t.id));
+        cursor = r.nextCursor;
+        pages++;
+      } while (cursor);
+      expect(pages).toBe(3);
+      expect(seen).toHaveLength(120);
+      expect(seen[0]).toBe("t-119");
+      const added = await server.call<{ queuedSubmission: { id: string; clientUserMessageId: string } }>("thread/queue/add", { threadId: "t-1", clientUserMessageId: "cophylad-x", input: [{ type: "text", text: "hi" }] });
+      expect(added.queuedSubmission.clientUserMessageId).toBe("cophylad-x");
+      const deleted = await server.call<{ deleted: boolean }>("thread/queue/delete", { threadId: "t-1", queuedSubmissionId: added.queuedSubmission.id });
+      expect(deleted.deleted).toBe(true);
+      const log = readJson<{ op: string }[]>(join(home, "queue.json"), []);
+      expect(log.map((l) => l.op)).toEqual(["add", "delete"]);
+      const unknown = await server.call("no/such", {}).then(
+        () => "resolved",
+        (e: Error) => e.message,
+      );
+      expect(unknown).toMatch(/unknown method/);
+    } finally {
+      await server.stop();
+    }
+    expect(server.alive).toBe(false);
+  });
+
+  test("declines a server request", async () => {
+    const server = fakeServer(home, { FAKE_SERVER_REQUEST: "1" });
+    try {
+      await server.start();
+      const answers = await waitFor(() => {
+        const a = readJson<{ result?: unknown; error?: unknown }[]>(join(home, "requests.json"), []);
+        return a.length > 0 ? a : undefined;
+      });
+      expect(answers[0]!.result).toEqual({ decision: "decline" });
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("codex hooks installer and trust", () => {
+  const command = '"C:/bun.exe" "C:/cophyla/data/cophylad-hook-shim.mjs" codex prof_x';
+  const commandWindows = `& ${command}`;
+  const foreign = { hooks: [{ type: "command", command: "node C:/tools/other.mjs" }] };
+
+  test("install keeps foreign hooks, is idempotent, clamps SessionEnd, and uninstall removes only ours", () => {
+    const home = tempHome();
+    const path = join(home, "hooks.json");
+    writeFileSync(path, JSON.stringify({ hooks: { Stop: [foreign] } }));
+    installCodexHooks(path, { command, commandWindows, timeoutS: 7200 });
+    let doc = readHooksFile(path) as { hooks: Record<string, { hooks: Record<string, unknown>[] }[]> };
+    expect(doc.hooks["Stop"]).toHaveLength(2);
+    expect(doc.hooks["Stop"]![0]).toEqual(foreign);
+    expect(isCophyladCodexGroup(doc.hooks["Stop"]![1])).toBe(true);
+    expect(doc.hooks["SessionStart"]![0]!.hooks[0]).toEqual({ type: "command", command, commandWindows, timeout: 7200, async: false, statusMessage: "cophylad" });
+    expect(doc.hooks["SessionEnd"]![0]!.hooks[0]!["timeout"]).toBe(3);
+    expect(Object.keys(doc.hooks)).toHaveLength(6);
+    installCodexHooks(path, { command, commandWindows, timeoutS: 7200 });
+    doc = readHooksFile(path) as typeof doc;
+    expect(doc.hooks["Stop"]).toHaveLength(2);
+    uninstallCodexHooks(path);
+    expect(readHooksFile(path)).toEqual({ hooks: { Stop: [foreign] } });
+    const fresh = join(home, "fresh", "hooks.json");
+    mkdirSync(join(home, "fresh"));
+    installCodexHooks(fresh, { command, commandWindows, timeoutS: 10 });
+    expect(Object.keys((readHooksFile(fresh) as { hooks: object }).hooks)).toHaveLength(6);
+  });
+
+  test("a trust edit escapes the key's backslashes and keeps the hash as reported", () => {
+    const e = trustEdit({ key: "C:\\Users\\me\\.codex\\hooks.json:stop:0:0", eventName: "stop", currentHash: "sha256:abc", trustStatus: "untrusted" });
+    expect(e).toEqual({ keyPath: 'hooks.state."C:\\\\Users\\\\me\\\\.codex\\\\hooks.json:stop:0:0".trusted_hash', value: "sha256:abc", mergeStrategy: "upsert" });
+    expect(trustEdit({ key: "k", eventName: "stop", currentHash: "abc", trustStatus: "untrusted" }).value).toBe("sha256:abc");
+  });
+
+  test("the grant turns untrusted entries trusted through hooks/list and config/batchWrite", async () => {
+    const home = tempHome();
+    const path = join(home, "hooks.json");
+    installCodexHooks(path, { command, commandWindows, timeoutS: 7200 });
+    const server = fakeServer(home);
+    try {
+      await server.start();
+      const r = await trustCodexHooks(server, { hooksPath: path, codexHome: home, log: silentLogger });
+      expect(r.refused).toBeUndefined();
+      expect(r.trusted).toBe(6);
+      expect(r.untrusted).toBe(0);
+      expect(r.entries.every((e) => e.sourcePath === path)).toBe(true);
+      const trust = readJson<Record<string, string>>(join(home, "trust.json"), {});
+      expect(Object.keys(trust)).toHaveLength(6);
+      expect(Object.keys(trust)[0]).toContain(path);
+      const again = await trustCodexHooks(server, { hooksPath: path, codexHome: home, log: silentLogger });
+      expect(again.trusted).toBe(6);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  test("a refused grant is reported, not thrown", async () => {
+    const home = tempHome();
+    const path = join(home, "hooks.json");
+    installCodexHooks(path, { command, commandWindows, timeoutS: 7200 });
+    const server = fakeServer(home, { FAKE_REFUSE_TRUST: "1" });
+    try {
+      await server.start();
+      const r = await trustCodexHooks(server, { hooksPath: path, codexHome: home, log: silentLogger });
+      expect(r.refused).toMatch(/refused/);
+      expect(r.untrusted).toBe(6);
+    } finally {
+      await server.stop();
+    }
+  });
+});
+
+describe("injections with an injected clock", () => {
+  test("times out, holds while busy, re-arms on idle, and a late receipt still delivers", () => {
+    let now = 1000;
+    const timers: { fn: () => void; at: number; id: number }[] = [];
+    let seq = 0;
+    const fired: PendingSend[] = [];
+    const inj = new Injections({
+      timeoutMs: 100,
+      now: () => now,
+      schedule: (fn, ms) => {
+        const t = { fn, at: now + ms, id: ++seq };
+        timers.push(t);
+        return t.id;
+      },
+      cancel: (id) => {
+        const i = timers.findIndex((t) => t.id === id);
+        if (i >= 0) timers.splice(i, 1);
+      },
+      onTimeout: (p) => fired.push(p),
+    });
+    const advance = (ms: number) => {
+      now += ms;
+      for (const t of timers.filter((t) => t.at <= now)) {
+        timers.splice(timers.indexOf(t), 1);
+        t.fn();
+      }
+    };
+    const p = inj.add({ ref: "r1", session: "s", harness: "codex", text: "hi", body: "[cophylad]\nhi", at: now });
+    expect(inj.pending("s")).toHaveLength(1);
+    advance(99);
+    expect(fired).toHaveLength(0);
+    advance(1);
+    expect(fired).toHaveLength(1);
+    inj.hold(p);
+    expect(p.waitingForIdle).toBe(true);
+    advance(500);
+    expect(fired).toHaveLength(1);
+    inj.rearm("s");
+    expect(p.waitingForIdle).toBeUndefined();
+    advance(100);
+    expect(fired).toHaveLength(2);
+    expect(inj.settle("r1", "unconfirmed")?.state).toBe("unconfirmed");
+    expect(inj.matchText("s", "prefix [cophylad]\nhi suffix")?.ref).toBe("r1");
+    expect(inj.settle("r1", "delivered")?.state).toBe("delivered");
+    expect(inj.settle("r1", "withdrawn")).toBeUndefined();
+    expect(inj.pending("s")).toHaveLength(0);
+    expect(inj.matchText("s", "nothing")).toBeUndefined();
+  });
+});
+
+describe("codex adapter over the fake app-server", () => {
+  let mini: Mini;
+  let home: string;
+  let cwd: string;
+  let rolloutPath: string;
+  const events = (id: string): SessionEvent[] => mini.store.sessionEvents.history(id, { limit: 500 });
+  const queueLog = () => readJson<{ op: string; clientUserMessageId?: string }[]>(join(home, "queue.json"), []);
+
+  beforeAll(async () => {
+    const scratch = tempHome();
+    home = join(scratch, "codex-home");
+    cwd = join(scratch, "work");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(home, "auth.json"), "{}");
+    const dir = join(home, "sessions", "2026", "09", "17");
+    mkdirSync(dir, { recursive: true });
+    rolloutPath = join(dir, `rollout-2026-09-17T15-05-48-${THREAD}.jsonl`);
+    const lines = readFileSync(FIXTURE, "utf8").split("\n").filter((l) => l.trim());
+    writeFileSync(rolloutPath, lines.slice(0, 10).join("\n") + "\n");
+    const now = Math.floor(Date.now() / 1000);
+    writeFileSync(
+      join(home, "threads.json"),
+      JSON.stringify([
+        { id: THREAD, sessionId: THREAD, cwd, name: "spike thread", preview: "reply with the single word ok", path: rolloutPath, createdAt: now - 60, updatedAt: now - 30, status: { type: "notLoaded" } },
+        { id: "old-thread", sessionId: "old-thread", cwd, name: "old", preview: "old", path: null, createdAt: now - 100000, updatedAt: now - 90000, status: { type: "notLoaded" } },
+      ]),
+    );
+    mini = await miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = true\npoll_ms = 100000\ncodex_list_ms = 1\nreceipt_timeout_ms = 250\ncodex_recent_ms = 600000\n\n[[profiles]]\nharness = "codex"\nname = "fake"\nconfig_dir = ${tomlString(home)}\ncommand = ${tomlString(process.execPath)}\nargs = [${tomlString(FAKE_CODEX)}]\n`,
+      (host, log) => [new CodexAdapter({ host, log, version: "0.1.0", raiser: tree })],
+    );
+  });
+  afterAll(() => mini.stop());
+
+  /** The process tree a hook's `x-cophyla-ppid` is walked up: the shim's parent is the shell Codex spawned, and Codex is above it. */
+  const walked: number[] = [];
+  const tree = {
+    async ancestors(pid: number) {
+      walked.push(pid);
+      return pid === 4242 ? [{ pid: 4242, name: "sh" }, { pid: 4100, name: process.platform === "win32" ? "codex.exe" : "codex-x86_64-unknown-linux-musl" }, { pid: 4000, name: "zsh" }] : [];
+    },
+  };
+
+  test("installs and trusts hooks in the fake home, and lists only the recent thread", async () => {
+    const doc = readHooksFile(join(home, "hooks.json")) as { hooks: Record<string, unknown[]> };
+    expect(Object.keys(doc.hooks)).toHaveLength(6);
+    const hook = (doc.hooks["Stop"]![0] as { hooks: { command: string; commandWindows: string }[] }).hooks[0]!;
+    expect(hook.command.startsWith('"')).toBe(true);
+    expect(hook.command).toContain('cophylad-hook-shim.mjs" codex prof_');
+    expect(hook.commandWindows).toBe(`& ${hook.command}`);
+    expect(Object.keys(readJson<Record<string, string>>(join(home, "trust.json"), {}))).toHaveLength(6);
+    const list = mini.sessions.list();
+    expect(list.map((s) => s.native.id)).toEqual([THREAD]);
+    const s = list[0]!;
+    expect(s.native.transport).toBe("app-server");
+    expect(s.title).toBe("spike thread");
+    expect(s.transcript?.path).toBe(rolloutPath);
+    expect(s.intent).toBe("reply with the single word ok");
+    expect(s.status).toBe("idle");
+    expect(s.stats).toEqual({ turns: 1, cost: 0, tokens: { in: 17443, out: 5, cacheRead: 11008 }, context: { used: 17448, limit: 258400 }, model: "gpt-5.6-luna" });
+    expect(events(s.id).map((e) => e.kind)).toEqual(["status", "status", "user_turn", "assistant_text", "status"]);
+  });
+
+  test("a send is queued through thread/queue/add, and withdrawn after the receipt window when idle", async () => {
+    const s = mini.sessions.list()[0]!;
+    const r = await mini.sessions.send(s.id, "hello");
+    expect(r.status).toBe("queued");
+    expect(r.ref.startsWith("cophylad-")).toBe(true);
+    await waitFor(() => queueLog().some((q) => q.op === "add" && q.clientUserMessageId === r.ref));
+    await waitFor(() => queueLog().some((q) => q.op === "delete"), 2000);
+    const n = await waitFor(() => events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref));
+    expect(n.payload).toEqual({ type: "message", ref: r.ref, state: "withdrawn" });
+  });
+
+  test("the receipt lands when the rollout shows cophylad's client_id, before the window closes", async () => {
+    const s = mini.sessions.list()[0]!;
+    const r = await mini.sessions.send(s.id, "run the tests");
+    const lines = readFileSync(FIXTURE, "utf8").split("\n").filter((l) => l.trim());
+    const queuedRow = lines[11]!.replace("cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0", r.ref);
+    writeFileSync(rolloutPath, lines.slice(0, 11).join("\n") + "\n" + queuedRow + "\n", { flag: "w" });
+    await mini.sessions.tick();
+    const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);
+    expect(n?.payload).toEqual({ type: "message", ref: r.ref, state: "delivered" });
+    expect(events(s.id).filter((e) => e.kind === "user_turn")).toHaveLength(1);
+    expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
+    await sleep(400);
+    expect(queueLog().filter((q) => q.op === "delete")).toHaveLength(1);
+  });
+
+  test("the withdrawal timer is held while the thread is busy and re-armed at its Stop", async () => {
+    const s = mini.sessions.list()[0]!;
+    expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
+    const r = await mini.sessions.send(s.id, "later");
+    await sleep(450);
+    expect(queueLog().filter((q) => q.op === "delete")).toHaveLength(1);
+    const answer = await mini.sessions.onHook("codex", { hook_event_name: "Stop", session_id: THREAD, turn_id: "t", cwd, last_assistant_message: "ok", stop_hook_active: false }, { via: "command", ppid: 4242 });
+    expect(answer).toEqual({});
+    expect(mini.store.sessions.get(s.id)?.status).toBe("idle");
+    // the hook's ppid is walked once, and the `codex` ancestor becomes the session's pid
+    await waitFor(() => mini.sessions.list().find((x) => x.id === s.id)?.native.pid === 4100);
+    expect(walked).toEqual([4242]);
+    await mini.sessions.onHook("codex", { hook_event_name: "Stop", session_id: THREAD, turn_id: "t2", cwd, last_assistant_message: "ok", stop_hook_active: false }, { via: "command", ppid: 4242 });
+    expect(walked).toEqual([4242]);
+    await waitFor(() => queueLog().filter((q) => q.op === "delete").length === 2, 2000);
+    const n = await waitFor(() => events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref));
+    expect(n.payload).toEqual({ type: "message", ref: r.ref, state: "withdrawn" });
+  });
+
+  test("a SessionStart hook creates a session the store does not have yet, and SessionEnd ends it", async () => {
+    const answer = await mini.sessions.onHook("codex", { hook_event_name: "SessionStart", session_id: "fresh-thread", cwd, transcript_path: null, model: "gpt-5.6-luna", permission_mode: "default", source: "startup" }, { via: "command", profile: mini.profiles.byHarness("codex")[0]!.id });
+    expect(answer).toEqual({});
+    const s = mini.sessions.list().find((x) => x.native.id === "fresh-thread")!;
+    expect(s.status).toBe("idle");
+    expect(s.cwd).toBe(cwd);
+    await mini.sessions.onHook("codex", { hook_event_name: "sessionEnd", session_id: "fresh-thread", cwd, reason: "exit" }, { via: "command" });
+    expect(mini.sessions.list().find((x) => x.native.id === "fresh-thread")).toBeUndefined();
+    expect(mini.store.sessions.get(s.id)?.status).toBe("ended");
+    expect(events(s.id).at(-1)?.kind).toBe("ended");
+  });
+
+  test("a SessionEnd for a thread no session stands for makes none: a CLI quit before its first prompt", async () => {
+    const answer = await mini.sessions.onHook("codex", { hook_event_name: "sessionEnd", session_id: "never-prompted", cwd, reason: "exit" }, { via: "command" });
+    expect(answer).toEqual({});
+    expect(mini.store.sessions.getByNative("codex", "never-prompted")).toBeUndefined();
+  });
+});
+
+describe("codex profiles that change after start", () => {
+  let scratch: string;
+  let home: string;
+  let trace: string;
+  let mini: Mini;
+  const initializes = () => (existsSync(trace) ? readFileSync(trace, "utf8").split("\n").filter((l) => l.startsWith("IN ") && l.includes('"method":"initialize"')).length : 0);
+
+  beforeAll(async () => {
+    scratch = tempHome();
+    home = join(scratch, "codex-later");
+    trace = join(scratch, "trace.log");
+    mini = await miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = true\npoll_ms = 100000\ncodex_list_ms = 1\n\n[[profiles]]\nharness = "codex"\nname = "later"\nconfig_dir = ${tomlString(home)}\ncommand = ${tomlString(process.execPath)}\nargs = [${tomlString(FAKE_CODEX)}]\n`,
+      (host, log) => [new CodexAdapter({ host, log, version: "0.1.0", env: { ...process.env, FAKE_TRACE: trace } })],
+    );
+  });
+  afterAll(async () => {
+    await mini.stop();
+    removeHome(scratch);
+  });
+
+  test("a profile whose directory comes after start gets an app-server, cophylad's hooks and their trust", async () => {
+    const id = mini.profiles.byHarness("codex")[0]!.id;
+    expect(mini.profiles.get(id)!.status).toBe("missing");
+    expect(initializes()).toBe(0);
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "auth.json"), "{}");
+    mini.profiles.check();
+    await mini.sessions.tick();
+    expect(mini.profiles.get(id)!.status).toBe("ok");
+    expect(initializes()).toBe(1);
+    expect(Object.keys((readHooksFile(join(home, "hooks.json")) as { hooks: object }).hooks)).toHaveLength(6);
+    expect(Object.keys(readJson<Record<string, string>>(join(home, "trust.json"), {}))).toHaveLength(6);
+  });
+
+  test("a new login starts its app-server again, which reads the login afresh", async () => {
+    writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: "after a new login" }));
+    mini.profiles.check();
+    await mini.sessions.tick();
+    await waitFor(() => initializes() === 2);
+    // Nothing changed since: the next checks start nothing.
+    mini.profiles.check();
+    await mini.sessions.tick();
+    expect(initializes()).toBe(2);
+  });
+});
+
+describe("a codex thread the app-server daemon runs", () => {
+  let scratch: string;
+  let home: string;
+  let cwd: string;
+  let fake: FakeTether;
+  let tether: Tether;
+  let mini: Mini;
+  let profile: string;
+  const table: ProcessRow[] = [];
+  const alive = new Set<number>();
+  const chains = new Map<number, { pid: number; name: string }[]>();
+  const commandLines = new Map<number, string[]>();
+  const read: number[] = [];
+  const tree = {
+    async ancestors(pid: number) {
+      return chains.get(pid) ?? [];
+    },
+    async commandLine(pid: number) {
+      read.push(pid);
+      return commandLines.get(pid);
+    },
+  };
+  const DAEMON = 9602;
+  const hook = (name: string, sessionId: string, extra: Record<string, unknown> = {}) => ({ hook_event_name: name, session_id: sessionId, cwd, transcript_path: null, ...extra }) as unknown as CodexHookEvent;
+
+  beforeAll(async () => {
+    scratch = tempHome();
+    home = join(scratch, "codex-home");
+    cwd = join(scratch, "proj");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(home, "auth.json"), "{}");
+    writeFileSync(join(home, "threads.json"), "[]");
+    fake = await new FakeTether(join(scratch, "tether")).start();
+    tether = new Tether({
+      config: { idle_exit_s: 600, window: "auto", window_on_start: false, profiles: false, on_path: false, dir: fake.dir },
+      env: {},
+      dataDir: join(scratch, "data"),
+      nodeId: "node_test",
+      log: silentLogger,
+      exe: "C:/fake/tether.exe",
+      run: async () => ({ code: 0, out: "tether 0.1.0\n", err: "" }),
+      connectOrStart: (opts) => TetherClient.connect(fake.host, { name: opts.name ?? "cophylad" }),
+    });
+    await tether.start();
+    // The daemon, its command line as Codex starts it, and the shell its hooks run in.
+    commandLines.set(DAEMON, ["C:/Users/u/.codex/packages/app-server-daemon/codex.exe", "app-server", "--listen", "unix://", "--managed-daemon"]);
+    chains.set(9700, [
+      { pid: 9700, name: "pwsh.exe" },
+      { pid: DAEMON, name: "codex.exe" },
+    ]);
+    for (const pid of [DAEMON, 9700]) alive.add(pid);
+    mini = await miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\ncodex_list_ms = 100000\n\n[[profiles]]\nharness = "codex"\nname = "fake"\nconfig_dir = ${tomlString(home)}\ncommand = ${tomlString(process.execPath)}\nargs = [${tomlString(FAKE_CODEX)}]\n`,
+      (host, log) => [new CodexAdapter({ host, log, version: "0.1.0", raiser: tree, isAlive: (pid) => alive.has(pid) })],
+      { deps: { tether, processes: () => table, isAlive: (pid) => alive.has(pid), cliTiming: { debounceMs: 20, gapMs: 100 } } },
+    );
+    profile = mini.profiles.byHarness("codex")[0]!.id;
+  }, 30_000);
+  afterAll(async () => {
+    await mini.stop();
+    await tether.stop();
+    await fake.stop();
+    removeHome(scratch);
+  });
+
+  /** A shell in `cwd` running a Codex CLI, marked once it titles its terminal. */
+  const cli = async (shellPid: number, tuiPid: number, title = "proj", at = cwd) => {
+    const shell = fake.add({ argv: ["pwsh.exe"], cwd: at }, shellPid);
+    table.push({ pid: shellPid, parent: 1, name: "pwsh.exe" }, { pid: tuiPid, parent: shellPid, name: "codex.exe" });
+    alive.add(shellPid);
+    alive.add(tuiPid);
+    await waitFor(() => tether.byPid(shellPid));
+    fake.emit({ ev: "title", session: shell.id, title });
+    const ref = { host: fake.host.host, id: shell.id };
+    await waitFor(() => mini.sessions.cliOf(ref) === "codex");
+    return { shell, ref };
+  };
+
+  test("the command line tells the daemon apart", () => {
+    expect(isManagedDaemon(commandLines.get(DAEMON))).toBe(true);
+    expect(isManagedDaemon(["codex.exe", "app-server", "--stdio"])).toBe(false);
+    expect(isManagedDaemon(["codex.exe"])).toBe(false);
+    expect(isManagedDaemon(undefined)).toBe(false);
+  });
+
+  test("its first prompt's hooks come from under the daemon: the session takes the CLI's terminal and the CLI as its process, and ends with it", async () => {
+    const { shell, ref } = await cli(9500, 9501);
+    // Before the first prompt there is a terminal with a CLI, and no session.
+    expect(mini.sessions.list()).toEqual([]);
+    await mini.sessions.onHook("codex", hook("SessionStart", "daemon-thread", { source: "startup", model: "m", permission_mode: "default" }), { via: "command", ppid: 9700, profile });
+    await mini.sessions.onHook("codex", hook("UserPromptSubmit", "daemon-thread", { prompt: "hello", turn_id: "t1" }), { via: "command", ppid: 9700, profile });
+    const rec = mini.sessions.find("codex", "daemon-thread")!;
+    await waitFor(() => rec.session.native.terminal, 3000);
+    expect(rec.hostedBy).toBe("daemon");
+    expect(rec.session.native.terminal).toEqual(ref);
+    expect(rec.session.native.pid).toBe(9501);
+    expect(mini.sessions.sessionOfTerminal(ref)?.id).toBe(rec.session.id);
+    // The daemon's command line was read once, for all the hooks it runs.
+    expect(read.filter((p) => p === DAEMON)).toHaveLength(1);
+    // The CLI quits: the session ends with its process, and the mark goes.
+    alive.delete(9501);
+    await mini.sessions.tick();
+    expect(mini.store.sessions.get(rec.session.id)?.status).toBe("ended");
+    expect(mini.sessions.cliOf(ref)).toBeUndefined();
+    shell.exit(0);
+  });
+
+  test("a thread that fits two terminals takes neither, and no pid of the daemon's", async () => {
+    const other = join(scratch, "twin");
+    mkdirSync(other, { recursive: true });
+    const a = await cli(9510, 9511, "twin", other);
+    const b = await cli(9520, 9521, "twin", other);
+    await mini.sessions.onHook("codex", hook("SessionStart", "twin-thread", { cwd: other }), { via: "command", ppid: 9700, profile });
+    const rec = mini.sessions.find("codex", "twin-thread")!;
+    await waitFor(() => rec.hostedBy === "daemon");
+    await sleep(50);
+    expect(rec.session.native.terminal).toBeUndefined();
+    expect(rec.session.native.pid).toBeUndefined();
+    // One of them quits: its mark goes, and the one left fits.
+    alive.delete(9521);
+    await mini.sessions.tick();
+    expect(rec.session.native.terminal).toEqual(a.ref);
+    expect(rec.session.native.pid).toBe(9511);
+    for (const t of [a, b]) t.shell.exit(0);
+  });
+});
+
+describe("codex sessions end and resume on evidence", () => {
+  const RECENT_MS = 4000;
+  let scratch: string;
+  let home: string;
+  let cwd: string;
+  let rolloutPath: string;
+  let storePath: string;
+  let setupAt: number;
+  let mini: Mini;
+  const lines = readFileSync(FIXTURE, "utf8").split("\n").filter((l) => l.trim());
+  const toml = () =>
+    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\ncodex_list_ms = 1\ncodex_recent_ms = ${RECENT_MS}\n\n[[profiles]]\nharness = "codex"\nname = "fake"\nconfig_dir = ${tomlString(home)}\ncommand = ${tomlString(process.execPath)}\nargs = [${tomlString(FAKE_CODEX)}]\n`;
+  const start = () => miniSessions(toml(), (host, log) => [new CodexAdapter({ host, log, version: "0.1.0" })], { storePath });
+  const listed = (updatedAt: number) =>
+    writeFileSync(join(home, "threads.json"), JSON.stringify([{ id: THREAD, sessionId: THREAD, cwd, name: "t", preview: "p", path: rolloutPath, createdAt: setupAt - 60000, updatedAt, status: { type: "notLoaded" } }]));
+  const record = () => mini.store.sessions.getByNative("codex", THREAD)!;
+  const events = (): SessionEvent[] => mini.store.sessionEvents.history(record().id, { limit: 500 });
+
+  beforeAll(async () => {
+    scratch = tempHome();
+    home = join(scratch, "codex-home");
+    cwd = join(scratch, "work");
+    storePath = join(scratch, "cophyla.sqlite");
+    const dir = join(home, "sessions", "2026", "09", "17");
+    mkdirSync(dir, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(home, "auth.json"), "{}");
+    rolloutPath = join(dir, `rollout-2026-09-17T15-05-48-${THREAD}.jsonl`);
+    // One whole turn of history, written an hour ago; the thread store says it moved two seconds ago.
+    writeFileSync(rolloutPath, lines.slice(0, 10).join("\n") + "\n");
+    const hourAgo = new Date(Date.now() - 3600_000);
+    utimesSync(rolloutPath, hourAgo, hourAgo);
+    setupAt = Date.now();
+    listed(setupAt - 2000);
+    mini = await start();
+  });
+  afterAll(async () => {
+    await mini.stop();
+    removeHome(scratch);
+  });
+
+  test("history read by a fresh tail does not reset the inactivity clock", async () => {
+    expect(mini.sessions.list().map((s) => s.native.id)).toEqual([THREAD]);
+    expect(events().filter((e) => e.kind === "user_turn")).toHaveLength(1);
+    // The window runs from the thread store's two seconds ago, not from the read.
+    await sleep(Math.max(0, setupAt + 2500 - Date.now()));
+    await mini.sessions.tick();
+    expect(record().status).toBe("ended");
+    expect(events().at(-1)?.payload).toEqual({ reason: "inactive" });
+  });
+
+  test("an ended thread listed again with nothing new since stays ended across ticks", async () => {
+    listed(Date.now());
+    const before = events().length;
+    for (let i = 0; i < 3; i++) await mini.sessions.tick();
+    expect(record().status).toBe("ended");
+    expect(events()).toHaveLength(before);
+    expect(mini.sessions.list()).toEqual([]);
+  });
+
+  test("a rollout grown past where it was recorded resumes it, and only the new lines are recorded", async () => {
+    const before = events().length;
+    writeFileSync(rolloutPath, lines.join("\n") + "\n");
+    listed(Date.now());
+    await mini.sessions.tick();
+    const s = record();
+    expect(s.status).not.toBe("ended");
+    expect(s.endedAt).toBeUndefined();
+    const added = events().slice(before);
+    expect(added[0]).toMatchObject({ kind: "status", payload: { resumed: true } });
+    // The first turn is not recorded a second time.
+    expect(events().filter((e) => e.kind === "user_turn" && (e.payload as { text: string }).text === "reply with the single word ok")).toHaveLength(1);
+    expect(added.map((e) => e.kind)).toContain("tool_call");
+    expect(mini.store.sessions.tail(s.id)).toEqual({ path: rolloutPath, offset: statSync(rolloutPath).size });
+  });
+
+  test("a daemon restart over the same store tails the rollout again without adding events", async () => {
+    const id = record().id;
+    const before = events().length;
+    await mini.stop();
+    mini = await start();
+    expect(mini.sessions.list().map((s) => s.id)).toEqual([id]);
+    await mini.sessions.tick();
+    expect(events()).toHaveLength(before);
+    // A line written while the daemon was down is new, and recorded once.
+    const extra = lines[18]!.replace('"msg_a2"', '"msg_a3"');
+    writeFileSync(rolloutPath, lines.join("\n") + "\n" + extra + "\n");
+    await mini.sessions.tick();
+    expect(events().slice(before).map((e) => e.kind)).toEqual(["assistant_text"]);
+  });
+});

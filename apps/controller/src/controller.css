@@ -1,0 +1,469 @@
+/* The phone's chrome: a view filling the screen and a thin bar under it, one row a thumb can
+   work: the menu button for the view's rail at the left, the talk button in the middle, the
+   speaker and the ⋯ menu (the status line, Listen, Forget) at the right. The bar keeps clear
+   of the home indicator. The view inside the frame brings its own look; this is only the
+   frame. */
+
+:root {
+  --bg: #14121a;
+  --panel: #1c1a24;
+  --line: #2b2833;
+  --text: #ece9f2;
+  --dim: #9a94a8;
+  --cophyla: #c08bd8;
+  --moss: #7fc9a0;
+  --amber: #e0b060;
+  --danger: #e2685f;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* An author `display` beats the user agent's rule for `hidden`, and every screen here sets
+   one: without this the three screens stack up on top of each other. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+  overscroll-behavior: none;
+}
+
+#app,
+#main {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+#pair,
+#gate {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  padding: 24px max(16px, env(safe-area-inset-left)) 24px max(16px, env(safe-area-inset-right));
+  height: 100%;
+}
+
+h1 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.hint {
+  color: var(--dim);
+  margin: 0;
+}
+
+.error {
+  color: var(--danger);
+  margin: 0;
+}
+
+form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+input {
+  font: inherit;
+  padding: 14px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--text);
+}
+
+#pair-code {
+  font-size: 28px;
+  letter-spacing: 0.3em;
+  text-align: center;
+}
+
+button {
+  font: inherit;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  color: var(--text);
+  touch-action: manipulation;
+}
+
+button:disabled {
+  opacity: 0.45;
+}
+
+button.big,
+#pair-account,
+#pair-submit,
+#invite-join {
+  background: var(--cophyla);
+  border-color: var(--cophyla);
+  color: #18121c;
+  font-weight: 600;
+  padding: 18px;
+}
+
+#invite-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+#invite-confirm p {
+  margin: 0;
+}
+
+#invite-confirm .buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+#view {
+  flex: 1;
+  min-height: 0;
+  background: var(--bg);
+}
+
+#view iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+/* Equal ends, so the talk button sits in the middle whatever is at either side of it. */
+#bar {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr) 80px;
+  align-items: center;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+  padding: 0 max(4px, env(safe-area-inset-right)) env(safe-area-inset-bottom) max(4px, env(safe-area-inset-left));
+}
+
+.bar-end {
+  display: flex;
+  justify-self: end;
+}
+
+/* The whole line, at the top of the ⋯ menu: the talk button has room for a word. */
+#status {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 0 4px;
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 14px;
+}
+
+#status .dot {
+  transform: translateY(1px);
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--dim);
+  flex: none;
+}
+
+.dot[data-status="offline"] {
+  background: #4b4757;
+}
+
+.dot[data-status="idle"] {
+  background: var(--moss);
+  opacity: 0.5;
+}
+
+.dot[data-status="listening"],
+.dot[data-status="transcribing"] {
+  background: var(--moss);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.dot[data-status="thinking"] {
+  background: var(--amber);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.dot[data-status="speaking"] {
+  background: var(--cophyla);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+
+#status-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+button.icon {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border-color: transparent;
+  background: transparent;
+  color: var(--dim);
+}
+
+button.icon svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+button.icon svg.dots {
+  fill: currentColor;
+  stroke: none;
+}
+
+#mute .speaker-off,
+#mute[aria-pressed="true"] .speaker-on {
+  display: none;
+}
+
+#mute[aria-pressed="true"] .speaker-off {
+  display: block;
+}
+
+#mute[aria-pressed="true"] {
+  color: var(--danger);
+}
+
+#more[aria-expanded="true"] {
+  border-color: var(--line);
+  background: var(--bg);
+  color: var(--text);
+}
+
+#rail:active {
+  color: var(--text);
+}
+
+.menu-wrap {
+  position: relative;
+  flex: none;
+}
+
+#menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 270px;
+  max-width: calc(100vw - 16px);
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+#menu [role="menu"] {
+  display: flex;
+  flex-direction: column;
+}
+
+#menu button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  font-size: 15px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+#menu button:active {
+  background: var(--bg);
+}
+
+#forget {
+  color: var(--danger);
+}
+
+.switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  border-radius: 10px;
+  background: var(--line);
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--dim);
+}
+
+#listen[aria-checked="true"] .switch {
+  background: var(--moss);
+}
+
+#listen[aria-checked="true"] .switch::after {
+  left: 18px;
+  background: #18121c;
+}
+
+/* The talk button: the bar's full height to press, a slim pill to see. */
+.ptt {
+  display: grid;
+  justify-self: center;
+  place-items: center;
+  width: min(100%, 240px);
+  height: 40px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+.ptt-pill {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid #3a3146;
+  border-radius: 15px;
+  background: #2a2334;
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+#ptt-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mic {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* The microphone in the dot's colours: what the conversation is doing. */
+.ptt[data-status="offline"] .mic {
+  color: var(--dim);
+}
+
+.ptt[data-status="listening"] .mic,
+.ptt[data-status="transcribing"] .mic {
+  color: var(--moss);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.ptt[data-status="thinking"] .mic {
+  color: var(--amber);
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.ptt[data-status="speaking"] .mic {
+  color: var(--cophyla);
+  animation: pulse 1s ease-in-out infinite;
+}
+
+.ptt[data-down="1"] .ptt-pill {
+  background: var(--cophyla);
+  border-color: var(--cophyla);
+  color: #18121c;
+}
+
+.ptt[data-down="1"] .mic {
+  color: inherit;
+  animation: none;
+}
+
+/* A remote desktop's stream page over everything, until Close. */
+.remote-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.remote-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: calc(env(safe-area-inset-top) + 6px) 12px 6px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+}
+
+.remote-bar button {
+  padding: 8px 14px;
+}
+
+.remote-layer iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #000;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .dot,
+  .mic {
+    animation: none !important;
+  }
+}

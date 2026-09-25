@@ -1,0 +1,22 @@
+{
+  "request": [
+    { "jsonrpc": "2.0", "id": 1, "method": "node.list" },
+    { "jsonrpc": "2.0", "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6", "method": "session.send", "params": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" } }
+  ],
+  "notification": [
+    { "jsonrpc": "2.0", "method": "ask.state", "params": { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5" } },
+    { "jsonrpc": "2.0", "method": "tools.changed" }
+  ],
+  "success": [
+    { "jsonrpc": "2.0", "id": 1, "result": { "nodes": [] } },
+    { "jsonrpc": "2.0", "id": "r-2", "result": {} }
+  ],
+  "failure": [
+    {
+      "jsonrpc": "2.0",
+      "id": 1,
+      "error": { "code": -32001, "message": "denied", "data": { "code": "denied", "message": "denied", "retryable": false } }
+    },
+    { "jsonrpc": "2.0", "id": null, "error": { "code": -32602, "message": "invalid params" } }
+  ]
+}

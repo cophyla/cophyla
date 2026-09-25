@@ -1,0 +1,460 @@
+{
+  "requests": {
+    "hello": {
+      "params": [
+        { "token": "6f1d…", "kind": "ui", "name": "desktop", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "audio": { "in": false, "out": false } },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true } },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "forward": true },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }
+      ],
+      "results": [
+        {
+          "client": {
+            "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+            "kind": "ui",
+            "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "scopes": ["chat", "sessions:read", "sessions:write", "tasks:read", "tasks:write", "asks:answer", "voice", "views", "nodes", "audit:read", "metrics:read", "account", "updates", "remote"],
+            "via": "direct",
+            "audio": { "in": false, "out": false },
+            "connectedAt": 1758196800000
+          },
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "protocolVersion": 1,
+          "platformVersion": "0.1.0"
+        },
+        {
+          "client": {
+            "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+            "kind": "controller",
+            "scopes": ["chat", "voice", "asks:answer"],
+            "via": "relay",
+            "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true },
+            "connectedAt": 1758196800000
+          },
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "protocolVersion": 1,
+          "platformVersion": "0.9.0",
+          "audio": { "codecs": ["opus", "pcm"] }
+        }
+      ]
+    },
+    "chat.send": { "params": [{ "text": "what is the agent doing" }, { "text": "how many tasks", "mode": "quick" }], "results": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" }] },
+    "chat.load": {
+      "params": [{}, { "before": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "limit": 1 }],
+      "results": [
+        { "threads": [], "messages": [] },
+        {"threads": [{"id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "topic": "the plan", "startedAt": 1758196000000, "sessions": []}], "messages": [{"id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "at": 1758196700000, "role": "user", "source": "ui", "content": [{"type": "text", "text": "what is in the plan"}]}, {"id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "at": 1758196800000, "role": "orchestrator", "source": "brain", "content": [{"type": "text", "text": "Its first lines:"}, {"type": "quote", "text": "# Plan\nPhase 1", "source": {"kind": "file", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator\\.docs\\plan.md", "lines": [1, 2]}}, {"type": "quote", "text": "the old plan", "unresolved": true}]}]}
+      ]
+    },
+    "session.list": { "params": [{}], "results": [{ "sessions": [] }] },
+    "session.history": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "before": 40, "limit": 20 }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "around": 12, "limit": 10 }], "results": [{ "events": [] }] },
+    "session.send": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" }], "results": [{ "status": "queued", "ref": "cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0" }, { "status": "held" }] },
+    "session.focus": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
+    "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
+    "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
+    "terminal.list": { "params": [{}], "results": [{ "terminals": [] }, { "terminals": [{ "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }] }] },
+    "terminal.spawn": {
+      "params": [{ "argv": ["pwsh.exe", "-NoLogo"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "name": "build" }, { "argv": ["bash"], "cwd": "/home/me", "size": { "cols": 100, "rows": 30 } }, {}],
+      "results": [{ "terminal": { "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "name": "build", "argv0": "pwsh.exe", "cwd": "C:\\D\\orchestrator", "cols": 100, "rows": 30, "status": "exited", "exitCode": 0, "windows": 0, "startedAt": 1758196000000 } }]
+    },
+    "terminal.open": {
+      "params": [{ "terminal": "5f2a9c01d4e7" }, { "terminal": "5f2a9c01d4e7", "input": true }, { "terminal": "5f2a9c01d4e7", "input": true, "drive": { "cols": 96, "rows": 28 } }],
+      "results": [{ "terminal": { "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }, "seq": 48213, "cols": 120, "rows": 32, "data": "\u001b[H\u001b[2J\u276F " }]
+    },
+    "terminal.close": { "params": [{ "terminal": "5f2a9c01d4e7" }, { "terminal": "0c9e41b27a53", "end": true }], "results": [{}] },
+    "ask.answer": {
+      "params": [
+        { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5", "option": "allow", "remember": "always" },
+        { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "no", "text": "later" },
+        { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB9", "option": "ESLint", "options": ["ESLint", "Prettier"], "text": "Biome" },
+        { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FC0", "option": "text", "text": "Valkey" }
+      ],
+      "results": [{}]
+    },
+    "task.list": { "params": [{}, { "filter": { "status": ["ready", "active"] } }], "results": [{ "tasks": [] }] },
+    "task.create": { "params": [{ "title": "Check the deploy", "priority": "high", "trigger": { "kind": "at", "at": 1758200400000 } }], "results": [{ "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3" }] },
+    "task.update": { "params": [{ "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB3", "patch": { "status": "paused" } }], "results": [{}] },
+    "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
+    "workspace.put": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\other", "name": "other" }], "results": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
+    "event.list": { "params": [{}], "results": [{ "events": [] }] },
+    "voice.ptt": { "params": [{ "active": true }], "results": [{}] },
+    "voice.wakeword": {
+      "params": [{ "heads": ["hey_jarvis_v0.1.onnx"] }, { "heads": [] }],
+      "results": [{ "mode": "phone", "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16" }, { "mode": "node" }, { "mode": "off" }]
+    },
+    "voice.wake": { "params": [{ "score": 0.93 }], "results": [{}] },
+    "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
+    "view.get": { "params": [{ "id": "default" }], "results": [{ "id": "default", "version": "1", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }, { "path": "icon.png", "mime": "image/png", "base64": "iVBORw0KGgo=" }] }] },
+    "view.setDefault": { "params": [{ "id": "board" }], "results": [{}] },
+    "view.stage": { "params": [{ "id": "default" }], "results": [{ "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2" }] },
+    "pair.start": { "params": [{}], "results": [{ "code": "482913", "url": "https://192.168.1.44:4818/?code=482913", "expiresAt": 1758197100000 }] },
+    "pair.claim": {
+      "params": [{ "code": "482913", "name": "Pixel 8" }],
+      "results": [
+        { "token": "9c2f…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false } },
+        {
+          "token": "9c2f…",
+          "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false, "relay": true },
+          "relay": { "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }
+        }
+      ]
+    },
+    "pair.account": {
+      "params": [{ "name": "Pixel 8" }],
+      "results": [
+        {
+          "token": "9c2f…",
+          "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false, "relay": true, "account": "octocat" },
+          "relay": { "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }
+        },
+        {
+          "token": "9c2f…",
+          "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false, "relay": true, "account": "octocat" },
+          "relay": { "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" },
+          "lan": { "host": "192.168.1.44", "port": 4818, "spki": "q1w2e3r4t5y6u7i8o9p0a1s2d3f4g5h6j7k8l9z0x1c=" }
+        }
+      ]
+    },
+    "relay.info": {
+      "params": [{}],
+      "results": [{ "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }]
+    },
+    "push.register": { "params": [{ "platform": "android", "token": "fcm-device-token" }, { "platform": "ios", "token": "apns-device-token", "name": "Pixel 8" }], "results": [{}] },
+    "push.unregister": { "params": [{}], "results": [{}] },
+    "controller.list": {
+      "params": [{}],
+      "results": [
+        { "controllers": [] },
+        { "controllers": [{ "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "lastSeen": 1758196900000, "connected": true, "relay": true, "push": { "platform": "android", "registeredAt": 1758196900000 } }] }
+      ]
+    },
+    "controller.revoke": { "params": [{ "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
+    "invite.redeem": {
+      "params": [{ "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Work phone" }],
+      "results": [
+        { "token": "6f1d0c…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "name": "Work phone", "pairedAt": 1758196800000, "connected": false, "access": { "scopes": ["sessions:read", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" } } },
+        {
+          "token": "6f1d0c…",
+          "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "name": "Work phone", "pairedAt": 1758196800000, "connected": false, "relay": true },
+          "relay": { "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824" },
+          "lan": { "host": "192.168.1.44", "port": 4818, "spki": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }
+        }
+      ]
+    },
+    "grant.invite": {
+      "params": [
+        { "kind": "node", "name": "build box", "role": "hands", "expiresIn": 86400000 },
+        { "kind": "controller", "name": "Work phone", "access": { "scopes": ["sessions:read", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" }, "inviteExpiresIn": 900000 }
+      ],
+      "results": [
+        {
+          "grant": { "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD2", "kind": "node", "name": "build box", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "role": "hands", "createdAt": 1758196800000, "expiresAt": 1758283200000, "inviteExpiresAt": 1758200400000, "connected": false },
+          "invite": { "text": "cophyla-invite:eyJ2IjoxfQ", "link": "cophyla://invite?i=eyJ2IjoxfQ", "expiresAt": 1758200400000 }
+        }
+      ]
+    },
+    "grant.list": { "params": [{}], "results": [{ "grants": [] }, { "grants": [{ "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1", "kind": "node", "name": "build box", "access": { "scopes": ["chat"], "messages": "send" }, "status": "active", "role": "full", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "createdAt": 1758196800000, "connected": true }] }] },
+    "grant.revoke": { "params": [{ "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1" }, { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
+    "node.list": { "params": [{}], "results": [{ "nodes": [] }] },
+    "node.join": {
+      "params": [{ "invite": "cophyla-invite:eyJ2IjoxfQ" }, { "invite": "cophyla-invite:eyJ2IjoxfQ", "paths": ["C:\\src\\app"], "answerHere": true }],
+      "results": [{ "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "hands" }]
+    },
+    "node.leave": { "params": [{}], "results": [{}] },
+    "node.promote": { "params": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
+    "node.restart": { "params": [{}, { "force": true }], "results": [{}] },
+    "profile.list": {
+      "params": [{}],
+      "results": [
+        {
+          "profiles": [
+            {
+              "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+              "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+              "harness": "claude",
+              "name": "default",
+              "configDir": "C:\\Users\\me\\.claude",
+              "env": {},
+              "origin": "discovered",
+              "default": true,
+              "status": "ok"
+            }
+          ]
+        }
+      ]
+    },
+    "profile.limits": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
+      "results": [{ "limits": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "at": 1758196800000, "weekly": { "percent": 93, "resetsAt": 1758600000000 } } } }]
+    },
+    "profile.update": {
+      "params": [
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "patch": { "usual": true } },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "patch": { "launch": { "mode": "bypassPermissions", "args": ["--effort", "high"] } } },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "patch": { "usual": null, "launch": null } }
+      ],
+      "results": [
+        {
+          "profile": {
+            "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+            "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "harness": "claude",
+            "name": "default",
+            "configDir": "C:\\Users\\me\\.claude",
+            "env": {},
+            "origin": "discovered",
+            "default": true,
+            "defaultBy": "you",
+            "status": "ok",
+            "launch": { "mode": "bypassPermissions", "args": ["--effort", "high"], "source": "you" }
+          }
+        }
+      ]
+    },
+    "metrics.subscribe": {
+      "params": [
+        { "intervalMs": 1000 },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "intervalMs": 5000 },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "intervalMs": 2000, "processes": "owners", "spend": { "from": 1758110400000 } }
+      ],
+      "results": [{}, { "spend": { "at": 1758196800000, "profiles": { "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8": { "in": 5200, "out": 810, "cached": 40000, "cost": 0.42 } } } }]
+    },
+    "metrics.unsubscribe": { "params": [{}], "results": [{}] },
+    "metrics.history": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "range": { "from": 1758100000000 } }], "results": [{ "samples": [] }] },
+    "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "laptop" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234" }], "results": [{}] },
+    "remote.invite": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "otp": "2357", "link": "art://192.168.1.44:47989?pin=2357&passphrase=cophyla-7f3a&name=study", "passphrase": "cophyla-7f3a", "expiresAt": 1758196980000 }, { "otp": "482913" }] },
+    "remote.open": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "forward": true }],
+      "results": [
+        {},
+        { "url": "https://192.168.1.44:4818/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60" },
+        { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "transport": "websocket" },
+        { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "transport": "webrtc", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "str_9c1e" },
+        { "url": "http://127.0.0.1:53211/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }
+      ]
+    },
+    "remote.close": { "params": [{ "stream": "str_9c1e" }], "results": [{}] },
+    "remote.pipe.open": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "pipe": "p7", "window": 262144 }] },
+    "remote.revoke": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "phone" }], "results": [{}] },
+    "account.login": { "params": [{}], "results": [{ "verificationUrl": "https://example.com/device", "userCode": "ABCD-EFGH", "expiresAt": 1758197400000 }] },
+    "account.logout": { "params": [{}], "results": [{}] },
+    "backup.enable": { "params": [{ "passphrase": "correct horse battery staple" }, { "passphrase": "correct horse battery staple", "replace": true }], "results": [{}] },
+    "backup.disable": { "params": [{}, { "forget": true }], "results": [{}] },
+    "backup.restore": { "params": [{ "passphrase": "correct horse battery staple" }], "results": [{}] },
+    "direct.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
+    "direct.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
+    "direct.info": {
+      "params": [{}],
+      "results": [
+        {
+          "iceServers": [
+            { "urls": ["stun:stun.cloudflare.com:3478"] },
+            { "urls": ["turn:turn.cloudflare.com:3478?transport=udp", "turns:turn.cloudflare.com:443?transport=tcp"], "username": "g0a1…", "credential": "b8c2…" }
+          ],
+          "expiresAt": 1758283200000
+        },
+        { "iceServers": [], "expiresAt": 1758283200000 }
+      ]
+    },
+    "direct.offer": {
+      "params": [
+        { "sdp": "v=0\r\no=- 4611731400430051336 2 IN IP4 127.0.0.1\r\n…", "epk": "xT8mYq1vB3nK0pR5sW7uZ2aD4fG6hJ9lC1eE3iO5tQ0=" },
+        { "sdp": "v=0\r\n…", "epk": "BHf1…", "curve": "p256" }
+      ],
+      "results": [{ "peer": "dc_01ARZ3NDEKTSV4RRFFQ69G5FD2", "sdp": "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n…", "epk": "aB3dF5hJ7kL9nP1rT3vX5zB7dF9hJ1lN3pR5tV7xZ0=" }]
+    },
+    "update.check": { "params": [{}], "results": [{}] },
+    "update.apply": { "params": [{}, { "component": "brain" }, { "component": "model", "name": "tts-kokoro-en" }], "results": [{}] }
+  },
+  "signals": {
+    "chat.typing": [{ "active": true }, { "active": false }],
+    "voice.audio": [{ "chunk": "AAAA" }, { "chunk": "AwD4//8=", "codec": "opus", "seq": 17 }, { "chunk": "AAAA", "codec": "pcm", "seq": 0 }],
+    "voice.played": [{ "reply": 3 }, { "reply": 4, "stats": { "underruns": 1, "maxLateMs": 120.5, "targetMs": 400, "frames": 31 } }],
+    "terminal.input": [{ "terminal": "5f2a9c01d4e7", "data": "y\r" }, { "terminal": "5f2a9c01d4e7", "data": "\u001b[Z" }],
+    "terminal.resize": [{ "terminal": "5f2a9c01d4e7", "cols": 96, "rows": 28 }],
+    "direct.candidate": [
+      { "peer": "dc_01ARZ3NDEKTSV4RRFFQ69G5FD2", "candidate": { "candidate": "candidate:842163049 1 udp 1677729535 198.51.100.9 55387 typ srflx raddr 0.0.0.0 rport 0 generation 0 ufrag Ab12 network-cost 999", "sdpMid": "0", "sdpMLineIndex": 0, "usernameFragment": "Ab12" } },
+      { "peer": "dc_01ARZ3NDEKTSV4RRFFQ69G5FD2", "candidate": null }
+    ],
+    "remote.pipe.data": [{ "pipe": "p7", "data": "R0VUIC9yZW1vdGUvc3RyZWFtLmh0bWwgSFRUUC8xLjENCg==" }],
+    "remote.pipe.ack": [{ "pipe": "p7", "bytes": 49152 }],
+    "remote.pipe.close": [{ "pipe": "p7" }, { "pipe": "p7", "reason": "the page closed" }]
+  },
+  "notifications": {
+    "chat.message": [
+      {
+        "message": {
+          "id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4",
+          "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+          "at": 1758196800000,
+          "role": "orchestrator",
+          "source": "brain",
+          "content": [{ "type": "text", "text": "Done." }]
+        }
+      },
+      {"message": {"id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB6", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "at": 1758196900000, "role": "orchestrator", "source": "brain", "content": [{"type": "quote", "text": "line 3\nline 4", "source": {"kind": "session", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": [3, 4]}}, {"type": "quote", "text": "gone", "unresolved": true}]}}
+    ],
+    "chat.delta": [
+      { "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", "block": 0, "delta": { "type": "text", "text": "Do" } },
+      { "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", "block": 0, "delta": { "type": "text", "text": "ne." } }
+    ],
+    "chat.retract": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" }],
+    "session.state": [
+      {
+        "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
+        "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "harness": "codex",
+        "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+        "native": { "id": "019a", "transport": "app-server" },
+        "origin": "user",
+        "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
+        "cwd": "C:\\D\\orchestrator",
+        "intent": "fix the gate tests",
+        "status": "idle",
+        "startedAt": 1758196000000,
+        "lastActivity": 1758196800000,
+        "stats": { "turns": 2, "cost": 0, "tokens": { "in": 100, "out": 50 } }
+      }
+    ],
+    "session.event": [
+      { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 12, "at": 1758196800000, "kind": "user_turn", "payload": { "text": "fix the gate tests" } }
+    ],
+    "terminal.state": [{ "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }, { "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "name": "build", "argv0": "pwsh.exe", "cwd": "C:\\D\\orchestrator", "cols": 100, "rows": 30, "status": "exited", "exitCode": 0, "windows": 0, "startedAt": 1758196000000 }],
+    "terminal.output": [{ "terminal": "5f2a9c01d4e7", "seq": 48230, "data": "\u001b[32m\u2713\u001b[0m done\r\n" }, { "terminal": "5f2a9c01d4e7", "seq": 50100, "data": "\u001b[H\u001b[2J\u276F ", "reset": true, "cols": 96, "rows": 28 }],
+    "task.state": [
+      { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "title": "Add the store migration", "createdBy": { "kind": "brain" }, "status": "active", "priority": "normal", "sessions": [], "createdAt": 1758196000000, "updatedAt": 1758196800000 }
+    ],
+    "thread.state": [
+      { "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "topic": "the gate tests", "startedAt": 1758196000000, "endedAt": 1758196800000, "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "sessions": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }
+    ],
+    "workspace.state": [
+      { "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\orchestrator", "name": "orchestrator", "origin": "discovered", "lastActivity": 1758196800000 }
+    ],
+    "ask.state": [
+      {
+        "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+        "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "type": "permission",
+        "source": { "kind": "gate", "action": "node.list", "principal": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" } },
+        "title": "Allow node.list?",
+        "detail": "{}",
+        "options": [{ "id": "allow", "label": "Allow", "style": "primary" }, { "id": "deny", "label": "Deny", "style": "danger" }],
+        "answerableBy": ["user"],
+        "status": "open",
+        "createdAt": 1758196800000
+      },
+      {
+        "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+        "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "type": "choice",
+        "source": { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
+        "title": "Which auth methods should the API accept?",
+        "detail": "Auth method · 2 of 3",
+        "options": [
+          { "id": "Session cookie", "label": "Session cookie", "description": "Server-side session, httpOnly cookie" },
+          { "id": "Bearer token", "label": "Bearer token", "description": "JWT in the Authorization header" }
+        ],
+        "multiple": true,
+        "allowsText": true,
+        "answerableBy": ["user", "brain"],
+        "status": "open",
+        "createdAt": 1758196800000,
+        "expiresAt": 1758204000000
+      }
+    ],
+    "voice.state": [{ "state": "idle" }, { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" }],
+    "voice.audio": [
+      { "chunk": "AAAA" },
+      { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },
+      { "chunk": "", "codec": "opus", "rate": 24000, "seq": 12, "reply": 3, "end": true }
+    ],
+    "voice.setup": [
+      { "stage": "tts", "engine": "chatterbox", "step": "deps", "progress": 0.4 },
+      { "stage": "tts", "engine": "chatterbox", "step": "failed", "message": "uv pip install exited 1" }
+    ],
+    "view.content": [{ "id": "default", "version": "2", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }] }],
+    "view.changed": [{ "id": "board" }],
+    "node.state": [
+      {
+        "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "name": "desk",
+        "role": "primary",
+        "status": "online",
+        "via": "direct",
+        "platform": "windows",
+        "scope": { "kind": "machine" },
+        "capabilities": { "harnesses": [], "voice": { "wake": false, "stt": false, "tts": false }, "remote": false, "brain": false },
+        "versions": { "platform": "0.1.0", "protocol": 1 },
+        "lastSeen": 1758196800000
+      }
+    ],
+    "metrics.sample": [
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "at": 1758196800000, "cpu": 3.2, "memory": { "used": 1000, "total": 2000 }, "processes": [], "llm": {} }
+    ],
+    "remote.state": [
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [{ "id": "D78A8CA2-A54F-4E28-D18E-10C7E59FF860", "name": "laptop", "kind": "native", "since": 1758196800000, "connected": true }, { "id": "web_7f3a", "name": "Pixel", "kind": "web", "since": 1758196900000 }], "streaming": true },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "apollo", "status": "installing", "step": "winget install ClassicOldSong.Apollo", "progress": 0.4 }, "viewers": [], "streaming": false },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "unavailable", "reason": "no host binary found and [remote] install = false" }, "viewers": [], "streaming": false },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "off" }, "viewers": [], "streaming": false }
+    ],
+    "audit.entry": [
+      {
+        "id": "aud_01ARZ3NDEKTSV4RRFFQ69G5FB6",
+        "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "at": 1758196800000,
+        "principal": { "kind": "user", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
+        "via": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",
+        "action": "node.list",
+        "args": {},
+        "decision": "allow",
+        "outcome": "ok",
+        "result": { "summary": "{\"nodes\":[…]}", "bytes": 412, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+        "durationMs": 3
+      }
+    ],
+    "account.state": [
+      { "plan": "free", "limits": {} },
+      { "plan": "pro", "limits": { "sessions": 8 }, "usage": { "period": "2026-09", "metrics": { "llm_tokens_in": { "used": 1, "cap": 2 } } } },
+      { "plan": "pro", "limits": { "sessions": 8, "nodes": 5, "memoryTier": "full", "planning": ["now", "at", "cron", "event", "recurring", "steps"] }, "subject": "usr_123", "connected": true },
+      { "plan": "free", "limits": { "sessions": 2 }, "subject": "usr_123", "connected": false },
+      {
+        "plan": "pro",
+        "limits": { "sessions": 8, "backupBytes": 268435456 },
+        "subject": "usr_123",
+        "connected": true,
+        "backup": { "enabled": true, "keyId": "5Yd9kQ2mXo0", "state": "syncing", "pending": 12, "lastSyncAt": 1758196800000, "bytes": 1834902, "limit": 268435456 }
+      },
+      {
+        "plan": "pro",
+        "limits": { "sessions": 8, "backupBytes": 268435456 },
+        "subject": "usr_123",
+        "connected": true,
+        "backup": { "enabled": false, "state": "idle", "remote": { "objects": 412, "bytes": 1834902, "updatedAt": 1758196800000, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" } }
+      }
+    ],
+    "direct.state": [
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "state": "off", "peers": [] },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "state": "unavailable", "reason": "the plan has no direct connections", "peers": [] },
+      {
+        "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+        "state": "ready",
+        "port": 51820,
+        "mapping": { "status": "mapped", "protocols": ["upnp"] },
+        "ipv6": false,
+        "peers": [
+          { "kind": "controller", "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "path": "predicted", "rttMs": 17.5, "since": 1758196800000 },
+          { "kind": "node", "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "srflx", "since": 1758196800000 }
+        ]
+      }
+    ],
+    "direct.candidate": [{ "peer": "dc_01ARZ3NDEKTSV4RRFFQ69G5FD2", "candidate": { "candidate": "candidate:1 1 udp 2130706431 192.168.1.44 51820 typ host", "sdpMid": "0", "sdpMLineIndex": 0 } }],
+    "remote.pipe.data": [{ "pipe": "p7", "data": "SFRUUC8xLjEgMjAwIE9LDQo=" }],
+    "remote.pipe.ack": [{ "pipe": "p7", "bytes": 1024 }],
+    "remote.pipe.close": [{ "pipe": "p7" }],
+    "update.state": [
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "platform", "current": "0.1.0" },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "brain", "current": "0.1.0", "available": "0.2.0", "staged": "0.2.0", "progress": 1 },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "model", "name": "tts-kokoro-en", "current": "none", "available": "1.0.0", "progress": 0.25 }
+    ]
+  }
+}

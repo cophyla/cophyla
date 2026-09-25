@@ -1,0 +1,26 @@
+# The speech sidecar's dependencies. This file is the source the locks are compiled from;
+# the daemon installs a lock, never this, so two machines get the same bytes:
+#
+#   uv pip compile pyproject.toml --generate-hashes --index https://download.pytorch.org/whl/cu124 \
+#     --index-strategy unsafe-best-match -o requirements-windows-x64.lock
+#
+# `setuptools<81` is pinned because Chatterbox's dependency chain still imports
+# `pkg_resources`, which 81 removed.
+
+[project]
+name = "cophyla-tts-py"
+version = "0.1.0"
+description = "Chatterbox Turbo behind an OpenAI-shaped speech endpoint on loopback"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+  "chatterbox-tts==0.1.7",
+  "fastapi>=0.115",
+  "uvicorn[standard]>=0.34",
+  "soundfile>=0.12",
+  "psutil>=6.0",
+  "setuptools<81",
+]
+
+[tool.uv]
+# torch comes from the CUDA index on Windows and Linux; macOS takes the default wheels.
+index-strategy = "unsafe-best-match"

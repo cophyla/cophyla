@@ -1,0 +1,698 @@
+{
+ "$comment": "Claude Code 2.1.280 screens as tether reads them (screen cells), replayed from spike 15's raw ConPTY output at 120x30; the trust dialog as text from the spike's log.",
+ "empty": {
+  "cols": 120,
+  "rows": 30,
+  "lines": [
+   "",
+   " ▐▛███▛█   Claude Code v2.1.280",
+   "▝▜██████▀  Haiku 4.5 · Claude Max",
+   "  ▝▝ ▝▝    C:\\D\\scratch-pty-demo\\work",
+   "",
+   "  Get to finished work sooner with Opus 5.5. Switch anytime with /model.",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "                                                                                  auto mode unavailable for this model",
+   "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "❯ Try \"how do I log an error?\"",
+   "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "  ⏸ manual mode on · ? for shortcuts · ← for agents"
+  ],
+  "cells": [
+   [],
+   [
+    {
+     "fg": "#d77757",
+     "t": " ▐"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "▛███▛█"
+    },
+    {
+     "t": "   "
+    },
+    {
+     "bold": true,
+     "t": "Claude Code"
+    },
+    {
+     "t": " "
+    },
+    {
+     "fg": "#999999",
+     "t": "v2.1.280                                                                                         "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "▝▜"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "█████"
+    },
+    {
+     "fg": "#d77757",
+     "t": "█▀  "
+    },
+    {
+     "fg": "#999999",
+     "t": "Haiku 4.5 · Claude Max                                                                                       "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "  ▝▝ ▝▝    "
+    },
+    {
+     "fg": "#999999",
+     "t": "C:\\D\\scratch-pty-demo\\work                                                                                   "
+    }
+   ],
+   [],
+   [
+    {
+     "t": "  Get to finished work sooner with Opus 5.5. Switch anytime with "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "/model"
+    },
+    {
+     "t": "."
+    }
+   ],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [
+    {
+     "t": "                                                                                  "
+    },
+    {
+     "fg": "#ffc107",
+     "t": "auto mode unavailable for this model  "
+    }
+   ],
+   [
+    {
+     "fg": "#888888",
+     "t": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    }
+   ],
+   [
+    {
+     "t": "❯ "
+    },
+    {
+     "dim": true,
+     "t": "Try \"how do I log an error?\""
+    }
+   ],
+   [
+    {
+     "fg": "#888888",
+     "t": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    }
+   ],
+   [
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#999999",
+     "t": "⏸ manual mode on · ? for shortcuts · ← for agents                                                                     "
+    }
+   ]
+  ]
+ },
+ "halfTyped": {
+  "cols": 120,
+  "rows": 30,
+  "lines": [
+   "",
+   " ▐▛███▛█   Claude Code v2.1.280",
+   "▝▜██████▀  Haiku 4.5 · Claude Max",
+   "  ▝▝ ▝▝    C:\\D\\scratch-pty-demo\\work",
+   "",
+   "  Get to finished work sooner with Opus 5.5. Switch anytime with /model.",
+   "",
+   "❯ /clears a code word for this chat only: PINEAPPLE. Do not save it anywhere. Reply with just: OK",
+   "",
+   "● OK",
+   "",
+   "✻ Baked for 1s · done 8:17 AM",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "  /clear                              Start a new session with empty context; previous session stays on disk",
+   "                                      (resumable with /resume)",
+   "  /product-launch-video               Turn a product or marketing URL, pasted script, or brief into a product launch /",
+   "                                      promo video — SaaS promos, feature reveals, product demos, app and company laun…",
+   "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "❯ /clear",
+   "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────",
+   "  ⏸ manual mode on"
+  ],
+  "cells": [
+   [],
+   [
+    {
+     "fg": "#d77757",
+     "t": " ▐"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "▛███▛█"
+    },
+    {
+     "t": "   "
+    },
+    {
+     "bold": true,
+     "t": "Claude Code"
+    },
+    {
+     "t": " "
+    },
+    {
+     "fg": "#999999",
+     "t": "v2.1.280                                                                                         "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "▝▜"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "█████"
+    },
+    {
+     "fg": "#d77757",
+     "t": "█▀  "
+    },
+    {
+     "fg": "#999999",
+     "t": "Haiku 4.5 · Claude Max                                                                                       "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "  ▝▝ ▝▝    "
+    },
+    {
+     "fg": "#999999",
+     "t": "C:\\D\\scratch-pty-demo\\work                                                                                   "
+    }
+   ],
+   [],
+   [
+    {
+     "t": "  Get to finished work sooner with Opus 5.5. Switch anytime with "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "/model"
+    },
+    {
+     "t": "."
+    }
+   ],
+   [],
+   [
+    {
+     "bg": "#373737",
+     "fg": "#505050",
+     "t": "❯"
+    },
+    {
+     "bg": "#373737",
+     "t": " "
+    },
+    {
+     "bg": "#373737",
+     "fg": "#ffffff",
+     "t": "/clears a code word for this chat only: PINEAPPLE. Do not save it anywhere. Reply with just: OK"
+    },
+    {
+     "bg": "#373737",
+     "fg": "#999999",
+     "t": "                       "
+    }
+   ],
+   [],
+   [
+    {
+     "fg": "#ffffff",
+     "t": "●"
+    },
+    {
+     "t": " OK"
+    }
+   ],
+   [],
+   [
+    {
+     "fg": "#999999",
+     "t": "✻"
+    },
+    {
+     "t": " "
+    },
+    {
+     "fg": "#999999",
+     "t": "Baked for 1s · done 8:17 AM"
+    }
+   ],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "/"
+    },
+    {
+     "bold": true,
+     "fg": "#b1b9f9",
+     "t": "clear"
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "                              Start a new session with empty context; previous session stays on disk"
+    }
+   ],
+   [
+    {
+     "t": "                                      "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "(resumable with /resume)"
+    }
+   ],
+   [
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#999999",
+     "t": "/product-launch-video               Turn a product or marketing URL, pasted script, or brief into a product launch /"
+    }
+   ],
+   [
+    {
+     "t": "                                      "
+    },
+    {
+     "fg": "#999999",
+     "t": "promo video — SaaS promos, feature reveals, product demos, app and company laun…"
+    },
+    {
+     "fg": "#ffc107",
+     "t": "  "
+    }
+   ],
+   [
+    {
+     "fg": "#888888",
+     "t": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    }
+   ],
+   [
+    {
+     "t": "❯ "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "/clear"
+    },
+    {
+     "fg": "#999999",
+     "t": "                                                                                                                "
+    }
+   ],
+   [
+    {
+     "fg": "#888888",
+     "t": "────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    }
+   ],
+   [
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#999999",
+     "t": "⏸ manual mode on"
+    }
+   ]
+  ]
+ },
+ "plan": {
+  "cols": 120,
+  "rows": 30,
+  "lines": [
+   "",
+   " ▐▛███▛█   Claude Code v2.1.280",
+   "▝▜██████▀  Haiku 4.5 · Claude Max",
+   "  ▝▝ ▝▝    C:\\D\\scratch-pty-demo\\work",
+   "",
+   "  Get to finished work sooner with Opus 5.5. Switch anytime with /model.",
+   "",
+   "╭─────────────────────────────────────────────────────────────────────────────╮",
+   "│ Plan to implement                                                           │",
+   "│                                                                             │",
+   "│ Create hello.txt in the current directory with the single-word contents hi. │",
+   "╰─────────────────────────────────────────────────────────────────────────────╯",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "",
+   "   ❯ 1. Yes, clear context (6% used) and auto-accept edits",
+   "     2. Yes, auto-accept edits",
+   "     3. Yes, manually approve edits",
+   "     4. Tell Claude what to change",
+   "        shift+tab to approve with this feedback",
+   "",
+   "   ctrl+g to edit in Notepad · ~\\.claude-accounts\\other\\plans\\make-a-plan-to-steady-aho.md"
+  ],
+  "cells": [
+   [],
+   [
+    {
+     "fg": "#d77757",
+     "t": " ▐"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "▛███▛█"
+    },
+    {
+     "t": "   "
+    },
+    {
+     "bold": true,
+     "t": "Claude Code"
+    },
+    {
+     "fg": "#999999",
+     "t": " v2.1.280                                                                                         "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "▝▜"
+    },
+    {
+     "bg": "#000000",
+     "fg": "#d77757",
+     "t": "█████"
+    },
+    {
+     "fg": "#d77757",
+     "t": "█▀  "
+    },
+    {
+     "fg": "#999999",
+     "t": "Haiku 4.5 · Claude Max                                                                                       "
+    }
+   ],
+   [
+    {
+     "fg": "#d77757",
+     "t": "  ▝▝ ▝▝  "
+    },
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#999999",
+     "t": "C:\\D\\scratch-pty-demo\\work"
+    }
+   ],
+   [],
+   [
+    {
+     "t": "  Get to finished work sooner with Opus 5.5. Switch anytime with "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "/model"
+    },
+    {
+     "t": "."
+    }
+   ],
+   [],
+   [
+    {
+     "fg": "#48968c",
+     "t": "╭─────────────────────────────────────────────────────────────────────────────╮"
+    }
+   ],
+   [
+    {
+     "fg": "#48968c",
+     "t": "│"
+    },
+    {
+     "t": " "
+    },
+    {
+     "bold": true,
+     "fg": "#48968c",
+     "t": "Plan to implement"
+    },
+    {
+     "t": "                                                           "
+    },
+    {
+     "fg": "#48968c",
+     "t": "│                                         "
+    }
+   ],
+   [
+    {
+     "fg": "#48968c",
+     "t": "│"
+    },
+    {
+     "t": "                  "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": " "
+    },
+    {
+     "t": "                                                          "
+    },
+    {
+     "fg": "#48968c",
+     "t": "│"
+    }
+   ],
+   [
+    {
+     "fg": "#48968c",
+     "t": "│"
+    },
+    {
+     "t": " Create "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "hello.txt "
+    },
+    {
+     "t": "in the current directory with the single-word contents "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "hi"
+    },
+    {
+     "t": ". "
+    },
+    {
+     "fg": "#48968c",
+     "t": "│                                         "
+    }
+   ],
+   [
+    {
+     "fg": "#48968c",
+     "t": "╰─────────────────────────────────────────────────────────────────────────────╯"
+    }
+   ],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [],
+   [
+    {
+     "t": "   "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "❯ "
+    },
+    {
+     "fg": "#999999",
+     "t": "1. "
+    },
+    {
+     "fg": "#b1b9f9",
+     "t": "Yes, clear context (6% used) and auto-accept edits"
+    },
+    {
+     "fg": "#999999",
+     "t": "                                                              "
+    }
+   ],
+   [
+    {
+     "t": "     "
+    },
+    {
+     "fg": "#999999",
+     "t": "2. "
+    },
+    {
+     "t": "Yes, auto-accept edits"
+    }
+   ],
+   [
+    {
+     "t": "     "
+    },
+    {
+     "fg": "#999999",
+     "t": "3. "
+    },
+    {
+     "t": "Yes, manually approve edits"
+    }
+   ],
+   [
+    {
+     "t": "     "
+    },
+    {
+     "fg": "#999999",
+     "t": "4. Tell Claude what to change                                                                                      "
+    }
+   ],
+   [
+    {
+     "t": "  "
+    },
+    {
+     "fg": "#999999",
+     "t": "      shift+tab to approve with this feedback                                                                         "
+    }
+   ],
+   [],
+   [
+    {
+     "t": "   "
+    },
+    {
+     "fg": "#999999",
+     "t": "ctrl+g to edit in Notepad · ~\\.claude-accounts\\other\\plans\\make-a-plan-to-steady-aho.md"
+    }
+   ]
+  ]
+ },
+ "trust": {
+  "cols": 120,
+  "rows": 30,
+  "lines": [
+   " Accessing workspace:",
+   " C:\\D\\scratch-pty-demo\\work",
+   " Quick safety check: Is this a project you created or one you trust? (Like your own code, a well-known open source",
+   " project, or work from your team). If not, take a moment to review what's in this folder first.",
+   " Claude Code'll be able to read, edit, and execute files here.",
+   " Security guide",
+   " ❯ No, exit",
+   "   Yes, I trust this folder",
+   " Enter to confirm · Esc to cancel"
+  ]
+ }
+}

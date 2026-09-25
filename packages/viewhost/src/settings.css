@@ -1,0 +1,303 @@
+/* The host's settings (settings.ts), over the frame and everything else on the host page:
+   the page dimmed, one card in the middle with a section per kind of setting. Dark, in the
+   default view's tones like the view picker, so it reads as part of whichever view asked for
+   it. Each host page links this file. */
+
+.host-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 5, 9, 0.66);
+  color: #ece9f2;
+  font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.host-settings *,
+.host-settings *::before,
+.host-settings *::after {
+  box-sizing: border-box;
+}
+
+.host-settings-card {
+  display: flex;
+  flex-direction: column;
+  width: min(620px, 100%);
+  max-height: min(760px, 100%);
+  padding: 12px;
+  border: 1px solid #3d3947;
+  border-radius: 8px;
+  background: #1c1a24;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.host-settings-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 4px 4px;
+}
+
+.host-settings-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.host-settings button,
+.host-settings select,
+.host-settings input {
+  font: inherit;
+  color: inherit;
+}
+
+.host-settings button {
+  cursor: pointer;
+}
+
+.host-settings button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.host-settings button:focus-visible,
+.host-settings select:focus-visible,
+.host-settings input:focus-visible {
+  outline: 2px solid #8c52d9;
+  outline-offset: 1px;
+}
+
+.host-settings-close {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #9a94a8;
+  font-size: 13px;
+}
+
+.host-settings-close:hover {
+  background: #25222e;
+  color: #ece9f2;
+}
+
+.host-settings-body {
+  min-height: 0;
+  overflow: auto;
+  padding: 0 4px 4px;
+}
+
+.host-settings-section-title {
+  margin: 4px 0 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  color: #c7a3f0;
+}
+
+.host-settings-lead {
+  margin: 2px 0 10px;
+  color: #9a94a8;
+  font-size: 12px;
+}
+
+.host-settings-machine {
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid #2b2833;
+  border-radius: 6px;
+}
+
+.host-settings-machine h3 {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.host-settings-harness + .host-settings-harness {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #2b2833;
+}
+
+.host-settings-harness h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #cfc9da;
+}
+
+.host-settings-usual {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+
+.host-settings-label {
+  color: #9a94a8;
+  font-size: 12px;
+}
+
+.host-settings select,
+.host-settings input[type="text"] {
+  min-height: 30px;
+  padding: 4px 8px;
+  border: 1px solid #3d3947;
+  border-radius: 4px;
+  background: #14121a;
+}
+
+.host-settings select {
+  max-width: 100%;
+}
+
+.host-settings select:disabled,
+.host-settings input:disabled {
+  opacity: 0.6;
+}
+
+.host-settings-profile {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #2b2833;
+  border-radius: 6px;
+  background: #211f2a;
+}
+
+.host-settings-profile-top {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.host-settings-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.host-settings-badge {
+  padding: 0 6px;
+  border-radius: 8px;
+  background: rgba(140, 82, 217, 0.22);
+  color: #c7a3f0;
+  font-size: 11px;
+}
+
+.host-settings-state {
+  margin-left: auto;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.host-settings-state.state-ok {
+  color: #7fc98f;
+}
+
+.host-settings-state.state-unauthenticated,
+.host-settings-state.state-missing {
+  color: #e2ae4d;
+}
+
+.host-settings-usage {
+  margin: 2px 0 0;
+  color: #9a94a8;
+  font-size: 12px;
+}
+
+.host-settings-launch {
+  margin: 8px 0 0;
+}
+
+.host-settings-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 0;
+}
+
+.host-settings-controls input[type="text"] {
+  flex: 1 1 200px;
+  min-width: 0;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.host-settings-save,
+.host-settings-reset {
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 1px solid #3d3947;
+  border-radius: 4px;
+  background: #25222e;
+}
+
+.host-settings-save:not(:disabled) {
+  border-color: #8c52d9;
+  background: rgba(140, 82, 217, 0.22);
+}
+
+.host-settings-save:hover:not(:disabled),
+.host-settings-reset:hover:not(:disabled) {
+  background: #2f2b3a;
+}
+
+.host-settings-reset[hidden] {
+  display: none;
+}
+
+.host-settings-source {
+  margin: 4px 0 0;
+  color: #6c6679;
+  font-size: 12px;
+}
+
+.host-settings-note,
+.host-settings-error {
+  margin: 4px 0 8px;
+  color: #e2ae4d;
+  font-size: 12px;
+}
+
+.host-settings-note[hidden] {
+  display: none;
+}
+
+/* a phone: the card fills the screen's width, and what a thumb presses is big enough */
+@media (max-width: 640px) {
+  .host-settings {
+    padding: 8px;
+  }
+
+  .host-settings-card {
+    max-height: 100%;
+  }
+
+  .host-settings-close {
+    width: 40px;
+    height: 40px;
+  }
+
+  .host-settings select,
+  .host-settings input[type="text"],
+  .host-settings-save,
+  .host-settings-reset {
+    min-height: 40px;
+  }
+
+  .host-settings-controls select,
+  .host-settings-usual select {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+}

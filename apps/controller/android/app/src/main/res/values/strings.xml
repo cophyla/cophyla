@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Cophyla</string>
+    <string name="title_activity_main">Cophyla</string>
+    <string name="package_name">com.fareaststudios.cophyla</string>
+    <string name="custom_url_scheme">com.fareaststudios.cophyla</string>
+</resources>

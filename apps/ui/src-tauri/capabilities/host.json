@@ -1,0 +1,25 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "host",
+  "description": "What the host page may call. Views load in a sandboxed frame on another origin and hold no capability at all; the allow-* entries are the app's own commands, under the ACL because build.rs declares them from commands.txt.",
+  "windows": [
+    "host"
+  ],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-unminimize",
+    "core:window:allow-set-title",
+    "core:event:default",
+    "allow-cophylad-attach",
+    "allow-cophylad-send",
+    "allow-view-stage",
+    "allow-notify-ask",
+    "allow-dismiss-ask",
+    "allow-stream-open",
+    "allow-stream-close",
+    "allow-open-link"
+  ]
+}

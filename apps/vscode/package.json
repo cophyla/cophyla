@@ -1,0 +1,46 @@
+{
+  "name": "tether",
+  "displayName": "tether",
+  "description": "A tether terminal in the panel's profile menu: your shell, held in tether so Cophyla can type into what runs there. Also opens the terminal of a session Cophyla starts in this window's panel.",
+  "version": "0.8.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "publisher": "fareaststudios",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": ["Other"],
+  "main": "./dist/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "contributes": {
+    "terminal": {
+      "profiles": [
+        {
+          "id": "tether.terminal",
+          "title": "tether",
+          "icon": "terminal"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "tether",
+      "properties": {
+        "cophyla.home": {
+          "type": "string",
+          "default": "",
+          "description": "The Cophyla home directory this window announces itself in, and learns Cophyla's tether from. Empty follows COPHYLA_HOME, then ~/.cophyla."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "esbuild src/extension.ts --bundle --outfile=dist/extension.js --external:vscode --format=cjs --platform=node --target=node20",
+    "package": "bun run build && vsce package --no-dependencies --out dist/tether.vsix",
+    "typecheck": "tsc -p ."
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.25.0"
+  }
+}

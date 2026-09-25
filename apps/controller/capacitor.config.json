@@ -1,0 +1,13 @@
+{
+  "appId": "com.fareaststudios.cophyla",
+  "appName": "Cophyla",
+  "webDir": "dist-native",
+  "server": {
+    "androidScheme": "https"
+  },
+  "plugins": {
+    "PushNotifications": {
+      "presentationOptions": []
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "name": "@cophyla/cophylad",
+  "version": "0.11.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/main.ts",
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.79.0",
+    "@agentclientprotocol/codex-acp": "1.12.0",
+    "@huggingface/tokenizers": "^0.2.0",
+    "@cophyla/protocol": "workspace:*",
+    "@cophyla/relay": "workspace:*",
+    "@cophyla/wake": "workspace:*",
+    "@tether-pty/client": "workspace:*",
+    "croner": "^10.0.1",
+    "onnxruntime-node": "1.30.0",
+    "opusscript": "^0.1.1",
+    "sherpa-onnx-node": "1.13.8",
+    "uqr": "0.1.3",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.15",
+    "@xterm/addon-fit": "0.11.0",
+    "@xterm/addon-unicode11": "0.9.0",
+    "@xterm/addon-web-links": "0.12.0",
+    "@xterm/xterm": "6.0.0",
+    "marked": "18.0.14"
+  }
+}

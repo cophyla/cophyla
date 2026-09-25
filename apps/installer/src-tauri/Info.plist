@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the launcher bundle's Info.plist by the Tauri bundler. The launcher has
+	     no window and exits once the shell runs: no Dock icon, no menu bar. The shell, a
+	     bundle of its own inside the version directory, has both. -->
+	<key>LSUIElement</key>
+	<true/>
+</dict>
+</plist>

@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>cophyla spike 07 — host</title>
+    <style>
+      body { font: 14px/1.5 system-ui, sans-serif; background: #101418; color: #e6edf3; padding: 20px; }
+      h1 { font-size: 16px; margin: 0 0 4px; }
+      .tag { display: inline-block; background: #1f6feb; padding: 2px 8px; border-radius: 4px; font-size: 12px; }
+      pre { background: #0b0e11; border: 1px solid #262c33; border-radius: 6px; padding: 12px; white-space: pre-wrap; }
+    </style>
+  </head>
+  <body>
+    <h1>cophyla spike 07 — <span class="tag">host page</span></h1>
+    <p>The shell's own page. It should have native APIs.</p>
+    <pre id="log">running…</pre>
+
+    <script>
+      const COLLECTOR = "http://127.0.0.1:8777/report";
+      const el = document.getElementById("log");
+      const lines = [];
+      const say = (k, v) => { lines.push(k.padEnd(28) + " " + v); el.textContent = lines.join("\n"); };
+
+      async function post(body) {
+        try {
+          await fetch(COLLECTOR, { method: "POST", headers: { "content-type": "application/json" },
+            body: JSON.stringify({ who: "host", ...body }) });
+          return true;
+        } catch (e) { say("collector", "UNREACHABLE " + e.message); return false; }
+      }
+
+      (async () => {
+        const r = {};
+        r.protocol = location.protocol;
+        r.href = location.href;
+        r.origin = location.origin;
+        r.hasGlobalTauri = typeof window.__TAURI__ !== "undefined";
+
+        // Something only the host should hold: a session token for the client protocol.
+        localStorage.setItem("cophyla.session.token", "HOST-ONLY-SECRET-abc123");
+        document.cookie = "cophyla_session=HOST-ONLY-COOKIE-xyz789; path=/";
+        r.storageSeeded = true;
+        say("seeded localStorage", "cophyla.session.token");
+        say("seeded cookie", "cophyla_session");
+
+        say("location", r.href);
+        say("window.__TAURI__", r.hasGlobalTauri ? "present" : "absent");
+
+        try {
+          r.invoke = await window.__TAURI__.core.invoke("host_ping");
+          r.invokeOk = true;
+          say("invoke host_ping", "OK -> " + r.invoke);
+        } catch (e) {
+          r.invokeOk = false; r.invokeErr = String(e);
+          say("invoke host_ping", "DENIED -> " + r.invokeErr);
+        }
+
+        try {
+          const w = window.__TAURI__.window.getCurrentWindow();
+          r.windowLabel = w.label;
+          await w.setTitle("cophyla spike 07 - host (native window API works)");
+          r.windowApiOk = true;
+          say("window.setTitle", "OK -> label=" + r.windowLabel);
+        } catch (e) {
+          r.windowApiOk = false; r.windowApiErr = String(e);
+          say("window.setTitle", "DENIED -> " + r.windowApiErr);
+        }
+
+        r.collectorReachable = await post({ test: "host-capabilities", round: 2, result: r });
+        try { await window.__TAURI__.core.invoke("record_cmd", { step: "host_page_report", data: r }); } catch {}
+
+        say("", "");
+        say("next", "closing in 5s -> tray, not quit");
+        setTimeout(async () => {
+          try { await window.__TAURI__.window.getCurrentWindow().close(); }
+          catch (e) { await post({ test: "self-close", error: String(e) }); }
+        }, 5000);
+      })();
+    </script>
+  </body>
+</html>

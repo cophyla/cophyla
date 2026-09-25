@@ -1,0 +1,163 @@
+/* The host's view picker (chooser.ts), over the frame and everything else on the host page:
+   the page dimmed, one card in the middle with a row per view. Dark, in the default view's
+   tones, so it reads as part of whichever view asked for it. Each host page links this file. */
+
+.view-chooser {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 5, 9, 0.66);
+  color: #ece9f2;
+  font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.view-chooser *,
+.view-chooser *::before,
+.view-chooser *::after {
+  box-sizing: border-box;
+}
+
+.view-chooser-card {
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  max-height: min(560px, 100%);
+  padding: 12px;
+  border: 1px solid #3d3947;
+  border-radius: 8px;
+  background: #1c1a24;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+}
+
+.view-chooser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin: 0 0 8px 4px;
+}
+
+.view-chooser-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.view-chooser button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.view-chooser button:disabled {
+  cursor: default;
+}
+
+.view-chooser button:focus-visible {
+  outline: 2px solid #8c52d9;
+  outline-offset: 2px;
+}
+
+.view-chooser-close {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #9a94a8;
+  font-size: 13px;
+}
+
+.view-chooser-close:hover {
+  background: #25222e;
+  color: #ece9f2;
+}
+
+.view-chooser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 3px;
+  min-height: 0;
+  overflow: auto;
+}
+
+.view-chooser-row {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #2b2833;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+}
+
+.view-chooser-row:focus-visible {
+  outline-offset: 1px;
+}
+
+.view-chooser-row:hover:not(:disabled) {
+  border-color: #3d3947;
+  background: #25222e;
+}
+
+.view-chooser-row[aria-current="true"],
+.view-chooser-row[aria-current="true"]:hover:not(:disabled) {
+  border-color: #8c52d9;
+  background: rgba(140, 82, 217, 0.16);
+}
+
+.view-chooser-row:disabled {
+  opacity: 0.7;
+}
+
+.view-chooser-name {
+  font-weight: 600;
+}
+
+.view-chooser-meta {
+  color: #9a94a8;
+  font-size: 12px;
+}
+
+.view-chooser-row[aria-current="true"] .view-chooser-meta {
+  color: #c7a3f0;
+}
+
+.view-chooser-note,
+.view-chooser-hint {
+  margin: 8px 4px 0;
+  font-size: 12px;
+}
+
+.view-chooser-note {
+  color: #e2ae4d;
+}
+
+.view-chooser-note[hidden] {
+  display: none;
+}
+
+.view-chooser-hint {
+  color: #6c6679;
+}
+
+/* rows a thumb can hit */
+@media (max-width: 640px) {
+  .view-chooser-row {
+    padding: 12px 14px;
+  }
+
+  .view-chooser-close {
+    width: 40px;
+    height: 40px;
+  }
+}

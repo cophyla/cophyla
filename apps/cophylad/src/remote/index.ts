@@ -1,0 +1,628 @@
+// The remote module: this node's desktop shared through a streaming host, the viewers it
+// runs for its own clients, and one frame for the brain. With `[remote] enabled` the host
+// (Apollo, or Sunshine) is located or installed, health-checked (on Windows it is a
+// service; elsewhere a sidecar), given credentials cophylad keeps under `data/remote`, named
+// after this node and told to serve its web UI to this machine only; its client list is
+// polled while it serves, so `remote.state` says who is paired and whether someone is
+// watching. Viewing needs no flag: a desktop client's `remote.open` pairs moonlight-qt with
+// the host node (the PIN it chose is posted there through `pairOn`, the gate's one ask) and
+// opens the window; a controller's gets a ticket to the moonlight-web sidecar this node
+// runs for it. `remote.open` is answered by the node the client's socket is on, so the
+// viewing node owns both viewers and nothing forwards it — except where there is no route to
+// the desktop: a phone off the LAN, or a desktop app on a node with no way to the host. Then
+// the host mints the ticket (`remote.ticket`, gated there as the node that asked), its own
+// web viewer serves the page to its loopback proxy, the page's connections ride pipes over
+// the links (the phone's own forwarder, or one on the viewing node), and the video goes over
+// WebRTC with the host's TURN servers, never through the relay.
+
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { randomBytes } from "node:crypto";
+import { RpcError } from "@cophyla/protocol";
+import type { CapabilityResult, Client, ClientResult, RemoteHost, RemoteState, RemoteViewer, StreamTransport } from "@cophyla/protocol";
+import type { ListenerKind } from "../api/clients.ts";
+import type { Bus } from "../bus.ts";
+import type { RemoteConfig } from "../config/schema.ts";
+import type { Logger } from "../log.ts";
+import type { Sidecar, Sidecars } from "../sidecars/index.ts";
+import { defaultExec } from "../sidecars/tts-py.ts";
+import type { Exec } from "../sidecars/tts-py.ts";
+import { hostOs } from "../update/platform.ts";
+import type { HostOs } from "../update/platform.ts";
+import { HostApi, HostApiError } from "./host.ts";
+import type { HostClient, HostCredentials } from "./host.ts";
+import { install, locateHost, locateMoonlight } from "./install.ts";
+import type { HostKind, Located } from "./install.ts";
+import { hostOfEndpoint, Moonlight, randomPin } from "./moonlight.ts";
+import type { Spawner } from "./moonlight.ts";
+import { RemoteProxy, RemoteTickets } from "./proxy.ts";
+import { screenshotter } from "./screenshot.ts";
+import type { Capture } from "./screenshot.ts";
+import { HOST_PORT, hostLabel, spawnHost, windowsServiceStart, windowsServiceState } from "./service.ts";
+import { Forwarder } from "./forwarder.ts";
+import { LoopbackProxy } from "./loopback.ts";
+import type { PipeHub } from "./pipes.ts";
+import { MoonlightWeb, WEB_RTC_PORTS } from "./web.ts";
+
+export interface OpenContext {
+  client: Client;
+  origin: string;
+  listener: ListenerKind;
+  /** The client fetches the stream page through a forwarder of its own: it gets the path, not a URL. */
+  forward?: boolean;
+}
+
+export interface RemoteDeps {
+  config: RemoteConfig;
+  nodeId: string;
+  /** This node's name: the host is called by it, and so is this node's viewer in other hosts' lists. */
+  nodeName: string;
+  /** `<home>/data/remote`: the host credentials and the capture script. */
+  dir: string;
+  /** `<home>/data/sidecars`: the web viewer's releases. */
+  sidecarsDir: string;
+  bus: Bus;
+  log: Logger;
+  sidecars: Sidecars;
+  /**
+   * Has `node`'s host accept a viewer's PIN under `name`: this node's own through the gate as
+   * the client that asked (`via`), or the owner's through the nodes module, gated there.
+   */
+  pairOn: (node: string, p: { pin: string; name: string }, via: string) => Promise<void>;
+  /** Where a node's host is reached: its first endpoint without the port; loopback for this node. */
+  addressOf: (node: string) => string | undefined;
+  /** Whether this machine has a route to `node`'s; without it, whether the node has an address. */
+  lanRoute?: (node: string) => boolean;
+  lanIps: () => string[];
+  /** The node's row changed: the host came up or went. */
+  onStateChange?: () => void;
+  os?: HostOs;
+  env?: Record<string, string | undefined>;
+  /** The seams: the command runner, the host API, the viewer's spawner and binary, the web sidecar's command, the capture. */
+  exec?: Exec;
+  fetch?: typeof fetch;
+  hostApi?: (kind: HostKind) => HostApi;
+  moonlight?: { spawn?: Spawner; command?: string };
+  web?: { command?: string[]; target?: string };
+  screenshot?: Capture;
+  now?: () => number;
+  /** The node links, for a stream on a node this one has no route to: its ticket there, and its end. */
+  links?: {
+    request(node: string, method: "remote.ticket" | "remote.close", params: unknown, opts?: { timeoutMs?: number }): Promise<unknown>;
+  };
+  /** The pipes a stream page's connections ride where there is no route to the host. */
+  pipes?: PipeHub;
+  /** This node's direct connections: the TURN servers a stream's own WebRTC uses, and the router's mapping of its ports. */
+  direct?: { readonly ready: boolean; iceServers(): Promise<unknown>; request(method: string, params: unknown): Promise<unknown> };
+}
+
+/** A stream shown where there is no route to its host: which host, whose it is, and the forwarder a window reads it through. */
+interface Away {
+  node: string;
+  client: string;
+  forwarder?: Forwarder;
+}
+
+const CREDENTIALS_FILE = "host.json";
+/** How long a viewer has to show it kept a pairing the host accepted. */
+const PAIR_CONFIRM_MS = 15_000;
+/** Polls the host may miss before it is called unavailable. */
+const MISSES = 3;
+/** Reads of the host's list, 250 ms apart, for a client it just paired to show up. */
+const CLIENT_WAIT_TRIES = 40;
+
+export class Remote {
+  private deps: RemoteDeps;
+  private log: Logger;
+  private config: RemoteConfig;
+  private os: HostOs;
+  private exec: Exec;
+  private host: RemoteHost = { kind: "none", status: "off" };
+  private hostApi?: HostApi;
+  private hostSidecar?: Sidecar;
+  private located?: Located;
+  private moonlight: Moonlight;
+  private web: MoonlightWeb;
+  readonly tickets: RemoteTickets;
+  readonly proxy: RemoteProxy;
+  /** The stream proxy on loopback, for the pages that come through pipes. */
+  readonly loopback: LoopbackProxy;
+  private away = new Map<string, Away>();
+  private capture: Capture;
+  private native: RemoteViewer[] = [];
+  private firstSeen = new Map<string, number>();
+  private hostStreaming = false;
+  private timer?: ReturnType<typeof setTimeout>;
+  private misses = 0;
+  private stopped = false;
+  private starting?: Promise<void>;
+  private last?: string;
+  private others = new Map<string, RemoteState>();
+  private unsubscribe: (() => void)[] = [];
+
+  constructor(deps: RemoteDeps) {
+    this.deps = deps;
+    this.log = deps.log;
+    this.config = deps.config;
+    this.os = deps.os ?? hostOs();
+    this.exec = deps.exec ?? defaultExec;
+    this.moonlight = new Moonlight({
+      command: () => this.moonlightCommand(),
+      exec: this.exec,
+      ...(deps.moonlight?.spawn ? { spawn: deps.moonlight.spawn } : {}),
+      log: this.log.child("moonlight"),
+    });
+    this.tickets = new RemoteTickets(deps.now ? { now: deps.now } : {});
+    this.tickets.onChange(() => this.publish());
+    this.web = new MoonlightWeb({
+      root: join(deps.sidecarsDir, "moonlight-web"),
+      sidecars: deps.sidecars,
+      config: deps.config,
+      log: this.log.child("web"),
+      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+      ...(deps.web?.target ? { target: deps.web.target } : {}),
+      ...(deps.web?.command ? { command: deps.web.command } : {}),
+      lanIps: deps.lanIps,
+      pairOn: deps.pairOn,
+      viewerName: `${deps.nodeName} web`,
+      iceServersFile: join(deps.dir, "ice-servers.json"),
+    });
+    this.proxy = new RemoteProxy({
+      tickets: this.tickets,
+      upstream: () => this.web.url(),
+      transport: () => this.config.web_transport,
+      log: this.log.child("proxy"),
+      ...(deps.fetch ? { fetch: deps.fetch } : {}),
+    });
+    this.loopback = new LoopbackProxy({ proxy: this.proxy, log: this.log.child("loopback") });
+    this.capture = deps.screenshot ?? screenshotter({ dir: deps.dir, os: this.os, log: this.log.child("screenshot"), ...(deps.env ? { env: deps.env } : {}) });
+    // Every node's last `remote.state` reaches the bus, this node's own included; the others are kept for `welcome`.
+    this.unsubscribe.push(
+      deps.bus.on("remote.state", (s) => {
+        if (s.node !== deps.nodeId) this.others.set(s.node, s);
+      }),
+      // A node that left serves nothing until it is back and says so again.
+      deps.bus.on("node.left", (e) => void this.others.delete(e.node)),
+    );
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  // --- state ------------------------------------------------------------------------------------
+
+  /** Whether this node shares its desktop now. */
+  capable(): boolean {
+    return this.host.status === "ready";
+  }
+
+  /** This node's `remote.state`. */
+  state(): RemoteState {
+    const viewers = [...this.native, ...this.tickets.viewers()];
+    return { node: this.deps.nodeId, host: { ...this.host }, viewers, streaming: this.hostStreaming };
+  }
+
+  /** Every node's last known `remote.state`, this node's first. */
+  states(): RemoteState[] {
+    return [this.state(), ...this.others.values()];
+  }
+
+  /** Emits `remote.state` when it changed since the last emit; `node.state` follows when the host came up or went. */
+  private publish(): void {
+    const s = this.state();
+    const text = JSON.stringify(s);
+    if (text === this.last) return;
+    const before = this.last ? (JSON.parse(this.last) as RemoteState).host.status : undefined;
+    this.last = text;
+    this.deps.bus.emit("remote.state", s);
+    if ((before === "ready") !== (s.host.status === "ready")) this.deps.onStateChange?.();
+  }
+
+  private setHost(patch: Partial<RemoteHost> & { status: RemoteHost["status"] }): void {
+    const kind = patch.kind ?? this.host.kind;
+    this.host = { kind, status: patch.status, ...(patch.step !== undefined ? { step: patch.step } : {}), ...(patch.progress !== undefined ? { progress: patch.progress } : {}), ...(patch.reason !== undefined ? { reason: patch.reason } : {}) };
+    this.publish();
+  }
+
+  // --- the host ---------------------------------------------------------------------------------
+
+  /** Brings the host up in the background; `ready()` waits for it. */
+  start(): void {
+    if (!this.config.enabled) {
+      this.setHost({ kind: "none", status: "off" });
+      return;
+    }
+    this.starting = this.bringUp().catch((e) => {
+      const reason = e instanceof Error ? e.message : String(e);
+      this.log.warn("remote host unavailable", { reason });
+      this.setHost({ status: "unavailable", reason });
+    });
+  }
+
+  /** For the tests and the live check: resolves once the host settled, ready or not. */
+  ready(): Promise<void> {
+    return this.starting ?? Promise.resolve();
+  }
+
+  private wantedKind(): HostKind {
+    if (this.config.host !== "auto") return this.config.host;
+    return this.os === "linux" ? "sunshine" : "apollo";
+  }
+
+  private async bringUp(): Promise<void> {
+    let located = locateHost(this.config, this.os, this.deps.env ?? process.env);
+    if (!located) {
+      const kind = this.wantedKind();
+      if (!this.config.install) throw new Error(`no ${kind} found and [remote] install is off`);
+      this.setHost({ kind, status: "installing", step: `installing ${kind}` });
+      this.log.info("installing the remote host", { kind });
+      await install(kind, { exec: this.exec, os: this.os, onLine: (line) => this.setHost({ kind, status: "installing", step: line.slice(0, 120) }) });
+      located = locateHost(this.config, this.os, this.deps.env ?? process.env);
+      if (!located) throw new Error(`${kind} was installed but its binary was not found`);
+    }
+    this.located = located;
+    const kind = located.kind;
+    this.setHost({ kind, status: "starting", step: `checking ${hostLabel(located)}` });
+    const api = this.deps.hostApi ? this.deps.hostApi(kind) : new HostApi({ kind, port: HOST_PORT, log: this.log.child("host"), ...(this.deps.fetch ? { fetch: this.deps.fetch } : {}) });
+    this.hostApi = api;
+
+    if (this.os === "windows") {
+      if (!(await api.alive())) {
+        const svc = await windowsServiceState(kind, this.exec);
+        if (svc.state === "stopped") {
+          this.setHost({ kind, status: "starting", step: svc.detail });
+          const started = await windowsServiceStart(kind, this.exec);
+          if (!started.ok) throw new Error(started.detail);
+        } else if (svc.state === "absent" || svc.state === "unknown") {
+          throw new Error(`${hostLabel(located)} does not answer: ${svc.detail}`);
+        }
+      }
+    } else {
+      this.setHost({ kind, status: "starting", step: `starting ${hostLabel(located)}` });
+      this.hostSidecar = spawnHost(this.deps.sidecars, located, this.os);
+      await this.hostSidecar.start();
+    }
+    this.setHost({ kind, status: "starting", step: "waiting for the host" });
+    if (!(await api.waitAlive())) throw new Error(`${hostLabel(located)} did not answer on port ${HOST_PORT}`);
+
+    this.setHost({ kind, status: "starting", step: "credentials" });
+    await this.credentials(api);
+    this.setHost({ kind, status: "starting", step: "configuring" });
+    const restarted = await api.configure({ sunshine_name: this.deps.nodeName, origin_web_ui_allowed: "pc" });
+    if (restarted) {
+      this.setHost({ kind, status: "starting", step: "restarting the host" });
+      if (!(await api.waitAlive())) throw new Error(`${hostLabel(located)} did not come back after its restart`);
+    }
+    await this.poll();
+    this.setHost({ kind, status: "ready" });
+    this.log.info("remote host ready", { host: hostLabel(located), name: this.deps.nodeName });
+    this.schedule();
+  }
+
+  /** The host's web credentials: the configured pair, the kept one, or a new one through the welcome flow. */
+  private async credentials(api: HostApi): Promise<void> {
+    const file = join(this.deps.dir, CREDENTIALS_FILE);
+    const configured = this.config.host_user && this.config.host_password ? { username: this.config.host_user, password: this.config.host_password } : undefined;
+    let kept: HostCredentials | undefined;
+    if (!configured && existsSync(file)) {
+      try {
+        kept = JSON.parse(readFileSync(file, "utf8")) as HostCredentials;
+      } catch {
+        kept = undefined;
+      }
+    }
+    const fresh: HostCredentials = { username: "cophyla", password: randomBytes(18).toString("base64url") };
+    const candidate = configured ?? kept ?? fresh;
+    // The welcome flow takes the first credentials a host ever gets; afterwards it refuses, and the known pair is tried.
+    if (await api.welcome(candidate)) {
+      if (!configured) {
+        mkdirSync(this.deps.dir, { recursive: true });
+        writeFileSync(file, JSON.stringify(candidate, null, 2), { mode: 0o600 });
+      }
+      this.log.info("remote host credentials set", { user: candidate.username });
+      return;
+    }
+    const known = configured ?? kept;
+    if (!known) throw new Error("the host already has credentials cophylad does not know: set [remote] host_user and host_password");
+    api.setCredentials(known);
+    try {
+      await api.config();
+    } catch (e) {
+      if (e instanceof HostApiError && e.status === 401) throw new Error("the host refused the known credentials: set [remote] host_user and host_password");
+      throw e;
+    }
+  }
+
+  private schedule(): void {
+    if (this.stopped) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => void this.tick(), this.config.poll_ms);
+    this.timer.unref?.();
+  }
+
+  private async tick(): Promise<void> {
+    if (this.stopped) return;
+    try {
+      await this.poll();
+      this.misses = 0;
+      if (this.host.status === "unavailable") {
+        this.log.info("remote host back");
+        this.setHost({ status: "ready" });
+      }
+    } catch (e) {
+      this.misses++;
+      if (this.misses >= MISSES && this.host.status === "ready") {
+        let reason = e instanceof Error ? e.message : String(e);
+        if (this.os === "windows" && this.located) reason = (await windowsServiceState(this.located.kind, this.exec)).detail;
+        this.log.warn("remote host stopped answering", { reason });
+        this.setHost({ status: "unavailable", reason });
+      }
+    }
+    this.schedule();
+  }
+
+  /** One read of the host: who is paired, and whether one of them streams. */
+  private async poll(): Promise<void> {
+    const api = this.hostApi;
+    if (!api) return;
+    const clients = await api.clients();
+    const now = this.now();
+    const seen = new Set<string>();
+    this.native = clients.map((c) => {
+      seen.add(c.uuid);
+      const since = this.firstSeen.get(c.uuid) ?? now;
+      this.firstSeen.set(c.uuid, since);
+      return { id: c.uuid, kind: "native", since, ...(c.name ? { name: c.name } : {}), ...(c.connected !== undefined ? { connected: c.connected } : {}) };
+    });
+    for (const id of [...this.firstSeen.keys()]) if (!seen.has(id)) this.firstSeen.delete(id);
+    let streaming = clients.some((c) => c.connected === true);
+    if (api.kind === "sunshine") {
+      const info = await api.serverInfo();
+      streaming = streaming || info.state === "SUNSHINE_SERVER_BUSY";
+    }
+    this.hostStreaming = streaming;
+    this.publish();
+  }
+
+  private requireHost(): HostApi {
+    if (!this.config.enabled) throw new RpcError("unavailable", "this node does not share its desktop: [remote] enabled is off");
+    if (this.host.status !== "ready" || !this.hostApi) throw new RpcError("unavailable", `this node's desktop host is ${this.host.status}${this.host.reason ? `: ${this.host.reason}` : ""}`);
+    return this.hostApi;
+  }
+
+  /** The host accepts a viewer's PIN and the viewer gets what a viewer needs. */
+  async pair(pin: string, name: string | undefined, opts: { signal?: AbortSignal } = {}): Promise<ClientResult<"remote.pair">> {
+    const api = this.requireHost();
+    const label = name ?? "viewer";
+    const before = new Set((await api.clients()).map((c) => c.uuid));
+    await api.pin(pin, label, opts.signal ? { signal: opts.signal } : {});
+    const client = await this.newClient(api, label, before);
+    if (!client) this.log.warn("the paired viewer never showed in the host's list; it may watch but not drive", { name: label });
+    else await api.grantViewer(client).catch((e) => this.log.warn("could not grant the viewer its permissions", { name: label, error: e instanceof Error ? e.message : String(e) }));
+    await this.poll().catch(() => undefined);
+    return {};
+  }
+
+  /**
+   * The client a PIN just paired: the host lists it only once the viewer has finished its half
+   * of the handshake, moments after it took the PIN, so the list is read until a client of that
+   * name that was not there before shows up.
+   */
+  private async newClient(api: HostApi, name: string, before: Set<string>): Promise<HostClient | undefined> {
+    for (let i = 0; i < CLIENT_WAIT_TRIES; i++) {
+      const found = (await api.clients()).find((c) => c.name === name && !before.has(c.uuid));
+      if (found) return found;
+      await Bun.sleep(250);
+    }
+    return undefined;
+  }
+
+  /** A code for a phone, from the host; Apollo's Artemis opens the link. */
+  async invite(): Promise<ClientResult<"remote.invite">> {
+    const api = this.requireHost();
+    if (api.kind !== "apollo") throw new RpcError("unsupported", "this host mints no invite codes; pair by PIN");
+    const passphrase = `cophyla-${randomBytes(3).toString("hex")}`;
+    const r = await api.otp(passphrase, "phone");
+    const ip = r.ip ?? this.deps.lanIps().find((a) => a !== "127.0.0.1") ?? "127.0.0.1";
+    const link = `art://${ip}:${HOST_PORT}?pin=${encodeURIComponent(r.otp)}&passphrase=${encodeURIComponent(passphrase)}&name=${encodeURIComponent(this.deps.nodeName)}`;
+    return { otp: r.otp, link, passphrase, expiresAt: this.now() + 3 * 60_000 };
+  }
+
+  /** Ends a viewer: a web session of this node, or a client paired with this node's host. */
+  async revoke(viewer: string): Promise<ClientResult<"remote.revoke">> {
+    const session = this.tickets.byViewer(viewer);
+    if (session) {
+      this.tickets.revoke(session.id);
+      return {};
+    }
+    const api = this.requireHost();
+    const client = (await api.clients()).find((c) => c.uuid === viewer || c.name === viewer);
+    if (!client) throw new RpcError("not_found", `no viewer ${viewer}`);
+    await api.disconnect(client.uuid).catch(() => undefined);
+    await api.unpair(client.uuid);
+    await this.poll().catch(() => undefined);
+    return {};
+  }
+
+  // --- viewing ----------------------------------------------------------------------------------
+
+  private async moonlightCommand(): Promise<string> {
+    if (this.deps.moonlight?.command) return this.deps.moonlight.command;
+    const found = locateMoonlight(this.config, this.os, this.deps.env ?? process.env);
+    if (found) return found;
+    if (!this.config.install) throw new RpcError("unavailable", "moonlight is not installed and [remote] install is off");
+    this.log.info("installing moonlight");
+    await install("moonlight", { exec: this.exec, os: this.os });
+    const after = locateMoonlight(this.config, this.os, this.deps.env ?? process.env);
+    if (!after) throw new RpcError("unavailable", "moonlight was installed but its binary was not found");
+    return after;
+  }
+
+  /** Whether this machine reaches `node`'s desktop over the LAN. */
+  private routable(node: string): boolean {
+    if (!this.config.lan_route) return false;
+    return this.deps.lanRoute ? this.deps.lanRoute(node) : this.deps.addressOf(node) !== undefined;
+  }
+
+  /** Where `node`'s host is, for the viewer. */
+  private hostAddress(node: string): string {
+    if (node === this.deps.nodeId) return "127.0.0.1";
+    const endpoint = this.deps.addressOf(node);
+    if (!endpoint) throw new RpcError("not_found", `no node ${node}`);
+    return hostOfEndpoint(endpoint);
+  }
+
+  /**
+   * Opens `node`'s desktop for the client on this socket: a desktop client gets moonlight-qt
+   * paired (the host's one ask) and a window; a controller gets a ticket to the web viewer
+   * on this node's controller origin. The phone app, which cannot show a page from the
+   * node's self-signed origin, fetches it through a forwarder on its own loopback over its
+   * pinned socket: it gets the ticket's path, its cookie without `Secure`, and the video on
+   * the page's WebSocket.
+   */
+  async open(node: string, ctx: OpenContext): Promise<ClientResult<"remote.open">> {
+    // the phone off the LAN: the host's page through its own forwarder and pipes
+    if (ctx.client.kind === "controller" && ctx.forward && (ctx.listener === "cloud" || ctx.listener === "p2p")) return this.openAway(node, ctx.client, "phone");
+    // the desktop app on a node with no route to the host: the page in a window of its own, through a forwarder here
+    if (ctx.client.kind === "ui" && node !== this.deps.nodeId && ctx.client.node === this.deps.nodeId && !this.routable(node)) return this.openAway(node, ctx.client, "window");
+    const address = this.hostAddress(node);
+    if (ctx.client.kind === "controller") {
+      if (ctx.listener !== "controller") throw new RpcError("unavailable", "a stream page is served on the controller listener only");
+      if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
+      const ids = await this.web.ensureHost(node, address, ctx.client.id);
+      const name = ctx.client.name !== undefined ? { name: ctx.client.name } : {};
+      if (ctx.forward) {
+        const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { ...name, transport: "websocket", secureCookie: false });
+        this.log.info("web viewer ticket minted", { node, client: ctx.client.id, forward: true });
+        return { path: `/remote/?t=${ticket}`, transport: "websocket", node, stream };
+      }
+      const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, name);
+      this.log.info("web viewer ticket minted", { node, client: ctx.client.id });
+      return { url: `${ctx.origin}/remote/?t=${ticket}`, stream };
+    }
+    // A window opens on this machine: only for the desktop app that runs on it.
+    if (ctx.client.node !== this.deps.nodeId) throw new RpcError("unsupported", "a viewer window opens only for the desktop app on this machine");
+    if (!(await this.moonlight.paired(address))) {
+      const pin = randomPin();
+      const child = await this.moonlight.pair(address, pin);
+      try {
+        await this.deps.pairOn(node, { pin, name: this.deps.nodeName }, ctx.client.id);
+        // moonlight finishes its half moments after the host's answer and then idles for most of a
+        // minute; the app list answering is the proof it kept the pairing, and the process can go.
+        const end = this.now() + PAIR_CONFIRM_MS;
+        while (!(await this.moonlight.paired(address))) {
+          if (this.now() > end) throw new RpcError("unavailable", `the viewer did not keep its pairing with ${node}`);
+          await Bun.sleep(500);
+        }
+      } finally {
+        child.kill();
+      }
+      this.log.info("viewer paired", { node, address });
+    }
+    await this.moonlight.stream(address);
+    return {};
+  }
+
+  /**
+   * A stream where there is no route to its host: the host's ticket (this node's own for a
+   * phone off its LAN), and for a window on this machine a forwarder here to read it through.
+   */
+  private async openAway(node: string, client: Client, how: "phone" | "window"): Promise<ClientResult<"remote.open">> {
+    const self = this.deps.nodeId;
+    let opened: { path: string; stream: string };
+    if (node === self) opened = await this.ticket(client.id, client.name, "webrtc");
+    else {
+      if (!this.deps.links) throw new RpcError("unavailable", `no link to ${node}`);
+      opened = (await this.deps.links.request(node, "remote.ticket", { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc" }, { timeoutMs: 180_000 })) as { path: string; stream: string };
+    }
+    const away: Away = { node, client: client.id };
+    this.away.set(opened.stream, away);
+    this.log.info("stream opened through pipes", { node, client: client.id, how });
+    if (how === "phone") return { path: opened.path, transport: "webrtc", node, stream: opened.stream };
+    if (!this.deps.pipes) throw new RpcError("unavailable", "this node carries no pipes");
+    const forwarder = new Forwarder({ hub: this.deps.pipes, node, log: this.log.child("forwarder"), onClose: () => void this.endAway(opened.stream, client.id) });
+    away.forwarder = forwarder;
+    const port = forwarder.start();
+    return { url: `http://127.0.0.1:${port}${opened.path}`, stream: opened.stream };
+  }
+
+  /**
+   * A ticket to this node's own desktop for a viewer with no route here: the stream page's
+   * path, its cookie without `Secure` (the page is on the viewer's loopback), its video over
+   * WebRTC with this node's TURN servers. The caller gates it.
+   */
+  async ticket(viewer: string, name: string | undefined, transport: StreamTransport): Promise<{ path: string; stream: string }> {
+    this.requireHost();
+    if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
+    if (transport === "webrtc") {
+      const direct = this.deps.direct;
+      if (!direct?.ready) throw new RpcError("unavailable", "the host's direct connections are not on");
+      // the stream's own WebRTC reads the TURN servers from the file this writes
+      await direct.iceServers();
+      const ports = Array.from({ length: WEB_RTC_PORTS.max - WEB_RTC_PORTS.min + 1 }, (_, i) => WEB_RTC_PORTS.min + i);
+      void direct.request("map.ports", { ports }).catch(() => undefined);
+    }
+    const ids = await this.web.ensureHost(this.deps.nodeId, "127.0.0.1", viewer);
+    const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { ...(name !== undefined ? { name } : {}), transport, secureCookie: false });
+    this.log.info("web viewer ticket minted for a viewer elsewhere", { viewer, transport });
+    return { path: `/remote/?t=${ticket}`, stream };
+  }
+
+  /** A viewer elsewhere ended its stream here. */
+  closeTicket(stream: string, viewer: string): void {
+    if (this.tickets.close(stream, viewer)) this.log.info("web viewer closed by a viewer elsewhere", { viewer });
+  }
+
+  /** The client ended a stream it opened: its web session, the ticket not yet claimed, or the host's session for one away. */
+  close(stream: string, client: string): ClientResult<"remote.close"> {
+    if (this.endAway(stream, client)) return {};
+    if (this.tickets.close(stream, client)) this.log.info("web viewer closed by its client", { client });
+    return {};
+  }
+
+  /** Ends a stream shown away from its host: the forwarder here, the session there. */
+  private endAway(stream: string, client: string): boolean {
+    const away = this.away.get(stream);
+    if (!away || away.client !== client) return false;
+    this.away.delete(stream);
+    away.forwarder?.stop();
+    if (away.node === this.deps.nodeId) this.tickets.close(stream, client);
+    else void this.deps.links?.request(away.node, "remote.close", { node: away.node, stream, viewer: client }).catch((e: unknown) => this.log.debug("the host did not hear the stream end", { error: e instanceof Error ? e.message : String(e) }));
+    return true;
+  }
+
+  /** One frame of a display, for the brain; the host is not involved. */
+  async screenshot(display?: number): Promise<CapabilityResult<"remote.screenshot">> {
+    const shot = await this.capture(display, this.config.screenshot_width);
+    return { image: { mime: shot.mime, base64: shot.base64 }, width: shot.width, height: shot.height, display: shot.display, at: this.now() };
+  }
+
+  /** The link to `node` went: the sessions its viewers opened here end (they are filed under it). */
+  linkGone(node: string): void {
+    this.tickets.forgetWhere((client) => client.startsWith(`${node}:`));
+  }
+
+  /** A client went: the web sessions it opened go with it, here and on hosts elsewhere. */
+  onDisconnect(client: string): void {
+    this.tickets.forgetClient(client);
+    for (const [stream, away] of [...this.away]) if (away.client === client) this.endAway(stream, client);
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    for (const off of this.unsubscribe) off();
+    this.unsubscribe = [];
+    this.moonlight.stop();
+    for (const away of this.away.values()) away.forwarder?.stop();
+    this.away.clear();
+    await this.loopback.stop();
+    await this.web.stop().catch(() => undefined);
+    if (this.hostSidecar) {
+      await this.hostSidecar.stop().catch(() => undefined);
+      this.deps.sidecars.forget("remote-host");
+      this.hostSidecar = undefined;
+    }
+  }
+}
