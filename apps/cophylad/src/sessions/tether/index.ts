@@ -1,8 +1,9 @@
 // cophylad's side of tether: the terminals the node's tether hosts hold, and the requests
 // sessions make of them. At start the daemon adopts every host running under the user's
 // tether folder — their sessions outlived the daemon that started them, as terminal sessions
-// always have — and watches each, so it knows every terminal by its host, its id and its
-// program's pid. A spawn goes to the host new sessions belong to, started on demand from the
+// always have — and, every few seconds after, any host started since: a terminal the user
+// opens when no host runs (none yet, or the last one idled out) starts one of its own. It
+// watches each, so it knows every terminal by its host, its id and its program's pid. A spawn goes to the host new sessions belong to, started on demand from the
 // staged binary (see locate.ts); a host from an older binary keeps its sessions until they end.
 //
 // tether knows nothing of harnesses; which terminal holds which session is settled by the
@@ -48,6 +49,15 @@ export interface TetherOptions {
   connectOrStart?: (opts: StartOptions) => Promise<TetherClient>;
   connect?: (host: HostFile) => Promise<TetherClient>;
   hosts?: (dir: string) => HostFile[];
+  /** How often the tether folder is looked at for a host started since; `SCAN_MS` by default. */
+  scanMs?: number;
+}
+
+/** How often the tether folder is read for a host the daemon does not hold: one directory listing. */
+export const SCAN_MS = 3000;
+
+function unref(t: unknown): void {
+  if (t && typeof t === "object" && "unref" in t) (t as { unref(): void }).unref();
 }
 
 /** A terminal as the host last described it. */
@@ -77,6 +87,10 @@ export class Tether {
   private listeners = new Set<(c: TerminalChange) => void>();
   private starting?: Promise<TetherClient>;
   private stopped = false;
+  private scanTimer?: ReturnType<typeof setInterval>;
+  private scanning = false;
+  /** Hosts that could not be adopted, by id: each is warned of once, not at every scan. */
+  private refused = new Set<string>();
 
   constructor(opts: TetherOptions) {
     this.opts = opts;
@@ -127,12 +141,42 @@ export class Tether {
       this.opts.log.info("tether found", { origin: found.origin, version, exe: this.exePath, dir: this.dir });
     }
     const hosts = (this.opts.hosts ?? liveHosts)(this.dir);
-    for (const h of hosts) await this.connect(h).catch((e: unknown) => this.opts.log.warn("tether host not adopted", { host: h.host, error: e instanceof Error ? e.message : String(e) }));
+    for (const h of hosts) await this.connect(h).catch((e: unknown) => this.refuse(h, e));
     if (hosts.length > 0) this.opts.log.info("tether hosts adopted", { hosts: this.clients.size, terminals: this.entries.size });
+    this.scanTimer = setInterval(() => void this.scan(), this.opts.scanMs ?? SCAN_MS);
+    unref(this.scanTimer);
+  }
+
+  /** Adopts every live host not held: one a terminal started after the daemon, when no host ran. */
+  private async scan(): Promise<void> {
+    if (this.stopped || this.scanning) return;
+    this.scanning = true;
+    try {
+      for (const h of (this.opts.hosts ?? liveHosts)(this.dir)) {
+        const held = this.clients.get(h.host);
+        if ((held && !held.closed) || this.refused.has(h.host)) continue;
+        try {
+          await this.connect(h);
+          this.opts.log.info("tether host adopted", { host: h.host, terminals: [...this.entries.values()].filter((e) => e.ref.host === h.host).length });
+        } catch (e) {
+          this.refuse(h, e);
+        }
+      }
+    } catch {
+      // the folder unreadable this time: the next scan looks again
+    } finally {
+      this.scanning = false;
+    }
+  }
+
+  private refuse(host: HostFile, e: unknown): void {
+    this.refused.add(host.host);
+    this.opts.log.warn("tether host not adopted", { host: host.host, error: e instanceof Error ? e.message : String(e) });
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    if (this.scanTimer) clearInterval(this.scanTimer);
     for (const c of this.clients.values()) c.close();
     this.clients.clear();
     this.entries.clear();
