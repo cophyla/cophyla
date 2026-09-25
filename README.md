@@ -1,3 +1,5 @@
+<p align="center"><img src="Assets/Cophyla_icon_large.png" alt="" width="128"></p>
+
 # Cophyla
 
 Cophyla (say "ko-FY-la") gives you one place to see and drive every AI coding session on your
