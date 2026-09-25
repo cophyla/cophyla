@@ -183,8 +183,10 @@ describe("update", () => {
     await feedBoth(s, s.scratch);
 
     await c1.request("update.check");
-    expect(feed.seen).toHaveLength(1);
-    const req = feed.seen[0]!;
+    // the artifacts may be on their way already; the feed itself was read once
+    const reads = feed.seen.filter((r) => !r.path.startsWith("/artifacts/"));
+    expect(reads).toHaveLength(1);
+    const req = reads[0]!;
     expect(req.method).toBe("GET");
     expect(req.path).toBe(`/stable/${OS}-${ARCH}.json`);
     expect(req.search).toBe("");
