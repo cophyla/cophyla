@@ -20,16 +20,18 @@ const config = (over: Record<string, unknown> = {}) => RemoteConfig.parse(over);
 describe("remote parts", () => {
   test("the host is found where its installer puts it, Apollo first; Apollo's tree names it whatever the file is called", () => {
     const env = { ProgramFiles: "C:\\PF" };
+    // joined as the code joins them, so the same paths on a test run off Windows
+    const pf = (...parts: string[]) => join("C:\\PF", ...parts);
     const all = hostCandidates("windows", env).map((c) => `${c.kind} ${c.path}`);
-    expect(all[0]).toBe("apollo C:\\PF\\Apollo\\sunshine.exe");
-    expect(all.at(-1)).toBe("sunshine C:\\PF\\Sunshine\\sunshine.exe");
+    expect(all[0]).toBe(`apollo ${pf("Apollo", "sunshine.exe")}`);
+    expect(all.at(-1)).toBe(`sunshine ${pf("Sunshine", "sunshine.exe")}`);
     const has = (paths: string[]) => (p: string) => paths.includes(p);
-    expect(locateHost(config(), "windows", env, has(["C:\\PF\\Sunshine\\sunshine.exe", "C:\\PF\\Apollo\\sunshine.exe"]))).toEqual({ kind: "apollo", path: "C:\\PF\\Apollo\\sunshine.exe" });
-    expect(locateHost(config({ host: "sunshine" }), "windows", env, has(["C:\\PF\\Sunshine\\sunshine.exe", "C:\\PF\\Apollo\\sunshine.exe"]))).toEqual({ kind: "sunshine", path: "C:\\PF\\Sunshine\\sunshine.exe" });
+    expect(locateHost(config(), "windows", env, has([pf("Sunshine", "sunshine.exe"), pf("Apollo", "sunshine.exe")]))).toEqual({ kind: "apollo", path: pf("Apollo", "sunshine.exe") });
+    expect(locateHost(config({ host: "sunshine" }), "windows", env, has([pf("Sunshine", "sunshine.exe"), pf("Apollo", "sunshine.exe")]))).toEqual({ kind: "sunshine", path: pf("Sunshine", "sunshine.exe") });
     expect(locateHost(config(), "windows", env, has([]))).toBeUndefined();
     expect(locateHost(config({ host_command: "D:\\apps\\Apollo\\sunshine.exe" }), "windows", env, has([]))).toEqual({ kind: "apollo", path: "D:\\apps\\Apollo\\sunshine.exe" });
     expect(kindOf("/usr/bin/sunshine")).toBe("sunshine");
-    expect(locateMoonlight(config(), "windows", env, has(["C:\\PF\\Moonlight Game Streaming\\Moonlight.exe"]))).toBe("C:\\PF\\Moonlight Game Streaming\\Moonlight.exe");
+    expect(locateMoonlight(config(), "windows", env, has([pf("Moonlight Game Streaming", "Moonlight.exe")]))).toBe(pf("Moonlight Game Streaming", "Moonlight.exe"));
     expect(locateMoonlight(config(), "macos", env, has(["/Applications/Moonlight.app/Contents/MacOS/Moonlight"]))).toBe("/Applications/Moonlight.app/Contents/MacOS/Moonlight");
   });
 
