@@ -647,6 +647,8 @@ describe("codex sessions end and resume on evidence", () => {
     const before = events().length;
     writeFileSync(rolloutPath, lines.join("\n") + "\n");
     listed(Date.now());
+    // threads are listed once a millisecond at most here: let one pass since the last test's ticks
+    await sleep(2);
     await mini.sessions.tick();
     const s = record();
     expect(s.status).not.toBe("ended");
