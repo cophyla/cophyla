@@ -71,5 +71,5 @@ waits for the old shell and starts the new one. The feed under `stage/feed/stabl
 
 ## Where the docs carry this
 
-The session-control survey §2a (U2), §2d (U3), §3 (U5); `docs/architecture.md`
+The session-control survey §2a (U2), §2d (U3), §3 (U5); `architecture.md`
 "update" and `session.focus` (U6); `apps/installer/README.md` runbooks PL1–PL6 and PM1–PM6.

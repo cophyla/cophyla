@@ -7,7 +7,7 @@ Virtual Monitor driver already present. Installed by hand (both installers eleva
 (`MoonlightGameStreamingProject.Moonlight`); moonlight-web v2.10.0 unzipped into `out/`.
 The host and every viewer ran on this one machine, so every stream is of this desktop.
 
-Question: does the remote-desktop design in `docs/architecture.md` hold against the real
+Question: does the remote-desktop design in `architecture.md` hold against the real
 binaries — can cophylad set up Apollo headlessly over its API, pair moonlight-qt and moonlight-web
 without anyone seeing Apollo's web UI, stream into a window and into a browser page framed
 under another page, and hand the brain one frame without a host at all?

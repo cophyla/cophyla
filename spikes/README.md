@@ -2,7 +2,7 @@
 
 Date: 2026-09-17, spikes 10–13 added 2026-09-20, spike 14 on 2026-09-21, spike 15 on 2026-09-23, spikes 16 and 17 on 2026-09-24. Windows 11, Claude Code 2.1.274, Codex CLI 0.153.4,
 Bun 1.3.14, Node 22.22.2, Rust 1.98.1, Tauri 2.11.5, sherpa-onnx-node 1.13.8.
-Throwaway code that tests the assumptions under [`docs/architecture.md`](../docs/architecture.md)
+Throwaway code that tests the assumptions under `architecture.md`
 and the agent-messaging proposal before any of it is built. Each
 folder has its own README with commands, results and what was not verified.
 
@@ -36,7 +36,7 @@ Nothing tested invalidates the architecture. Several details in it are wrong or 
 ## Where the docs carry this
 
 The design docs state these results as design, without the test detail, which stays here.
-`architecture.md` and `entities.md` are published, in [`docs/`](../docs/); the rest are not.
+The design docs are kept private.
 
 | Doc | What it takes from the spikes |
 |---|---|

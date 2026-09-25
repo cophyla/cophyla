@@ -4,8 +4,7 @@ The desktop app: a Tauri 2 shell around one web view. It holds no product logic.
 side keeps the client-protocol credential and the connection to cophylad, starts cophylad when
 none is listening and never stops it, serves views to a sandboxed frame, puts asks on OS
 notifications, and lives in the tray when the window is closed. The host page it loads is a
-multiplexer between that native side and the view. Design in
-[architecture.md](../../docs/architecture.md), "Clients".
+multiplexer between that native side and the view.
 
 ```
 $env:PATH += ";$HOME\.cargo\bin"; $env:CARGO_BUILD_JOBS = 12   # Windows, one-off per shell

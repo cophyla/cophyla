@@ -4,7 +4,7 @@ Date: 2026-09-20. Machine: Windows 11, i7-13700K (8 P-cores + 8 E-cores, 24 thre
 16 GB, 64 GB RAM. Bun 1.3.14, Node 22.22.2, sherpa-onnx-node 1.13.8, Python 3.11 (uv),
 torch 2.6.0+cu124, chatterbox-tts 0.1.7. Microphone: Brio 101.
 
-Question: do the engines in the voice table of [architecture.md](../../docs/architecture.md)
+Question: do the engines in the voice table of architecture.md
 run here in the placement the table names, and at what cost? Nemotron 3.5 ASR Streaming
 0.6B INT8 and Silero VAD through sherpa-onnx in-process; Chatterbox Turbo with a cloned voice
 in the `tts-py` sidecar; Kokoro on the CPU.

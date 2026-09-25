@@ -6,8 +6,7 @@
 // window is closed (on macOS the Dock icon goes with the window: it is there while the
 // window is, and a click on it in the Dock or the Finder shows the window again).
 // Installed, it runs from a version directory behind the launcher and relaunches through
-// it when a newer version waits. See apps/ui/README.md and docs/architecture.md,
-// "Clients".
+// it when a newer version waits. See apps/ui/README.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;

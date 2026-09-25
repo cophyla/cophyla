@@ -9,9 +9,9 @@ package in its own repository and is not part of this tree.
 
 ## Before you start
 
-- Read [`docs/architecture.md`](docs/architecture.md): the design is deliberate and the
-  docs are kept true as the code changes, so a change that departs from them should change
-  them too, in the same pull request, with no history of what used to be there.
+- The design is deliberate. Its notes are kept private, and the schemas in
+  `packages/protocol` are the contract: a change to them is a change of design, so talk it
+  through in an issue first.
 - Open an issue for anything beyond a fix, so the shape is agreed before the work.
 - Every contribution is accepted under [CLA.md](CLA.md): sign your commits (`git commit -s`)
   or say in the pull request that you agree.

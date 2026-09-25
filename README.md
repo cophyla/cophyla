@@ -11,8 +11,7 @@ answers from the phone, and hands you a terminal or the whole screen of any of y
 A brain talks to you about the work: what each session is doing, what finished, what needs you.
 It acts only through this platform, and every action it asks for crosses a gate and lands in an
 audit you can read. The platform is open (Apache-2.0) and runs without the brain; the brain is a
-separate, closed package. Design in [`docs/architecture.md`](docs/architecture.md), entities in
-[`docs/entities.md`](docs/entities.md).
+separate, closed package.
 
 ## Building
 
@@ -48,8 +47,11 @@ cophyla-net need Rust, and the phone app needs the Android SDK (see
 | `apps/vscode` | the VS Code extension that opens terminals on tether |
 | `sidecars/tts-py` | the optional GPU speech engine: sources and locked requirements only, built on the node when the stage is turned on |
 | `tether/` | the pseudo-terminal host ([its own repository](https://github.com/FeritMelih/tether)) |
-| `docs/` | the design, kept true as the code changes |
 | `spikes/` | the throwaway tests the design rests on |
+
+The design notes the code mentions (`architecture.md`, `entities.md` and the others) are kept
+private. The public contract is `packages/protocol`: its schemas define every entity and
+protocol.
 
 The editable layer under `~/.cophyla` uses erasable syntax only (`erasableSyntaxOnly` in
 `tsconfig.base.json`), so nothing there needs a build step.

@@ -1,4 +1,4 @@
-// Spike 07: does the Tauri 2 shell described in docs/architecture.md actually behave
+// Spike 07: does the Tauri 2 shell described in architecture.md actually behave
 // that way on Windows? The run is scripted on a timer so the whole thing is
 // reproducible without a human clicking anything. Findings land in ../../out/rust.jsonl.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]

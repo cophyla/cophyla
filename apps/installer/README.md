@@ -6,7 +6,7 @@ The first install and every release after it. Two things live here: the **launch
 resources; and the **release scripts** (`scripts/`, Bun) that stage a platform version, sign
 what must be signed, write the signed release entries, build the package, keep the static
 feed and publish it. Each OS builds its own archive, brain and package with the same
-scripts. Design in [architecture.md](../../docs/architecture.md), "update".
+scripts.
 
 The **root** holds the pointers, the versions and the brain seed; the **launcher** is the
 one thing that never moves. On Windows they are the same directory. On macOS and Linux the

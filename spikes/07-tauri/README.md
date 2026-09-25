@@ -6,7 +6,7 @@ Date: 2026-09-17. Windows 11 Pro 10.0.26200, Rust 1.98.1 / cargo 1.98.1
 
 Rust was not installed on this machine before today; the licence and language decision
 listed that as a follow-up. This spike installs it and then tests, one by one, the claims
-`docs/architecture.md` makes about the desktop shell. The run is scripted on a timer
+`architecture.md` makes about the desktop shell. The run is scripted on a timer
 ([`app/src-tauri/src/main.rs`](app/src-tauri/src/main.rs)), so nothing here depends on a human
 clicking. Findings are written by the Rust side to `out/rust.jsonl`, and by the two web pages
 to a loopback HTTP collector ([`collector.mjs`](collector.mjs)) that stands in for cophylad's

@@ -1,8 +1,7 @@
 # @cophyla/protocol
 
-The entities from [entities.md](../../docs/entities.md) and the five protocols from
-[architecture.md](../../docs/architecture.md), defined once as Zod schemas and shared by
-every process. Nothing here does I/O.
+The entities and the five protocols, defined once as Zod schemas and shared by every
+process. They are the public contract; the design notes behind them are kept private. Nothing here does I/O.
 
 | File | Holds |
 |---|---|

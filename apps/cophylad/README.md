@@ -1,7 +1,7 @@
 # cophylad
 
 The daemon. Runs once per user per machine; every install is the same daemon, with the brain
-on when the node is the primary. Design in [architecture.md](../../docs/architecture.md).
+on when the node is the primary.
 
 ```
 bun run apps/cophylad/src/main.ts [--home <dir>] [--port <n>]
