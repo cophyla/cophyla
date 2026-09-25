@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc -p packages/protocol && tsc -p tether/sdk/typescript && tsc -p packages/relay && tsc -p packages/wake && tsc -p packages/viewhost && tsc -p apps/cophylad && tsc -p apps/cophylad/views && tsc -p apps/ui && tsc -p apps/controller && tsc -p apps/installer",
+    "typecheck": "tsc -p packages/protocol && tsc -p tether/sdk/typescript && tsc -p packages/relay && tsc -p packages/wake && tsc -p packages/voicehost && tsc -p packages/viewhost && tsc -p apps/cophylad && tsc -p apps/cophylad/views && tsc -p apps/ui && tsc -p apps/controller && tsc -p apps/installer",
     "cophylad": "bun run apps/cophylad/src/main.ts",
     "schema": "bun run packages/protocol/scripts/emit-json-schema.ts",
     "ui": "bun run --cwd apps/ui dev",

@@ -1,9 +1,10 @@
-// The phone's microphone and speaker, each behind its own `AudioContext`, both started by
-// one user gesture (browsers only let a page start one from a gesture, so in the browser
-// everything here starts at the Start button; the app's web view has no such rule and
-// starts it at launch). Capture asks for 16 kHz, so the browser's resampler feeds the
-// worklet the 16 kHz int16 frames the wake word was validated on. Playback runs at the
-// device's own rate, so speech at 24 kHz is not squeezed through a 16 kHz context.
+// A client's microphone and speaker — the phone's, the desktop app's — each behind its own
+// `AudioContext`, both started by one user gesture (browsers only let a page start one from
+// a gesture, so in the phone's browser everything here starts at the Start button; the
+// apps' web views are let start it at launch). Capture asks for 16 kHz, so the browser's
+// resampler feeds the worklet the 16 kHz int16 frames the wake word was validated on.
+// Playback runs at the device's own rate, so speech at 24 kHz is not squeezed through a
+// 16 kHz context.
 //
 // Playback is a jitter buffer. Speech arriving while nothing plays is held until enough of
 // it is buffered (the target), or the target's time has passed since the first slice, or
@@ -18,7 +19,9 @@
 
 import { decodeChunk, toFloat } from "./pcm.ts";
 import { SpeechDecoder } from "./opus.ts";
-import type { TransportKind } from "./transport.ts";
+
+/** Which way a link runs, as far as playback cares: on the LAN (or the machine itself), through the relay, or on a data channel. */
+export type LinkVia = "lan" | "relay" | "p2p";
 
 export const OUT_RATE = 24000;
 export const IN_RATE = 16000;
@@ -287,7 +290,7 @@ export class Audio {
   }
 
   /** Which transport carries the link: the jitter target starts from its floor, the LAN's or, off the LAN (the relay, a data channel), the relay's. */
-  setVia(via: TransportKind | undefined): void {
+  setVia(via: LinkVia | undefined): void {
     this.floorMs = via === "relay" || via === "p2p" ? TARGET_RELAY_MS : TARGET_LAN_MS;
     this.playback?.setFloor(this.floorMs);
   }

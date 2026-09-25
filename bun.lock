@@ -23,8 +23,7 @@
         "@cophyla/protocol": "workspace:*",
         "@cophyla/relay": "workspace:*",
         "@cophyla/viewhost": "workspace:*",
-        "@cophyla/wake": "workspace:*",
-        "onnxruntime-web": "1.30.0",
+        "@cophyla/voicehost": "workspace:*",
       },
       "devDependencies": {
         "@capacitor/android": "^6",
@@ -75,6 +74,7 @@
       "dependencies": {
         "@cophyla/protocol": "workspace:*",
         "@cophyla/viewhost": "workspace:*",
+        "@cophyla/voicehost": "workspace:*",
         "@tauri-apps/api": "^2",
       },
       "devDependencies": {
@@ -97,6 +97,15 @@
       "version": "0.1.0",
       "dependencies": {
         "@cophyla/protocol": "workspace:*",
+      },
+    },
+    "packages/voicehost": {
+      "name": "@cophyla/voicehost",
+      "version": "0.1.0",
+      "dependencies": {
+        "@cophyla/protocol": "workspace:*",
+        "@cophyla/wake": "workspace:*",
+        "onnxruntime-web": "1.30.0",
       },
     },
     "packages/wake": {
@@ -178,6 +187,8 @@
     "@cophyla/ui": ["@cophyla/ui@workspace:apps/ui"],
 
     "@cophyla/viewhost": ["@cophyla/viewhost@workspace:packages/viewhost"],
+
+    "@cophyla/voicehost": ["@cophyla/voicehost@workspace:packages/voicehost"],
 
     "@cophyla/wake": ["@cophyla/wake@workspace:packages/wake"],
 

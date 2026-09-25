@@ -10,3 +10,4 @@ dismiss_ask
 stream_open
 stream_close
 open_link
+ptt_shortcut

@@ -4,7 +4,7 @@
 // starts `wake-worker.js` as a module worker with the bytes transferred to it, and from then
 // on hands it the frames the page is listening to and passes on what it hears.
 
-import type { WakewordMode } from "@cophyla/protocol";
+import type { WakeHeadMode, WakewordMode } from "@cophyla/protocol";
 import { BUNDLED, BUNDLED_FILES, BUNDLED_HEADS, WAKE_DIR } from "./bundled.ts";
 import type { BundledFile } from "./bundled.ts";
 import type { WorkerIn, WorkerOut } from "./worker.ts";
@@ -12,6 +12,11 @@ import type { WorkerIn, WorkerOut } from "./worker.ts";
 export type DetectorState = "idle" | "loading" | "ready" | "failed";
 
 export type PhoneWake = Extract<WakewordMode, { mode: "phone" }>;
+
+/** The heads a `phone` answer names: its list, or, from a node that sends none, the one head it names. */
+export function headsOf(mode: PhoneWake): WakeHeadMode[] {
+  return mode.heads && mode.heads.length > 0 ? mode.heads : [{ head: mode.head, threshold: mode.threshold, scale: mode.scale }];
+}
 
 export interface WakeStats {
   msPerChunk: number;
@@ -33,7 +38,7 @@ export interface DetectorOptions {
   cache?: FileCache;
   /** Checks each download against its pin: the browser page, whose files come from the node. */
   verify?: boolean;
-  onWake: (score: number, seq: number) => void;
+  onWake: (score: number, seq: number, head: string) => void;
   /** The worker failed after it was ready. */
   onError: (reason: string) => void;
   onStats?: (stats: WakeStats) => void;
@@ -113,11 +118,11 @@ export class WakeDetector {
     return bytes;
   }
 
-  /** The head, threshold and scale the node said to run. */
+  /** The heads, thresholds and scales the node said to run. */
   configure(mode: PhoneWake): void {
     if (!this.worker) return;
     this.configured = mode;
-    this.post({ type: "configure", head: mode.head, threshold: mode.threshold, scale: mode.scale });
+    this.post({ type: "configure", heads: headsOf(mode).map((h) => ({ head: h.head, threshold: h.threshold, scale: h.scale })) });
   }
 
   /** A frame to listen to; the page keeps its own, since this one is handed over. */
@@ -145,7 +150,7 @@ export class WakeDetector {
   private onMessage(msg: WorkerOut): void {
     switch (msg.type) {
       case "wake":
-        this.opts.onWake(msg.score, msg.seq);
+        this.opts.onWake(msg.score, msg.seq, msg.head);
         return;
       case "stats":
         this.stats = { msPerChunk: Number(msg.msPerChunk.toFixed(2)), chunks: msg.chunks, peak: Number(msg.peak.toFixed(3)), at: Date.now() };

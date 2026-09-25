@@ -367,6 +367,16 @@ describe("default view model", () => {
     expect(s.errors).toEqual(["send: unavailable"]);
   });
 
+  test("a host with a microphone and no talk button of its own gets one in the composer", () => {
+    const s = ready();
+    expect(s.hostTalk).toBe(false);
+    apply(s, { type: "host.ready", params: { ...READY, talk: true } });
+    expect(s.hostTalk).toBe(true);
+    // The phone's bar has its own: its host says nothing of talk.
+    apply(s, { type: "host.ready", params: { ...READY, menu: true } });
+    expect(s.hostTalk).toBe(false);
+  });
+
   test("loaded threads and messages take their place among audit rows, oldest first; a session is a tab, not an item", () => {
     const s = ready();
     apply(s, { type: "session.state", params: session("sess_a", 150) });

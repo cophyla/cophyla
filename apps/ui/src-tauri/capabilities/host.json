@@ -20,6 +20,7 @@
     "allow-dismiss-ask",
     "allow-stream-open",
     "allow-stream-close",
-    "allow-open-link"
+    "allow-open-link",
+    "allow-ptt-shortcut"
   ]
 }

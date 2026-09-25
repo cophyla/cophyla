@@ -233,6 +233,14 @@ pub struct Link {
     rx: Mutex<Option<mpsc::Receiver<String>>>,
     snapshot: Mutex<LinkSnapshot>,
     reattach: Notify,
+    /// What the hello says of the app's audio: the host page's microphone and speaker, and the
+    /// codecs its web view speaks, as it said them at attach; none until it has.
+    audio: Mutex<Value>,
+}
+
+/// The hello's `audio` before the host page has said what it has: nothing, as before it could.
+fn no_audio() -> Value {
+    json!({ "in": false, "out": false })
 }
 
 impl Link {
@@ -243,7 +251,31 @@ impl Link {
             rx: Mutex::new(Some(rx)),
             snapshot: Mutex::new(LinkSnapshot { state: LinkState::Connecting, hello: None, since: now_ms(), error: None, url: String::new() }),
             reattach: Notify::new(),
+            audio: Mutex::new(no_audio()),
         }
+    }
+
+    /// The host page's audio for the next hello: `in` and `out` as booleans, `codecs` as the
+    /// names cophylad knows and `played` as a boolean, anything else dropped.
+    pub fn set_audio(&self, audio: &Value) {
+        let flag = |key: &str| audio.get(key).and_then(Value::as_bool).unwrap_or(false);
+        let mut clean = json!({ "in": flag("in"), "out": flag("out") });
+        if let Some(codecs) = audio.get("codecs").and_then(Value::as_array) {
+            let known: Vec<Value> = codecs.iter().filter(|c| matches!(c.as_str(), Some("opus" | "pcm"))).cloned().collect();
+            if !known.is_empty() {
+                clean["codecs"] = Value::Array(known);
+            }
+        }
+        if flag("played") {
+            clean["played"] = Value::Bool(true);
+        }
+        if let Ok(mut a) = self.audio.lock() {
+            *a = clean;
+        }
+    }
+
+    fn audio(&self) -> Value {
+        self.audio.lock().map(|a| a.clone()).unwrap_or_else(|_| no_audio())
     }
 
     pub fn snapshot(&self) -> LinkSnapshot {
@@ -468,7 +500,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
         "jsonrpc": "2.0",
         "id": HELLO_ID,
         "method": "hello",
-        "params": { "token": token, "kind": "ui", "name": "desktop", "audio": { "in": false, "out": false } },
+        "params": { "token": token, "kind": "ui", "name": "desktop", "audio": link.audio() },
     });
     if let Err(e) = ws.send(Message::text(hello.to_string())).await {
         return Attempt::Unreachable { refused: false, error: format!("hello not sent: {e}") };

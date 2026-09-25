@@ -7,7 +7,8 @@
 
 import type { VoiceState } from "@cophyla/protocol";
 import type { LinkState } from "@cophyla/viewhost";
-import type { WakeMode } from "./wake/state.ts";
+import { route } from "@cophyla/voicehost";
+import type { WakeMode } from "@cophyla/voicehost";
 
 export type Screen = "pair" | "gate" | "main";
 
@@ -77,20 +78,16 @@ export function deriveChrome(input: ChromeInput): Chrome {
   const dot = connected ? (input.voice ? (input.voice === "idle" ? "idle" : input.voice) : "idle") : "offline";
   const status = statusOf(input, connected);
   const live = connected && input.audioReady && input.watching !== true;
-  const inUtterance = input.voice === "listening" || input.voice === "transcribing";
+  const frames = route({ ...input, connected });
   const chrome: Chrome = {
     screen,
     status,
     pttLabel: pttLabelOf(input, connected),
     dot,
     voiceWord: connected && input.voice ? VOICE_WORD[input.voice] : "",
-    // A held button beats the toggle: it is how you speak with the wake word off. Whenever the
-    // node is listening to this phone, audio goes up, whatever else is true, so the node never
-    // waits on a phone that stopped sending; and until it says so, the phone's own word is enough.
-    streaming: live && (input.talking || input.voice === "listening" || input.pending || (input.listening && input.wake === "node")),
-    // The phone's wake word runs whenever the node's would have: through a reply too, so a word
-    // over it interrupts, but not over the utterance itself or while the button is held.
-    detecting: live && input.listening && input.wake === "phone" && !input.talking && !input.pending && !inUtterance,
+    // Where frames go is voicehost's, which the desktop app follows too.
+    streaming: frames.streaming,
+    detecting: frames.detecting,
     awakeLock: live && (input.talking || input.voice === "listening" || (input.listening && input.wake !== "off")),
     pttEnabled: connected && input.audioReady && input.sttReady,
     muted: input.muted,

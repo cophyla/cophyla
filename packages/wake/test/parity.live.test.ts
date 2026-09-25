@@ -64,14 +64,14 @@ async function models(ort: WakeModels["ort"], create: Create): Promise<WakeModel
   const read = (file: string) => new Uint8Array(readFileSync(join(DIR, file)));
   const head = manifest.params.heads[0]!;
   const [mel, emb, session] = await Promise.all([create(read(manifest.params.mel)), create(read(manifest.params.embedding)), create(read(head))]);
-  return { ort, mel, emb, heads: [{ name: head, session }], scale: manifest.params.scale };
+  return { ort, mel, emb, heads: [{ name: head, session, threshold: THRESHOLD, scale: manifest.params.scale }] };
 }
 
 async function scores(m: WakeModels, input: Int16Array[]): Promise<{ scores: number[]; ms: number }> {
   const pipeline = new WakePipeline(m);
   const out: number[] = [];
   const t0 = performance.now();
-  for (const chunk of input) out.push(await pipeline.feed(chunk));
+  for (const chunk of input) out.push((await pipeline.feed(chunk)).score);
   return { scores: out, ms: (performance.now() - t0) / input.length };
 }
 

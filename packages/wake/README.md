@@ -10,11 +10,15 @@ no native code.
 
 | File | Holds |
 |---|---|
-| `src/pipeline.ts` | `WakePipeline`: 16 kHz int16 in, 80 ms chunks (`CHUNK`, with 30 ms of earlier audio so the mel frames line up) through `melspectrogram.onnx`, 76-frame windows of 32 mel bins through `embedding_model.onnx`, the last 16 embeddings through the keyword head, the peak score out; nothing scored until 16 chunks have filled the window; `reset()` starts over. The shared models are `WakeModels`, a head's input scale `int16` or `unit` |
+| `src/pipeline.ts` | `WakePipeline`: 16 kHz int16 in, 80 ms chunks (`CHUNK`, with 30 ms of earlier audio so the mel frames line up) through `melspectrogram.onnx`, 76-frame windows of 32 mel bins through `embedding_model.onnx`, the last 16 embeddings through every keyword head — one per phrase, each with its own threshold — and a `WakeScore` out: the first head that fired, or the best score when none did; nothing scored until 16 chunks have filled the window; `reset()` starts over. The shared models are `WakeModels`; a head's input scale is `int16` or `unit`, and the features are computed once per scale the heads use |
 
 The models come from the `wake-openwakeword` model release (`apps/cophylad/scripts/fetch-models.ts
---voice`); the node loads them in `apps/cophylad/src/voice/openwakeword.ts`, and the controller
-carries its own copies under `wake/` (`apps/controller/src/wake/`).
+--voice`); the node loads them in `apps/cophylad/src/voice/openwakeword.ts`, and the phone and
+the desktop app carry their own copies under `wake/` (`packages/voicehost/src/wake/`). The
+heads Cophyla trained itself are in `heads/`, with how they were made.
+
+`test/pipeline.test.ts` runs the pipeline over fake sessions: several heads at their own
+thresholds, the first to fire, the features shared by a scale and computed again for another.
 
 ## Testing
 

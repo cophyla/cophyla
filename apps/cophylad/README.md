@@ -324,12 +324,23 @@ hybrid CPU the threads are pinned to the performance cores. Audio arrives as bas
 inside `voice.audio` and belongs to one controller at a time: speech goes back to that phone
 alone, while `voice.state` — which names the controller — reaches every client.
 
-The wake word is heard on the phone when the phone can run the configured head. It names the
-heads it carries with `voice.wakeword`; when `wake_model` is among them the answer is `phone`
-with `wake_model`, `wake_threshold` and `wake_scale`, the node runs no wake word over that
-controller's frames, and the phone sends `voice.wake` and then the audio once it heard the
-word. Otherwise the answer is `node` and the phone streams while it listens, as does a
-controller that never asks; `off` means voice or the wake word is off here. An empty list,
+The wake word listens for several phrases at once, one keyword head each: `wake_model` names
+them (by default "Hey Jarvis", "Cophyla" and "Hey Phyla"), each at its own threshold and input
+scale from the model's manifest (`head_params`) unless `wake_threshold` or `wake_scale` says
+otherwise, and a head the model folder lacks is skipped with a warning. It is heard on the
+client — the phone or the desktop app — when the client carries every one of them. A client
+names the heads it carries with `voice.wakeword`; when they cover the node's the answer is
+`phone` with `heads`, each with its threshold, scale and phrase (and the first again as
+`head`, `threshold` and `scale` for an older app), the node runs no wake word over that
+client's frames, and the client sends `voice.wake` and then the audio once it heard a word.
+The answer waits up to ten seconds for a wake stage still loading. Otherwise the answer is
+`node` and the client streams while it listens, as does a controller that never asks; `off`
+means voice or the wake word is off here. A word fires a moment after it ends, often inside the
+next word, so the recogniser also hears the 160 ms before it fired: the node keeps them for a
+client it listens for, and a client sends them after `voice.wake` and counts them in its
+`lead`; the VAD does not hear them, so a false accept is still abandoned untranscribed. Each
+utterance's recogniser hears 200 ms of silence first: Nemotron, started on audio that begins
+mid-word, can give nothing back for the whole utterance. An empty list,
 a disconnect or a stop hands the word back. The engines are looked up per utterance, so a
 controller that streamed before a stage came up is heard once it does. An utterance the
 wake word began — on the phone or here — is abandoned without transcribing when the VAD

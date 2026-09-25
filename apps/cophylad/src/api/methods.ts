@@ -391,7 +391,7 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     },
     "voice.wake": {
       handler: (p, ctx) => {
-        deps.voice.wake(ctx.client, p.score);
+        deps.voice.wake(ctx.client, p.score, p.head, p.lead);
         return {};
       },
     },

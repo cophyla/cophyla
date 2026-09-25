@@ -8,7 +8,13 @@
 // controller that streams while it listens, on the phone for one that detects the word
 // itself and says so with `wakeHeard`. Once it fires — or the button is pressed — the
 // utterance begins: the VAD and the recogniser both see the audio, partials go out as they
-// grow, and the end of the utterance (silence, or the button released) closes it. An empty
+// grow, and the end of the utterance (silence, or the button released) closes it. A word
+// fires a moment after it ends, often inside the first word that follows, so the recogniser
+// also hears the last `LEAD_FRAMES` frames from before it fired — the node keeps them, a
+// phone sends them after `voice.wake` and says how many — while the VAD does not, so a false
+// accept in a quiet room is still abandoned untranscribed. The streaming recogniser, started
+// on audio that begins mid-word, can give nothing back for the whole utterance, so each
+// utterance's stream hears `PRIME_MS` of silence first. An empty
 // utterance ends the turn without waking the brain, so a tap on the button costs nothing,
 // and one the wake word began is abandoned without transcribing when no speech follows or
 // the phone stops sending. While the reply is spoken the wake word keeps running, so a word
@@ -42,6 +48,10 @@ export const REPLY_GRACE_MS = 1500;
 export const NO_SPEECH_MS = 5000;
 /** How long an utterance the wake word began waits for the next frame before it is abandoned. */
 export const LISTEN_STALL_MS = 4000;
+/** Frames from before a wake word fired that the recogniser hears: 160 ms, the start of the next word. */
+export const LEAD_FRAMES = 4;
+/** Silence a recogniser hears before an utterance's first frame. */
+export const PRIME_MS = 200;
 
 export interface ConversationHandlers {
   state(state: VoiceState): void;
@@ -76,7 +86,6 @@ export interface ConversationDeps {
   tts?: () => TtsEngine | undefined;
   /** The controller answers each reply's end with `voice.played`, so `speaking` waits for it. */
   acksPlayed?: boolean;
-  wakeThreshold: number;
   thinkingTimeoutMs: number;
   /** For the tests: `NO_SPEECH_MS`, `LISTEN_STALL_MS` and `PLAYED_FALLBACK_MS` unless given. */
   noSpeechMs?: number;
@@ -98,6 +107,10 @@ export class Conversation {
   private began?: "wake" | "button";
   /** Samples the utterance has seen, for the no-speech abandon. */
   private samples = 0;
+  /** The last frames the wake word heard, for the recogniser once it fires. */
+  private recent: Int16Array[] = [];
+  /** Frames still to come that were captured before the phone's word fired: the recogniser's alone. */
+  private leadLeft = 0;
   private stallTimer?: ReturnType<typeof setTimeout>;
   private queue: Int16Array[] = [];
   private pumping = false;
@@ -202,14 +215,24 @@ export class Conversation {
     // reply stops it. While the button is held there is nothing for it to decide.
     const wake = this.wake;
     if (wake && !this.pttHeld && this.state !== "listening" && this.state !== "transcribing") {
-      const score = await wake.feed(pcm);
-      if (score >= this.deps.wakeThreshold) {
-        this.deps.log?.info("wake word", { client: this.client, score: Number(score.toFixed(3)) });
+      this.recent.push(pcm);
+      if (this.recent.length > LEAD_FRAMES) this.recent.shift();
+      const scored = await wake.feed(pcm);
+      if (scored.fired) {
+        this.deps.log?.info("wake word", { client: this.client, head: scored.head, score: Number(scored.score.toFixed(3)) });
+        const lead = this.recent;
+        this.recent = [];
         this.begin("wake");
+        for (const f of lead) this.stream?.accept(f);
         return;
       }
     }
     if (this.state !== "listening") return;
+    if (this.leadLeft > 0) {
+      this.leadLeft--;
+      this.stream?.accept(pcm);
+      return;
+    }
     const closed = this.vad?.feed(pcm) ?? false;
     this.stream?.accept(pcm);
     if (closed && !this.pttHeld) {
@@ -222,12 +245,14 @@ export class Conversation {
   }
 
   /**
-   * The phone heard the wake word itself: the utterance begins as if the node had. Ignored
-   * while one is in progress and while the button is held, which already began one.
+   * The phone heard the wake word itself: the utterance begins as if the node had, and the
+   * first `lead` frames that follow were captured before the word fired. Ignored while one is
+   * in progress and while the button is held, which already began one.
    */
-  wakeHeard(): boolean {
+  wakeHeard(lead = 0): boolean {
     if (this.disposed || this.pttHeld || this.state === "listening" || this.state === "transcribing") return false;
     this.begin("wake");
+    this.leadLeft = Math.max(0, Math.min(16, Math.floor(lead)));
     return true;
   }
 
@@ -259,12 +284,14 @@ export class Conversation {
     this.stream = undefined;
     this.began = why;
     this.samples = 0;
+    this.leadLeft = 0;
     const stt = this.deps.stt?.();
     if (stt) {
       const stream = stt.stream();
       stream.onPartial = (text) => {
         if (this.state === "listening") this.deps.on.partial(text);
       };
+      stream.accept(new Int16Array((PRIME_MS / 1000) * IN_RATE));
       this.stream = stream;
     }
     this.setSpeaking(true);

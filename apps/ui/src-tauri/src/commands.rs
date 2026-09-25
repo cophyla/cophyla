@@ -13,9 +13,14 @@ use crate::views::{StageView, Staged, StagedBase};
 
 /// The link's state now. When the link is already connected the host page just (re)loaded
 /// after the hello, so the link reconnects and cophylad re-sends its post-hello snapshot; the
-/// page is told `connecting` and learns of the new connection like any other.
+/// page is told `connecting` and learns of the new connection like any other. `audio` is what
+/// the page has — a microphone, a speaker, the codecs its web view speaks — and the hello says
+/// it from then on.
 #[tauri::command]
-pub fn cophylad_attach(link: State<'_, Link>) -> LinkSnapshot {
+pub fn cophylad_attach(link: State<'_, Link>, audio: Option<Value>) -> LinkSnapshot {
+    if let Some(audio) = audio {
+        link.set_audio(&audio);
+    }
     let mut snapshot = link.snapshot();
     if snapshot.state == LinkState::Connected {
         link.reattach();

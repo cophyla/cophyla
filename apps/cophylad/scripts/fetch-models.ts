@@ -45,10 +45,11 @@ const MODELS: ModelSpec[] = [
 
 // --- the voice models ------------------------------------------------------------------------
 
-/** One file fetched as it is, or one archive unpacked into the model directory. */
+/** One file fetched as it is, one archive unpacked into the model directory, or one of Cophyla's own from the repository. */
 export type VoiceSource =
   | { kind: "file"; url: string; local: string; sha256?: string }
-  | { kind: "archive"; url: string; sha256?: string; strip?: number; drop?: string[] };
+  | { kind: "archive"; url: string; sha256?: string; strip?: number; drop?: string[] }
+  | { kind: "repo"; path: string; local: string; sha256: string };
 
 export interface VoiceModelSpec {
   name: string;
@@ -60,18 +61,31 @@ export interface VoiceModelSpec {
 }
 
 const OWW = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1";
+/** The repository's root, for the files Cophyla made itself (`kind: "repo"`). */
+const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
 const K2 = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
 
 export const VOICE_MODELS: VoiceModelSpec[] = [
   {
     name: "wake-openwakeword",
     kind: "wake",
-    version: "1.0.0",
-    params: { scale: "int16", mel: "melspectrogram.onnx", embedding: "embedding_model.onnx", heads: ["hey_jarvis_v0.1.onnx"] },
+    version: "1.1.0",
+    params: {
+      scale: "int16",
+      mel: "melspectrogram.onnx",
+      embedding: "embedding_model.onnx",
+      heads: ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx"],
+      head_params: {
+        "hey_jarvis_v0.1.onnx": { threshold: 0.7, phrase: "Hey Jarvis" },
+        "cophyla_v0.1.onnx": { threshold: 0.8, phrase: "Cophyla" },
+      },
+    },
     sources: [
       { kind: "file", url: `${OWW}/melspectrogram.onnx`, local: "melspectrogram.onnx", sha256: "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f" },
       { kind: "file", url: `${OWW}/embedding_model.onnx`, local: "embedding_model.onnx", sha256: "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f" },
       { kind: "file", url: `${OWW}/hey_jarvis_v0.1.onnx`, local: "hey_jarvis_v0.1.onnx", sha256: "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb" },
+      // Cophyla's own heads (packages/wake/heads/README.md says how they were made).
+      { kind: "repo", path: "packages/wake/heads/cophyla_v0.1.onnx", local: "cophyla_v0.1.onnx", sha256: "c2a7e3cc1ef8705548e39afba6c1ea9374e67a87bfd41a278d1f361b2b320b47" },
     ],
   },
   {
@@ -146,6 +160,13 @@ async function fill(spec: VoiceModelSpec, dir: string, from?: string): Promise<v
   mkdirSync(dir, { recursive: true });
   const tmp = join(dir, ".download");
   for (const source of spec.sources) {
+    if (source.kind === "repo") {
+      const bytes = readFileSync(join(REPO_ROOT, source.path));
+      if (!values.pin && sha256(bytes) !== source.sha256) throw new Error(`${source.path}: sha256 ${sha256(bytes)}, expected ${source.sha256}`);
+      writeFileSync(join(dir, source.local), bytes);
+      console.log(`  ${source.local} (from ${source.path}) ${mb(bytes.byteLength)}`);
+      continue;
+    }
     if (source.kind === "file") {
       const local = join(dir, source.local);
       if (from) {
@@ -224,7 +245,7 @@ async function voice(): Promise<void> {
     if (values.pin) {
       // The archive hashes are what `VOICE_MODELS` pins; the per-file ones live in the manifest.
       for (const source of spec.sources) {
-        if (source.kind === "file") console.log(`    ${source.local}: ${files[source.local]}`);
+        if (source.kind === "file" || source.kind === "repo") console.log(`    ${source.local}: ${files[source.local]}`);
         else console.log(`    ${source.url.split("/").pop()}: ${pinned.get(source.url.split("/").pop()!) ?? "(from a local copy; not pinned)"}`);
       }
     }

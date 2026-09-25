@@ -33,10 +33,10 @@ cophylad outlive the app.
 
 | Path | What |
 |---|---|
-| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, `links.rs` a clicked link in the system browser, `tray.rs` |
+| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `tray.rs` |
 | `src-tauri/commands.txt` | the app manifest's command list, read by `build.rs` |
 | `src-tauri/capabilities/host.json` | what the `host` window may call; the only capability file |
-| `host/` | the host page: `main.ts`, `index.html`, `host.css`, `inliner.ts` — the shell's half, the rest is `@cophyla/viewhost`, whose view picker's `chooser.css` the build copies beside them |
+| `host/` | the host page: `main.ts`, `voice.ts`, `index.html`, `host.css`, `inliner.ts` — the shell's half, the rest is `@cophyla/viewhost`, whose view picker's `chooser.css` the build copies beside them, and `@cophyla/voicehost`, whose worklet, wake worker and `wake/` files it copies too |
 | `scripts/build-host.ts` | bundles `host/` into `dist/`, which is `frontendDist` |
 | `test/` | `bun test`: the shell's own host modules over fakes, and the manifest check |
 
@@ -152,6 +152,39 @@ commands from `commands.txt`; `test/manifest.test.ts` fails when the Rust source
 when a grant goes to any window but `host`, when the host CSP lacks `frame-src
 http://view.localhost`, or when an updater plugin appears in `Cargo.toml`. Adding a command
 means adding it in all four places, and the test says which one was missed.
+
+## Voice
+
+The app has a microphone and a speaker, as the phone does, through the same
+`@cophyla/voicehost`: the host page (`host/voice.ts`) captures 16 kHz mono from launch, hears
+the node's wake words itself in a worker ("Hey Jarvis", "Cophyla" and "Hey Phyla" by default:
+the ones `[voice] wake_model` names on the node), sends audio to cophylad only after a word
+or while the talk key or the view's talk button is held, and plays the spoken replies. It
+keeps running while the window is hidden in the tray, so a wake word works with the app out
+of sight. The hello says what the page has (`audio: {in, out, codecs, played}`), passed to
+the shell with `cophylad_attach`, which says it in every hello from then on.
+
+- **The microphone** is granted to the host page without a prompt and to nothing else
+  (`voice.rs`): WebView2's `PermissionRequested` on Windows, WebKitGTK's `permission-request`
+  on Linux, both for the app's own origin only; on macOS WebKit asks the system with the text
+  in `Info.plist`. Windows' own privacy switch for desktop apps still applies; a refused
+  microphone shows in Settings with a retry.
+- **Audio from launch**: WebView2 is started with `--autoplay-policy=no-user-gesture-required`
+  (with wry's own flags repeated, since the argument replaces them). Where there is no such
+  switch the page starts its audio at the first click the view passes up.
+- **The talk key**, Ctrl+Alt+Space unless the user sets another in Settings, is a global
+  shortcut (`tauri-plugin-global-shortcut`): held anywhere on the desktop it is push-to-talk,
+  told to the page as `voice:ptt {down}`. The page keeps the choice and registers it with
+  `ptt_shortcut` at every start; a key another app holds is refused with a word.
+- **The talk button** is the view's: `host.ready` says `talk`, and the default view draws a
+  microphone beside Send that holds `voice.ptt` while pressed.
+- **Settings → Voice** shows what voice is doing, listening for the wake words and speaking
+  the replies as switches (kept in the page's storage), and the talk key.
+
+`window.__cophylaWake` and `window.__cophylaVoice` show where the wake word and the audio
+stand, for Playwright over WebView2's debugger (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=
+--remote-debugging-port=…`, plus `--use-fake-device-for-media-stream
+--use-file-for-fake-audio-capture=<wav>` for a microphone that plays a file).
 
 ## Notifications
 

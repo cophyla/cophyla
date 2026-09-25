@@ -143,8 +143,9 @@ rpc.onNotification((n) => {
       return;
     case "host.state": {
       const p = n.params as { connected: boolean };
-      // The line is back: a restart asked for is done.
+      // The line is back: a restart asked for is done. Gone, the node let go of the button itself.
       if (p.connected) ui.restart = undefined;
+      else ui.talking = false;
       dispatch({ type: "host.state", params: p });
       if (p.connected) {
         void loadProfiles();
@@ -952,6 +953,20 @@ async function loadEarlier(session: string): Promise<void> {
   }
 }
 
+/**
+ * The talk button, held and let go: `voice.ptt` on the host's own connection. The host streams
+ * its microphone while the node listens to it, and what was said comes back as a message.
+ */
+function talk(held: boolean): void {
+  if ((ui.talking === true) === held) return;
+  ui.talking = held;
+  draw();
+  rpc.request("voice.ptt", { active: held }).catch((e: unknown) => {
+    if (held) ui.talking = false;
+    fail("talk", e);
+  });
+}
+
 async function send(session: string, text: string): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
@@ -1422,6 +1437,34 @@ document.addEventListener("keydown", (ev) => {
     putRailAway();
     draw();
   }
+});
+
+// The talk button listens while it is held: by the pointer, which it captures so a release
+// outside it still counts, or by Space or Enter while it has the focus.
+document.addEventListener("pointerdown", (ev) => {
+  const button = (ev.target as Element | null)?.closest<HTMLButtonElement>(".talk");
+  if (!button || button.disabled || ev.button !== 0) return;
+  ev.preventDefault();
+  button.setPointerCapture(ev.pointerId);
+  talk(true);
+});
+for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
+  document.addEventListener(type, (ev) => {
+    if (ui.talking && (ev.target as Element | null)?.closest(".talk")) talk(false);
+  });
+}
+document.addEventListener("keydown", (ev) => {
+  if ((ev.key === " " || ev.key === "Enter") && (ev.target as Element | null)?.classList.contains("talk")) {
+    ev.preventDefault();
+    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true);
+  }
+});
+document.addEventListener("keyup", (ev) => {
+  if ((ev.key === " " || ev.key === "Enter") && ui.talking && (ev.target as Element | null)?.classList.contains("talk")) talk(false);
+});
+// A window that loses the focus mid-hold never sees the key come up.
+window.addEventListener("blur", () => {
+  if (ui.talking) talk(false);
 });
 
 document.addEventListener("focusout", (ev) => {

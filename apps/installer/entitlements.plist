@@ -14,5 +14,9 @@
 	<true/>
 	<key>com.apple.security.cs.disable-library-validation</key>
 	<true/>
+	<!-- The desktop app's microphone, for the wake words and the talk key: the hardened runtime
+	     refuses audio input to a binary without it, whatever the user allowed in Privacy. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 </dict>
 </plist>

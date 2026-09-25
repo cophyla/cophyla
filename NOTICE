@@ -9,8 +9,9 @@ Licensed under the Apache License, Version 2.0. See LICENSE.
 The brain package is not covered by this license. It is distributed as a
 closed, signed binary under its own end-user license agreement.
 
-The controller app carries third-party files under its `wake/` directory, shipped
-unmodified, so the phone can hear the wake word itself:
+The controller app and the desktop app carry third-party files under their `wake/`
+directory, shipped unmodified, so the phone and the desktop can hear the wake words
+themselves:
 
   ONNX Runtime Web 1.30.0 (ort-wasm-simd-threaded.wasm)
   https://github.com/microsoft/onnxruntime
@@ -19,6 +20,10 @@ unmodified, so the phone can hear the wake word itself:
   openWakeWord v0.5.1 feature models (melspectrogram.onnx, embedding_model.onnx)
   https://github.com/dscripka/openWakeWord
   Copyright (c) 2022 David Scripka. Licensed under the Apache License, Version 2.0.
+
+  Cophyla's own "cophyla" keyword head (cophyla_v0.1.onnx), trained with livekit-wakeword
+  (Apache License 2.0) against openWakeWord's precomputed ACAV100M features, which are
+  licensed CC BY-NC-SA 4.0; see packages/wake/heads/README.md.
 
   openWakeWord v0.5.1 pre-trained "hey jarvis" model (hey_jarvis_v0.1.onnx)
   https://github.com/dscripka/openWakeWord

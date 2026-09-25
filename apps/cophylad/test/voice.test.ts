@@ -13,7 +13,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Client, Message, RpcNotification, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
-import { FakeEngines, b64, silenceChunk, speechChunk, wakeChunk } from "../src/voice/fake.ts";
+import { FakeEngines, WAKE_MARKER, b64, silenceChunk, speechChunk, wakeChunk } from "../src/voice/fake.ts";
+import { parseConfig } from "../src/config/load.ts";
 import { Conversation, OUT_FRAME, PLAYBACK_SLACK_MS } from "../src/voice/conversation.ts";
 import { OpusDecoder, OpusEncoder } from "../src/voice/opus.ts";
 import type { SttEngine } from "../src/voice/engines.ts";
@@ -378,6 +379,19 @@ describe("voice", () => {
 // --- the wake word on the phone ----------------------------------------------------------------
 
 const HEAD = "hey_jarvis_v0.1.onnx";
+/** Every head the node listens with by default: a client that carries them all hears the words itself. */
+const HEADS = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"];
+const PHONE_MODE: WakewordMode = {
+  mode: "phone",
+  head: HEAD,
+  threshold: 0.7,
+  scale: "int16",
+  heads: [
+    { head: HEAD, threshold: 0.7, scale: "int16", phrase: "hey jarvis" },
+    { head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "cophyla" },
+    { head: "hey_phyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "hey phyla" },
+  ],
+};
 const idByName = (d: Daemon, name: string): string => d.clients.list().find((c) => c.name === name)!.id;
 const userMessages = (c: TestClient) => c.notifications.filter(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
 
@@ -391,7 +405,6 @@ async function bare(opts: { stt?: SttEngine; stallMs?: number } = {}) {
     client: "cli_bare",
     vad: makeVad,
     stt: () => stt,
-    wakeThreshold: 0.7,
     thinkingTimeoutMs: 60_000,
     stallMs: opts.stallMs ?? 150,
     on: { state: (s) => seen.push(s), partial: () => {}, final: () => {}, speaking: () => {}, audio: () => {} },
@@ -402,28 +415,60 @@ async function bare(opts: { stt?: SttEngine; stallMs?: number } = {}) {
 describe("the wake word on the phone", () => {
   test("the phone is told where its wake word is heard, and a client with no microphone is refused", async () => {
     const { d, ui, phone } = await start();
-    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] })).toEqual({ mode: "phone", head: HEAD, threshold: 0.7, scale: "int16" });
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS })).toEqual(PHONE_MODE);
     expect(d.voice.phoneWakeClients()).toEqual([idByName(d, "Pixel")]);
-    // A phone without the configured head streams while it listens, and the node detects.
-    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: ["hey_mycroft_v0.1.onnx"] })).toEqual({ mode: "node" });
+    // A phone without one of the configured heads streams while it listens, and the node detects.
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] })).toEqual({ mode: "node" });
     expect(d.voice.phoneWakeClients()).toEqual([]);
-    expect(await ui.call("voice.wakeword", { heads: [HEAD] })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: ["hey_mycroft_v0.1.onnx"] })).toEqual({ mode: "node" });
+    expect(await ui.call("voice.wakeword", { heads: HEADS })).toMatchObject({ error: { data: { code: "invalid" } } });
+  }, 20_000);
+
+  test("a wake stage still loading is waited for, and one that did not come up leaves the words to the node", async () => {
+    let release!: () => void;
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    engines.hold.wake = new Promise<void>((resolve) => (release = resolve));
+    const { phone } = await start({ engines, wait: false });
+    const answer = phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
+    await sleep(100);
+    release();
+    expect(await answer).toEqual(PHONE_MODE);
+
+    const failing = new FakeEngines({ transcript: TRANSCRIPT });
+    failing.failStage = "wake";
+    const second = await start({ engines: failing });
+    expect(await second.phone.request<WakewordMode>("voice.wakeword", { heads: HEADS })).toEqual({ mode: "node" });
   }, 20_000);
 
   test("with the wake word off on the node there is nothing to detect, on the phone or anywhere", async () => {
     const { d, phone } = await start({ voice: `wake = "off"\n` });
-    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] })).toEqual({ mode: "off" });
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS })).toEqual({ mode: "off" });
     expect(d.voice.phoneWakeClients()).toEqual([]);
   }, 20_000);
 
-  test("the head and the threshold the phone runs are the node's", async () => {
-    const { phone } = await start({ voice: `wake_threshold = 0.55\nwake_scale = "unit"\n` });
-    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: ["other.onnx", HEAD] })).toEqual({ mode: "phone", head: HEAD, threshold: 0.55, scale: "unit" });
+  test("the heads and the thresholds the phone runs are the node's", async () => {
+    const { phone } = await start({ voice: `wake_model = "${HEAD}"\nwake_threshold = 0.55\nwake_scale = "unit"\n` });
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: ["other.onnx", HEAD] })).toEqual({
+      mode: "phone",
+      head: HEAD,
+      threshold: 0.55,
+      scale: "unit",
+      heads: [{ head: HEAD, threshold: 0.55, scale: "unit", phrase: "hey jarvis" }],
+    });
+  }, 20_000);
+
+  test("a threshold per head", async () => {
+    const { phone } = await start({ voice: `wake_model = ["a.onnx", "b.onnx"]\nwake_threshold = { "b.onnx" = 0.4 }\n` });
+    const mode = await phone.request<WakewordMode>("voice.wakeword", { heads: ["b.onnx", "a.onnx"] });
+    expect(mode.mode === "phone" ? mode.heads : undefined).toEqual([
+      { head: "a.onnx", threshold: 0.7, scale: "int16", phrase: "a" },
+      { head: "b.onnx", threshold: 0.4, scale: "int16", phrase: "b" },
+    ]);
   }, 20_000);
 
   test("a phone that detects the word is not listened for by the node, until an empty list hands it back", async () => {
     const { phone } = await start();
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     say(phone, wakeChunk());
     await sleep(150);
     expect(states(phone)).toEqual([]);
@@ -434,7 +479,7 @@ describe("the wake word on the phone", () => {
 
   test("voice.wake starts the utterance and silence ends it", async () => {
     const { ui, phone } = await start();
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     await phone.request("voice.wake", { score: 0.93 });
     speak(phone, 6);
     hush(phone, 20);
@@ -447,7 +492,7 @@ describe("the wake word on the phone", () => {
   test("voice.wake over the reply cuts the speech", async () => {
     const engines = new FakeEngines({ transcript: TRANSCRIPT, msPerSentence: 400, synthDelayMs: 120 });
     const { d, phone } = await start({ engines });
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     await phone.request("voice.wake", { score: 0.9 });
     speak(phone, 6);
     hush(phone, 20);
@@ -464,7 +509,7 @@ describe("the wake word on the phone", () => {
 
   test("voice.wake in the middle of an utterance is ignored", async () => {
     const { phone } = await start();
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     await phone.request("voice.wake", { score: 0.9 });
     speak(phone, 3);
     await phone.request("voice.wake", { score: 0.9 });
@@ -475,7 +520,7 @@ describe("the wake word on the phone", () => {
 
   test("a wake with nothing said after it is abandoned, without transcribing and without a message", async () => {
     const { ui, phone, engines } = await start();
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     await phone.request("voice.wake", { score: 0.8 });
     // Five seconds and a little more of a quiet room.
     hush(phone, 130);
@@ -516,6 +561,49 @@ describe("the wake word on the phone", () => {
     await waitFor(() => seen.at(-1) === "idle");
     expect(seen).toEqual(["listening", "idle"]);
     expect(engines.finals).toBe(0);
+    c.dispose();
+  });
+
+  test("the frames from before the phone's word are the recogniser's alone: a quiet room after them is still abandoned", async () => {
+    const accepted: number[] = [];
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    const stt: SttEngine = { stream: () => ({ accept: (pcm) => accepted.push(pcm[0]!), final: async () => "", reset: () => {}, dispose: () => {} }), close: () => {} };
+    const { c, seen } = await bare({ stt });
+    expect(c.wakeHeard(3)).toBe(true);
+    // Three frames of the word's tail, then nothing: the VAD never heard speech after the word.
+    for (let i = 0; i < 3; i++) c.push(speechChunk(500 + i));
+    // The recogniser's stream hears its silence first.
+    await waitFor(() => accepted.length === 4);
+    for (let i = 0; i < 140; i++) c.push(silenceChunk());
+    await waitFor(() => seen.at(-1) === "idle");
+    expect(seen).toEqual(["listening", "idle"]);
+    expect(accepted.slice(0, 4)).toEqual([0, 500, 501, 502]);
+    expect(engines.finals).toBe(0);
+    c.dispose();
+  });
+
+  test("the node's own word gives the recogniser the frames it heard the word in", async () => {
+    const accepted: number[] = [];
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    const makeVad = await engines.vad();
+    const wakeModel = await engines.wake("", parseConfig("[voice]\nenabled = true\n").voice);
+    const stt: SttEngine = { stream: () => ({ accept: (pcm) => accepted.push(pcm[0]!), final: async () => "", reset: () => {}, dispose: () => {} }), close: () => {} };
+    const seen: VoiceState[] = [];
+    const c = new Conversation({
+      client: "cli_lead",
+      wake: wakeModel.stream(),
+      vad: makeVad,
+      stt: () => stt,
+      thinkingTimeoutMs: 60_000,
+      on: { state: (s) => seen.push(s), partial: () => {}, final: () => {}, speaking: () => {}, audio: () => {} },
+    });
+    for (let i = 0; i < 8; i++) c.push(speechChunk(100 + i));
+    c.push(wakeChunk());
+    c.push(speechChunk(900));
+    await waitFor(() => accepted.includes(900));
+    expect(seen).toEqual(["listening"]);
+    // Silence, the last three frames before the word and the one it fired on, then what followed.
+    expect(accepted).toEqual([0, 105, 106, 107, WAKE_MARKER, 900]);
     c.dispose();
   });
 
@@ -570,7 +658,7 @@ describe("the wake word on the phone", () => {
     const old = await TestClient.connect(d.api.url);
     extra.push(old);
     await idOf(old, d.token, { name: "old app" });
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     say(phone, wakeChunk());
     say(old, wakeChunk());
     await waitFor(() => d.voice.snapshot().states.length === 1);
@@ -580,7 +668,7 @@ describe("the wake word on the phone", () => {
 
   test("a phone that goes away is forgotten, though it never sent a frame", async () => {
     const { d, phone } = await start();
-    await phone.request<WakewordMode>("voice.wakeword", { heads: [HEAD] });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: HEADS });
     expect(d.voice.phoneWakeClients()).toHaveLength(1);
     phone.close();
     await waitFor(() => d.voice.phoneWakeClients().length === 0);

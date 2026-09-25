@@ -7,8 +7,8 @@ export interface NumberedFrame {
   pcm: Int16Array;
 }
 
-/** Eight 40 ms frames: the worker's lag on a slow phone, with room to spare. */
-export const RING_FRAMES = 8;
+/** Sixteen 40 ms frames: the lead-in before the word fired, and the worker's lag on a slow phone, with room to spare. */
+export const RING_FRAMES = 16;
 
 export class FrameRing {
   private frames: NumberedFrame[] = [];

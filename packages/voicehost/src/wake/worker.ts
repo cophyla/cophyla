@@ -2,12 +2,13 @@
 // same `WakePipeline` the node runs, over the frames the page hands it while it listens.
 // One thread and no proxy (the page is not cross-origin isolated), and the wasm's bytes come
 // from the page, which fetched and checked them, so the runtime never looks for a URL of
-// its own. When the score reaches the threshold it says so with the frame's number and
-// starts over; every ten seconds it says how long a chunk takes.
+// its own. The node names the heads to listen with, one per phrase, each with its threshold;
+// when one fires it says so with the head and the frame's number and starts over; every ten
+// seconds it says how long a chunk takes.
 //
 // in:  init {wasm, mel, embedding, heads: [{name, bytes}]}   → ready | error {reason}
-//      configure {head, threshold, scale}
-//      frame {seq, pcm}                                      → wake {score, seq}
+//      configure {heads: [{head, threshold, scale}]}
+//      frame {seq, pcm}                                      → wake {score, seq, head}
 //      reset
 // out: stats {msPerChunk, chunks, peak}, every 10 s
 
@@ -24,14 +25,14 @@ const scope = globalThis as unknown as WorkerScope;
 
 export type WorkerIn =
   | { type: "init"; wasm: ArrayBuffer; mel: ArrayBuffer; embedding: ArrayBuffer; heads: { name: string; bytes: ArrayBuffer }[] }
-  | { type: "configure"; head: string; threshold: number; scale: Scale }
+  | { type: "configure"; heads: { head: string; threshold: number; scale: Scale }[] }
   | { type: "frame"; seq: number; pcm: ArrayBuffer }
   | { type: "reset" };
 
 export type WorkerOut =
   | { type: "ready" }
   | { type: "error"; reason: string }
-  | { type: "wake"; score: number; seq: number }
+  | { type: "wake"; score: number; seq: number; head: string }
   | { type: "stats"; msPerChunk: number; chunks: number; peak: number };
 
 /** Two seconds of frames: a phone that falls further behind starts over rather than catching up. */
@@ -40,7 +41,6 @@ const STATS_MS = 10_000;
 
 let sessions: { mel: WakeSession; emb: WakeSession; heads: Map<string, WakeSession> } | undefined;
 let pipeline: WakePipeline | undefined;
-let threshold = 1;
 let queue: { seq: number; pcm: Int16Array }[] = [];
 let pumping = false;
 /** A reset asked for while a chunk was being scored, applied before the next. */
@@ -71,10 +71,14 @@ function reset(): void {
 
 function configure(msg: Extract<WorkerIn, { type: "configure" }>): void {
   if (!sessions) throw new Error("configure before init");
-  const head = sessions.heads.get(msg.head);
-  if (!head) throw new Error(`no wake head ${msg.head} in this build`);
-  pipeline = new WakePipeline({ ort, mel: sessions.mel, emb: sessions.emb, heads: [{ name: msg.head, session: head }], scale: msg.scale });
-  threshold = msg.threshold;
+  const own = sessions;
+  const heads = msg.heads.map((h) => {
+    const session = own.heads.get(h.head);
+    if (!session) throw new Error(`no wake head ${h.head} in this build`);
+    return { name: h.head, session, threshold: h.threshold, scale: h.scale };
+  });
+  if (heads.length === 0) throw new Error("no wake heads to listen with");
+  pipeline = new WakePipeline({ ort, mel: own.mel, emb: own.emb, heads });
   queue = [];
 }
 
@@ -90,12 +94,12 @@ async function pump(): Promise<void> {
         pipeline.reset();
       }
       const t0 = performance.now();
-      const score = await pipeline.feed(frame.pcm);
+      const scored = await pipeline.feed(frame.pcm);
       busyMs += performance.now() - t0;
       samples += frame.pcm.length;
-      if (score > peak) peak = score;
-      if (score >= threshold) {
-        post({ type: "wake", score, seq: frame.seq });
+      if (scored.score > peak) peak = scored.score;
+      if (scored.fired) {
+        post({ type: "wake", score: scored.score, seq: frame.seq, head: scored.head ?? "" });
         // Heard: start over, and what was queued behind the word is the utterance's, not ours.
         pipeline.reset();
         queue = [];

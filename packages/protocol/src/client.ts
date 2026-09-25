@@ -96,14 +96,25 @@ export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six 
 export const VoiceSetupStage = z.enum(["wake", "stt", "tts"]);
 export const VoiceSetupStep = z.enum(["uv", "venv", "deps", "weights", "starting", "ready", "failed"]);
 
+/** One phrase a client's wake word listens for: the head's file, the score it fires at, its input scale, what is said. */
+export const WakeHeadMode = z.object({
+  head: z.string().min(1),
+  threshold: z.number().min(0).max(1),
+  scale: z.enum(["int16", "unit"]),
+  phrase: z.string().min(1).max(64).optional(),
+});
+export type WakeHeadMode = z.infer<typeof WakeHeadMode>;
+
 /**
- * Where a controller's wake word is detected. `phone`: the phone runs the node's configured
- * head itself, at the node's threshold and input scale, and sends audio only once it heard
- * the word. `node`: the phone does not carry that head, so it streams while listening and the
- * node detects. `off`: there is no wake word; audio goes up only while the button is held.
+ * Where a controller's wake word is detected. `phone`: the client runs the node's configured
+ * heads itself, each at the node's threshold and input scale, and sends audio only once it
+ * heard a word; `heads` lists them all, and `head`, `threshold` and `scale` repeat the first
+ * for a client from before there were several. `node`: the client does not carry every one
+ * of them, so it streams while listening and the node detects. `off`: there is no wake word;
+ * audio goes up only while the button is held.
  */
 export const WakewordMode = z.discriminatedUnion("mode", [
-  z.object({ mode: z.literal("phone"), head: z.string().min(1), threshold: z.number().min(0).max(1), scale: z.enum(["int16", "unit"]) }),
+  z.object({ mode: z.literal("phone"), head: z.string().min(1), threshold: z.number().min(0).max(1), scale: z.enum(["int16", "unit"]), heads: z.array(WakeHeadMode).min(1).max(16).optional() }),
   z.object({ mode: z.literal("node") }),
   z.object({ mode: z.literal("off") }),
 ]);
@@ -265,8 +276,12 @@ export const clientRequests = {
    * is detected. Sent again on every connect; an empty list hands detection back to the node.
    */
   "voice.wakeword": { params: z.object({ heads: z.array(z.string().min(1).max(128)).max(16) }), result: WakewordMode },
-  /** The phone heard the wake word: an utterance begins and ends on silence. `score` is for the log. */
-  "voice.wake": { params: z.object({ score: z.number().min(0).max(1) }), result: Empty },
+  /**
+   * The phone heard the wake word: an utterance begins and ends on silence. `score` and the
+   * `head` that heard it are for the log; `lead` counts the frames that follow which were
+   * captured before the word fired, for the recogniser and not the end-of-speech detector.
+   */
+  "voice.wake": { params: z.object({ score: z.number().min(0).max(1), head: z.string().min(1).max(128).optional(), lead: z.number().int().min(0).max(16).optional() }), result: Empty },
   "view.list": { params: Empty, result: z.object({ views: z.array(ViewManifest) }) },
   "view.get": { params: z.object({ id: z.string() }), result: ViewContent },
   "view.setDefault": { params: z.object({ id: z.string() }), result: Empty },

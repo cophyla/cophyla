@@ -9,6 +9,7 @@ import type { VoiceConfig } from "../config/schema.ts";
 import type { Sidecars } from "../sidecars/index.ts";
 import type { EngineFactory, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
+import { phraseOf } from "./openwakeword.ts";
 
 /** A sample value no real microphone produces, so a test can fire the wake word by hand. */
 export const WAKE_MARKER = 31337;
@@ -77,12 +78,16 @@ export class FakeEngines implements EngineFactory {
     return [];
   }
 
-  async wake(): Promise<WakeModel> {
+  async wake(_dir: string, config: VoiceConfig): Promise<WakeModel> {
     await this.hold.wake;
     if (this.failStage === "wake") throw new Error("fake wake failure");
+    const threshold = (name: string) => (typeof config.wake_threshold === "number" ? config.wake_threshold : (config.wake_threshold?.[name] ?? 0.7));
+    const heads = config.wake_model.map((name) => ({ name, threshold: threshold(name), scale: config.wake_scale ?? ("int16" as const), phrase: phraseOf(name) }));
+    const first = heads[0]!.name;
     return {
+      heads,
       stream: (): WakeEngine => ({
-        feed: async (pcm) => (isWake(pcm) ? 1 : 0),
+        feed: async (pcm) => (isWake(pcm) ? { fired: true, score: 1, head: first } : { fired: false, score: 0 }),
         reset: () => {},
       }),
       close: () => {},

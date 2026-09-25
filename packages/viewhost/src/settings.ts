@@ -1,6 +1,9 @@
 // The host's settings: a layer over the frame that is the host's own, like the view picker,
 // so any view opens the same one by asking `host.settings` and none has to draw it. It is
-// made of sections, and more will join; the first is Agents. For each machine and harness it
+// made of sections, and more will join. Voice comes first on a host with a microphone of its
+// own (the desktop app; the phone keeps its switches in its bar's menu): whether it listens
+// for the wake words and which ones the node listens for, whether replies are spoken, the
+// talk key, and what is wrong with the microphone when something is. Then Agents. For each machine and harness it
 // shows the usual account — Automatic, naming the profile cophylad picks and why, or one the
 // user picks — and for each profile its name, whether it is signed in, how much of its
 // session and weekly limits it has used (`profile.limits`) and, for a Claude profile, what a
@@ -361,9 +364,40 @@ export class SettingsModel {
   }
 }
 
+/** What the Voice section shows. */
+export interface VoiceSettingsState {
+  /** Listening for the wake words. */
+  listening: boolean;
+  /** Replies are spoken aloud. */
+  speak: boolean;
+  /** The talk key as the shell reads it; `""` when there is none. */
+  talkKey: string;
+  /** The phrases the node listens for, once it said which; the node detects them itself when empty. */
+  phrases: string[];
+  /** What voice is doing now, in words: listening for the words, the microphone refused, voice off on the node. */
+  status: string;
+  /** The microphone could not be had, and why. */
+  micError?: string;
+}
+
+/** A host's own voice, for the Voice section: the desktop app's. */
+export interface VoiceSettings {
+  state(): VoiceSettingsState;
+  /** Calls `changed` whenever the state moves; returns how to stop. */
+  subscribe(changed: () => void): () => void;
+  setListening(on: boolean): void;
+  setSpeak(on: boolean): void;
+  /** The talk key, by name; resolves with it as the shell reads it, rejects with why it could not be had. */
+  setTalkKey(accelerator: string): Promise<string>;
+  /** Asks for the microphone again. */
+  retry(): Promise<void>;
+}
+
 export interface SettingsPanelDeps {
   /** The host's own connection. */
   request: SettingsRequest;
+  /** The host's own voice, when it has a microphone: the Voice section shows. */
+  voice?: VoiceSettings;
   /** Where the layer goes; the page's body when absent. */
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
@@ -375,6 +409,10 @@ export class SettingsPanel {
   private deps: SettingsPanelDeps;
   private layer?: HTMLElement;
   private model?: SettingsModel;
+  /** The talk key as typed and not yet set, and why the last one could not be. */
+  private keyDraft?: string;
+  private keyNote = "";
+  private unsubscribe?: () => void;
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape") this.close();
   };
@@ -427,6 +465,7 @@ export class SettingsPanel {
     });
     this.model = model;
     document.addEventListener("keydown", this.onKey);
+    this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
     this.render();
     close.focus();
     void model.load();
@@ -437,6 +476,10 @@ export class SettingsPanel {
     this.layer.remove();
     this.layer = undefined;
     this.model = undefined;
+    this.unsubscribe?.();
+    this.unsubscribe = undefined;
+    this.keyDraft = undefined;
+    this.keyNote = "";
     document.removeEventListener("keydown", this.onKey);
     this.deps.refocus?.();
   }
@@ -454,12 +497,73 @@ export class SettingsPanel {
     const note = paragraph("host-settings-note", model.note);
     note.hidden = model.note === "";
     agents.append(note, ...model.sections().map((m) => this.machine(m, model)));
-    body.replaceChildren(agents);
+    body.replaceChildren(...(this.deps.voice ? [this.voiceSection(this.deps.voice)] : []), agents);
     if (focusKey) {
       const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
       again?.focus();
       if (again instanceof HTMLInputElement && caret && caret[0] !== null && caret[1] !== null) again.setSelectionRange(caret[0], caret[1]);
     }
+  }
+
+  private voiceSection(voice: VoiceSettings): HTMLElement {
+    const v = voice.state();
+    const box = section("Voice", "Say a wake word, or hold the talk key, and Cophyla listens; what you say is transcribed and answered as if you had typed it.");
+    box.dataset["section"] = "voice";
+    box.append(paragraph(v.micError ? "host-settings-error" : "host-settings-voice-status", v.micError ? `The microphone is off: ${v.micError}` : v.status));
+    if (v.micError) {
+      const retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "host-settings-reset";
+      retry.dataset["focus"] = "voice:retry";
+      retry.textContent = "Try the microphone again";
+      retry.addEventListener("click", () => void voice.retry().catch(() => {}));
+      box.append(retry);
+    }
+    const words = v.phrases.length > 0 ? v.phrases.map((p) => `“${titleCase(p)}”`).join(", ") : "the node's wake words";
+    box.append(
+      toggle("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)),
+      toggle("voice:speak", "Speak the replies to what I say", v.speak, (on) => voice.setSpeak(on)),
+    );
+    const key = document.createElement("div");
+    key.className = "host-settings-controls host-settings-talk";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.placeholder = "No talk key";
+    input.setAttribute("aria-label", "Talk key");
+    input.dataset["focus"] = "voice:key";
+    input.value = this.keyDraft ?? v.talkKey;
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "host-settings-save";
+    save.textContent = "Set";
+    save.disabled = this.keyDraft === undefined || this.keyDraft.trim() === v.talkKey;
+    const set = (): void => {
+      voice.setTalkKey(input.value).then(
+        () => {
+          this.keyDraft = undefined;
+          this.keyNote = "";
+          this.render();
+        },
+        (e: unknown) => {
+          this.keyNote = message(e).replace(/^(invalid|unavailable): /, "");
+          this.render();
+        },
+      );
+    };
+    input.addEventListener("input", () => {
+      this.keyDraft = input.value;
+      save.disabled = input.value.trim() === v.talkKey;
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !save.disabled) set();
+    });
+    save.addEventListener("click", set);
+    key.append(span("host-settings-label", "Hold to talk"), input, save);
+    box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Alt+Space or Ctrl+Shift+F9; empty for none."));
+    if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
+    return box;
   }
 
   private machine(m: MachineSection, model: SettingsModel): HTMLElement {
@@ -567,6 +671,23 @@ function section(title: string, lead: string): HTMLElement {
   h.className = "host-settings-section-title";
   s.append(h, paragraph("host-settings-lead", lead));
   return s;
+}
+
+function toggle(focus: string, label: string, on: boolean, set: (on: boolean) => void): HTMLElement {
+  const line = document.createElement("label");
+  line.className = "host-settings-toggle";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = on;
+  box.dataset["focus"] = focus;
+  box.addEventListener("change", () => set(box.checked));
+  line.append(box, span("", label));
+  return line;
+}
+
+/** "hey jarvis" → "Hey Jarvis": a phrase as it reads in a sentence. */
+export function titleCase(phrase: string): string {
+  return phrase.replace(/(^|\s)(\p{Ll})/gu, (_m, space: string, ch: string) => space + ch.toUpperCase());
 }
 
 function heading(tag: "h3" | "h4", text: string): HTMLElement {

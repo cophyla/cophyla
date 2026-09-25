@@ -273,6 +273,9 @@ export const ControllerConfig = z.object({
 });
 export type ControllerConfig = z.infer<typeof ControllerConfig>;
 
+/** The phrases the wake word listens for unless the config names others: "Hey Jarvis", "Cophyla" and "Hey Phyla". */
+export const DEFAULT_WAKE_HEADS = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"] as const;
+
 /** The voice pipeline: which engine serves each stage, and what each one needs. */
 export const VoiceConfig = z.object({
   /** Run the pipeline at all. Off, the models are never fetched and nothing listens. */
@@ -282,12 +285,22 @@ export const VoiceConfig = z.object({
   stt: z.enum(["nemotron", "server", "off"]).default("nemotron"),
   /** Kokoro runs in-process on the CPU; Chatterbox needs the GPU sidecar, bootstrapped on demand; `server` is the account's hosted voice. */
   tts: z.enum(["kokoro", "chatterbox", "server", "off"]).default("kokoro"),
-  /** The keyword head inside the wake model directory; a phone that carries the same head runs it itself, at this threshold and scale. */
-  wake_model: z.string().min(1).default("hey_jarvis_v0.1.onnx"),
-  /** The input scale the head was trained at: openWakeWord's own heads are int16. */
-  wake_scale: z.enum(["int16", "unit"]).default("int16"),
-  /** Score at or above which the phrase counts as said. */
-  wake_threshold: z.number().min(0).max(1).default(0.7),
+  /**
+   * The keyword heads inside the wake model directory, one per phrase, all listening at once;
+   * one name or a list. A head the model does not have is skipped. A phone that carries every
+   * one runs them itself, at the thresholds and scales the node gives it.
+   */
+  wake_model: z
+    .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(8)])
+    .transform((v) => (typeof v === "string" ? [v] : v))
+    .default([...DEFAULT_WAKE_HEADS]),
+  /** The input scale every head was trained at; each head's own, from the model's manifest, when absent. */
+  wake_scale: z.enum(["int16", "unit"]).optional(),
+  /**
+   * Score at or above which a phrase counts as said: one for every head, or per head by file
+   * name. Each head's own, from the model's manifest, when absent (0.7 when it names none).
+   */
+  wake_threshold: z.union([z.number().min(0).max(1), z.record(z.string().min(1), z.number().min(0).max(1))]).optional(),
   /** Silence that ends an utterance. */
   vad_min_silence_ms: z.number().int().positive().default(700),
   stt_threads: z.number().int().positive().default(2),
@@ -712,9 +725,9 @@ enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
 stt = "nemotron"               # nemotron | server (the account's hosted transcription) | off
 tts = "kokoro"                 # kokoro (in-process, CPU) | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off
-wake_model = "hey_jarvis_v0.1.onnx"   # a phone that carries this head hears it itself; otherwise it streams and the node listens
-wake_scale = "int16"           # the scale the head was trained at: int16 | unit
-wake_threshold = 0.7
+wake_model = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Hey Jarvis", "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
+# wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
+# wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent
 vad_min_silence_ms = 700       # silence that ends an utterance
 stt_threads = 2
 # stt_language = "en"          # pinned; detected when absent

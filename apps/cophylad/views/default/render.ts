@@ -84,6 +84,8 @@ export interface UiState {
   directBusy?: Set<string>;
   /** The grant form open under the machines or the phones: Add a machine, Join another computer, Invite a phone. */
   grantForm?: "node" | "join" | "phone";
+  /** The talk button is held: Cophyla listens until it is let go. */
+  talking?: boolean;
   /** A grant request on its way: the forms' buttons wait for its answer. */
   grantBusy?: boolean;
   /** A machine being removed from its card: asked in place, then on its way. */
@@ -1925,6 +1927,26 @@ function ensureEarlier(stream: HTMLElement, state: ViewState): void {
   setText(earlier, button.label);
 }
 
+/** A microphone, drawn in the button's own colour. */
+function micIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const body = document.createElementNS(SVG_NS, "rect");
+  for (const [k, v] of Object.entries({ x: "9", y: "3", width: "6", height: "11", rx: "3" })) body.setAttribute(k, v);
+  const cup = document.createElementNS(SVG_NS, "path");
+  cup.setAttribute("d", "M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7");
+  for (const part of [body, cup]) {
+    part.setAttribute("fill", "none");
+    part.setAttribute("stroke", "currentColor");
+    part.setAttribute("stroke-width", "1.8");
+    part.setAttribute("stroke-linecap", "round");
+  }
+  svg.append(body, cup);
+  return svg;
+}
+
 /** What the phone is doing, over the composer: the dot, the word and whose phone it is. */
 function renderVoice(root: HTMLElement, state: ViewState): void {
   let row = root.querySelector<HTMLElement>(".voice-row");
@@ -1967,7 +1989,11 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
     input.placeholder = "Ask about the work";
     const button = el("button", "composer-button", "Send");
     button.type = "submit";
-    form.append(quick, input, button);
+    // Held, Cophyla listens (`voice.ptt`); let go, what was said is sent as if typed.
+    const talk = el("button", "talk");
+    talk.type = "button";
+    talk.append(micIcon());
+    form.append(quick, input, talk, button);
     root.append(form);
   }
   // Under a terminal there is no input at all: the terminal takes the typing.
@@ -1981,6 +2007,16 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   const quick = form.querySelector<HTMLButtonElement>(".quick")!;
   quick.disabled = !canChat;
   quick.setAttribute("aria-pressed", state.quick ? "true" : "false");
+  const talk = form.querySelector<HTMLButtonElement>(".talk")!;
+  const canTalk = state.hostTalk && state.connected && state.scopes.includes("voice");
+  setHidden(talk, !state.hostTalk);
+  talk.disabled = !canTalk;
+  talk.setAttribute("aria-pressed", ui.talking ? "true" : "false");
+  const talkWords = !state.connected ? "Waiting for cophylad" : canTalk ? "Hold to talk" : "This view may not listen";
+  if (talk.title !== talkWords) {
+    talk.title = talkWords;
+    talk.setAttribute("aria-label", talkWords);
+  }
   renderSend(root, state, ui);
   renderVoice(root, state);
   const errors = state.errors.slice(-1)[0];

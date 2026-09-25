@@ -50,7 +50,7 @@ with no menu button gets the view's own, in a thin bar at the top.
 
 | File | Holds |
 |---|---|
-| `src/app.ts` | the app: `boot(platform)` wires pairing, the link, the view host, the microphone, the wake word and the screens over what a platform supplies; each frame numbered and sent to the node, to the worker, or to neither |
+| `src/app.ts` | the app: `boot(platform)` wires pairing, the link, the view host, voice (`@cophyla/voicehost`'s `VoiceHost`: the microphone, the wake word, the speaker) and the screens over what a platform supplies |
 | `src/main.ts` | the browser entry: the page's own socket back to the origin that served it, views staged by the node under a ticket, the credential in the page's storage. LAN only (`connect-src 'self'`) |
 | `src/native.ts` | the Capacitor entry: the pinned native socket, the relay transport, views written to the app's storage, push registration and deep links, the phone's background and network signals |
 | `src/link-core.ts` | the link, shaped as the `TauriIo` the shared view host expects: `pair.claim`, `invite.redeem` and `hello` said for itself (`redeem` races an invite's pinned LAN addresses, with their head start, against its relay peer, then says hello on the same LAN socket or comes back through the relay on the phone's own access), backoff while visible, closed while hidden, the transport chooser (LAN first, the relay when the LAN cannot be reached, the LAN tried again every minute and on a network change), `relay.info` asked for on a LAN hello that finds the access missing |
@@ -60,18 +60,9 @@ with no menu button gets the view's own, in a thin bar at the top.
 | `src/native/push.ts` | the device token sent as `push.register` until the node took it; `cophyla://ask/<id>/<option>` links answered as `ask.answer` once the link is up, dropped after a minute |
 | `src/native/stage.ts` | views written under `Data/views/<id>/<version>/` from `view.get`, a content policy put into the entry page, older versions pruned |
 | `src/native/storage.ts`, `src/native/platform.ts` | the credential store over `@capacitor/preferences`; the platform check and file URLs |
-| `src/audio.ts` | one `AudioContext`: capture through the worklet, every frame handed to the app, playback on a scheduled playhead, flushed when the node stops speaking |
-| `src/worklet.ts`, `src/chunk.ts` | the capture worklet and the resampling behind it: whatever rate the device gives → 16 kHz mono, 640-sample frames, carried across callbacks |
-| `src/pcm.ts` | base64 of little-endian int16, which is what `voice.audio` carries both ways |
 | `src/remote.ts` | `host.open`: the remote-desktop page in a same-origin frame in the browser, links and invites opened outside |
 | `chooser.css` (built) | the look of the view picker `host.chooseView` opens, which is `@cophyla/viewhost`'s own; the build copies it beside `controller.css`, since the page's policy refuses inline styles |
-| `src/chrome.ts` | what the page shows, as a value: the screen, the status line and the talk button's words, which controls are live, and where frames go — `streaming`, `detecting`, the screen kept awake. Pure |
-| `src/wake/bundled.ts` | the files the build carries under `wake/` — the two feature models, the `hey_jarvis` head, onnxruntime-web's wasm — with their sha256 pins |
-| `src/wake/worker.ts` | the module worker: `onnxruntime-web/wasm` on one thread with the bytes the page sent, `@cophyla/wake`'s `WakePipeline` over the frames, `wake {score, seq}` at the threshold, stats every ten seconds |
-| `src/wake/detector.ts` | the page's side of it: the four files fetched (and checked and cached where the platform says), the worker started and fed copies of the frames; `window.__cophylaWake` shows where it stands |
-| `src/wake/cache.ts` | the browser page's IndexedDB copy of the files, keyed by sha256 |
-| `src/wake/state.ts` | where the word is detected and whether the phone just heard it, as a reducer: the node's answer, the three-second wait for `listening`. Pure |
-| `src/wake/ring.ts` | the last eight numbered frames, so the ones captured while the worker scored the word follow `voice.wake` up |
+| `src/chrome.ts` | what the page shows, as a value: the screen, the status line and the talk button's words, which controls are live, and where frames go — `streaming`, `detecting` (voicehost's `route`), the screen kept awake. Pure |
 | `src/ui.ts` | the elements, rendering a `Chrome` and turning taps into calls; the menu button passed to the view, the ⋯ menu opening and closing |
 | `src/index.html`, `src/controller.css` | the page itself |
 | `android/` | the committed Android project: `MainActivity.kt` (the plugin registered, the microphone granted to the page once `RECORD_AUDIO` is), `ViewFiles.kt` (the staged views served to their frame with `Access-Control-Allow-Origin` and the node's types, which Capacitor's file server does not give), `CophylaSocketPlugin.kt` (an OkHttp socket trusting one self-signed leaf by its key), `AskMessagingService.kt` (a data-only push → a notification with up to three buttons). `google-services.json`, `local.properties` and the build output are gitignored |
@@ -130,24 +121,22 @@ they differ), and lands in `apps/installer/stage/out/cophyla-controller-<v>.apk`
 release asset beside the platform's, not a feed entry. `adb install -r` puts either build on
 a phone with USB debugging.
 
-Both builds carry the wake word under `wake/` (18 MB, about 7 MB compressed; `wake/NOTICE.txt`
-names the licences). `build.ts` takes the models from
-`apps/cophylad/models/voice/wake-openwakeword/`, running `fetch-models.ts --voice --only
-wake-openwakeword` first when they are missing, and the wasm from `onnxruntime-web`, and fails
-when any file differs from its pin in `src/wake/bundled.ts`.
+The microphone, the wake word and the speaker are `packages/voicehost`, which the desktop
+app's host page runs too. Both builds carry its assets: the capture worklet, the wake word's
+worker, and the wake word under `wake/` (about 20 MB; `wake/NOTICE.txt` names the licences),
+which voicehost's `buildVoiceAssets` takes from `apps/cophylad/models/voice/wake-openwakeword/`,
+running `fetch-models.ts --voice --only wake-openwakeword` first when they are missing, and
+the wasm from `onnxruntime-web`, and fails when any file differs from its pin in
+voicehost's `src/wake/bundled.ts`.
 
 ## Testing
 
 `test/controller.test.ts` covers the parts over fakes: the credential round trip, the listen
-switch's default and its remembered off, code parsing, 16 and 48 kHz chunking with the carry,
-clamping, playback scheduling and the flush, every screen and flag `chrome.ts` produces (the
-app's start with no gate included, and `streaming`, `detecting` and the wake lock across every
-mode, voice state, button and pending word), what `host.open` lets through, the wake word's
-reducer (heard, pending, `listening`, the three seconds, a refusal, `unsupported`, a
-disconnect), the frame ring, and the detector over a fake worker (the files fetched, pinned,
-cached and handed over, a mismatch refused, a worker that fails).
-`packages/wake/test/parity.live.test.ts` holds the worker's runtime to the node's, chunk by
-chunk, when the wake model is present.
+switch's default and its remembered off, code parsing, every screen and flag `chrome.ts`
+produces (the app's start with no gate included, and `streaming`, `detecting` and the wake
+lock across every mode, voice state, button and pending word), and what `host.open` lets
+through. Voice's own parts — chunking, playback, the uplink, Opus, the wake word's reducer,
+ring and detector — are tested in `packages/voicehost`.
 `test/link-core.test.ts` drives the link over fake transports: claim → store → `hello`, a
 denied `hello` dropping the credential, backoff and the pause/resume cycle, the LAN falling
 to the relay and back, `relay.info` filling a missing access, the relay's 4401 dropping it, and

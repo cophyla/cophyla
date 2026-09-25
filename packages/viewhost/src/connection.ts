@@ -62,14 +62,17 @@ export class Connection {
     return this.state.state === "connected";
   }
 
-  /** Subscribes to the shell's events, then asks for the link's state. Idempotent. */
-  async attach(): Promise<LinkSnapshot> {
+  /**
+   * Subscribes to the shell's events, then asks for the link's state. Idempotent. `args` go
+   * to the shell with it: the desktop app says there what its page has for audio.
+   */
+  async attach(args?: Record<string, unknown>): Promise<LinkSnapshot> {
     if (!this.attached) {
       this.attached = true;
       await this.io.listen<string>(EVENT_FRAME, (text) => this.handleFrame(text));
       await this.io.listen<LinkSnapshot>(EVENT_STATE, (snapshot) => this.handleState(snapshot));
     }
-    const snapshot = await this.io.invoke<LinkSnapshot>("cophylad_attach");
+    const snapshot = await this.io.invoke<LinkSnapshot>("cophylad_attach", args);
     this.handleState(snapshot);
     return snapshot;
   }

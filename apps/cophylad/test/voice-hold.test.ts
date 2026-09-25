@@ -34,7 +34,6 @@ describe("the speaking hold", () => {
     const c = new Conversation({
       client: "cli_test",
       tts: () => tts,
-      wakeThreshold: 0.5,
       thinkingTimeoutMs: 10_000,
       on: {
         state: (state) => states.push({ state, at: performance.now() }),
@@ -74,7 +73,6 @@ function acking(opts: { fallbackMs: number; seconds?: number }) {
     tts: () => tts,
     acksPlayed: true,
     playedFallbackMs: opts.fallbackMs,
-    wakeThreshold: 0.5,
     thinkingTimeoutMs: 10_000,
     log,
     on: {

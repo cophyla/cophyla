@@ -273,6 +273,40 @@
   display: none;
 }
 
+.host-settings-section[data-section="voice"] {
+  margin: 0 0 14px;
+}
+
+.host-settings-voice-status {
+  margin: 0 0 8px;
+  color: #cfc9da;
+  font-size: 12px;
+}
+
+.host-settings-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 6px;
+  cursor: pointer;
+}
+
+.host-settings-toggle input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #8c52d9;
+}
+
+.host-settings-talk {
+  align-items: center;
+  margin-top: 8px;
+}
+
+.host-settings-talk input[type="text"] {
+  flex: 0 1 220px;
+}
+
 /* a phone: the card fills the screen's width, and what a thumb presses is big enough */
 @media (max-width: 640px) {
   .host-settings {

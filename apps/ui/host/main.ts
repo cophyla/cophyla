@@ -4,7 +4,8 @@
 // is up it says where the link is, in one line; after that it renders nothing of its own:
 // the view is the product, and shows the link itself. A staged update is the tray's. A
 // desktop with no route to it opens, through `host.open`, in a window of its own (open.ts);
-// a link clicked in a view (`host.openLink`) opens in the system browser.
+// a link clicked in a view (`host.openLink`) opens in the system browser. Voice is voice.ts:
+// the microphone, the wake words, the talk key and the speaker, and its section in Settings.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -13,6 +14,7 @@ import type { ViewContent } from "@cophyla/protocol";
 import { AskNotifier, Connection, SnapshotCache, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
+import { DesktopVoice } from "./voice.ts";
 
 const io: TauriIo = {
   invoke: (cmd, args) => invoke(cmd, args),
@@ -25,6 +27,19 @@ const appWindow = getCurrentWindow();
 
 const conn = new Connection(io);
 const cache = new SnapshotCache();
+const voice = new DesktopVoice({
+  link: conn,
+  invoke: io.invoke,
+  listen: io.listen,
+  store: (() => {
+    try {
+      return window.localStorage;
+    } catch {
+      return undefined;
+    }
+  })(),
+  log: (m) => console.info(m),
+});
 const streams = new StreamWindows({ invoke: io.invoke, request: (method, params) => conn.request(method, params), log: (m) => console.warn(m) });
 // The view's files come over the host's connection and are staged on the shell's native side.
 const viewhost = new ViewHost({
@@ -33,6 +48,9 @@ const viewhost = new ViewHost({
   container: viewEl,
   host: streams.host,
   openLink: (url) => io.invoke<void>("open_link", { url }),
+  // The app has a microphone and no bar of its own: the view draws the talk button.
+  talk: true,
+  voice,
   stage: async (manifest) => {
     const content = await conn.request<ViewContent>("view.get", { id: manifest.id });
     const { base } = await io.invoke<{ base: string }>("view_stage", { view: content });
@@ -98,6 +116,8 @@ function renderTitle(): void {
 
 conn.onFrame((frame) => {
   if ("method" in frame && !("id" in frame)) {
+    // Speech is played here and never handed to the view.
+    if (voice.handleFrame(frame)) return;
     cache.upsert(frame);
     notifier.onNotification(frame);
     if (frame.method === "session.state") renderTitle();
@@ -109,6 +129,7 @@ conn.onFrame((frame) => {
 conn.onState((s) => {
   if (s.state !== "connected") cache.clear();
   else notifier.onConnected();
+  voice.linkChanged(s);
   if (s.state === "disconnected" || s.state === "unauthorized") streams.linkLost();
   renderStatus(s);
   renderTitle();
@@ -132,7 +153,24 @@ conn.onState((s) => {
 void io.listen<Activated>("ask:activated", (a) => void notifier.onActivated(a));
 void io.listen<{ stream: string }>("stream:closed", (e) => streams.closed(e.stream));
 
-conn
-  .attach()
+// Where the wake word and the voice's audio stand, for Playwright over the web view's debugger.
+Object.assign(window, {
+  __cophylaVoice: {
+    get state() {
+      return voice.host.audioState;
+    },
+  },
+  __cophylaWake: {
+    get state() {
+      return { ...voice.host.wakeState, view: voice.host.view };
+    },
+  },
+});
+
+// The hello says what the page has for audio, so the link attaches once WebCodecs has answered.
+void voice
+  .helloAudio()
+  .then((audio) => conn.attach({ audio }))
   .then((s) => renderStatus(s))
   .catch((e) => note(`attach: ${e instanceof Error ? e.message : String(e)}`));
+void voice.start().catch((e: unknown) => console.warn("voice", e));

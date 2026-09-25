@@ -80,9 +80,23 @@
     "voice.ptt": { "params": [{ "active": true }], "results": [{}] },
     "voice.wakeword": {
       "params": [{ "heads": ["hey_jarvis_v0.1.onnx"] }, { "heads": [] }],
-      "results": [{ "mode": "phone", "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16" }, { "mode": "node" }, { "mode": "off" }]
+      "results": [
+        { "mode": "phone", "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16" },
+        {
+          "mode": "phone",
+          "head": "hey_jarvis_v0.1.onnx",
+          "threshold": 0.7,
+          "scale": "int16",
+          "heads": [
+            { "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16", "phrase": "Hey Jarvis" },
+            { "head": "cophyla_v0.1.onnx", "threshold": 0.5, "scale": "int16", "phrase": "Cophyla" }
+          ]
+        },
+        { "mode": "node" },
+        { "mode": "off" }
+      ]
     },
-    "voice.wake": { "params": [{ "score": 0.93 }], "results": [{}] },
+    "voice.wake": { "params": [{ "score": 0.93 }, { "score": 0.81, "head": "cophyla_v0.1.onnx", "lead": 5 }], "results": [{}] },
     "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
     "view.get": { "params": [{ "id": "default" }], "results": [{ "id": "default", "version": "1", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }, { "path": "icon.png", "mime": "image/png", "base64": "iVBORw0KGgo=" }] }] },
     "view.setDefault": { "params": [{ "id": "board" }], "results": [{}] },

@@ -3,8 +3,11 @@
 // model in-process, a sidecar over HTTP, or a fake in a test. Audio is int16 mono
 // throughout, 16 kHz up from the controller and 24 kHz down to it.
 
+import type { Scale, WakeScore } from "@cophyla/wake";
 import type { Sidecars } from "../sidecars/index.ts";
 import type { VoiceConfig } from "../config/schema.ts";
+
+export type { Scale, WakeScore } from "@cophyla/wake";
 
 /** What a controller sends: 16 kHz mono, 40 ms to a frame. */
 export const IN_RATE = 16000;
@@ -13,15 +16,25 @@ export const OUT_RATE = 24000;
 /** Samples in one `voice.audio` frame from the controller. */
 export const FRAME = 640;
 
+/** One phrase the wake word listens for: its head's file, the score it fires at, the scale it was trained at, and what is said. */
+export interface WakeHeadInfo {
+  name: string;
+  threshold: number;
+  scale: Scale;
+  phrase: string;
+}
+
 /** A loaded wake model; a stream per conversation, the sessions shared. */
 export interface WakeModel {
+  /** The heads that listen, in the configured order; a configured head the model lacks is not among them. */
+  readonly heads: readonly WakeHeadInfo[];
   stream(): WakeEngine;
   close(): void | Promise<void>;
 }
 
 export interface WakeEngine {
-  /** The peak score over the chunks this audio completed, 0 when it completed none. */
-  feed(pcm: Int16Array): Promise<number>;
+  /** The chunks this audio completed, scored: the head that fired, or the best score when none did. */
+  feed(pcm: Int16Array): Promise<WakeScore>;
   reset(): void;
 }
 

@@ -11,5 +11,9 @@
 	     finds its peers on the local network and answers them there; macOS asks first. -->
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Cophyla connects your phone and your other computers to this one directly when they are on the same network.</string>
+	<!-- Voice: the app listens for its wake words and to the talk key, and sends what follows
+	     to cophylad to be transcribed; WebKit asks macOS for the microphone with this text. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Cophyla listens for "Hey Jarvis", "Cophyla" and "Hey Phyla", and to you while you hold the talk key, so you can speak to it.</string>
 </dict>
 </plist>

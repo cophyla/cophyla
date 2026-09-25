@@ -4,7 +4,8 @@
 // on their own origin, puts asks on OS notifications while it is not in front (and takes
 // them down when it comes to the front), and lives in the tray when the
 // window is closed (on macOS the Dock icon goes with the window: it is there while the
-// window is, and a click on it in the Dock or the Finder shows the window again).
+// window is, and a click on it in the Dock or the Finder shows the window again). Its host
+// page hears the wake words and the talk key, and speaks the replies (voice.rs).
 // Installed, it runs from a version directory behind the launcher and relaunches through
 // it when a newer version waits. See apps/ui/README.md.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
@@ -17,6 +18,7 @@ mod cophylad;
 mod stream;
 mod tray;
 mod views;
+mod voice;
 
 use tauri::{AppHandle, Manager, RunEvent, Runtime, Theme, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -67,14 +69,21 @@ fn main() {
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| tray::show_window(app)))
+        .plugin(voice::plugin())
         .manage(cophylad::Link::new())
+        .manage(voice::TalkKey::default())
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, stream::stream_open, stream::stream_close, links::open_link])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, stream::stream_open, stream::stream_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
-            let window = WebviewWindowBuilder::new(app, cophylad::HOST_LABEL, WebviewUrl::App("index.html".into()))
+            let builder = WebviewWindowBuilder::new(app, cophylad::HOST_LABEL, WebviewUrl::App("index.html".into()));
+            // The host page starts its audio with no click first, as the phone app's does: wry's
+            // own flags, and the autoplay policy that lets an AudioContext run from the start.
+            #[cfg(windows)]
+            let builder = builder.additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required");
+            let window = builder
                 .title("Cophyla")
                 .inner_size(1100.0, 760.0)
                 .min_inner_size(640.0, 420.0)
@@ -99,6 +108,7 @@ fn main() {
                 .build()?;
             #[cfg(windows)]
             caption_color(&window);
+            voice::allow_microphone(&window);
             tray::build(app, install.as_ref())?;
             let handle = app.handle().clone();
             window.on_window_event(move |event| match event {

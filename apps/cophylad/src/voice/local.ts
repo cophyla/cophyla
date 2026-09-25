@@ -54,7 +54,14 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
 
     async wake(dir: string, config: VoiceConfig): Promise<WakeModel> {
       pin();
-      return OpenWakeWord.load(dir, { head: config.wake_model, scale: config.wake_scale });
+      const model = await OpenWakeWord.load(dir, {
+        heads: config.wake_model,
+        ...(config.wake_threshold !== undefined ? { threshold: config.wake_threshold } : {}),
+        ...(config.wake_scale ? { scale: config.wake_scale } : {}),
+      });
+      if (model.missing.length > 0) deps.log.warn("wake heads the model does not have are skipped", { missing: model.missing, dir });
+      deps.log.info("wake phrases", { heads: model.heads.map((h) => `${h.phrase} (${h.threshold})`) });
+      return model;
     },
 
     async vad(dir: string, config: VoiceConfig): Promise<() => VadEngine> {

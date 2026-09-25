@@ -21,8 +21,7 @@
     "@cophyla/protocol": "workspace:*",
     "@cophyla/relay": "workspace:*",
     "@cophyla/viewhost": "workspace:*",
-    "@cophyla/wake": "workspace:*",
-    "onnxruntime-web": "1.30.0"
+    "@cophyla/voicehost": "workspace:*"
   },
   "devDependencies": {
     "@capacitor/android": "^6",

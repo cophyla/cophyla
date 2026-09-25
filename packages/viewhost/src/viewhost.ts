@@ -18,6 +18,7 @@ import { Bridge, envelope, isEnvelope } from "./bridge.ts";
 import type { HostRequests } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
+import type { VoiceSettings } from "./settings.ts";
 import type { Connection, LinkSnapshot } from "./connection.ts";
 import type { SnapshotCache } from "./snapshot.ts";
 
@@ -37,6 +38,10 @@ export interface ViewHostDeps {
   host?: HostRequests;
   /** The host has a menu button of its own, and calls `menu()` when it is pressed: the phone's bar. */
   menu?: boolean;
+  /** The host has a microphone and no talk button of its own, so the view may draw one: the desktop app. */
+  talk?: boolean;
+  /** The host's own voice, for the Voice section of its settings. */
+  voice?: VoiceSettings;
   /** Opens a web page in the user's browser, for a view's `host.openLink`. */
   openLink?: (url: string) => Promise<void>;
   onError?: (message: string) => void;
@@ -91,6 +96,7 @@ export class ViewHost {
     this.settings = new SettingsPanel({
       request: (method, params) => deps.conn.request(method, params),
       refocus: () => this.mounted?.frame.focus(),
+      ...(deps.voice ? { voice: deps.voice } : {}),
     });
     window.addEventListener("message", (ev) => this.onMessage(ev));
   }
@@ -131,6 +137,7 @@ export class ViewHost {
         instance: ++this.instances,
         ...(this.deps.host ? { host: this.deps.host } : {}),
         ...(this.deps.menu ? { menu: true } : {}),
+        ...(this.deps.talk ? { talk: true } : {}),
         chooseView: () => this.chooseView(),
         openSettings: () => this.openSettings(),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),

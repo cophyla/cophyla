@@ -1,0 +1,22 @@
+{
+  "name": "@cophyla/voicehost",
+  "version": "0.1.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./build": "./build.ts",
+    "./worklet.ts": "./src/worklet.ts",
+    "./wake-worker.ts": "./src/wake/worker.ts"
+  },
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p ."
+  },
+  "dependencies": {
+    "@cophyla/protocol": "workspace:*",
+    "@cophyla/wake": "workspace:*",
+    "onnxruntime-web": "1.30.0"
+  }
+}

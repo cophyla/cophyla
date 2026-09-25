@@ -9,10 +9,12 @@
 // does hear is `voice.state`, which names the controller the conversation belongs to, so the
 // desktop app can show what the phone is doing.
 //
-// The wake word is heard on the phone when the phone can run the head the node is configured
-// with: it says which heads it carries with `voice.wakeword`, and from then on sends audio
-// only after `voice.wake`. A controller that never asks — an older app, a phone without the
-// head — streams while it listens and the node detects the word for it, as before.
+// The wake word listens for several phrases at once, a keyword head each. It is heard on the
+// phone when the phone can run every head the node listens with: it says which heads it
+// carries with `voice.wakeword`, and from then on sends audio only after `voice.wake`. A
+// controller that never asks — an older app, a phone without one of the heads — streams while
+// it listens and the node detects the words for it, as before. The desktop app is a client
+// like the phone in this: it carries the same heads and hears the words itself.
 //
 // Audio goes as Opus both ways when the controller says it speaks it (`audio.codecs`), and
 // as PCM otherwise: a frame up names its codec, and the speech down is encoded once per
@@ -41,6 +43,9 @@ type VoiceSetup = import("@cophyla/protocol").ClientNotificationParams<"voice.se
 
 /** Bytes of one `voice.audio` frame; a bigger one is dropped rather than decoded. */
 const MAX_CHUNK_BYTES = 64 * 1024;
+
+/** How long `voice.wakeword` waits on a wake stage still loading before it answers `node`. */
+export const WAKE_WAIT_MS = 10_000;
 
 /** The codecs the node takes and sends, best first; told to every client in its `hello`. */
 export const AUDIO_CODECS: AudioCodec[] = ["opus", "pcm"];
@@ -98,6 +103,8 @@ export class Voice {
   private unsubscribe: (() => void)[] = [];
   private stopped = false;
   private loading?: Promise<void>;
+  /** The wake stage's latest load, settled once it is ready or unavailable. */
+  private wakeLoading?: Promise<void>;
 
   constructor(deps: VoiceDeps) {
     this.deps = deps;
@@ -134,7 +141,8 @@ export class Voice {
   }
 
   private async load(): Promise<void> {
-    await Promise.all([this.loadWake(), this.loadStt(), this.loadTts()]);
+    this.wakeLoading = this.loadWake();
+    await Promise.all([this.wakeLoading, this.loadStt(), this.loadTts()]);
     this.log.info("voice stages", { wake: this.stages.wake.status, stt: this.stages.stt.status, tts: this.stages.tts.status });
   }
 
@@ -273,7 +281,6 @@ export class Voice {
       stt: () => this.sttEngine,
       tts: () => this.ttsEngine,
       acksPlayed: client.audio.played === true,
-      wakeThreshold: this.config.wake_threshold,
       thinkingTimeoutMs: this.config.thinking_timeout_ms,
       log: this.log.child("conversation"),
       ...(this.deps.now ? { now: this.deps.now } : {}),
@@ -399,28 +406,53 @@ export class Voice {
     this.conversation(client)?.ptt(active);
   }
 
+  /** The wake model once its stage settles, waiting a while for one still loading; none when it is not up. */
+  private async settledWake(): Promise<WakeModel | undefined> {
+    if (this.stages.wake.status === "loading" && this.wakeLoading) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WAKE_WAIT_MS);
+        timer.unref?.();
+      });
+      await Promise.race([this.wakeLoading, late]);
+      clearTimeout(timer);
+    }
+    return this.stages.wake.status === "ready" ? this.wakeModel : undefined;
+  }
+
   /**
    * `voice.wakeword`: where this controller's wake word is detected. On the phone when it
-   * carries the configured head, which it then runs at the node's threshold and scale; on
-   * the node otherwise, over the frames the phone streams while it listens. An empty list
-   * hands detection back to the node.
+   * carries every head the node listens with, which it then runs at the node's thresholds and
+   * scales; on the node otherwise, over the frames the phone streams while it listens. An
+   * empty list hands detection back to the node, and so does a wake stage that is not up,
+   * since the thresholds are the model's.
    */
-  wakeword(client: Client, heads: string[]): WakewordMode {
+  async wakeword(client: Client, heads: string[]): Promise<WakewordMode> {
     if (!client.audio.in) throw new RpcError("invalid", "this client has no microphone");
-    const was = this.phoneWake.has(client.id);
     if (!this.config.enabled || this.config.wake === "off") {
       this.phoneWake.delete(client.id);
       return { mode: "off" };
     }
-    const head = this.config.wake_model;
+    const model = await this.settledWake();
+    // Gone while the stage loaded: there is nobody to hear for.
+    if (this.stopped || !this.deps.clients.get(client.id)) return { mode: "node" };
+    const was = this.phoneWake.has(client.id);
+    const listening = model?.heads ?? [];
     const existing = this.conversations.get(client.id);
-    if (heads.includes(head)) {
+    const first = listening[0];
+    if (first && listening.every((h) => heads.includes(h.name))) {
       if (!was) {
         this.phoneWake.add(client.id);
         existing?.useWake(undefined);
-        this.log.info("the wake word is heard on the phone", { client: client.id, head });
+        this.log.info("the wake word is heard on the phone", { client: client.id, heads: listening.map((h) => h.name) });
       }
-      return { mode: "phone", head, threshold: this.config.wake_threshold, scale: this.config.wake_scale };
+      return {
+        mode: "phone",
+        head: first.name,
+        threshold: first.threshold,
+        scale: first.scale,
+        heads: listening.map((h) => ({ head: h.name, threshold: h.threshold, scale: h.scale, phrase: h.phrase })),
+      };
     }
     if (was) {
       this.phoneWake.delete(client.id);
@@ -430,11 +462,14 @@ export class Voice {
     return { mode: "node" };
   }
 
-  /** `voice.wake`: the phone heard the word. Ignored mid-utterance and while the button is held. */
-  wake(client: Client, score: number): void {
+  /**
+   * `voice.wake`: the phone heard the word; the first `lead` frames that follow were captured
+   * before it fired. Ignored mid-utterance and while the button is held.
+   */
+  wake(client: Client, score: number, head?: string, lead?: number): void {
     this.hearable(client);
-    const heard = this.conversation(client)?.wakeHeard() ?? false;
-    if (heard) this.log.info("wake word (phone)", { client: client.id, score: Number(score.toFixed(3)) });
+    const heard = this.conversation(client)?.wakeHeard(lead) ?? false;
+    if (heard) this.log.info("wake word (phone)", { client: client.id, score: Number(score.toFixed(3)), ...(head ? { head } : {}) });
     else this.log.debug("wake word (phone) ignored: an utterance is in progress", { client: client.id });
   }
 
@@ -464,7 +499,7 @@ export class Voice {
   onModel(name: string, dir: string): void {
     if (!this.config.enabled || this.stopped) return;
     this.log.info("voice model changed", { model: name, dir });
-    if (name === WAKE_MODEL) void this.loadWake();
+    if (name === WAKE_MODEL) void (this.wakeLoading = this.loadWake());
     else if (name === VAD_MODEL || name === STT_MODEL) void this.loadStt();
     else if (name === TTS_MODEL) void this.loadTts();
   }

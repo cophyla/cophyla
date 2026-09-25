@@ -119,6 +119,8 @@ export interface HostReady {
   scopes: Scope[];
   /** The host has a menu button of its own, under the frame, that sends `host.menu`: the phone's bar. */
   menu?: boolean;
+  /** The host has a microphone and no talk button of its own: the view draws one, holding `voice.ptt`. */
+  talk?: boolean;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -134,6 +136,8 @@ export interface ViewState {
   platformVersion?: string;
   /** The host's own button shows and hides the rail (`host.menu`), so the view draws none. */
   hostMenu: boolean;
+  /** The host has a microphone and no talk button: the composer has one (the desktop app). */
+  hostTalk: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -258,6 +262,7 @@ export const SPEND_WINDOW_MS = 24 * 60 * 60 * 1000;
 export function initialState(): ViewState {
   return {
     hostMenu: false,
+    hostTalk: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -417,6 +422,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.platformVersion = p.platformVersion;
       state.scopes = p.scopes;
       state.hostMenu = p.menu === true;
+      state.hostTalk = p.talk === true;
       return state;
     }
     case "host.state":

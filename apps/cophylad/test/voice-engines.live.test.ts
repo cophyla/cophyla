@@ -107,14 +107,14 @@ describe.skipIf(!present)("the real engines", () => {
       const hit = model.stream();
       let peak = 0;
       for (const f of [...silence(500), ...frames(readWav(join(CLIPS, "hey_jarvis.wav")).samples), ...silence(500)]) {
-        peak = Math.max(peak, await hit.feed(f));
+        peak = Math.max(peak, (await hit.feed(f)).score);
       }
       expect(peak).toBeGreaterThanOrEqual(0.9);
 
       const quiet = model.stream();
       let other = 0;
       for (const f of [...silence(500), ...frames(readWav(join(CLIPS, "question.wav")).samples)]) {
-        other = Math.max(other, await quiet.feed(f));
+        other = Math.max(other, (await quiet.feed(f)).score);
       }
       expect(other).toBeLessThan(0.5);
     } finally {

@@ -17,7 +17,8 @@
 // where the host has the seam. The host tells the view
 // things of its own as notifications, never scoped: `host.ready` and `host.state`, and
 // `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
-// pressed. DOM-free.
+// pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
+// own, so a view with the voice scope may draw one that holds `voice.ptt`. DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -47,6 +48,8 @@ export interface HostReady {
   scopes: Scope[];
   /** The host has a menu button of its own and says `host.menu` when it is pressed. */
   menu?: boolean;
+  /** The host has a microphone and no talk button of its own: the view may draw one, holding `voice.ptt`. */
+  talk?: boolean;
 }
 
 export interface BridgeConfig {
@@ -58,6 +61,8 @@ export interface BridgeConfig {
   host?: HostRequests;
   /** The host has a menu button of its own (`host.menu`). */
   menu?: boolean;
+  /** The host has a microphone and no talk button of its own. */
+  talk?: boolean;
   /** Shows the host's view picker (`host.chooseView`); absent, it answers `unsupported`. */
   chooseView?: () => void;
   /** Shows the host's settings (`host.settings`); absent, it answers `unsupported`. */
@@ -100,6 +105,7 @@ export class Bridge {
   private instance: number;
   private host?: HostRequests;
   private hasMenu: boolean;
+  private hasTalk: boolean;
   /** `host.chooseView`: the picker shows, and the answer is that it did. */
   private chooser?: HostRequests;
   /** `host.settings`: the same for the settings. */
@@ -117,6 +123,7 @@ export class Bridge {
     this.instance = cfg.instance;
     if (cfg.host) this.host = cfg.host;
     this.hasMenu = cfg.menu === true;
+    this.hasTalk = cfg.talk === true;
     const show = cfg.chooseView;
     if (show) {
       this.chooser = async () => {
@@ -231,6 +238,7 @@ export class Bridge {
       scopes: this.scopes,
     };
     if (this.hasMenu) params.menu = true;
+    if (this.hasTalk) params.talk = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
   }

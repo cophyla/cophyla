@@ -1540,6 +1540,46 @@ button:disabled {
   border-color: var(--line);
 }
 
+/* the talk button: held, Cophyla listens (the desktop app; the phone's is in its bar) */
+.talk {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  padding: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--muted);
+  touch-action: none;
+  user-select: none;
+}
+
+.talk svg {
+  width: 18px;
+  height: 18px;
+}
+
+.talk:hover:enabled {
+  border-color: var(--muted);
+  color: var(--ink);
+}
+
+.talk[aria-pressed="true"] {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.talk:disabled {
+  opacity: 0.45;
+}
+
+.talk[hidden] {
+  display: none;
+}
+
 .composer-note {
   padding-top: 6px;
   padding-bottom: 12px;
@@ -3142,6 +3182,7 @@ button:disabled {
   .rail-more,
   .earlier,
   .quick,
+  .talk,
   .threads-earlier {
     transition: border-color 120ms ease, background-color 120ms ease;
   }

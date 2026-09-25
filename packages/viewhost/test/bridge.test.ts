@@ -275,6 +275,16 @@ describe("bridge", () => {
     expect(without.toView).toHaveLength(2);
   });
 
+  test("a host with a microphone and no talk button says talk in host.ready", () => {
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, talk: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect(toView[0]).toMatchObject({ method: "host.ready", params: { talk: true } });
+    const without = make();
+    without.bridge.ready(HELLO);
+    expect((without.toView[0] as { params: object }).params).not.toHaveProperty("talk");
+  });
+
   test("two instances never share a wire id", () => {
     const a = make(MANIFEST, 1);
     const b = make(MANIFEST, 2);

@@ -8,7 +8,7 @@ import { boot } from "./app.ts";
 import { codeFromUrl, guessName, syncStore } from "./pairing.ts";
 import { hostOpen } from "./remote.ts";
 import { lanTransport } from "./transport.ts";
-import { indexedDbCache } from "./wake/cache.ts";
+import { indexedDbCache } from "@cophyla/voicehost";
 
 const wsUrl = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/client`;
 /** The asks' notifications up, by ask: a settled ask closes its own. */
