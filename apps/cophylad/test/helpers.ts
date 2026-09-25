@@ -99,11 +99,11 @@ export async function miniSessions(
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Polls until `check` returns a value, or fails after `timeoutMs`. */
-export async function waitFor<T>(check: () => T | undefined | false, timeoutMs = 3000, stepMs = 25): Promise<T> {
+/** Polls until `check` returns a value, or fails after `timeoutMs`; an async check is awaited. */
+export async function waitFor<T>(check: () => T | undefined | false | Promise<T | undefined | false>, timeoutMs = 3000, stepMs = 25): Promise<T> {
   const end = Date.now() + timeoutMs;
   for (;;) {
-    const v = check();
+    const v = await check();
     if (v) return v;
     if (Date.now() > end) throw new Error("timed out waiting");
     await sleep(stepMs);
