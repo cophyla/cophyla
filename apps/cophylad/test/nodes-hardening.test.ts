@@ -111,7 +111,11 @@ describe("upward rows are the sender's own", () => {
     const fromRogue = heard.filter((h) => JSON.stringify(h.params).includes("forged") || JSON.stringify(h.params).includes(other) || JSON.stringify(h.params).includes("hijacked") || JSON.stringify(h.params).includes("9.9.9"));
     expect(fromRogue).toEqual([]);
     expect(heard.filter((h) => h.method === "session.event" && (h.params as SessionEvent).seq === 999)).toEqual([]);
-    expect(events.filter((e) => ["session.discovered", "session.ended", "session.ask", "workspace.updated", "node.pressure"].includes(e.name))).toEqual([]);
+    // The primary's own workspace row may come a second after the spawn touched it, echoed as workspace.updated.
+    const echo = (e: { name: string; params: unknown }) =>
+      e.name === "workspace.updated" &&
+      heard.some((h) => h.method === "workspace.state" && (h.params as Workspace).id === (e.params as { id: string }).id && (h.params as Workspace).lastActivity === (e.params as { at: number }).at);
+    expect(events.filter((e) => ["session.discovered", "session.ended", "session.ask", "workspace.updated", "node.pressure"].includes(e.name) && !echo(e))).toEqual([]);
     // The primary's own rows are untouched.
     expect(d.sessions.get(local.id)?.status).not.toBe("ended");
     expect(d.asks.get(localAsk.id)?.title).toBe("local");

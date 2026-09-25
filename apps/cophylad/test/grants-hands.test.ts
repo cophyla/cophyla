@@ -206,8 +206,11 @@ describe("re-keying", () => {
     expect(p.d.grants.get(backup.nodes.member()!.grant)?.replica).toBe(true);
     const c = await client(p.d);
     clients.push(c);
+    // a node not linked when the holder goes is marked to be invited again instead: both are, on the primary's side
+    await waitFor(() => [full, guest].every((s) => p.d.nodes.linkedNodes().includes(s.identity.id)), 8000);
     await c.request("grant.revoke", { id: backup.nodes.member()!.grant });
-    await waitFor(() => readLinkFile(full.paths.linkFile)!.key !== before.full && readLinkFile(guest.paths.linkFile)!.key !== before.guest, 5000);
+    // each re-key is a request over its link, answered within the hello timeout
+    await waitFor(() => readLinkFile(full.paths.linkFile)!.key !== before.full && readLinkFile(guest.paths.linkFile)!.key !== before.guest, 15_000);
     // the primary keeps the same new keys, its own too
     expect(p.d.grants.get(full.nodes.member()!.grant)?.key).toBe(readLinkFile(full.paths.linkFile)!.key);
     expect(p.d.grants.get(guest.nodes.member()!.grant)?.key).toBe(readLinkFile(guest.paths.linkFile)!.key);
