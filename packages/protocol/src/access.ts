@@ -241,6 +241,7 @@ export const requestFilters = {
   "voice.settings": { names: "global" },
   "voice.configure": { names: "global" },
   "voice.preview": { names: "global" },
+  "voice.install": { names: "global" },
   "view.list": { names: "open" },
   "view.get": { names: "open" },
   // The default view is the node's, for every client.

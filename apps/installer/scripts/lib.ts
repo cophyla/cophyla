@@ -75,16 +75,6 @@ export const TARGETS: { os: HostOs; arch: string }[] = [
   { os: "linux", arch: "arm64" },
 ];
 
-/**
- * sherpa-onnx ships one native package per target, as optional dependencies of
- * `sherpa-onnx-node`. The stage installs with `--omit=optional` (the harness binaries are
- * never shipped), so the one for this target is named as a direct dependency instead, from
- * Node's own platform and arch words — with `win32` spelled `win`, as the packages are.
- */
-export function sherpaBinaryPackage(platform: string, arch: string): string {
-  return `sherpa-onnx-${platform === "win32" ? "win" : platform}-${arch}`;
-}
-
 /** A model's name: what `data/models/<name>/` is called, and what the feed keys its entries on. */
 export const MODEL_NAME = /^[a-z0-9][a-z0-9.-]{1,63}$/;
 

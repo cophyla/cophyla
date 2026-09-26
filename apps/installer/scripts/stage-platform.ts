@@ -14,14 +14,17 @@
 // cophylad's tree on macOS (hardened runtime with Bun's entitlements) and cophyla-net (hardened
 // runtime with none), nothing on Linux. Writes
 // `stage/current` for the installer. `release.json` is added by sign-release.ts. The node's
-// voice models are not staged: they are `model` releases of their own; the controller's copy
-// of the wake word is the one exception, since the phone runs it.
+// voice models are not staged: the wake word's and the VAD's are `model` releases of their
+// own; the controller's copy of the wake word is the one exception, since the phone runs it.
+// No speech engine is staged either, nor sherpa-onnx, the runtime they run on (its native
+// library carries espeak-ng, GPL-3.0): a node installs one from where its makers publish it
+// when its user asks, and the stage fails if any of it lands here.
 //   bun run apps/installer/scripts/stage-platform.ts --version 0.1.0 [--skip-shell-build]
 
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, platformVersion, REPO, run, SHELL_REL, sherpaBinaryPackage, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
+import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -96,9 +99,8 @@ log(`shell, runtime, tether and cophyla-net copied (bun ${Bun.version})`);
 const cophyladDir = join(dir, "cophylad", "apps", "cophylad");
 mkdirSync(cophyladDir, { recursive: true });
 const pkg = JSON.parse(readFileSync(join(COPHYLAD, "package.json"), "utf8")) as { dependencies: Record<string, string>; devDependencies?: unknown; scripts?: unknown };
-const sherpaVersion = pkg.dependencies["sherpa-onnx-node"];
-if (!sherpaVersion) fail("apps/cophylad/package.json no longer depends on sherpa-onnx-node; the voice stages need it");
-pkg.dependencies[sherpaBinaryPackage(process.platform, process.arch)] = sherpaVersion;
+// sherpa-onnx is a development dependency: the stage installs production ones only.
+if (pkg.dependencies["sherpa-onnx-node"]) fail("apps/cophylad/package.json depends on sherpa-onnx-node; the speech runtime is never shipped, a node installs it");
 // The workspace packages are published nowhere: they leave the install and are copied in after it.
 const workspace = Object.keys(pkg.dependencies).filter((name) => pkg.dependencies[name]!.startsWith("workspace:"));
 /** Where a workspace package lives: `packages/` for cophylad's own, `tether/sdk/typescript` for tether's SDK. */
@@ -145,12 +147,9 @@ if (!existsSync(join(modelsSrc, "bge-small-en-v1.5", "manifest.json"))) fail(`no
 // carries only the embedding model, which recall needs from the first run.
 const voiceModels = join(modelsSrc, "voice");
 cpSync(modelsSrc, join(cophyladDir, "models"), { recursive: true, filter: (src) => src !== voiceModels });
-// sherpa-onnx's `addon.js` loads `../sherpa-onnx-<platform>-<arch>/sherpa-onnx.node` from
-// beside itself. Exactly one of those packages belongs in the stage: each is 23 MB.
-const sherpaWanted = sherpaBinaryPackage(process.platform, process.arch);
-const sherpaFound = readdirSync(join(cophyladDir, "node_modules")).filter((n) => n.startsWith("sherpa-onnx-") && n !== "sherpa-onnx-node");
-if (!sherpaFound.includes(sherpaWanted)) fail(`${sherpaWanted} is not in the stage; sherpa-onnx cannot load without it`);
-if (sherpaFound.length > 1) fail(`the stage carries ${sherpaFound.join(", ")}; only ${sherpaWanted} belongs in it`);
+// None of sherpa-onnx belongs in the stage, not even pulled in by something else.
+const sherpaFound = readdirSync(join(cophyladDir, "node_modules")).filter((n) => n.startsWith("sherpa-onnx"));
+if (sherpaFound.length > 0) fail(`the stage carries ${sherpaFound.join(", ")}; the speech runtime is never shipped, a node installs it`);
 const ortBin = join(cophyladDir, "node_modules", "onnxruntime-node", "bin", "napi-v6");
 if (!existsSync(join(ortBin, process.platform, process.arch))) fail(`onnxruntime-node has no binaries for ${process.platform}/${process.arch} under ${ortBin}`);
 for (const os of readdirSync(ortBin)) {

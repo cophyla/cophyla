@@ -17,6 +17,8 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { dirname, join, relative } from "node:path";
 import { parseArgs } from "node:util";
 import { defaultTar } from "../src/update/platform.ts";
+import { VOICE_MODELS } from "../src/voice/catalog.ts";
+import type { VoiceModelSpec } from "../src/voice/catalog.ts";
 
 interface ModelSpec {
   name: string;
@@ -43,118 +45,10 @@ const MODELS: ModelSpec[] = [
   },
 ];
 
-// --- the voice models ------------------------------------------------------------------------
+// --- the voice models: the table is the catalog's (src/voice/catalog.ts) -----------------------
 
-/** One file fetched as it is, one archive unpacked into the model directory, or one of Cophyla's own from the repository. */
-export type VoiceSource =
-  | { kind: "file"; url: string; local: string; sha256?: string }
-  | { kind: "archive"; url: string; sha256?: string; strip?: number; drop?: string[] }
-  | { kind: "repo"; path: string; local: string; sha256: string };
-
-export interface VoiceModelSpec {
-  name: string;
-  kind: "wake" | "vad" | "stt" | "tts";
-  version: string;
-  /** What the engine needs to know: which file is what, and the numbers beside them. */
-  params: Record<string, unknown>;
-  sources: VoiceSource[];
-}
-
-const OWW = "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1";
 /** The repository's root, for the files Cophyla made itself (`kind: "repo"`). */
 const REPO_ROOT = join(import.meta.dir, "..", "..", "..");
-const K2 = "https://github.com/k2-fsa/sherpa-onnx/releases/download";
-
-export const VOICE_MODELS: VoiceModelSpec[] = [
-  {
-    name: "wake-openwakeword",
-    kind: "wake",
-    version: "1.2.0",
-    params: {
-      scale: "int16",
-      mel: "melspectrogram.onnx",
-      embedding: "embedding_model.onnx",
-      heads: ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
-      head_params: {
-        "cophyla_v0.1.onnx": { threshold: 0.7, phrase: "Cophyla" },
-        "hey_phyla_v0.1.onnx": { threshold: 0.6, phrase: "Hey Phyla" },
-      },
-    },
-    sources: [
-      { kind: "file", url: `${OWW}/melspectrogram.onnx`, local: "melspectrogram.onnx", sha256: "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f" },
-      { kind: "file", url: `${OWW}/embedding_model.onnx`, local: "embedding_model.onnx", sha256: "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f" },
-      // Cophyla's own heads (packages/wake/heads/README.md says how they were made).
-      { kind: "repo", path: "packages/wake/heads/cophyla_v0.1.onnx", local: "cophyla_v0.1.onnx", sha256: "b08ab17c1ff81a3293c7e8d3c4623d9c9a3b0bacbb291311e7d7d2b9e8b984e9" },
-      { kind: "repo", path: "packages/wake/heads/hey_phyla_v0.1.onnx", local: "hey_phyla_v0.1.onnx", sha256: "4ec1d76da29e8581bb8d1d48a453336a35752159403a144df16657e1975f8a36" },
-    ],
-  },
-  {
-    name: "vad-silero",
-    kind: "vad",
-    version: "1.0.0",
-    params: { model: "silero_vad.onnx", windowSize: 512 },
-    sources: [{ kind: "file", url: `${K2}/asr-models/silero_vad.onnx`, local: "silero_vad.onnx", sha256: "9e2449e1087496d8d4caba907f23e0bd3f78d91fa552479bb9c23ac09cbb1fd6" }],
-  },
-  {
-    name: "stt-nemotron-3.5-streaming-int8",
-    kind: "stt",
-    version: "1.0.0",
-    params: { encoder: "encoder.int8.onnx", decoder: "decoder.int8.onnx", joiner: "joiner.int8.onnx", tokens: "tokens.txt", featureDim: 128, chunkMs: 560 },
-    sources: [
-      {
-        kind: "archive",
-        url: `${K2}/asr-models/sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11.tar.bz2`,
-        sha256: "c6bf5e0df765f9d5b43bc9e0536d4b4b3e7d40bdf5ecf13e45f134c51c05ae3a",
-        strip: 1,
-        // The sample clips are a third of the archive and nothing loads them.
-        drop: ["test_wavs"],
-      },
-    ],
-  },
-  {
-    name: "tts-kokoro-en",
-    kind: "tts",
-    version: "1.0.0",
-    params: { model: "model.onnx", voices: "voices.bin", tokens: "tokens.txt", dataDir: "espeak-ng-data", sampleRate: 24000 },
-    sources: [{ kind: "archive", url: `${K2}/tts-models/kokoro-en-v0_19.tar.bz2`, sha256: "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7", strip: 1 }],
-  },
-  {
-    // The default voice: Piper's LibriTTS-R voice (MIT; the recordings CC BY 4.0, named in its MODEL_CARD), 904 speakers.
-    name: "tts-piper-en",
-    kind: "tts",
-    version: "1.0.0",
-    params: { model: "en_US-libritts_r-medium.onnx", tokens: "tokens.txt", dataDir: "espeak-ng-data", sampleRate: 22050, voice: 0 },
-    sources: [{ kind: "archive", url: `${K2}/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2`, sha256: "10dc268f3e371696d721486123e2705a9fc1faa113491979fde4d88dba1f1b1c", strip: 1 }],
-  },
-  {
-    // 31 languages, 10 voices. Two flow steps rather than the model's five: twice as fast, and still clear.
-    // The weights are OpenRAIL-M, whose use restrictions travel with them: MODEL_LICENSE is that licence.
-    name: "tts-supertonic-3",
-    kind: "tts",
-    version: "1.0.0",
-    params: {
-      durationPredictor: "duration_predictor.int8.onnx",
-      textEncoder: "text_encoder.int8.onnx",
-      vectorEstimator: "vector_estimator.int8.onnx",
-      vocoder: "vocoder.int8.onnx",
-      ttsJson: "tts.json",
-      unicodeIndexer: "unicode_indexer.bin",
-      voiceStyle: "voice.bin",
-      sampleRate: 44100,
-      numSteps: 2,
-      voice: 0,
-    },
-    sources: [
-      { kind: "archive", url: `${K2}/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2`, sha256: "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427", strip: 1 },
-      {
-        kind: "file",
-        url: "https://huggingface.co/Supertone/supertonic-3/resolve/3cadd1ee6394adea1bd021217a0e650ede09a323/LICENSE",
-        local: "MODEL_LICENSE",
-        sha256: "0d944a9110fed9a9602d60e0423a272903e7bd21ab060490774efc77c2275e9f",
-      },
-    ],
-  },
-];
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: { pin: { type: "boolean" }, voice: { type: "boolean" }, from: { type: "string" }, only: { type: "string" } }, strict: true });
 

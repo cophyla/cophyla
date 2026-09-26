@@ -3,7 +3,7 @@
 // `stage/feed` with every `url` rewritten to this server's `/artifacts/<name>`, which serves
 // the file from `stage/out`. Logs every request, so the acceptance run can read what the
 // daemon asked for. `--only` limits the served entries, to stage the feed's growth.
-//   bun run apps/installer/scripts/serve-feed.ts [--dir stage/feed] [--artifacts stage/out] [--host 0.0.0.0] [--port 8790] [--only platform@0.1.0,model/tts-kokoro-en@1.0.0]
+//   bun run apps/installer/scripts/serve-feed.ts [--dir stage/feed] [--artifacts stage/out] [--host 0.0.0.0] [--port 8790] [--only platform@0.1.0,model/vad-silero@1.0.0]
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";

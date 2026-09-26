@@ -9,8 +9,8 @@
 //   bun run apps/installer/scripts/sign-release.ts --component platform --version 0.1.0 \
 //     --file stage/out/platform-0.1.0-windows-x64.tar.gz --into stage/versions/0.1.0 \
 //     [--target macos-arm64] [--url …] [--protocol 1-1] [--channel stable] [--key <path>]
-//   bun run apps/installer/scripts/sign-release.ts --component model --name tts-kokoro-en \
-//     --version 1.0.0 --file stage/out/model-tts-kokoro-en-1.0.0.tar.gz
+//   bun run apps/installer/scripts/sign-release.ts --component model --name vad-silero \
+//     --version 1.0.0 --file stage/out/model-vad-silero-1.0.0.tar.gz
 
 import { existsSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";

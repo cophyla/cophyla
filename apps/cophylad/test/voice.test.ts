@@ -831,7 +831,12 @@ describe("the speech engine picked in the app", () => {
     const { d, ui, engines } = await start();
     const first = await settings(ui);
     expect(first).toMatchObject({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 4, stage: { status: "ready", engine: "piper" } });
-    expect(first.engines.map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
+    expect(first.engines.filter((e) => e.stage === "tts").map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
+    expect(first.engines.filter((e) => e.stage === "stt").map((e) => e.id)).toEqual(["nemotron", "server", "off"]);
+    // A local engine says what it comes under; a hosted one runs nowhere here and needs no install.
+    expect(first.engines.find((e) => e.id === "piper")).toMatchObject({ local: true, installed: true });
+    expect(first.engines.find((e) => e.id === "piper")!.licences!.map((l) => l.name)).toContain("GPL-3.0");
+    expect(first.engines.find((e) => e.stage === "tts" && e.id === "server")).toMatchObject({ local: false });
 
     const picked = await configure(ui, { tts: "kokoro" });
     // Answered before the load: the stage is still loading, and the engine before it still speaks.
@@ -957,4 +962,78 @@ describe("the speech engine picked in the app", () => {
     prefs.write({});
     expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
   });
+});
+
+describe("local engines are installed only when asked", () => {
+  const settings = (c: TestClient) => c.request<VoiceSettings>("voice.settings", {});
+  const setupSteps = (c: TestClient) => c.notifications.filter((n) => n.method === "voice.setup").map((n) => (n.params as { engine: string; step: string }).step);
+
+  test("an engine not installed leaves its stage uninstalled and fetches nothing; the rest of voice works", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    engines.notInstalled.add("piper");
+    engines.notInstalled.add("nemotron");
+    const { d, ui } = await start({ engines });
+    expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "uninstalled", engine: "nemotron" }, tts: { status: "uninstalled", engine: "piper" } });
+    expect(d.voice.capabilities()).toEqual({ wake: true, stt: false, tts: false });
+    expect(engines.installs).toEqual([]);
+    expect(engines.ttsLoads).toEqual([]);
+    const s = await settings(ui);
+    expect(s.sttStage).toMatchObject({ status: "uninstalled", reason: "not installed on this computer" });
+    expect(s.engines.find((e) => e.id === "piper")).toMatchObject({ local: true, installed: false, bytes: 1000 });
+  }, 20_000);
+
+  test("the hosted recogniser needs no install: the VAD is the platform's own", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    engines.notInstalled.add("nemotron");
+    const { d, ui } = await start({ engines });
+    expect(d.voice.stageStates().stt.status).toBe("uninstalled");
+    await ui.request("voice.configure", { stt: "server" });
+    // Up with nothing installed: what it needs besides the account is the VAD, which ships.
+    await waitFor(() => d.voice.stageStates().stt.status === "ready");
+    expect(d.voice.stageStates().stt).toMatchObject({ engine: "server" });
+    expect(engines.installs).toEqual([]);
+    expect(await settings(ui)).toMatchObject({ stt: "server", sttSource: "app" });
+    await ui.request("voice.configure", { stt: null });
+    await waitFor(() => d.voice.stageStates().stt.status === "uninstalled");
+  }, 20_000);
+
+  test("an install asked for runs behind the answer, is told as it goes, and the stage loads when it is in", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    engines.notInstalled.add("piper");
+    let release!: () => void;
+    engines.holdInstall = new Promise<void>((r) => (release = r));
+    const { d, ui } = await start({ engines });
+    const started = await ui.request<VoiceSettings>("voice.install", { engine: "piper" });
+    expect(started.installing).toMatchObject({ engine: "piper" });
+    await waitFor(async () => (await settings(ui)).installing?.step === "runtime");
+    // One at a time.
+    expect(await ui.call("voice.install", { engine: "kokoro" })).toMatchObject({ error: { data: { code: "conflict" } } });
+    release();
+    await waitFor(() => d.voice.stageStates().tts.status === "ready");
+    expect(engines.installs).toEqual(["piper"]);
+    expect(engines.ttsLoads.map((l) => l.engine)).toEqual(["piper"]);
+    await waitFor(() => setupSteps(ui).includes("ready"));
+    expect(setupSteps(ui)[0]).toBe("runtime");
+    const after = await settings(ui);
+    expect(after.installing).toBeUndefined();
+    expect(after.engines.find((e) => e.id === "piper")).toMatchObject({ installed: true });
+    // Installed already: nothing to do.
+    await ui.request("voice.install", { engine: "piper" });
+    expect(engines.installs).toEqual(["piper"]);
+  }, 20_000);
+
+  test("a failed install says why and leaves the stage uninstalled; what is not an engine is refused", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    engines.notInstalled.add("kokoro");
+    engines.failInstall = "https://example.test/kokoro.tar.bz2: sha256 0000, expected 9128";
+    const { d, ui } = await start({ engines, voice: 'tts = "kokoro"\n' });
+    await ui.request("voice.install", { engine: "kokoro" });
+    await waitFor(() => setupSteps(ui).includes("failed"));
+    expect(await settings(ui)).toMatchObject({ installError: { engine: "kokoro", message: engines.failInstall } });
+    expect(d.voice.stageStates().tts.status).toBe("uninstalled");
+    expect(await ui.call("voice.install", { engine: "chatterbox" })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await ui.call("voice.install", { engine: "rm -rf" })).toMatchObject({ error: { data: { code: "invalid" } } });
+    // The install is audited as a network action.
+    expect(d.store.audit.list({ limit: 50 }).some((e) => e.action === "voice.install" && e.target === "kokoro")).toBe(true);
+  }, 20_000);
 });

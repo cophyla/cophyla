@@ -7,7 +7,7 @@
 
 import type { VoiceConfig } from "../config/schema.ts";
 import type { Sidecars } from "../sidecars/index.ts";
-import type { EngineFactory, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
+import type { EngineFactory, SpeechInstaller, SpeechInstallProgress, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 import { phraseOf } from "./openwakeword.ts";
 
@@ -64,6 +64,25 @@ export class FakeEngines implements EngineFactory {
   /** The speech engines loaded, by the name the configuration gave, with the voice each started in; and how many were closed. */
   readonly ttsLoads: { engine: string; voice?: number }[] = [];
   ttsClosed = 0;
+  /** The local engines this fake machine has not installed; every one is, unless a test says otherwise. */
+  readonly notInstalled = new Set<string>();
+  /** The installs asked for, in order; hold one open with `holdInstall`, fail one with `failInstall`. */
+  readonly installs: string[] = [];
+  holdInstall?: Promise<unknown>;
+  failInstall?: string;
+  /** The installer the voice module sees: instant, with a runtime step and a model step. */
+  readonly speech: SpeechInstaller = {
+    installed: (engine) => !this.notInstalled.has(engine),
+    pendingBytes: (engine) => (this.notInstalled.has(engine) ? 1000 : 0),
+    install: async (engine: string, onProgress: (p: SpeechInstallProgress) => void) => {
+      this.installs.push(engine);
+      onProgress({ step: "runtime", what: "sherpa-onnx", done: 0, total: 1000 });
+      await this.holdInstall;
+      if (this.failInstall) throw new Error(this.failInstall);
+      onProgress({ step: "model", what: engine, done: 1000, total: 1000 });
+      this.notInstalled.delete(engine);
+    },
+  };
   /** How many utterances the recogniser was asked to drain. */
   finals = 0;
 

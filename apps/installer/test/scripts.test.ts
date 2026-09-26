@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Release } from "@cophyla/protocol";
 import { BUN_NAMES, NET_PATHS, SHELL_PATHS } from "../../cophylad/src/update/platform.ts";
-import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, parseSignArgs, parseTarget, releaseTag, SHELL_REL, sherpaBinaryPackage, TARGETS } from "../scripts/lib.ts";
+import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, parseSignArgs, parseTarget, releaseTag, SHELL_REL, TARGETS } from "../scripts/lib.ts";
 import { feedFilesFor, mergeInto, releaseKey } from "../scripts/feed.ts";
 import { LAUNCHER_IDENTIFIER, overlayFor } from "../scripts/overlay.ts";
 import { installerAssets, mergePlan } from "../scripts/publish.ts";
@@ -57,12 +57,6 @@ describe("names", () => {
   test("a model name is lowercase with dots and dashes, and not empty", () => {
     for (const ok of ["tts-kokoro-en", "wake-openwakeword", "stt-nemotron-3.5-streaming-int8", "vad-silero"]) expect(MODEL_NAME.test(ok)).toBe(true);
     for (const bad of ["", "a", "Tts-Kokoro", "tts_kokoro", "-leading", "tts kokoro", "../escape", "x".repeat(65)]) expect(MODEL_NAME.test(bad)).toBe(false);
-  });
-
-  test("sherpa's native package is named from node's own words, with win32 spelled win", () => {
-    expect(sherpaBinaryPackage("win32", "x64")).toBe("sherpa-onnx-win-x64");
-    expect(sherpaBinaryPackage("darwin", "arm64")).toBe("sherpa-onnx-darwin-arm64");
-    expect(sherpaBinaryPackage("linux", "x64")).toBe("sherpa-onnx-linux-x64");
   });
 
   test("targets parse as the feed names them", () => {

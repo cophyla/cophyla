@@ -40,7 +40,7 @@ export interface WakeEngine {
 
 export interface VadEngine {
   /** True once, on the frame that closes an utterance. */
-  feed(pcm: Int16Array): boolean;
+  feed(pcm: Int16Array): boolean | Promise<boolean>;
   /** Speech was detected at some point since the last `reset()`. */
   readonly heard: boolean;
   reset(): void;
@@ -76,7 +76,7 @@ export interface TtsEngine {
   close(): void | Promise<void>;
 }
 
-export type StageStatus = "off" | "unavailable" | "loading" | "ready" | "failed";
+export type StageStatus = "off" | "uninstalled" | "unavailable" | "loading" | "ready" | "failed";
 
 export interface StageState {
   status: StageStatus;
@@ -91,8 +91,29 @@ export interface ModelResolver {
   resolve(name: string): Promise<string | undefined>;
 }
 
+/** Where an install of a local speech engine is: its runtime or a model, and the bytes come of all it fetches. */
+export interface SpeechInstallProgress {
+  step: "runtime" | "model";
+  what: string;
+  done: number;
+  total: number;
+}
+
+/**
+ * The local speech engines this machine installs when its user asks: whether one is here,
+ * what installing it would still fetch, and the install itself. The daemon never calls
+ * `install` on its own.
+ */
+export interface SpeechInstaller {
+  installed(engine: string): boolean;
+  pendingBytes(engine: string): number;
+  install(engine: string, onProgress: (p: SpeechInstallProgress) => void): Promise<void>;
+}
+
 /** How the voice module builds its engines; `fake.ts` is the other implementation. */
 export interface EngineFactory {
+  /** Installs the local speech engines; none on a factory whose engines need no install. */
+  readonly speech?: SpeechInstaller;
   /** The model names this configuration needs, so they are fetched before a stage loads. */
   models(config: VoiceConfig): string[];
   wake(dir: string, config: VoiceConfig): Promise<WakeModel>;

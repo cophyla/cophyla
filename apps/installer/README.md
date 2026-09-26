@@ -129,14 +129,15 @@ bun run apps/installer/scripts/release-brain.ts               # bun run build, s
 bun run apps/installer/scripts/stage-brain.ts --from brain/dist   # or --feed, to bundle the newest published brain
 bun run apps/installer/scripts/build-installer.ts [--appimage]    # overlay + tauri build --config; stage/out/Cophyla_<v>_…
 
-# a model release, once per model, from the directory fetch-models.ts --voice wrote
-bun run apps/cophylad/scripts/fetch-models.ts --voice         # apps/cophylad/models/voice/<name>/, ~1.1 GB, pinned by sha256
-bun run apps/installer/scripts/release-model.ts --name tts-kokoro-en   # stage/out/model-<name>-<v>.tar.gz + its entry
+# a model release, once per model, from the directory fetch-models.ts --voice wrote: the wake word's
+# and the VAD's only; a speech engine's model is never released, a node installs it from its makers
+bun run apps/cophylad/scripts/fetch-models.ts --voice --only wake-openwakeword,vad-silero   # apps/cophylad/models/voice/<name>/, pinned by sha256
+bun run apps/installer/scripts/release-model.ts --name vad-silero      # stage/out/model-<name>-<v>.tar.gz + its entry
 
 # the feed: every target's entries, copied from the other machines' stage/out into this one
 bun run apps/installer/scripts/feed.ts --add stage/out/*.release.json
-bun run apps/installer/scripts/serve-feed.ts                  # LAN feed for a clean machine; --only platform@0.1.0,model/tts-kokoro-en@1.0.0 to hold entries back
-bun run apps/installer/scripts/publish.ts --release platform@<v> --release brain@<v> --release model/tts-kokoro-en@1.0.0 --installer --feed --yes
+bun run apps/installer/scripts/serve-feed.ts                  # LAN feed for a clean machine; --only platform@0.1.0,model/vad-silero@1.0.0 to hold entries back
+bun run apps/installer/scripts/publish.ts --release platform@<v> --release brain@<v> --release model/vad-silero@1.0.0 --installer --feed --yes
 ```
 
 `COPHYLA_SIGN_*` (Windows) or `APPLE_*` (macOS) must be in the environment of every step that
@@ -154,9 +155,15 @@ stage loads, so its entry carries no `os`, no `arch` and no protocol range, and 
 `model-<name>-v<version>`, with the one archive `model-<name>-<version>.tar.gz` as its
 asset. The daemon fetches a model the first time a stage that needs it is turned on and
 unpacks it under `~/.cophyla/data/models/<name>/<version>/`, checking every file against the
-`manifest.json` inside the archive; it never ships in the platform archive. The four voice
-models total about 1.1 GB, which is why. Re-cutting the same bytes under a new version is
-`release-model.ts --name <n> --version <v>`; otherwise the version is the manifest's.
+`manifest.json` inside the archive; it never ships in the platform archive. Only the
+platform's own voice models are released so, the wake word's and the VAD's: a speech
+engine's (Nemotron, Piper, Kokoro, Supertonic) is never published by Cophyla, and neither is
+sherpa-onnx, the runtime they run on, whose native library carries espeak-ng (GPL-3.0). A
+node installs an engine from its makers — the npm registry, the k2-fsa releases, Hugging Face,
+pinned by hash in `apps/cophylad/src/voice/catalog.ts` — when its user asks, after the app
+has shown the licences, and `release-model.ts` and `stage-platform.ts` refuse to carry any
+of it. Re-cutting the same bytes under a new version is `release-model.ts --name <n>
+--version <v>`; otherwise the version is the manifest's.
 
 The **speech sidecar** ships as sources and locks only (`sidecars/tts-py/`, a few hundred
 kilobytes). Its Python environment is about 5 GB and its weights about 2 GB, both built on
@@ -166,7 +173,9 @@ release and no installer ever carries them.
 Sizes seen: a version directory is ~145 MB (6.6k files; the runtime 94 MB, cophylad's hoisted
 dependencies ~54 MB), its archive 48 MB, the brain 95 MB (the runtime is inside), the
 installer 58 MB (NSIS LZMA over the stage; ~2–3 minutes, most of it the compression). The
-voice models beside it: kokoro 330 MB, nemotron 310 MB, openwakeword 2 MB, silero 2 MB.
+platform's voice models beside it: openwakeword 2 MB, silero 2 MB. What a node installs for a
+speech engine: the runtime 9–14 MB, Piper 82 MB, Supertonic 129 MB, Kokoro 320 MB, Nemotron
+475 MB, each a download from its makers.
 
 ## Clean-machine run (Windows Sandbox)
 

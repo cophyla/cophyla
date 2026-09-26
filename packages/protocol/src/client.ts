@@ -94,7 +94,7 @@ export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six 
 
 /** A voice stage's engine being set up on demand: the bootstrap of a sidecar, step by step. */
 export const VoiceSetupStage = z.enum(["wake", "stt", "tts"]);
-export const VoiceSetupStep = z.enum(["uv", "venv", "deps", "weights", "starting", "ready", "failed"]);
+export const VoiceSetupStep = z.enum(["uv", "venv", "deps", "weights", "runtime", "model", "starting", "ready", "failed"]);
 
 /** One phrase a client's wake word listens for: the head's file, the score it fires at, its input scale, what is said. */
 export const WakeHeadMode = z.object({
@@ -124,23 +124,47 @@ export type WakewordMode = z.infer<typeof WakewordMode>;
 export const TtsEngineId = z.enum(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
 export type TtsEngineId = z.infer<typeof TtsEngineId>;
 
-/** One engine a node offers, for the app's picker: its name and what it is like. */
-export const TtsEngineInfo = z.object({ id: TtsEngineId, label: z.string().min(1), detail: z.string() });
-export type TtsEngineInfo = z.infer<typeof TtsEngineInfo>;
+/** The engines a node can transcribe with, as `[voice] stt` names them. */
+export const SttEngineId = z.enum(["nemotron", "server", "off"]);
+export type SttEngineId = z.infer<typeof SttEngineId>;
 
-/** A voice stage as the app shows it: loading, ready, or why it is not up. */
+/** A licence a local engine comes under: what it covers, its name, where to read it. */
+export const SpeechLicence = z.object({ covers: z.string(), name: z.string().min(1), url: z.string().url() });
+export type SpeechLicence = z.infer<typeof SpeechLicence>;
+
+/**
+ * One engine a node offers, for the app's picker: the stage it serves, its name and what it is
+ * like. A `local` one runs on the node and is installed there only when the user asks, from
+ * where its makers publish it, so it says whether it is `installed`, the `bytes` installing it
+ * would still fetch, and the `licences` it comes under, for the user to read first.
+ */
+export const SpeechEngineInfo = z.object({
+  id: z.string().min(1),
+  stage: z.enum(["stt", "tts"]),
+  label: z.string().min(1),
+  detail: z.string(),
+  local: z.boolean(),
+  installed: z.boolean().optional(),
+  bytes: z.number().int().nonnegative().optional(),
+  licences: z.array(SpeechLicence).optional(),
+});
+export type SpeechEngineInfo = z.infer<typeof SpeechEngineInfo>;
+
+/** A voice stage as the app shows it: loading, ready, not installed on this machine, or why it is not up. */
 export const VoiceStageState = z.object({
-  status: z.enum(["off", "unavailable", "loading", "ready", "failed"]),
+  status: z.enum(["off", "uninstalled", "unavailable", "loading", "ready", "failed"]),
   reason: z.string().optional(),
   engine: z.string().optional(),
 });
 export type VoiceStageState = z.infer<typeof VoiceStageState>;
 
 /**
- * A node's speech as the app's Settings shows it: whether voice is on at all, the engine that
- * speaks and where that choice came from (`app`: set in Settings; `config`: config.toml), the
+ * A node's voice as the app's Settings shows it: whether voice is on at all; the engine that
+ * speaks, where that choice came from (`app`: set in Settings; `config`: config.toml), the
  * voice among the engine's `voices` (the model's own default when absent; `voices` is known
- * once the engine is loaded), the speech stage, and every engine there is.
+ * once the engine is loaded) and the speech stage; the same for transcription (`stt`,
+ * `sttSource`, `sttStage`); every engine there is for either; and the install under way or
+ * the last one that failed.
  */
 export const VoiceSettings = z.object({
   enabled: z.boolean(),
@@ -149,7 +173,12 @@ export const VoiceSettings = z.object({
   voice: z.number().int().nonnegative().optional(),
   voices: z.number().int().positive().optional(),
   stage: VoiceStageState,
-  engines: z.array(TtsEngineInfo),
+  stt: SttEngineId,
+  sttSource: z.enum(["app", "config"]),
+  sttStage: VoiceStageState,
+  engines: z.array(SpeechEngineInfo),
+  installing: z.object({ engine: z.string(), step: z.enum(["runtime", "model"]), progress: z.number().min(0).max(1) }).optional(),
+  installError: z.object({ engine: z.string(), message: z.string() }).optional(),
 });
 export type VoiceSettings = z.infer<typeof VoiceSettings>;
 
@@ -315,7 +344,7 @@ export const clientRequests = {
    * captured before the word fired, for the recogniser and not the end-of-speech detector.
    */
   "voice.wake": { params: z.object({ score: z.number().min(0).max(1), head: z.string().min(1).max(128).optional(), lead: z.number().int().min(0).max(16).optional() }), result: Empty },
-  /** The node's speech: the engine that speaks and its voice, where they were set, the stage, and the engines there are. */
+  /** The node's voice: the engines that speak and transcribe, where they were set, their stages, and the engines there are. */
   "voice.settings": { params: Empty, result: VoiceSettings },
   /**
    * The engine or the voice, set from the app over config.toml; `null` hands either back to
@@ -323,9 +352,16 @@ export const clientRequests = {
    * behind the answer, and `voice.settings` says when its stage is up.
    */
   "voice.configure": {
-    params: z.object({ tts: TtsEngineId.nullable().optional(), voice: z.number().int().nonnegative().max(9999).nullable().optional() }),
+    params: z.object({ tts: TtsEngineId.nullable().optional(), voice: z.number().int().nonnegative().max(9999).nullable().optional(), stt: SttEngineId.nullable().optional() }),
     result: VoiceSettings,
   },
+  /**
+   * Installs a local engine on this node, from where its makers publish it, after the user has
+   * seen its licences: the runtime when it is missing, then its models. Answered at once; the
+   * install goes on behind it as `voice.setup` (`runtime`, `model`, then `ready` or `failed`),
+   * and the stage that uses the engine loads once it is in. `conflict` while another installs.
+   */
+  "voice.install": { params: z.object({ engine: z.string().min(1).max(64) }), result: VoiceSettings },
   /** A line spoken to this client in the voice set now, for trying one out; a sample line when no text is given. */
   "voice.preview": { params: z.object({ text: z.string().min(1).max(500).optional() }), result: Empty },
   "view.list": { params: Empty, result: z.object({ views: z.array(ViewManifest) }) },

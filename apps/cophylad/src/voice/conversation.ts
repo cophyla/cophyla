@@ -233,7 +233,7 @@ export class Conversation {
       this.stream?.accept(pcm);
       return;
     }
-    const closed = this.vad?.feed(pcm) ?? false;
+    const closed = (await this.vad?.feed(pcm)) ?? false;
     this.stream?.accept(pcm);
     if (closed && !this.pttHeld) {
       await this.finish("silence");

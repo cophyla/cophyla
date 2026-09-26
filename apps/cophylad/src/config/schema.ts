@@ -5,7 +5,7 @@
 // empty file is a valid one.
 
 import { z } from "zod";
-import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass, TtsEngineId } from "@cophyla/protocol";
+import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass, SttEngineId, TtsEngineId } from "@cophyla/protocol";
 
 /** Whether `tz` names a zone Intl knows. */
 function validTz(tz: string): boolean {
@@ -281,12 +281,17 @@ export const VoiceConfig = z.object({
   /** Run the pipeline at all. Off, the models are never fetched and nothing listens. */
   enabled: z.boolean().default(false),
   wake: z.enum(["openwakeword", "off"]).default("openwakeword"),
-  /** `server` sends each utterance to the account's hosted transcription; the wake word and the VAD stay local. */
-  stt: z.enum(["nemotron", "server", "off"]).default("nemotron"),
   /**
-   * Piper, Kokoro and Supertonic run in-process on the CPU: Piper is the fastest, Kokoro sounds
-   * best, Supertonic speaks 31 languages. Chatterbox needs the GPU sidecar, bootstrapped on
-   * demand; `server` is the account's hosted voice. The app can set another over this one.
+   * Nemotron transcribes on this machine once it is installed (the app's Settings shows its
+   * licences and installs it); `server` sends each utterance to the account's hosted
+   * transcription and needs no install. The wake word and the VAD are local either way.
+   */
+  stt: SttEngineId.default("nemotron"),
+  /**
+   * Piper, Kokoro and Supertonic run in-process on the CPU once installed from Settings: Piper
+   * is the fastest, Kokoro sounds best, Supertonic speaks 31 languages. None ships with
+   * Cophyla. Chatterbox needs the GPU sidecar, bootstrapped on demand; `server` is the account's
+   * hosted voice. The app can set another over this one.
    */
   tts: TtsEngineId.default("piper"),
   /**
@@ -723,12 +728,14 @@ port = 4818
 account_pairing = true         # a phone signed in to this node's account pairs through the relay, no code
 
 # Voice: wake word, then transcription, then the reply read out on the phone that asked.
-# Models come from the release feed the first time a stage is turned on.
+# The wake word's and the VAD's models come from the release feed the first time a stage is
+# turned on. A local speech or transcription engine is installed only when you ask in the
+# app's Settings, which shows its licences first: Cophyla ships none of them.
 [voice]
 enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
-stt = "nemotron"               # nemotron | server (the account's hosted transcription) | off
-tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), all in-process on the CPU | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off; the app's Settings can pick another
+stt = "nemotron"               # nemotron (on this machine, once installed) | server (the account's hosted transcription) | off
+tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), on the CPU once installed | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off; the app's Settings picks and installs
 wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
 # wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
 # wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent

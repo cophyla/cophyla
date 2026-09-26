@@ -578,9 +578,11 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     clients,
     chat,
     activity,
-    models: modelResolver({ ...(config.voice.models_dir ? { override: config.voice.models_dir } : {}), update, log: voiceLog }),
+    models: modelResolver({ ...(config.voice.models_dir ? { override: config.voice.models_dir } : {}), dataDir: p.data, update, log: voiceLog }),
     sidecars,
-    engines: opts.voice?.engines ?? localEngines({ dataDir: p.data, log: voiceLog, ...(affinity !== undefined ? { affinity } : {}), ttsPy }),
+    engines:
+      opts.voice?.engines ??
+      localEngines({ dataDir: p.data, log: voiceLog, ...(affinity !== undefined ? { affinity } : {}), ttsPy, ...(config.voice.models_dir ? { modelsDir: config.voice.models_dir } : {}) }),
     hosted: { stt: () => cloud.sttEngine(config.voice.stt_language), tts: () => cloud.ttsEngine() },
     names,
     onStageChange: () => bus.emit("node.state", node()),

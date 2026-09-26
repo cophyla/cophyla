@@ -44,6 +44,7 @@ export const requestScopes = {
   "voice.settings": "voice",
   "voice.configure": "voice",
   "voice.preview": "voice",
+  "voice.install": "voice",
   "view.list": "views",
   "view.get": "views",
   "view.setDefault": "views",

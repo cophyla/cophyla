@@ -106,18 +106,45 @@
           "source": "config",
           "voices": 904,
           "stage": { "status": "ready", "engine": "piper" },
+          "stt": "nemotron",
+          "sttSource": "config",
+          "sttStage": { "status": "uninstalled", "engine": "nemotron", "reason": "not installed on this machine" },
           "engines": [
-            { "id": "piper", "label": "Piper", "detail": "The fastest: speaks a tenth of a second after the reply. English." },
-            { "id": "kokoro", "label": "Kokoro", "detail": "Sounds the most natural, and takes a second or more to start. English." },
-            { "id": "off", "label": "Off", "detail": "Replies are shown, not spoken." }
-          ]
+            {
+              "id": "piper",
+              "stage": "tts",
+              "label": "Piper",
+              "detail": "The fastest: speaks a tenth of a second after the reply. English.",
+              "local": true,
+              "installed": true,
+              "licences": [{ "covers": "Piper's LibriTTS-R voice", "name": "MIT", "url": "https://huggingface.co/rhasspy/piper-voices" }]
+            },
+            { "id": "server", "stage": "tts", "label": "Hosted", "detail": "Your account's hosted voice.", "local": false },
+            { "id": "nemotron", "stage": "stt", "label": "Nemotron", "detail": "Transcribes as you speak.", "local": true, "installed": false, "bytes": 475271763, "licences": [] }
+          ],
+          "installing": { "engine": "nemotron", "step": "model", "progress": 0.42 }
         },
-        { "enabled": false, "tts": "chatterbox", "source": "app", "voice": 3, "stage": { "status": "unavailable", "engine": "chatterbox", "reason": "no GPU" }, "engines": [] }
+        {
+          "enabled": false,
+          "tts": "chatterbox",
+          "source": "app",
+          "voice": 3,
+          "stage": { "status": "unavailable", "engine": "chatterbox", "reason": "no GPU" },
+          "stt": "server",
+          "sttSource": "app",
+          "sttStage": { "status": "off" },
+          "engines": [],
+          "installError": { "engine": "kokoro", "message": "sha256 mismatch" }
+        }
       ]
     },
     "voice.configure": {
-      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, {}],
-      "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "stage": { "status": "loading", "engine": "kokoro" }, "engines": [] }]
+      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "stt": "server" }, { "stt": null }, {}],
+      "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "stage": { "status": "loading", "engine": "kokoro" }, "stt": "nemotron", "sttSource": "config", "sttStage": { "status": "ready", "engine": "nemotron" }, "engines": [] }]
+    },
+    "voice.install": {
+      "params": [{ "engine": "piper" }],
+      "results": [{ "enabled": true, "tts": "piper", "source": "app", "stage": { "status": "uninstalled", "engine": "piper" }, "stt": "server", "sttSource": "app", "sttStage": { "status": "ready", "engine": "server" }, "engines": [], "installing": { "engine": "piper", "step": "runtime", "progress": 0 } }]
     },
     "voice.preview": { "params": [{}, { "text": "This is how I sound." }], "results": [{}] },
     "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
@@ -407,7 +434,9 @@
     ],
     "voice.setup": [
       { "stage": "tts", "engine": "chatterbox", "step": "deps", "progress": 0.4 },
-      { "stage": "tts", "engine": "chatterbox", "step": "failed", "message": "uv pip install exited 1" }
+      { "stage": "tts", "engine": "chatterbox", "step": "failed", "message": "uv pip install exited 1" },
+      { "stage": "stt", "engine": "nemotron", "step": "runtime", "progress": 0.1, "message": "sherpa-onnx-1.13.8" },
+      { "stage": "tts", "engine": "piper", "step": "model", "progress": 0.62, "message": "tts-piper-en" }
     ],
     "view.content": [{ "id": "default", "version": "2", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }] }],
     "view.changed": [{ "id": "board" }],

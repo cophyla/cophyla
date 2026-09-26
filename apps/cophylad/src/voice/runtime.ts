@@ -8,15 +8,52 @@
 // The ORT session config beside each model is the other half of spike 10: with the thread
 // pool's busy-wait left on, two threads cost 156 % of a core while the stream idles between
 // chunks; with `allow_spinning` off, the same two threads cost 35 %.
+//
+// onnxruntime-node ships with the platform. sherpa-onnx does not: its native library carries
+// espeak-ng (GPL-3.0), so it is installed on this machine when a speech engine is
+// (`install.ts`), and loaded from there. A source checkout that develops against local model
+// folders (`[voice] models_dir`) loads its own development copy instead.
 
 import { createRequire } from "node:module";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { runtimeDir } from "./install.ts";
 
 export type Ort = typeof import("onnxruntime-node");
 
 let ortPromise: Promise<Ort> | undefined;
 let sherpaPromise: Promise<SherpaModule> | undefined;
+
+/** Where sherpa-onnx is looked for: the daemon's data directory, and whether a development copy may stand in. */
+let sherpaFrom: { dataDir?: string; dev: boolean } = { dev: true };
+
+/** Says where sherpa-onnx comes from; the daemon calls it before any engine loads. */
+export function useSherpaFrom(from: { dataDir: string; dev: boolean }): void {
+  sherpaFrom = from;
+}
+
+/** The installed runtime's package directory, when it is installed. */
+function installedSherpa(): string | undefined {
+  if (!sherpaFrom.dataDir) return undefined;
+  const dir = join(runtimeDir(sherpaFrom.dataDir), "node_modules", "sherpa-onnx-node");
+  return existsSync(join(dir, "package.json")) ? dir : undefined;
+}
+
+/** A development copy in this checkout's node_modules. */
+function devSherpa(): boolean {
+  if (!sherpaFrom.dev) return false;
+  try {
+    createRequire(import.meta.url).resolve("sherpa-onnx-node");
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether sherpa-onnx can load here: installed, or a development copy where one may stand in. */
+export function sherpaAvailable(): boolean {
+  return installedSherpa() !== undefined || devSherpa();
+}
 
 /** The ONNX Runtime binding, loaded once. */
 export function loadOrt(): Promise<Ort> {
@@ -29,7 +66,6 @@ export interface SherpaModule {
   OnlineRecognizer: new (config: unknown) => SherpaRecognizer;
   OfflineTts: new (config: unknown) => SherpaTts;
   GenerationConfig: new (opts: { sid?: number; speed?: number; numSteps?: number }) => unknown;
-  Vad: new (config: unknown, bufferSizeInSeconds: number) => SherpaVad;
   LinearResampler: new (inputSampleRate: number, outputSampleRate: number) => SherpaResampler;
 }
 
@@ -59,27 +95,25 @@ export interface SherpaTts {
   generateAsync(obj: { text: string; generationConfig?: unknown; onProgress?: (info: { samples: Float32Array; progress: number }) => number | boolean | void }): Promise<{ samples: Float32Array; sampleRate: number }>;
 }
 
-export interface SherpaVad {
-  acceptWaveform(samples: Float32Array): void;
-  isEmpty(): boolean;
-  /** Speech is under way: a segment has started and not yet closed. */
-  isDetected(): boolean;
-  pop(): void;
-  reset(): void;
-}
-
 /**
  * sherpa-onnx-node, loaded after onnxruntime-node so the newer runtime wins the module
- * name. The require is CommonJS: the package is a `.node` addon behind a JS wrapper.
+ * name: the installed copy, else a development one. The require is CommonJS: the package is
+ * a `.node` addon behind a JS wrapper. A failed load is not kept, so an install that comes
+ * later is loaded then.
  */
 export async function loadSherpa(): Promise<SherpaModule> {
   if (!sherpaPromise) {
     sherpaPromise = (async () => {
       // Load-bearing: onnxruntime-node first, always. See the note at the top of this file.
       await loadOrt();
-      const require = createRequire(import.meta.url);
-      return require("sherpa-onnx-node") as SherpaModule;
+      const installed = installedSherpa();
+      if (installed) return createRequire(join(installed, "package.json"))("./sherpa-onnx.js") as SherpaModule;
+      if (devSherpa()) return createRequire(import.meta.url)("sherpa-onnx-node") as SherpaModule;
+      throw new Error("the speech runtime is not installed");
     })();
+    sherpaPromise.catch(() => {
+      sherpaPromise = undefined;
+    });
   }
   return sherpaPromise;
 }

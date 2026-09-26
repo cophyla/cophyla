@@ -331,6 +331,35 @@
   width: 72px;
 }
 
+/* a local engine not installed: what it comes under, each licence a link, and Install */
+.host-settings-install {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border: 1px solid #2b2833;
+  border-radius: 6px;
+  background: #211f2a;
+}
+
+.host-settings-install .host-settings-source {
+  margin: 0 0 4px;
+  color: #9a94a8;
+}
+
+.host-settings-licences {
+  margin: 0 0 8px;
+  padding: 0 0 0 18px;
+  color: #9a94a8;
+  font-size: 12px;
+}
+
+.host-settings-licences a {
+  color: #c4a3f0;
+}
+
+.host-settings-install .host-settings-voice-status {
+  margin: 6px 0 0;
+}
+
 /* a phone: the card fills the screen's width, and what a thumb presses is big enough */
 @media (max-width: 640px) {
   .host-settings {

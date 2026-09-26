@@ -4,6 +4,7 @@
 // Windows will otherwise put some of it on the efficiency cores, where it runs three times
 // slower (spike 10). The pin is applied once and inherited by every sidecar.
 
+import { join } from "node:path";
 import type { VoiceConfig } from "../config/schema.ts";
 import type { Logger } from "../log.ts";
 import type { Sidecars } from "../sidecars/index.ts";
@@ -12,7 +13,12 @@ import { chatterboxEngine } from "./chatterbox.ts";
 import type { EngineFactory, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
 import { loadNemotron } from "./nemotron.ts";
 import { OpenWakeWord } from "./openwakeword.ts";
-import { ensureNospinConfig } from "./runtime.ts";
+import { speechEngine } from "./catalog.ts";
+import type { SpeechInstaller } from "./engines.ts";
+import { installEngine, modelInstalled, pendingBytes, runtimeInstalled } from "./install.ts";
+import type { InstallOptions } from "./install.ts";
+import { readVoiceManifest } from "./manifest.ts";
+import { ensureNospinConfig, sherpaAvailable, useSherpaFrom } from "./runtime.ts";
 import { loadSherpaTts } from "./sherpa-tts.ts";
 import type { SherpaTtsEngine } from "./sherpa-tts.ts";
 import { loadSilero } from "./silero.ts";
@@ -41,9 +47,48 @@ export interface LocalEnginesDeps {
   affinity?: bigint;
   /** The Chatterbox sidecar's bootstrap, built by the daemon; absent means the stage cannot come up. */
   ttsPy?: { ensure(): Promise<import("../sidecars/index.ts").Sidecar> };
+  /**
+   * `[voice] models_dir`: a checkout developing against local model folders, whose own
+   * node_modules copy of sherpa-onnx stands in for an installed runtime.
+   */
+  modelsDir?: string;
+  /** Where installs download from, for tests. */
+  install?: Pick<InstallOptions, "fetch" | "registry" | "tar">;
+}
+
+/**
+ * The local speech engines on this machine: an engine is here when sherpa-onnx is and every
+ * model it loads is, installed under `data/voice/` or, while developing, in `models_dir`.
+ */
+export function localSpeech(deps: Pick<LocalEnginesDeps, "dataDir" | "modelsDir" | "install">): SpeechInstaller {
+  const modelHere = (name: string) => modelInstalled(deps.dataDir, name) || (deps.modelsDir !== undefined && readVoiceManifest(join(deps.modelsDir, name)) !== undefined);
+  const spec = (engine: string) => {
+    const s = speechEngine(engine);
+    if (!s) throw new Error(`${engine} is not a speech engine this machine installs`);
+    return s;
+  };
+  return {
+    installed: (engine) => {
+      const s = speechEngine(engine);
+      return !s || (sherpaAvailable() && s.models.every(modelHere));
+    },
+    pendingBytes: (engine) => {
+      const s = speechEngine(engine);
+      if (!s) return 0;
+      const missing = { ...s, models: s.models.filter((m) => !modelHere(m)) };
+      return pendingBytes(deps.dataDir, missing, sherpaAvailable() || runtimeInstalled(deps.dataDir));
+    },
+    install: (engine, onProgress) => {
+      const s = spec(engine);
+      const missing = { ...s, models: s.models.filter((m) => !modelHere(m)) };
+      return installEngine(deps.dataDir, missing, { ...deps.install, onProgress }, sherpaAvailable());
+    },
+  };
 }
 
 export function localEngines(deps: LocalEnginesDeps): EngineFactory {
+  useSherpaFrom({ dataDir: deps.dataDir, dev: deps.modelsDir !== undefined });
+  const speech = localSpeech(deps);
   let pinned = false;
   const pin = () => {
     if (pinned || deps.affinity === undefined) return;
@@ -53,6 +98,8 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
   const nospin = () => ensureNospinConfig(deps.dataDir);
 
   return {
+    speech,
+
     models(config: VoiceConfig): string[] {
       const names: string[] = [];
       if (config.wake !== "off") names.push(WAKE_MODEL);
@@ -78,7 +125,7 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
 
     async vad(dir: string, config: VoiceConfig): Promise<() => VadEngine> {
       pin();
-      return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms, nospin: nospin() });
+      return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms });
     },
 
     async stt(dir: string, config: VoiceConfig): Promise<SttEngine> {

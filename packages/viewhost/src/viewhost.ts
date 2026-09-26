@@ -97,6 +97,7 @@ export class ViewHost {
       request: (method, params) => deps.conn.request(method, params),
       refocus: () => this.mounted?.frame.focus(),
       ...(deps.voice ? { voice: deps.voice } : {}),
+      ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
     window.addEventListener("message", (ev) => this.onMessage(ev));
   }

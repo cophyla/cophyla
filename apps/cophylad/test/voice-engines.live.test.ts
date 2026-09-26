@@ -88,7 +88,8 @@ function wer(ref: string, hyp: string): number {
 }
 
 const config = (over: Partial<ReturnType<typeof Config.parse>["voice"]> = {}) => ({ ...Config.parse({}).voice, enabled: true, ...over });
-const engines = () => localEngines({ dataDir: tempHome(), log: silentLogger });
+// The models come from a local folder, as `[voice] models_dir` gives them while developing: the checkout's own sherpa-onnx stands in for an installed runtime.
+const engines = () => localEngines({ dataDir: tempHome(), log: silentLogger, modelsDir: MODELS });
 const dirOf = (name: string) => join(MODELS, name);
 
 describe.skipIf(!present)("the real engines", () => {
@@ -158,7 +159,7 @@ describe.skipIf(!present)("the real engines", () => {
       const closes: number[] = [];
       for (const f of [...frames(clip.samples), ...silence(2500)]) {
         quietMs = rms(f) < 200 ? quietMs + frameMs : 0;
-        if (vad.feed(f)) closes.push(quietMs);
+        if (await vad.feed(f)) closes.push(quietMs);
       }
       expect(closes).toHaveLength(1);
       expect(closes[0]!).toBeGreaterThanOrEqual(600);

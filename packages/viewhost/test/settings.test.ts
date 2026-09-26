@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { HarnessProfile, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, launchKey, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, usageText, usualKey } from "../src/settings.ts";
+import { joinFlags, launchKey, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -202,18 +202,36 @@ describe("the settings model", () => {
   });
 });
 
+const GPL = { covers: "espeak-ng, built into the runtime", name: "GPL-3.0", url: "https://github.com/espeak-ng/espeak-ng/blob/master/COPYING" };
 const ENGINES: VoiceSettings["engines"] = [
-  { id: "piper", label: "Piper", detail: "The fastest." },
-  { id: "kokoro", label: "Kokoro", detail: "Sounds the most natural." },
-  { id: "chatterbox", label: "Chatterbox", detail: "Your own voice." },
-  { id: "off", label: "Off", detail: "Replies are shown, not spoken." },
+  { id: "piper", stage: "tts", label: "Piper", detail: "The fastest.", local: true, installed: true, licences: [GPL] },
+  { id: "kokoro", stage: "tts", label: "Kokoro", detail: "Sounds the most natural.", local: true, installed: false, bytes: 329_000_000, licences: [{ covers: "Kokoro 82M", name: "Apache-2.0", url: "https://huggingface.co/hexgrad/Kokoro-82M" }, GPL] },
+  { id: "chatterbox", stage: "tts", label: "Chatterbox", detail: "Your own voice.", local: false },
+  { id: "off", stage: "tts", label: "Off", detail: "Replies are shown, not spoken.", local: false },
+  { id: "nemotron", stage: "stt", label: "Nemotron", detail: "On this computer.", local: true, installed: false, bytes: 484_000_000, licences: [GPL] },
+  { id: "server", stage: "stt", label: "Hosted", detail: "Your account's.", local: false },
+  { id: "off", stage: "stt", label: "Off", detail: "Nothing is transcribed.", local: false },
 ];
-const speech = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 904, stage: { status: "ready", engine: "piper" }, engines: ENGINES, ...over });
+/** The same, with Kokoro installed. */
+const KOKORO_IN = ENGINES.map((e) => (e.id === "kokoro" ? { ...e, installed: true } : e));
+const speech = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({
+  enabled: true,
+  tts: "piper",
+  source: "config",
+  voice: 0,
+  voices: 904,
+  stage: { status: "ready", engine: "piper" },
+  stt: "server",
+  sttSource: "config",
+  sttStage: { status: "ready", engine: "server" },
+  engines: ENGINES,
+  ...over,
+});
 
 describe("the node's speech", () => {
   test("the row: the engine, its voice from 1, its status in words, and where the choice came from", () => {
     expect(speechRow(speech())).toMatchObject({ engine: "piper", voice: 1, voices: 904, status: "Piper is ready.", trouble: false, canPreview: true, source: "From config.toml.", reset: false, detail: "The fastest." });
-    expect(speechRow(speech({ tts: "kokoro", source: "app", voice: 3, voices: 11, stage: { status: "loading", engine: "kokoro" } }))).toMatchObject({ status: "Loading Kokoro…", canPreview: false, voice: 4, source: "Picked here.", reset: true });
+    expect(speechRow(speech({ tts: "kokoro", source: "app", voice: 3, voices: 11, stage: { status: "loading", engine: "kokoro" }, engines: KOKORO_IN }))).toMatchObject({ status: "Loading Kokoro…", canPreview: false, voice: 4, source: "Picked here.", reset: true });
     expect(speechRow(speech({ tts: "chatterbox", stage: { status: "loading" } })).status).toContain("the first time takes several minutes");
     expect(speechRow(speech({ tts: "chatterbox", voices: 1, stage: { status: "unavailable", reason: "no GPU" } }))).toMatchObject({ status: "Chatterbox cannot speak: no GPU", trouble: true, canPreview: false });
     // One voice is no choice: the number is not shown.
@@ -256,7 +274,7 @@ describe("the node's speech", () => {
     const { request } = fakeConnection({
       "voice.settings": () => {
         reads++;
-        return speech({ tts: "kokoro", stage: reads >= 2 ? { status: "ready", engine: "kokoro" } : { status: "loading", engine: "kokoro" } });
+        return speech({ tts: "kokoro", engines: KOKORO_IN, stage: reads >= 2 ? { status: "ready", engine: "kokoro" } : { status: "loading", engine: "kokoro" } });
       },
     });
     const m = new SettingsModel(request, () => {});
@@ -275,6 +293,58 @@ describe("the node's speech", () => {
     closed.dispose();
     await new Promise((r) => setTimeout(r, SPEECH_POLL_MS + 200));
     expect(loading).toBe(1);
+  }, 10_000);
+
+  test("an engine not installed says so, lists what it comes under, and offers the install with its size; one not local offers none", () => {
+    const row = speechRow(speech({ tts: "kokoro", source: "app", stage: { status: "uninstalled", engine: "kokoro" } }));
+    expect(row).toMatchObject({ status: "Kokoro is not installed on this computer.", trouble: false, canPreview: false });
+    expect(row.install).toEqual({ licences: ENGINES[1]!.licences!, bytes: 329_000_000 });
+    expect(row.options.find((o) => o.value === "kokoro")!.label).toBe("Kokoro (not installed)");
+    expect(megabytes(329_000_000)).toBe("329 MB");
+    expect(speechRow(speech()).install).toBeUndefined();
+    expect(speechRow(speech({ tts: "chatterbox", stage: { status: "loading", engine: "chatterbox" } })).install).toBeUndefined();
+    // While it installs the row says how far, and every control waits; a failed one says why.
+    const installing = speechRow(speech({ tts: "kokoro", stage: { status: "uninstalled" }, installing: { engine: "kokoro", step: "model", progress: 0.421 } }));
+    expect(installing).toMatchObject({ busy: true, install: { progress: "Installing Kokoro: the model, 42%" } });
+    expect(speechRow(speech({ tts: "kokoro", stage: { status: "uninstalled" }, installError: { engine: "kokoro", message: "sha256 mismatch" } })).install!.error).toBe("The install failed: sha256 mismatch");
+  });
+
+  test("the transcription row: its engines only, not installed or ready, and hosted needing nothing", () => {
+    expect(sttRow(speech())).toMatchObject({ stage: "stt", engine: "server", status: "Hosted is ready.", canPreview: false, source: "From config.toml." });
+    expect(sttRow(speech()).options.map((o) => o.value)).toEqual(["nemotron", "server", "off"]);
+    expect(sttRow(speech()).voices).toBeUndefined();
+    const local = sttRow(speech({ stt: "nemotron", sttSource: "app", sttStage: { status: "uninstalled", engine: "nemotron" } }));
+    expect(local).toMatchObject({ status: "Nemotron is not installed on this computer.", reset: true, install: { bytes: 484_000_000 } });
+    expect(sttRow(speech({ stt: "off", sttStage: { status: "off" } })).status).toBe("Nothing is transcribed.");
+  });
+
+  test("an install goes out for the engine picked, and the model asks again until it is in", async () => {
+    let now = speech({ tts: "kokoro", source: "app", stage: { status: "uninstalled", engine: "kokoro" } });
+    let reads = 0;
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => {
+        reads++;
+        // Two reads into the install it is in, and the engine loads.
+        if (reads >= 2) now = { ...now, installing: undefined, engines: ENGINES.map((e) => (e.id === "kokoro" ? { ...e, installed: true } : e)), stage: { status: "ready", engine: "kokoro" } };
+        return now;
+      },
+      "voice.install": (p) => {
+        now = { ...now, installing: { engine: String(p["engine"]), step: "runtime", progress: 0 } };
+        return now;
+      },
+      "voice.configure": (p) => ({ ...now, stt: p["stt"] as VoiceSettings["stt"], sttSource: "app" as const }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.install("kokoro", "tts");
+    expect(asked.at(-1)).toEqual({ method: "voice.install", params: { engine: "kokoro" } });
+    expect(m.speechRow()!.install!.progress).toBe("Installing Kokoro: the runtime, 0%");
+    await new Promise((r) => setTimeout(r, SPEECH_POLL_MS * 2 + 400));
+    expect(m.speechRow()).toMatchObject({ status: "Kokoro is ready." });
+    expect(m.speechRow()!.install).toBeUndefined();
+    await m.setStt("server");
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { stt: "server" } });
+    m.dispose();
   }, 10_000);
 
   test("a node that cannot say leaves the part out; a failed pick or preview says so beside it", async () => {

@@ -4,8 +4,10 @@
 // so its entry goes into every target's feed file, and the daemon unpacks it under
 // `data/models/<name>/<version>/` when a stage that needs it is turned on. The archive holds
 // the model's files at its root, `manifest.json` among them: that manifest is what the daemon
-// checks the unpacked files against.
-//   bun run apps/installer/scripts/release-model.ts --name tts-kokoro-en
+// checks the unpacked files against. Only the platform's own models are released this way,
+// the wake word's and the VAD's: a speech engine's is never Cophyla's to publish, since a node
+// installs it from its makers when its user asks, so the script refuses one.
+//   bun run apps/installer/scripts/release-model.ts --name vad-silero
 //   bun run apps/installer/scripts/release-model.ts --name wake-openwakeword --version 1.1.0 --channel beta
 
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
@@ -33,8 +35,9 @@ if (!name || !MODEL_NAME.test(name)) fail("--name <model>: lowercase letters, di
 const dir = values.dir ?? join(COPHYLAD, "models", "voice", name);
 if (!existsSync(join(dir, "manifest.json"))) fail(`no manifest.json under ${dir}; run: bun run apps/cophylad/scripts/fetch-models.ts --voice --only ${name}`);
 
-const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as { name?: string; version?: string };
+const manifest = JSON.parse(readFileSync(join(dir, "manifest.json"), "utf8")) as { name?: string; version?: string; kind?: string };
 if (manifest.name !== name) fail(`${join(dir, "manifest.json")} names the model ${manifest.name}, not ${name}`);
+if (manifest.kind === "stt" || manifest.kind === "tts") fail(`${name} is a speech engine's model: a node installs it from its makers, and Cophyla never publishes it`);
 // The manifest's version is the model's; `--version` is for re-cutting the same bytes.
 const version = values.version ?? manifest.version;
 if (!version || !SEMVER.test(version)) fail(`--version <semver>: ${join(dir, "manifest.json")} carries ${manifest.version ?? "none"}`);

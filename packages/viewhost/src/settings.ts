@@ -4,10 +4,13 @@
 // own (the desktop app; the phone keeps its switches in its bar's menu): whether it listens
 // for the wake words and which ones the node listens for, whether replies are spoken, the
 // talk key, and what is wrong with the microphone when something is. On every host it holds
-// the node's speech: the engine that reads replies out (`voice.settings`, set with
-// `voice.configure`), which of its voices, where that choice came from with a way back to
-// config.toml's, and Hear it (`voice.preview`); while an engine loads the panel asks again
-// each second, so the status follows it up. Then Agents. For each machine and harness it
+// the node's engines: the one that transcribes and the one that reads replies out
+// (`voice.settings`, set with `voice.configure`), the voice, where each choice came from with
+// a way back to config.toml's, and Hear it (`voice.preview`). A local engine the node has not
+// installed shows the licences it comes under, each a link, and an Install button with what
+// it would download (`voice.install`); nothing is installed unless that is pressed. While an
+// engine loads or installs the panel asks again each second, so the status follows it. Then
+// Agents. For each machine and harness it
 // shows the usual account — Automatic, naming the profile cophylad picks and why, or one the
 // user picks — and for each profile its name, whether it is signed in, how much of its
 // session and weekly limits it has used (`profile.limits`) and, for a Claude profile, what a
@@ -18,7 +21,7 @@
 // what failed beside what failed. `settingsRows`, `speechRow` and `SettingsModel` are DOM-free; the panel
 // draws them. Its look is `settings.css`, which each host page links.
 
-import type { HarnessProfile, LaunchMode, Node, ProfileLimits, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import type { HarnessProfile, LaunchMode, Node, ProfileLimits, SpeechLicence, SttEngineId, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -268,7 +271,8 @@ export function joinFlags(args: readonly string[]): string {
 
 /** What the speech part of the Voice section shows. */
 export interface SpeechRow {
-  engine: TtsEngineId;
+  stage: "stt" | "tts";
+  engine: string;
   options: Choice[];
   /** What the engine picked is like. */
   detail: string;
@@ -286,41 +290,83 @@ export interface SpeechRow {
   reset: boolean;
   busy: boolean;
   note?: string;
+  /** The engine runs on this computer and is not installed: what it comes under, what it would download, and how an install goes. */
+  install?: InstallRow;
 }
 
-/** The speech part of the Voice section, from the node's `voice.settings`. */
-export function speechRow(s: SpeechSettings, busy = false, note?: string): SpeechRow {
-  const info = s.engines.find((e) => e.id === s.tts);
-  const label = info?.label ?? s.tts;
-  const stage = s.stage;
+export interface InstallRow {
+  licences: SpeechLicence[];
+  bytes: number;
+  /** "Installing Piper: the model, 42%" while it runs. */
+  progress?: string;
+  /** Why the last install of this engine failed. */
+  error?: string;
+}
+
+/** "92 MB" */
+export function megabytes(bytes: number): string {
+  return `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
+}
+
+/** One stage's part of the Voice section, from the node's `voice.settings`: speech (`tts`) or transcription (`stt`). */
+function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note: string | undefined): SpeechRow {
+  const engine = stage === "tts" ? s.tts : s.stt;
+  const state = stage === "tts" ? s.stage : s.sttStage;
+  const mine = s.engines.filter((e) => e.stage === stage);
+  const info = mine.find((e) => e.id === engine);
+  const label = info?.label ?? engine;
   let status: string;
   let trouble = false;
   if (!s.enabled) {
     status = "Voice is off on this computer: it is turned on in config.toml, under [voice].";
     trouble = true;
-  } else if (s.tts === "off" || stage.status === "off") status = "Replies are not spoken.";
-  else if (stage.status === "loading") status = s.tts === "chatterbox" ? "Setting up Chatterbox… the first time takes several minutes." : `Loading ${label}…`;
-  else if (stage.status === "ready") status = `${label} is ready.`;
+  } else if (engine === "off" || state.status === "off") status = stage === "tts" ? "Replies are not spoken." : "Nothing is transcribed.";
+  else if (state.status === "uninstalled" || (info?.local && info.installed === false)) status = `${label} is not installed on this computer.`;
+  else if (state.status === "loading") status = engine === "chatterbox" ? "Setting up Chatterbox… the first time takes several minutes." : `Loading ${label}…`;
+  else if (state.status === "ready") status = `${label} is ready.`;
   else {
-    status = `${label} cannot speak${stage.reason ? `: ${stage.reason}` : "."}`;
+    status = `${label} cannot ${stage === "tts" ? "speak" : "transcribe"}${state.reason ? `: ${state.reason}` : "."}`;
     trouble = true;
   }
-  const options = s.engines.map((e) => ({ value: e.id, label: e.label }));
-  if (!info) options.push({ value: s.tts, label: s.tts });
-  const many = s.voices !== undefined && s.voices > 1;
+  const options = mine.map((e) => ({ value: e.id, label: e.local && e.installed === false ? `${e.label} (not installed)` : e.label }));
+  if (!info) options.push({ value: engine, label: engine });
+  const many = stage === "tts" && s.voices !== undefined && s.voices > 1;
+  const source = stage === "tts" ? s.source : s.sttSource;
+  let install: InstallRow | undefined;
+  if (info?.local && info.installed === false) {
+    const running = s.installing?.engine === engine ? s.installing : undefined;
+    install = {
+      licences: info.licences ?? [],
+      bytes: info.bytes ?? 0,
+      ...(running ? { progress: `Installing ${label}: ${running.step === "runtime" ? "the runtime" : "the model"}, ${Math.round(running.progress * 100)}%` } : {}),
+      ...(s.installError?.engine === engine ? { error: `The install failed: ${s.installError.message}` } : {}),
+    };
+  }
   return {
-    engine: s.tts,
+    stage,
+    engine,
     options,
     detail: info?.detail ?? "",
     status,
     trouble,
     ...(many ? { voice: (s.voice ?? 0) + 1, voices: s.voices } : {}),
-    canPreview: s.enabled && stage.status === "ready" && s.tts !== "off",
-    source: s.source === "app" ? "Picked here." : "From config.toml.",
-    reset: s.source === "app",
-    busy,
+    canPreview: stage === "tts" && s.enabled && state.status === "ready" && engine !== "off",
+    source: source === "app" ? "Picked here." : "From config.toml.",
+    reset: source === "app",
+    busy: busy || s.installing !== undefined,
     ...(note ? { note } : {}),
+    ...(install ? { install } : {}),
   };
+}
+
+/** The speech part of the Voice section, from the node's `voice.settings`. */
+export function speechRow(s: SpeechSettings, busy = false, note?: string): SpeechRow {
+  return engineRow(s, "tts", busy, note);
+}
+
+/** The transcription part of the Voice section. */
+export function sttRow(s: SpeechSettings, busy = false, note?: string): SpeechRow {
+  return engineRow(s, "stt", busy, note);
 }
 
 /** How often the panel asks again while an engine loads. */
@@ -345,6 +391,7 @@ export class SettingsModel {
   speech?: SpeechSettings;
   speechBusy = false;
   speechNote = "";
+  sttNote = "";
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
   private request: SettingsRequest;
@@ -396,6 +443,37 @@ export class SettingsModel {
     return this.speech ? speechRow(this.speech, this.speechBusy, this.speechNote || undefined) : undefined;
   }
 
+  sttRow(): SpeechRow | undefined {
+    return this.speech ? sttRow(this.speech, this.speechBusy, this.sttNote || undefined) : undefined;
+  }
+
+  /** Another transcription engine, or back to config.toml's with `null`. */
+  setStt(stt: SttEngineId | null): Promise<void> {
+    if (stt !== null && stt === this.speech?.stt && this.speech.sttSource === "app") return Promise.resolve();
+    return this.configure({ stt }, "stt");
+  }
+
+  /** Installs a local engine, the licences having been shown beside the button. */
+  async install(engine: string, stage: "stt" | "tts"): Promise<void> {
+    if (this.speechBusy) return;
+    this.speechBusy = true;
+    this.setNote(stage, "");
+    this.changed();
+    try {
+      this.speech = await this.request<SpeechSettings>("voice.install", { engine });
+    } catch (e) {
+      this.setNote(stage, `Not installed: ${message(e)}`);
+    } finally {
+      this.speechBusy = false;
+    }
+    this.afterSpeech();
+  }
+
+  private setNote(stage: "stt" | "tts", note: string): void {
+    if (stage === "stt") this.sttNote = note;
+    else this.speechNote = note;
+  }
+
   /** Another engine, or back to config.toml's with `null`. */
   setEngine(tts: TtsEngineId | null): Promise<void> {
     if (tts !== null && tts === this.speech?.tts && this.speech.source === "app") return Promise.resolve();
@@ -429,28 +507,29 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null }): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; stt?: SttEngineId | null }, stage: "stt" | "tts" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
-    this.speechNote = "";
+    this.setNote(stage, "");
     this.changed();
     try {
       this.speech = await this.request<SpeechSettings>("voice.configure", patch);
     } catch (e) {
-      this.speechNote = `Not saved: ${message(e)}`;
+      this.setNote(stage, `Not saved: ${message(e)}`);
     } finally {
       this.speechBusy = false;
     }
     this.afterSpeech();
   }
 
-  /** Draws, and while an engine loads asks again in a second, until the panel closes. */
+  /** Draws, and while an engine loads or installs asks again in a second, until the panel closes. */
   private afterSpeech(): void {
     if (this.disposed) return;
     this.changed();
     if (this.speechTimer) clearTimeout(this.speechTimer);
     this.speechTimer = undefined;
-    if (this.speech?.enabled && this.speech.stage.status === "loading") {
+    const s = this.speech;
+    if (s && (s.installing || (s.enabled && (s.stage.status === "loading" || s.sttStage.status === "loading")))) {
       this.speechTimer = setTimeout(() => {
         this.speechTimer = undefined;
         void this.loadSpeech();
@@ -549,6 +628,8 @@ export interface SettingsPanelDeps {
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
   refocus?: () => void;
+  /** Opens a web page in the user's browser: a licence's link. A new window when absent. */
+  openLink?: (url: string) => Promise<void>;
 }
 
 /** The layer itself: opened by `host.settings`, drawn from a `SettingsModel`. */
@@ -718,32 +799,74 @@ export class SettingsPanel {
     key.append(span("host-settings-label", "Hold to talk"), input, save);
     box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Alt+Space or Ctrl+Shift+F9; empty for none."));
     if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
+    const stt = model.sttRow();
+    if (stt) box.append(this.speech(stt, model));
     if (speech) box.append(this.speech(speech, model));
     return box;
   }
 
-  /** The Voice section on a host with no microphone of its own: the node's speech alone. */
+  /** The Voice section on a host with no microphone of its own: the node's engines alone. */
   private speechOnly(speech: SpeechRow, model: SettingsModel): HTMLElement {
-    const box = section("Voice", "How Cophyla reads its replies out when you talk to it.");
+    const box = section("Voice", "How Cophyla hears you and reads its replies out when you talk to it.");
     box.dataset["section"] = "voice";
+    const stt = model.sttRow();
+    if (stt) box.append(this.speech(stt, model));
     box.append(this.speech(speech, model));
     return box;
   }
 
-  /** The engine that reads replies out, its voice, where the choice came from, and Hear it. */
+  /** What a local engine not installed comes under, each licence a link, and the button that installs it. */
+  private install(row: SpeechRow, install: InstallRow, model: SettingsModel): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "host-settings-install";
+    box.append(paragraph("host-settings-source", "Cophyla does not ship this engine. Installing downloads it to this computer from where its makers publish it, under these licences:"));
+    const list = document.createElement("ul");
+    list.className = "host-settings-licences";
+    for (const l of install.licences) {
+      const item = document.createElement("li");
+      const link = document.createElement("a");
+      link.href = l.url;
+      link.textContent = l.name;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (this.deps.openLink) void this.deps.openLink(l.url).catch(() => {});
+        else window.open(l.url, "_blank", "noopener");
+      });
+      item.append(link, document.createTextNode(` — ${l.covers}`));
+      list.append(item);
+    }
+    box.append(list);
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "host-settings-save";
+    go.dataset["focus"] = `${row.stage}:install`;
+    go.textContent = install.progress ? "Installing…" : `Install (${megabytes(install.bytes)})`;
+    go.disabled = row.busy;
+    go.addEventListener("click", () => void model.install(row.engine, row.stage));
+    box.append(go);
+    if (install.progress) box.append(paragraph("host-settings-voice-status", install.progress));
+    if (install.error) box.append(paragraph("host-settings-error", install.error));
+    return box;
+  }
+
+  /** One stage's engine: the one that transcribes, or the one that reads replies out with its voice and Hear it; where the choice came from; and, for one not installed, what installing it means. */
   private speech(row: SpeechRow, model: SettingsModel): HTMLElement {
+    const tts = row.stage === "tts";
     const box = document.createElement("div");
     box.className = "host-settings-speech";
+    box.dataset["stage"] = row.stage;
     const line = document.createElement("div");
     line.className = "host-settings-controls";
     const engine = document.createElement("select");
-    engine.dataset["focus"] = "speech:engine";
-    engine.setAttribute("aria-label", "Speech engine");
+    engine.dataset["focus"] = `${row.stage}:engine`;
+    engine.setAttribute("aria-label", tts ? "Speech engine" : "Transcription engine");
     for (const o of row.options) engine.append(option(o.value, o.label));
     engine.value = row.engine;
     engine.disabled = row.busy;
-    engine.addEventListener("change", () => void model.setEngine(engine.value as TtsEngineId));
-    line.append(span("host-settings-label", "Reads replies with"), engine);
+    engine.addEventListener("change", () => void (tts ? model.setEngine(engine.value as TtsEngineId) : model.setStt(engine.value as SttEngineId)));
+    line.append(span("host-settings-label", tts ? "Reads replies with" : "Transcribes with"), engine);
     if (row.voices !== undefined) {
       const voice = document.createElement("input");
       voice.type = "number";
@@ -759,27 +882,30 @@ export class SettingsPanel {
       voice.addEventListener("change", () => void model.setVoice(Number(voice.value)));
       line.append(span("host-settings-label", "Voice"), voice);
     }
-    const hear = document.createElement("button");
-    hear.type = "button";
-    hear.className = "host-settings-save";
-    hear.dataset["focus"] = "speech:hear";
-    hear.textContent = "Hear it";
-    hear.disabled = !row.canPreview || row.busy;
-    hear.addEventListener("click", () => void model.preview());
-    line.append(hear);
+    if (tts && !row.install) {
+      const hear = document.createElement("button");
+      hear.type = "button";
+      hear.className = "host-settings-save";
+      hear.dataset["focus"] = "speech:hear";
+      hear.textContent = "Hear it";
+      hear.disabled = !row.canPreview || row.busy;
+      hear.addEventListener("click", () => void model.preview());
+      line.append(hear);
+    }
     const reset = document.createElement("button");
     reset.type = "button";
     reset.className = "host-settings-reset";
-    reset.dataset["focus"] = "speech:reset";
+    reset.dataset["focus"] = `${row.stage}:reset`;
     reset.textContent = "Reset";
-    reset.title = "Forget what was picked here: config.toml's engine and voice are used again";
+    reset.title = tts ? "Forget what was picked here: config.toml's engine and voice are used again" : "Forget what was picked here: config.toml's engine is used again";
     reset.hidden = !row.reset;
     reset.disabled = row.busy;
-    reset.addEventListener("click", () => void model.setEngine(null));
+    reset.addEventListener("click", () => void (tts ? model.setEngine(null) : model.setStt(null)));
     line.append(reset);
     box.append(line, paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status));
     if (row.detail) box.append(paragraph("host-settings-source", `${row.detail} ${row.source}`));
     else box.append(paragraph("host-settings-source", row.source));
+    if (row.install) box.append(this.install(row, row.install, model));
     if (row.note) box.append(paragraph("host-settings-error", row.note));
     return box;
   }

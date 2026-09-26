@@ -20,13 +20,18 @@
 // as PCM otherwise: a frame up names its codec, and the speech down is encoded once per
 // conversation in the codec the controller asked for, each frame numbered within its reply.
 //
-// The engine that speaks is config.toml's unless the app picked another (`voice.configure`),
-// which is kept in the store over it, with a voice per engine. A new pick loads behind the
-// answer while the engine before it goes on speaking, and takes its place once it is up; a
-// new voice for the same engine needs no load at all.
+// The engines that speak and transcribe are config.toml's unless the app picked others
+// (`voice.configure`), kept in the store over it, with a voice per speech engine. A new pick
+// loads behind the answer while the engine before it goes on working, and takes its place
+// once it is up; a new voice for the same engine needs no load at all.
+//
+// A local speech or transcription engine is installed on this machine only when the user
+// asks (`voice.install`), after the app has shown its licences: until then its stage is
+// `uninstalled` and nothing is fetched for it. The wake word and the VAD are the platform's
+// own and need no install, so a hosted recogniser works with none.
 
 import { RpcError } from "@cophyla/protocol";
-import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, TtsEngineId, TtsEngineInfo, VoiceSettings, VoiceState, WakewordMode } from "@cophyla/protocol";
+import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, SpeechEngineInfo, SttEngineId, TtsEngineId, VoiceSettings, VoiceStageState, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { Bus } from "../bus.ts";
 import type { Activity } from "../chat/activity.ts";
@@ -42,6 +47,7 @@ import { OpusDecoder, OpusEncoder, opusRate } from "./opus.ts";
 import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
 import { IN_RATE } from "./engines.ts";
 import type { StageState } from "./engines.ts";
+import { speechEngine } from "./catalog.ts";
 import { sherpaEngine, STT_MODEL, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
 import type { VoicePrefs, VoicePrefsStore } from "./prefs.ts";
 
@@ -56,15 +62,21 @@ export const WAKE_WAIT_MS = 10_000;
 /** The codecs the node takes and sends, best first; told to every client in its `hello`. */
 export const AUDIO_CODECS: AudioCodec[] = ["opus", "pcm"];
 
-/** The engines the app offers, in the order it lists them. */
-export const TTS_ENGINES: TtsEngineInfo[] = [
-  { id: "piper", label: "Piper", detail: "The fastest: it starts speaking about a tenth of a second after the reply. English." },
-  { id: "kokoro", label: "Kokoro", detail: "Sounds the most natural, but takes a second or more to start, longer on a busy computer. English." },
-  { id: "supertonic", label: "Supertonic", detail: "Fast, and speaks 31 languages." },
-  { id: "chatterbox", label: "Chatterbox", detail: "Your own voice, cloned from a clip. Needs an NVIDIA graphics card and a one-time download of several gigabytes." },
-  { id: "server", label: "Hosted", detail: "Your account's hosted voice, over the internet." },
-  { id: "off", label: "Off", detail: "Replies are shown, not spoken." },
+/** The engines the app offers, speech then transcription, each in the order it lists them. */
+export const VOICE_ENGINES: { id: string; stage: "stt" | "tts"; label: string; detail: string }[] = [
+  { id: "piper", stage: "tts", label: "Piper", detail: "The fastest: it starts speaking about a tenth of a second after the reply. English." },
+  { id: "kokoro", stage: "tts", label: "Kokoro", detail: "Sounds the most natural, but takes a second or more to start, longer on a busy computer. English." },
+  { id: "supertonic", stage: "tts", label: "Supertonic", detail: "Fast, and speaks 31 languages." },
+  { id: "chatterbox", stage: "tts", label: "Chatterbox", detail: "Your own voice, cloned from a clip. Needs an NVIDIA graphics card and a one-time download of several gigabytes." },
+  { id: "server", stage: "tts", label: "Hosted", detail: "Your account's hosted voice, over the internet." },
+  { id: "off", stage: "tts", label: "Off", detail: "Replies are shown, not spoken." },
+  { id: "nemotron", stage: "stt", label: "Nemotron", detail: "Transcribes as you speak, in 40 languages, on this computer: nothing you say leaves it." },
+  { id: "server", stage: "stt", label: "Hosted", detail: "Your account's hosted transcription: each utterance goes to the server once you stop speaking." },
+  { id: "off", stage: "stt", label: "Off", detail: "Nothing is transcribed, so the wake word and the talk key do nothing." },
 ];
+
+/** How often an install's progress is told to the clients, at most. */
+const INSTALL_TELL_MS = 250;
 
 /** What a preview says when the app gives it nothing to say. */
 export const PREVIEW_LINE = "This is how I sound. I'll read my replies to you like this.";
@@ -120,8 +132,12 @@ export class Voice {
   /** The controller whose utterance is being answered: where the reply is spoken. */
   private active?: string;
   private lastSetup?: VoiceSetup;
-  /** Counts speech loads, so one a newer pick overtook is dropped when it lands. */
+  /** Counts speech and transcription loads, so one a newer pick overtook is dropped when it lands. */
   private ttsLoads = 0;
+  private sttLoads = 0;
+  /** The install under way, and the last one that failed. */
+  private installing?: { engine: string; stage: "stt" | "tts"; step: "runtime" | "model"; progress: number };
+  private installError?: { engine: string; message: string };
   private unsubscribe: (() => void)[] = [];
   private stopped = false;
   private loading?: Promise<void>;
@@ -208,15 +224,20 @@ export class Voice {
     return this.deps.prefs?.read() ?? {};
   }
 
-  /** config.toml with the app's picks over it: the engine, and its voice when one was set for it. */
+  /** config.toml with the app's picks over it: the engines, and the speech engine's voice when one was set for it. */
   private effective(): VoiceConfig {
     const prefs = this.prefs();
     const tts = prefs.tts ?? this.config.tts;
     const voice = prefs.voices?.[tts] ?? (tts === this.config.tts ? this.config.tts_voice : undefined);
-    const out: VoiceConfig = { ...this.config, tts };
+    const out: VoiceConfig = { ...this.config, tts, stt: prefs.stt ?? this.config.stt };
     if (voice === undefined) delete out.tts_voice;
     else out.tts_voice = voice;
     return out;
+  }
+
+  /** A local engine this machine has not installed; any other engine needs no install. */
+  private uninstalled(engine: string): boolean {
+    return speechEngine(engine) !== undefined && this.deps.engines.speech?.installed(engine) === false;
   }
 
   /** The directory of a model the engines want, or `""` for one they do not use. */
@@ -238,17 +259,53 @@ export class Voice {
     for (const c of this.conversations.values()) if (!this.phoneWake.has(c.client)) c.useWake(model.stream());
   }
 
+  /**
+   * Loads the recogniser the configuration names, with the VAD beside it, in place of the one
+   * before, as `loadTts` does the speech engine. A local one this machine has not installed
+   * leaves the stage `uninstalled`, and nothing is fetched for it.
+   */
   private async loadStt(): Promise<void> {
-    if (this.config.stt === "off") return;
-    const engine = this.config.stt;
-    await this.stage("stt", engine, async () => {
+    const config = this.effective();
+    const engine = config.stt;
+    const load = ++this.sttLoads;
+    const current = () => load === this.sttLoads && !this.stopped;
+    if (engine === "off") {
+      this.sttEngine = undefined;
+      this.setStage("stt", { status: "off" });
+      return;
+    }
+    if (this.uninstalled(engine)) {
+      this.sttEngine = undefined;
+      this.setStage("stt", { status: "uninstalled", engine, reason: "not installed on this computer" });
+      this.log.info("voice stage not installed", { stage: "stt", engine });
+      return;
+    }
+    this.setStage("stt", { status: "loading", engine });
+    try {
       // The VAD is local either way: it closes the utterance the hosted recogniser then reads whole.
-      this.makeVad = await this.deps.engines.vad(await this.dir(VAD_MODEL), this.config);
+      const vad = await this.deps.engines.vad(await this.dir(VAD_MODEL), config);
+      let next: SttEngine;
       if (engine === "server") {
         if (!this.deps.hosted) throw new Error("no hosted transcription on this node");
-        this.sttEngine = this.deps.hosted.stt();
-      } else this.sttEngine = await this.deps.engines.stt(await this.dir(STT_MODEL), this.config);
-    });
+        next = this.deps.hosted.stt();
+      } else next = await this.deps.engines.stt(await this.dir(STT_MODEL), config);
+      if (!current()) {
+        void Promise.resolve(next.close()).catch(() => {});
+        return;
+      }
+      const before = this.sttEngine;
+      this.makeVad = vad;
+      this.sttEngine = next;
+      if (before && before !== next) void Promise.resolve(before.close()).catch(() => {});
+      this.setStage("stt", { status: "ready", engine });
+      this.log.info("voice stage ready", { stage: "stt", engine });
+    } catch (e) {
+      if (!current()) return;
+      const reason = e instanceof Error ? e.message : String(e);
+      this.sttEngine = undefined;
+      this.setStage("stt", { status: "unavailable", engine, reason });
+      this.log.warn("voice stage unavailable", { stage: "stt", engine, reason });
+    }
   }
 
   /**
@@ -264,6 +321,12 @@ export class Voice {
     if (engine === "off") {
       this.swapTts(undefined);
       this.setStage("tts", { status: "off" });
+      return;
+    }
+    if (this.uninstalled(engine)) {
+      this.swapTts(undefined);
+      this.setStage("tts", { status: "uninstalled", engine, reason: "not installed on this computer" });
+      this.log.info("voice stage not installed", { stage: "tts", engine });
       return;
     }
     this.setStage("tts", { status: "loading", engine });
@@ -305,6 +368,7 @@ export class Voice {
   async stop(): Promise<void> {
     this.stopped = true;
     this.ttsLoads++;
+    this.sttLoads++;
     // A `voice.wakeword` still waiting for voice to start is answered now.
     this.markBegun();
     for (const off of this.unsubscribe) off();
@@ -344,21 +408,33 @@ export class Voice {
     return true;
   }
 
-  /** The node's speech as the app's Settings shows it. */
+  /** The node's voice as the app's Settings shows it. */
   settings(): VoiceSettings {
     const prefs = this.prefs();
     const config = this.effective();
     const engine = this.ttsEngine && this.ttsEngine.name === config.tts ? this.ttsEngine : undefined;
     const voice = config.tts_voice ?? engine?.voice;
-    const stage = this.stages.tts;
+    const speech = this.deps.engines.speech;
+    const stage = (s: StageState): VoiceStageState => ({ status: s.status, ...(s.reason !== undefined ? { reason: s.reason } : {}), ...(s.engine !== undefined ? { engine: s.engine } : {}) });
+    const engines: SpeechEngineInfo[] = VOICE_ENGINES.map((e) => {
+      const spec = speechEngine(e.id);
+      if (!spec || spec.stage !== e.stage) return { ...e, local: false };
+      const installed = speech?.installed(e.id) ?? true;
+      return { ...e, local: true, installed, ...(installed ? {} : { bytes: speech?.pendingBytes(e.id) ?? 0 }), licences: spec.licences };
+    });
     return {
       enabled: this.config.enabled,
       tts: config.tts,
       source: prefs.tts !== undefined || prefs.voices?.[config.tts] !== undefined ? "app" : "config",
       ...(voice !== undefined ? { voice } : {}),
       ...(engine?.voices !== undefined ? { voices: engine.voices } : {}),
-      stage: { status: stage.status, ...(stage.reason !== undefined ? { reason: stage.reason } : {}), ...(stage.engine !== undefined ? { engine: stage.engine } : {}) },
-      engines: TTS_ENGINES,
+      stage: stage(this.stages.tts),
+      stt: config.stt,
+      sttSource: prefs.stt !== undefined ? "app" : "config",
+      sttStage: stage(this.stages.stt),
+      engines,
+      ...(this.installing ? { installing: { engine: this.installing.engine, step: this.installing.step, progress: this.installing.progress } } : {}),
+      ...(this.installError ? { installError: this.installError } : {}),
     };
   }
 
@@ -367,12 +443,14 @@ export class Voice {
    * back. A new engine loads behind the answer; a new voice for the one loaded is used from
    * its next line.
    */
-  configure(patch: { tts?: TtsEngineId | null; voice?: number | null }): VoiceSettings {
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; stt?: SttEngineId | null }): VoiceSettings {
     if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
     const before = this.effective();
     const prefs: VoicePrefs = { ...this.prefs() };
     if (patch.tts === null) delete prefs.tts;
     else if (patch.tts !== undefined) prefs.tts = patch.tts;
+    if (patch.stt === null) delete prefs.stt;
+    else if (patch.stt !== undefined) prefs.stt = patch.stt;
     if (patch.voice !== undefined) {
       const engine = prefs.tts ?? this.config.tts;
       const voices = { ...prefs.voices };
@@ -383,12 +461,64 @@ export class Voice {
     }
     this.deps.prefs.write(prefs);
     const after = this.effective();
-    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, source: prefs.tts !== undefined ? "app" : "config" });
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, stt: after.stt });
     if (this.config.enabled && !this.stopped) {
+      if (after.stt !== before.stt) void this.loadStt();
       if (after.tts !== before.tts) void this.loadTts();
       // The engine in place takes the voice now; one still loading takes it as it lands.
       else if (after.tts_voice !== before.tts_voice && this.ttsEngine?.name === after.tts) this.ttsEngine.useVoice?.(after.tts_voice);
     }
+    return this.settings();
+  }
+
+  /**
+   * `voice.install`: fetches a local engine onto this machine, the user having seen its
+   * licences in the app. Answered at once; the install goes on behind it, told to every
+   * client as `voice.setup`, and the stage that uses the engine loads once it is in.
+   */
+  install(engine: string): VoiceSettings {
+    const spec = speechEngine(engine);
+    if (!spec) throw new RpcError("invalid", `${engine} is not an engine this computer installs`);
+    const speech = this.deps.engines.speech;
+    if (!speech) throw new RpcError("unsupported", "this node installs no speech engines");
+    if (this.installing) throw new RpcError("conflict", `${this.installing.engine} is being installed`);
+    if (speech.installed(engine)) return this.settings();
+    this.installError = undefined;
+    // The step is the installer's to say: the runtime first only when it is missing.
+    this.installing = { engine, stage: spec.stage, step: "model", progress: 0 };
+    let told = 0;
+    const tell = (step: "runtime" | "model", progress: number, what: string, force = false) => {
+      const now = Date.now();
+      if (!force && now - told < INSTALL_TELL_MS) return;
+      told = now;
+      this.setup({ stage: spec.stage, engine, step, progress, message: what });
+    };
+    this.log.info("voice engine install", { engine, bytes: speech.pendingBytes(engine) });
+    speech
+      .install(engine, (p) => {
+        const progress = p.total > 0 ? Math.min(1, p.done / p.total) : 0;
+        const stepChanged = this.installing?.step !== p.step;
+        this.installing = { engine, stage: spec.stage, step: p.step, progress };
+        tell(p.step, progress, p.what, stepChanged);
+      })
+      .then(
+        () => {
+          this.installing = undefined;
+          this.setup({ stage: spec.stage, engine, step: "ready" });
+          this.log.info("voice engine installed", { engine });
+          if (this.stopped || !this.config.enabled) return;
+          const config = this.effective();
+          if (config.stt === engine) void this.loadStt();
+          if (config.tts === engine) void this.loadTts();
+        },
+        (e: unknown) => {
+          const message = e instanceof Error ? e.message : String(e);
+          this.installing = undefined;
+          this.installError = { engine, message };
+          this.setup({ stage: spec.stage, engine, step: "failed", message });
+          this.log.warn("voice engine install failed", { engine, error: message });
+        },
+      );
     return this.settings();
   }
 

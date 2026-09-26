@@ -398,8 +398,9 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     "voice.settings": { handler: () => deps.voice.settings() },
     "voice.configure": {
       handler: (p) =>
-        deps.voice.configure({ ...(p.tts !== undefined ? { tts: p.tts } : {}), ...(p.voice !== undefined ? { voice: p.voice } : {}) }),
+        deps.voice.configure({ ...(p.tts !== undefined ? { tts: p.tts } : {}), ...(p.voice !== undefined ? { voice: p.voice } : {}), ...(p.stt !== undefined ? { stt: p.stt } : {}) }),
     },
+    "voice.install": { target: (p) => p.engine, handler: (p) => deps.voice.install(p.engine) },
     "voice.preview": {
       handler: (p, ctx) => {
         deps.voice.preview(ctx.client, p.text);

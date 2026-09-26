@@ -93,6 +93,8 @@ export const actions = {
   "voice.settings": { risk: "read" },
   "voice.configure": { risk: "write" },
   "voice.preview": { risk: "write" },
+  // Fetches an engine and its runtime from the network onto this machine.
+  "voice.install": { risk: "network" },
   "view.list": { risk: "read" },
   "view.get": { risk: "read" },
   "view.setDefault": { risk: "write" },

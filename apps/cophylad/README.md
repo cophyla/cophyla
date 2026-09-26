@@ -57,7 +57,7 @@ again.
 | `push/` | 12 | an ask that opens with no connection from a controller that registered a push device goes to the server as `push.send` once, trimmed to a title, a detail and three options, and is dismissed when the ask leaves `open`; `push.register` forwarded or kept until the link is up |
 | `brain-link/` | 3 | spawns the brain, the `hello` handshake, every brain request through the gate with the brain as principal, the event feed, the outbox while the brain is down, restart with backoff, quote expansion from the audit body, a `reply` completion's `llm.delta` as `chat.delta` with `chat.retract` for a placeholder nothing takes (`stream.ts`) |
 | `update/` | 4, 8 | the public release feed read on a schedule (`feed.ts`: signed, this OS/arch/channel, inside our protocol version), downloads checked by size and hash (`download.ts`), platform versions staged behind the `staged` pointer (`platform.ts`), brain releases under `data/brain/` verified before every spawn (`brain.ts`), voice models unpacked under `data/models/<name>/<version>/` and checked against their own manifest (`models.ts`), and `update.check`/`update.apply`/`update.state` (`index.ts`); the release keys' public halves in `keys.ts` |
-| `voice/` | 8, 14 | the three stages behind engine interfaces (`engines.ts`) with the local ones beside them — `openwakeword.ts` (the sessions; the streaming pipeline is `@cophyla/wake`'s, which the phone runs too), `silero.ts`, `nemotron.ts`, `sherpa-tts.ts` (Piper, Kokoro and Supertonic, with `pieces.ts` cutting a reply into what each makes whole), `chatterbox.ts` — assembled by `local.ts` and `fake.ts`; `prefs.ts` keeps the engine and voice the app picked; `runtime.ts` fixes the ONNX load order, `affinity.ts` finds the performance cores, `models.ts` and `manifest.ts` resolve and check a model directory, `conversation.ts` is the per-controller state machine, `compose.ts` turns blocks into speakable text with a lead-in for each quote, and `index.ts` is the module the daemon holds |
+| `voice/` | 8, 14 | the three stages behind engine interfaces (`engines.ts`) with the local ones beside them — `openwakeword.ts` (the sessions; the streaming pipeline is `@cophyla/wake`'s, which the phone runs too), `silero.ts` (on onnxruntime-node, which ships), `nemotron.ts`, `sherpa-tts.ts` (Piper, Kokoro and Supertonic, with `pieces.ts` cutting a reply into what each makes whole), `chatterbox.ts` — assembled by `local.ts` and `fake.ts`; `catalog.ts` names what each local engine needs, where it comes from and its licences, and `install.ts` installs one when asked; `prefs.ts` keeps the engines and voice the app picked; `runtime.ts` fixes the ONNX load order, `affinity.ts` finds the performance cores, `models.ts` and `manifest.ts` resolve and check a model directory, `conversation.ts` is the per-controller state machine, `compose.ts` turns blocks into speakable text with a lead-in for each quote, and `index.ts` is the module the daemon holds |
 | `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a rotated log under `data/sidecars/`, the daemon's own CPU mask (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
 | `metrics/` | 9 | the machine sampled without a shell: the engines behind one interface (`windows.ts` through `bun:ffi` and `NtQuerySystemInformation`, `linux.ts` over `/proc`, `macos.ts` over libproc, `nvml.ts` for the GPU, `fake.ts` for tests), owners from the process tree (`owners.ts`), the sample built from two raw readings (`sampler.ts`), pressure with hysteresis (`pressure.ts`), per-minute rollups (`rollup.ts`), the price table and the token counters (`prices.ts`, `tokens.ts`), each login's plan limits from Claude's usage endpoint, Codex's rollouts or Muse's host (`limits.ts`), each subscriber's share of the samples with the counts it skipped carried on and the rows summed per owner (`delivery.ts`), and the module with its ring, its subscribers, its adaptive rate and a range's spend (`index.ts`) |
 | `remote/` | 10 | the remote desktop: the host found or installed with the package manager (`install.ts`), its API with the cookie login, the blind PIN and the viewer grant (`host.ts`), the Windows service or a spawned host (`service.ts`), moonlight-qt driven by its CLI (`moonlight.ts`), the moonlight-web sidecar fetched from its pinned release (`manifest.ts`, `web.ts`), the tickets and the reverse proxy under `/remote` (`proxy.ts`), the OS screenshot (`screenshot.ts`), and the module with `remote.state` and the viewers (`index.ts`) |
@@ -313,8 +313,16 @@ an ask as a push when it has no connection here (`push/`), and the notification'
 answer it.
 
 The stages load in the background at start, so a daemon with voice on is up as fast as one
-without; each reports itself in the node's capabilities as it comes up, and a model it needs
-is fetched from the feed the first time. `stt = "server"` and `tts = "server"` put those two
+without; each reports itself in the node's capabilities as it comes up. The wake word's and
+the VAD's models are fetched from the feed the first time; they run on onnxruntime-node,
+which the platform ships. A local speech or transcription engine is not Cophyla's to ship:
+it runs on sherpa-onnx, whose native library carries espeak-ng (GPL-3.0), with a model under
+its own licence, so its stage stays `uninstalled` until the user asks for it in Settings,
+which shows those licences first; `voice.install` then fetches the runtime from the npm
+registry and the model from its makers, each held to the hash `voice/catalog.ts` pins,
+into `data/voice/`, told as `voice.setup`, and the stage loads. With `models_dir` set (a
+checkout developing against local folders) the checkout's own sherpa-onnx and those folders
+stand in. `stt = "server"` and `tts = "server"` put those two
 stages on the account's server over the server link, with no model to fetch: the utterance
 goes whole when the VAD closes it and speech comes back in 24 kHz chunks; the wake word and
 the VAD stay local. `onnxruntime-node` is imported before
@@ -335,7 +343,8 @@ engine and its voice (`voice.settings`, `voice.configure`, both with the `voice`
 in the store over config.toml as this node's own (the `voice` kv namespace, never
 replicated), `null` handing either back; a new engine loads behind the answer while the one
 before it goes on speaking, a new voice needs no load, and `voice.preview` speaks a line to
-the client that asked.
+the client that asked. The transcription engine is picked the same way (`stt`), and a
+hosted one needs nothing installed.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
 them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input
