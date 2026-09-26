@@ -3,7 +3,11 @@
 // made of sections, and more will join. Voice comes first on a host with a microphone of its
 // own (the desktop app; the phone keeps its switches in its bar's menu): whether it listens
 // for the wake words and which ones the node listens for, whether replies are spoken, the
-// talk key, and what is wrong with the microphone when something is. Then Agents. For each machine and harness it
+// talk key, and what is wrong with the microphone when something is. On every host it holds
+// the node's speech: the engine that reads replies out (`voice.settings`, set with
+// `voice.configure`), which of its voices, where that choice came from with a way back to
+// config.toml's, and Hear it (`voice.preview`); while an engine loads the panel asks again
+// each second, so the status follows it up. Then Agents. For each machine and harness it
 // shows the usual account — Automatic, naming the profile cophylad picks and why, or one the
 // user picks — and for each profile its name, whether it is signed in, how much of its
 // session and weekly limits it has used (`profile.limits`) and, for a Claude profile, what a
@@ -11,10 +15,10 @@
 // where the launch in use came from (set here, config.toml, or the user's own last session
 // there) and a Reset. It reads with the host's own connection and writes with
 // `profile.update`. It closes on its ✕, on Escape and on a click outside its card, and says
-// what failed beside what failed. `settingsRows` and `SettingsModel` are DOM-free; the panel
+// what failed beside what failed. `settingsRows`, `speechRow` and `SettingsModel` are DOM-free; the panel
 // draws them. Its look is `settings.css`, which each host page links.
 
-import type { HarnessProfile, LaunchMode, Node, ProfileLimits } from "@cophyla/protocol";
+import type { HarnessProfile, LaunchMode, Node, ProfileLimits, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -262,10 +266,71 @@ export function joinFlags(args: readonly string[]): string {
   return args.map((a) => (a === "" || /[\s"']/.test(a) ? `"${a.replace(/\\(?=["\\]|$)/g, "\\\\").replace(/"/g, '\\"')}"` : a)).join(" ");
 }
 
+/** What the speech part of the Voice section shows. */
+export interface SpeechRow {
+  engine: TtsEngineId;
+  options: Choice[];
+  /** What the engine picked is like. */
+  detail: string;
+  /** Where the engine stands, in words, and whether that is trouble. */
+  status: string;
+  trouble: boolean;
+  /** The voice as the user counts it, from 1, among `voices`; neither when the engine has no choice of voices. */
+  voice?: number;
+  voices?: number;
+  /** Hear it can be pressed: the engine is up. */
+  canPreview: boolean;
+  /** Where the choice came from, in words. */
+  source: string;
+  /** Set here: the reset hands it back to config.toml. */
+  reset: boolean;
+  busy: boolean;
+  note?: string;
+}
+
+/** The speech part of the Voice section, from the node's `voice.settings`. */
+export function speechRow(s: SpeechSettings, busy = false, note?: string): SpeechRow {
+  const info = s.engines.find((e) => e.id === s.tts);
+  const label = info?.label ?? s.tts;
+  const stage = s.stage;
+  let status: string;
+  let trouble = false;
+  if (!s.enabled) {
+    status = "Voice is off on this computer: it is turned on in config.toml, under [voice].";
+    trouble = true;
+  } else if (s.tts === "off" || stage.status === "off") status = "Replies are not spoken.";
+  else if (stage.status === "loading") status = s.tts === "chatterbox" ? "Setting up Chatterbox… the first time takes several minutes." : `Loading ${label}…`;
+  else if (stage.status === "ready") status = `${label} is ready.`;
+  else {
+    status = `${label} cannot speak${stage.reason ? `: ${stage.reason}` : "."}`;
+    trouble = true;
+  }
+  const options = s.engines.map((e) => ({ value: e.id, label: e.label }));
+  if (!info) options.push({ value: s.tts, label: s.tts });
+  const many = s.voices !== undefined && s.voices > 1;
+  return {
+    engine: s.tts,
+    options,
+    detail: info?.detail ?? "",
+    status,
+    trouble,
+    ...(many ? { voice: (s.voice ?? 0) + 1, voices: s.voices } : {}),
+    canPreview: s.enabled && stage.status === "ready" && s.tts !== "off",
+    source: s.source === "app" ? "Picked here." : "From config.toml.",
+    reset: s.source === "app",
+    busy,
+    ...(note ? { note } : {}),
+  };
+}
+
+/** How often the panel asks again while an engine loads. */
+export const SPEECH_POLL_MS = 1000;
+
 /**
  * What the panel shows, and what it changes: the profiles, the machines' names and the
- * limits, read when it opens; edits to a launch held as drafts until saved; a note beside
- * what failed. `changed` is called whenever there is something new to draw.
+ * limits, read when it opens; edits to a launch held as drafts until saved; the node's
+ * speech and the picks made for it; a note beside what failed. `changed` is called whenever
+ * there is something new to draw.
  */
 export class SettingsModel {
   nodes: Node[] = [];
@@ -276,6 +341,12 @@ export class SettingsModel {
   readonly drafts = new Map<string, LaunchDraft>();
   readonly notes = new Map<string, string>();
   readonly busy = new Set<string>();
+  /** The node's speech, once read; absent while reading and on a node that has none to say. */
+  speech?: SpeechSettings;
+  speechBusy = false;
+  speechNote = "";
+  private speechTimer?: ReturnType<typeof setTimeout>;
+  private disposed = false;
   private request: SettingsRequest;
   private changed: () => void;
 
@@ -309,6 +380,82 @@ export class SettingsModel {
       this.limits = {};
     }
     this.changed();
+  }
+
+  /** The node's speech. A node that cannot say (one from before it could) leaves the part out. */
+  async loadSpeech(): Promise<void> {
+    try {
+      this.speech = await this.request<SpeechSettings>("voice.settings", {});
+    } catch {
+      this.speech = undefined;
+    }
+    this.afterSpeech();
+  }
+
+  speechRow(): SpeechRow | undefined {
+    return this.speech ? speechRow(this.speech, this.speechBusy, this.speechNote || undefined) : undefined;
+  }
+
+  /** Another engine, or back to config.toml's with `null`. */
+  setEngine(tts: TtsEngineId | null): Promise<void> {
+    if (tts !== null && tts === this.speech?.tts && this.speech.source === "app") return Promise.resolve();
+    return this.configure(tts === null ? { tts: null, voice: null } : { tts });
+  }
+
+  /** A voice as the user counts it, from 1. */
+  setVoice(voice: number): Promise<void> {
+    const n = Math.round(voice) - 1;
+    const voices = this.speech?.voices;
+    if (!Number.isFinite(n) || n < 0 || (voices !== undefined && n >= voices) || n === this.speech?.voice) return Promise.resolve();
+    return this.configure({ voice: n });
+  }
+
+  /** A line in the voice set now, spoken to this host. */
+  async preview(): Promise<void> {
+    this.speechNote = "";
+    this.changed();
+    try {
+      await this.request("voice.preview", {});
+    } catch (e) {
+      this.speechNote = `Could not play it: ${message(e)}`;
+      this.changed();
+    }
+  }
+
+  /** Stops asking again: the panel closed. */
+  dispose(): void {
+    this.disposed = true;
+    if (this.speechTimer) clearTimeout(this.speechTimer);
+    this.speechTimer = undefined;
+  }
+
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null }): Promise<void> {
+    if (this.speechBusy) return;
+    this.speechBusy = true;
+    this.speechNote = "";
+    this.changed();
+    try {
+      this.speech = await this.request<SpeechSettings>("voice.configure", patch);
+    } catch (e) {
+      this.speechNote = `Not saved: ${message(e)}`;
+    } finally {
+      this.speechBusy = false;
+    }
+    this.afterSpeech();
+  }
+
+  /** Draws, and while an engine loads asks again in a second, until the panel closes. */
+  private afterSpeech(): void {
+    if (this.disposed) return;
+    this.changed();
+    if (this.speechTimer) clearTimeout(this.speechTimer);
+    this.speechTimer = undefined;
+    if (this.speech?.enabled && this.speech.stage.status === "loading") {
+      this.speechTimer = setTimeout(() => {
+        this.speechTimer = undefined;
+        void this.loadSpeech();
+      }, SPEECH_POLL_MS);
+    }
   }
 
   /** The usual account for a harness on a machine: a profile, or `""` for automatic. */
@@ -469,12 +616,14 @@ export class SettingsPanel {
     this.render();
     close.focus();
     void model.load();
+    void model.loadSpeech();
   }
 
   close(): void {
     if (!this.layer) return;
     this.layer.remove();
     this.layer = undefined;
+    this.model?.dispose();
     this.model = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
@@ -497,7 +646,13 @@ export class SettingsPanel {
     const note = paragraph("host-settings-note", model.note);
     note.hidden = model.note === "";
     agents.append(note, ...model.sections().map((m) => this.machine(m, model)));
-    body.replaceChildren(...(this.deps.voice ? [this.voiceSection(this.deps.voice)] : []), agents);
+    const speech = model.speechRow();
+    const voice = this.deps.voice
+      ? this.voiceSection(this.deps.voice, speech, model)
+      : speech
+        ? this.speechOnly(speech, model)
+        : undefined;
+    body.replaceChildren(...(voice ? [voice] : []), agents);
     if (focusKey) {
       const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
       again?.focus();
@@ -505,7 +660,7 @@ export class SettingsPanel {
     }
   }
 
-  private voiceSection(voice: VoiceSettings): HTMLElement {
+  private voiceSection(voice: VoiceSettings, speech: SpeechRow | undefined, model: SettingsModel): HTMLElement {
     const v = voice.state();
     const box = section("Voice", "Say a wake word, or hold the talk key, and Cophyla listens; what you say is transcribed and answered as if you had typed it.");
     box.dataset["section"] = "voice";
@@ -563,6 +718,69 @@ export class SettingsPanel {
     key.append(span("host-settings-label", "Hold to talk"), input, save);
     box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Alt+Space or Ctrl+Shift+F9; empty for none."));
     if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
+    if (speech) box.append(this.speech(speech, model));
+    return box;
+  }
+
+  /** The Voice section on a host with no microphone of its own: the node's speech alone. */
+  private speechOnly(speech: SpeechRow, model: SettingsModel): HTMLElement {
+    const box = section("Voice", "How Cophyla reads its replies out when you talk to it.");
+    box.dataset["section"] = "voice";
+    box.append(this.speech(speech, model));
+    return box;
+  }
+
+  /** The engine that reads replies out, its voice, where the choice came from, and Hear it. */
+  private speech(row: SpeechRow, model: SettingsModel): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "host-settings-speech";
+    const line = document.createElement("div");
+    line.className = "host-settings-controls";
+    const engine = document.createElement("select");
+    engine.dataset["focus"] = "speech:engine";
+    engine.setAttribute("aria-label", "Speech engine");
+    for (const o of row.options) engine.append(option(o.value, o.label));
+    engine.value = row.engine;
+    engine.disabled = row.busy;
+    engine.addEventListener("change", () => void model.setEngine(engine.value as TtsEngineId));
+    line.append(span("host-settings-label", "Reads replies with"), engine);
+    if (row.voices !== undefined) {
+      const voice = document.createElement("input");
+      voice.type = "number";
+      voice.min = "1";
+      voice.max = String(row.voices);
+      voice.step = "1";
+      voice.value = String(row.voice ?? 1);
+      voice.className = "host-settings-voice";
+      voice.dataset["focus"] = "speech:voice";
+      voice.setAttribute("aria-label", `Voice, 1 to ${row.voices}`);
+      voice.title = `One of ${row.voices} voices`;
+      voice.disabled = row.busy;
+      voice.addEventListener("change", () => void model.setVoice(Number(voice.value)));
+      line.append(span("host-settings-label", "Voice"), voice);
+    }
+    const hear = document.createElement("button");
+    hear.type = "button";
+    hear.className = "host-settings-save";
+    hear.dataset["focus"] = "speech:hear";
+    hear.textContent = "Hear it";
+    hear.disabled = !row.canPreview || row.busy;
+    hear.addEventListener("click", () => void model.preview());
+    line.append(hear);
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "host-settings-reset";
+    reset.dataset["focus"] = "speech:reset";
+    reset.textContent = "Reset";
+    reset.title = "Forget what was picked here: config.toml's engine and voice are used again";
+    reset.hidden = !row.reset;
+    reset.disabled = row.busy;
+    reset.addEventListener("click", () => void model.setEngine(null));
+    line.append(reset);
+    box.append(line, paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status));
+    if (row.detail) box.append(paragraph("host-settings-source", `${row.detail} ${row.source}`));
+    else box.append(paragraph("host-settings-source", row.source));
+    if (row.note) box.append(paragraph("host-settings-error", row.note));
     return box;
   }
 

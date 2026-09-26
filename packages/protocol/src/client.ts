@@ -120,6 +120,39 @@ export const WakewordMode = z.discriminatedUnion("mode", [
 ]);
 export type WakewordMode = z.infer<typeof WakewordMode>;
 
+/** The engines a node can speak with, as `[voice] tts` names them. */
+export const TtsEngineId = z.enum(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
+export type TtsEngineId = z.infer<typeof TtsEngineId>;
+
+/** One engine a node offers, for the app's picker: its name and what it is like. */
+export const TtsEngineInfo = z.object({ id: TtsEngineId, label: z.string().min(1), detail: z.string() });
+export type TtsEngineInfo = z.infer<typeof TtsEngineInfo>;
+
+/** A voice stage as the app shows it: loading, ready, or why it is not up. */
+export const VoiceStageState = z.object({
+  status: z.enum(["off", "unavailable", "loading", "ready", "failed"]),
+  reason: z.string().optional(),
+  engine: z.string().optional(),
+});
+export type VoiceStageState = z.infer<typeof VoiceStageState>;
+
+/**
+ * A node's speech as the app's Settings shows it: whether voice is on at all, the engine that
+ * speaks and where that choice came from (`app`: set in Settings; `config`: config.toml), the
+ * voice among the engine's `voices` (the model's own default when absent; `voices` is known
+ * once the engine is loaded), the speech stage, and every engine there is.
+ */
+export const VoiceSettings = z.object({
+  enabled: z.boolean(),
+  tts: TtsEngineId,
+  source: z.enum(["app", "config"]),
+  voice: z.number().int().nonnegative().optional(),
+  voices: z.number().int().positive().optional(),
+  stage: VoiceStageState,
+  engines: z.array(TtsEngineInfo),
+});
+export type VoiceSettings = z.infer<typeof VoiceSettings>;
+
 /**
  * An ICE candidate as a browser's `RTCIceCandidateInit` has it, between a phone and its node
  * for a data channel.
@@ -282,6 +315,19 @@ export const clientRequests = {
    * captured before the word fired, for the recogniser and not the end-of-speech detector.
    */
   "voice.wake": { params: z.object({ score: z.number().min(0).max(1), head: z.string().min(1).max(128).optional(), lead: z.number().int().min(0).max(16).optional() }), result: Empty },
+  /** The node's speech: the engine that speaks and its voice, where they were set, the stage, and the engines there are. */
+  "voice.settings": { params: Empty, result: VoiceSettings },
+  /**
+   * The engine or the voice, set from the app over config.toml; `null` hands either back to
+   * it. A voice belongs to the engine it was set for. Answered at once: the engine loads
+   * behind the answer, and `voice.settings` says when its stage is up.
+   */
+  "voice.configure": {
+    params: z.object({ tts: TtsEngineId.nullable().optional(), voice: z.number().int().nonnegative().max(9999).nullable().optional() }),
+    result: VoiceSettings,
+  },
+  /** A line spoken to this client in the voice set now, for trying one out; a sample line when no text is given. */
+  "voice.preview": { params: z.object({ text: z.string().min(1).max(500).optional() }), result: Empty },
   "view.list": { params: Empty, result: z.object({ views: z.array(ViewManifest) }) },
   "view.get": { params: z.object({ id: z.string() }), result: ViewContent },
   "view.setDefault": { params: z.object({ id: z.string() }), result: Empty },

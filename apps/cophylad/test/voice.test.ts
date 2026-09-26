@@ -4,14 +4,15 @@
 // to no one else, and what it says is composed for the ear with a lead-in before the quote.
 // Push-to-talk, barge-in, two phones, an empty tap, a disconnect mid-turn and a stage that
 // is off are the rest; then the wake word heard on the phone — where it is detected, the
-// utterance `voice.wake` begins, and the abandons that end one nothing was said in. Last,
+// utterance `voice.wake` begins, and the abandons that end one nothing was said in. Then
 // a phone that speaks Opus and acks what it played: its frames both ways, and `speaking`
-// ending on its `voice.played`.
+// ending on its `voice.played`. Last, the speech engine picked in the app: over config.toml,
+// loaded behind the answer, a voice per engine, kept across a restart, and a line to try it.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Client, Message, RpcNotification, VoiceState, WakewordMode } from "@cophyla/protocol";
+import type { Client, Message, RpcNotification, VoiceSettings, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { ClientRegistry } from "../src/api/clients.ts";
 import { Bus } from "../src/bus.ts";
@@ -21,7 +22,9 @@ import { Asks } from "../src/gate/asks.ts";
 import { silentLogger } from "../src/log.ts";
 import { Sidecars } from "../src/sidecars/index.ts";
 import { Store } from "../src/store/index.ts";
-import { Voice } from "../src/voice/index.ts";
+import { PREVIEW_LINE, Voice } from "../src/voice/index.ts";
+import { storePrefs, VOICE_KV_NS } from "../src/voice/prefs.ts";
+import { EXCLUDED_KV_NS } from "../src/nodes/replication.ts";
 import { FakeEngines, WAKE_MARKER, b64, silenceChunk, speechChunk, wakeChunk } from "../src/voice/fake.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Conversation, OUT_FRAME, PLAYBACK_SLACK_MS } from "../src/voice/conversation.ts";
@@ -63,11 +66,13 @@ interface StartOptions {
   memory?: string;
   /** Wait for every stage to settle before the clients connect; on unless a test holds a stage. */
   wait?: boolean;
+  /** A home a daemon already ran on, for a restart: its store is kept. */
+  home?: string;
 }
 
 /** A daemon with voice on fake engines, a desktop client and a controller client. */
 async function start(opts: StartOptions = {}): Promise<Started> {
-  const scratch = tempHome();
+  const scratch = opts.home ?? tempHome();
   const log = join(scratch, "brain.log");
   const engines = opts.engines ?? new FakeEngines({ transcript: TRANSCRIPT });
   const brain = opts.script
@@ -336,7 +341,7 @@ describe("voice", () => {
     engines.failStage = "tts";
     const { d, ui, phone } = await start({ engines });
     expect(d.voice.capabilities()).toEqual({ wake: true, stt: true, tts: false });
-    expect(d.voice.stageStates().tts).toMatchObject({ status: "unavailable", engine: "kokoro" });
+    expect(d.voice.stageStates().tts).toMatchObject({ status: "unavailable", engine: "piper" });
     expect(d.voice.stageStates().tts.reason).toContain("fake tts failure");
     // The utterance still reaches the brain; there is simply nothing to speak with.
     await utterance(phone);
@@ -815,4 +820,141 @@ describe("a phone that speaks Opus and acks", () => {
     expect(frames.every((s) => s.codec === "pcm" && s.rate === 24000)).toBe(true);
     expect(frames.at(-1)).toMatchObject({ chunk: "", end: true, reply: 1 });
   }, 20_000);
+});
+
+describe("the speech engine picked in the app", () => {
+  const settings = (c: TestClient) => c.request<VoiceSettings>("voice.settings", {});
+  const configure = (c: TestClient, patch: object) => c.request<VoiceSettings>("voice.configure", patch);
+  const ready = (d: Daemon, engine: string) => waitFor(() => d.voice.stageStates().tts.status === "ready" && d.voice.stageStates().tts.engine === engine);
+
+  test("config.toml's engine until the app picks another, which loads behind the answer and hands back with null", async () => {
+    const { d, ui, engines } = await start();
+    const first = await settings(ui);
+    expect(first).toMatchObject({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 4, stage: { status: "ready", engine: "piper" } });
+    expect(first.engines.map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
+
+    const picked = await configure(ui, { tts: "kokoro" });
+    // Answered before the load: the stage is still loading, and the engine before it still speaks.
+    expect(picked).toMatchObject({ tts: "kokoro", source: "app", stage: { status: "loading", engine: "kokoro" } });
+    await ready(d, "kokoro");
+    expect(engines.ttsLoads.map((l) => l.engine)).toEqual(["piper", "kokoro"]);
+    expect(engines.ttsClosed).toBe(1);
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toEqual({ tts: "kokoro" });
+    expect(await settings(ui)).toMatchObject({ tts: "kokoro", source: "app", stage: { status: "ready" } });
+
+    const back = await configure(ui, { tts: null });
+    expect(back).toMatchObject({ tts: "piper", source: "config" });
+    await ready(d, "piper");
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+    // The pick is audited like any other change the app makes.
+    expect(d.store.audit.list({ limit: 50 }).some((e) => e.action === "voice.configure")).toBe(true);
+  }, 20_000);
+
+  test("a voice belongs to its engine: set with no reload, and remembered when the engine comes back", async () => {
+    const { d, ui, engines } = await start();
+    const set = await configure(ui, { voice: 2 });
+    expect(set).toMatchObject({ tts: "piper", voice: 2, source: "app" });
+    expect(engines.ttsLoads).toHaveLength(1);
+    await configure(ui, { tts: "kokoro" });
+    await ready(d, "kokoro");
+    expect(engines.ttsLoads.at(-1)).toEqual({ engine: "kokoro" });
+    await configure(ui, { tts: "piper" });
+    await ready(d, "piper");
+    expect(engines.ttsLoads.at(-1)).toEqual({ engine: "piper", voice: 2 });
+    expect(await settings(ui)).toMatchObject({ tts: "piper", voice: 2 });
+    // Handing the voice back leaves the model's own.
+    expect(await configure(ui, { voice: null })).toMatchObject({ voice: 0 });
+  }, 20_000);
+
+  test("a voice picked while its engine loads is that engine's, not the one still speaking", async () => {
+    const { d, ui, engines } = await start();
+    const piper = d.voice["ttsEngine"] as { voice?: number };
+    let release!: () => void;
+    engines.hold.tts = new Promise<void>((r) => (release = r));
+    await configure(ui, { tts: "kokoro" });
+    await configure(ui, { voice: 3 });
+    expect(piper.voice).toBe(0);
+    release();
+    await ready(d, "kokoro");
+    expect((d.voice["ttsEngine"] as { voice?: number }).voice).toBe(3);
+    expect(await settings(ui)).toMatchObject({ tts: "kokoro", voice: 3 });
+  }, 20_000);
+
+  test("a pick another one overtook is dropped when it lands", async () => {
+    const { d, ui, engines } = await start();
+    let release!: () => void;
+    engines.hold.tts = new Promise<void>((r) => (release = r));
+    await configure(ui, { tts: "kokoro" });
+    await configure(ui, { tts: "supertonic" });
+    expect(d.voice.stageStates().tts).toMatchObject({ status: "loading", engine: "supertonic" });
+    release();
+    await ready(d, "supertonic");
+    await sleep(50);
+    expect(d.voice.stageStates().tts).toMatchObject({ status: "ready", engine: "supertonic" });
+    // Piper went when Supertonic took its place, Kokoro the moment it loaded.
+    expect(engines.ttsClosed).toBe(2);
+  }, 20_000);
+
+  test("an engine that will not load leaves nothing speaking and says why; another pick brings speech back", async () => {
+    const { d, ui, phone, engines } = await start();
+    engines.failStage = "tts";
+    await configure(ui, { tts: "chatterbox" });
+    await waitFor(() => d.voice.stageStates().tts.status === "unavailable");
+    expect(await settings(ui)).toMatchObject({ tts: "chatterbox", stage: { status: "unavailable", engine: "chatterbox", reason: "fake tts failure" } });
+    expect(d.voice.capabilities().tts).toBe(false);
+    expect(await phone.call("voice.preview", {})).toMatchObject({ error: { data: { code: "unavailable" } } });
+    engines.failStage = undefined;
+    await configure(ui, { tts: "piper" });
+    await ready(d, "piper");
+    expect(d.voice.capabilities().tts).toBe(true);
+  }, 20_000);
+
+  test("off speaks nothing", async () => {
+    const { d, ui, phone } = await start();
+    expect(await configure(ui, { tts: "off" })).toMatchObject({ tts: "off", stage: { status: "off" } });
+    expect(d.voice.capabilities().tts).toBe(false);
+    await utterance(phone);
+    await waitFor(() => states(phone).includes("thinking"));
+    d.voice.speak([{ type: "text", text: "nobody hears this" }], {});
+    await sleep(100);
+    expect(audioFrames(phone)).toEqual([]);
+  }, 20_000);
+
+  test("the pick is kept across a restart, and stays this machine's own", async () => {
+    const first = await start();
+    await configure(first.ui, { tts: "kokoro", voice: 3 });
+    await ready(first.d, "kokoro");
+    first.ui.close();
+    first.phone.close();
+    await first.d.stop();
+    current = undefined;
+    const engines = new FakeEngines({ transcript: TRANSCRIPT });
+    const again = await start({ home: first.scratch, engines });
+    expect(again.d.voice.stageStates().tts).toMatchObject({ status: "ready", engine: "kokoro" });
+    expect(engines.ttsLoads).toEqual([{ engine: "kokoro", voice: 3 }]);
+    expect(await settings(again.ui)).toMatchObject({ tts: "kokoro", voice: 3, source: "app" });
+    expect(EXCLUDED_KV_NS).toContain(VOICE_KV_NS);
+  }, 30_000);
+
+  test("a preview speaks to the client that asked, in the voice set now; one that cannot play is refused", async () => {
+    const { ui, phone, engines } = await start();
+    await phone.request("voice.preview", {});
+    await waitFor(() => audioFrames(phone).length > 0);
+    expect(engines.spoken.at(-1)).toBe(PREVIEW_LINE);
+    await phone.request("voice.preview", { text: "Testing, one two." });
+    await waitFor(() => engines.spoken.at(-1) === "Testing, one two.");
+    // The desktop client here said it has no speaker.
+    expect(await ui.call("voice.preview", {})).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(audioFrames(ui)).toEqual([]);
+  }, 20_000);
+
+  test("a stored pick that no longer parses reads as none", () => {
+    const store = new Store(":memory:");
+    store.migrate();
+    const prefs = storePrefs(store);
+    store.kv.put(VOICE_KV_NS, "prefs", { tts: "espeak", voices: { piper: 7, kokoro: -1, espeak: 2 } });
+    expect(prefs.read()).toEqual({ voices: { piper: 7 } });
+    prefs.write({});
+    expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+  });
 });

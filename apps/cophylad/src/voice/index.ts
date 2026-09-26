@@ -19,9 +19,14 @@
 // Audio goes as Opus both ways when the controller says it speaks it (`audio.codecs`), and
 // as PCM otherwise: a frame up names its codec, and the speech down is encoded once per
 // conversation in the codec the controller asked for, each frame numbered within its reply.
+//
+// The engine that speaks is config.toml's unless the app picked another (`voice.configure`),
+// which is kept in the store over it, with a voice per engine. A new pick loads behind the
+// answer while the engine before it goes on speaking, and takes its place once it is up; a
+// new voice for the same engine needs no load at all.
 
 import { RpcError } from "@cophyla/protocol";
-import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, VoiceState, WakewordMode } from "@cophyla/protocol";
+import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, TtsEngineId, TtsEngineInfo, VoiceSettings, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { Bus } from "../bus.ts";
 import type { Activity } from "../chat/activity.ts";
@@ -37,7 +42,8 @@ import { OpusDecoder, OpusEncoder, opusRate } from "./opus.ts";
 import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
 import { IN_RATE } from "./engines.ts";
 import type { StageState } from "./engines.ts";
-import { STT_MODEL, TTS_MODEL, VAD_MODEL, WAKE_MODEL } from "./local.ts";
+import { sherpaEngine, STT_MODEL, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
+import type { VoicePrefs, VoicePrefsStore } from "./prefs.ts";
 
 type VoiceSetup = import("@cophyla/protocol").ClientNotificationParams<"voice.setup">;
 
@@ -49,6 +55,19 @@ export const WAKE_WAIT_MS = 10_000;
 
 /** The codecs the node takes and sends, best first; told to every client in its `hello`. */
 export const AUDIO_CODECS: AudioCodec[] = ["opus", "pcm"];
+
+/** The engines the app offers, in the order it lists them. */
+export const TTS_ENGINES: TtsEngineInfo[] = [
+  { id: "piper", label: "Piper", detail: "The fastest: it starts speaking about a tenth of a second after the reply. English." },
+  { id: "kokoro", label: "Kokoro", detail: "Sounds the most natural, but takes a second or more to start, longer on a busy computer. English." },
+  { id: "supertonic", label: "Supertonic", detail: "Fast, and speaks 31 languages." },
+  { id: "chatterbox", label: "Chatterbox", detail: "Your own voice, cloned from a clip. Needs an NVIDIA graphics card and a one-time download of several gigabytes." },
+  { id: "server", label: "Hosted", detail: "Your account's hosted voice, over the internet." },
+  { id: "off", label: "Off", detail: "Replies are shown, not spoken." },
+];
+
+/** What a preview says when the app gives it nothing to say. */
+export const PREVIEW_LINE = "This is how I sound. I'll read my replies to you like this.";
 
 type SignalParams<N extends ClientSignalName> = z.infer<(typeof clientSignals)[N]>;
 
@@ -80,6 +99,8 @@ export interface VoiceDeps {
   names?: SpeechNames;
   /** A stage came up or went down: the node's capabilities changed. */
   onStageChange?: () => void;
+  /** The app's picks; config.toml alone when absent. */
+  prefs?: VoicePrefsStore;
   now?: () => number;
 }
 
@@ -99,7 +120,8 @@ export class Voice {
   /** The controller whose utterance is being answered: where the reply is spoken. */
   private active?: string;
   private lastSetup?: VoiceSetup;
-  private neededModels?: Set<string>;
+  /** Counts speech loads, so one a newer pick overtook is dropped when it lands. */
+  private ttsLoads = 0;
   private unsubscribe: (() => void)[] = [];
   private stopped = false;
   private loading?: Promise<void>;
@@ -179,8 +201,22 @@ export class Voice {
 
   /** The models this configuration's engines need; a factory that needs none asks for none. */
   private needed(): Set<string> {
-    if (!this.neededModels) this.neededModels = new Set(this.deps.engines.models(this.config));
-    return this.neededModels;
+    return new Set(this.deps.engines.models(this.effective()));
+  }
+
+  private prefs(): VoicePrefs {
+    return this.deps.prefs?.read() ?? {};
+  }
+
+  /** config.toml with the app's picks over it: the engine, and its voice when one was set for it. */
+  private effective(): VoiceConfig {
+    const prefs = this.prefs();
+    const tts = prefs.tts ?? this.config.tts;
+    const voice = prefs.voices?.[tts] ?? (tts === this.config.tts ? this.config.tts_voice : undefined);
+    const out: VoiceConfig = { ...this.config, tts };
+    if (voice === undefined) delete out.tts_voice;
+    else out.tts_voice = voice;
+    return out;
   }
 
   /** The directory of a model the engines want, or `""` for one they do not use. */
@@ -215,22 +251,60 @@ export class Voice {
     });
   }
 
+  /**
+   * Loads the engine the configuration names and puts it in place of the one speaking, which
+   * goes on speaking until then. A load a newer pick overtook is dropped when it lands; one
+   * that fails leaves nothing speaking, and the stage says why.
+   */
   private async loadTts(): Promise<void> {
-    if (this.config.tts === "off") return;
-    const engine = this.config.tts;
-    await this.stage("tts", engine, async () => {
+    const config = this.effective();
+    const engine = config.tts;
+    const load = ++this.ttsLoads;
+    const current = () => load === this.ttsLoads && !this.stopped;
+    if (engine === "off") {
+      this.swapTts(undefined);
+      this.setStage("tts", { status: "off" });
+      return;
+    }
+    this.setStage("tts", { status: "loading", engine });
+    try {
+      let next: TtsEngine;
       if (engine === "server") {
         if (!this.deps.hosted) throw new Error("no hosted speech on this node");
-        this.ttsEngine = this.deps.hosted.tts();
+        next = this.deps.hosted.tts();
+      } else {
+        const local = sherpaEngine(engine);
+        const dir = local ? (await this.dir(TTS_MODELS[local])) || undefined : undefined;
+        next = await this.deps.engines.tts(dir, config, this.deps.sidecars);
+      }
+      if (!current()) {
+        void Promise.resolve(next.close()).catch(() => {});
         return;
       }
-      const dir = engine === "kokoro" ? (await this.dir(TTS_MODEL)) || undefined : undefined;
-      this.ttsEngine = await this.deps.engines.tts(dir, this.config, this.deps.sidecars);
-    });
+      // A voice picked while the engine loaded is its voice from the first line.
+      const voice = this.effective().tts_voice;
+      if (voice !== config.tts_voice) next.useVoice?.(voice);
+      this.swapTts(next);
+      this.setStage("tts", { status: "ready", engine });
+      this.log.info("voice stage ready", { stage: "tts", engine });
+    } catch (e) {
+      if (!current()) return;
+      const reason = e instanceof Error ? e.message : String(e);
+      this.swapTts(undefined);
+      this.setStage("tts", { status: "unavailable", engine, reason });
+      this.log.warn("voice stage unavailable", { stage: "tts", engine, reason });
+    }
+  }
+
+  private swapTts(next: TtsEngine | undefined): void {
+    const before = this.ttsEngine;
+    this.ttsEngine = next;
+    if (before && before !== next) void Promise.resolve(before.close()).catch(() => {});
   }
 
   async stop(): Promise<void> {
     this.stopped = true;
+    this.ttsLoads++;
     // A `voice.wakeword` still waiting for voice to start is answered now.
     this.markBegun();
     for (const off of this.unsubscribe) off();
@@ -268,6 +342,65 @@ export class Voice {
   idle(): boolean {
     for (const c of this.conversations.values()) if (c.busy) return false;
     return true;
+  }
+
+  /** The node's speech as the app's Settings shows it. */
+  settings(): VoiceSettings {
+    const prefs = this.prefs();
+    const config = this.effective();
+    const engine = this.ttsEngine && this.ttsEngine.name === config.tts ? this.ttsEngine : undefined;
+    const voice = config.tts_voice ?? engine?.voice;
+    const stage = this.stages.tts;
+    return {
+      enabled: this.config.enabled,
+      tts: config.tts,
+      source: prefs.tts !== undefined || prefs.voices?.[config.tts] !== undefined ? "app" : "config",
+      ...(voice !== undefined ? { voice } : {}),
+      ...(engine?.voices !== undefined ? { voices: engine.voices } : {}),
+      stage: { status: stage.status, ...(stage.reason !== undefined ? { reason: stage.reason } : {}), ...(stage.engine !== undefined ? { engine: stage.engine } : {}) },
+      engines: TTS_ENGINES,
+    };
+  }
+
+  /**
+   * `voice.configure`: the engine or its voice, set over config.toml, `null` handing either
+   * back. A new engine loads behind the answer; a new voice for the one loaded is used from
+   * its next line.
+   */
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null }): VoiceSettings {
+    if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
+    const before = this.effective();
+    const prefs: VoicePrefs = { ...this.prefs() };
+    if (patch.tts === null) delete prefs.tts;
+    else if (patch.tts !== undefined) prefs.tts = patch.tts;
+    if (patch.voice !== undefined) {
+      const engine = prefs.tts ?? this.config.tts;
+      const voices = { ...prefs.voices };
+      if (patch.voice === null) delete voices[engine];
+      else voices[engine] = patch.voice;
+      if (Object.keys(voices).length > 0) prefs.voices = voices;
+      else delete prefs.voices;
+    }
+    this.deps.prefs.write(prefs);
+    const after = this.effective();
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, source: prefs.tts !== undefined ? "app" : "config" });
+    if (this.config.enabled && !this.stopped) {
+      if (after.tts !== before.tts) void this.loadTts();
+      // The engine in place takes the voice now; one still loading takes it as it lands.
+      else if (after.tts_voice !== before.tts_voice && this.ttsEngine?.name === after.tts) this.ttsEngine.useVoice?.(after.tts_voice);
+    }
+    return this.settings();
+  }
+
+  /** `voice.preview`: a line to this client in the voice set now. Refused when nothing can speak it to this client. */
+  preview(client: Client, text?: string): void {
+    if (!this.config.enabled) throw new RpcError("unavailable", "voice is off on this node");
+    if (!client.audio.out) throw new RpcError("invalid", "this client cannot play audio");
+    const stage = this.stages.tts;
+    if (stage.status !== "ready") throw new RpcError("unavailable", `speech is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
+    const conversation = this.conversation(client);
+    if (!conversation) throw new RpcError("unavailable", "voice is stopping");
+    void conversation.speak(text ?? PREVIEW_LINE, { interrupt: true });
   }
 
   /** A step of an engine bootstrap, on its way to every client with the voice scope. */
@@ -519,9 +652,10 @@ export class Voice {
   onModel(name: string, dir: string): void {
     if (!this.config.enabled || this.stopped) return;
     this.log.info("voice model changed", { model: name, dir });
+    const speech = sherpaEngine(this.effective().tts);
     if (name === WAKE_MODEL) void (this.wakeLoading = this.loadWake());
     else if (name === VAD_MODEL || name === STT_MODEL) void this.loadStt();
-    else if (name === TTS_MODEL) void this.loadTts();
+    else if (speech && name === TTS_MODELS[speech]) void this.loadTts();
   }
 
   /** A client went away: its conversation goes with it. */

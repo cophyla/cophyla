@@ -28,8 +28,15 @@ export function loadOrt(): Promise<Ort> {
 export interface SherpaModule {
   OnlineRecognizer: new (config: unknown) => SherpaRecognizer;
   OfflineTts: new (config: unknown) => SherpaTts;
-  GenerationConfig: new (opts: { sid?: number; speed?: number }) => unknown;
+  GenerationConfig: new (opts: { sid?: number; speed?: number; numSteps?: number }) => unknown;
   Vad: new (config: unknown, bufferSizeInSeconds: number) => SherpaVad;
+  LinearResampler: new (inputSampleRate: number, outputSampleRate: number) => SherpaResampler;
+}
+
+/** A streaming resampler: `resample` each chunk in order, `flush` once after the last. */
+export interface SherpaResampler {
+  resample(samples: Float32Array): Float32Array;
+  flush(samples: Float32Array): Float32Array;
 }
 
 export interface SherpaStream {

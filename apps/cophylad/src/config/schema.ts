@@ -5,7 +5,7 @@
 // empty file is a valid one.
 
 import { z } from "zod";
-import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass } from "@cophyla/protocol";
+import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass, TtsEngineId } from "@cophyla/protocol";
 
 /** Whether `tz` names a zone Intl knows. */
 function validTz(tz: string): boolean {
@@ -283,8 +283,12 @@ export const VoiceConfig = z.object({
   wake: z.enum(["openwakeword", "off"]).default("openwakeword"),
   /** `server` sends each utterance to the account's hosted transcription; the wake word and the VAD stay local. */
   stt: z.enum(["nemotron", "server", "off"]).default("nemotron"),
-  /** Kokoro runs in-process on the CPU; Chatterbox needs the GPU sidecar, bootstrapped on demand; `server` is the account's hosted voice. */
-  tts: z.enum(["kokoro", "chatterbox", "server", "off"]).default("kokoro"),
+  /**
+   * Piper, Kokoro and Supertonic run in-process on the CPU: Piper is the fastest, Kokoro sounds
+   * best, Supertonic speaks 31 languages. Chatterbox needs the GPU sidecar, bootstrapped on
+   * demand; `server` is the account's hosted voice. The app can set another over this one.
+   */
+  tts: TtsEngineId.default("piper"),
   /**
    * The keyword heads inside the wake model directory, one per phrase, all listening at once;
    * one name or a list. A head the model does not have is skipped. A phone that carries every
@@ -307,8 +311,8 @@ export const VoiceConfig = z.object({
   /** Pin the recogniser to one language; it detects the language when absent. */
   stt_language: z.string().min(2).optional(),
   tts_threads: z.number().int().positive().default(2),
-  /** Which of the model's voices speaks. */
-  tts_voice: z.number().int().nonnegative().default(0),
+  /** Which of the model's voices speaks; the model's own default when absent. */
+  tts_voice: z.number().int().nonnegative().optional(),
   chatterbox_device: z.enum(["cuda", "cpu", "auto"]).default("cuda"),
   /** The reference clip Chatterbox clones, longer than five seconds; the stage is unavailable without one. */
   chatterbox_voice: z.string().min(1).optional(),
@@ -724,7 +728,7 @@ account_pairing = true         # a phone signed in to this node's account pairs 
 enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
 stt = "nemotron"               # nemotron | server (the account's hosted transcription) | off
-tts = "kokoro"                 # kokoro (in-process, CPU) | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off
+tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), all in-process on the CPU | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off; the app's Settings can pick another
 wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
 # wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
 # wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent
@@ -732,7 +736,7 @@ vad_min_silence_ms = 700       # silence that ends an utterance
 stt_threads = 2
 # stt_language = "en"          # pinned; detected when absent
 tts_threads = 2
-tts_voice = 0
+# tts_voice = 0                # which of the model's voices speaks; the model's own when absent
 chatterbox_device = "cuda"     # cuda | cpu | auto
 # chatterbox_voice = "C:\\clips\\me.wav"   # the reference clip it clones; the stage needs one, longer than 5 s
 cpu_affinity = "auto"          # auto pins to the performance cores on a hybrid CPU; or "0-15", or "off"

@@ -150,7 +150,8 @@
 }
 
 .host-settings select,
-.host-settings input[type="text"] {
+.host-settings input[type="text"],
+.host-settings input[type="number"] {
   min-height: 30px;
   padding: 4px 8px;
   border: 1px solid #3d3947;
@@ -305,6 +306,29 @@
 
 .host-settings-talk input[type="text"] {
   flex: 0 1 220px;
+}
+
+/* the node's speech: the engine, its voice and Hear it on one line, what it is like below */
+.host-settings-speech {
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px solid #2b2833;
+}
+
+/* alone in its section (a host with no microphone of its own): no rule under the heading */
+.host-settings-lead + .host-settings-speech {
+  margin: 4px 0 0;
+  padding: 0;
+  border-top: 0;
+}
+
+.host-settings-speech .host-settings-controls {
+  align-items: center;
+  margin: 0 0 6px;
+}
+
+.host-settings-voice {
+  width: 72px;
 }
 
 /* a phone: the card fills the screen's width, and what a thumb presses is big enough */

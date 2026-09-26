@@ -65,6 +65,12 @@ export interface SttEngine {
 export interface TtsEngine {
   readonly name: string;
   readonly sampleRate: number;
+  /** How many voices the model has, for an engine that has a choice of them. */
+  readonly voices?: number;
+  /** The voice that speaks now, among `voices`. */
+  readonly voice?: number;
+  /** Another of the model's voices, from the next line on; the model's own default for `undefined`. */
+  useVoice?(voice: number | undefined): void;
   /** One chunk per sentence, so the first words leave before the rest is synthesised. */
   synth(text: string, opts?: { signal?: AbortSignal }): AsyncIterable<Int16Array>;
   close(): void | Promise<void>;

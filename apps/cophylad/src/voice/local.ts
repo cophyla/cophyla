@@ -10,17 +10,28 @@ import type { Sidecars } from "../sidecars/index.ts";
 import { applyProcessAffinity } from "./affinity.ts";
 import { chatterboxEngine } from "./chatterbox.ts";
 import type { EngineFactory, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
-import { loadKokoro } from "./kokoro.ts";
 import { loadNemotron } from "./nemotron.ts";
 import { OpenWakeWord } from "./openwakeword.ts";
 import { ensureNospinConfig } from "./runtime.ts";
+import { loadSherpaTts } from "./sherpa-tts.ts";
+import type { SherpaTtsEngine } from "./sherpa-tts.ts";
 import { loadSilero } from "./silero.ts";
 
 /** The model names the feed ships, one release each. */
 export const WAKE_MODEL = "wake-openwakeword";
 export const VAD_MODEL = "vad-silero";
 export const STT_MODEL = "stt-nemotron-3.5-streaming-int8";
-export const TTS_MODEL = "tts-kokoro-en";
+/** The model each in-process speech engine speaks with. */
+export const TTS_MODELS: Record<SherpaTtsEngine, string> = {
+  piper: "tts-piper-en",
+  kokoro: "tts-kokoro-en",
+  supertonic: "tts-supertonic-3",
+};
+
+/** The engines that run in-process on a model of the feed's, as opposed to a sidecar or the server. */
+export function sherpaEngine(tts: string): SherpaTtsEngine | undefined {
+  return Object.hasOwn(TTS_MODELS, tts) ? (tts as SherpaTtsEngine) : undefined;
+}
 
 export interface LocalEnginesDeps {
   /** `<home>/data`, where the ORT session config is written. */
@@ -48,7 +59,8 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
       // The VAD is local on every recogniser; the recogniser's own model only for the local one.
       if (config.stt !== "off") names.push(VAD_MODEL);
       if (config.stt === "nemotron") names.push(STT_MODEL);
-      if (config.tts === "kokoro") names.push(TTS_MODEL);
+      const speech = sherpaEngine(config.tts);
+      if (speech) names.push(TTS_MODELS[speech]);
       return names;
     },
 
@@ -82,8 +94,10 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
         const sidecar = await deps.ttsPy.ensure();
         return chatterboxEngine(sidecar);
       }
-      if (!dir) throw new Error("no Kokoro model directory");
-      return loadKokoro(dir, { threads: config.tts_threads, voice: config.tts_voice, nospin: nospin() });
+      const speech = sherpaEngine(config.tts);
+      if (!speech) throw new Error(`no in-process speech engine is called ${config.tts}`);
+      if (!dir) throw new Error(`no ${speech} model directory`);
+      return loadSherpaTts(speech, dir, { threads: config.tts_threads, ...(config.tts_voice !== undefined ? { voice: config.tts_voice } : {}), nospin: nospin() });
     },
   };
 }

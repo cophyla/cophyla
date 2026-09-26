@@ -60,7 +60,10 @@ export class FakeEngines implements EngineFactory {
   /** Set per test to make a stage fail to load. */
   failStage?: "wake" | "stt" | "tts";
   /** Set per test to hold a stage in `loading` until the promise settles. */
-  hold: Partial<Record<"wake" | "stt", Promise<unknown>>> = {};
+  hold: Partial<Record<"wake" | "stt" | "tts", Promise<unknown>>> = {};
+  /** The speech engines loaded, by the name the configuration gave, with the voice each started in; and how many were closed. */
+  readonly ttsLoads: { engine: string; voice?: number }[] = [];
+  ttsClosed = 0;
   /** How many utterances the recogniser was asked to drain. */
   finals = 0;
 
@@ -169,12 +172,21 @@ export class FakeEngines implements EngineFactory {
     };
   }
 
-  async tts(_dir: string | undefined, _config: VoiceConfig, _sidecars: Sidecars): Promise<TtsEngine> {
+  async tts(_dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars): Promise<TtsEngine> {
+    const hold = this.hold.tts;
+    await hold;
     if (this.failStage === "tts") throw new Error("fake tts failure");
+    this.ttsLoads.push({ engine: config.tts, ...(config.tts_voice !== undefined ? { voice: config.tts_voice } : {}) });
     const engine = this;
+    // Named after the engine it stands in for, with four voices and the first by default.
     return {
-      name: "fake",
+      name: config.tts,
       sampleRate: OUT_RATE,
+      voices: 4,
+      voice: config.tts_voice ?? 0,
+      useVoice(voice) {
+        (this as { voice?: number }).voice = voice ?? 0;
+      },
       synth(text, opts = {}) {
         engine.spoken.push(text);
         const sentences = text.split(/(?<=[.!?])\s+/).filter((s) => s.trim());
@@ -197,7 +209,9 @@ export class FakeEngines implements EngineFactory {
           },
         };
       },
-      close: () => {},
+      close: () => {
+        engine.ttsClosed++;
+      },
     };
   }
 }

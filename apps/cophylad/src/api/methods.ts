@@ -395,6 +395,17 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
         return {};
       },
     },
+    "voice.settings": { handler: () => deps.voice.settings() },
+    "voice.configure": {
+      handler: (p) =>
+        deps.voice.configure({ ...(p.tts !== undefined ? { tts: p.tts } : {}), ...(p.voice !== undefined ? { voice: p.voice } : {}) }),
+    },
+    "voice.preview": {
+      handler: (p, ctx) => {
+        deps.voice.preview(ctx.client, p.text);
+        return {};
+      },
+    },
   };
 }
 

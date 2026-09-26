@@ -1,11 +1,12 @@
 // The host's settings, without a DOM: the rows the panel draws for each machine, harness and
 // profile (the usual account and what Automatic would pick, sign-in state, usage, where a
 // launch came from), what a save and a reset send, and the note a failure leaves beside
-// what failed.
+// what failed. Then the node's speech: the engine, its voice counted from 1, its status in
+// words, what a pick and a reset send, and the second-by-second read while an engine loads.
 
 import { describe, expect, test } from "bun:test";
-import type { HarnessProfile, Node } from "@cophyla/protocol";
-import { joinFlags, launchKey, SettingsModel, settingsRows, splitFlags, usageText, usualKey } from "../src/settings.ts";
+import type { HarnessProfile, Node, VoiceSettings } from "@cophyla/protocol";
+import { joinFlags, launchKey, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -198,5 +199,104 @@ describe("the settings model", () => {
     await m.load();
     expect(m.note).toBe("The agents' settings could not be read: no profile.list");
     expect(m.sections()).toEqual([]);
+  });
+});
+
+const ENGINES: VoiceSettings["engines"] = [
+  { id: "piper", label: "Piper", detail: "The fastest." },
+  { id: "kokoro", label: "Kokoro", detail: "Sounds the most natural." },
+  { id: "chatterbox", label: "Chatterbox", detail: "Your own voice." },
+  { id: "off", label: "Off", detail: "Replies are shown, not spoken." },
+];
+const speech = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 904, stage: { status: "ready", engine: "piper" }, engines: ENGINES, ...over });
+
+describe("the node's speech", () => {
+  test("the row: the engine, its voice from 1, its status in words, and where the choice came from", () => {
+    expect(speechRow(speech())).toMatchObject({ engine: "piper", voice: 1, voices: 904, status: "Piper is ready.", trouble: false, canPreview: true, source: "From config.toml.", reset: false, detail: "The fastest." });
+    expect(speechRow(speech({ tts: "kokoro", source: "app", voice: 3, voices: 11, stage: { status: "loading", engine: "kokoro" } }))).toMatchObject({ status: "Loading Kokoro…", canPreview: false, voice: 4, source: "Picked here.", reset: true });
+    expect(speechRow(speech({ tts: "chatterbox", stage: { status: "loading" } })).status).toContain("the first time takes several minutes");
+    expect(speechRow(speech({ tts: "chatterbox", voices: 1, stage: { status: "unavailable", reason: "no GPU" } }))).toMatchObject({ status: "Chatterbox cannot speak: no GPU", trouble: true, canPreview: false });
+    // One voice is no choice: the number is not shown.
+    expect(speechRow(speech({ tts: "chatterbox", voices: 1 })).voices).toBeUndefined();
+    expect(speechRow(speech({ tts: "off", stage: { status: "off" } }))).toMatchObject({ status: "Replies are not spoken.", canPreview: false });
+    expect(speechRow(speech({ enabled: false }))).toMatchObject({ trouble: true, canPreview: false });
+    expect(speechRow(speech({ enabled: false })).status).toContain("config.toml");
+  });
+
+  test("a pick sends the engine, a voice goes out counted from 0, and a reset hands both back", async () => {
+    let now = speech();
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => {
+        now = { ...now, ...(p["tts"] ? { tts: p["tts"] as VoiceSettings["tts"], source: "app" as const } : {}), ...(typeof p["voice"] === "number" ? { voice: p["voice"] } : {}) };
+        return now;
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    expect(m.speechRow()?.engine).toBe("piper");
+    await m.setEngine("kokoro");
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { tts: "kokoro" } });
+    await m.setVoice(5);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { voice: 4 } });
+    // The voice already set, one out of range, and nothing at all send nothing.
+    const before = asked.length;
+    await m.setVoice(5);
+    await m.setVoice(0);
+    await m.setVoice(905);
+    await m.setVoice(Number.NaN);
+    expect(asked.length).toBe(before);
+    await m.setEngine(null);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { tts: null, voice: null } });
+    m.dispose();
+  });
+
+  test("while an engine loads the model asks again each second, and stops when the panel closes", async () => {
+    let reads = 0;
+    const { request } = fakeConnection({
+      "voice.settings": () => {
+        reads++;
+        return speech({ tts: "kokoro", stage: reads >= 2 ? { status: "ready", engine: "kokoro" } : { status: "loading", engine: "kokoro" } });
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    expect(m.speechRow()?.status).toBe("Loading Kokoro…");
+    await new Promise((r) => setTimeout(r, SPEECH_POLL_MS + 300));
+    expect(m.speechRow()?.status).toBe("Kokoro is ready.");
+    expect(reads).toBe(2);
+    await new Promise((r) => setTimeout(r, SPEECH_POLL_MS + 200));
+    expect(reads).toBe(2);
+
+    let loading = 0;
+    const slow = fakeConnection({ "voice.settings": () => (loading++, speech({ stage: { status: "loading", engine: "piper" } })) });
+    const closed = new SettingsModel(slow.request, () => {});
+    await closed.loadSpeech();
+    closed.dispose();
+    await new Promise((r) => setTimeout(r, SPEECH_POLL_MS + 200));
+    expect(loading).toBe(1);
+  }, 10_000);
+
+  test("a node that cannot say leaves the part out; a failed pick or preview says so beside it", async () => {
+    const none = new SettingsModel(fakeConnection({}).request, () => {});
+    await none.loadSpeech();
+    expect(none.speechRow()).toBeUndefined();
+
+    const { request } = fakeConnection({
+      "voice.settings": () => speech(),
+      "voice.configure": () => {
+        throw new Error("denied: voice.configure needs scope voice");
+      },
+      "voice.preview": () => {
+        throw new Error("unavailable: speech is loading");
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setEngine("kokoro");
+    expect(m.speechRow()).toMatchObject({ engine: "piper", busy: false, note: "Not saved: denied: voice.configure needs scope voice" });
+    await m.preview();
+    expect(m.speechRow()?.note).toBe("Could not play it: unavailable: speech is loading");
+    m.dispose();
   });
 });

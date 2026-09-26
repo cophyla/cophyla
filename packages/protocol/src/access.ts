@@ -237,6 +237,10 @@ export const requestFilters = {
   "voice.ptt": { names: "global" },
   "voice.wakeword": { names: "global" },
   "voice.wake": { names: "global" },
+  // The node's speech, not any one session's.
+  "voice.settings": { names: "global" },
+  "voice.configure": { names: "global" },
+  "voice.preview": { names: "global" },
   "view.list": { names: "open" },
   "view.get": { names: "open" },
   // The default view is the node's, for every client.

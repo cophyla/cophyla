@@ -4,10 +4,10 @@
 // and streams them to each backup; a backup asks for a whole snapshot when it joins and
 // again whenever the sequence breaks. The backup's `Replica` applies at the store level, so
 // nothing above the store hears a replicated row: no `task.ready`, no `chat.message`, no
-// hook fires on a backup for work the primary is doing. Three kv namespaces stay local:
-// `profiles` (this node's own harness installations), `update` (this node's own staging) and
-// `grants.local` (the phones paired on this node while it was not the primary), which a
-// snapshot keeps rather than wipes.
+// hook fires on a backup for work the primary is doing. Four kv namespaces stay local:
+// `profiles` (this node's own harness installations), `update` (this node's own staging),
+// `grants.local` (the phones paired on this node while it was not the primary) and `voice`
+// (the speech engine picked for this machine), which a snapshot keeps rather than wipes.
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -18,9 +18,10 @@ import type { Logger } from "../log.ts";
 import type { Store, StoreWrite } from "../store/index.ts";
 import { PROFILE_KV_NS } from "../sessions/profiles.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "../grants/namespaces.ts";
+import { VOICE_KV_NS } from "../voice/prefs.ts";
 
-/** The kv namespaces that are a node's own and never replicated: its profiles (their ids, usual accounts and launches), its updates and its own grants. */
-export const EXCLUDED_KV_NS = [...PROFILE_KV_NS, "update", LOCAL_GRANTS_NS];
+/** The kv namespaces that are a node's own and never replicated: its profiles (their ids, usual accounts and launches), its updates, its own grants and its speech engine. */
+export const EXCLUDED_KV_NS = [...PROFILE_KV_NS, "update", LOCAL_GRANTS_NS, VOICE_KV_NS];
 
 const TEXT_EXT = new Set([".ts", ".js", ".mjs", ".md", ".json", ".html", ".css", ".txt", ".toml", ".svg"]);
 

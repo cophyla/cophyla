@@ -44,12 +44,11 @@ describe("config", () => {
     expect(c.voice).toMatchObject({
       wake: "openwakeword",
       stt: "nemotron",
-      tts: "kokoro",
+      tts: "piper",
       wake_model: ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
       vad_min_silence_ms: 700,
       stt_threads: 2,
       tts_threads: 2,
-      tts_voice: 0,
       chatterbox_device: "cuda",
       cpu_affinity: "auto",
       thinking_timeout_ms: 60000,
@@ -58,6 +57,8 @@ describe("config", () => {
     expect(c.voice.chatterbox_voice).toBeUndefined();
     expect(c.voice.models_dir).toBeUndefined();
     expect(c.voice.stt_language).toBeUndefined();
+    // The voice is the model's own until one is picked.
+    expect(c.voice.tts_voice).toBeUndefined();
     expect(c.controller.app_dir).toBeUndefined();
   });
 

@@ -114,6 +114,7 @@ import type { EngineFactory } from "./voice/engines.ts";
 import { AUDIO_CODECS, Voice } from "./voice/index.ts";
 import { localEngines } from "./voice/local.ts";
 import { modelResolver } from "./voice/models.ts";
+import { storePrefs } from "./voice/prefs.ts";
 import { Workspaces } from "./workspaces/index.ts";
 
 export const PLATFORM_VERSION: string = pkg.version;
@@ -583,6 +584,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     hosted: { stt: () => cloud.sttEngine(config.voice.stt_language), tts: () => cloud.ttsEngine() },
     names,
     onStageChange: () => bus.emit("node.state", node()),
+    prefs: storePrefs(store),
   });
 
   let controller: ApiServer | undefined;

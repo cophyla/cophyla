@@ -273,7 +273,7 @@ describe("cloud", () => {
     await d.voice.ready();
     expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "ready", engine: "server" }, tts: { status: "ready", engine: "server" } });
     expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:stt-nemotron-3.5-streaming-int8");
-    expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:tts-kokoro-en");
+    expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:tts-piper-en");
     expect(engines.models()).toEqual([]);
     await waitFor(() => d.brain?.state === "up");
     await waitFor(() => d.cloud.hostedAllowed("voice") === undefined);

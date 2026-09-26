@@ -2,7 +2,7 @@
 // sha256, like the brain seed: a build-time step, never the daemon's.
 //
 //   bun run apps/cophylad/scripts/fetch-models.ts              the embedding model recall uses
-//   bun run apps/cophylad/scripts/fetch-models.ts --voice      the four voice models (~1.1 GB)
+//   bun run apps/cophylad/scripts/fetch-models.ts --voice      the voice models (~1.4 GB); --only names some
 //   … --pin                                                 download without checking, print the hashes
 //   … --voice --pin --from <dir>                            assemble from local copies and print the hashes
 //
@@ -117,6 +117,42 @@ export const VOICE_MODELS: VoiceModelSpec[] = [
     version: "1.0.0",
     params: { model: "model.onnx", voices: "voices.bin", tokens: "tokens.txt", dataDir: "espeak-ng-data", sampleRate: 24000 },
     sources: [{ kind: "archive", url: `${K2}/tts-models/kokoro-en-v0_19.tar.bz2`, sha256: "912804855a04745fa77a30be545b3f9a5d15c4d66db00b88cbcd4921df605ac7", strip: 1 }],
+  },
+  {
+    // The default voice: Piper's LibriTTS-R voice (MIT; the recordings CC BY 4.0, named in its MODEL_CARD), 904 speakers.
+    name: "tts-piper-en",
+    kind: "tts",
+    version: "1.0.0",
+    params: { model: "en_US-libritts_r-medium.onnx", tokens: "tokens.txt", dataDir: "espeak-ng-data", sampleRate: 22050, voice: 0 },
+    sources: [{ kind: "archive", url: `${K2}/tts-models/vits-piper-en_US-libritts_r-medium.tar.bz2`, sha256: "10dc268f3e371696d721486123e2705a9fc1faa113491979fde4d88dba1f1b1c", strip: 1 }],
+  },
+  {
+    // 31 languages, 10 voices. Two flow steps rather than the model's five: twice as fast, and still clear.
+    // The weights are OpenRAIL-M, whose use restrictions travel with them: MODEL_LICENSE is that licence.
+    name: "tts-supertonic-3",
+    kind: "tts",
+    version: "1.0.0",
+    params: {
+      durationPredictor: "duration_predictor.int8.onnx",
+      textEncoder: "text_encoder.int8.onnx",
+      vectorEstimator: "vector_estimator.int8.onnx",
+      vocoder: "vocoder.int8.onnx",
+      ttsJson: "tts.json",
+      unicodeIndexer: "unicode_indexer.bin",
+      voiceStyle: "voice.bin",
+      sampleRate: 44100,
+      numSteps: 2,
+      voice: 0,
+    },
+    sources: [
+      { kind: "archive", url: `${K2}/tts-models/sherpa-onnx-supertonic-3-tts-int8-2026-05-11.tar.bz2`, sha256: "82fa96f91c4ef8abaae3a14a3f4153facf88bed821d1f7331cec2700f432c427", strip: 1 },
+      {
+        kind: "file",
+        url: "https://huggingface.co/Supertone/supertonic-3/resolve/3cadd1ee6394adea1bd021217a0e650ede09a323/LICENSE",
+        local: "MODEL_LICENSE",
+        sha256: "0d944a9110fed9a9602d60e0423a272903e7bd21ab060490774efc77c2275e9f",
+      },
+    ],
   },
 ];
 

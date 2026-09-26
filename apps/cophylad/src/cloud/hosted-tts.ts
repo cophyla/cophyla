@@ -11,11 +11,11 @@ export class ServerTtsEngine implements TtsEngine {
   readonly name = "server";
   readonly sampleRate = OUT_RATE;
   private deps: HostedDeps;
-  private voice: string | undefined;
+  private voiceName: string | undefined;
 
   constructor(deps: HostedDeps, voice?: string) {
     this.deps = deps;
-    this.voice = voice;
+    this.voiceName = voice;
   }
 
   async *synth(text: string, opts: { signal?: AbortSignal } = {}): AsyncIterable<Int16Array> {
@@ -31,7 +31,7 @@ export class ServerTtsEngine implements TtsEngine {
       wake = undefined;
     };
     const request = this.deps.link
-      .requestCancellable("tts.speak", { text, ...(this.voice ? { voice: this.voice } : {}) }, {
+      .requestCancellable("tts.speak", { text, ...(this.voiceName ? { voice: this.voiceName } : {}) }, {
         ...(opts.signal ? { signal: opts.signal } : {}),
         onNotice: (method, params) => {
           if (method !== "tts.delta") return;

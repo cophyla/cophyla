@@ -1,5 +1,6 @@
 // The real engines, on the real models, from two recorded clips. Skipped unless the four
-// model directories are there, since they are a gigabyte and a checkout does not carry them:
+// model directories are there (Piper speaks), since they are a gigabyte and a checkout does
+// not carry them:
 //
 //   bun run apps/cophylad/scripts/fetch-models.ts --voice
 //   bun test apps/cophylad/test/voice-engines.live.test.ts
@@ -8,8 +9,9 @@
 // What it holds to: onnxruntime-node loads before sherpa-onnx (the order the two native
 // runtimes need on Windows), the wake word fires on its own phrase and not on the question,
 // the recogniser gets the question word for word, the VAD closes the utterance after the
-// clip, Kokoro speaks in more than one chunk at 24 kHz, and the whole module turns a stream
-// of frames into a `user.message` and speech back.
+// clip, each in-process speech engine whose model is here speaks in more than one chunk at
+// 24 kHz in the voice picked, and the whole module turns a stream of frames into a
+// `user.message` and speech back.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -25,12 +27,12 @@ import { Sidecars } from "../src/sidecars/index.ts";
 import { Store } from "../src/store/index.ts";
 import { FRAME, IN_RATE, toInt16 } from "../src/voice/engines.ts";
 import { Voice } from "../src/voice/index.ts";
-import { localEngines, STT_MODEL, TTS_MODEL, VAD_MODEL, WAKE_MODEL } from "../src/voice/local.ts";
+import { localEngines, STT_MODEL, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "../src/voice/local.ts";
 import { removeHome, sleep, tempHome, waitFor } from "./helpers.ts";
 
 const MODELS = process.env["COPHYLA_VOICE_MODELS"] ?? join(import.meta.dir, "..", "models", "voice");
 const CLIPS = join(import.meta.dir, "fixtures", "audio");
-const NEEDED = [WAKE_MODEL, VAD_MODEL, STT_MODEL, TTS_MODEL];
+const NEEDED = [WAKE_MODEL, VAD_MODEL, STT_MODEL, TTS_MODELS.piper];
 const present = NEEDED.every((m) => existsSync(join(MODELS, m, "manifest.json")));
 const QUESTION = "What time is the meeting tomorrow afternoon?";
 
@@ -166,30 +168,37 @@ describe.skipIf(!present)("the real engines", () => {
     }
   }, 120_000);
 
-  test("Kokoro speaks a two-sentence line in more than one chunk at 24 kHz", async () => {
-    const tts = await engines().tts(dirOf(TTS_MODEL), config(), new Sidecars({ dir: tempHome(), log: silentLogger }));
-    try {
-      expect(tts.name).toBe("kokoro");
-      expect(tts.sampleRate).toBe(24000);
-      const started = Date.now();
-      const chunks: Int16Array[] = [];
-      let firstAt = 0;
-      for await (const chunk of tts.synth("The meeting is at half past three. It is in the blue room.")) {
-        if (!firstAt) firstAt = Date.now() - started;
-        chunks.push(chunk);
+  // Each in-process engine whose model is here: Piper always, Kokoro and Supertonic when fetched.
+  for (const engine of ["piper", "kokoro", "supertonic"] as const) {
+    test.skipIf(!existsSync(join(MODELS, TTS_MODELS[engine], "manifest.json")))(`${engine} speaks a two-sentence line in more than one chunk at 24 kHz, in the voice picked`, async () => {
+      const tts = await engines().tts(dirOf(TTS_MODELS[engine]), config({ tts: engine }), new Sidecars({ dir: tempHome(), log: silentLogger }));
+      try {
+        expect(tts.name).toBe(engine);
+        expect(tts.sampleRate).toBe(24000);
+        expect(tts.voices).toBeGreaterThanOrEqual(1);
+        tts.useVoice?.((tts.voices ?? 1) - 1);
+        expect(tts.voice).toBe((tts.voices ?? 1) - 1);
+        tts.useVoice?.(undefined);
+        const started = Date.now();
+        const chunks: Int16Array[] = [];
+        let firstAt = 0;
+        for await (const chunk of tts.synth("The meeting is at half past three. It is in the blue room.")) {
+          if (!firstAt) firstAt = Date.now() - started;
+          chunks.push(chunk);
+        }
+        const took = Date.now() - started;
+        const samples = chunks.reduce((n, c) => n + c.length, 0);
+        const audioMs = (samples / tts.sampleRate) * 1000;
+        expect(chunks.length).toBeGreaterThanOrEqual(2);
+        expect(audioMs).toBeGreaterThan(1500);
+        // Faster than real time, and the first sentence leaves before the second is made.
+        expect(took / audioMs).toBeLessThan(2);
+        expect(firstAt).toBeLessThan(took);
+      } finally {
+        await tts.close();
       }
-      const took = Date.now() - started;
-      const samples = chunks.reduce((n, c) => n + c.length, 0);
-      const audioMs = (samples / tts.sampleRate) * 1000;
-      expect(chunks.length).toBeGreaterThanOrEqual(2);
-      expect(audioMs).toBeGreaterThan(1500);
-      // Faster than real time, and the first sentence leaves before the second is made.
-      expect(took / audioMs).toBeLessThan(2);
-      expect(firstAt).toBeLessThan(took);
-    } finally {
-      await tts.close();
-    }
-  }, 180_000);
+    }, 180_000);
+  }
 
   test("the whole module: frames in, a user message out, and speech back to the phone", async () => {
     const home = tempHome();
