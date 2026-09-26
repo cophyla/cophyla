@@ -124,7 +124,7 @@ export const CodexHookEvent = z.object({
   cwd: z.string().optional(),
   model: z.string().optional(),
   permission_mode: z.string().optional(),
-  /** The rollout file; null before the thread has one. */
+  /** The rollout file; null before the thread has one. A sub-agent's hooks come under its parent's `session_id` with the sub-agent's rollout here. */
   transcript_path: z.string().nullable().optional(),
   // SessionStart, SessionEnd
   source: z.string().optional(),

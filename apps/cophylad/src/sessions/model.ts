@@ -139,7 +139,9 @@ export function normaliseHook(harness: AttachedHarness, e: ClaudeHookEvent | Cod
     if (value !== undefined && value !== null) n[key] = value;
   };
   set("cwd", e.cwd);
-  set("transcriptPath", e.transcript_path);
+  // A Codex sub-agent's hooks come under its parent thread's id, with the sub-agent's own
+  // rollout: the hook is the parent's, the rollout is not its transcript.
+  if (harness !== "codex" || !otherThreadsRollout(e.transcript_path, e.session_id)) set("transcriptPath", e.transcript_path);
   set("permissionMode", e.permission_mode);
   set("prompt", e.prompt);
   set("toolName", e.tool_name);
@@ -162,6 +164,13 @@ export function normaliseHook(harness: AttachedHarness, e: ClaudeHookEvent | Cod
     if (harness === "muse") set("message", (e as MuseHookEvent).message);
   }
   return n;
+}
+
+/** Whether a path is a Codex rollout, `rollout-<time>-<threadId>.jsonl`, of a thread other than `threadId`. */
+function otherThreadsRollout(path: string | null | undefined, threadId: string): boolean {
+  if (!path) return false;
+  const name = (path.split(/[\\/]/).pop() ?? "").toLowerCase();
+  return name.startsWith("rollout-") && name.endsWith(".jsonl") && !name.endsWith(`-${threadId.toLowerCase()}.jsonl`);
 }
 
 /** What cophylad installs: the http endpoint, or the command that runs the shim. */

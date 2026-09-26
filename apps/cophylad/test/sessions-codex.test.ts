@@ -6,11 +6,12 @@
 // nothing new leaving it ended, a grown rollout resuming it with only the new lines recorded,
 // and a restart tailing again without adding events. A profile that comes after start gets its
 // app-server and hooks, a new login restarts the app-server, a quit before the first prompt
-// leaves no session, and a thread the app-server daemon runs takes its CLI's terminal.
+// leaves no session, a sub-agent's hook under its parent's id leaves the parent's transcript
+// be, and a thread the app-server daemon runs takes its CLI's terminal.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { CodexHookEvent, SessionEvent } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
 import { createLogger, silentLogger } from "../src/log.ts";
@@ -405,6 +406,25 @@ describe("codex adapter over the fake app-server", () => {
     const answer = await mini.sessions.onHook("codex", { hook_event_name: "sessionEnd", session_id: "never-prompted", cwd, reason: "exit" }, { via: "command" });
     expect(answer).toEqual({});
     expect(mini.store.sessions.getByNative("codex", "never-prompted")).toBeUndefined();
+  });
+
+  test("a sub-agent's hook under its parent's id is the parent's, but the sub-agent's rollout is not the parent's transcript", async () => {
+    const s = mini.sessions.list().find((x) => x.native.id === THREAD)!;
+    const child = "01a0af90-1111-7222-8333-444455556666";
+    const childPath = join(dirname(rolloutPath), `rollout-2026-09-17T15-20-00-${child}.jsonl`);
+    const usage = { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1, total_tokens: 6 };
+    writeFileSync(childPath, JSON.stringify({ timestamp: "2026-09-17T13:20:00.000Z", type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage, model_context_window: 258400 } } }) + "\n");
+    const postToolUse = (sessionId: string, id: string) => ({ hook_event_name: "PostToolUse" as const, session_id: sessionId, turn_id: "sub-turn", cwd, transcript_path: childPath, tool_name: "Bash", tool_input: { command: "ls" }, tool_response: "ok", tool_use_id: id });
+    expect(await mini.sessions.onHook("codex", postToolUse(THREAD, "call_sub_1"), { via: "command" })).toEqual({});
+    await mini.sessions.tick();
+    const after = mini.sessions.list().find((x) => x.id === s.id)!;
+    expect(after.transcript?.path).toBe(rolloutPath);
+    expect(after.stats).toEqual(s.stats);
+    expect(events(s.id).some((e) => e.kind === "tool_result" && (e.payload as { id?: string }).id === "call_sub_1")).toBe(true);
+    // A thread first heard of through a sub-agent's hook does not take its rollout either.
+    await mini.sessions.onHook("codex", postToolUse("unseen-parent", "call_sub_2"), { via: "command", profile: mini.profiles.byHarness("codex")[0]!.id });
+    const unseen = mini.sessions.list().find((x) => x.native.id === "unseen-parent")!;
+    expect(unseen.transcript?.path).not.toBe(childPath);
   });
 });
 
