@@ -120,12 +120,20 @@ export const WakewordMode = z.discriminatedUnion("mode", [
 ]);
 export type WakewordMode = z.infer<typeof WakewordMode>;
 
-/** The engines a node can speak with, as `[voice] tts` names them. */
-export const TtsEngineId = z.enum(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
+/**
+ * The engines a node can speak with, as `[voice] tts` names them. `kokoro-online` goes through
+ * the node's speech routes (the account's server, then the user's own key); `server` is the
+ * name it had before, and a node reads it as `kokoro-online`.
+ */
+export const TtsEngineId = z.enum(["piper", "kokoro", "supertonic", "chatterbox", "kokoro-online", "server", "off"]);
 export type TtsEngineId = z.infer<typeof TtsEngineId>;
 
-/** The engines a node can transcribe with, as `[voice] stt` names them. */
-export const SttEngineId = z.enum(["nemotron", "server", "off"]);
+/**
+ * The engines a node can transcribe with, as `[voice] stt` names them. `gemini` goes through
+ * the node's transcription routes (the account's server, then the user's own key); `server`
+ * is the name it had before, and a node reads it as `gemini`.
+ */
+export const SttEngineId = z.enum(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini", "server", "off"]);
 export type SttEngineId = z.infer<typeof SttEngineId>;
 
 /** A licence a local engine comes under: what it covers, its name, where to read it. */

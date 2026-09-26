@@ -157,7 +157,7 @@ asset. The daemon fetches a model the first time a stage that needs it is turned
 unpacks it under `~/.cophyla/data/models/<name>/<version>/`, checking every file against the
 `manifest.json` inside the archive; it never ships in the platform archive. Only the
 platform's own voice models are released so, the wake word's and the VAD's: a speech
-engine's (Nemotron, Piper, Kokoro, Supertonic) is never published by Cophyla, and neither is
+engine's (Moonshine, Whisper, Nemotron, Piper, Kokoro, Supertonic) is never published by Cophyla, and neither is
 sherpa-onnx, the runtime they run on, whose native library carries espeak-ng (GPL-3.0). A
 node installs an engine from its makers — the npm registry, the k2-fsa releases, Hugging Face,
 pinned by hash in `apps/cophylad/src/voice/catalog.ts` — when its user asks, after the app
@@ -174,8 +174,9 @@ Sizes seen: a version directory is ~145 MB (6.6k files; the runtime 94 MB, cophy
 dependencies ~54 MB), its archive 48 MB, the brain 95 MB (the runtime is inside), the
 installer 58 MB (NSIS LZMA over the stage; ~2–3 minutes, most of it the compression). The
 platform's voice models beside it: openwakeword 2 MB, silero 2 MB. What a node installs for a
-speech engine: the runtime 9–14 MB, Piper 82 MB, Supertonic 129 MB, Kokoro 320 MB, Nemotron
-475 MB, each a download from its makers.
+speech engine: the runtime 9–14 MB, Moonshine Tiny 30 MB, Moonshine Base 111 MB, Whisper Base
+208 MB, Piper 82 MB, Supertonic 129 MB, Kokoro 320 MB, Nemotron 475 MB, each a download from
+its makers.
 
 ## Clean-machine run (Windows Sandbox)
 

@@ -115,6 +115,8 @@ import type { EngineFactory } from "./voice/engines.ts";
 import { AUDIO_CODECS, Voice } from "./voice/index.ts";
 import { localEngines } from "./voice/local.ts";
 import { modelResolver } from "./voice/models.ts";
+import { onlineStt, onlineTts } from "./voice/online.ts";
+import type { OnlineDeps } from "./voice/online.ts";
 import { storePrefs } from "./voice/prefs.ts";
 import { Workspaces } from "./workspaces/index.ts";
 
@@ -573,6 +575,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     thread: (id) => chat.get(id)?.topic,
     ask: (id) => asks.get(id)?.title,
   };
+  /** Transcription and speech over the network, routed as the model is. */
+  const online: OnlineDeps = {
+    sttRoutes: config.providers.stt,
+    ttsRoutes: config.providers.tts,
+    server: cloud.speechRoute(),
+    gemini: { apiKey: () => config.providers.gemini.api_key ?? env["GEMINI_API_KEY"], baseUrl: config.providers.gemini.base_url, model: config.providers.gemini.stt_model },
+    deepinfra: { apiKey: () => config.providers.deepinfra.api_key ?? env["DEEPINFRA_API_KEY"], baseUrl: config.providers.deepinfra.base_url, model: config.providers.deepinfra.tts_model },
+    ...(config.voice.stt_language ? { language: config.voice.stt_language } : {}),
+    log: voiceLog.child("online"),
+  };
   voice = new Voice({
     config: config.voice,
     dataDir: p.data,
@@ -586,7 +598,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     engines:
       opts.voice?.engines ??
       localEngines({ dataDir: p.data, log: voiceLog, ...(affinity !== undefined ? { affinity } : {}), ttsPy, ...(config.voice.models_dir ? { modelsDir: config.voice.models_dir } : {}) }),
-    hosted: { stt: () => cloud.sttEngine(config.voice.stt_language), tts: () => cloud.ttsEngine() },
+    hosted: { stt: () => onlineStt(online), tts: () => onlineTts(online) },
     names,
     onStageChange: () => bus.emit("node.state", node()),
     prefs: storePrefs(store),

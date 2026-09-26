@@ -74,6 +74,38 @@ export const VOICE_MODELS: VoiceModelSpec[] = [
     ],
   },
   {
+    // Moonshine's second generation, English: the whole utterance at once, in a few tens of ms.
+    name: "stt-moonshine-tiny-en",
+    kind: "stt",
+    version: "1.0.0",
+    params: { recognizer: "moonshine", encoder: "encoder_model.ort", mergedDecoder: "decoder_model_merged.ort", tokens: "tokens.txt" },
+    sources: [{ kind: "archive", url: `${K2}/asr-models/sherpa-onnx-moonshine-tiny-en-quantized-2026-02-27.tar.bz2`, sha256: "9ec31b342d8fa3240c3b81b8f82e1cf7e3ac467c93ca5a999b741d5887164f8d", bytes: 29858559, strip: 1, drop: ["test_wavs"] }],
+  },
+  {
+    name: "stt-moonshine-base-en",
+    kind: "stt",
+    version: "1.0.0",
+    params: { recognizer: "moonshine", encoder: "encoder_model.ort", mergedDecoder: "decoder_model_merged.ort", tokens: "tokens.txt" },
+    sources: [{ kind: "archive", url: `${K2}/asr-models/sherpa-onnx-moonshine-base-en-quantized-2026-02-27.tar.bz2`, sha256: "43232c1d13013d37317163baec3135bd771a186a4356f28c889bab453bb0e891", bytes: 111266225, strip: 1, drop: ["test_wavs"] }],
+  },
+  {
+    // The int8 pair only: the archive's fp32 pair is twice the size and nothing loads it.
+    name: "stt-whisper-base",
+    kind: "stt",
+    version: "1.0.0",
+    params: { recognizer: "whisper", encoder: "base-encoder.int8.onnx", decoder: "base-decoder.int8.onnx", tokens: "base-tokens.txt" },
+    sources: [
+      {
+        kind: "archive",
+        url: `${K2}/asr-models/sherpa-onnx-whisper-base.tar.bz2`,
+        sha256: "911b2083efd7c0dca2ac3b358b75222660dc09fb716d64fbfc417ba6c99ff3de",
+        bytes: 207557382,
+        strip: 1,
+        drop: ["test_wavs", "base-encoder.onnx", "base-decoder.onnx"],
+      },
+    ],
+  },
+  {
     name: "tts-kokoro-en",
     kind: "tts",
     version: "1.0.0",
@@ -169,15 +201,24 @@ export function runtimePackages(platform: string = process.platform, arch: strin
 
 /** A local speech engine: the stage it serves, the models it loads, and what it comes under. */
 export interface SpeechEngineSpec {
-  id: "nemotron" | "piper" | "kokoro" | "supertonic";
+  id: "moonshine-tiny" | "moonshine-base" | "whisper-base" | "nemotron" | "piper" | "kokoro" | "supertonic";
   stage: "stt" | "tts";
   models: string[];
   licences: Licence[];
 }
 
 const ESPEAK_DATA: Licence = { covers: "espeak-ng's data, which the model reads", name: "GPL-3.0", url: "https://github.com/espeak-ng/espeak-ng/blob/master/COPYING" };
+const MOONSHINE: Licence = { covers: "Moonshine's English models, from Moonshine AI", name: "MIT", url: "https://github.com/moonshine-ai/moonshine/blob/main/LICENSE" };
 
 export const SPEECH_ENGINES: SpeechEngineSpec[] = [
+  { id: "moonshine-tiny", stage: "stt", models: ["stt-moonshine-tiny-en"], licences: [MOONSHINE] },
+  { id: "moonshine-base", stage: "stt", models: ["stt-moonshine-base-en"], licences: [MOONSHINE] },
+  {
+    id: "whisper-base",
+    stage: "stt",
+    models: ["stt-whisper-base"],
+    licences: [{ covers: "Whisper Base, OpenAI's model", name: "MIT", url: "https://github.com/openai/whisper/blob/main/LICENSE" }],
+  },
   {
     id: "nemotron",
     stage: "stt",

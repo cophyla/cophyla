@@ -1,8 +1,13 @@
-// The engines that run on this machine, built from the model directories the feed unpacked.
+// The engines that run on this machine, built from the model directories the feed unpacked or
+// the user installed. The wake word and the VAD run in the daemon, on onnxruntime-node: they
+// are small, and the wake word listens all the time. The transcription and speech engines run
+// in the speech process (`speech-process.ts`), which exists only while a turn needs it, so
+// what this factory hands the voice module for them are stand-ins that start it.
+//
 // One job beyond wiring: before the first engine loads, the daemon pins itself to the
 // performance cores on a hybrid CPU, because everything below this line is inference and
 // Windows will otherwise put some of it on the efficiency cores, where it runs three times
-// slower (spike 10). The pin is applied once and inherited by every sidecar.
+// slower (spike 10). The pin is applied once and inherited by every process it starts.
 
 import { join } from "node:path";
 import type { VoiceConfig } from "../config/schema.ts";
@@ -10,8 +15,7 @@ import type { Logger } from "../log.ts";
 import type { Sidecars } from "../sidecars/index.ts";
 import { applyProcessAffinity } from "./affinity.ts";
 import { chatterboxEngine } from "./chatterbox.ts";
-import type { EngineFactory, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
-import { loadNemotron } from "./nemotron.ts";
+import type { EngineFactory, EngineLoadOptions, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
 import { OpenWakeWord } from "./openwakeword.ts";
 import { speechEngine } from "./catalog.ts";
 import type { SpeechInstaller } from "./engines.ts";
@@ -19,24 +23,39 @@ import { installEngine, modelInstalled, pendingBytes, runtimeInstalled } from ".
 import type { InstallOptions } from "./install.ts";
 import { readVoiceManifest } from "./manifest.ts";
 import { ensureNospinConfig, sherpaAvailable, useSherpaFrom } from "./runtime.ts";
-import { loadSherpaTts } from "./sherpa-tts.ts";
+import { SpeechProcess } from "./speech-process.ts";
+import type { SpawnWorker, SpeechStage } from "./speech-process.ts";
 import type { SherpaTtsEngine } from "./sherpa-tts.ts";
 import { loadSilero } from "./silero.ts";
 
 /** The model names the feed ships, one release each. */
 export const WAKE_MODEL = "wake-openwakeword";
 export const VAD_MODEL = "vad-silero";
-export const STT_MODEL = "stt-nemotron-3.5-streaming-int8";
-/** The model each in-process speech engine speaks with. */
+/** The model each local transcription engine reads. */
+export const STT_MODELS = {
+  "moonshine-tiny": "stt-moonshine-tiny-en",
+  "moonshine-base": "stt-moonshine-base-en",
+  "whisper-base": "stt-whisper-base",
+  nemotron: "stt-nemotron-3.5-streaming-int8",
+} as const;
+export type LocalSttEngine = keyof typeof STT_MODELS;
+/** Nemotron's, the recogniser there was first. */
+export const STT_MODEL = STT_MODELS.nemotron;
+/** The model each local speech engine speaks with. */
 export const TTS_MODELS: Record<SherpaTtsEngine, string> = {
   piper: "tts-piper-en",
   kokoro: "tts-kokoro-en",
   supertonic: "tts-supertonic-3",
 };
 
-/** The engines that run in-process on a model of the feed's, as opposed to a sidecar or the server. */
+/** The speech engines that run in the speech process on a model of their own, as opposed to a sidecar or a route. */
 export function sherpaEngine(tts: string): SherpaTtsEngine | undefined {
   return Object.hasOwn(TTS_MODELS, tts) ? (tts as SherpaTtsEngine) : undefined;
+}
+
+/** The transcription engines that run in the speech process. */
+export function localSttEngine(stt: string): LocalSttEngine | undefined {
+  return Object.hasOwn(STT_MODELS, stt) ? (stt as LocalSttEngine) : undefined;
 }
 
 export interface LocalEnginesDeps {
@@ -54,6 +73,8 @@ export interface LocalEnginesDeps {
   modelsDir?: string;
   /** Where installs download from, for tests. */
   install?: Pick<InstallOptions, "fetch" | "registry" | "tar">;
+  /** How the speech process is started, for tests. */
+  spawn?: SpawnWorker;
 }
 
 /**
@@ -86,8 +107,14 @@ export function localSpeech(deps: Pick<LocalEnginesDeps, "dataDir" | "modelsDir"
   };
 }
 
-export function localEngines(deps: LocalEnginesDeps): EngineFactory {
-  useSherpaFrom({ dataDir: deps.dataDir, dev: deps.modelsDir !== undefined });
+export interface LocalEngines extends EngineFactory {
+  /** The speech process, for the tests and the live check. */
+  readonly process: SpeechProcess;
+}
+
+export function localEngines(deps: LocalEnginesDeps): LocalEngines {
+  const dev = deps.modelsDir !== undefined;
+  useSherpaFrom({ dataDir: deps.dataDir, dev });
   const speech = localSpeech(deps);
   let pinned = false;
   const pin = () => {
@@ -96,16 +123,33 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
     applyProcessAffinity(deps.affinity, deps.log);
   };
   const nospin = () => ensureNospinConfig(deps.dataDir);
+  let watcher: ((stage: SpeechStage, engine: string, failure: string | undefined) => void) | undefined;
+  const proc = new SpeechProcess({
+    dataDir: deps.dataDir,
+    dev,
+    nospin,
+    log: deps.log.child("speech"),
+    ...(deps.affinity !== undefined ? { affinity: deps.affinity } : {}),
+    ...(deps.spawn ? { spawn: deps.spawn } : {}),
+    onStage: (stage, engine, failure) => watcher?.(stage, engine, failure),
+  });
+  const checked = async (stage: SpeechStage, opts: EngineLoadOptions | undefined) => {
+    if (!opts?.check) return;
+    const failure = await proc.probe(stage);
+    if (failure) throw new Error(failure);
+  };
 
   return {
     speech,
+    process: proc,
 
     models(config: VoiceConfig): string[] {
       const names: string[] = [];
       if (config.wake !== "off") names.push(WAKE_MODEL);
-      // The VAD is local on every recogniser; the recogniser's own model only for the local one.
+      // The VAD is local on every recogniser; the recogniser's own model only for a local one.
       if (config.stt !== "off") names.push(VAD_MODEL);
-      if (config.stt === "nemotron") names.push(STT_MODEL);
+      const stt = localSttEngine(config.stt);
+      if (stt) names.push(STT_MODELS[stt]);
       const speech = sherpaEngine(config.tts);
       if (speech) names.push(TTS_MODELS[speech]);
       return names;
@@ -128,23 +172,41 @@ export function localEngines(deps: LocalEnginesDeps): EngineFactory {
       return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms });
     },
 
-    async stt(dir: string, config: VoiceConfig): Promise<SttEngine> {
+    async stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine> {
       pin();
-      return loadNemotron(dir, { threads: config.stt_threads, ...(config.stt_language ? { language: config.stt_language } : {}), nospin: nospin() });
+      const engine = localSttEngine(config.stt);
+      if (!engine) throw new Error(`no local transcription engine is called ${config.stt}`);
+      proc.set("stt", { engine, dir, threads: config.stt_threads, ...(config.stt_language ? { language: config.stt_language } : {}) });
+      await checked("stt", opts);
+      return proc.sttEngine();
     },
 
-    async tts(dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars): Promise<TtsEngine> {
+    async tts(dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine> {
       pin();
       if (config.tts === "chatterbox") {
+        proc.set("tts", undefined);
         if (!deps.ttsPy) throw new Error("the speech sidecar is not configured on this node");
         // The bootstrap is minutes on a first run: `voice.setup` reports every step of it.
         const sidecar = await deps.ttsPy.ensure();
         return chatterboxEngine(sidecar);
       }
       const speech = sherpaEngine(config.tts);
-      if (!speech) throw new Error(`no in-process speech engine is called ${config.tts}`);
+      if (!speech) throw new Error(`no local speech engine is called ${config.tts}`);
       if (!dir) throw new Error(`no ${speech} model directory`);
-      return loadSherpaTts(speech, dir, { threads: config.tts_threads, ...(config.tts_voice !== undefined ? { voice: config.tts_voice } : {}), nospin: nospin() });
+      const spec = { engine: speech, dir, threads: config.tts_threads, ...(config.tts_voice !== undefined ? { voice: config.tts_voice } : {}) };
+      proc.set("tts", spec);
+      await checked("tts", opts);
+      return proc.ttsEngine(spec);
     },
+
+    turn: (busy) => proc.hold(busy),
+    unload: (stage) => {
+      if (stage === "stt") proc.set("stt", undefined);
+      else proc.set("tts", undefined);
+    },
+    watch: (on) => {
+      watcher = on;
+    },
+    close: () => proc.close(),
   };
 }

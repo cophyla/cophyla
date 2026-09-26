@@ -446,6 +446,14 @@ export class Cloud {
     return new ServerTtsEngine(this.hosted, voice);
   }
 
+  /** The `server` route of the online engines: one utterance or one line, a refusal thrown so the next route can take it. */
+  speechRoute(): { transcribe(pcm: Int16Array, language: string | undefined): Promise<string>; speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array> } {
+    return {
+      transcribe: (pcm, language) => new ServerSttEngine(this.hosted, language).transcribe(pcm),
+      speak: (text, voice, signal) => new ServerTtsEngine(this.hosted, voice).synth(text, signal ? { signal } : {}),
+    };
+  }
+
   /**
    * The recall index's embedder on the `server` route: settled by the first link-up that
    * knows the plan (with the hosted model's name and width, probed then), at once with

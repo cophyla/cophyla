@@ -64,6 +64,7 @@ export function loadOrt(): Promise<Ort> {
 /** The pieces of `sherpa-onnx-node` the voice module uses. */
 export interface SherpaModule {
   OnlineRecognizer: new (config: unknown) => SherpaRecognizer;
+  OfflineRecognizer: { createAsync(config: unknown): Promise<SherpaOfflineRecognizer> };
   OfflineTts: new (config: unknown) => SherpaTts;
   GenerationConfig: new (opts: { sid?: number; speed?: number; numSteps?: number }) => unknown;
   LinearResampler: new (inputSampleRate: number, outputSampleRate: number) => SherpaResampler;
@@ -87,6 +88,12 @@ export interface SherpaRecognizer {
   decode(stream: SherpaStream): void;
   reset(stream: SherpaStream): void;
   getResult(stream: SherpaStream): { text: string };
+}
+
+/** A recogniser that reads an utterance whole; `decodeAsync` runs off the calling thread. */
+export interface SherpaOfflineRecognizer {
+  createStream(): { acceptWaveform(obj: { samples: Float32Array; sampleRate: number }): void };
+  decodeAsync(stream: unknown): Promise<{ text: string }>;
 }
 
 export interface SherpaTts {

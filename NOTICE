@@ -30,8 +30,8 @@ tether (`tether/`), the pseudo-terminal host the daemon runs sessions in, is a p
 own under the same licence, with its own NOTICE in `tether/NOTICE`.
 
 No speech engine is part of this distribution: not sherpa-onnx, the runtime they run on (its
-native library carries espeak-ng, GPL-3.0), nor the Nemotron, Piper, Kokoro or Supertonic
-models. A node downloads one from where its makers publish it only when its user asks, after
+native library carries espeak-ng, GPL-3.0), nor the Moonshine, Whisper, Nemotron, Piper,
+Kokoro or Supertonic models. A node downloads one from where its makers publish it only when its user asks, after
 the app has shown the licences it comes under, and it is then the user's under those
 licences.
 

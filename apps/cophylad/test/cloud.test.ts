@@ -271,7 +271,7 @@ describe("cloud", () => {
     });
     writeFileSync(current!.scriptPath, JSON.stringify({ on: [{ event: "user.message", requests: [{ method: "voice.speak", params: { blocks: [{ type: "text", text: "Nothing is open." }], interrupt: true } }] }] }));
     await d.voice.ready();
-    expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "ready", engine: "server" }, tts: { status: "ready", engine: "server" } });
+    expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "ready", engine: "gemini" }, tts: { status: "ready", engine: "kokoro-online" } });
     expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:stt-nemotron-3.5-streaming-int8");
     expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:tts-piper-en");
     expect(engines.models()).toEqual([]);

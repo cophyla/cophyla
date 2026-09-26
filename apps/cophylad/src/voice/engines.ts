@@ -110,6 +110,11 @@ export interface SpeechInstaller {
   install(engine: string, onProgress: (p: SpeechInstallProgress) => void): Promise<void>;
 }
 
+/** How a stage's engine is made: `check` loads it once to see that it does, rather than trusting what is installed. */
+export interface EngineLoadOptions {
+  check?: boolean;
+}
+
 /** How the voice module builds its engines; `fake.ts` is the other implementation. */
 export interface EngineFactory {
   /** Installs the local speech engines; none on a factory whose engines need no install. */
@@ -118,8 +123,18 @@ export interface EngineFactory {
   models(config: VoiceConfig): string[];
   wake(dir: string, config: VoiceConfig): Promise<WakeModel>;
   vad(dir: string, config: VoiceConfig): Promise<() => VadEngine>;
-  stt(dir: string, config: VoiceConfig): Promise<SttEngine>;
-  tts(dir: string | undefined, config: VoiceConfig, sidecars: Sidecars): Promise<TtsEngine>;
+  stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine>;
+  tts(dir: string | undefined, config: VoiceConfig, sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine>;
+  /**
+   * A turn began (`true`) or every turn is over (`false`). A factory whose engines run in a
+   * process of their own starts it for the turn and ends it after.
+   */
+  turn?(busy: boolean): void;
+  /** The stage no longer uses one of this factory's engines. */
+  unload?(stage: "stt" | "tts"): void;
+  /** Told when an engine fails to load where no call was waiting on it, and when it loads again. */
+  watch?(on: (stage: "stt" | "tts", engine: string, failure: string | undefined) => void): void;
+  close?(): void | Promise<void>;
 }
 
 /** int16 as the floats sherpa and ONNX want. */

@@ -20,8 +20,22 @@ export class ServerSttEngine implements SttEngine {
     this.language = language;
   }
 
+  /** One utterance over the link; a refusal (not signed in, no plan for it, the link down) or a failure is thrown, for a route to pass on. */
+  async transcribe(pcm: Int16Array, language?: string): Promise<string> {
+    const deps = this.deps;
+    const refused = deps.allowed("voice");
+    if (refused) throw refused;
+    const all = pcm.length > MAX_SECONDS * IN_RATE ? pcm.subarray(0, MAX_SECONDS * IN_RATE) : pcm;
+    const seconds = Math.ceil(all.length / IN_RATE);
+    const lang = language ?? this.language;
+    const r = (await deps.link.request("stt.transcribe", { audio: Buffer.from(all.buffer, all.byteOffset, all.byteLength).toString("base64"), ...(lang ? { language: lang } : {}) })) as { text?: unknown };
+    deps.usage.add("stt_seconds", seconds);
+    return typeof r?.text === "string" ? r.text : "";
+  }
+
   stream(opts: { language?: string } = {}): SttStream {
     const deps = this.deps;
+    const self = this;
     const language = opts.language ?? this.language;
     let chunks: Int16Array[] = [];
     let samples = 0;
@@ -43,16 +57,8 @@ export class ServerSttEngine implements SttEngine {
         chunks = [];
         samples = 0;
         if (all.length === 0) return "";
-        const refused = deps.allowed("voice");
-        if (refused) {
-          deps.log.warn("hosted transcription refused", { reason: refused.message });
-          return "";
-        }
-        const seconds = Math.ceil(all.length / IN_RATE);
         try {
-          const r = (await deps.link.request("stt.transcribe", { audio: Buffer.from(all.buffer, all.byteOffset, all.byteLength).toString("base64"), ...(language ? { language } : {}) })) as { text?: unknown };
-          deps.usage.add("stt_seconds", seconds);
-          return typeof r?.text === "string" ? r.text : "";
+          return await self.transcribe(all, language);
         } catch (e) {
           const err = e instanceof RpcError ? e : undefined;
           deps.log.warn("hosted transcription failed", { code: err?.code, message: e instanceof Error ? e.message : String(e) });

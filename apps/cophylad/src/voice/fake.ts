@@ -7,7 +7,7 @@
 
 import type { VoiceConfig } from "../config/schema.ts";
 import type { Sidecars } from "../sidecars/index.ts";
-import type { EngineFactory, SpeechInstaller, SpeechInstallProgress, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
+import type { EngineFactory, EngineLoadOptions, SpeechInstaller, SpeechInstallProgress, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 import { phraseOf } from "./openwakeword.ts";
 
@@ -85,6 +85,19 @@ export class FakeEngines implements EngineFactory {
   };
   /** How many utterances the recogniser was asked to drain. */
   finals = 0;
+  /** Every `turn` the voice module told, in order: what would hold the speech process and let it go. */
+  readonly turns: boolean[] = [];
+  /** The stages unloaded, and the loads asked to check their engine. */
+  readonly unloads: ("stt" | "tts")[] = [];
+  readonly checks: ("stt" | "tts")[] = [];
+
+  turn(busy: boolean): void {
+    if (this.turns[this.turns.length - 1] !== busy) this.turns.push(busy);
+  }
+
+  unload(stage: "stt" | "tts"): void {
+    this.unloads.push(stage);
+  }
 
   constructor(opts: FakeOptions = {}) {
     this.opts = {
@@ -153,7 +166,8 @@ export class FakeEngines implements EngineFactory {
     };
   }
 
-  async stt(): Promise<SttEngine> {
+  async stt(_dir?: string, _config?: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine> {
+    if (opts?.check) this.checks.push("stt");
     await this.hold.stt;
     if (this.failStage === "stt") throw new Error("fake stt failure");
     const words = this.opts.transcript.split(/\s+/).filter(Boolean);
@@ -191,7 +205,8 @@ export class FakeEngines implements EngineFactory {
     };
   }
 
-  async tts(_dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars): Promise<TtsEngine> {
+  async tts(_dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine> {
+    if (opts?.check) this.checks.push("tts");
     const hold = this.hold.tts;
     await hold;
     if (this.failStage === "tts") throw new Error("fake tts failure");

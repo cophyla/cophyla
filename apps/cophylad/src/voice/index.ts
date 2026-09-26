@@ -28,7 +28,11 @@
 // A local speech or transcription engine is installed on this machine only when the user
 // asks (`voice.install`), after the app has shown its licences: until then its stage is
 // `uninstalled` and nothing is fetched for it. The wake word and the VAD are the platform's
-// own and need no install, so a hosted recogniser works with none.
+// own and need no install, so an online recogniser works with none. The local engines run
+// in the speech process, which a turn holds from its first moment to its last (`turn`): a
+// daemon at rest has none of their models in memory. So a stage is `ready` once its engine is
+// installed, and is loaded to check it only when the user picks or installs it; an engine
+// that fails to load in a turn makes its stage `unavailable`, and the next turn tries again.
 
 import { RpcError } from "@cophyla/protocol";
 import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, SpeechEngineInfo, SttEngineId, TtsEngineId, VoiceSettings, VoiceStageState, VoiceState, WakewordMode } from "@cophyla/protocol";
@@ -48,7 +52,7 @@ import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, Wak
 import { IN_RATE } from "./engines.ts";
 import type { StageState } from "./engines.ts";
 import { speechEngine } from "./catalog.ts";
-import { sherpaEngine, STT_MODEL, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
+import { localSttEngine, sherpaEngine, STT_MODELS, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
 import type { VoicePrefs, VoicePrefsStore } from "./prefs.ts";
 
 type VoiceSetup = import("@cophyla/protocol").ClientNotificationParams<"voice.setup">;
@@ -62,18 +66,45 @@ export const WAKE_WAIT_MS = 10_000;
 /** The codecs the node takes and sends, best first; told to every client in its `hello`. */
 export const AUDIO_CODECS: AudioCodec[] = ["opus", "pcm"];
 
-/** The engines the app offers, speech then transcription, each in the order it lists them. */
+/**
+ * The engines the app offers, speech then transcription, each in the order it lists them. The
+ * memory a local one takes is the speech process's while it runs, which is only while a turn does.
+ */
 export const VOICE_ENGINES: { id: string; stage: "stt" | "tts"; label: string; detail: string }[] = [
-  { id: "piper", stage: "tts", label: "Piper", detail: "The fastest: it starts speaking about a tenth of a second after the reply. English." },
-  { id: "kokoro", stage: "tts", label: "Kokoro", detail: "Sounds the most natural, but takes a second or more to start, longer on a busy computer. English." },
-  { id: "supertonic", stage: "tts", label: "Supertonic", detail: "Fast, and speaks 31 languages." },
+  { id: "piper", stage: "tts", label: "Piper", detail: "The fastest: it starts speaking about a tenth of a second after the reply. English. On this computer, about 270 MB while it speaks." },
+  { id: "kokoro", stage: "tts", label: "Kokoro", detail: "Sounds the most natural, but takes a second or more to start, longer on a busy computer. English. On this computer, about 570 MB while it speaks." },
+  { id: "supertonic", stage: "tts", label: "Supertonic", detail: "Fast, and speaks 31 languages. On this computer, about 350 MB while it speaks." },
   { id: "chatterbox", stage: "tts", label: "Chatterbox", detail: "Your own voice, cloned from a clip. Needs an NVIDIA graphics card and a one-time download of several gigabytes." },
-  { id: "server", stage: "tts", label: "Hosted", detail: "Your account's hosted voice, over the internet." },
+  {
+    id: "kokoro-online",
+    stage: "tts",
+    label: "Kokoro online",
+    detail: "The cheapest online voice, about $0.0006 a minute of speech: through your account's server, or your own DeepInfra key. Nothing runs on this computer.",
+  },
   { id: "off", stage: "tts", label: "Off", detail: "Replies are shown, not spoken." },
-  { id: "nemotron", stage: "stt", label: "Nemotron", detail: "Transcribes as you speak, in 40 languages, on this computer: nothing you say leaves it." },
-  { id: "server", stage: "stt", label: "Hosted", detail: "Your account's hosted transcription: each utterance goes to the server once you stop speaking." },
+  { id: "moonshine-tiny", stage: "stt", label: "Moonshine Tiny", detail: "English. The smallest and the quickest to start: half a second, and about 200 MB while you speak. On this computer: nothing you say leaves it." },
+  { id: "moonshine-base", stage: "stt", label: "Moonshine Base", detail: "English, and more accurate than Tiny: under a second to start, about 330 MB while you speak. On this computer: nothing you say leaves it." },
+  { id: "whisper-base", stage: "stt", label: "Whisper Base", detail: "99 languages: under a second to start, about 440 MB while you speak. On this computer: nothing you say leaves it." },
+  { id: "nemotron", stage: "stt", label: "Nemotron", detail: "Words appear as you speak, in 40 languages. The largest: about 1.5 s to start and 880 MB while you speak. On this computer: nothing you say leaves it." },
+  {
+    id: "gemini",
+    stage: "stt",
+    label: "Gemini Flash-Lite",
+    detail: "Online, about $0.0007 a minute: each utterance once you stop speaking, in about a second, through your account's server or your own Gemini key, as the assistant's model goes.",
+  },
   { id: "off", stage: "stt", label: "Off", detail: "Nothing is transcribed, so the wake word and the talk key do nothing." },
 ];
+
+/** The engines the protocol once called `server`: the account's hosted transcription and voice, now routes like the model's. */
+export function sttAlias(id: SttEngineId): SttEngineId {
+  return id === "server" ? "gemini" : id;
+}
+export function ttsAlias(id: TtsEngineId): TtsEngineId {
+  return id === "server" ? "kokoro-online" : id;
+}
+
+/** An engine that goes over the network rather than running here. */
+const online = (id: string) => id === "gemini" || id === "kokoro-online";
 
 /** How often an install's progress is told to the clients, at most. */
 const INSTALL_TELL_MS = 250;
@@ -105,7 +136,7 @@ export interface VoiceDeps {
   models: ModelResolver;
   sidecars: Sidecars;
   engines: EngineFactory;
-  /** The account's hosted engines, taken when a stage is configured as `server`. */
+  /** The online engines, over `[providers] stt` and `tts`: taken when a stage is `gemini` or `kokoro-online`. */
   hosted?: { stt: () => SttEngine; tts: () => TtsEngine };
   /** What the things a reply points at are called, when it is read out. */
   names?: SpeechNames;
@@ -154,6 +185,28 @@ export class Voice {
     const off: StageState = { status: "off" };
     this.stages = { wake: { ...off }, stt: { ...off }, tts: { ...off } };
     this.begun = new Promise((resolve) => (this.markBegun = resolve));
+    deps.engines.watch?.((stage, engine, failure) => this.engineLoaded(stage, engine, failure));
+  }
+
+  /**
+   * A local engine loaded in a turn, or failed to: the stage says so while it is the stage's
+   * engine and no load of its own is under way. A failed one stays in place, so the next turn
+   * tries it again.
+   */
+  private engineLoaded(stage: "stt" | "tts", engine: string, failure: string | undefined): void {
+    if (this.stopped) return;
+    const state = this.stages[stage];
+    if (state.engine !== engine || state.status === "loading" || state.status === "off" || state.status === "uninstalled") return;
+    if (failure) this.setStage(stage, { status: "unavailable", engine, reason: failure });
+    else if (state.status !== "ready") {
+      this.setStage(stage, { status: "ready", engine });
+      this.log.info("voice stage ready", { stage, engine });
+    }
+  }
+
+  /** A conversation changed state: the speech process is held while any is in a turn. */
+  private holdSpeech(): void {
+    this.deps.engines.turn?.(!this.idle());
   }
 
   // --- lifecycle ---------------------------------------------------------------------------
@@ -192,7 +245,8 @@ export class Voice {
 
   private async load(): Promise<void> {
     this.wakeLoading = this.loadWake();
-    await Promise.all([this.wakeLoading, this.loadStt(), this.loadTts()]);
+    // Not loaded to check: a local engine loads in the speech process when a turn needs it.
+    await Promise.all([this.wakeLoading, this.loadStt(false), this.loadTts(false)]);
     this.log.info("voice stages", { wake: this.stages.wake.status, stt: this.stages.stt.status, tts: this.stages.tts.status });
   }
 
@@ -227,9 +281,9 @@ export class Voice {
   /** config.toml with the app's picks over it: the engines, and the speech engine's voice when one was set for it. */
   private effective(): VoiceConfig {
     const prefs = this.prefs();
-    const tts = prefs.tts ?? this.config.tts;
-    const voice = prefs.voices?.[tts] ?? (tts === this.config.tts ? this.config.tts_voice : undefined);
-    const out: VoiceConfig = { ...this.config, tts, stt: prefs.stt ?? this.config.stt };
+    const tts = ttsAlias(prefs.tts ?? this.config.tts);
+    const voice = prefs.voices?.[tts] ?? (tts === ttsAlias(this.config.tts) ? this.config.tts_voice : undefined);
+    const out: VoiceConfig = { ...this.config, tts, stt: sttAlias(prefs.stt ?? this.config.stt) };
     if (voice === undefined) delete out.tts_voice;
     else out.tts_voice = voice;
     return out;
@@ -264,31 +318,38 @@ export class Voice {
    * before, as `loadTts` does the speech engine. A local one this machine has not installed
    * leaves the stage `uninstalled`, and nothing is fetched for it.
    */
-  private async loadStt(): Promise<void> {
+  private async loadStt(check = true): Promise<void> {
     const config = this.effective();
     const engine = config.stt;
     const load = ++this.sttLoads;
     const current = () => load === this.sttLoads && !this.stopped;
     if (engine === "off") {
       this.sttEngine = undefined;
+      this.deps.engines.unload?.("stt");
       this.setStage("stt", { status: "off" });
       return;
     }
     if (this.uninstalled(engine)) {
       this.sttEngine = undefined;
+      this.deps.engines.unload?.("stt");
       this.setStage("stt", { status: "uninstalled", engine, reason: "not installed on this computer" });
       this.log.info("voice stage not installed", { stage: "stt", engine });
       return;
     }
     this.setStage("stt", { status: "loading", engine });
     try {
-      // The VAD is local either way: it closes the utterance the hosted recogniser then reads whole.
+      // The VAD is local either way: it closes the utterance the online recogniser then reads whole.
       const vad = await this.deps.engines.vad(await this.dir(VAD_MODEL), config);
       let next: SttEngine;
-      if (engine === "server") {
-        if (!this.deps.hosted) throw new Error("no hosted transcription on this node");
+      if (online(engine)) {
+        if (!this.deps.hosted) throw new Error("no online transcription on this node");
+        this.deps.engines.unload?.("stt");
         next = this.deps.hosted.stt();
-      } else next = await this.deps.engines.stt(await this.dir(STT_MODEL), config);
+      } else {
+        const local = localSttEngine(engine);
+        if (!local) throw new Error(`no transcription engine is called ${engine}`);
+        next = await this.deps.engines.stt(await this.dir(STT_MODELS[local]), config, { check });
+      }
       if (!current()) {
         void Promise.resolve(next.close()).catch(() => {});
         return;
@@ -313,18 +374,20 @@ export class Voice {
    * goes on speaking until then. A load a newer pick overtook is dropped when it lands; one
    * that fails leaves nothing speaking, and the stage says why.
    */
-  private async loadTts(): Promise<void> {
+  private async loadTts(check = true): Promise<void> {
     const config = this.effective();
     const engine = config.tts;
     const load = ++this.ttsLoads;
     const current = () => load === this.ttsLoads && !this.stopped;
     if (engine === "off") {
       this.swapTts(undefined);
+      this.deps.engines.unload?.("tts");
       this.setStage("tts", { status: "off" });
       return;
     }
     if (this.uninstalled(engine)) {
       this.swapTts(undefined);
+      this.deps.engines.unload?.("tts");
       this.setStage("tts", { status: "uninstalled", engine, reason: "not installed on this computer" });
       this.log.info("voice stage not installed", { stage: "tts", engine });
       return;
@@ -332,13 +395,15 @@ export class Voice {
     this.setStage("tts", { status: "loading", engine });
     try {
       let next: TtsEngine;
-      if (engine === "server") {
-        if (!this.deps.hosted) throw new Error("no hosted speech on this node");
+      if (online(engine)) {
+        if (!this.deps.hosted) throw new Error("no online speech on this node");
+        this.deps.engines.unload?.("tts");
         next = this.deps.hosted.tts();
+        next.useVoice?.(config.tts_voice);
       } else {
         const local = sherpaEngine(engine);
         const dir = local ? (await this.dir(TTS_MODELS[local])) || undefined : undefined;
-        next = await this.deps.engines.tts(dir, config, this.deps.sidecars);
+        next = await this.deps.engines.tts(dir, config, this.deps.sidecars, { check });
       }
       if (!current()) {
         void Promise.resolve(next.close()).catch(() => {});
@@ -377,7 +442,7 @@ export class Voice {
     this.conversations.clear();
     for (const id of [...this.codecs.keys()]) this.dropCodecs(id);
     this.phoneWake.clear();
-    await Promise.allSettled([this.wakeModel?.close(), this.sttEngine?.close(), this.ttsEngine?.close()]);
+    await Promise.allSettled([this.wakeModel?.close(), this.sttEngine?.close(), this.ttsEngine?.close(), this.deps.engines.close?.()]);
     this.wakeModel = undefined;
     this.sttEngine = undefined;
     this.ttsEngine = undefined;
@@ -527,7 +592,7 @@ export class Voice {
     if (!this.config.enabled) throw new RpcError("unavailable", "voice is off on this node");
     if (!client.audio.out) throw new RpcError("invalid", "this client cannot play audio");
     const stage = this.stages.tts;
-    if (stage.status !== "ready") throw new RpcError("unavailable", `speech is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
+    if (stage.status !== "ready" && !(stage.status === "unavailable" && this.ttsEngine)) throw new RpcError("unavailable", `speech is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
     const conversation = this.conversation(client);
     if (!conversation) throw new RpcError("unavailable", "voice is stopping");
     void conversation.speak(text ?? PREVIEW_LINE, { interrupt: true });
@@ -562,7 +627,10 @@ export class Voice {
       log: this.log.child("conversation"),
       ...(this.deps.now ? { now: this.deps.now } : {}),
       on: {
-        state: (state) => this.deps.bus.emit("voice.state", { state, client: client.id }),
+        state: (state) => {
+          this.deps.bus.emit("voice.state", { state, client: client.id });
+          this.holdSpeech();
+        },
         partial: (text) => this.deps.bus.emit("voice.transcript", { at: this.now(), text }),
         final: (text) => {
           this.active = client.id;
@@ -670,11 +738,15 @@ export class Voice {
     this.conversations.get(client.id)?.played(p.reply, p.stats);
   }
 
-  /** What the button and the phone's wake word both need: a microphone, and something to transcribe with. */
+  /**
+   * What the button and the phone's wake word both need: a microphone, and something to
+   * transcribe with. A local engine that failed to load in the last turn is tried again.
+   */
   private hearable(client: Client): void {
     if (!this.config.enabled) throw new RpcError("unavailable", "voice is off on this node");
     if (!client.audio.in) throw new RpcError("invalid", "this client has no microphone");
-    if (this.stages.stt.status !== "ready") throw new RpcError("unavailable", `speech to text is ${this.stages.stt.status}${this.stages.stt.reason ? `: ${this.stages.stt.reason}` : ""}`);
+    const stage = this.stages.stt;
+    if (stage.status !== "ready" && !(stage.status === "unavailable" && this.sttEngine)) throw new RpcError("unavailable", `speech to text is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
   }
 
   /** The push-to-talk button. Refused when nothing could transcribe what is said. */
@@ -783,8 +855,9 @@ export class Voice {
     if (!this.config.enabled || this.stopped) return;
     this.log.info("voice model changed", { model: name, dir });
     const speech = sherpaEngine(this.effective().tts);
+    const stt = localSttEngine(this.effective().stt);
     if (name === WAKE_MODEL) void (this.wakeLoading = this.loadWake());
-    else if (name === VAD_MODEL || name === STT_MODEL) void this.loadStt();
+    else if (name === VAD_MODEL || (stt && name === STT_MODELS[stt])) void this.loadStt();
     else if (speech && name === TTS_MODELS[speech]) void this.loadTts();
   }
 
@@ -797,6 +870,7 @@ export class Voice {
     c.dispose();
     this.conversations.delete(clientId);
     if (this.active === clientId) this.active = undefined;
+    this.holdSpeech();
     this.log.debug("voice conversation ended", { client: clientId });
   }
 }

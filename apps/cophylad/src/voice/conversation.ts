@@ -340,7 +340,15 @@ export class Conversation {
     this.clearStall();
     this.began = undefined;
     this.setState("transcribing");
-    const text = stream ? await stream.final() : "";
+    // An utterance the VAD heard no speech in is not transcribed at all: a model that reads
+    // audio (Whisper, an online one) makes up a sentence for silence, and a hosted one bills it.
+    // Dropped rather than drained, so nothing stays open for it: the speech process can go.
+    const heard = this.vad?.heard ?? true;
+    if (!heard && stream) {
+      stream.dispose();
+      if (this.stream === stream) this.stream = undefined;
+    }
+    const text = stream && heard ? await stream.final() : "";
     if (this.disposed) return;
     this.stamp("sttFinal");
     if (!text) {

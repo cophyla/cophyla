@@ -208,6 +208,33 @@ describe("voice", () => {
     expect(brainFrames(current!.log).some((f) => f.dir === "out" && f.frame["method"] === "voice.speak")).toBe(true);
   }, 30_000);
 
+  test("a turn holds the speech process from the word until its reply has played, and nothing is loaded to check it at start", async () => {
+    const { d, phone, engines } = await start({
+      script: {
+        on: [
+          {
+            event: "user.message",
+            requests: [
+              { method: "ui.say", params: { blocks: [{ type: "text", text: "It is at three." }] } },
+              { method: "voice.speak", params: { blocks: [{ type: "text", text: "It is at three." }], interrupt: true } },
+            ],
+          },
+        ],
+      },
+    });
+    await waitFor(() => d.brain?.state === "up");
+    // At rest the process is let go of, and the stages came up without a load.
+    expect(engines.turns.filter((t) => t)).toEqual([]);
+    expect(engines.checks).toEqual([]);
+    await utterance(phone);
+    await waitFor(() => engines.turns.includes(true));
+    await waitFor(() => engines.spoken.length === 1, 10_000);
+    // Held through transcription, the brain's turn and the speech; let go once it has played.
+    await waitFor(() => states(phone).at(-1) === "idle" && states(phone).includes("speaking"), 10_000);
+    expect(engines.turns.at(-1)).toBe(false);
+    expect(engines.turns.filter((t) => t)).toHaveLength(1);
+  }, 20_000);
+
   test("push-to-talk with the wake word off: the release ends the utterance, with no silence to wait for", async () => {
     const { ui, phone } = await start({ voice: `wake = "off"\n` });
     await phone.request("voice.ptt", { active: true });
@@ -604,7 +631,8 @@ describe("the wake word on the phone", () => {
     await phone.request("voice.ptt", { active: false });
     await waitFor(() => states(phone).at(-1) === "idle");
     expect(states(phone)).toEqual(["listening", "transcribing", "idle"]);
-    expect(engines.finals).toBe(1);
+    // Nothing was said in it: the recogniser is not asked to read silence.
+    expect(engines.finals).toBe(0);
   }, 20_000);
 
   test("the stall backstop abandons a wake whose phone stopped sending", async () => {
@@ -675,6 +703,19 @@ describe("the wake word on the phone", () => {
     c.dispose();
   });
 
+  test("a press with nothing said drops its stream undrained, so nothing is left open in the speech process", async () => {
+    const calls: string[] = [];
+    const stt: SttEngine = { stream: () => ({ accept: () => {}, final: async () => (calls.push("final"), "words"), reset: () => {}, dispose: () => calls.push("dispose") }), close: () => {} };
+    const { c, seen } = await bare({ stt });
+    c.ptt(true);
+    c.push(silenceChunk());
+    await sleep(10);
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "idle");
+    expect(calls).toEqual(["dispose"]);
+    c.dispose();
+  });
+
   test("the phone's wake is ignored while listening, while transcribing and while the button is held", async () => {
     let release!: () => void;
     const held = new Promise<void>((r) => (release = r));
@@ -682,6 +723,9 @@ describe("the wake word on the phone", () => {
     const { c, seen } = await bare({ stt });
     c.ptt(true);
     expect(c.wakeHeard()).toBe(false);
+    // Something said, so the release has an utterance to transcribe.
+    c.push(speechChunk());
+    await sleep(10);
     c.ptt(false);
     expect(seen).toEqual(["listening", "transcribing"]);
     expect(c.wakeHeard()).toBe(false);
@@ -824,6 +868,17 @@ describe("a phone that speaks Opus and acks", () => {
 
 describe("the speech engine picked in the app", () => {
   const settings = (c: TestClient) => c.request<VoiceSettings>("voice.settings", {});
+
+  test("a pick loads the engine once to check it; an online engine unloads the local one", async () => {
+    const { ui, engines } = await start();
+    await ui.request("voice.configure", { stt: "moonshine-tiny" });
+    await waitFor(() => engines.checks.includes("stt"));
+    await ui.request("voice.configure", { tts: "kokoro-online" });
+    await waitFor(() => engines.unloads.includes("tts"));
+    expect(engines.checks).toEqual(["stt"]);
+    const s = await settings(ui);
+    expect(s).toMatchObject({ tts: "kokoro-online", stt: "moonshine-tiny" });
+  }, 20_000);
   const configure = (c: TestClient, patch: object) => c.request<VoiceSettings>("voice.configure", patch);
   const ready = (d: Daemon, engine: string) => waitFor(() => d.voice.stageStates().tts.status === "ready" && d.voice.stageStates().tts.engine === engine);
 
@@ -831,12 +886,12 @@ describe("the speech engine picked in the app", () => {
     const { d, ui, engines } = await start();
     const first = await settings(ui);
     expect(first).toMatchObject({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 4, stage: { status: "ready", engine: "piper" } });
-    expect(first.engines.filter((e) => e.stage === "tts").map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "server", "off"]);
-    expect(first.engines.filter((e) => e.stage === "stt").map((e) => e.id)).toEqual(["nemotron", "server", "off"]);
+    expect(first.engines.filter((e) => e.stage === "tts").map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "kokoro-online", "off"]);
+    expect(first.engines.filter((e) => e.stage === "stt").map((e) => e.id)).toEqual(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini", "off"]);
     // A local engine says what it comes under; a hosted one runs nowhere here and needs no install.
     expect(first.engines.find((e) => e.id === "piper")).toMatchObject({ local: true, installed: true });
     expect(first.engines.find((e) => e.id === "piper")!.licences!.map((l) => l.name)).toContain("GPL-3.0");
-    expect(first.engines.find((e) => e.stage === "tts" && e.id === "server")).toMatchObject({ local: false });
+    expect(first.engines.find((e) => e.stage === "tts" && e.id === "kokoro-online")).toMatchObject({ local: false });
 
     const picked = await configure(ui, { tts: "kokoro" });
     // Answered before the load: the stage is still loading, and the engine before it still speaks.
@@ -982,17 +1037,17 @@ describe("local engines are installed only when asked", () => {
     expect(s.engines.find((e) => e.id === "piper")).toMatchObject({ local: true, installed: false, bytes: 1000 });
   }, 20_000);
 
-  test("the hosted recogniser needs no install: the VAD is the platform's own", async () => {
+  test("the online recogniser needs no install: the VAD is the platform's own, and `server` is its old name", async () => {
     const engines = new FakeEngines({ transcript: TRANSCRIPT });
     engines.notInstalled.add("nemotron");
     const { d, ui } = await start({ engines });
     expect(d.voice.stageStates().stt.status).toBe("uninstalled");
     await ui.request("voice.configure", { stt: "server" });
-    // Up with nothing installed: what it needs besides the account is the VAD, which ships.
+    // Up with nothing installed: what it needs besides a route is the VAD, which ships.
     await waitFor(() => d.voice.stageStates().stt.status === "ready");
-    expect(d.voice.stageStates().stt).toMatchObject({ engine: "server" });
+    expect(d.voice.stageStates().stt).toMatchObject({ engine: "gemini" });
     expect(engines.installs).toEqual([]);
-    expect(await settings(ui)).toMatchObject({ stt: "server", sttSource: "app" });
+    expect(await settings(ui)).toMatchObject({ stt: "gemini", sttSource: "app" });
     await ui.request("voice.configure", { stt: null });
     await waitFor(() => d.voice.stageStates().stt.status === "uninstalled");
   }, 20_000);

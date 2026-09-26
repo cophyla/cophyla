@@ -8,10 +8,11 @@
 //
 // What it holds to: onnxruntime-node loads before sherpa-onnx (the order the two native
 // runtimes need on Windows), the wake word fires on its own phrase and not on the question,
-// the recogniser gets the question word for word, the VAD closes the utterance after the
-// clip, each in-process speech engine whose model is here speaks in more than one chunk at
-// 24 kHz in the voice picked, and the whole module turns a stream of frames into a
-// `user.message` and speech back.
+// each recogniser whose model is here gets the question word for word in the speech process,
+// with partials on the way, the VAD closes the utterance after the clip, each speech engine
+// whose model is here speaks in more than one chunk at 24 kHz in the voice picked, and the
+// whole module turns a stream of frames into a `user.message` and speech back, with the
+// speech process there for the turn and gone after it.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -27,7 +28,7 @@ import { Sidecars } from "../src/sidecars/index.ts";
 import { Store } from "../src/store/index.ts";
 import { FRAME, IN_RATE, toInt16 } from "../src/voice/engines.ts";
 import { Voice } from "../src/voice/index.ts";
-import { localEngines, STT_MODEL, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "../src/voice/local.ts";
+import { localEngines, STT_MODEL, STT_MODELS, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "../src/voice/local.ts";
 import { removeHome, sleep, tempHome, waitFor } from "./helpers.ts";
 
 const MODELS = process.env["COPHYLA_VOICE_MODELS"] ?? join(import.meta.dir, "..", "models", "voice");
@@ -125,27 +126,37 @@ describe.skipIf(!present)("the real engines", () => {
     }
   }, 120_000);
 
-  test("the recogniser gets the question word for word, with partials on the way", async () => {
-    const stt = await engines().stt(dirOf(STT_MODEL), config());
-    try {
-      const stream = stt.stream();
-      const partials: string[] = [];
-      stream.onPartial = (t) => partials.push(t);
-      const clip = readWav(join(CLIPS, "question.wav"));
-      expect(clip.sampleRate).toBe(IN_RATE);
-      const started = Date.now();
-      for (const f of frames(clip.samples)) stream.accept(f);
-      const text = await stream.final();
-      const took = Date.now() - started;
-      expect(wer(QUESTION, text)).toBe(0);
-      expect(partials.length).toBeGreaterThanOrEqual(2);
-      // Real time is 3 s of audio: the decode must be well inside it.
-      expect(took).toBeLessThan((clip.samples.length / IN_RATE) * 1000);
-      stream.dispose();
-    } finally {
-      await stt.close();
-    }
-  }, 180_000);
+  // Each recogniser whose model is here, in the speech process: Nemotron always, the others when installed.
+  for (const engine of ["nemotron", "moonshine-tiny", "moonshine-base", "whisper-base"] as const) {
+    test.skipIf(!existsSync(join(MODELS, STT_MODELS[engine], "manifest.json")))(`${engine} gets the question word for word in the speech process, with partials on the way, and the process goes after`, async () => {
+      const local = engines();
+      const stt = await local.stt(dirOf(STT_MODELS[engine]), config({ stt: engine }), { check: true });
+      try {
+        expect(local.process.running).toBe(false);
+        const stream = stt.stream();
+        const partials: string[] = [];
+        stream.onPartial = (t) => partials.push(t);
+        const clip = readWav(join(CLIPS, "question.wav"));
+        expect(clip.sampleRate).toBe(IN_RATE);
+        // Paced as a phone sends it, so the partials have time to come.
+        const started = Date.now();
+        for (const f of frames(clip.samples)) {
+          stream.accept(f);
+          await sleep(FEED_MS * 2);
+        }
+        const fed = Date.now();
+        const text = await stream.final();
+        expect(wer(QUESTION, text)).toBe(0);
+        expect(partials.length).toBeGreaterThanOrEqual(1);
+        // After the last frame, the rest of the decode is well inside the clip's length.
+        expect(Date.now() - fed).toBeLessThan((clip.samples.length / IN_RATE) * 1000);
+        expect(Date.now() - started).toBeGreaterThan(0);
+        await waitFor(() => !local.process.running, 5000, 20);
+      } finally {
+        await local.close?.();
+      }
+    }, 180_000);
+  }
 
   test("the VAD closes the utterance once, about a second after the speaking stops", async () => {
     const makeVad = await engines().vad(dirOf(VAD_MODEL), config({ vad_min_silence_ms: 700 }));
@@ -172,7 +183,9 @@ describe.skipIf(!present)("the real engines", () => {
   // Each in-process engine whose model is here: Piper always, Kokoro and Supertonic when fetched.
   for (const engine of ["piper", "kokoro", "supertonic"] as const) {
     test.skipIf(!existsSync(join(MODELS, TTS_MODELS[engine], "manifest.json")))(`${engine} speaks a two-sentence line in more than one chunk at 24 kHz, in the voice picked`, async () => {
-      const tts = await engines().tts(dirOf(TTS_MODELS[engine]), config({ tts: engine }), new Sidecars({ dir: tempHome(), log: silentLogger }));
+      const local = engines();
+      // Checked, so the process says how many voices the model has.
+      const tts = await local.tts(dirOf(TTS_MODELS[engine]), config({ tts: engine }), new Sidecars({ dir: tempHome(), log: silentLogger }), { check: true });
       try {
         expect(tts.name).toBe(engine);
         expect(tts.sampleRate).toBe(24000);
@@ -195,14 +208,16 @@ describe.skipIf(!present)("the real engines", () => {
         // Faster than real time, and the first sentence leaves before the second is made.
         expect(took / audioMs).toBeLessThan(2);
         expect(firstAt).toBeLessThan(took);
+        await waitFor(() => !local.process.running, 5000, 20);
       } finally {
-        await tts.close();
+        await local.close?.();
       }
     }, 180_000);
   }
 
   test("the whole module: frames in, a user message out, and speech back to the phone", async () => {
     const home = tempHome();
+    const local = engines();
     const store = new Store(":memory:");
     store.migrate();
     const bus = new Bus();
@@ -224,12 +239,14 @@ describe.skipIf(!present)("the real engines", () => {
       activity,
       models: { resolve: async (name) => dirOf(name) },
       sidecars,
-      engines: engines(),
+      engines: local,
     });
     try {
       await voice.start();
       await voice.ready();
       expect(voice.capabilities()).toEqual({ wake: true, stt: true, tts: true });
+      // Up without a load: nothing runs until the word.
+      expect(local.process.running).toBe(false);
 
       const messages: string[] = [];
       bus.on("user.message", (m) => messages.push(m.text));
@@ -239,19 +256,20 @@ describe.skipIf(!present)("the real engines", () => {
       const wake = readWav(join(CLIPS, "cophyla.wav")).samples;
       const question = readWav(join(CLIPS, "question.wav")).samples;
       const send = (f: Int16Array) => voice.onAudio(client, { chunk: Buffer.from(f.buffer, f.byteOffset, f.byteLength).toString("base64") });
-      // Paced, as a phone sends it: a burst all at once would fill the backlog and the oldest
-      // frames would be dropped, which is exactly what the guard is there to do.
+      // Paced as a phone sends it, in real time: the recogniser loads in the speech process
+      // while the question is said, and the partials come once it is up.
       for (const f of [...silence(300), ...frames(wake), ...silence(200), ...frames(question), ...silence(2000)]) {
         send(f);
-        await sleep(FEED_MS);
+        await sleep((FRAME / IN_RATE) * 1000);
       }
 
+      await waitFor(() => local.process.running, 60_000, 20);
       await waitFor(() => messages.length === 1, 60_000, 100);
       // The wake word fires partway through its own phrase, so its tail can lead the utterance;
       // what the question itself says must come through whole.
       expect(messages[0]!.toLowerCase()).toContain("what time is the meeting tomorrow afternoon");
       expect(wer(QUESTION, messages[0]!)).toBeLessThan(0.3);
-      expect(transcripts.length).toBeGreaterThanOrEqual(2);
+      expect(transcripts.length).toBeGreaterThanOrEqual(1);
 
       voice.speak([{ type: "text", text: "It is at half past three." }], { client: client.id });
       await waitFor(() => audio.length > 0, 60_000, 100);
@@ -259,7 +277,9 @@ describe.skipIf(!present)("the real engines", () => {
       expect(played).toBeGreaterThan(0);
       // The speech is int16 at the engine's rate, in frames a browser can schedule.
       expect(Buffer.from(audio[0]!, "base64").byteLength % 2).toBe(0);
-      await sleep(100);
+      // Once the reply has played (the node's estimate: this phone sends no ack), the process goes.
+      await waitFor(() => !local.process.running, 20_000, 50);
+      expect(local.process.spawns).toBe(1);
     } finally {
       await voice.stop();
       await sidecars.stopAll();

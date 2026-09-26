@@ -172,11 +172,32 @@ export const ProvidersConfig = z.object({
     .union([Route, z.array(Route).min(1)])
     .default(["server", "byok:gemini"])
     .transform((r) => (typeof r === "string" ? [r] : r)),
+  /** The routes `[voice] stt = "gemini"` tries, the same way: `server`, then `byok:gemini`. */
+  stt: z
+    .union([Route, z.array(Route).min(1)])
+    .default(["server", "byok:gemini"])
+    .transform((r) => (typeof r === "string" ? [r] : r)),
+  /** The routes `[voice] tts = "kokoro-online"` tries: `server`, then `byok:deepinfra`. */
+  tts: z
+    .union([Route, z.array(Route).min(1)])
+    .default(["server", "byok:deepinfra"])
+    .transform((r) => (typeof r === "string" ? [r] : r)),
   gemini: z
     .object({
       /** `GEMINI_API_KEY` in the environment when absent. */
       api_key: z.string().optional(),
       base_url: z.string().url().default("https://generativelanguage.googleapis.com"),
+      /** The model that transcribes on the `byok:gemini` transcription route. */
+      stt_model: z.string().min(1).default("gemini-3.5-flash-lite"),
+    })
+    .prefault({}),
+  deepinfra: z
+    .object({
+      /** `DEEPINFRA_API_KEY` in the environment when absent. */
+      api_key: z.string().optional(),
+      base_url: z.string().url().default("https://api.deepinfra.com"),
+      /** The model that speaks on the `byok:deepinfra` speech route. */
+      tts_model: z.string().min(1).default("hexgrad/Kokoro-82M"),
     })
     .prefault({}),
   tiers: z
@@ -282,16 +303,17 @@ export const VoiceConfig = z.object({
   enabled: z.boolean().default(false),
   wake: z.enum(["openwakeword", "off"]).default("openwakeword"),
   /**
-   * Nemotron transcribes on this machine once it is installed (the app's Settings shows its
-   * licences and installs it); `server` sends each utterance to the account's hosted
-   * transcription and needs no install. The wake word and the VAD are local either way.
+   * Moonshine (Tiny, Base), Whisper Base and Nemotron transcribe on this machine once installed
+   * (the app's Settings shows their licences and installs them), in the speech process, which
+   * runs only while a turn does; `gemini` sends each utterance over `[providers] stt` and needs
+   * no install. The wake word and the VAD are local either way.
    */
   stt: SttEngineId.default("nemotron"),
   /**
-   * Piper, Kokoro and Supertonic run in-process on the CPU once installed from Settings: Piper
-   * is the fastest, Kokoro sounds best, Supertonic speaks 31 languages. None ships with
-   * Cophyla. Chatterbox needs the GPU sidecar, bootstrapped on demand; `server` is the account's
-   * hosted voice. The app can set another over this one.
+   * Piper, Kokoro and Supertonic run on the CPU once installed from Settings, in the speech
+   * process: Piper is the fastest, Kokoro sounds best, Supertonic speaks 31 languages. None
+   * ships with Cophyla. Chatterbox needs the GPU sidecar, bootstrapped on demand;
+   * `kokoro-online` goes over `[providers] tts`. The app can set another over this one.
    */
   tts: TtsEngineId.default("piper"),
   /**
@@ -652,11 +674,19 @@ hello_timeout_ms = 10000
 # not there yet. A route that cannot serve passes the call on; one string is a list of one.
 [providers]
 llm = ["server", "byok:gemini"]
+stt = ["server", "byok:gemini"]      # the routes [voice] stt = "gemini" tries, the same way
+tts = ["server", "byok:deepinfra"]   # the routes [voice] tts = "kokoro-online" tries
 timeout_ms = 120000
 
 [providers.gemini]
 # api_key = "..."            # GEMINI_API_KEY in the environment when absent
 base_url = "https://generativelanguage.googleapis.com"
+stt_model = "gemini-3.5-flash-lite"   # 2.5 Flash-Lite is closed to new keys; the same audio price
+
+[providers.deepinfra]
+# api_key = "..."            # DEEPINFRA_API_KEY in the environment when absent
+base_url = "https://api.deepinfra.com"
+tts_model = "hexgrad/Kokoro-82M"
 
 # What each logical tier means; the brain asks for a tier, never a vendor. tiny is the
 # bookkeeping tier: the running summary and anything else the user never reads.
@@ -730,12 +760,14 @@ account_pairing = true         # a phone signed in to this node's account pairs 
 # Voice: wake word, then transcription, then the reply read out on the phone that asked.
 # The wake word's and the VAD's models come from the release feed the first time a stage is
 # turned on. A local speech or transcription engine is installed only when you ask in the
-# app's Settings, which shows its licences first: Cophyla ships none of them.
+# app's Settings, which shows its licences first: Cophyla ships none of them. The local
+# engines run in a speech process of their own, started when a turn begins (the wake word,
+# the talk button, a reply to read out) and ended as soon as it is over.
 [voice]
 enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
-stt = "nemotron"               # nemotron (on this machine, once installed) | server (the account's hosted transcription) | off
-tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), on the CPU once installed | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off; the app's Settings picks and installs
+stt = "nemotron"               # moonshine-tiny | moonshine-base (English) | whisper-base (99 languages) | nemotron (live words, 40 languages), on this machine once installed | gemini ([providers] stt) | off
+tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), on the CPU once installed | chatterbox (GPU sidecar, bootstrapped on demand) | kokoro-online ([providers] tts) | off; the app's Settings picks and installs
 wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
 # wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
 # wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent
