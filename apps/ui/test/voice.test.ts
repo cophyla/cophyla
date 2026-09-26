@@ -54,7 +54,7 @@ function fixture(opts: { stored?: Record<string, string>; refuseKey?: string } =
   return { voice, store, requests, invoked, handlers };
 }
 
-const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, listening: true, muted: false, watching: false, phrases: ["Hey Jarvis", "Cophyla"] };
+const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"] };
 
 describe("the desktop app's voice", () => {
   test("the hello says a microphone, a speaker, the codecs this web view speaks and played acks", async () => {

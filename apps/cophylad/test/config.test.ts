@@ -45,7 +45,7 @@ describe("config", () => {
       wake: "openwakeword",
       stt: "nemotron",
       tts: "kokoro",
-      wake_model: ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
+      wake_model: ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
       vad_min_silence_ms: 700,
       stt_threads: 2,
       tts_threads: 2,
@@ -102,7 +102,7 @@ describe("config", () => {
     expect(() => parseConfig('[voice]\nstt = "whisper"\n')).toThrow(/voice.stt/);
     expect(() => parseConfig("[voice]\nwake_threshold = 1.5\n")).toThrow(/voice.wake_threshold/);
     // One head by name, as older configs say it, or a list; a threshold for all, or per head.
-    expect(parseConfig('[voice]\nwake_model = "hey_jarvis_v0.1.onnx"\n').voice.wake_model).toEqual(["hey_jarvis_v0.1.onnx"]);
+    expect(parseConfig('[voice]\nwake_model = "cophyla_v0.1.onnx"\n').voice.wake_model).toEqual(["cophyla_v0.1.onnx"]);
     expect(parseConfig('[voice]\nwake_model = ["a.onnx", "b.onnx"]\n').voice.wake_model).toEqual(["a.onnx", "b.onnx"]);
     expect(parseConfig('[voice]\nwake_threshold = { "b.onnx" = 0.55 }\n').voice.wake_threshold).toEqual({ "b.onnx": 0.55 });
     expect(() => parseConfig("[voice]\nwake_model = []\n")).toThrow(/voice.wake_model/);

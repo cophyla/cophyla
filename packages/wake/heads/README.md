@@ -1,6 +1,6 @@
 # Cophyla's own wake-word heads
 
-Keyword heads trained for Cophyla, beside openWakeWord's stock "hey jarvis". Each takes the
+Keyword heads trained for Cophyla, the only ones it ships. Each takes the
 16 × 96 embedding window `WakePipeline` feeds every head and returns one score; each is
 listed with its threshold and phrase in the `wake-openwakeword` model's manifest
 (`apps/cophylad/scripts/fetch-models.ts`, `head_params`), and the phone and the desktop app
@@ -48,9 +48,9 @@ through the node's pipeline, with 13 near misses of which six are in no training
   and neither a higher threshold nor the second pass separated them. Every other near miss
   stayed under 0.15. It fires on "Cophyla" too, in the Kokoro voices, which wakes the node
   all the same.
-- "Hey Jarvis" scored 0.998 or more in all five; nothing else reached 0.06 on it.
 
 The precomputed ACAV100M and validation features are CC BY-NC-SA 4.0 (their dataset cards,
-`binhpham/livekit_wakeword_features` and `davidscripka/openwakeword_features`), the terms the
-stock "hey jarvis" head ships under too. A head trained without them — negatives from
-permissively licensed speech run through the same feature models — would be free of that.
+`binhpham/livekit_wakeword_features` and `davidscripka/openwakeword_features`), and MIT's room
+impulse responses (`davidscripka/MIT_environmental_impulse_responses`) state no licence. A head
+trained without them — negatives from permissively licensed speech run through the same feature
+models, and impulse responses under an open licence — would be free of that.

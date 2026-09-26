@@ -106,7 +106,7 @@ describe.skipIf(!present)("the real engines", () => {
     try {
       const hit = model.stream();
       let peak = 0;
-      for (const f of [...silence(500), ...frames(readWav(join(CLIPS, "hey_jarvis.wav")).samples), ...silence(500)]) {
+      for (const f of [...silence(500), ...frames(readWav(join(CLIPS, "cophyla.wav")).samples), ...silence(500)]) {
         peak = Math.max(peak, (await hit.feed(f)).score);
       }
       expect(peak).toBeGreaterThanOrEqual(0.9);
@@ -226,7 +226,7 @@ describe.skipIf(!present)("the real engines", () => {
       const transcripts: string[] = [];
       bus.on("voice.transcript", (t) => transcripts.push(t.text));
 
-      const wake = readWav(join(CLIPS, "hey_jarvis.wav")).samples;
+      const wake = readWav(join(CLIPS, "cophyla.wav")).samples;
       const question = readWav(join(CLIPS, "question.wav")).samples;
       const send = (f: Int16Array) => voice.onAudio(client, { chunk: Buffer.from(f.buffer, f.byteOffset, f.byteLength).toString("base64") });
       // Paced, as a phone sends it: a burst all at once would fill the backlog and the oldest

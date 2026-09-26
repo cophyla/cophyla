@@ -387,17 +387,16 @@ describe("voice", () => {
 
 // --- the wake word on the phone ----------------------------------------------------------------
 
-const HEAD = "hey_jarvis_v0.1.onnx";
+const HEAD = "cophyla_v0.1.onnx";
 /** Every head the node listens with by default: a client that carries them all hears the words itself. */
-const HEADS = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"];
+const HEADS = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"];
 const PHONE_MODE: WakewordMode = {
   mode: "phone",
   head: HEAD,
   threshold: 0.7,
   scale: "int16",
   heads: [
-    { head: HEAD, threshold: 0.7, scale: "int16", phrase: "hey jarvis" },
-    { head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "cophyla" },
+    { head: HEAD, threshold: 0.7, scale: "int16", phrase: "cophyla" },
     { head: "hey_phyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "hey phyla" },
   ],
 };
@@ -504,7 +503,7 @@ describe("the wake word on the phone", () => {
       head: HEAD,
       threshold: 0.55,
       scale: "unit",
-      heads: [{ head: HEAD, threshold: 0.55, scale: "unit", phrase: "hey jarvis" }],
+      heads: [{ head: HEAD, threshold: 0.55, scale: "unit", phrase: "cophyla" }],
     });
   }, 20_000);
 

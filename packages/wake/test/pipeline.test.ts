@@ -55,14 +55,14 @@ describe("the wake pipeline", () => {
 
   test("each head fires at its own threshold, and the best score is kept when none does", async () => {
     const { m } = models([
-      { name: "jarvis", threshold: 0.7, scale: "int16", scores: [0.625, 0.625, 0.125] },
+      { name: "hey_phyla", threshold: 0.7, scale: "int16", scores: [0.625, 0.625, 0.125] },
       { name: "cophyla", threshold: 0.5, scale: "int16", scores: [0.25, 0.5625, 0.125] },
     ]);
     const p = new WakePipeline(m);
     for (let i = 0; i < 15; i++) await p.feed(chunk());
-    // 0.625 is under jarvis's 0.7 and 0.25 under cophyla's 0.5: the best of them, unfired.
-    expect(await p.feed(chunk())).toEqual({ fired: false, score: 0.625, head: "jarvis" });
-    // 0.5625 is over cophyla's 0.5, though under jarvis's score: cophyla fired.
+    // 0.625 is under hey_phyla's 0.7 and 0.25 under cophyla's 0.5: the best of them, unfired.
+    expect(await p.feed(chunk())).toEqual({ fired: false, score: 0.625, head: "hey_phyla" });
+    // 0.5625 is over cophyla's 0.5, though under hey_phyla's score: cophyla fired.
     expect(await p.feed(chunk())).toEqual({ fired: true, score: 0.5625, head: "cophyla" });
   });
 

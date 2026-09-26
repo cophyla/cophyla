@@ -79,17 +79,17 @@
     "event.list": { "params": [{}], "results": [{ "events": [] }] },
     "voice.ptt": { "params": [{ "active": true }], "results": [{}] },
     "voice.wakeword": {
-      "params": [{ "heads": ["hey_jarvis_v0.1.onnx"] }, { "heads": [] }],
+      "params": [{ "heads": ["cophyla_v0.1.onnx"] }, { "heads": [] }],
       "results": [
-        { "mode": "phone", "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16" },
+        { "mode": "phone", "head": "cophyla_v0.1.onnx", "threshold": 0.7, "scale": "int16" },
         {
           "mode": "phone",
-          "head": "hey_jarvis_v0.1.onnx",
+          "head": "cophyla_v0.1.onnx",
           "threshold": 0.7,
           "scale": "int16",
           "heads": [
-            { "head": "hey_jarvis_v0.1.onnx", "threshold": 0.7, "scale": "int16", "phrase": "Hey Jarvis" },
-            { "head": "cophyla_v0.1.onnx", "threshold": 0.5, "scale": "int16", "phrase": "Cophyla" }
+            { "head": "cophyla_v0.1.onnx", "threshold": 0.7, "scale": "int16", "phrase": "Cophyla" },
+            { "head": "hey_phyla_v0.1.onnx", "threshold": 0.6, "scale": "int16", "phrase": "Hey Phyla" }
           ]
         },
         { "mode": "node" },

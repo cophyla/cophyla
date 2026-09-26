@@ -160,7 +160,7 @@ const server = Bun.serve<Conn>({
         }
         case "voice.wakeword":
           console.log("wakeword", JSON.stringify(params));
-          return ok(ws, id, { mode: "phone", head: "hey_jarvis_v0.1.onnx", threshold: 0.7, scale: "int16" });
+          return ok(ws, id, { mode: "phone", head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16" });
         case "voice.wake":
           console.log("wake heard on the phone", JSON.stringify(params));
           ok(ws, id, {});

@@ -488,7 +488,8 @@ describe("the wake detector", () => {
     expect(d.state).toBe("ready");
     expect(fetched).toEqual(BUNDLED_FILES.map((f) => `wake/${f.file}`));
     expect(d.heads).toEqual(BUNDLED_HEADS);
-    expect(BUNDLED_HEADS).toContain("hey_jarvis_v0.1.onnx");
+    // openWakeWord's stock heads are CC BY-NC-SA 4.0: none of them ships.
+    expect(BUNDLED_HEADS).not.toContain("hey_jarvis_v0.1.onnx");
     expect(BUNDLED_HEADS).toContain("cophyla_v0.1.onnx");
     expect(BUNDLED_HEADS).toContain("hey_phyla_v0.1.onnx");
     await Bun.sleep(0);
@@ -536,14 +537,14 @@ describe("the wake detector", () => {
     d.feed(1, pcm);
     // Nothing is listened to before the node said what to run.
     expect(worker.sent.map((s) => s.msg.type)).toEqual(["init"]);
-    d.configure({ mode: "phone", head: "hey_jarvis_v0.1.onnx", threshold: 0.7, scale: "int16" });
+    d.configure({ mode: "phone", head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16" });
     d.feed(2, pcm);
     const frame = worker.sent.at(-1)!;
     expect(frame.msg).toMatchObject({ type: "frame", seq: 2 });
     expect((frame.msg as Extract<WorkerIn, { type: "frame" }>).pcm).not.toBe(pcm.buffer);
     expect(frame.transfer).toHaveLength(1);
-    worker.emit({ type: "wake", score: 0.93, seq: 2, head: "hey_jarvis_v0.1.onnx" });
-    expect(heard).toEqual([[0.93, 2, "hey_jarvis_v0.1.onnx"]]);
+    worker.emit({ type: "wake", score: 0.93, seq: 2, head: "cophyla_v0.1.onnx" });
+    expect(heard).toEqual([[0.93, 2, "cophyla_v0.1.onnx"]]);
     worker.emit({ type: "error", reason: "out of memory" });
     expect(errors).toEqual(["out of memory"]);
     expect(d.state).toBe("failed");
@@ -555,22 +556,22 @@ describe("the wake detector", () => {
     await d.load();
     d.configure({
       mode: "phone",
-      head: "hey_jarvis_v0.1.onnx",
+      head: "cophyla_v0.1.onnx",
       threshold: 0.7,
       scale: "int16",
       heads: [
-        { head: "hey_jarvis_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "Hey Jarvis" },
-        { head: "cophyla_v0.1.onnx", threshold: 0.5, scale: "int16", phrase: "Cophyla" },
+        { head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "Cophyla" },
+        { head: "hey_phyla_v0.1.onnx", threshold: 0.5, scale: "int16", phrase: "Hey Phyla" },
       ],
     });
     expect(worker.sent.at(-1)!.msg).toEqual({
       type: "configure",
       heads: [
-        { head: "hey_jarvis_v0.1.onnx", threshold: 0.7, scale: "int16" },
-        { head: "cophyla_v0.1.onnx", threshold: 0.5, scale: "int16" },
+        { head: "cophyla_v0.1.onnx", threshold: 0.7, scale: "int16" },
+        { head: "hey_phyla_v0.1.onnx", threshold: 0.5, scale: "int16" },
       ],
     });
-    d.configure({ mode: "phone", head: "hey_jarvis_v0.1.onnx", threshold: 0.6, scale: "unit" });
-    expect(worker.sent.at(-1)!.msg).toEqual({ type: "configure", heads: [{ head: "hey_jarvis_v0.1.onnx", threshold: 0.6, scale: "unit" }] });
+    d.configure({ mode: "phone", head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" });
+    expect(worker.sent.at(-1)!.msg).toEqual({ type: "configure", heads: [{ head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" }] });
   });
 });

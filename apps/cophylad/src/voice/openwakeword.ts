@@ -34,7 +34,7 @@ export interface WakeLoadOptions {
   scale?: Scale;
 }
 
-/** "hey_jarvis_v0.1.onnx" → "hey jarvis": what a head hears, when the manifest does not say. */
+/** "hey_phyla_v0.1.onnx" → "hey phyla": what a head hears, when the manifest does not say. */
 export function phraseOf(file: string): string {
   return basename(file)
     .replace(/\.onnx$/i, "")

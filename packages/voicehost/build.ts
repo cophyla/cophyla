@@ -21,11 +21,6 @@ const NOTICES: Record<string, string> = {
   openWakeWord v0.5.1 feature models, https://github.com/dscripka/openWakeWord
   Copyright (c) 2022 David Scripka. Apache License 2.0.
 `,
-  "hey_jarvis_v0.1.onnx": `hey_jarvis_v0.1.onnx
-  openWakeWord v0.5.1 pre-trained "hey jarvis" model, https://github.com/dscripka/openWakeWord
-  Copyright (c) 2022 David Scripka. Creative Commons Attribution-NonCommercial-ShareAlike 4.0
-  International (CC BY-NC-SA 4.0), https://creativecommons.org/licenses/by-nc-sa/4.0/
-`,
 };
 
 const OWN_HEAD = (file: string) => `${file}

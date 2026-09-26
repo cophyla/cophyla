@@ -90,7 +90,7 @@ describe.skipIf(!present)("the phone's runtime scores as the node's does", () =>
     const onWeb = await models(web, (bytes) => web.InferenceSession.create(bytes, { executionProviders: ["wasm"] }) as Promise<WakeSession>);
 
     const first = (s: number[]) => s.findIndex((v) => v >= THRESHOLD);
-    for (const [clip, fires] of [["hey_jarvis.wav", true], ["question.wav", false]] as const) {
+    for (const [clip, fires] of [["cophyla.wav", true], ["question.wav", false]] as const) {
       const input = chunks(readWav(join(CLIPS, clip)));
       const a = await scores(onNode, input);
       const b = await scores(onWeb, input);

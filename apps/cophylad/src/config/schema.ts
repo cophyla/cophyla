@@ -273,8 +273,8 @@ export const ControllerConfig = z.object({
 });
 export type ControllerConfig = z.infer<typeof ControllerConfig>;
 
-/** The phrases the wake word listens for unless the config names others: "Hey Jarvis", "Cophyla" and "Hey Phyla". */
-export const DEFAULT_WAKE_HEADS = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"] as const;
+/** The phrases the wake word listens for unless the config names others: "Cophyla" and "Hey Phyla". */
+export const DEFAULT_WAKE_HEADS = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"] as const;
 
 /** The voice pipeline: which engine serves each stage, and what each one needs. */
 export const VoiceConfig = z.object({
@@ -725,7 +725,7 @@ enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
 stt = "nemotron"               # nemotron | server (the account's hosted transcription) | off
 tts = "kokoro"                 # kokoro (in-process, CPU) | chatterbox (GPU sidecar, bootstrapped on demand) | server (hosted) | off
-wake_model = ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Hey Jarvis", "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
+wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
 # wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
 # wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent
 vad_min_silence_ms = 700       # silence that ends an utterance

@@ -325,7 +325,7 @@ inside `voice.audio` and belongs to one controller at a time: speech goes back t
 alone, while `voice.state` — which names the controller — reaches every client.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
-them (by default "Hey Jarvis", "Cophyla" and "Hey Phyla"), each at its own threshold and input
+them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input
 scale from the model's manifest (`head_params`) unless `wake_threshold` or `wake_scale` says
 otherwise, and a head the model folder lacks is skipped with a warning. It is heard on the
 client — the phone or the desktop app — when the client carries every one of them. A client

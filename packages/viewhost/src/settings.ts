@@ -685,7 +685,7 @@ function toggle(focus: string, label: string, on: boolean, set: (on: boolean) =>
   return line;
 }
 
-/** "hey jarvis" → "Hey Jarvis": a phrase as it reads in a sentence. */
+/** "hey phyla" → "Hey Phyla": a phrase as it reads in a sentence. */
 export function titleCase(phrase: string): string {
   return phrase.replace(/(^|\s)(\p{Ll})/gu, (_m, space: string, ch: string) => space + ch.toUpperCase());
 }

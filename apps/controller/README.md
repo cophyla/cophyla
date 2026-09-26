@@ -30,7 +30,7 @@ Android and iOS projects by `cap sync` and never committed.
 
 The phone listens for the wake word the whole time it is open, and hears it itself: a
 worker runs openWakeWord on ONNX Runtime's wasm build over the microphone, and only once it
-hears "hey jarvis" does the page send `voice.wake` and the audio after it, until the node
+hears one of the node's wake words ("Cophyla", "Hey Phyla") does the page send `voice.wake` and the audio after it, until the node
 stops listening. The menu's switch turns that off, and the page remembers the off
 (`cophyla.controller.listen` in its storage) until it is turned back on. Push-to-talk skips the
 wake word: hold it, speak, release. Either way the frames go up as `voice.audio` and the
