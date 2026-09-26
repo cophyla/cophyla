@@ -1,7 +1,7 @@
 // Each harness login's plan limits: Claude's read from its usage endpoint with the login's
 // own token (never refreshed; an expired one, an API key or a refusal reads nothing new),
-// at most every five minutes and a quarter hour after a 429; Codex's from the last
-// `rate_limits` in its most recently written rollout, the window told by its length; Muse's
+// at most every five minutes and a quarter hour after a 429; Codex's from the newest
+// `rate_limits` row of its recent rollouts, the window told by its length; Muse's
 // from what its host last observed; a window past its reset reads 0; and a profile that is
 // gone takes its reading with it.
 
@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessProfile } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
-import { CLAUDE_BACKOFF_MS, CLAUDE_EVERY_MS, CLAUDE_USAGE_URL, claudeWindow, lastRolloutLimits, newestRollout, PlanLimits } from "../src/metrics/limits.ts";
+import { CLAUDE_BACKOFF_MS, CLAUDE_EVERY_MS, CLAUDE_USAGE_URL, claudeWindow, lastRolloutLimits, PlanLimits, recentRollouts } from "../src/metrics/limits.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLAUDE = "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8";
@@ -198,7 +198,7 @@ describe("plan limits: Codex", () => {
     expect(lastRolloutLimits("not json \"rate_limits\"\n")).toBeUndefined();
   });
 
-  test("the most recently written rollout of the last two days is read, every minute", async () => {
+  test("the newest row of the last two days' rollouts is read, whatever their times say, every minute", async () => {
     const home = join(dir, ".codex");
     const day = (y: string, m: string, d: string) => {
       const p = join(home, "sessions", y, m, d);
@@ -208,23 +208,26 @@ describe("plan limits: Codex", () => {
     const old = day("2026", "08", "31");
     const yesterday = day("2026", "09", "22");
     const today = day("2026", "09", "23");
-    const write = (d: string, name: string, percent: number, mtime: number) => {
+    const row = (at: string, percent: number) => tokenCount(at, { primary: { used_percent: percent, window_minutes: 10080, resets_at: 1790400000 }, secondary: null }) + "\n";
+    const write = (d: string, name: string, text: string, mtime: number) => {
       const path = join(d, name);
-      writeFileSync(path, tokenCount("2026-09-23T11:00:00Z", { primary: { used_percent: percent, window_minutes: 10080, resets_at: 1790400000 }, secondary: null }) + "\n");
+      writeFileSync(path, text);
       utimesSync(path, mtime / 1000, mtime / 1000);
       return path;
     };
-    write(old, "rollout-2026-08-31T10-00-00-a.jsonl", 90, T0 + 60_000);
-    const long = write(yesterday, "rollout-2026-09-22T09-00-00-b.jsonl", 7, T0 - 60_000);
-    write(today, "rollout-2026-09-23T08-00-00-c.jsonl", 3, T0 - 120_000);
-    // A session started yesterday and still going wrote last; a month-old directory is not looked at.
-    expect(newestRollout(home)).toBe(long);
-    expect(newestRollout(join(dir, "none"))).toBeUndefined();
+    write(old, "rollout-2026-08-31T10-00-00-a.jsonl", row("2026-09-23T11:50:00Z", 90), T0 + 60_000);
+    // A session started yesterday and still going wrote last, though its file kept the time it was made
+    // (as Windows shows a rollout Codex keeps open); a month-old directory is not looked at.
+    const long = write(yesterday, "rollout-2026-09-22T09-00-00-b.jsonl", row("2026-09-23T11:00:00Z", 7), T0 - 86_400_000);
+    const short = write(today, "rollout-2026-09-23T08-00-00-c.jsonl", row("2026-09-23T10:00:00Z", 3), T0 - 60_000);
+    expect(recentRollouts(home).map((r) => r.path).sort()).toEqual([long, short].sort());
+    expect(recentRollouts(join(dir, "none"))).toEqual([]);
     const clock = { now: T0 };
     const limits = new PlanLimits({ profiles: () => [profile(CODEX, "codex", home)], log: silentLogger, now: () => clock.now });
     await limits.refresh();
-    expect(limits.latest()![CODEX]!.weekly!.percent).toBe(7);
-    write(today, "rollout-2026-09-23T08-00-00-c.jsonl", 9, T0 + 1000);
+    expect(limits.latest()![CODEX]).toEqual({ at: Date.parse("2026-09-23T11:00:00Z"), weekly: { percent: 7, resetsAt: 1790400000_000 } });
+    // The other one grows: read again once the minute is up, its row now the newest.
+    write(today, "rollout-2026-09-23T08-00-00-c.jsonl", row("2026-09-23T10:00:00Z", 3) + row("2026-09-23T11:30:00Z", 9), T0 - 60_000);
     await limits.refresh();
     expect(limits.latest()![CODEX]!.weekly!.percent).toBe(7);
     clock.now += 60_000;

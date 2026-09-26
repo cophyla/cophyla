@@ -4,7 +4,9 @@
 // `.credentials.json`: read and never refreshed or written, so an expired token means no new
 // reading until Claude Code refreshes it, and the macOS Keychain is never asked. A profile on
 // an API key has no plan and no limits. Codex writes its limits into every `token_count` of a
-// rollout, so the last one in the most recently written rollout is read. Muse's host keeps the
+// rollout, so the newest of the recent rollouts' last ones is read: by the row's time, since a
+// rollout Codex keeps writing on Windows can keep the time it was made as its last-modified
+// one, and only a rollout that grew since it was last read is read again. Muse's host keeps the
 // last usage it observed, which `usage/read` gives without a model call; none until the login
 // has made one. Readings are taken while a client watches the samples (`refresh`), and when
 // someone asks for them now (`fresh`: `profile.limits`, the brain choosing an account),
@@ -43,6 +45,12 @@ export interface PlanLimitsDeps {
 /** A reading's outcome: new limits, none (the login has none to read), or the last reading kept. */
 type Read = { limits: ProfileLimits } | { none: true } | { keep: true; retryMs?: number };
 
+/** A rollout's size when it was last read, and the limits its last `token_count` carried then. */
+interface RolloutRead {
+  size: number;
+  limits?: ProfileLimits;
+}
+
 export class PlanLimits {
   private deps: PlanLimitsDeps;
   private readings = new Map<string, ProfileLimits>();
@@ -51,6 +59,8 @@ export class PlanLimits {
   private running?: Promise<void>;
   /** When each profile was last read, whatever the reading said. */
   private readAt = new Map<string, number>();
+  /** Each Codex profile's recent rollouts, by path, as last read. */
+  private rollouts = new Map<string, Map<string, RolloutRead>>();
 
   constructor(deps: PlanLimitsDeps) {
     this.deps = deps;
@@ -122,6 +132,7 @@ export class PlanLimits {
     const profiles = this.deps.profiles();
     const known = new Set(profiles.map((p) => p.id));
     for (const id of [...this.readings.keys()]) if (!known.has(id)) this.readings.delete(id);
+    for (const id of [...this.rollouts.keys()]) if (!known.has(id)) this.rollouts.delete(id);
     for (const p of profiles) {
       if (only && !only.has(p.id)) continue;
       const now = this.now();
@@ -169,10 +180,24 @@ export class PlanLimits {
   }
 
   private readCodex(p: HarnessProfile): Read {
-    const file = newestRollout(p.configDir);
-    if (!file) return { keep: true };
-    const limits = lastRolloutLimits(readTail(file, ROLLOUT_TAIL_BYTES));
-    return limits ? { limits } : { keep: true };
+    const before = this.rollouts.get(p.id);
+    const now = new Map<string, RolloutRead>();
+    let newest: ProfileLimits | undefined;
+    for (const { path, size } of recentRollouts(p.configDir)) {
+      let read = before?.get(path);
+      if (!read || read.size !== size) {
+        try {
+          const limits = lastRolloutLimits(readTail(path, ROLLOUT_TAIL_BYTES));
+          read = limits ? { size, limits } : { size };
+        } catch {
+          continue; // gone between the listing and the read
+        }
+      }
+      now.set(path, read);
+      if (read.limits && (!newest || read.limits.at > newest.at)) newest = read.limits;
+    }
+    this.rollouts.set(p.id, now);
+    return newest ? { limits: newest } : { keep: true };
   }
 }
 
@@ -216,8 +241,8 @@ function numbered(dir: string): string[] {
   }
 }
 
-/** The most recently written rollout of the last two days Codex wrote any: `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl`. */
-export function newestRollout(codexHome: string): string | undefined {
+/** The rollouts of the last two days Codex wrote any, with their sizes: `<CODEX_HOME>/sessions/YYYY/MM/DD/rollout-*.jsonl`. */
+export function recentRollouts(codexHome: string): { path: string; size: number }[] {
   const root = join(codexHome, "sessions");
   const days: string[] = [];
   outer: for (const y of numbered(root)) {
@@ -228,7 +253,7 @@ export function newestRollout(codexHome: string): string | undefined {
       }
     }
   }
-  let best: { path: string; mtime: number } | undefined;
+  const out: { path: string; size: number }[] = [];
   for (const day of days) {
     let names: string[];
     try {
@@ -240,14 +265,13 @@ export function newestRollout(codexHome: string): string | undefined {
       if (!name.startsWith("rollout-") || !name.endsWith(".jsonl")) continue;
       const path = join(day, name);
       try {
-        const mtime = statSync(path).mtimeMs;
-        if (!best || mtime > best.mtime) best = { path, mtime };
+        out.push({ path, size: statSync(path).size });
       } catch {
         // gone between the listing and the stat
       }
     }
   }
-  return best?.path;
+  return out;
 }
 
 /** The last `bytes` of a file as text, the partial first line dropped when the read starts mid-file. */
