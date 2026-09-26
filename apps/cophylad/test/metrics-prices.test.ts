@@ -89,4 +89,20 @@ describe("metrics token counters", () => {
     spend.observe(session(b, PROFILE_B, { in: 9, out: 3 }, 0, "ended"));
     expect(spend.drain()).toBeUndefined();
   });
+
+  test("totals that read lower for a while are not spent again when they climb back: only past the highest", () => {
+    const spend = new ProfileSpend();
+    const a = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1";
+    spend.observe(session(a, PROFILE_A, { in: 400, out: 40, cacheRead: 300 }, 2));
+    expect(spend.drain()).toEqual({ [PROFILE_A]: { in: 400, out: 40, cached: 300, cost: 2 } });
+    // Another thread's stats in its place, then its own again, twice over.
+    for (let i = 0; i < 2; i++) {
+      spend.observe(session(a, PROFILE_A, { in: 30, out: 3, cacheRead: 20 }, 0));
+      spend.observe(session(a, PROFILE_A, { in: 400, out: 40, cacheRead: 300 }, 2));
+    }
+    expect(spend.drain()).toBeUndefined();
+    spend.observe(session(a, PROFILE_A, { in: 30, out: 3, cacheRead: 20 }, 0));
+    spend.observe(session(a, PROFILE_A, { in: 410, out: 41, cacheRead: 300 }, 2.5));
+    expect(spend.drain()).toEqual({ [PROFILE_A]: { in: 10, out: 1, cached: 0, cost: 0.5 } });
+  });
 });

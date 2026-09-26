@@ -3,7 +3,9 @@
 // watches the sessions' running stats: each `session.state` is diffed against the last
 // counts seen for that session id, the delta credited to the session's harness profile, so
 // a session that reports cumulative totals is counted once however often it is announced,
-// and a session that ended is credited its last delta and then forgotten.
+// and a session that ended is credited its last delta and then forgotten. The counts kept
+// are the highest seen: totals that read lower for a while (a transcript read again, another
+// thread's stats briefly in their place) are not spent again when they climb back.
 
 import type { Session } from "@cophyla/protocol";
 import type { LlmCounts, ProfileCounts } from "./sampler.ts";
@@ -36,6 +38,8 @@ const seenOf = (s: Session): Seen | undefined => {
   if (!t) return undefined;
   return { in: t.in, out: t.out, cached: (t.cacheRead ?? 0) + (t.cacheWrite ?? 0), cost: s.stats?.cost ?? 0 };
 };
+
+const highest = (a: Seen, b: Seen): Seen => ({ in: Math.max(a.in, b.in), out: Math.max(a.out, b.out), cached: Math.max(a.cached, b.cached), cost: Math.max(a.cost, b.cost) });
 
 /** Ended session ids remembered, so a repeated `ended` announcement is not counted again. */
 const ENDED_CAP = 1024;
@@ -73,7 +77,7 @@ export class ProfileSpend {
       this.last.delete(session.id);
       this.ended.add(session.id);
       if (this.ended.size > ENDED_CAP) this.ended.delete(this.ended.values().next().value!);
-    } else if (now) this.last.set(session.id, now);
+    } else if (now) this.last.set(session.id, was ? highest(was, now) : now);
   }
 
   /** The per-profile deltas since the last drain; undefined when there were none. */
