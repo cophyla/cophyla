@@ -468,8 +468,11 @@ button:disabled {
   flex: 1 1 auto;
 }
 
+/* The sessions and the half under them share the rail below the chat's row as the divider
+   between them says (`--rail-split`, the sessions' percent), the same under every tab, so
+   nothing jumps as a tab is picked, folders open or the cards grow; each scrolls past its share. */
 .tab-sessions {
-  flex: 1 1 auto;
+  flex: var(--rail-split, 45) 1 0;
   min-height: 0;
   overflow: auto;
   overscroll-behavior: contain;
@@ -626,11 +629,42 @@ button:disabled {
    rest. */
 .rail-panel {
   display: flex;
-  flex: 0 1 auto;
+  flex: calc(100 - var(--rail-split, 45)) 1 0;
   flex-direction: column;
   min-height: 0;
-  max-height: 55%;
-  border-top: 1px solid var(--line);
+}
+
+/* The divider: a line with room above and below it to take hold of. */
+.rail-split {
+  position: relative;
+  flex: 0 0 7px;
+  margin: -3px 0;
+  z-index: 1;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.rail-split::before {
+  content: "";
+  position: absolute;
+  top: 3px;
+  right: 0;
+  left: 0;
+  height: 1px;
+  background: var(--line);
+  transition: background-color 0.1s;
+}
+
+.rail-split:hover::before,
+.rail-split:focus-visible::before,
+.rail-split[data-dragging="true"]::before {
+  top: 2px;
+  height: 3px;
+  background: var(--cophyla);
+}
+
+.rail-split:focus-visible {
+  outline: none;
 }
 
 .rail-cards {
@@ -642,20 +676,7 @@ button:disabled {
   overscroll-behavior: contain;
 }
 
-/* With an agent's tab selected the half is two tabs, Status and Files, and takes whatever the
-   sessions leave it, at least that little over half, so the files have room and it does not
-   jump as folders open or the tabs change; the sessions shrink to their tabs and scroll past
-   the rest. */
-#tabs[data-panel="tabbed"] .tab-sessions {
-  flex: 0 1 auto;
-  max-height: 45%;
-}
-
-#tabs[data-panel="tabbed"] .rail-panel {
-  flex: 1 1 0;
-  max-height: none;
-}
-
+/* With an agent's tab selected the half is two tabs, Status and Files. */
 .rail-panel-tabs {
   display: flex;
   flex: 0 0 auto;

@@ -138,6 +138,8 @@ export interface HostReady {
   menu?: boolean;
   /** The host has a microphone and no talk button of its own: the view draws one, holding `voice.ptt`. */
   talk?: boolean;
+  /** What this view last saved with `host.savePrefs` on this device. */
+  prefs?: Record<string, unknown>;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */

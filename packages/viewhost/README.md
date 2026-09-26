@@ -54,5 +54,9 @@ scope check — is the same code in both.
   no credentials in it (`webLink`), and `ViewHost` only while the page has the user's
   activation, which a click in the frame gives it for a few seconds, so a view cannot open
   pages nobody clicked. A host without the seam answers `unsupported`.
+- `host.savePrefs` needs none: it keeps `{ prefs }`, a plain object of at most 8 KB as JSON
+  (`viewPrefs`), in the host page's storage under the view's id, and `host.ready` hands it
+  back as `prefs`. It is how a view without web storage of its own remembers how the user
+  left it on this device; one view never sees another's.
 - `hello` is the host's, always. A view asking for it gets `denied` before the frame reaches
   the daemon.

@@ -5,7 +5,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Client, RpcMessage, RpcNotification, RpcRequest, ViewManifest } from "@cophyla/protocol";
-import { Bridge, envelope, isEnvelope } from "../src/bridge.ts";
+import { Bridge, envelope, isEnvelope, PREFS_MAX } from "../src/bridge.ts";
+import { prefsStore } from "../src/viewhost.ts";
 import type { HelloResult } from "../src/connection.ts";
 
 const MANIFEST: ViewManifest = { id: "default", name: "Chat", entry: "index.html", default: true, source: "builtin", scopes: ["sessions:read", "sessions:write", "asks:answer", "audit:read"] };
@@ -167,6 +168,36 @@ describe("bridge", () => {
     await Bun.sleep(0);
     expect(opened).toHaveLength(1);
     expect(answer("r6")).toMatchObject({ error: { data: { code: "unsupported" } } });
+  });
+
+  test("host.savePrefs keeps a view's own record for any view, host.ready hands it back, and anything but a small object is refused", async () => {
+    const store = new Map<string, string>();
+    const toCophylad: unknown[] = [];
+    const toView: RpcMessage[] = [];
+    const answer = (id: string) => toView.find((f) => (f as { id: unknown }).id === id);
+    const bridge = new Bridge(
+      { manifest: { ...MANIFEST, scopes: [] }, clientScopes: CLIENT.scopes, instance: 1, prefs: prefsStore({ getItem: (k) => store.get(k) ?? null, setItem: (k, v) => void store.set(k, v) }, MANIFEST.id) },
+      { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) },
+    );
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).not.toHaveProperty("prefs");
+    bridge.fromView(req("r1", "host.savePrefs", { prefs: { railSplit: 40 } }));
+    bridge.fromView(req("r2", "host.savePrefs", { prefs: [1] }));
+    bridge.fromView(req("r3", "host.savePrefs", { prefs: { big: "x".repeat(PREFS_MAX) } }));
+    bridge.fromView(req("r4", "host.savePrefs", {}));
+    await Bun.sleep(0);
+    expect(toCophylad).toEqual([]);
+    expect(answer("r1")).toEqual({ jsonrpc: "2.0", id: "r1", result: {} });
+    for (const id of ["r2", "r3", "r4"]) expect(answer(id)).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect([...store.keys()]).toEqual(["cophyla.view-prefs.default"]);
+    toView.length = 0;
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ prefs: { railSplit: 40 } });
+    // a host that keeps none says so
+    const { bridge: bare, toView: bareOut } = make();
+    bare.fromView(req("r5", "host.savePrefs", { prefs: {} }));
+    await Bun.sleep(0);
+    expect(bareOut[0]).toMatchObject({ error: { data: { code: "unsupported" } } });
   });
 
   test("hello, the other scope-less requests and unknown methods are unsupported; malformed frames get invalid or nothing", () => {

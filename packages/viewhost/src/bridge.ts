@@ -14,7 +14,9 @@
 // the host's settings, to any view, since what is picked or set there is the user's doing and
 // never the view's; `host.openLink` opens a web page the user clicked (a URL in a terminal) in
 // their browser, to any view, only http and https and never with credentials in it, and only
-// where the host has the seam. The host tells the view
+// where the host has the seam; `host.savePrefs` keeps a small record of the view's own (how
+// the user left its layout) on this device, to any view, each view's apart from the others',
+// and `host.ready` hands it back as `prefs`. The host tells the view
 // things of its own as notifications, never scoped: `host.ready` and `host.state`, and
 // `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
 // pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
@@ -50,6 +52,20 @@ export interface HostReady {
   menu?: boolean;
   /** The host has a microphone and no talk button of its own: the view may draw one, holding `voice.ptt`. */
   talk?: boolean;
+  /** What the view last saved with `host.savePrefs` on this device, when it saved anything. */
+  prefs?: ViewPrefs;
+}
+
+/** A view's own record on the device it runs on: plain JSON, a few kilobytes at most. */
+export type ViewPrefs = Record<string, unknown>;
+
+/** The most a view's prefs may take, as JSON. */
+export const PREFS_MAX = 8192;
+
+/** Where a view's prefs are kept: the host's, one record per view. */
+export interface PrefsStore {
+  load(): ViewPrefs | undefined;
+  save(prefs: ViewPrefs): void;
 }
 
 export interface BridgeConfig {
@@ -69,13 +85,23 @@ export interface BridgeConfig {
   openSettings?: () => void;
   /** Opens a web page in the user's browser (`host.openLink`); absent, it answers `unsupported`. */
   openLink?: (url: string) => Promise<void>;
+  /** Keeps the view's prefs (`host.savePrefs`); absent, it answers `unsupported`. */
+  prefs?: PrefsStore;
 }
 
 /** The requests a view may make of the host itself, by method. */
 export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
 
 /** The host requests a view may make, and the scope each needs; `null` is none. */
-const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null };
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null };
+
+/** The record a `host.savePrefs` keeps: a plain object whose JSON fits in `PREFS_MAX`. */
+export function viewPrefs(params: unknown): ViewPrefs {
+  const prefs = (params as { prefs?: unknown } | null)?.prefs;
+  if (typeof prefs !== "object" || prefs === null || Array.isArray(prefs)) throw new Error("host.savePrefs needs prefs, an object");
+  if (JSON.stringify(prefs).length > PREFS_MAX) throw new Error(`prefs take at most ${PREFS_MAX} bytes`);
+  return prefs as ViewPrefs;
+}
 
 /** The page a `host.openLink` names, if it may open: an http or https URL with a host and no credentials. */
 export function webLink(params: unknown): string {
@@ -112,6 +138,9 @@ export class Bridge {
   private settings?: HostRequests;
   /** `host.openLink`: the page opens, once it is one that may. */
   private links?: HostRequests;
+  /** `host.savePrefs`, and the prefs `host.ready` carries. */
+  private prefs?: PrefsStore;
+  private savePrefs?: HostRequests;
   private n = 0;
   /** wire id → the view's own id and method. */
   private pending = new Map<string, { id: RpcId; method: string }>();
@@ -142,6 +171,14 @@ export class Bridge {
     if (open) {
       this.links = async (_method, params) => {
         await open(webLink(params));
+        return {};
+      };
+    }
+    const prefs = cfg.prefs;
+    if (prefs) {
+      this.prefs = prefs;
+      this.savePrefs = async (_method, params) => {
+        prefs.save(viewPrefs(params));
         return {};
       };
     }
@@ -196,7 +233,8 @@ export class Bridge {
   /** A request the host answers itself, within the view's scopes. */
   private hostRequest(req: RpcRequest): void {
     const needs = HOST_METHODS[req.method];
-    const handler = req.method === "host.chooseView" ? this.chooser : req.method === "host.settings" ? this.settings : req.method === "host.openLink" ? this.links : this.host;
+    const own: Record<string, HostRequests | undefined> = { "host.chooseView": this.chooser, "host.settings": this.settings, "host.openLink": this.links, "host.savePrefs": this.savePrefs };
+    const handler = req.method in own ? own[req.method] : this.host;
     if (needs === undefined || !handler) {
       this.io.toView(failure(req.id, protocolError("unsupported", `this host has no ${req.method}`)));
       return;
@@ -239,6 +277,8 @@ export class Bridge {
     };
     if (this.hasMenu) params.menu = true;
     if (this.hasTalk) params.talk = true;
+    const prefs = this.prefs?.load();
+    if (prefs) params.prefs = prefs;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
   }

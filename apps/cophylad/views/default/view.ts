@@ -20,7 +20,9 @@
 // folders open) or, a tab away, the status cards; a file or a folder dragged from there onto the
 // chat or the terminal drops its path, and the repository's line under the files
 // (`session.git`) is read again as the agent works and every few seconds, since nothing says
-// a push or a fetch happened. Runs in a sandboxed frame with no network: the host is its whole
+// a push or a fetch happened. The divider between the sessions and that lower half moves, the
+// same under every tab, and where the user left it is kept on the device (`host.savePrefs`,
+// back in `host.ready`). Runs in a sandboxed frame with no network: the host is its whole
 // world.
 //
 // The view pulls only what it shows. The node streams a session's events only while its
@@ -35,14 +37,14 @@
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, connectWords, dropText, explorerKey, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewState, VoiceSetup } from "./model.ts";
-import { activePane, draftOf, explorerSession, HOME_PLACE, refreshAskForm, render } from "./render.ts";
+import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { TerminalView } from "./terminal.ts";
 
 const rpc = new HostRpc();
 const state: ViewState = initialState();
-const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set(), railTab: "files", openDirs: new Map(), picked: new Map() };
+const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set(), railTab: "files", railSplit: RAIL_SPLIT.usual, openDirs: new Map(), picked: new Map() };
 const roots: Roots = {
   app: document.getElementById("app")!,
   railbar: document.getElementById("railbar")!,
@@ -141,6 +143,10 @@ rpc.onNotification((n) => {
       // The link moved with no gap (a phone onto its data channel, or back to the LAN): the node
       // knows this view as a new client now, so what the old one subscribed to is asked again.
       if (state.connected && state.client !== undefined && state.client.id !== ready.client.id) watched.clear();
+      if (ready.prefs) {
+        prefs = ready.prefs;
+        if (!splitDrag) ui.railSplit = railSplit(prefs["railSplit"]);
+      }
       dispatch({ type: "host.ready", params: ready });
       return;
     }
@@ -1684,6 +1690,68 @@ document.addEventListener("keydown", (ev) => {
     putRailAway();
     draw();
   }
+});
+
+// --- the rail's divider --------------------------------------------------------------------------
+
+/** What this view keeps on the device, as the host last handed it back: saved whole, each change on top. */
+let prefs: Record<string, unknown> = {};
+/** The divider is held: where in it the pointer took it, from its top. */
+let splitDrag: { pointer: number; grab: number } | undefined;
+
+/** The divider moved: the rail shows it at once, and the device keeps it. A host that keeps nothing forgets it with the frame. */
+function setRailSplit(value: number, save: boolean): void {
+  ui.railSplit = railSplit(value);
+  roots.tabs.style.setProperty("--rail-split", String(ui.railSplit));
+  roots.tabs.querySelector(".rail-split")?.setAttribute("aria-valuenow", String(ui.railSplit));
+  if (!save) return;
+  prefs = { ...prefs, railSplit: ui.railSplit };
+  void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+}
+
+/** The share the divider's top at `y` gives the sessions, of the height they and the lower half share. */
+function splitAt(y: number): number | undefined {
+  const list = roots.tabs.querySelector<HTMLElement>(".tab-sessions");
+  const panel = roots.tabs.querySelector<HTMLElement>(".rail-panel");
+  const split = roots.tabs.querySelector<HTMLElement>(".rail-split");
+  if (!list || !panel || !split) return undefined;
+  const top = list.getBoundingClientRect().top;
+  const room = panel.getBoundingClientRect().bottom - top - split.offsetHeight;
+  return room > 0 ? ((y - top) / room) * 100 : undefined;
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  const split = (ev.target as Element | null)?.closest<HTMLElement>(".rail-split");
+  if (!split || ev.button !== 0) return;
+  ev.preventDefault();
+  split.setPointerCapture(ev.pointerId);
+  splitDrag = { pointer: ev.pointerId, grab: ev.clientY - split.getBoundingClientRect().top };
+  split.dataset["dragging"] = "true";
+});
+document.addEventListener("pointermove", (ev) => {
+  if (!splitDrag || ev.pointerId !== splitDrag.pointer) return;
+  const at = splitAt(ev.clientY - splitDrag.grab);
+  if (at !== undefined) setRailSplit(at, false);
+});
+for (const type of ["pointerup", "pointercancel"] as const) {
+  document.addEventListener(type, (ev) => {
+    if (!splitDrag || ev.pointerId !== splitDrag.pointer) return;
+    splitDrag = undefined;
+    const split = roots.tabs.querySelector<HTMLElement>(".rail-split");
+    if (split) delete split.dataset["dragging"];
+    setRailSplit(ui.railSplit, true);
+  });
+}
+document.addEventListener("dblclick", (ev) => {
+  if ((ev.target as Element | null)?.closest(".rail-split")) setRailSplit(RAIL_SPLIT.usual, true);
+});
+document.addEventListener("keydown", (ev) => {
+  if (!(ev.target as Element | null)?.classList.contains("rail-split")) return;
+  const step = ev.shiftKey ? 10 : 2;
+  const to = ev.key === "ArrowUp" ? ui.railSplit - step : ev.key === "ArrowDown" ? ui.railSplit + step : ev.key === "Home" ? RAIL_SPLIT.min : ev.key === "End" ? RAIL_SPLIT.max : undefined;
+  if (to === undefined) return;
+  ev.preventDefault();
+  setRailSplit(to, true);
 });
 
 // The talk button listens while it is held: by the pointer, which it captures so a release

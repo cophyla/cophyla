@@ -90,6 +90,10 @@ view without it leaves them no way to another. For the same reason every view mu
 Settings beside it: a control that sends \`host.settings\` the same way, which lays the host's
 own settings over the view (which account agents start under, and with what).
 
+The frame has no storage of its own. To remember how the user left it on this device, a
+view sends \`host.savePrefs\` with \`{ prefs }\` (a plain object, 8 KB at most as JSON; no
+scope needed), and gets it back as \`prefs\` in \`host.ready\`.
+
 ## prompts/ and memory/
 
 Markdown files with front matter, written by the brain through \`prompt.*\` and \`memory.*\`

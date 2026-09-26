@@ -9,13 +9,14 @@
 // view picker (`ViewChooser`) lies over the frame when a view asks for it (`host.chooseView`),
 // and so do its settings (`SettingsPanel`, `host.settings`). A link a view asks it to open
 // (`host.openLink`) opens only on a fresh click: a click in the frame activates this page too,
-// so a view cannot open pages the user never asked for.
+// so a view cannot open pages the user never asked for. What a view saves with `host.savePrefs`
+// is kept in this page's storage, under the view's id, and comes back in its `host.ready`.
 // Where the files come from is the host's: the desktop app fetches them with `view.get` and
 // stages them on its native side, the controller asks the node for a `view.stage` ticket.
 
 import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
-import type { HostRequests } from "./bridge.ts";
+import type { HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
 import type { VoiceSettings } from "./settings.ts";
@@ -44,6 +45,8 @@ export interface ViewHostDeps {
   voice?: VoiceSettings;
   /** Opens a web page in the user's browser, for a view's `host.openLink`. */
   openLink?: (url: string) => Promise<void>;
+  /** Where views' prefs are kept; absent, this page's localStorage, when it has one. */
+  store?: Pick<Storage, "getItem" | "setItem">;
   onError?: (message: string) => void;
 }
 
@@ -68,6 +71,42 @@ export function isStale(mounted: ViewManifest, served: ViewManifest | undefined)
   if (!served) return false;
   if (served.id !== mounted.id) return true;
   return served.version !== undefined && mounted.version !== undefined && served.version !== mounted.version;
+}
+
+/** The storage key a view's prefs are kept under. */
+export function prefsKey(viewId: string): string {
+  return `cophyla.view-prefs.${viewId}`;
+}
+
+/** A view's prefs in a store: what it saved, if it reads back as an object; saving where the store refuses is lost quietly. */
+export function prefsStore(store: Pick<Storage, "getItem" | "setItem"> | undefined, viewId: string): PrefsStore {
+  const key = prefsKey(viewId);
+  return {
+    load: () => {
+      try {
+        const raw = store?.getItem(key);
+        const prefs: unknown = raw ? JSON.parse(raw) : undefined;
+        return typeof prefs === "object" && prefs !== null && !Array.isArray(prefs) ? (prefs as ViewPrefs) : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    save: (prefs) => {
+      try {
+        store?.setItem(key, JSON.stringify(prefs));
+      } catch {
+        // full, or refused: the layout is as the user left it until the view reloads
+      }
+    },
+  };
+}
+
+function pageStorage(): Storage | undefined {
+  try {
+    return window.localStorage;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Milliseconds `view.changed` notices are gathered for before one `view.list` asks what moved. */
@@ -142,6 +181,7 @@ export class ViewHost {
         chooseView: () => this.chooseView(),
         openSettings: () => this.openSettings(),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),
+        prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },
       {
         toCophylad: (req) => conn.send(req).catch((e) => this.fail(String(e instanceof Error ? e.message : e))),

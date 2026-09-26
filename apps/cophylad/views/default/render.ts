@@ -48,6 +48,15 @@ import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, N
 export const processesKey = (node: string): string => `node:${node}/processes`;
 export const ACCOUNT_KEY = "account/details";
 
+/** The sessions' share of the rail under the chat's row, in percent: the usual, and the least and most the divider goes to. */
+export const RAIL_SPLIT = { usual: 45, min: 12, max: 88 } as const;
+
+/** A share for the divider: a number held to its bounds, anything else the usual. */
+export function railSplit(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return RAIL_SPLIT.usual;
+  return Math.round(Math.min(RAIL_SPLIT.max, Math.max(RAIL_SPLIT.min, value)) * 10) / 10;
+}
+
 export interface UiState {
   /** Collapsibles the user opened: `<card key>/<row key>`, and the rail's folds. */
   expanded: Set<string>;
@@ -65,6 +74,8 @@ export interface UiState {
   folded: Set<string>;
   /** What the rail's lower half shows while an agent's tab is selected: its folder's files (the default) or the status cards. The same for every agent. */
   railTab: RailTab;
+  /** The sessions' share of the rail's height under the chat's row, in percent, the rest the lower half's: the divider between them sets it, the same under every tab. */
+  railSplit: number;
   /** The folders the user opened in the explorer, by their path under the folder it shows, per folder (`explorerKey`). */
   openDirs: Map<string, Set<string>>;
   /** The explorer's row the user last picked, per folder it shows. */
@@ -1362,7 +1373,16 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
       strip.append(b);
     }
     panel.append(strip, cards, createExplorer());
-    root.append(top, list, panel);
+    // Between the two: a divider the user drags, or steps with the arrow keys.
+    const split = el("div", "rail-split");
+    split.setAttribute("role", "separator");
+    split.setAttribute("aria-orientation", "horizontal");
+    split.setAttribute("aria-label", "Between the sessions and the panel under them");
+    split.tabIndex = 0;
+    split.setAttribute("aria-valuemin", String(RAIL_SPLIT.min));
+    split.setAttribute("aria-valuemax", String(RAIL_SPLIT.max));
+    split.title = "Drag to share the height; double-click for the usual";
+    root.append(top, list, split, panel);
   }
   const link = linkWords(state);
   const dot = chat.querySelector<HTMLElement>(".link-dot")!;
@@ -1373,6 +1393,9 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     dot.setAttribute("aria-label", link.title);
   }
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
+  const split = String(ui.railSplit);
+  if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
+  root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
   renderRailMenu(root, state, ui);
   // The chat tab pulses while a reply streams, and while a phone is in a conversation.
   setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && !voiceBusy(state));
@@ -1424,7 +1447,6 @@ function renderPanel(root: HTMLElement, state: ViewState, ui: UiState): void {
   const panel = root.querySelector<HTMLElement>(".rail-panel")!;
   const session = explorerSession(state, ui);
   const tab = session ? ui.railTab : "status";
-  setData(root, "panel", session ? "tabbed" : "cards");
   setData(panel, "tab", tab);
   setHidden(panel.querySelector<HTMLElement>(".rail-panel-tabs")!, !session);
   for (const b of Array.from(panel.querySelectorAll<HTMLButtonElement>(".rail-panel-tab"))) {
