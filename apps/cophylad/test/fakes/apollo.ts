@@ -64,20 +64,11 @@ export async function startFakeApollo(opts: { kind?: "apollo" | "sunshine"; cred
   const kind = opts.kind ?? "apollo";
   const dir = mkdtempSync(join(tmpdir(), "cophyla-fake-apollo-"));
   const cert = ensureCertificate(dir, { dnsNames: ["localhost"], ips: ["127.0.0.1"] });
-  let port = freePort();
-  // Two consecutive ports; try until both are free.
-  for (let i = 0; i < 20; i++) {
-    try {
-      const probe = Bun.listen({ hostname: "127.0.0.1", port: port + 1, socket: { data() {} } });
-      probe.stop(true);
-      break;
-    } catch {
-      port = freePort();
-    }
-  }
+  let info!: ReturnType<typeof Bun.serve>;
+  let api!: ReturnType<typeof Bun.serve>;
   const state: FakeApollo = {
     kind,
-    port,
+    port: 0,
     ...(opts.credentials ? { credentials: opts.credentials } : {}),
     config: {},
     live: {},
@@ -116,10 +107,7 @@ export async function startFakeApollo(opts: { kind?: "apollo" | "sunshine"; cred
     return cookie !== undefined && raw.includes(`auth=${cookie}`);
   };
 
-  const info = Bun.serve({
-    hostname: "127.0.0.1",
-    port,
-    fetch(req) {
+  const infoFetch = (req: Request): Response => {
       const url = new URL(req.url);
       state.requests.push(`info ${url.pathname}`);
       if (state.down) return new Response("down", { status: 503 });
@@ -127,14 +115,9 @@ export async function startFakeApollo(opts: { kind?: "apollo" | "sunshine"; cred
       const name = state.live["sunshine_name"] ?? "FAKE-HOST";
       const busy = kind === "sunshine" && state.clients.some((c) => c.connected);
       return new Response(`<?xml version="1.0" encoding="utf-8"?><root status_code="200"><hostname>${name}</hostname><uniqueid>0E6E0635-FAKE</uniqueid><PairStatus>0</PairStatus><state>${busy ? "SUNSHINE_SERVER_BUSY" : "SUNSHINE_SERVER_FREE"}</state></root>`, { headers: { "content-type": "text/xml" } });
-    },
-  });
+  };
 
-  const api = Bun.serve({
-    hostname: "127.0.0.1",
-    port: port + 1,
-    tls: { key: cert.keyPem, cert: cert.certPem },
-    async fetch(req) {
+  const apiFetch = async (req: Request): Promise<Response> => {
       const url = new URL(req.url);
       state.requests.push(`${req.method} ${url.pathname}`);
       if (state.down) return new Response("down", { status: 503 });
@@ -212,7 +195,21 @@ export async function startFakeApollo(opts: { kind?: "apollo" | "sunshine"; cred
         default:
           return json({ error: "Not Found", status_code: 404 }, 404);
       }
-    },
-  });
+  };
+  // Two consecutive ports, bound for real: a pair probed free can be taken before it is served.
+  for (let attempt = 1; ; attempt++) {
+    const port = freePort();
+    let first: ReturnType<typeof Bun.serve> | undefined;
+    try {
+      first = Bun.serve({ hostname: "127.0.0.1", port, fetch: infoFetch });
+      api = Bun.serve({ hostname: "127.0.0.1", port: port + 1, tls: { key: cert.keyPem, cert: cert.certPem }, fetch: apiFetch });
+      info = first;
+      state.port = port;
+      break;
+    } catch (e) {
+      void first?.stop(true);
+      if (attempt >= 20) throw e;
+    }
+  }
   return state;
 }

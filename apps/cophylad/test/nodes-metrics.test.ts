@@ -53,8 +53,8 @@ describe("metrics across the link", () => {
     const T0 = Math.floor(1_700_000_000_000 / 60000) * 60000;
     const p = scripted(T0);
     const s = scripted(T0);
-    primary = await startPrimary({ daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
-    secondary = await startSecondary(primary, { daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
+    primary = await startPrimary({ heartbeatMs: 1000, daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
+    secondary = await startSecondary(primary, { heartbeatMs: 1000, daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
     await linked(secondary);
     // Both nodes primed at start; a tick each yields a first sample.
     p.step();
@@ -111,8 +111,8 @@ describe("metrics across the link", () => {
     const T0 = Math.floor(1_700_000_000_000 / 60000) * 60000;
     const p = scripted(T0);
     const s = scripted(T0);
-    primary = await startPrimary({ daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
-    secondary = await startSecondary(primary, { daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
+    primary = await startPrimary({ heartbeatMs: 1000, daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
+    secondary = await startSecondary(primary, { heartbeatMs: 1000, daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
     await linked(secondary);
     s.step();
     await secondary.metrics.tick();
@@ -169,8 +169,8 @@ describe("metrics across the link", () => {
     const T0 = Math.floor(1_700_000_000_000 / 60000) * 60000;
     const p = scripted(T0);
     const s = scripted(T0);
-    primary = await startPrimary({ daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
-    secondary = await startSecondary(primary, { daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
+    primary = await startPrimary({ heartbeatMs: 1000, daemon: { metrics: { engine: p.engine, manual: true, now: p.now } } });
+    secondary = await startSecondary(primary, { heartbeatMs: 1000, daemon: { metrics: { engine: s.engine, manual: true, now: s.now } } });
     await linked(secondary);
     s.step();
     await secondary.metrics.tick();
