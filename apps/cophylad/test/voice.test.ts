@@ -13,6 +13,15 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Client, Message, RpcNotification, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
+import { ClientRegistry } from "../src/api/clients.ts";
+import { Bus } from "../src/bus.ts";
+import { Activity } from "../src/chat/activity.ts";
+import { Chat } from "../src/chat/index.ts";
+import { Asks } from "../src/gate/asks.ts";
+import { silentLogger } from "../src/log.ts";
+import { Sidecars } from "../src/sidecars/index.ts";
+import { Store } from "../src/store/index.ts";
+import { Voice } from "../src/voice/index.ts";
 import { FakeEngines, WAKE_MARKER, b64, silenceChunk, speechChunk, wakeChunk } from "../src/voice/fake.ts";
 import { parseConfig } from "../src/config/load.ts";
 import { Conversation, OUT_FRAME, PLAYBACK_SLACK_MS } from "../src/voice/conversation.ts";
@@ -438,6 +447,39 @@ describe("the wake word on the phone", () => {
     failing.failStage = "wake";
     const second = await start({ engines: failing });
     expect(await second.phone.request<WakewordMode>("voice.wakeword", { heads: HEADS })).toEqual({ mode: "node" });
+  }, 20_000);
+
+  test("a client that asks while the daemon is still starting, before voice has begun to load, is answered once the wake stage is up", async () => {
+    // The daemon takes clients seconds before it starts voice (the brain comes first), and the
+    // desktop app asks the moment it reconnects: answered `node` then, it streamed for good.
+    const home = tempHome();
+    try {
+      const store = new Store(":memory:");
+      store.migrate();
+      const bus = new Bus();
+      const clients = new ClientRegistry();
+      const client: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["voice", "chat"], via: "direct", audio: { in: true, out: true }, connectedAt: 1 };
+      clients.add(client, { send: () => {}, close: () => {} }, "loopback");
+      const voice = new Voice({
+        config: parseConfig("[voice]\nenabled = true\n").voice,
+        dataDir: join(home, "data"),
+        bus,
+        log: silentLogger,
+        clients,
+        chat: new Chat({ store, bus, asks: new Asks(store, "node_start", bus) }),
+        activity: new Activity({ bus }),
+        models: { resolve: async () => "" },
+        sidecars: new Sidecars({ dir: join(home, "sidecars"), log: silentLogger }),
+        engines: new FakeEngines({ transcript: TRANSCRIPT }),
+      });
+      const answer = voice.wakeword(client, HEADS);
+      await sleep(100);
+      await voice.start();
+      expect(await answer).toEqual(PHONE_MODE);
+      await voice.stop();
+    } finally {
+      removeHome(home);
+    }
   }, 20_000);
 
   test("with the wake word off on the node there is nothing to detect, on the phone or anywhere", async () => {

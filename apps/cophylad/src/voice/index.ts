@@ -105,6 +105,9 @@ export class Voice {
   private loading?: Promise<void>;
   /** The wake stage's latest load, settled once it is ready or unavailable. */
   private wakeLoading?: Promise<void>;
+  /** Settles once `start` has run: the daemon takes clients seconds before it starts voice. */
+  private begun: Promise<void>;
+  private markBegun!: () => void;
 
   constructor(deps: VoiceDeps) {
     this.deps = deps;
@@ -112,12 +115,21 @@ export class Voice {
     this.config = deps.config;
     const off: StageState = { status: "off" };
     this.stages = { wake: { ...off }, stt: { ...off }, tts: { ...off } };
+    this.begun = new Promise((resolve) => (this.markBegun = resolve));
   }
 
   // --- lifecycle ---------------------------------------------------------------------------
 
   /** Returns at once; the engines load behind it and each stage reports itself as it comes up. */
   async start(): Promise<void> {
+    try {
+      await this.begin();
+    } finally {
+      this.markBegun();
+    }
+  }
+
+  private async begin(): Promise<void> {
     if (!this.config.enabled) {
       this.log.info("voice off");
       return;
@@ -406,17 +418,20 @@ export class Voice {
     this.conversation(client)?.ptt(active);
   }
 
-  /** The wake model once its stage settles, waiting a while for one still loading; none when it is not up. */
+  /**
+   * The wake model once its stage settles, waiting a while for one still loading — or not yet
+   * started, for a client that connected while the daemon was still starting; none when it is
+   * not up.
+   */
   private async settledWake(): Promise<WakeModel | undefined> {
-    if (this.stages.wake.status === "loading" && this.wakeLoading) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const late = new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, WAKE_WAIT_MS);
-        timer.unref?.();
-      });
-      await Promise.race([this.wakeLoading, late]);
-      clearTimeout(timer);
-    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, WAKE_WAIT_MS);
+      timer.unref?.();
+    });
+    await Promise.race([this.begun, late]);
+    if (this.stages.wake.status === "loading" && this.wakeLoading) await Promise.race([this.wakeLoading, late]);
+    clearTimeout(timer);
     return this.stages.wake.status === "ready" ? this.wakeModel : undefined;
   }
 
