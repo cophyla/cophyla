@@ -147,6 +147,24 @@ describe("ServerLink", () => {
     fake.scripts["stall"] = { deltas: Array.from({ length: 100 }, () => "x") };
     await expect(l.request("llm.complete", { model: { tier: "fast" }, messages: [{ role: "user", content: [{ type: "text", text: "stall" }] }] })).rejects.toMatchObject({ code: "timeout" });
   });
+
+  test("close while a connect waits on a server that never answers returns at once, not at the connect's timeout", async () => {
+    // Accepts the connection and never answers the upgrade: the socket fires nothing.
+    const mute = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } });
+    try {
+      fake = new FakeServer();
+      const { link: l } = make(() => "token", { url: `http://127.0.0.1:${mute.port}`, helloTimeoutMs: 10_000 });
+      l.connect();
+      await waitFor(() => l.attempts === 1 && l.state === "connecting");
+      await sleep(100);
+      const t0 = Date.now();
+      await l.close();
+      expect(Date.now() - t0).toBeLessThan(2000);
+      expect(l.state).toBe("off");
+    } finally {
+      mute.stop(true);
+    }
+  });
 });
 
 describe("device flow", () => {

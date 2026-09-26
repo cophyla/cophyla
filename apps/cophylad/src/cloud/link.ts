@@ -74,6 +74,8 @@ export class ServerLink {
   private closed = false;
   private loop?: Promise<void>;
   private wake?: () => void;
+  /** Gives up the connect under way, for a close that must not wait out its timeout. */
+  private abortOpen?: () => void;
   private notices = new Map<string, (method: string, params: unknown) => void>();
   private backoffMs: number;
   /** Sockets opened, for the tests. */
@@ -109,6 +111,7 @@ export class ServerLink {
   async close(reason = "closed"): Promise<void> {
     this.closed = true;
     this.dropActive(reason);
+    this.abortOpen?.();
     this.wake?.();
     await this.loop;
     this.stateValue = "off";
@@ -143,7 +146,7 @@ export class ServerLink {
       this.stateValue = "connecting";
       let refused = false;
       try {
-        const auth = await this.open(token);
+        const auth = await this.open(token).finally(() => (this.abortOpen = undefined));
         this.backoffMs = this.deps.reconnectMs;
         this.stateValue = "up";
         this.log.info("server link up", { subject: auth.subject, url: this.deps.url });
@@ -195,16 +198,20 @@ export class ServerLink {
         return;
       }
       let settled = false;
-      const timer = setTimeout(() => {
+      const giveUp = (err: RpcError) => {
         if (settled) return;
         settled = true;
-        reject(new RpcError("timeout", `${url}: no answer within ${timeoutMs} ms`));
+        clearTimeout(timer);
+        reject(err);
         try {
           ws.close();
         } catch {
           // already closed
         }
-      }, timeoutMs);
+      };
+      const timer = setTimeout(() => giveUp(new RpcError("timeout", `${url}: no answer within ${timeoutMs} ms`)), timeoutMs);
+      // A socket that never answers its upgrade fires nothing until the timeout: close() ends it now.
+      this.abortOpen = () => giveUp(new RpcError("unavailable", `${url}: closed while connecting`));
       const rpc = wsPeer(ws, {
         log: this.log,
         label: "server",
