@@ -61,6 +61,7 @@ import type { Metrics } from "../metrics/index.ts";
 import type { Direct } from "../direct/index.ts";
 import type { LinkDirectTiming } from "./direct.ts";
 import type { Remote as RemoteModule } from "../remote/index.ts";
+import type { SessionFiles } from "../sessions/files.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import type { PipeHub, PipeWire } from "../remote/pipes.ts";
 import type { Store } from "../store/index.ts";
@@ -114,6 +115,8 @@ export interface NodesDeps {
   remote?: () => RemoteModule | undefined;
   /** This node's profiles, which the primary's clients may set over the link. */
   profiles?: Pick<Profiles, "update">;
+  /** This node's sessions' folders and repositories, which the primary's clients' explorer lists over the link. */
+  files?: Pick<SessionFiles, "list" | "git">;
   /** The direct connections, once built: switched from the primary's clients, their state carried up on link. */
   direct?: () => Direct | undefined;
   /** The pipes a stream page rides where there is no route to its desktop, once built. */
@@ -316,6 +319,7 @@ export class Nodes {
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
+      ...(deps.files ? { files: deps.files } : {}),
       ...(deps.direct?.() ? { direct: deps.direct()! } : {}),
       directNodes: () => deps.config.direct.nodes,
       ...(deps.directTiming ? { directTiming: deps.directTiming } : {}),

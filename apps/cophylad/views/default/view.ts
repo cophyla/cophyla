@@ -15,8 +15,13 @@
 // rail is put away and slides in over the pane, from the menu button on the host's bar
 // (`host.menu`) or, on a host with none, the view's own. The ⋮ beside the chat's tab has
 // Change view, which opens the host's view picker over the frame (`host.chooseView`), and
-// Settings, which opens the host's settings there (`host.settings`). Runs in a sandboxed
-// frame with no network: the host is its whole world.
+// Settings, which opens the host's settings there (`host.settings`). While an agent's tab is
+// selected the rail's lower half shows its folder's files (`session.files`, a level at a time as
+// folders open) or, a tab away, the status cards; a file or a folder dragged from there onto the
+// chat or the terminal drops its path, and the repository's line under the files
+// (`session.git`) is read again as the agent works and every few seconds, since nothing says
+// a push or a fetch happened. Runs in a sandboxed frame with no network: the host is its whole
+// world.
 //
 // The view pulls only what it shows. The node streams a session's events only while its
 // tab is open (`session.watch`, sent again on every connect), and leaving a tab drops its
@@ -27,17 +32,17 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ContentBlock, Controller, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
+import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, connectWords, dropText, explorerKey, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewState, VoiceSetup } from "./model.ts";
-import { activePane, draftOf, HOME_PLACE, refreshAskForm, render } from "./render.ts";
+import { activePane, draftOf, explorerSession, HOME_PLACE, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { TerminalView } from "./terminal.ts";
 
 const rpc = new HostRpc();
 const state: ViewState = initialState();
-const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set() };
+const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set(), railTab: "files", openDirs: new Map(), picked: new Map() };
 const roots: Roots = {
   app: document.getElementById("app")!,
   railbar: document.getElementById("railbar")!,
@@ -71,6 +76,7 @@ function toggleRail(): void {
     ui.railMenu = undefined;
   }
   draw();
+  refreshExplorer();
 }
 
 /** On a phone the rail lies over the pane: it goes once the user picked what the pane shows. */
@@ -244,7 +250,13 @@ rpc.onNotification((n) => {
     case "terminal.output":
       terminal.output(n.params as TerminalOutput);
       return;
-    case "session.event":
+    case "session.event": {
+      const e = n.params as SessionEvent;
+      dispatch({ type: "session.event", params: e });
+      // A tool the agent ran may have written, moved or committed something: its folder is read again once it settles.
+      if (e.kind === "tool_result" && e.session === ui.selected) explorerSoon();
+      return;
+    }
     case "workspace.state":
     case "ask.state":
     case "audit.entry":
@@ -1027,6 +1039,219 @@ async function taskAction(id: string, action: "pause" | "resume" | "complete"): 
   }
 }
 
+// --- the explorer ------------------------------------------------------------------------------
+
+/** How often the repository is read again while the files show: nothing says a push or a fetch happened. */
+const GIT_POLL_MS = 15_000;
+/** How long after an agent's tool result its folder is read again, so a burst of them reads it once. */
+const FILES_SETTLE_MS = 700;
+
+/** The agent whose files show: its tab is selected, Files is picked, and the rail is out. */
+function shownExplorer(): Session | undefined {
+  if (!state.connected || ui.railTab !== "files" || !railShown()) return undefined;
+  return explorerSession(state, ui);
+}
+
+/** Lists folders of a session's explorer: the ones named, else the folder itself and every one open in it. */
+async function loadFiles(s: Session, dirs?: string[]): Promise<void> {
+  const place = explorerKey(state, s);
+  const asked = dirs ?? openFolders(ui.openDirs.get(place) ?? new Set());
+  dispatch({ type: "files.loading", place, dirs: asked });
+  try {
+    const r = await rpc.request<ClientResult<"session.files">>("session.files", { id: s.id, dirs: asked });
+    dispatch({ type: "files", place, asked, root: r.root, dirs: r.dirs });
+  } catch (e) {
+    const code = e instanceof ViewRpcError ? e.code : undefined;
+    dispatch({ type: "files", place, asked, error: filesErrorWords(code, e instanceof Error ? e.message : String(e)) });
+  }
+}
+
+/** The repository the session's folder is in; its line goes when there is none, or it could not be read. */
+async function loadGit(s: Session): Promise<void> {
+  const place = explorerKey(state, s);
+  try {
+    const r = await rpc.request<{ git?: GitState }>("session.git", { id: s.id });
+    dispatch({ type: "git", place, ...(r.git ? { git: r.git } : {}) });
+  } catch {
+    dispatch({ type: "git", place });
+  }
+}
+
+/** The files shown, read again: every open folder, and the repository. */
+function refreshExplorer(): void {
+  const s = shownExplorer();
+  if (!s) return;
+  void loadFiles(s);
+  void loadGit(s);
+}
+
+let explorerTimer: ReturnType<typeof setTimeout> | undefined;
+
+function explorerSoon(): void {
+  clearTimeout(explorerTimer);
+  explorerTimer = setTimeout(refreshExplorer, FILES_SETTLE_MS);
+}
+
+setInterval(() => {
+  const s = shownExplorer();
+  if (s && document.visibilityState === "visible") void loadGit(s);
+}, GIT_POLL_MS);
+
+// The user was elsewhere, in an editor or a terminal of their own: what they changed shows as they come back.
+window.addEventListener("focus", () => refreshExplorer());
+
+/** Opens a folder of the explorer or closes it; an opened one is listed, what was listed before showing meanwhile. */
+function toggleFolder(rel: string, open?: boolean): void {
+  const s = shownExplorer();
+  if (!s) return;
+  const place = explorerKey(state, s);
+  let dirs = ui.openDirs.get(place);
+  if (!dirs) {
+    dirs = new Set();
+    ui.openDirs.set(place, dirs);
+  }
+  const opening = open ?? !dirs.has(rel);
+  if (opening === dirs.has(rel)) return;
+  if (opening) dirs.add(rel);
+  else dirs.delete(rel);
+  draw();
+  if (opening) void loadFiles(s, [rel]);
+}
+
+/** Picks an explorer row: a folder opens or closes, a file is only marked. */
+function pickFile(row: HTMLElement): void {
+  const s = shownExplorer();
+  const rel = row.dataset["rel"];
+  if (!s || rel === undefined) return;
+  ui.picked.set(explorerKey(state, s), rel);
+  if (row.dataset["kind"] === "dir") toggleFolder(rel);
+  else draw();
+}
+
+/** The explorer's rows the arrows move through: folders and files, in order. */
+function fileRows(): HTMLElement[] {
+  return Array.from(roots.tabs.querySelectorAll<HTMLElement>(".explorer-tree .file-row[data-action=file]"));
+}
+
+/** Moves the focus to an explorer row, and marks it picked. */
+function focusFile(row: HTMLElement | undefined): void {
+  const s = shownExplorer();
+  const rel = row?.dataset["rel"];
+  if (!s || !row || rel === undefined) return;
+  ui.picked.set(explorerKey(state, s), rel);
+  draw();
+  roots.tabs.querySelector<HTMLElement>(`.explorer-tree .file-row[data-rel="${CSS.escape(rel)}"]`)?.focus();
+}
+
+// The tree as VS Code's is walked: the arrows up and down, right to open a folder or step into
+// it, left to close it or step out to its folder, Enter or Space to open or close.
+document.addEventListener("keydown", (ev) => {
+  const row = (ev.target as Element | null)?.closest?.<HTMLElement>(".explorer-tree .file-row[data-action=file]");
+  const rel = row?.dataset["rel"];
+  if (!row || rel === undefined || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  const rows = fileRows();
+  const i = rows.indexOf(row);
+  const dir = row.dataset["kind"] === "dir";
+  const open = row.getAttribute("aria-expanded") === "true";
+  switch (ev.key) {
+    case "ArrowDown":
+      focusFile(rows[i + 1]);
+      break;
+    case "ArrowUp":
+      focusFile(rows[i - 1]);
+      break;
+    case "Home":
+      focusFile(rows[0]);
+      break;
+    case "End":
+      focusFile(rows[rows.length - 1]);
+      break;
+    case "ArrowRight":
+      if (dir && !open) toggleFolder(rel, true);
+      else if (dir) focusFile(rows[i + 1]?.dataset["rel"]?.startsWith(`${rel}/`) ? rows[i + 1] : undefined);
+      break;
+    case "ArrowLeft": {
+      if (dir && open) {
+        toggleFolder(rel, false);
+        break;
+      }
+      const parent = rel.includes("/") ? rel.slice(0, rel.lastIndexOf("/")) : undefined;
+      if (parent !== undefined) focusFile(rows.find((r) => r.dataset["rel"] === parent));
+      break;
+    }
+    case "Enter":
+    case " ":
+      pickFile(row);
+      break;
+    default:
+      return;
+  }
+  ev.preventDefault();
+});
+
+/** What an explorer row carries when dragged: its path, beside the text any other drop takes. */
+const PATH_TYPE = "application/x-cophyla-path";
+
+document.addEventListener("dragstart", (ev) => {
+  const row = (ev.target as Element | null)?.closest?.<HTMLElement>(".file-row[draggable=true]");
+  const path = row?.dataset["path"];
+  if (!row || !path || !ev.dataTransfer) return;
+  ev.dataTransfer.setData(PATH_TYPE, path);
+  ev.dataTransfer.setData("text/plain", dropText(path));
+  ev.dataTransfer.effectAllowed = "copy";
+});
+
+/** The input under the pane that shows, the chat's or the session's, where the user may type. */
+function composerInput(): HTMLInputElement | null {
+  if (roots.composer.hidden) return null;
+  return roots.composer.querySelector<HTMLInputElement>("form:not([hidden]) input[type=text]:not(:disabled)");
+}
+
+/**
+ * Where a dragged path would land: the terminal on show, typed into as a paste; a text field,
+ * which takes the text itself where it is dropped; the pane or its input's row, which puts it
+ * in the input at its caret; or nowhere.
+ */
+function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" | undefined {
+  const node = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
+  if (!node) return undefined;
+  if (terminal.el.contains(node)) return terminal.droppable ? "terminal" : undefined;
+  if (node.matches("input[type=text], textarea")) return (node as HTMLInputElement).disabled ? undefined : "field";
+  if (node.closest("#panes") && composerInput()) return "pane";
+  return undefined;
+}
+
+document.addEventListener("dragover", (ev) => {
+  if (!ev.dataTransfer?.types.includes(PATH_TYPE)) return;
+  const where = dropTarget(ev.target);
+  if (where === undefined || where === "field") return;
+  ev.preventDefault();
+  ev.dataTransfer.dropEffect = "copy";
+});
+
+document.addEventListener("drop", (ev) => {
+  if (!ev.dataTransfer?.types.includes(PATH_TYPE)) return;
+  const where = dropTarget(ev.target);
+  if (where === undefined || where === "field") return;
+  ev.preventDefault();
+  const text = dropText(ev.dataTransfer.getData(PATH_TYPE));
+  if (where === "terminal") {
+    // With a space after it, as macOS's terminals drop a file, so the next one dropped is a word of its own.
+    terminal.paste(`${text} `);
+    return;
+  }
+  const input = composerInput();
+  if (!input) return;
+  input.focus();
+  // After what is there, never over it: a field leaves what was dropped on it selected. A
+  // word right before it is kept apart by a space.
+  const at = input.selectionEnd ?? input.value.length;
+  const spaced = at > 0 && !/\s/.test(input.value[at - 1]!) ? ` ${text}` : text;
+  input.setRangeText(spaced, at, at, "end");
+  // As if typed: the session's draft keeps it.
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+});
+
 // --- the user --------------------------------------------------------------------------------------
 
 /**
@@ -1041,6 +1266,8 @@ function openTab(): void {
   dispatch({ type: "tab.open", session: ui.selected });
   watch();
   if (ui.selected !== undefined && state.connected && loadsHistory(state)) void loadEarlier(ui.selected);
+  // An agent's files show as its tab opens, read afresh.
+  refreshExplorer();
 }
 
 /** Shows a session's tab, or the chat when `session` is undefined, and puts the cursor in its input. */
@@ -1173,6 +1400,26 @@ document.addEventListener("click", (ev) => {
       draw();
       return;
     }
+    case "rail-tab": {
+      const tab = target.dataset["tab"];
+      if (tab !== "files" && tab !== "status") return;
+      ui.railTab = tab;
+      draw();
+      if (tab === "files") refreshExplorer();
+      return;
+    }
+    case "files-refresh":
+      refreshExplorer();
+      return;
+    case "files-collapse": {
+      const s = shownExplorer();
+      if (s) ui.openDirs.delete(explorerKey(state, s));
+      draw();
+      return;
+    }
+    case "file":
+      pickFile(target);
+      return;
     case "rail-toggle":
       toggleRail();
       return;

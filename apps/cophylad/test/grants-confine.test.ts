@@ -167,6 +167,7 @@ describe("what a confined node serves", () => {
       answerHere: () => answerHere,
       local: { session: (id) => sessions.get(id), workspace: (id) => workspaces.get(id), ask: (id) => (id === localAsk.id ? (localAsk as never) : undefined) },
       tools: { source: (name) => (name === "mine" ? "editable" : "builtin"), risk: (name) => (name === "http.get" ? "network" : "read") },
+      files: { list: async (id) => (ran.push(`files ${id}`), { root: "", dirs: [] }), git: async (id) => (ran.push(`git ${id}`), undefined) },
     });
     return { s, inside, outside, wsIn, wsOut, ran, localAsk };
   }
@@ -188,6 +189,12 @@ describe("what a confined node serves", () => {
     expect(await refused(call("remote.invite", { node: NODE }))).toMatch(/not its desktop/);
     expect(await refused(call("profile.update", { id: newId("profile"), patch: {} }))).toMatch(/profiles are its own/);
     expect(ran).toEqual([`spawn ${wsIn.id}`, `put ${join(t.shared, "src")}`]);
+    // an explorer looks into a session inside alone
+    expect(await refused(call("session.files", { id: outside.id }))).toMatch(/outside the folders/);
+    expect(await refused(call("session.git", { id: outside.id }))).toMatch(/outside the folders/);
+    expect(await refused(call("session.files", { id: inside.id, dirs: ["src"] }))).toBe("served");
+    expect(await refused(call("session.git", { id: inside.id }))).toBe("served");
+    expect(ran.slice(2)).toEqual([`files ${inside.id}`, `git ${inside.id}`]);
     expect(((await call("session.list", {})) as { sessions: Session[] }).sessions.map((x) => x.id)).toEqual([inside.id]);
     expect(((await call("workspace.list", {})) as { workspaces: Workspace[] }).workspaces.map((x) => x.id)).toEqual([wsIn.id]);
     expect(((await call("recall", { query: "x" })) as { hits: Hit[] }).hits.map((h) => h.snippet)).toEqual(["in"]);

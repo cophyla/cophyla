@@ -12,10 +12,11 @@
 // into a terminal joined to its turn, and how a followed screen picks its font. Which
 // sessions the user can kill from their pane, and the workspaces New terminal offers. The
 // prompts pinned over the pane, less a session's own while its terminal shows.
+// The explorer: its folders as listed, its rows, the paths they drag, and the repository's line.
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1498,5 +1499,119 @@ describe("default view: terminals", () => {
 
   test("Shift+Enter sends ESC CR, which a Claude prompt takes as a new line", () => {
     expect(SHIFT_ENTER).toBe("\x1b\r");
+  });
+});
+
+describe("default view: the explorer", () => {
+  const place = (s: ViewState, sess: Session) => explorerKey(s, sess);
+
+  test("sessions in one folder of one node share an explorer, whatever the case or the slashes", () => {
+    const s = ready();
+    const a = session("sess_a", 1, { cwd: "C:\\D\\orchestrator" });
+    const b = session("sess_b", 2, { cwd: "c:/d/orchestrator/" });
+    const c = session("sess_c", 3, { cwd: "C:\\D\\orchestrator\\apps" });
+    expect(place(s, a)).toBe(place(s, b));
+    expect(place(s, a)).not.toBe(place(s, c));
+    expect(place(s, a)).not.toBe(place(s, { ...a, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }));
+  });
+
+  test("listings fold in; the rows go folders then files, open folders' contents under them; a failed folder and a long one say so", () => {
+    const s = ready();
+    const p = "k";
+    apply(s, { type: "files.loading", place: p, dirs: ["", "src"] });
+    expect(s.explorers.get(p)!.loading).toEqual(new Set(["", "src"]));
+    expect(explorerNote(s.explorers.get(p))).toBe("Loading…");
+    apply(s, {
+      type: "files",
+      place: p,
+      asked: [""],
+      root: "C:\\D\\site",
+      dirs: [{ dir: "", entries: [{ name: "src", kind: "dir" }, { name: "gone", kind: "dir" }, { name: "README.md", kind: "file" }] }],
+    });
+    const ex = s.explorers.get(p)!;
+    expect(ex.loading).toEqual(new Set(["src"]));
+    expect(explorerNote(ex)).toBe("");
+    // Closed folders show their row alone; one open and still loading says so on its row.
+    expect(selectFileRows(ex, new Set()).map((r) => [r.key, r.kind, r.depth, r.open])).toEqual([
+      ["src", "dir", 0, false],
+      ["gone", "dir", 0, false],
+      ["README.md", "file", 0, false],
+    ]);
+    expect(selectFileRows(ex, new Set(["src"]))[0]).toMatchObject({ key: "src", open: true, loading: true, path: "C:\\D\\site\\src" });
+    apply(s, {
+      type: "files",
+      place: p,
+      asked: ["src", "gone", "src/lib"],
+      root: "C:\\D\\site",
+      dirs: [
+        { dir: "src", entries: [{ name: "lib", kind: "dir" }, { name: "a b.ts", kind: "file" }] },
+        { dir: "gone", error: "no such folder" },
+        { dir: "src/lib", entries: [{ name: "x.ts", kind: "file" }], truncated: true },
+      ],
+    });
+    const rows = selectFileRows(ex, new Set(["src", "src/lib", "gone"]));
+    expect(rows.map((r) => [r.key, r.kind, r.depth, r.name])).toEqual([
+      ["src", "dir", 0, "src"],
+      ["src/lib", "dir", 1, "lib"],
+      ["src/lib/x.ts", "file", 2, "x.ts"],
+      ["src/lib\n+", "more", 2, "More not shown"],
+      ["src/a b.ts", "file", 1, "a b.ts"],
+      ["gone", "dir", 0, "gone"],
+      ["gone\n!", "note", 1, "no such folder"],
+      ["README.md", "file", 0, "README.md"],
+    ]);
+    expect(rows.find((r) => r.key === "src/a b.ts")!.path).toBe("C:\\D\\site\\src\\a b.ts");
+    // A folder open inside a closed one stays open for later, but shows nothing now.
+    expect(selectFileRows(ex, new Set(["src/lib"])).map((r) => r.key)).toEqual(["src", "gone", "README.md"]);
+    // A listing that failed keeps what was listed, and says why.
+    apply(s, { type: "files", place: p, asked: [""], error: "That computer is not connected." });
+    expect(selectFileRows(ex, new Set()).length).toBe(3);
+    expect(explorerNote(ex)).toBe("That computer is not connected.");
+    apply(s, { type: "files", place: p, asked: [""], root: "C:\\D\\site", dirs: [{ dir: "", entries: [] }] });
+    expect(explorerNote(ex)).toBe("This folder is empty.");
+    apply(s, { type: "files", place: p, asked: [""], root: "C:\\D\\site", dirs: [{ dir: "", error: "not allowed to read it" }] });
+    expect(explorerNote(ex)).toBe("This folder cannot be read: not allowed to read it.");
+  });
+
+  test("what is listed again: the folder and each open one whose parents are open, shallowest first, as many as one ask takes", () => {
+    expect(openFolders(new Set())).toEqual([""]);
+    expect(openFolders(new Set(["src/lib", "src", "docs", "old/deep"]))).toEqual(["", "docs", "src", "src/lib"]);
+    const many = new Set(Array.from({ length: 100 }, (_, i) => `d${i}`));
+    expect(openFolders(many).length).toBe(FOLDERS_PER_ASK);
+  });
+
+  test("paths are spelled as their node spells them, and dropped as one word", () => {
+    expect(joinPath("C:\\D\\site", "src/a.ts")).toBe("C:\\D\\site\\src\\a.ts");
+    expect(joinPath("C:\\", "Users")).toBe("C:\\Users");
+    expect(joinPath("\\\\server\\share\\", "x/y")).toBe("\\\\server\\share\\x\\y");
+    expect(joinPath("/home/me/site", "src/a.ts")).toBe("/home/me/site/src/a.ts");
+    expect(joinPath("/", "etc")).toBe("/etc");
+    expect(joinPath("/home/me", "")).toBe("/home/me");
+    expect(dropText("C:\\D\\site\\a.ts")).toBe("C:\\D\\site\\a.ts");
+    expect(dropText("C:\\Program Files\\x")).toBe('"C:\\Program Files\\x"');
+  });
+
+  test("the repository's line reads as VS Code's status bar", () => {
+    expect(gitLine({ branch: "master", commit: "1e0d3291", upstream: "origin/master", ahead: 2, behind: 1, changes: 3 })).toEqual({
+      branch: "master*",
+      sync: "1↓ 2↑",
+      title: "On master; 1 commit to pull and 2 commits to push, against origin/master as of the last fetch; 3 changed files",
+    });
+    expect(gitLine({ branch: "main", upstream: "origin/main", ahead: 0, behind: 0, changes: 0 })).toMatchObject({ branch: "main", sync: "" });
+    expect(gitLine({ branch: "feat", changes: 1 })).toEqual({ branch: "feat*", sync: "not published", title: "On feat; tracking nothing: not published; 1 changed file" });
+    expect(gitLine({ commit: "a8d9def0", changes: 0 })).toEqual({ branch: "a8d9def0", sync: "", title: "Detached at a8d9def0; no changes" });
+    expect(gitLine({ branch: "feat", upstream: "origin/feat", changes: 0 }).title).toBe("On feat; tracking origin/feat, which is gone; no changes");
+    const s = ready();
+    apply(s, { type: "git", place: "k", git: { branch: "main", changes: 0 } });
+    expect(s.explorers.get("k")!.git?.branch).toBe("main");
+    apply(s, { type: "git", place: "k" });
+    expect(s.explorers.get("k")!.git).toBeUndefined();
+  });
+
+  test("a failed listing in the explorer's words", () => {
+    expect(filesErrorWords("unsupported", "unknown method session.files")).toBe("This app cannot show files yet: update it.");
+    expect(filesErrorWords("unsupported", "session.files is not served over the node link")).toBe("That computer cannot show its files yet: update Cophyla there.");
+    expect(filesErrorWords("denied", "session.files reaches past this access")).toBe("This view may not list these files.");
+    expect(filesErrorWords("not_found", "C:\\x: no such folder")).toBe("C:\\x: no such folder");
   });
 });

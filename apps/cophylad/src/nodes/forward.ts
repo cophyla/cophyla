@@ -66,6 +66,8 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "session.send":
     case "session.focus":
     case "session.stop":
+    case "session.files":
+    case "session.git":
       return node(host.ownerOfSession(p["id"] as string));
     case "ask.answer":
       return node(host.ownerOfAsk(p["id"] as string));

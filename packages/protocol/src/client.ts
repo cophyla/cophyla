@@ -214,6 +214,39 @@ const PipeClose = z.object({ pipe: PipeId, reason: z.string().max(200).optional(
 export const TerminalSize = z.object({ cols: z.number().int().min(2).max(1000), rows: z.number().int().min(2).max(1000) });
 export type TerminalSize = z.infer<typeof TerminalSize>;
 
+/** One entry of a folder as `session.files` lists it: a folder (a link to one too), or a file. */
+export const FileEntry = z.object({ name: z.string().min(1), kind: z.enum(["dir", "file"]) });
+export type FileEntry = z.infer<typeof FileEntry>;
+
+/**
+ * A folder under a session's working directory: its path there (`/` between the names, `""`
+ * the directory itself) and its entries, folders first and then files, each by name, cut
+ * short where `truncated` says; or why it could not be read.
+ */
+export const FolderListing = z.object({
+  dir: z.string(),
+  entries: z.array(FileEntry).optional(),
+  truncated: z.literal(true).optional(),
+  error: z.string().optional(),
+});
+export type FolderListing = z.infer<typeof FolderListing>;
+
+/**
+ * A repository as VS Code's status bar has it: the branch checked out (none while HEAD is
+ * detached), the commit it is at (none before the first), the branch it tracks, the commits
+ * it has that one lacks (`ahead`, to push) and the other way (`behind`, to pull) as of the
+ * last fetch, and how many files changed or are new.
+ */
+export const GitState = z.object({
+  branch: z.string().optional(),
+  commit: z.string().optional(),
+  upstream: z.string().optional(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  changes: z.number().int().nonnegative(),
+});
+export type GitState = z.infer<typeof GitState>;
+
 /**
  * A session, a workspace and a thread as a client gets them: without the summary and tags
  * the archive writes, which are the brain's and never leave the node for a client.
@@ -284,6 +317,18 @@ export const clientRequests = {
    * it a client hears a session only as `session.state` and `ask.state`.
    */
   "session.watch": { params: z.object({ ids: z.array(SessionId).max(16) }), result: Empty },
+  /**
+   * Folders under a session's working directory, a level each, for a file explorer: each by
+   * its path there, the directory itself when none is named. One that is not under it (through
+   * `..` or a link that leads out) comes back with an error of its own. Answered by the
+   * session's node.
+   */
+  "session.files": {
+    params: z.object({ id: SessionId, dirs: z.array(z.string().max(4096)).min(1).max(64).optional() }),
+    result: z.object({ root: z.string(), dirs: z.array(FolderListing) }),
+  },
+  /** The repository a session's working directory is in, as a status bar shows it, without fetching; none outside one, or without git. Answered by the session's node. */
+  "session.git": { params: z.object({ id: SessionId }), result: z.object({ git: GitState.optional() }) },
   /** The terminals this node's tether hosts hold: harness sessions' own, and any program started in one. */
   "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
   /**

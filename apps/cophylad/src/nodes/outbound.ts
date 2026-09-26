@@ -103,6 +103,8 @@ export interface OutboundDeps {
   local?: NonNullable<ServeDeps["local"]>;
   /** Where a tool comes from and its risk. */
   tools?: ServeDeps["tools"];
+  /** This node's sessions' folders and repositories, served for the primary's explorer. */
+  files?: ServeDeps["files"];
   /** The primary handed this node's grant a new key: kept for every link after this one. */
   onRekey: (key: string) => void;
   platformVersion: string;
@@ -369,6 +371,7 @@ export class Outbound {
         ...(this.deps.answerHere ? { answerHere: this.deps.answerHere } : {}),
         ...(this.deps.local ? { local: this.deps.local } : {}),
         ...(this.deps.tools ? { tools: this.deps.tools } : {}),
+        ...(this.deps.files ? { files: this.deps.files } : {}),
       });
       this.subscribeUpward(peer);
       // What only changes on events goes up once now, so the primary's clients see it before the next change.

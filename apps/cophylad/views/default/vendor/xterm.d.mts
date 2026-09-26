@@ -78,6 +78,7 @@ export declare class Terminal implements IDisposable {
   loadAddon(addon: ITerminalAddon): void;
   onData(listener: (data: string) => void): IDisposable;
   input(data: string, wasUserInput?: boolean): void;
+  paste(data: string): void;
   attachCustomKeyEventHandler(handler: (event: KeyboardEvent) => boolean): void;
   readonly onSelectionChange: (listener: () => void) => IDisposable;
   hasSelection(): boolean;

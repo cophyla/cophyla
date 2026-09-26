@@ -12,7 +12,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { Node, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
-import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals, eventMethods, foundationMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
+import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
@@ -85,6 +85,7 @@ import { PipeHub } from "./remote/pipes.ts";
 import type { LinkDirectTiming } from "./nodes/direct.ts";
 import { defaultRaiser, withProcessTable } from "./sessions/focus.ts";
 import type { WindowRaiser } from "./sessions/focus.ts";
+import { SessionFiles } from "./sessions/files.ts";
 import { Sessions } from "./sessions/index.ts";
 import type { HarnessAdapter, SessionHost } from "./sessions/model.ts";
 import { Profiles } from "./sessions/profiles.ts";
@@ -417,6 +418,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...(tether ? { tether, env: scrub(env), processes } : {}),
     pricer: (model, tokens) => pricer.cost(model, tokens),
   });
+  // What an explorer shows of a session: the folders under its directory, and its repository.
+  const files = new SessionFiles({ session: (id) => sessions.get(id) });
 
   // The event stream every listener shares, the catalogue, the hooks and the editable layer
   // over them. The stream knows this node's sessions only: a session on another node is
@@ -774,6 +777,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     metrics,
     remote: () => remote,
     profiles,
+    files,
     direct: () => direct,
     pipes: () => pipes,
     ...(opts.direct?.link ? { directTiming: opts.direct.link } : {}),
@@ -930,6 +934,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const methods = withForwarding({
     ...foundationMethods({ asks, node, promote: (id) => nodes!.promote(id), restart: (force, by) => restart.request({ force, by }) }),
     ...attachMethods({ sessions, workspaces, profiles, clients, nodeId: identity.id, ...(limits ? { limits } : {}) }),
+    ...fileMethods({ files }),
     ...viewMethods({ views }),
     ...viewStageMethods({ views, tickets }),
     ...chatMethods({ chat }),

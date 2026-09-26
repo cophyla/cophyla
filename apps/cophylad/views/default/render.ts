@@ -5,7 +5,12 @@
 // and under it one tab per open session, the agent's mark and its name, grouped under the
 // folder they work in, then a card per node with its machine's bars, its processes folded
 // away, and its desktop (the host's state, its viewers, and Connect, a PIN or a phone code),
-// each login's plan limits and spend, and the account, its details folded away;
+// each login's plan limits and spend, and the account, its details folded away. While an
+// agent's tab is selected that lower half has two tabs: Status, which holds all of it, and
+// Files, the default, an explorer of the folder the agent works in, its folders folding open
+// a level at a time and each row dragged onto the chat or the terminal to drop its path
+// there, and at its foot the repository's branch and the commits to pull and to push. Which
+// of the two shows is the same for every agent;
 // the chat stream and every session pane stay in the DOM and only the selected one shows,
 // so the chat keeps its place when the user comes back, and a session's pane holds rows
 // only while its tab is open. Above a timeline, and at the top of the chat, a button loads
@@ -36,8 +41,8 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, GRANT_ENDS, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -58,6 +63,12 @@ export interface UiState {
   scale: number;
   /** The rail's folder groups the user folded away, by group key. */
   folded: Set<string>;
+  /** What the rail's lower half shows while an agent's tab is selected: its folder's files (the default) or the status cards. The same for every agent. */
+  railTab: RailTab;
+  /** The folders the user opened in the explorer, by their path under the folder it shows, per folder (`explorerKey`). */
+  openDirs: Map<string, Set<string>>;
+  /** The explorer's row the user last picked, per folder it shows. */
+  picked: Map<string, string>;
   /** The user was working in the pinned prompts: when its ask is replaced by the next one, the focus follows. */
   pinnedFocus: boolean;
   /** The user folded the pinned prompts away to their bar's one line. */
@@ -97,6 +108,8 @@ export interface UiState {
   /** The invite's QR code shows large, over the view, for a camera across the desk. */
   qrZoom?: boolean;
 }
+
+export type RailTab = "files" | "status";
 
 /** New terminal's menu: the node's recent workspaces once it listed them, and the place a shell is starting in (`HOME_PLACE` for the home folder). */
 export interface TerminalMenu {
@@ -1333,7 +1346,23 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     // They share one scroll under the sessions.
     const cards = el("div", "rail-cards");
     cards.append(nodes, account, foot);
-    root.append(top, list, cards);
+    // While an agent's tab is selected they are the Status tab, beside its folder's files.
+    const panel = el("div", "rail-panel");
+    const strip = el("div", "rail-panel-tabs");
+    strip.setAttribute("role", "tablist");
+    strip.setAttribute("aria-label", "Under the sessions");
+    for (const [tab, label, title] of [
+      ["status", "Status", "The machines, the usage, the account and the phones"],
+      ["files", "Files", "The folder this agent works in"],
+    ] as const) {
+      const b = actionButton("rail-panel-tab", label, "rail-tab");
+      b.setAttribute("role", "tab");
+      b.dataset["tab"] = tab;
+      b.title = title;
+      strip.append(b);
+    }
+    panel.append(strip, cards, createExplorer());
+    root.append(top, list, panel);
   }
   const link = linkWords(state);
   const dot = chat.querySelector<HTMLElement>(".link-dot")!;
@@ -1358,6 +1387,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   newTerminal.disabled = !state.connected;
   renderNewTerminal(root.querySelector<HTMLElement>(".new-terminal-menu")!, newTerminal, state, ui, canTerminal);
 
+  renderPanel(root, state, ui);
   renderNodes(root.querySelector<HTMLElement>(".rail-nodes")!, state, ui);
   renderAccount(root.querySelector<HTMLElement>(".account-card")!, state, ui);
 
@@ -1378,6 +1408,127 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   setFormBusy(phoneForm, state, ui);
   renderInvitePanel(foot.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui, "controller");
   renderPending(foot.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller");
+}
+
+/** The session whose files the rail can show: the agent whose tab is selected, where the view may read sessions. */
+export function explorerSession(state: ViewState, ui: UiState): Session | undefined {
+  if (!state.scopes.includes("sessions:read")) return undefined;
+  return ui.selected !== undefined ? state.sessions.get(ui.selected)?.session : undefined;
+}
+
+/**
+ * The rail's lower half: the status cards alone while the chat or a bare terminal shows; with
+ * an agent's tab selected, its two tabs, Status and Files, and the one picked.
+ */
+function renderPanel(root: HTMLElement, state: ViewState, ui: UiState): void {
+  const panel = root.querySelector<HTMLElement>(".rail-panel")!;
+  const session = explorerSession(state, ui);
+  const tab = session ? ui.railTab : "status";
+  setData(root, "panel", session ? "tabbed" : "cards");
+  setData(panel, "tab", tab);
+  setHidden(panel.querySelector<HTMLElement>(".rail-panel-tabs")!, !session);
+  for (const b of Array.from(panel.querySelectorAll<HTMLButtonElement>(".rail-panel-tab"))) {
+    const on = b.dataset["tab"] === tab;
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  }
+  const cards = panel.querySelector<HTMLElement>(".rail-cards")!;
+  setHidden(cards, tab !== "status");
+  if (session) cards.setAttribute("role", "tabpanel");
+  else cards.removeAttribute("role");
+  renderExplorer(panel.querySelector<HTMLElement>(".explorer")!, state, ui, tab === "files" ? session : undefined);
+}
+
+/** The Files tab: the folder's name with Refresh and Collapse, its tree, a note while it has none, and the repository's line at its foot. */
+function createExplorer(): HTMLElement {
+  const block = el("section", "explorer");
+  block.setAttribute("role", "tabpanel");
+  const head = el("div", "explorer-head");
+  const refresh = actionButton("explorer-tool explorer-refresh", "", "files-refresh");
+  refresh.title = "Refresh";
+  refresh.setAttribute("aria-label", "Refresh the files");
+  const collapse = actionButton("explorer-tool explorer-collapse", "", "files-collapse");
+  collapse.title = "Collapse folders";
+  collapse.setAttribute("aria-label", "Collapse every folder");
+  head.append(el("span", "explorer-root"), refresh, collapse);
+  const tree = el("div", "explorer-tree");
+  tree.setAttribute("role", "tree");
+  const git = el("div", "explorer-git");
+  git.setAttribute("role", "status");
+  git.append(el("span", "git-mark"), el("span", "git-branch"), el("span", "git-sync"));
+  block.append(head, tree, el("p", "explorer-note"), git);
+  return block;
+}
+
+const NO_FOLDERS: ReadonlySet<string> = new Set();
+
+function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, session: Session | undefined): void {
+  setHidden(block, session === undefined);
+  if (!session) return;
+  const place = explorerKey(state, session);
+  const ex = state.explorers.get(place);
+  const rootPath = ex?.root ?? session.cwd;
+  const name = rootPath.split(/[\\/]/).filter((p) => p !== "").pop() ?? rootPath;
+  const head = block.querySelector<HTMLElement>(".explorer-root")!;
+  setText(head, name);
+  head.title = rootPath;
+  const tree = block.querySelector<HTMLElement>(".explorer-tree")!;
+  tree.setAttribute("aria-label", `Files in ${name}`);
+  const rows = ex ? selectFileRows(ex, ui.openDirs.get(place) ?? NO_FOLDERS) : [];
+  const picked = ui.picked.get(place);
+  // One row takes the Tab key, the one picked or else the first; the arrows move from it.
+  const current = rows.find((r) => r.key === picked && (r.kind === "dir" || r.kind === "file"))?.key ?? rows.find((r) => r.kind === "dir" || r.kind === "file")?.key;
+  reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current));
+  const note = block.querySelector<HTMLElement>(".explorer-note")!;
+  const words = explorerNote(ex);
+  setText(note, words);
+  setHidden(note, words === "");
+  for (const b of Array.from(block.querySelectorAll<HTMLButtonElement>(".explorer-tool"))) b.disabled = !state.connected;
+  const git = block.querySelector<HTMLElement>(".explorer-git")!;
+  setHidden(git, ex?.git === undefined);
+  if (!ex?.git) return;
+  const line = gitLine(ex.git);
+  setText(git.querySelector(".git-branch")!, line.branch);
+  const sync = git.querySelector<HTMLElement>(".git-sync")!;
+  setText(sync, line.sync);
+  setHidden(sync, line.sync === "");
+  setData(sync, "state", ex.git.upstream === undefined ? "none" : line.sync === "" ? "even" : "moved");
+  git.title = line.title;
+}
+
+/** An explorer row: its twisty (a folder's), its mark, its name. A folder or a file is dragged by its path. */
+function createFileRow(): HTMLElement {
+  const row = el("div", "file-row");
+  row.append(el("span", "file-twisty"), el("span", "file-mark"), el("span", "file-name"));
+  return row;
+}
+
+function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined, current: string | undefined): void {
+  const item = r.kind === "dir" || r.kind === "file";
+  setData(row, "kind", r.kind);
+  setData(row, "rel", r.key);
+  setData(row, "path", r.path);
+  setData(row, "loading", r.loading ? "1" : "0");
+  const depth = String(r.depth);
+  if (row.style.getPropertyValue("--depth") !== depth) row.style.setProperty("--depth", depth);
+  if (item) {
+    setData(row, "action", "file");
+    row.setAttribute("role", "treeitem");
+    row.setAttribute("aria-level", String(r.depth + 1));
+    row.setAttribute("aria-selected", picked === r.key ? "true" : "false");
+    if (r.kind === "dir") row.setAttribute("aria-expanded", r.open ? "true" : "false");
+    else row.removeAttribute("aria-expanded");
+    row.draggable = true;
+    row.tabIndex = r.key === current ? 0 : -1;
+    row.title = r.path;
+  } else {
+    delete row.dataset["action"];
+    row.setAttribute("role", "none");
+    for (const a of ["aria-level", "aria-selected", "aria-expanded"]) row.removeAttribute(a);
+    row.draggable = false;
+    row.removeAttribute("tabindex");
+    row.title = r.kind === "more" ? "This folder has more entries than the explorer lists" : r.path;
+  }
+  setText(row.querySelector(".file-name")!, r.name);
 }
 
 /** The ⋮ menu beside the chat's tab: Change view and Settings, and why one did not open when it could not. */

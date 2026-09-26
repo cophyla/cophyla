@@ -89,6 +89,9 @@ fn main() {
                 .min_inner_size(640.0, 420.0)
                 // The view is dark, and so is the title bar.
                 .theme(Some(Theme::Dark))
+                // The page's own drag and drop, a file dragged from the view's explorer onto its
+                // chat or terminal: on Windows the native file-drop handler would swallow it.
+                .disable_drag_drop_handler()
                 .visible(false)
                 // The host page never leaves the app's own origin (or `tauri dev`'s server when
                 // one is configured). A view's frame is governed by the host CSP's frame-src;

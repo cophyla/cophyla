@@ -12,9 +12,12 @@
 // The grants are rows too: each phone and node with its access and its end, an invite just
 // minted while its panel shows, the ones still pending, and what the desktop offers this node
 // (Join a primary while it is alone, Leave once it joined one).
+// A session's explorer is rows too: the folders under its directory as listed so far, kept per
+// folder a session works in so the sessions there share them, and its repository as a status
+// bar has it.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /** The conversation on a controller, as the view last heard it. */
 export interface VoiceRow {
@@ -110,6 +113,20 @@ export interface SessionCard {
   unseen: boolean;
 }
 
+/**
+ * What the explorer shows of a folder a session works in: the folder as its node spells it,
+ * once listed; each folder under it listed so far, by its path there (`""` the folder itself);
+ * the ones asked for and not answered yet; why the last listing failed, when it did; and its
+ * repository as last read, when it is in one.
+ */
+export interface Explorer {
+  root?: string;
+  dirs: Map<string, FolderListing>;
+  loading: Set<string>;
+  error?: string;
+  git?: GitState;
+}
+
 export interface HostReady {
   client: Client;
   node: NodeId;
@@ -143,6 +160,8 @@ export interface ViewState {
   sessions: Map<string, SessionCard>;
   /** The node's terminals, from `terminal.list` and `terminal.state`, while connected. */
   terminals: Map<string, Terminal>;
+  /** What each folder a session works in shows in the explorer, by `explorerKey`. */
+  explorers: Map<string, Explorer>;
   asks: Map<string, Ask>;
   /** The newest AUDIT_KEEP entries by `at`. */
   audit: Map<string, AuditEntry>;
@@ -210,6 +229,12 @@ export type Action =
   /** A page of a tab's history, asked for under its opening `opened`. */
   | { type: "history"; session: string; opened: number; events: SessionEvent[]; limit: number }
   | { type: "draft"; session: string; text: string }
+  /** Folders of an explorer were asked for. */
+  | { type: "files.loading"; place: string; dirs: string[] }
+  /** The folders asked for came back, or why they did not (`error`). */
+  | { type: "files"; place: string; asked: string[]; root?: string; dirs?: FolderListing[]; error?: string }
+  /** An explorer's repository as read now; none outside one, or when it could not be read. */
+  | { type: "git"; place: string; git?: GitState }
   | { type: "send.result"; session: string; ref: string; text: string; at: number; status: "queued" | "held" }
   | { type: "chat.message"; params: { message: Message } }
   | { type: "chat.delta"; params: { message: string; block: number; delta: ContentBlock } }
@@ -267,6 +292,7 @@ export function initialState(): ViewState {
     scopes: [],
     sessions: new Map(),
     terminals: new Map(),
+    explorers: new Map(),
     asks: new Map(),
     audit: new Map(),
     workspaces: new Map(),
@@ -392,6 +418,15 @@ function card(state: ViewState, session: Session): SessionCard {
     c.session = session;
   }
   return c;
+}
+
+function explorer(state: ViewState, place: string): Explorer {
+  let ex = state.explorers.get(place);
+  if (!ex) {
+    ex = { dirs: new Map(), loading: new Set() };
+    state.explorers.set(place, ex);
+  }
+  return ex;
 }
 
 function addEvent(c: SessionCard, e: SessionEvent): void {
@@ -530,6 +565,29 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "draft": {
       const c = state.sessions.get(action.session);
       if (c) c.draft = action.text;
+      return state;
+    }
+    case "files.loading": {
+      const ex = explorer(state, action.place);
+      for (const d of action.dirs) ex.loading.add(d);
+      return state;
+    }
+    case "files": {
+      const ex = explorer(state, action.place);
+      for (const d of action.asked) ex.loading.delete(d);
+      if (action.error !== undefined) {
+        ex.error = action.error;
+        return state;
+      }
+      delete ex.error;
+      if (action.root !== undefined) ex.root = action.root;
+      for (const listing of action.dirs ?? []) ex.dirs.set(listing.dir, listing);
+      return state;
+    }
+    case "git": {
+      const ex = explorer(state, action.place);
+      if (action.git) ex.git = action.git;
+      else delete ex.git;
       return state;
     }
     case "send.result": {
@@ -1051,6 +1109,127 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
 
 export function workspaceName(state: ViewState, session: Session): string | undefined {
   return session.workspace ? state.workspaces.get(session.workspace)?.name : undefined;
+}
+
+// --- the explorer ------------------------------------------------------------------------------
+
+/** How many folders one listing asks for: the protocol's cap. */
+export const FOLDERS_PER_ASK = 64;
+
+/** The folder a session's explorer shows, as a key: sessions in one folder of one node share it, and what the user opened there. */
+export function explorerKey(state: ViewState, session: Session): string {
+  return `${session.node}\n${placeKey(session.cwd, state.nodes.get(session.node)?.platform)}`;
+}
+
+/** The folders to list again: the folder itself, then each one the user opened whose every parent is open too, as many as one ask takes. */
+export function openFolders(open: ReadonlySet<string>): string[] {
+  const shown = [...open].filter((dir) => {
+    const parts = dir.split("/");
+    for (let i = 1; i < parts.length; i++) if (!open.has(parts.slice(0, i).join("/"))) return false;
+    return true;
+  });
+  shown.sort((a, b) => a.split("/").length - b.split("/").length || (a < b ? -1 : a > b ? 1 : 0));
+  return ["", ...shown].slice(0, FOLDERS_PER_ASK);
+}
+
+/** A path under a folder, spelled as its node spells paths: a Windows folder's with backslashes. */
+export function joinPath(root: string, rel: string): string {
+  if (rel === "") return root;
+  const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\");
+  const sep = windows ? "\\" : "/";
+  return `${root.replace(/[\\/]+$/, "")}${sep}${rel.split("/").join(sep)}`;
+}
+
+/** A path as it is dropped into a chat or a terminal: in double quotes when it has a space in it, so it stays one word. */
+export function dropText(path: string): string {
+  return /\s/.test(path) ? `"${path}"` : path;
+}
+
+/**
+ * One line of the explorer: a folder or a file under the folder the explorer shows, indented
+ * by `depth`; a folder open or closed, and being listed; its full path, which is what a drag
+ * carries. A folder that could not be read has a `note` line under it saying why, and one cut
+ * short a `more` line.
+ */
+export interface FileRow {
+  /** Its path under the folder shown, `/` between names; a note's and a `more`'s are their folder's with a suffix no name has. */
+  key: string;
+  name: string;
+  kind: "dir" | "file" | "note" | "more";
+  depth: number;
+  open: boolean;
+  loading: boolean;
+  path: string;
+}
+
+/** The explorer's lines, in order: each listed folder's folders, then its files, and under each open folder what it holds. */
+export function selectFileRows(ex: Explorer, open: ReadonlySet<string>): FileRow[] {
+  const rows: FileRow[] = [];
+  const root = ex.root;
+  if (root === undefined) return rows;
+  const walk = (dir: string, depth: number): void => {
+    const listing = ex.dirs.get(dir);
+    if (!listing) return;
+    if (listing.error !== undefined) {
+      // The folder itself says why under the rows; an open one inside says it under its own row.
+      if (dir !== "") rows.push({ key: `${dir}\n!`, name: listing.error, kind: "note", depth, open: false, loading: false, path: joinPath(root, dir) });
+      return;
+    }
+    for (const e of listing.entries ?? []) {
+      const key = dir === "" ? e.name : `${dir}/${e.name}`;
+      const opened = e.kind === "dir" && open.has(key);
+      rows.push({ key, name: e.name, kind: e.kind, depth, open: opened, loading: ex.loading.has(key), path: joinPath(root, key) });
+      if (opened) walk(key, depth + 1);
+    }
+    if (listing.truncated) rows.push({ key: `${dir}\n+`, name: "More not shown", kind: "more", depth, open: false, loading: false, path: joinPath(root, dir) });
+  };
+  walk("", 0);
+  return rows;
+}
+
+/** What the explorer says under its rows: that it is loading, why it cannot list, or that the folder is empty; nothing once rows show. */
+export function explorerNote(ex: Explorer | undefined): string {
+  if (ex?.error !== undefined) return ex.error;
+  const top = ex?.dirs.get("");
+  if (!top) return "Loading…";
+  if (top.error !== undefined) return `This folder cannot be read: ${top.error}.`;
+  return top.entries && top.entries.length > 0 ? "" : "This folder is empty.";
+}
+
+/** Why a listing failed, in the explorer's words: an app or a node too old to list files, a refusal, or the node's own words. */
+export function filesErrorWords(code: string | undefined, message: string): string {
+  if (code === "unsupported") return /unknown method/.test(message) ? "This app cannot show files yet: update it." : "That computer cannot show its files yet: update Cophyla there.";
+  if (code === "denied") return "This view may not list these files.";
+  if (code === "unavailable") return "That computer is not connected.";
+  if (code === "timeout") return "The listing did not come back.";
+  return message;
+}
+
+/**
+ * The repository line at the foot of the explorer, as VS Code's status bar has it: the branch
+ * (the commit while HEAD is detached) with a star when files changed, and the commits to pull
+ * and to push as `1↓ 2↑` when there are any, or that the branch tracks nothing; the whole of
+ * it in words for its title.
+ */
+export function gitLine(git: GitState): { branch: string; sync: string; title: string } {
+  const name = git.branch ?? git.commit ?? "no commits yet";
+  const branch = git.changes > 0 ? `${name}*` : name;
+  const counted = git.upstream !== undefined && git.ahead !== undefined && git.behind !== undefined;
+  const sync = counted ? (git.ahead! + git.behind! > 0 ? `${git.behind}↓ ${git.ahead}↑` : "") : git.branch !== undefined && git.upstream === undefined ? "not published" : "";
+  const where = git.branch !== undefined ? `On ${git.branch}` : git.commit !== undefined ? `Detached at ${git.commit}` : "No commits yet";
+  const against = counted
+    ? `${commits(git.behind!)} to pull and ${commits(git.ahead!)} to push, against ${git.upstream} as of the last fetch`
+    : git.upstream !== undefined
+      ? `tracking ${git.upstream}, which is gone`
+      : git.branch !== undefined
+        ? "tracking nothing: not published"
+        : "";
+  const changed = git.changes === 0 ? "no changes" : `${git.changes} changed file${git.changes === 1 ? "" : "s"}`;
+  return { branch, sync, title: [where, against, changed].filter(Boolean).join("; ") };
+}
+
+function commits(n: number): string {
+  return `${n} commit${n === 1 ? "" : "s"}`;
 }
 
 // --- voice and controllers ---------------------------------------------------------------------

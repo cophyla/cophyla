@@ -79,6 +79,16 @@ describe("forwarding over the node link", () => {
     const sends = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.send" || e.action === "session.history");
     expect(sends.every((e) => e.principal.kind === "node")).toBe(true);
     expect(sends.map((e) => e.action).sort()).toEqual(["session.history", "session.history", "session.send"]);
+    // The explorer's reads follow the session too: its folder on the secondary, audited there under principal node.
+    const listed = await c.request<{ root: string; dirs: { dir: string; entries?: { name: string }[] }[] }>("session.files", { id: session.id });
+    expect(listed.root).toBe(secondary.home);
+    expect(listed.dirs[0]!.entries!.some((e) => e.name === "config.toml")).toBe(true);
+    expect(await c.request<Record<string, unknown>>("session.git", { id: session.id })).toEqual({});
+    const reads = secondary.store.audit.list({ limit: 80 }).filter((e: AuditEntry) => e.action === "session.files" || e.action === "session.git");
+    expect(reads.map((e) => [e.action, e.principal.kind, e.outcome]).sort()).toEqual([
+      ["session.files", "node", "ok"],
+      ["session.git", "node", "ok"],
+    ]);
     // A tool run in that workspace runs on the secondary, no node named: the file read is the secondary's.
     await c.request("chat.send", { text: `read ${ws.id}` });
     const read = await waitFor(() => brainFrames(primary!.brainLog!).find((f) => f.dir === "in" && f.frame["result"] !== undefined && (f.frame["result"] as { result?: { path?: string } }).result?.path !== undefined), 10_000);

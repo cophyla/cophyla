@@ -5,8 +5,9 @@
 // the table; `metrics.subscribe`, `metrics.unsubscribe` and `metrics.history` (client
 // methods, not capability ones) are served here too, so the primary's clients can watch
 // this node, `remote.invite` and `remote.revoke` likewise, so they can hand out and take
-// back access to this desktop, `profile.update`, so they can set this node's profiles, and
-// `direct.enable` and `direct.disable`, so they can switch this node's direct connections.
+// back access to this desktop, `profile.update`, so they can set this node's profiles,
+// `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
+// and `session.files` and `session.git`, so their explorer shows this node's sessions' files.
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
 // requests are checked: a session, a workspace or a path outside is refused, the lists and
@@ -26,6 +27,8 @@ import type { Metrics } from "../metrics/index.ts";
 import type { Remote } from "../remote/index.ts";
 import { updatePatch } from "../api/methods.ts";
 import type { Profiles } from "../sessions/profiles.ts";
+import { listingSummary } from "../sessions/files.ts";
+import type { FilesResult, SessionFiles } from "../sessions/files.ts";
 import type { Direct } from "../direct/index.ts";
 
 /** The capability requests a node answers for its primary. */
@@ -61,6 +64,9 @@ export const NODE_SERVED_PROFILES = ["profile.update"] as const;
 
 /** The direct connections' switch, served for the primary's clients. */
 export const NODE_SERVED_DIRECT = ["direct.enable", "direct.disable"] as const;
+
+/** A session's folders and repository, for the explorer of a view on the primary. */
+export const NODE_SERVED_FILES = ["session.files", "session.git"] as const;
 
 /**
  * The served table: `brainMethods` narrowed to the allowlist, with `ui.say` and its kin never
@@ -126,6 +132,8 @@ export interface ServeDeps {
   /** This node's profiles, for `profile.update`. */
   profiles?: Pick<Profiles, "update">;
   direct?: Direct;
+  /** This node's sessions' folders and repositories, for `session.files` and `session.git`. */
+  files?: Pick<SessionFiles, "list" | "git">;
   /** The folders this node shares with its primary, when its owner named some. */
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
@@ -288,6 +296,7 @@ export class NodeServer {
       return this.serveProfile(params);
     }
     if ((NODE_SERVED_DIRECT as readonly string[]).includes(method)) return this.serveDirect(method as (typeof NODE_SERVED_DIRECT)[number], params);
+    if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
     const name = method as CapabilityRequestName;
     const def = capabilityRequests[name];
     const impl = this.deps.table[name];
@@ -385,6 +394,29 @@ export class NodeServer {
       else await direct.disable();
       return {};
     });
+  }
+
+  /**
+   * A session's folders or repository, for the primary's clients. On a node that shares some
+   * folders alone, a session outside them is not the primary's to look into; one inside lists
+   * nothing above its own directory.
+   */
+  private async serveFiles(method: (typeof NODE_SERVED_FILES)[number], params: unknown): Promise<unknown> {
+    const files = this.deps.files;
+    if (!files) throw new RpcError("unsupported", "this node lists no files");
+    const parsed = clientRequests[method].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
+    const p = parsed.data as { id: string; dirs?: string[] };
+    this.confined()?.require(this.deps.local?.session(p.id)?.cwd, "that session");
+    const listing = method === "session.files";
+    return this.deps.gate.run(
+      { principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(listing ? { redactResult: (r: unknown) => listingSummary(r as FilesResult) } : {}) },
+      async () => {
+        if (listing) return files.list(p.id, p.dirs);
+        const git = await files.git(p.id);
+        return git ? { git } : {};
+      },
+    );
   }
 
   private async serveMetrics(method: (typeof NODE_SERVED_METRICS)[number], params: unknown): Promise<unknown> {

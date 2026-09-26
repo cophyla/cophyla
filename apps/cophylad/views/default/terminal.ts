@@ -20,7 +20,8 @@
 // (Claude, which takes the mouse) copies with OSC 52, which is honoured, and never read
 // back. A link, a URL in the text or an OSC 8 one, opens in the browser at Ctrl+click (⌘ on
 // a Mac), or a tap where there is no mouse: the host opens it (`host.openLink`), since the
-// frame has no way out.
+// frame has no way out. A file or a folder dragged from the explorer onto the screen is typed
+// in as its path, as a paste.
 
 import type { Terminal as TerminalRow } from "@cophyla/protocol";
 import { clipboardWrite, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
@@ -211,6 +212,18 @@ export class TerminalView {
 
   focus(): void {
     this.term?.focus();
+  }
+
+  /** Whether text dropped on the screen would be typed in: a terminal shows, and this view types into it. */
+  get droppable(): boolean {
+    return this.term !== undefined && this.typing;
+  }
+
+  /** Text dropped on the screen, typed in as a paste is (bracketed, when the program asked for that); nothing when it is not typed into from here. */
+  paste(text: string): void {
+    if (!this.term || !this.typing) return;
+    this.term.paste(text);
+    this.term.focus();
   }
 
   private async open(id: string, opts: ShowOptions, generation: number): Promise<void> {

@@ -52,6 +52,17 @@
     "session.focus": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
     "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
+    "session.files": {
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": ["", "apps", "apps/cophylad/src"] }],
+      "results": [
+        { "root": "C:\\D\\orchestrator", "dirs": [{ "dir": "", "entries": [{ "name": "apps", "kind": "dir" }, { "name": "packages", "kind": "dir" }, { "name": "package.json", "kind": "file" }, { "name": "README.md", "kind": "file" }] }] },
+        { "root": "/home/me/site", "dirs": [{ "dir": "logs", "entries": [{ "name": "a.log", "kind": "file" }], "truncated": true }, { "dir": "gone", "error": "no such folder" }] }
+      ]
+    },
+    "session.git": {
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],
+      "results": [{ "git": { "branch": "master", "commit": "1e0d3291", "upstream": "origin/master", "ahead": 2, "behind": 1, "changes": 3 } }, { "git": { "commit": "a8d9def0", "changes": 0 } }, { "git": { "changes": 0 } }, {}]
+    },
     "terminal.list": { "params": [{}], "results": [{ "terminals": [] }, { "terminals": [{ "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }] }] },
     "terminal.spawn": {
       "params": [{ "argv": ["pwsh.exe", "-NoLogo"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "name": "build" }, { "argv": ["bash"], "cwd": "/home/me", "size": { "cols": 100, "rows": 30 } }, {}],

@@ -3,7 +3,8 @@
 // the view methods; milestone 3 chat, tasks and the signals; milestone 4 the update methods;
 // milestone 7 `event.list`; milestone 8 pairing, `view.stage` and the voice methods;
 // milestone 9 the metrics methods; milestone 10 the remote desktop methods; milestone 11
-// the account methods; milestone 12 `relay.info` and the push registration.
+// the account methods; milestone 12 `relay.info` and the push registration; the explorer
+// `session.files` and `session.git`.
 
 import { RpcError } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
@@ -18,6 +19,8 @@ import type { Asks } from "../gate/asks.ts";
 import type { GateContext } from "../gate/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { Metrics } from "../metrics/index.ts";
+import { listingSummary } from "../sessions/files.ts";
+import type { SessionFiles } from "../sessions/files.ts";
 import type { Sessions } from "../sessions/index.ts";
 import type { ProfilePatch, Profiles } from "../sessions/profiles.ts";
 import { profileLimits } from "../brain-link/methods.ts";
@@ -180,6 +183,32 @@ export function attachMethods(deps: AttachDeps): MethodTable {
     "profile.update": {
       target: (p) => p.id,
       handler: (p) => ({ profile: deps.profiles.update(p.id, updatePatch(p.patch)) }),
+    },
+  };
+}
+
+export interface FileMethodDeps {
+  files: Pick<SessionFiles, "list" | "git">;
+}
+
+/**
+ * A session's folders and its repository, for a view's file explorer: reads, answered by the
+ * session's node (another node's session is forwarded there first). The audit row keeps what
+ * was listed and how much, not every name.
+ */
+export function fileMethods(deps: FileMethodDeps): MethodTable {
+  return {
+    "session.files": {
+      target: (p) => p.id,
+      redactResult: (r) => listingSummary(r),
+      handler: (p) => deps.files.list(p.id, p.dirs),
+    },
+    "session.git": {
+      target: (p) => p.id,
+      handler: async (p) => {
+        const git = await deps.files.git(p.id);
+        return git ? { git } : {};
+      },
     },
   };
 }

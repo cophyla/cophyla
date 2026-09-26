@@ -223,6 +223,9 @@ export const requestFilters = {
   "session.focus": { names: (p) => [{ session: p.id }] },
   "session.stop": { names: (p) => [{ session: p.id }] },
   "session.watch": { names: (p) => p.ids.map((id) => ({ session: id })) },
+  // the session's own directory, the path its target is checked by, and nothing above it
+  "session.files": { names: (p) => [{ session: p.id }] },
+  "session.git": { names: (p) => [{ session: p.id }] },
   "terminal.list": { names: "open", result: (r, keep) => ({ ...r, terminals: r.terminals.filter((t) => keep(terminalTarget(t))) }) },
   "terminal.spawn": { names: "global" },
   "terminal.open": { names: "global" },
