@@ -347,6 +347,16 @@ describe("the node's speech", () => {
     m.dispose();
   }, 10_000);
 
+  test("a node from before transcription could be picked still shows its speech engines, and no transcription row", async () => {
+    const old = { enabled: true, tts: "piper", source: "config", voice: 0, voices: 904, stage: { status: "ready", engine: "piper" }, engines: [{ id: "piper", label: "Piper", detail: "The fastest." }, { id: "kokoro", label: "Kokoro", detail: "Natural." }] };
+    const m = new SettingsModel(fakeConnection({ "voice.settings": () => old }).request, () => {});
+    await m.loadSpeech();
+    expect(m.speechRow()).toMatchObject({ engine: "piper", status: "Piper is ready." });
+    expect(m.speechRow()!.options.map((o) => o.value)).toEqual(["piper", "kokoro"]);
+    expect(m.sttRow()).toBeUndefined();
+    m.dispose();
+  });
+
   test("a node that cannot say leaves the part out; a failed pick or preview says so beside it", async () => {
     const none = new SettingsModel(fakeConnection({}).request, () => {});
     await none.loadSpeech();

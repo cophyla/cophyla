@@ -312,7 +312,8 @@ export function megabytes(bytes: number): string {
 function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note: string | undefined): SpeechRow {
   const engine = stage === "tts" ? s.tts : s.stt;
   const state = stage === "tts" ? s.stage : s.sttStage;
-  const mine = s.engines.filter((e) => e.stage === stage);
+  // A node from before transcription could be picked names no stage: its engines are speech engines.
+  const mine = s.engines.filter((e) => ((e as { stage?: string }).stage ?? "tts") === stage);
   const info = mine.find((e) => e.id === engine);
   const label = info?.label ?? engine;
   let status: string;
@@ -443,8 +444,9 @@ export class SettingsModel {
     return this.speech ? speechRow(this.speech, this.speechBusy, this.speechNote || undefined) : undefined;
   }
 
+  /** None from a node that cannot pick one, from before transcription could be. */
   sttRow(): SpeechRow | undefined {
-    return this.speech ? sttRow(this.speech, this.speechBusy, this.sttNote || undefined) : undefined;
+    return this.speech?.sttStage ? sttRow(this.speech, this.speechBusy, this.sttNote || undefined) : undefined;
   }
 
   /** Another transcription engine, or back to config.toml's with `null`. */
@@ -529,7 +531,7 @@ export class SettingsModel {
     if (this.speechTimer) clearTimeout(this.speechTimer);
     this.speechTimer = undefined;
     const s = this.speech;
-    if (s && (s.installing || (s.enabled && (s.stage.status === "loading" || s.sttStage.status === "loading")))) {
+    if (s && (s.installing || (s.enabled && (s.stage.status === "loading" || s.sttStage?.status === "loading")))) {
       this.speechTimer = setTimeout(() => {
         this.speechTimer = undefined;
         void this.loadSpeech();
