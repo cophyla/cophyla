@@ -460,23 +460,32 @@ describe("the wake word on the phone", () => {
       const clients = new ClientRegistry();
       const client: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["voice", "chat"], via: "direct", audio: { in: true, out: true }, connectedAt: 1 };
       clients.add(client, { send: () => {}, close: () => {} }, "loopback");
-      const voice = new Voice({
-        config: parseConfig("[voice]\nenabled = true\n").voice,
-        dataDir: join(home, "data"),
-        bus,
-        log: silentLogger,
-        clients,
-        chat: new Chat({ store, bus, asks: new Asks(store, "node_start", bus) }),
-        activity: new Activity({ bus }),
-        models: { resolve: async () => "" },
-        sidecars: new Sidecars({ dir: join(home, "sidecars"), log: silentLogger }),
-        engines: new FakeEngines({ transcript: TRANSCRIPT }),
-      });
-      const answer = voice.wakeword(client, HEADS);
+      const voice = () =>
+        new Voice({
+          config: parseConfig("[voice]\nenabled = true\n").voice,
+          dataDir: join(home, "data"),
+          bus,
+          log: silentLogger,
+          clients,
+          chat: new Chat({ store, bus, asks: new Asks(store, "node_start", bus) }),
+          activity: new Activity({ bus }),
+          models: { resolve: async () => "" },
+          sidecars: new Sidecars({ dir: join(home, "sidecars"), log: silentLogger }),
+          engines: new FakeEngines({ transcript: TRANSCRIPT }),
+        });
+      const starting = voice();
+      const answer = starting.wakeword(client, HEADS);
       await sleep(100);
-      await voice.start();
+      await starting.start();
       expect(await answer).toEqual(PHONE_MODE);
-      await voice.stop();
+      await starting.stop();
+
+      // A daemon that stops before it got to voice answers too, rather than holding the request.
+      const stopping = voice();
+      const late = stopping.wakeword(client, HEADS);
+      await sleep(100);
+      await stopping.stop();
+      expect(await late).toEqual({ mode: "node" });
     } finally {
       removeHome(home);
     }

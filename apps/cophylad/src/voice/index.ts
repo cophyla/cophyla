@@ -231,6 +231,8 @@ export class Voice {
 
   async stop(): Promise<void> {
     this.stopped = true;
+    // A `voice.wakeword` still waiting for voice to start is answered now.
+    this.markBegun();
     for (const off of this.unsubscribe) off();
     this.unsubscribe = [];
     for (const c of this.conversations.values()) c.dispose();
@@ -419,19 +421,22 @@ export class Voice {
   }
 
   /**
-   * The wake model once its stage settles, waiting a while for one still loading — or not yet
-   * started, for a client that connected while the daemon was still starting; none when it is
-   * not up.
+   * The wake model once its stage settles, waiting a while for one still loading; none when it
+   * is not up. A client that connected while the daemon was still starting waits for voice to
+   * start first, however long the rest of the start takes: the daemon always gets there, or
+   * stops.
    */
   private async settledWake(): Promise<WakeModel | undefined> {
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const late = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, WAKE_WAIT_MS);
-      timer.unref?.();
-    });
-    await Promise.race([this.begun, late]);
-    if (this.stages.wake.status === "loading" && this.wakeLoading) await Promise.race([this.wakeLoading, late]);
-    clearTimeout(timer);
+    await this.begun;
+    if (this.stages.wake.status === "loading" && this.wakeLoading) {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const late = new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, WAKE_WAIT_MS);
+        timer.unref?.();
+      });
+      await Promise.race([this.wakeLoading, late]);
+      clearTimeout(timer);
+    }
     return this.stages.wake.status === "ready" ? this.wakeModel : undefined;
   }
 
