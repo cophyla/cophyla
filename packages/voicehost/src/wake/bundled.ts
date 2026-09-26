@@ -19,7 +19,8 @@ export const BUNDLED = {
   /** One per phrase; the node's answer names the threshold and the input scale each runs at. */
   heads: [
     { file: "hey_jarvis_v0.1.onnx", sha256: "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb" },
-    { file: "cophyla_v0.1.onnx", sha256: "c2a7e3cc1ef8705548e39afba6c1ea9374e67a87bfd41a278d1f361b2b320b47" },
+    { file: "cophyla_v0.1.onnx", sha256: "b08ab17c1ff81a3293c7e8d3c4623d9c9a3b0bacbb291311e7d7d2b9e8b984e9" },
+    { file: "hey_phyla_v0.1.onnx", sha256: "4ec1d76da29e8581bb8d1d48a453336a35752159403a144df16657e1975f8a36" },
   ],
 } as const satisfies { wasm: BundledFile; mel: BundledFile; embedding: BundledFile; heads: readonly BundledFile[] };
 

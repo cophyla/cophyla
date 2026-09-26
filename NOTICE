@@ -21,9 +21,10 @@ themselves:
   https://github.com/dscripka/openWakeWord
   Copyright (c) 2022 David Scripka. Licensed under the Apache License, Version 2.0.
 
-  Cophyla's own "cophyla" keyword head (cophyla_v0.1.onnx), trained with livekit-wakeword
-  (Apache License 2.0) against openWakeWord's precomputed ACAV100M features, which are
-  licensed CC BY-NC-SA 4.0; see packages/wake/heads/README.md.
+  Cophyla's own "cophyla" and "hey phyla" keyword heads (cophyla_v0.1.onnx,
+  hey_phyla_v0.1.onnx), trained with livekit-wakeword (Apache License 2.0) against
+  openWakeWord's precomputed ACAV100M features, which are licensed CC BY-NC-SA 4.0; see
+  packages/wake/heads/README.md.
 
   openWakeWord v0.5.1 pre-trained "hey jarvis" model (hey_jarvis_v0.1.onnx)
   https://github.com/dscripka/openWakeWord

@@ -74,10 +74,11 @@ export const VOICE_MODELS: VoiceModelSpec[] = [
       scale: "int16",
       mel: "melspectrogram.onnx",
       embedding: "embedding_model.onnx",
-      heads: ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx"],
+      heads: ["hey_jarvis_v0.1.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
       head_params: {
         "hey_jarvis_v0.1.onnx": { threshold: 0.7, phrase: "Hey Jarvis" },
-        "cophyla_v0.1.onnx": { threshold: 0.8, phrase: "Cophyla" },
+        "cophyla_v0.1.onnx": { threshold: 0.7, phrase: "Cophyla" },
+        "hey_phyla_v0.1.onnx": { threshold: 0.6, phrase: "Hey Phyla" },
       },
     },
     sources: [
@@ -85,7 +86,8 @@ export const VOICE_MODELS: VoiceModelSpec[] = [
       { kind: "file", url: `${OWW}/embedding_model.onnx`, local: "embedding_model.onnx", sha256: "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f" },
       { kind: "file", url: `${OWW}/hey_jarvis_v0.1.onnx`, local: "hey_jarvis_v0.1.onnx", sha256: "94a13cfe60075b132f6a472e7e462e8123ee70861bc3fb58434a73712ee0d2cb" },
       // Cophyla's own heads (packages/wake/heads/README.md says how they were made).
-      { kind: "repo", path: "packages/wake/heads/cophyla_v0.1.onnx", local: "cophyla_v0.1.onnx", sha256: "c2a7e3cc1ef8705548e39afba6c1ea9374e67a87bfd41a278d1f361b2b320b47" },
+      { kind: "repo", path: "packages/wake/heads/cophyla_v0.1.onnx", local: "cophyla_v0.1.onnx", sha256: "b08ab17c1ff81a3293c7e8d3c4623d9c9a3b0bacbb291311e7d7d2b9e8b984e9" },
+      { kind: "repo", path: "packages/wake/heads/hey_phyla_v0.1.onnx", local: "hey_phyla_v0.1.onnx", sha256: "4ec1d76da29e8581bb8d1d48a453336a35752159403a144df16657e1975f8a36" },
     ],
   },
   {

@@ -490,6 +490,7 @@ describe("the wake detector", () => {
     expect(d.heads).toEqual(BUNDLED_HEADS);
     expect(BUNDLED_HEADS).toContain("hey_jarvis_v0.1.onnx");
     expect(BUNDLED_HEADS).toContain("cophyla_v0.1.onnx");
+    expect(BUNDLED_HEADS).toContain("hey_phyla_v0.1.onnx");
     await Bun.sleep(0);
     expect([...cache.map.keys()].sort()).toEqual(BUNDLED_FILES.map((f) => f.sha256).sort());
     const init = worker.sent[0]!;
