@@ -58,6 +58,9 @@ The editable layer under `~/.cophyla` uses erasable syntax only (`erasableSyntax
 
 ## Install and update
 
+No release has been published yet: until the first one, Cophyla runs from a checkout (see
+Building above) and the links to releases below lead to an empty page.
+
 Windows: run `Cophyla_<version>_x64-setup.exe` from the
 [releases](https://github.com/cophyla/cophyla/releases). It installs per user into
 `%LOCALAPPDATA%\Cophyla`: a fixed launcher, the version directory with the desktop app, the
