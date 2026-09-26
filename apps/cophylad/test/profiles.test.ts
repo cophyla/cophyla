@@ -304,7 +304,8 @@ describe("login files, looked at", () => {
     p.check();
     expect(rebuilt).toBe(1);
     expect(p.byHarness("claude")[0]!.status).toBe("unauthenticated");
-    writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, numStartups: 43 }));
+    // a size of its own: a rewrite of the same size in the same clock tick as the last one reads unchanged
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, numStartups: 4300 }));
     p.check();
     expect(rebuilt).toBe(2);
   });

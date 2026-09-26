@@ -367,8 +367,9 @@ describe("update", () => {
   }, 15_000);
 
   test("with a desktop app attached, a stale or staged platform waits; the explicit apply needs only idle", async () => {
-    // the first check waits long enough for the client's hello to land, so the desktop app is attached when it evaluates
-    const s = await start({ install: { current: NEXT_PLATFORM, extra: [NEXT_PLATFORM] }, update: "enabled = true\nauto_apply = true\nfirst_check_delay_ms = 300\ncheck_interval_ms = 60000\n" });
+    // The apply the start schedules for the stale pointer waits long enough for the client's hello to land, so the
+    // desktop app is attached when it evaluates (at the tests' 50 ms it could stop the daemon first).
+    const s = await start({ install: { current: NEXT_PLATFORM, extra: [NEXT_PLATFORM] }, update: "enabled = true\nauto_apply = true\nfirst_check_delay_ms = 300\ncheck_interval_ms = 60000\n", daemon: { applyRetryMs: 1500 } });
     const { d, c } = s;
     await waitFor(() => d.brain?.state === "up");
     await waitFor(() => logged(s.lines, "a desktop app is attached").length >= 1, 5000);
@@ -432,7 +433,8 @@ describe("update", () => {
     await sleep(300);
     expect(feed.maxInFlight).toBe(1);
     expect(feed.seen.length).toBeGreaterThan(before + 1);
-    expect(d.update.checkCount).toBe(feed.seen.length);
+    // checks keep running every 20 ms: one may be counted and not yet at the feed when sampled
+    await waitFor(() => d.update.checkCount === feed.seen.length);
   }, 15_000);
 
   test("a bundled brain under <install>/brain is found when nothing is installed under data/, and verified", async () => {
