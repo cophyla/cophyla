@@ -311,4 +311,11 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE transcript_tails ADD COLUMN cursor TEXT;
   `,
+  // 10: the prose chunks, the only ones the embed queue reads. Without it the queue's two
+  // questions after every write (the next batch, what is left) each scanned every chunk of
+  // every session event, a fifth of a second on a store of a year's work, on the thread
+  // that answers the brain: each reply reached the brain that much later.
+  `
+  CREATE INDEX chunks_prose ON chunks(id) WHERE prose = 1;
+  `,
 ];
