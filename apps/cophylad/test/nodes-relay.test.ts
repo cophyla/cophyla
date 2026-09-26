@@ -26,8 +26,9 @@ const script = { on: [{ event: "user.message", requests: [{ method: "ui.say", pa
 
 describe("relayed clients", () => {
   test("a client on the secondary is served by the primary while linked, and locally once the link is gone", async () => {
-    primary = await startPrimary({ brain: { script } });
-    secondary = await startSecondary(primary, { agent: true });
+    // Heartbeats at a second: a slow runner's stall while the brain starts must not drop the link.
+    primary = await startPrimary({ brain: { script }, heartbeatMs: 1000 });
+    secondary = await startSecondary(primary, { agent: true, heartbeatMs: 1000 });
     await linked(secondary);
     await waitFor(() => primary!.d.brain?.state === "up");
     const c = await TestClient.connect(secondary.api.url);

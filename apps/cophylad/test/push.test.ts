@@ -32,7 +32,7 @@ afterEach(async () => {
 
 async function start(opts: { signedIn?: boolean; pushOff?: boolean } = {}): Promise<Started> {
   const fake = new FakeServer();
-  const home = tempHome(`[controller]\nenabled = true\nport = 0\n\n[nodes]\ndiscovery = false\n\n${opts.pushOff ? "[push]\nenabled = false\n\n" : ""}[cloud]\nenabled = true\nurl = "${fake.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\n`);
+  const home = tempHome(`[controller]\nenabled = true\nport = 0\n\n[nodes]\ndiscovery = false\n\n${opts.pushOff ? "[push]\nenabled = false\n\n" : ""}[cloud]\nenabled = true\nurl = "${fake.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\nhello_timeout_ms = 2000\n`);
   const p = paths(home);
   mkdirSync(p.data, { recursive: true });
   if (opts.signedIn !== false) writeFileSync(p.accountToken, fake.mintToken("test") + "\n", { mode: 0o600 });
@@ -242,7 +242,8 @@ describe("push", () => {
     const during = openAsk(s.d);
     await sleep(100);
     expect(sends(s.fake, "ask").length).toBe(1);
-    await waitFor(() => s.d.cloud.hostedAllowed("push") === undefined, 5000);
+    // a connect that meets the server's restart can hang until its hello timeout, then retries
+    await waitFor(() => s.d.cloud.hostedAllowed("push") === undefined, 8000);
     await sleep(100);
     expect(sends(s.fake, "ask").length).toBe(1);
     s.d.asks.answer(during.id, { option: "deny" }, { kind: "user", client: "cli_test" });

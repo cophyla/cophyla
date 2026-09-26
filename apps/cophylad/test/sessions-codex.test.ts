@@ -686,6 +686,8 @@ describe("codex sessions end and resume on evidence", () => {
   test("a daemon restart over the same store tails the rollout again without adding events", async () => {
     const id = record().id;
     const before = events().length;
+    // the thread store says it moved just now, however long the last test took on a slow runner
+    listed(Date.now());
     await mini.stop();
     mini = await start();
     expect(mini.sessions.list().map((s) => s.id)).toEqual([id]);

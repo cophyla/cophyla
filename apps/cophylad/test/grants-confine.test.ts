@@ -207,9 +207,10 @@ describe("what a confined node serves", () => {
 describe("a confined guest, end to end", () => {
   test("the primary sees the shared folder alone, spawns there, and reads nothing outside, not through a junction either", async () => {
     const t = tree();
-    const p = await startPrimary();
+    // Heartbeats at a second: a slow runner's stall during the spawn must not drop the link.
+    const p = await startPrimary({ heartbeatMs: 1000 });
     primaries.push(p);
-    const guest = await startSecondary(p, { hands: true, agent: true, paths: [t.shared], gateRules: { "node:session.spawn": "allow", "node:workspace.put": "allow", "node:tool.run": "allow", "node:session.list": "allow" } });
+    const guest = await startSecondary(p, { heartbeatMs: 1000, hands: true, agent: true, paths: [t.shared], gateRules: { "node:session.spawn": "allow", "node:workspace.put": "allow", "node:tool.run": "allow", "node:session.list": "allow" } });
     started.push(guest);
     await linked(guest);
     // the guest's own apps see its every workspace, the cophyla home among them; the primary, the shared folder alone
