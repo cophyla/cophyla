@@ -2,7 +2,8 @@
 // product logic. It keeps the client-protocol credential and connection on this side,
 // starts cophylad when none is listening and never stops it, hosts views in a sandboxed frame
 // on their own origin, puts asks on OS notifications while it is not in front (and takes
-// them down when it comes to the front), and lives in the tray when the
+// them down when it comes to the front), names the files dropped on a view from the desktop
+// (dropped.rs), and lives in the tray when the
 // window is closed (on macOS the Dock icon goes with the window: it is there while the
 // window is, and a click on it in the Dock or the Finder shows the window again). Its host
 // page hears the wake words and the talk key, and speaks the replies (voice.rs).
@@ -11,6 +12,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod dropped;
 mod install;
 mod links;
 mod notify;
@@ -74,7 +76,7 @@ fn main() {
         .manage(voice::TalkKey::default())
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, stream::stream_open, stream::stream_close, links::open_link, voice::ptt_shortcut])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, dropped::dropped_paths, stream::stream_open, stream::stream_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
@@ -90,7 +92,8 @@ fn main() {
                 // The view is dark, and so is the title bar.
                 .theme(Some(Theme::Dark))
                 // The page's own drag and drop, a file dragged from the view's explorer onto its
-                // chat or terminal: on Windows the native file-drop handler would swallow it.
+                // chat or terminal: on Windows the native file-drop handler would swallow it. A
+                // file dragged in from the desktop reaches the page too, and dropped.rs names it.
                 .disable_drag_drop_handler()
                 .visible(false)
                 // The host page never leaves the app's own origin (or `tauri dev`'s server when
@@ -112,6 +115,7 @@ fn main() {
             #[cfg(windows)]
             caption_color(&window);
             voice::allow_microphone(&window);
+            dropped::listen(&window);
             tray::build(app, install.as_ref())?;
             let handle = app.handle().clone();
             window.on_window_event(move |event| match event {

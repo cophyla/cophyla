@@ -47,6 +47,8 @@ export interface ViewHostDeps {
   openLink?: (url: string) => Promise<void>;
   /** Where views' prefs are kept; absent, this page's localStorage, when it has one. */
   store?: Pick<Storage, "getItem" | "setItem">;
+  /** Where the files just dropped on a view from the desktop are, by their names, for a view's `host.filePaths`: the desktop app's shell. */
+  filePaths?: (names: string[]) => Promise<string[]>;
   onError?: (message: string) => void;
 }
 
@@ -181,6 +183,7 @@ export class ViewHost {
         chooseView: () => this.chooseView(),
         openSettings: () => this.openSettings(),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),
+        ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },
       {

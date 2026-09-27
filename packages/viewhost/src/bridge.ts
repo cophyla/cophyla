@@ -20,7 +20,13 @@
 // things of its own as notifications, never scoped: `host.ready` and `host.state`, and
 // `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
 // pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
-// own, so a view with the voice scope may draw one that holds `voice.ptt`. DOM-free.
+// own, so a view with the voice scope may draw one that holds `voice.ptt`. `host.filePaths`
+// says where the files just dropped on the view from the desktop are, by the names the view
+// saw them under (a page learns only a dropped file's name), to any view, and only where the
+// host has the seam, which `filePaths` in `host.ready` says; the shell hands a drop over
+// once, and only while it is fresh. On Windows the view asks WebView2 itself instead, past
+// this bridge: WebView2 grants a dropped file to the frame's process alone, so only the frame
+// can hand it on (apps/ui/src-tauri/src/dropped.rs). DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -54,6 +60,8 @@ export interface HostReady {
   talk?: boolean;
   /** What the view last saved with `host.savePrefs` on this device, when it saved anything. */
   prefs?: ViewPrefs;
+  /** The host says where files dropped on the view from the desktop are (`host.filePaths`): the desktop app. */
+  filePaths?: boolean;
 }
 
 /** A view's own record on the device it runs on: plain JSON, a few kilobytes at most. */
@@ -87,13 +95,15 @@ export interface BridgeConfig {
   openLink?: (url: string) => Promise<void>;
   /** Keeps the view's prefs (`host.savePrefs`); absent, it answers `unsupported`. */
   prefs?: PrefsStore;
+  /** Where the files just dropped on the view are, by their names, in their order (`host.filePaths`); absent, it answers `unsupported`. */
+  filePaths?: (names: string[]) => Promise<string[]>;
 }
 
 /** The requests a view may make of the host itself, by method. */
 export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
 
 /** The host requests a view may make, and the scope each needs; `null` is none. */
-const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null };
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null };
 
 /** The record a `host.savePrefs` keeps: a plain object whose JSON fits in `PREFS_MAX`. */
 export function viewPrefs(params: unknown): ViewPrefs {
@@ -101,6 +111,19 @@ export function viewPrefs(params: unknown): ViewPrefs {
   if (typeof prefs !== "object" || prefs === null || Array.isArray(prefs)) throw new Error("host.savePrefs needs prefs, an object");
   if (JSON.stringify(prefs).length > PREFS_MAX) throw new Error(`prefs take at most ${PREFS_MAX} bytes`);
   return prefs as ViewPrefs;
+}
+
+/** The most files one `host.filePaths` may name. */
+export const DROPPED_MAX = 4096;
+
+/** The names a `host.filePaths` asks about: 1 to `DROPPED_MAX` file names, each 1 to 1024 characters with no slash or NUL. */
+export function droppedNames(params: unknown): string[] {
+  const names = (params as { names?: unknown } | null)?.names;
+  if (!Array.isArray(names) || names.length === 0 || names.length > DROPPED_MAX) throw new Error(`host.filePaths needs names, 1 to ${DROPPED_MAX} of them`);
+  for (const name of names) {
+    if (typeof name !== "string" || name === "" || name.length > 1024 || /[/\0]/.test(name)) throw new Error("a dropped file's name is not a file name");
+  }
+  return names as string[];
 }
 
 /** The page a `host.openLink` names, if it may open: an http or https URL with a host and no credentials. */
@@ -141,6 +164,8 @@ export class Bridge {
   /** `host.savePrefs`, and the prefs `host.ready` carries. */
   private prefs?: PrefsStore;
   private savePrefs?: HostRequests;
+  /** `host.filePaths`: the paths, once the names are file names. */
+  private filePaths?: HostRequests;
   private n = 0;
   /** wire id → the view's own id and method. */
   private pending = new Map<string, { id: RpcId; method: string }>();
@@ -182,6 +207,8 @@ export class Bridge {
         return {};
       };
     }
+    const dropped = cfg.filePaths;
+    if (dropped) this.filePaths = async (_method, params) => ({ paths: await dropped(droppedNames(params)) });
     this.io = io;
   }
 
@@ -233,7 +260,7 @@ export class Bridge {
   /** A request the host answers itself, within the view's scopes. */
   private hostRequest(req: RpcRequest): void {
     const needs = HOST_METHODS[req.method];
-    const own: Record<string, HostRequests | undefined> = { "host.chooseView": this.chooser, "host.settings": this.settings, "host.openLink": this.links, "host.savePrefs": this.savePrefs };
+    const own: Record<string, HostRequests | undefined> = { "host.chooseView": this.chooser, "host.settings": this.settings, "host.openLink": this.links, "host.savePrefs": this.savePrefs, "host.filePaths": this.filePaths };
     const handler = req.method in own ? own[req.method] : this.host;
     if (needs === undefined || !handler) {
       this.io.toView(failure(req.id, protocolError("unsupported", `this host has no ${req.method}`)));
@@ -279,6 +306,7 @@ export class Bridge {
     if (this.hasTalk) params.talk = true;
     const prefs = this.prefs?.load();
     if (prefs) params.prefs = prefs;
+    if (this.filePaths) params.filePaths = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
   }

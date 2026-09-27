@@ -18,12 +18,14 @@
 // Settings, which opens the host's settings there (`host.settings`). While an agent's tab is
 // selected the rail's lower half shows its folder's files (`session.files`, a level at a time as
 // folders open) or, a tab away, the status cards; a file or a folder dragged from there onto the
-// chat or the terminal drops its path, and the repository's line under the files
-// (`session.git`) is read again as the agent works and every few seconds, since nothing says
-// a push or a fetch happened. The divider between the sessions and that lower half moves, the
-// same under every tab, and where the user left it is kept on the device (`host.savePrefs`,
-// back in `host.ready`). Runs in a sandboxed frame with no network: the host is its whole
-// world.
+// chat or the terminal drops its path, and so does one dragged in from the desktop where the
+// shell can say where it is (`filePaths` in `host.ready`, dropped.ts), and the repository's
+// line under the files (`session.git`) is read again as the agent works and every few
+// seconds, since nothing says a push or a fetch happened. The divider between the sessions
+// and that lower half moves, the same under every tab, and where the user left it is kept on
+// the device (`host.savePrefs`, back in `host.ready`). Runs in a sandboxed frame with no
+// network: the host is its whole world, but for where dropped files are in WebView2, which
+// it asks the shell past the host (dropped.ts).
 //
 // The view pulls only what it shows. The node streams a session's events only while its
 // tab is open (`session.watch`, sent again on every connect), and leaving a tab drops its
@@ -35,14 +37,16 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, explorerKey, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
+import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewState, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
+import { DroppedPaths, webView2 } from "./dropped.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { TerminalView } from "./terminal.ts";
 
 const rpc = new HostRpc();
+const dropped = new DroppedPaths(webView2(window), (names) => rpc.request("host.filePaths", { names }));
 const state: ViewState = initialState();
 const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set(), railTab: "files", railSplit: RAIL_SPLIT.usual, openDirs: new Map(), picked: new Map() };
 const roots: Roots = {
@@ -1198,6 +1202,18 @@ document.addEventListener("keydown", (ev) => {
 /** What an explorer row carries when dragged: its path, beside the text any other drop takes. */
 const PATH_TYPE = "application/x-cophyla-path";
 
+/**
+ * What a drag brings that lands as paths: an explorer row, or files and folders from the
+ * desktop (Explorer, the Finder, a file manager) when the host can say where they are, since a
+ * page learns only their names (dropped.ts).
+ */
+function dragKind(data: DataTransfer | null): "row" | "files" | undefined {
+  if (!data) return undefined;
+  if (data.types.includes(PATH_TYPE)) return "row";
+  if (state.hostFilePaths && data.types.includes("Files")) return "files";
+  return undefined;
+}
+
 document.addEventListener("dragstart", (ev) => {
   const row = (ev.target as Element | null)?.closest?.<HTMLElement>(".file-row[draggable=true]");
   const path = row?.dataset["path"];
@@ -1215,8 +1231,8 @@ function composerInput(): HTMLInputElement | null {
 
 /**
  * Where a dragged path would land: the terminal on show, typed into as a paste; a text field,
- * which takes the text itself where it is dropped; the pane or its input's row, which puts it
- * in the input at its caret; or nowhere.
+ * which takes a row's text itself where it is dropped and files' paths at its caret; the pane
+ * or its input's row, which puts it in the input at its caret; or nowhere.
  */
 function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" | undefined {
   const node = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
@@ -1228,25 +1244,42 @@ function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" |
 }
 
 document.addEventListener("dragover", (ev) => {
-  if (!ev.dataTransfer?.types.includes(PATH_TYPE)) return;
+  const kind = dragKind(ev.dataTransfer);
+  if (!kind) return;
   const where = dropTarget(ev.target);
-  if (where === undefined || where === "field") return;
+  // A text field takes a row's text itself; files it would not.
+  if (where === undefined || (where === "field" && kind === "row")) return;
   ev.preventDefault();
-  ev.dataTransfer.dropEffect = "copy";
+  ev.dataTransfer!.dropEffect = "copy";
 });
 
 document.addEventListener("drop", (ev) => {
-  if (!ev.dataTransfer?.types.includes(PATH_TYPE)) return;
+  const kind = dragKind(ev.dataTransfer);
+  if (!kind) return;
   const where = dropTarget(ev.target);
-  if (where === undefined || where === "field") return;
+  if (where === undefined || (where === "field" && kind === "row")) return;
   ev.preventDefault();
-  const text = dropText(ev.dataTransfer.getData(PATH_TYPE));
+  if (kind === "row") {
+    land(where, dropText(ev.dataTransfer!.getData(PATH_TYPE)));
+    return;
+  }
+  const field = where === "field" ? (ev.target as HTMLInputElement) : undefined;
+  const files = Array.from(ev.dataTransfer!.files);
+  if (files.length === 0) return;
+  dropped.paths(files).then(
+    (paths) => land(where, dropTexts(paths), field),
+    (e: unknown) => console.warn(`the dropped files did not land: ${e instanceof Error ? e.message : String(e)}`),
+  );
+});
+
+/** Dropped paths, landing where they were dropped: typed into the terminal, or put in a field at its caret (the pane's is its input's). */
+function land(where: "terminal" | "field" | "pane", text: string, field?: HTMLInputElement): void {
   if (where === "terminal") {
     // With a space after it, as macOS's terminals drop a file, so the next one dropped is a word of its own.
     terminal.paste(`${text} `);
     return;
   }
-  const input = composerInput();
+  const input = field ?? composerInput();
   if (!input) return;
   input.focus();
   // After what is there, never over it: a field leaves what was dropped on it selected. A
@@ -1256,7 +1289,7 @@ document.addEventListener("drop", (ev) => {
   input.setRangeText(spaced, at, at, "end");
   // As if typed: the session's draft keeps it.
   input.dispatchEvent(new Event("input", { bubbles: true }));
-});
+}
 
 // --- the user --------------------------------------------------------------------------------------
 

@@ -33,7 +33,7 @@ cophylad outlive the app.
 
 | Path | What |
 |---|---|
-| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `tray.rs` |
+| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `dropped.rs` the paths of files dropped on a view (`dropped/` a small piece per platform), `tray.rs` |
 | `src-tauri/commands.txt` | the app manifest's command list, read by `build.rs` |
 | `src-tauri/capabilities/host.json` | what the `host` window may call; the only capability file |
 | `host/` | the host page: `main.ts`, `voice.ts`, `index.html`, `host.css`, `inliner.ts` — the shell's half, the rest is `@cophyla/viewhost`, whose view picker's `chooser.css` the build copies beside them, and `@cophyla/voicehost`, whose worklet, wake worker and `wake/` files it copies too |
@@ -119,6 +119,31 @@ from cophylad (a view's files edited under `~/.cophyla/views`, or the default mo
 `view.setDefault`) does the same while the app runs: the notices of one edit are gathered
 for a moment, one `view.list` decides, and the mounted frame is replaced only once the new
 files are fetched and staged, so a view half written keeps the old one on screen.
+
+A view may ask where the files dropped on it from the desktop are, which a page knows only
+by name; `filePaths` in `host.ready` tells it it may. On Windows that is the one thing that
+leaves the frame past the host page. It hands WebView2 the `File`s with
+`chrome.webview.postMessageWithAdditionalObjects({ cophyla: "cophyla.filePaths", id }, files)`,
+and `dropped.rs` answers that frame with `{ cophyla: "cophyla.filePaths", id, paths }`. It
+has to be the frame: WebView2 grants a dropped file to the process of the frame it
+was dropped on alone, and a view's frame is a process of its own, so the host page handing
+the files on would be a bad message, and WebView2 ends a renderer that sends one. A frame's
+WebView2 messages reach only the handlers on that frame, which Tauri's IPC never adds; the
+shell reads only this message and only from the view origin, and WebView2 refuses a file
+the frame was not given, so a view learns only the paths of files the user dropped or picked
+there. The page's own document could not post files to the shell either: wry's handler on
+it reads strings alone and ends the dispatch at anything else.
+
+macOS and Linux have no such seam, and WebKit hides even `text/uri-list` from a drop that
+carries files, so the shell reads the paths natively as the drop passes into the page
+(`dropped/macos.rs` wraps wry's `performDragOperation:` and reads the Finder's
+`NSFilenamesPboardType`, `dropped/linux.rs` reads the file URIs WebKitGTK is handed on
+`drag-data-received` and keeps them on `drag-drop`) and keeps the last drop's, then lets
+WebKit hand the drop to the page as usual. The view asks the bridge, `host.filePaths
+{ names }` with the dropped `File`s' names; the host page asks the shell (`dropped_paths`),
+which answers the paths in the names' order only when the drop is under five seconds old, has
+as many files and each name is one of its paths' own, and hands a drop over once whatever
+the answer. Tauri's own drag and drop stays off: it would take every drop from the page.
 
 ### Probe results (Windows 11, WebView2 153, tauri 2.11.5)
 

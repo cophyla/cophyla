@@ -18,6 +18,7 @@
     "allow-view-stage",
     "allow-notify-ask",
     "allow-dismiss-ask",
+    "allow-dropped-paths",
     "allow-stream-open",
     "allow-stream-close",
     "allow-open-link",

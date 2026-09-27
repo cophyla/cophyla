@@ -94,6 +94,13 @@ The frame has no storage of its own. To remember how the user left it on this de
 view sends \`host.savePrefs\` with \`{ prefs }\` (a plain object, 8 KB at most as JSON; no
 scope needed), and gets it back as \`prefs\` in \`host.ready\`.
 
+A file or a folder dragged onto the view from the desktop arrives with its name alone. When
+\`host.ready\` says \`filePaths\` (the desktop app on Windows), the app says where they are:
+post the dropped \`File\`s with
+\`window.chrome.webview.postMessageWithAdditionalObjects({ cophyla: "cophyla.filePaths", id }, files)\`
+and the answer comes as a message on \`window.chrome.webview\`,
+\`{ cophyla: "cophyla.filePaths", id, paths }\`, the full paths in the files' order.
+
 ## prompts/ and memory/
 
 Markdown files with front matter, written by the brain through \`prompt.*\` and \`memory.*\`

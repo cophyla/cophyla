@@ -141,6 +141,8 @@ export interface HostReady {
   talk?: boolean;
   /** What this view last saved with `host.savePrefs` on this device. */
   prefs?: Record<string, unknown>;
+  /** The host names files dropped here from the desktop (`host.filePaths`): the desktop app. */
+  filePaths?: boolean;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -158,6 +160,8 @@ export interface ViewState {
   hostMenu: boolean;
   /** The host has a microphone and no talk button: the composer has one (the desktop app). */
   hostTalk: boolean;
+  /** The host names files dropped from the desktop, so a drop of them lands as their paths. */
+  hostFilePaths: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -291,6 +295,7 @@ export function initialState(): ViewState {
   return {
     hostMenu: false,
     hostTalk: false,
+    hostFilePaths: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -461,6 +466,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.scopes = p.scopes;
       state.hostMenu = p.menu === true;
       state.hostTalk = p.talk === true;
+      state.hostFilePaths = p.filePaths === true;
       return state;
     }
     case "host.state":
@@ -1176,6 +1182,11 @@ export function joinPath(root: string, rel: string): string {
 /** A path as it is dropped into a chat or a terminal: in double quotes when it has a space in it, so it stays one word. */
 export function dropText(path: string): string {
   return /\s/.test(path) ? `"${path}"` : path;
+}
+
+/** Paths dropped together, as they land: each as `dropText` spells it, a space between them. */
+export function dropTexts(paths: readonly string[]): string {
+  return paths.map(dropText).join(" ");
 }
 
 /**

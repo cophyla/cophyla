@@ -4,8 +4,11 @@
 // is up it says where the link is, in one line; after that it renders nothing of its own:
 // the view is the product, and shows the link itself. A staged update is the tray's. A
 // desktop with no route to it opens, through `host.open`, in a window of its own (open.ts);
-// a link clicked in a view (`host.openLink`) opens in the system browser. Voice is voice.ts:
-// the microphone, the wake words, the talk key and the speaker, and its section in Settings.
+// a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
+// view had dropped on it from the desktop are (`host.filePaths`) the shell says, from the drop
+// it saw pass into the page (dropped.rs); on Windows the view asks WebView2 for them instead.
+// Voice is voice.ts: the microphone, the wake words, the talk key and the speaker, and its
+// section in Settings.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -48,6 +51,7 @@ const viewhost = new ViewHost({
   container: viewEl,
   host: streams.host,
   openLink: (url) => io.invoke<void>("open_link", { url }),
+  filePaths: (names) => io.invoke<string[]>("dropped_paths", { names }),
   // The app has a microphone and no bar of its own: the view draws the talk button.
   talk: true,
   voice,

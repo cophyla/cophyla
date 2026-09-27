@@ -200,6 +200,47 @@ describe("bridge", () => {
     expect(bareOut[0]).toMatchObject({ error: { data: { code: "unsupported" } } });
   });
 
+  test("host.filePaths says where files dropped on a view are, by their names, for any view where the host has the seam, and never reaches cophylad", async () => {
+    const asked: string[][] = [];
+    const toCophylad: unknown[] = [];
+    const toView: RpcMessage[] = [];
+    const answer = (id: string) => toView.find((f) => (f as { id: unknown }).id === id);
+    const bridge = new Bridge(
+      {
+        manifest: { ...MANIFEST, scopes: [] },
+        clientScopes: CLIENT.scopes,
+        instance: 1,
+        filePaths: async (names) => {
+          asked.push(names);
+          if (names.includes("gone.txt")) throw new Error("unavailable: no files were dropped just now");
+          return names.map((n) => `/home/u/drop me/${n}`);
+        },
+      },
+      { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) },
+    );
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ filePaths: true });
+    bridge.fromView(req("r1", "host.filePaths", { names: ["a.txt", "b c.txt", "café"] }));
+    bridge.fromView(req("r2", "host.filePaths", { names: ["gone.txt"] }));
+    for (const [id, names] of [["r3", []], ["r4", ["../a"]], ["r5", ["a\0b"]], ["r6", [""]], ["r7", [7]], ["r8", "a.txt"], ["r9", ["x".repeat(1025)]], ["r10", Array(4097).fill("a")]] as const) {
+      bridge.fromView(req(id, "host.filePaths", { names }));
+    }
+    bridge.fromView(req("r11", "host.filePaths", {}));
+    await Bun.sleep(0);
+    expect(answer("r1")).toEqual({ jsonrpc: "2.0", id: "r1", result: { paths: ["/home/u/drop me/a.txt", "/home/u/drop me/b c.txt", "/home/u/drop me/café"] } });
+    expect(answer("r2")).toMatchObject({ error: { data: { code: "invalid", message: expect.stringContaining("no files were dropped") } } });
+    for (const id of ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11"]) expect(answer(id)).toMatchObject({ error: { data: { code: "invalid" } } });
+    // only well-formed names reach the shell
+    expect(asked).toEqual([["a.txt", "b c.txt", "café"], ["gone.txt"]]);
+    expect(toCophylad).toEqual([]);
+    // a host without the seam says nothing of it and answers unsupported
+    const { bridge: bare, toView: bareOut } = make();
+    bare.ready(HELLO);
+    expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("filePaths");
+    bare.fromView(req("r12", "host.filePaths", { names: ["a.txt"] }));
+    expect(bareOut.at(-1)).toMatchObject({ id: "r12", error: { data: { code: "unsupported" } } });
+  });
+
   test("hello, the other scope-less requests and unknown methods are unsupported; malformed frames get invalid or nothing", () => {
     const { bridge, toCophylad, toView } = make();
     bridge.fromView(req("r1", "hello", { token: "x" }));

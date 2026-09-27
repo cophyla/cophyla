@@ -47,11 +47,18 @@ notify-rust = "4.18"
 # A stream's window switches WebKitGTK's WebRTC on: the versions Tauri's own web view uses.
 webkit2gtk = "2.0"
 glib = "0.18"
+# Where files dropped on the view are, read as the drop passes into it (dropped/linux.rs).
+gtk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = { version = "4.18", features = ["preview-macos-un"] }
 # The backend itself, for taking a delivered notification down by its identifier.
 mac-usernotifications = "0.3.1"
+# Where files dropped on the view are, read as the drop passes into it (dropped/macos.rs): the
+# versions wry is built on.
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard"] }
 
 [profile.dev]
 incremental = true

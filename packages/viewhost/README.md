@@ -13,7 +13,7 @@ injected, so the tests run under `bun test` with no browser.
 | File | Holds |
 |---|---|
 | `src/connection.ts` | the link to cophylad: frames and link state in, a request/response API out, ids in the `h<n>` namespace. The transport is injected (`TauriIo`), so the shell can put the socket on its native side and the controller can hold it in the page |
-| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one) |
+| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one; `filePaths`, it says where files dropped from the desktop are, through `host.filePaths`) |
 | `src/snapshot.ts` | the daemon's picture as the host last saw it — live sessions, workspaces, nodes and their desktops, open tasks and asks, the latest `voice.state`, a voice setup in progress, the account — replayed to a view that mounts later, since cophylad sends them once after `hello` |
 | `src/viewhost.ts` | loads the default view into a sandboxed frame, runs a `Bridge` over it, and reloads it when a reconnect or `view.changed` finds a new version |
 | `src/chooser.ts`, `src/chooser.css` | the view picker a view opens with `host.chooseView`: a layer over the frame listing `view.list`, where picking one sets the node's default and loads it. Each host page links the stylesheet (`@cophyla/viewhost/chooser.css`), since the controller's policy refuses inline styles |
@@ -58,5 +58,17 @@ scope check — is the same code in both.
   (`viewPrefs`), in the host page's storage under the view's id, and `host.ready` hands it
   back as `prefs`. It is how a view without web storage of its own remembers how the user
   left it on this device; one view never sees another's.
+- `host.filePaths` needs none: it says where the files just dropped on the view from the
+  desktop are, which a web page knows only by name. The view sends `{ names }`, the dropped
+  `File`s' names (1 to 4096 of them, none empty, longer than 1024 or with a slash or NUL:
+  `droppedNames`), and gets `{ paths }` in the names' order; the shell answers only for a
+  drop it saw pass into the page under five seconds ago, of as many files, each name one of
+  its paths' own, and hands a drop over once. `filePaths` in `host.ready` says the host has
+  it (the desktop app); a host without the seam answers `unsupported`. In WebView2 (Windows)
+  the view asks the shell itself instead, past the bridge, since WebView2 grants a dropped
+  file to the process of the frame it was dropped on alone and the host page could not hand
+  it on: it posts `{ cophyla: "cophyla.filePaths", id }` with the `File`s through
+  `chrome.webview.postMessageWithAdditionalObjects`, and the shell answers its frame with
+  `{ cophyla: "cophyla.filePaths", id, paths }` (apps/ui/src-tauri/src/dropped.rs).
 - `hello` is the host's, always. A view asking for it gets `denied` before the frame reaches
   the daemon.

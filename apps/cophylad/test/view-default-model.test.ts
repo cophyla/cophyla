@@ -16,7 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -376,6 +376,15 @@ describe("default view model", () => {
     // The phone's bar has its own: its host says nothing of talk.
     apply(s, { type: "host.ready", params: { ...READY, menu: true } });
     expect(s.hostTalk).toBe(false);
+  });
+
+  test("files dragged in from the desktop are taken only from a host that says where they are", () => {
+    const s = ready();
+    expect(s.hostFilePaths).toBe(false);
+    apply(s, { type: "host.ready", params: { ...READY, filePaths: true } });
+    expect(s.hostFilePaths).toBe(true);
+    apply(s, { type: "host.ready", params: READY });
+    expect(s.hostFilePaths).toBe(false);
   });
 
   test("loaded threads and messages take their place among audit rows, oldest first; a session is a tab, not an item", () => {
@@ -1604,6 +1613,8 @@ describe("default view: the explorer", () => {
     expect(joinPath("/home/me", "")).toBe("/home/me");
     expect(dropText("C:\\D\\site\\a.ts")).toBe("C:\\D\\site\\a.ts");
     expect(dropText("C:\\Program Files\\x")).toBe('"C:\\Program Files\\x"');
+    expect(dropTexts(["C:\\D\\a.ts", "C:\\Program Files\\x", "C:\\D\\docs"])).toBe('C:\\D\\a.ts "C:\\Program Files\\x" C:\\D\\docs');
+    expect(dropTexts(["/home/me/a b"])).toBe('"/home/me/a b"');
   });
 
   test("the repository's line reads as VS Code's status bar", () => {
