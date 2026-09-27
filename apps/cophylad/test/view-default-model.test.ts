@@ -16,7 +16,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1365,6 +1365,21 @@ describe("default view: terminals", () => {
     // They go with the line, and come again with the next list.
     apply(s, { type: "host.state", params: { connected: false } });
     expect(s.terminals.size).toBe(0);
+  });
+
+  test("a bare terminal's tab says where it works: its workspace's name or its folder's, then its own name when that says more than its program", () => {
+    const s = scoped(withTerminals());
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    apply(s, { type: "workspace.state", params: { id: "wks_app", node: NODE, path: "C:\\src\\app", name: "My App", origin: "discovered", lastActivity: 1 } });
+    // A shell's title is its program's own path: the place alone.
+    expect(terminalTabLabel(s, term("t1", 1, { cwd: "c:\\src\\app\\", title: "C:\\Program Files\\PowerShell\\7\\pwsh.exe" }))).toBe("My App");
+    expect(terminalTabLabel(s, term("t2", 1, { cwd: "C:\\src\\app\\web" }))).toBe("web");
+    expect(terminalTabLabel(s, term("t3", 1, { name: "build" }))).toBe("My App · build");
+    expect(terminalTabLabel(s, term("t4", 1, { cwd: "C:\\src\\lib", agents: "claude" }))).toBe("lib · Claude agents");
+    expect(terminalTabLabel(s, term("t5", 1, { argv0: "bash", cwd: "/home/me/site", title: "vim notes.md" }))).toBe("site · vim notes.md");
+    // Another machine's, with its name; its workspace there is not this one's.
+    apply(s, { type: "nodes", nodes: [{ id: OTHER, name: "laptop", role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false }, versions: { platform: "0.3.0", protocol: 1 }, lastSeen: 1 }] });
+    expect(terminalPlace(s, term("t6", 1, { node: OTHER }))).toBe("app · laptop");
   });
 
   test("New terminal offers this node's workspaces, the one worked in last first, at most eight", () => {

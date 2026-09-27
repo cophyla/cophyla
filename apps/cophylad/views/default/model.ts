@@ -8,7 +8,8 @@
 // folder they work in. A node's spend is the node's own totals for the day, with the live
 // samples added, beside each login's plan limits as the node's latest sample carries them.
 // The node's terminals are rows too: a session's own is reached from its pane, and the bare
-// ones (a shell the user started here, in a workspace they picked) get tabs of their own.
+// ones (a shell the user started here, in a workspace they picked) get tabs of their own,
+// under Terminals, named by where they work.
 // The grants are rows too: each phone and node with its access and its end, an invite just
 // minted while its panel shows, the ones still pending, and what the desktop offers this node
 // (Join a primary while it is alone, Leave once it joined one).
@@ -983,6 +984,36 @@ export function selectTerminalTabs(state: ViewState, shown?: string): Terminal[]
 /** What a terminal is called on its tab: its name, Claude's agents when it shows their screen, the title its program set, or the program. */
 export function terminalLabel(t: Terminal): string {
   return t.name || (t.agents === "claude" ? "Claude agents" : undefined) || t.title || t.argv0;
+}
+
+/**
+ * Where a bare terminal works, as its tab says it: the name of the workspace it started in,
+ * or its folder's own; with the machine's when it is another node's.
+ */
+export function terminalPlace(state: ViewState, t: Terminal): string {
+  const platform = state.nodes.get(t.node)?.platform;
+  const key = placeKey(t.cwd, platform);
+  let name: string | undefined;
+  for (const w of state.workspaces.values()) {
+    if (w.node === t.node && placeKey(w.path, platform) === key) {
+      name = w.name;
+      break;
+    }
+  }
+  name ??= lastPart(t.cwd);
+  const other = t.node !== state.node ? state.nodes.get(t.node)?.name : undefined;
+  return other ? `${name} · ${other}` : name;
+}
+
+/**
+ * A bare terminal's tab under Terminals: where it works, then what it is called when that
+ * says more than its program does (a shell's title is often the program's own path).
+ */
+export function terminalTabLabel(state: ViewState, t: Terminal): string {
+  const place = terminalPlace(state, t);
+  const label = terminalLabel(t);
+  const program = (s: string) => lastPart(s).toLowerCase().replace(/\.exe$/, "");
+  return program(label) === program(t.argv0) ? place : `${place} · ${label}`;
 }
 
 /**

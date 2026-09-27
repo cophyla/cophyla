@@ -3,7 +3,8 @@
 // and the frame does not flicker. The rail on the left holds, on the desktop, a dot for the
 // line to cophylad at the very top, one tab for the chat, fixed,
 // and under it one tab per open session, the agent's mark and its name, grouped under the
-// folder they work in, then a card per node with its machine's bars, its processes folded
+// folder they work in, the bare terminals under Terminals, each named by the folder it works
+// in, then a card per node with its machine's bars, its processes folded
 // away, and its desktop (the host's state, its viewers, and Connect, a PIN or a phone code),
 // each login's plan limits and spend, and the account, its details folded away. While an
 // agent's tab is selected that lower half has two tabs: Status, which holds all of it, and
@@ -41,7 +42,7 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalLabel, terminalMark, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -70,7 +71,7 @@ export interface UiState {
   fit: boolean;
   /** The font they are sized at, in percent of the default: − and + step it, and drive them. */
   scale: number;
-  /** The rail's folder groups the user folded away, by group key. */
+  /** The rail's folder groups the user folded away, by group key, and Terminals (`TERMINALS_GROUP`). */
   folded: Set<string>;
   /** What the rail's lower half shows while an agent's tab is selected: its folder's files (the default) or the status cards. The same for every agent. */
   railTab: RailTab;
@@ -512,7 +513,21 @@ function createTermTab(): HTMLElement {
   return tab;
 }
 
-function updateTermTab(tab: HTMLElement, t: Terminal, ui: UiState): void {
+/** Terminals: a heading like a folder's, which folds them away the same way, and the bare terminals' tabs. */
+function renderTerminals(node: HTMLElement, terminals: Terminal[], state: ViewState, ui: UiState): void {
+  setHidden(node, terminals.length === 0);
+  const name = node.querySelector<HTMLElement>(".tab-group-name")!;
+  const folded = ui.folded.has(TERMINALS_GROUP);
+  name.setAttribute("aria-expanded", folded ? "false" : "true");
+  const list = node.querySelector<HTMLElement>(".tab-terminals")!;
+  setHidden(list, folded);
+  reconcile(list, terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui));
+}
+
+/** The fold key of the Terminals heading: no folder group's, which all hold a newline. */
+const TERMINALS_GROUP = "terminals";
+
+function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiState): void {
   setData(tab, "terminal", t.id);
   setData(tab, "status", t.status === "running" ? "idle" : "ended");
   tab.setAttribute("aria-current", ui.terminal === t.id ? "true" : "false");
@@ -523,7 +538,7 @@ function updateTermTab(tab: HTMLElement, t: Terminal, ui: UiState): void {
   // The same black window a session in a terminal has its mark in, with a prompt for a plain program.
   setData(icon, "tether", "1");
   icon.setAttribute("aria-label", t.status === "running" ? mark.kind : `${mark.kind}, ended`);
-  setText(tab.querySelector(".tab-title")!, terminalLabel(t));
+  setText(tab.querySelector(".tab-title")!, terminalTabLabel(state, t));
   tab.title = `${t.argv0} in ${t.cwd}${t.status === "running" ? "" : ", ended"}${t.windows > 0 ? `, ${t.windows} window${t.windows === 1 ? "" : "s"} open` : ""}`;
 }
 
@@ -1334,7 +1349,13 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     // Under it, once pressed: where to start the shell.
     const menu = el("div", "new-terminal-menu");
     menu.append(el("p", "new-terminal-head", "Open a terminal in"), el("p", "new-terminal-loading", "Loading workspaces…"), el("div", "new-terminal-places"));
-    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), el("div", "tab-terminals"), newTerminal, menu);
+    // The bare terminals under a heading of their own, which folds them like a folder's.
+    const terminals = el("div", "tab-group terminals-group");
+    const terminalsName = actionButton("tab-group-name", "Terminals", "group-fold");
+    terminalsName.dataset["group"] = TERMINALS_GROUP;
+    terminalsName.title = "Terminals no agent session runs in";
+    terminals.append(terminalsName, el("div", "tab-terminals"));
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, newTerminal, menu);
     // Under the sessions: the machines, what they are doing, and each login's limits and spend.
     const nodes = el("div", "rail-nodes");
     const spend = el("div", "spend");
@@ -1404,7 +1425,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
   const canTerminal = state.scopes.includes("terminal");
-  reconcile(root.querySelector<HTMLElement>(".tab-terminals")!, canTerminal ? selectTerminalTabs(state, ui.terminal) : [], (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, ui));
+  renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal) : [], state, ui);
   const newTerminal = root.querySelector<HTMLButtonElement>(".tab-new-terminal")!;
   setHidden(newTerminal, !canTerminal);
   newTerminal.disabled = !state.connected;
@@ -1580,7 +1601,7 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   toggle.setAttribute("aria-expanded", shown ? "true" : "false");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
-  setText(root.querySelector(".railbar-title")!, card ? sessionLabel(card.session) : bare ? terminalLabel(bare) : "Cophyla Chat");
+  setText(root.querySelector(".railbar-title")!, card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
 }
 
 /** New terminal's row for the user's home folder, beside the workspaces' ids. */
