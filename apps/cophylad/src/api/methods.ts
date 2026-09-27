@@ -20,7 +20,7 @@ import type { GateContext } from "../gate/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { Listeners } from "../listeners/index.ts";
 import type { Metrics } from "../metrics/index.ts";
-import { listingSummary } from "../sessions/files.ts";
+import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { SessionFiles } from "../sessions/files.ts";
 import type { Sessions } from "../sessions/index.ts";
 import type { ProfilePatch, Profiles } from "../sessions/profiles.ts";
@@ -186,13 +186,14 @@ export function attachMethods(deps: AttachDeps): MethodTable {
 }
 
 export interface FileMethodDeps {
-  files: Pick<SessionFiles, "list" | "git">;
+  files: Pick<SessionFiles, "list" | "git" | "read">;
 }
 
 /**
- * A session's folders and its repository, for a view's file explorer: reads, answered by the
- * session's node (another node's session is forwarded there first). The audit row keeps what
- * was listed and how much, not every name.
+ * A session's folders, its repository and a file in it, for a view's file explorer and its
+ * viewer: reads, answered by the session's node (another node's session is forwarded there
+ * first). The audit row keeps what was listed and how much, not every name, and which file was
+ * read and how much of it, not its text.
  */
 export function fileMethods(deps: FileMethodDeps): MethodTable {
   return {
@@ -207,6 +208,11 @@ export function fileMethods(deps: FileMethodDeps): MethodTable {
         const git = await deps.files.git(p.id);
         return git ? { git } : {};
       },
+    },
+    "session.file": {
+      target: (p) => p.id,
+      redactResult: (r) => fileSummary(r),
+      handler: (p) => deps.files.read(p.id, p.path),
     },
   };
 }
@@ -426,12 +432,13 @@ export interface VoiceDeps {
   voice: Voice;
 }
 
-/** Push-to-talk: the button on the controller, held and released; and the wake word, when the phone hears it itself. */
+/** Push-to-talk: the button on the controller, held and released, or let go taking back what was said; and the wake word, when the phone hears it itself. */
 export function voiceMethods(deps: VoiceDeps): MethodTable {
   return {
     "voice.ptt": {
       handler: (p, ctx) => {
-        deps.voice.ptt(ctx.client, p.active);
+        if (p.cancel) deps.voice.cancel(ctx.client);
+        else deps.voice.ptt(ctx.client, p.active);
         return {};
       },
     },
@@ -447,7 +454,12 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     "voice.settings": { handler: () => deps.voice.settings() },
     "voice.configure": {
       handler: (p) =>
-        deps.voice.configure({ ...(p.tts !== undefined ? { tts: p.tts } : {}), ...(p.voice !== undefined ? { voice: p.voice } : {}), ...(p.stt !== undefined ? { stt: p.stt } : {}) }),
+        deps.voice.configure({
+          ...(p.tts !== undefined ? { tts: p.tts } : {}),
+          ...(p.voice !== undefined ? { voice: p.voice } : {}),
+          ...(p.speed !== undefined ? { speed: p.speed } : {}),
+          ...(p.stt !== undefined ? { stt: p.stt } : {}),
+        }),
     },
     "voice.install": { target: (p) => p.engine, handler: (p) => deps.voice.install(p.engine) },
     "voice.preview": {

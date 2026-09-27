@@ -18,7 +18,7 @@
 // bar has it.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /** The conversation on a controller, as the view last heard it. */
 export interface VoiceRow {
@@ -1239,19 +1239,23 @@ export function openFolders(open: ReadonlySet<string>): string[] {
  * Where the Files panel can show a file of `node`: the live session whose folder holds it, the
  * innermost such folder first and then the session worked in last, with the file's path under
  * that folder as the explorer keys it. A relative path, or one no session's folder holds, has none.
+ * The session `prefer` names comes first whenever its folder holds the file.
  */
-export function fileHome(state: ViewState, node: string, path: string): { session: Session; rel: string } | undefined {
+export function fileHome(state: ViewState, node: string, path: string, prefer?: string): { session: Session; rel: string } | undefined {
   if (!/^([A-Za-z]:)?[\\/]/.test(path)) return undefined;
   const platform = state.nodes.get(node)?.platform;
   const key = placeKey(path, platform);
   let best: { session: Session; root: string } | undefined;
+  let preferred: { session: Session; root: string } | undefined;
   for (const card of state.sessions.values()) {
     const s = card.session;
     if (s.node !== node || s.status === "ended") continue;
     const root = placeKey(s.cwd, platform);
     if (key !== root && !key.startsWith(`${root}/`)) continue;
+    if (s.id === prefer) preferred = { session: s, root };
     if (!best || root.length > best.root.length || (root.length === best.root.length && s.lastActivity > best.session.lastActivity)) best = { session: s, root };
   }
+  best = preferred ?? best;
   if (!best) return undefined;
   // The rest of the path as it was written: the folded key only chose the folder.
   const spelled = path.replace(/\\/g, "/").replace(/\/+$/, "");
@@ -1364,11 +1368,246 @@ function commits(n: number): string {
   return `${n} commit${n === 1 ? "" : "s"}`;
 }
 
+// --- the file viewer ---------------------------------------------------------------------------
+
+/**
+ * A file open in the viewer of an agent's tab: its path under the agent's folder, `/` between
+ * the names, a line to show first, and which opening this is, so one opened again is read
+ * afresh and goes back to its line.
+ */
+export interface ViewerFile {
+  rel: string;
+  line?: number;
+  opened: number;
+}
+
+/** Where the viewer sits on a wide window: over the pane, or beside it. A narrow one always lays it over. */
+export type ViewerDock = "over" | "beside";
+
+/** The grammars the viewer colours with (vendor/shj/), by name, and what each language is called. */
+export const GRAMMARS: Readonly<Record<string, string>> = {
+  asm: "Assembly",
+  bash: "Shell",
+  c: "C",
+  css: "CSS",
+  diff: "Diff",
+  docker: "Dockerfile",
+  go: "Go",
+  html: "HTML",
+  ini: "INI",
+  java: "Java",
+  js: "JavaScript",
+  jsdoc: "JSDoc",
+  json: "JSON",
+  log: "Log",
+  lua: "Lua",
+  make: "Makefile",
+  md: "Markdown",
+  py: "Python",
+  regex: "Regex",
+  rs: "Rust",
+  sql: "SQL",
+  todo: "Text",
+  toml: "TOML",
+  ts: "TypeScript",
+  xml: "XML",
+  yaml: "YAML",
+};
+
+/** Other names a language goes by: a file's extension, or a fenced block's info string in markdown. */
+const LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
+  python: "py",
+  pyi: "py",
+  pyw: "py",
+  markdown: "md",
+  mdx: "md",
+  typescript: "ts",
+  tsx: "ts",
+  mts: "ts",
+  cts: "ts",
+  javascript: "js",
+  jsx: "js",
+  mjs: "js",
+  cjs: "js",
+  jsonc: "json",
+  json5: "json",
+  jsonl: "json",
+  ipynb: "json",
+  sh: "bash",
+  shell: "bash",
+  zsh: "bash",
+  fish: "bash",
+  console: "bash",
+  ps1: "bash",
+  psm1: "bash",
+  powershell: "bash",
+  bat: "bash",
+  cmd: "bash",
+  rust: "rs",
+  golang: "go",
+  h: "c",
+  cc: "c",
+  cpp: "c",
+  cxx: "c",
+  hpp: "c",
+  hh: "c",
+  "c++": "c",
+  cs: "java",
+  csharp: "java",
+  kt: "java",
+  kts: "java",
+  kotlin: "java",
+  scala: "java",
+  htm: "html",
+  svelte: "html",
+  vue: "html",
+  svg: "xml",
+  xaml: "xml",
+  csproj: "xml",
+  plist: "xml",
+  scss: "css",
+  less: "css",
+  yml: "yaml",
+  cfg: "ini",
+  conf: "ini",
+  properties: "ini",
+  env: "ini",
+  editorconfig: "ini",
+  gitattributes: "ini",
+  gitignore: "ini",
+  npmrc: "ini",
+  patch: "diff",
+  dockerfile: "docker",
+  containerfile: "docker",
+  makefile: "make",
+  gnumakefile: "make",
+  mk: "make",
+  txt: "todo",
+  text: "todo",
+};
+
+/** A grammar by a name a language goes by, whatever its case; undefined for one there is none for. */
+export function grammarName(name: string): string | undefined {
+  const n = name.trim().toLowerCase();
+  if (Object.hasOwn(GRAMMARS, n)) return n;
+  return Object.hasOwn(LANGUAGE_ALIASES, n) ? LANGUAGE_ALIASES[n] : undefined;
+}
+
+/** The grammar a file is coloured with, by its whole name (`Dockerfile`, `.gitignore`) or else its extension; undefined for none. */
+export function fileLanguage(path: string): string | undefined {
+  const name = path.slice(path.lastIndexOf("/") + 1).toLowerCase();
+  const whole = grammarName(name.replace(/^\./, ""));
+  if (whole !== undefined && (name.startsWith(".") || !name.includes("."))) return whole;
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? grammarName(name.slice(dot + 1)) : undefined;
+}
+
+/** A file's lines, as a viewer numbers them: any line ending, and none after the last line's own. */
+export function fileLines(text: string): string[] {
+  const lines = text.split(/\r\n?|\n/);
+  if (lines.length > 1 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+/** A file's size as the viewer says it: to a tenth under ten, so a file a little over what shows reads as more. */
+function fileSizeWords(n: number): string {
+  for (const [unit, size] of [
+    ["GB", 1024 ** 3],
+    ["MB", 1024 ** 2],
+    ["KB", 1024],
+  ] as const) {
+    if (n < size) continue;
+    const v = n / size;
+    return `${v < 10 ? String(Math.round(v * 10) / 10) : String(Math.round(v))} ${unit}`;
+  }
+  return `${n} B`;
+}
+
+/** What the viewer's head says of a file: its language, how many lines, how big. */
+export function viewerMeta(file: FileText, lines: number | undefined): string {
+  const language = fileLanguage(file.path);
+  const kind = file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text";
+  const counted = lines !== undefined && !file.binary ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : undefined;
+  return [kind, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
+}
+
+/** What the viewer says over a file it shows only part of, or none of; nothing for one shown whole. */
+export function viewerNote(file: FileText): string {
+  if (file.binary) return "This file is not text, so there is nothing to show.";
+  if (file.truncated) return `Only the first ${fileSizeWords(new TextEncoder().encode(file.text ?? "").length)} of ${fileSizeWords(file.size)} shows.`;
+  return "";
+}
+
+/** Why a file could not be shown, in the viewer's words: an app or a node too old to read files, a refusal, or what the node said. */
+export function fileErrorWords(code: string | undefined, message: string): string {
+  if (code === "unsupported") return /unknown method/.test(message) ? "This app cannot show files yet: update it." : "That computer cannot show its files yet: update Cophyla there.";
+  if (code === "not_found") return "There is no such file, or it has gone.";
+  if (code === "unavailable") return "That computer is not connected.";
+  if (code === "timeout") return "The file did not come back.";
+  if (code === "invalid" && / a folder$/.test(message)) return "That is a folder, not a file.";
+  return message;
+}
+
+/** A path in a terminal's row: where it stands in the row's text, the path, and the line written after it. */
+export interface PathInText {
+  start: number;
+  end: number;
+  path: string;
+  line?: number;
+}
+
+const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})(?::(?<line>\d+)(?::\d+)?)?/g;
+
+/**
+ * The paths a terminal's row names that the viewer could open, as Claude Code and a compiler
+ * write them (`src/app.py`, `C:\repo\x.ts:12`): a name with an extension, in folders or not,
+ * with the line after it when there is one. A bare name counts only when its extension is a
+ * language's, so `e.g.` and `v1.2` are none; one inside a URL or a longer word is left alone.
+ */
+export function pathsIn(text: string): PathInText[] {
+  const out: PathInText[] = [];
+  for (const m of text.matchAll(PATH_IN_TEXT)) {
+    const path = m.groups!["path"]!;
+    if (m.index > 0 && /[\w.@+\\/:-]/.test(text[m.index - 1]!)) continue;
+    if (!/[\\/]/.test(path) && fileLanguage(path) === undefined) continue;
+    const line = m.groups!["line"] !== undefined ? Number(m.groups!["line"]) : undefined;
+    out.push({ start: m.index, end: m.index + m[0].length, path, ...(line !== undefined && line > 0 ? { line } : {}) });
+  }
+  return out;
+}
+
+/** A relative path as the explorer keys it, `/` between the names and no `./` before; undefined for one that climbs out, or is absolute. */
+export function relativeFile(path: string): string | undefined {
+  if (/^([A-Za-z]:)?[\\/]/.test(path)) return undefined;
+  const parts = path.split(/[\\/]/).filter((p) => p !== ".");
+  if (parts.length === 0 || parts.some((p) => p === "" || p === "..")) return undefined;
+  return parts.join("/");
+}
+
+/** The text between two points of a file's lines, each a line's index and a column in it: what a copy of what is selected takes. */
+export function linesBetween(lines: readonly string[], from: readonly [number, number], to: readonly [number, number]): string {
+  const [l1, c1] = from;
+  const [l2, c2] = to;
+  if (l2 < l1 || (l1 === l2 && c2 <= c1)) return "";
+  if (l1 === l2) return (lines[l1] ?? "").slice(c1, c2);
+  return [(lines[l1] ?? "").slice(c1), ...lines.slice(l1 + 1, l2), (lines[l2] ?? "").slice(0, c2)].join("\n");
+}
+
 // --- voice and controllers ---------------------------------------------------------------------
 
 /** A conversation is running, or an engine is being set up: the chat tab pulses. */
 export function voiceBusy(state: ViewState): boolean {
   return state.voice !== undefined || state.setup !== undefined;
+}
+
+/**
+ * This view's own utterance is being heard or transcribed, however it began (the wake word, the
+ * talk key or the talk button), so Escape can take it back. Another client's is not this one's to drop.
+ */
+export function voiceCancellable(state: ViewState): boolean {
+  const v = state.voice;
+  if (!v || (v.state !== "listening" && v.state !== "transcribing")) return false;
+  return state.connected && state.scopes.includes("voice") && (v.client === undefined || v.client === state.client?.id);
 }
 
 /** What the voice row says: the state, the phone it belongs to, or the setup step. */

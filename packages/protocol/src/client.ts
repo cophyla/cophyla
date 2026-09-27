@@ -137,6 +137,9 @@ export type TtsEngineId = z.infer<typeof TtsEngineId>;
 export const SttEngineId = z.enum(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini", "server", "off"]);
 export type SttEngineId = z.infer<typeof SttEngineId>;
 
+/** How fast replies are read, the engine's own pace being 1: from half as fast to three times as fast. */
+export const SpeechSpeed = z.number().min(0.5).max(3);
+
 /** A licence a local engine comes under: what it covers, its name, where to read it. */
 export const SpeechLicence = z.object({ covers: z.string(), name: z.string().min(1), url: z.string().url() });
 export type SpeechLicence = z.infer<typeof SpeechLicence>;
@@ -171,7 +174,8 @@ export type VoiceStageState = z.infer<typeof VoiceStageState>;
  * A node's voice as the app's Settings shows it: whether voice is on at all; the engine that
  * speaks, where that choice came from (`app`: set in Settings; `config`: config.toml), the
  * voice among the engine's `voices` (the model's own default when absent; `voices` is known
- * once the engine is loaded) and the speech stage; the same for transcription (`stt`,
+ * once the engine is loaded), the `speed` replies are read at, whichever engine reads them,
+ * and the speech stage; the same for transcription (`stt`,
  * `sttSource`, `sttStage`); every engine there is for either; and the install under way or
  * the last one that failed.
  */
@@ -181,6 +185,7 @@ export const VoiceSettings = z.object({
   source: z.enum(["app", "config"]),
   voice: z.number().int().nonnegative().optional(),
   voices: z.number().int().positive().optional(),
+  speed: SpeechSpeed,
   stage: VoiceStageState,
   stt: SttEngineId,
   sttSource: z.enum(["app", "config"]),
@@ -257,6 +262,22 @@ export const GitState = z.object({
 export type GitState = z.infer<typeof GitState>;
 
 /**
+ * A file under a session's working directory as a viewer shows it: its path there as it was
+ * asked for, its size in bytes and when it last changed (ms since the epoch), and its text,
+ * the first MiB of it where `truncated` says; a file that is not text (`binary`) comes
+ * without any.
+ */
+export const FileText = z.object({
+  path: z.string(),
+  size: z.number().int().nonnegative(),
+  modified: z.number().int().nonnegative(),
+  text: z.string().optional(),
+  truncated: z.literal(true).optional(),
+  binary: z.literal(true).optional(),
+});
+export type FileText = z.infer<typeof FileText>;
+
+/**
  * A session, a workspace and a thread as a client gets them: without the summary and tags
  * the archive writes, which are the brain's and never leave the node for a client.
  */
@@ -324,7 +345,8 @@ export const clientRequests = {
   },
   /**
    * Ends a session by the user's hand: one cophylad started as the brain's `session.stop` would,
-   * and one of the user's own too, whose process ends and whose terminal stays. A session
+   * and one of the user's own too, with its terminal when the node started that terminal, else
+   * its process alone, so a shell in a window of the user's stays. A session
    * whose process the node does not know is `unsupported`, one that already ended a `conflict`.
    */
   "session.stop": { params: z.object({ id: SessionId }), result: Empty },
@@ -346,6 +368,13 @@ export const clientRequests = {
   },
   /** The repository a session's working directory is in, as a status bar shows it, without fetching; none outside one, or without git. Answered by the session's node. */
   "session.git": { params: z.object({ id: SessionId }), result: z.object({ git: GitState.optional() }) },
+  /**
+   * A file under a session's working directory, by its path there (`/` between the names), for
+   * a viewer: its text, decoded from UTF-8 or from UTF-16 by its byte order mark, or that it is
+   * not text. One that is not under the directory (through `..` or a link that leads out), a
+   * folder or anything but a plain file is refused. Answered by the session's node.
+   */
+  "session.file": { params: z.object({ id: SessionId, path: z.string().min(1).max(4096) }), result: FileText },
   /** The terminals this node's tether hosts hold: harness sessions' own, and any program started in one. */
   "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
   /**
@@ -394,7 +423,12 @@ export const clientRequests = {
     result: z.object({ id: WorkspaceId }),
   },
   "event.list": { params: Empty, result: z.object({ events: z.array(EventDefinition) }) },
-  "voice.ptt": { params: z.object({ active: z.boolean() }), result: Empty },
+  /**
+   * The talk button, held and let go. `cancel` takes back this client's utterance while it is
+   * heard or transcribed, however it began (the button, the talk key or the wake word): nothing
+   * is sent, and the button is let go. With nothing to take back it is no error.
+   */
+  "voice.ptt": { params: z.object({ active: z.boolean(), cancel: z.literal(true).optional() }), result: Empty },
   /**
    * The keyword heads this controller can run itself, for the node to say where its wake word
    * is detected. Sent again on every connect; an empty list hands detection back to the node.
@@ -410,11 +444,17 @@ export const clientRequests = {
   "voice.settings": { params: Empty, result: VoiceSettings },
   /**
    * The engine or the voice, set from the app over config.toml; `null` hands either back to
-   * it. A voice belongs to the engine it was set for. Answered at once: the engine loads
-   * behind the answer, and `voice.settings` says when its stage is up.
+   * it. A voice belongs to the engine it was set for. The speed is every engine's, from the
+   * next line on; `null` is the engines' own pace. Answered at once: the engine loads behind
+   * the answer, and `voice.settings` says when its stage is up.
    */
   "voice.configure": {
-    params: z.object({ tts: TtsEngineId.nullable().optional(), voice: z.number().int().nonnegative().max(9999).nullable().optional(), stt: SttEngineId.nullable().optional() }),
+    params: z.object({
+      tts: TtsEngineId.nullable().optional(),
+      voice: z.number().int().nonnegative().max(9999).nullable().optional(),
+      speed: SpeechSpeed.nullable().optional(),
+      stt: SttEngineId.nullable().optional(),
+    }),
     result: VoiceSettings,
   },
   /**

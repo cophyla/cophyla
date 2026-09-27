@@ -99,7 +99,8 @@ skip ACP-owned records; when the harness's registry entry appears before `sessio
 returns and an attached adapter makes the record first, the ACP adapter claims it. A spawned
 session carries `origin: orchestrator` and its `task`;
 `session.stop` ends one and is `unsupported` on an attached session, unless a client asks:
-the user's `session.stop` ends an attached session's process and leaves its terminal.
+the user's `session.stop` ends an attached session with its terminal when cophylad started
+that terminal (New terminal's shell), and otherwise its process alone, leaving the user's shell.
 
 - **Discovery.** Claude from each profile's `sessions/*.json` registry and its sibling key
   file; Codex from `thread/list` on a `codex app-server` child cophylad runs per profile, which
@@ -349,7 +350,11 @@ in the store over config.toml as this node's own (the `voice` kv namespace, neve
 replicated), `null` handing either back; a new engine loads behind the answer while the one
 before it goes on speaking, a new voice needs no load, and `voice.preview` speaks a line to
 the client that asked. The transcription engine is picked the same way (`stt`), and a
-hosted one needs nothing installed.
+hosted one needs nothing installed. The speed replies are read at is set there too
+(`speed`, 0.5 to 3, `null` or 1 the engine's own pace), one for every engine: each line is
+made at the engine's pace and changed on its way out at the same pitch (`voice/tempo.ts`,
+Sonic's method: whole periods of the voice dropped, or repeated to slow it), since the
+engines' own speed settings fall short of the speed asked or garble the words.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
 them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input
@@ -373,7 +378,12 @@ controller that streamed before a stage came up is heard once it does. An uttera
 wake word began — on the phone or here — is abandoned without transcribing when the VAD
 hears no speech in its first five seconds of audio, or when four seconds pass without a
 frame; the recogniser is dropped, not drained, so a hosted one is never sent silence, and a
-held button is never abandoned.
+held button is never abandoned. `voice.ptt` with `cancel` (Escape in the default view) takes
+back the caller's own utterance while it is heard or transcribed, however it began: the
+recogniser is dropped, a transcript already on its way is thrown away, nothing reaches the
+chat, and the button is let go, so its own release later ends nothing. It rides on
+`voice.ptt` rather than a method of its own so that a host built before it, which passes on
+only the requests it knows, carries it too.
 
 ## Remote desktop
 
@@ -413,9 +423,11 @@ files import each other by their own names. The daemon strips the types when it 
 so nothing here is built. `model.ts` is the pure reducer over what the host sends
 (`test/view-default-model.test.ts`), `render.ts` the keyed DOM renderer, `markdown.ts` the
 elements of what a model wrote, built from marked's tokens, `rpc.ts` the postMessage line to
-the host, `terminal.ts` a terminal's screen, and `view.ts` the loop. `vendor/` holds the
-libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked and uqr,
-copied and pinned by `scripts/vendor-view.ts`. A view's `id` is its directory name.
+the host, `terminal.ts` a terminal's screen, `fileview.ts` the file viewer (a file of an
+agent's folder, `session.file`, over the pane or beside it), and `view.ts` the loop. `vendor/`
+holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
+uqr, and speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file
+needs them, copied and pinned by `scripts/vendor-view.ts`. A view's `id` is its directory name.
 Every view offers Change view, a control that asks the host `host.chooseView` for its view
 picker (`test/views.test.ts` holds the built-in ones to it); the default's is in the ⋮ beside
 the chat's tab.

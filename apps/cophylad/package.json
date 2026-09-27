@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "@lydell/node-pty": "^1.2.0-beta.15",
+    "@speed-highlight/core": "2.1.0",
     "@xterm/addon-fit": "0.11.0",
     "@xterm/addon-unicode11": "0.9.0",
     "@xterm/addon-web-links": "0.12.0",

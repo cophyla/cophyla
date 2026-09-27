@@ -226,6 +226,7 @@ export const requestFilters = {
   // the session's own directory, the path its target is checked by, and nothing above it
   "session.files": { names: (p) => [{ session: p.id }] },
   "session.git": { names: (p) => [{ session: p.id }] },
+  "session.file": { names: (p) => [{ session: p.id }] },
   "terminal.list": { names: "open", result: (r, keep) => ({ ...r, terminals: r.terminals.filter((t) => keep(terminalTarget(t))) }) },
   "terminal.spawn": { names: "global" },
   "terminal.open": { names: "global" },

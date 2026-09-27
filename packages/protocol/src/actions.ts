@@ -35,6 +35,7 @@ export const actions = {
   "session.watch": { risk: "read" },
   "session.files": { risk: "read" },
   "session.git": { risk: "read" },
+  "session.file": { risk: "read" },
   "terminal.list": { risk: "read" },
   "terminal.spawn": { risk: "exec" },
   // Watching is a read; typing into it (`input`, `drive`) is `exec`, and so is ending it.

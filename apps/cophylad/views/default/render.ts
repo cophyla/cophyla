@@ -9,7 +9,8 @@
 // each login's plan limits and spend, and the account, its details folded away. While an
 // agent's tab is selected that lower half has two tabs: Status, which holds all of it, and
 // Files, the default, an explorer of the folder the agent works in, its folders folding open
-// a level at a time and each row dragged onto the chat or the terminal to drop its path
+// a level at a time, a file opening in the viewer at a click (fileview.ts, the file it shows
+// marked in the tree), and each row dragged onto the chat or the terminal to drop its path
 // there, and at its foot the repository's branch and the commits to pull and to push. Which
 // of the two shows is the same for every agent;
 // the chat stream and every session pane stay in the DOM and only the selected one shows,
@@ -43,7 +44,7 @@ import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -83,6 +84,12 @@ export interface UiState {
   picked: Map<string, string>;
   /** A file a chip asked the Files panel to show: its row is scrolled to and focused once it is listed. */
   reveal?: { place: string; rel: string };
+  /** The file open in each agent's tab, by session, over its pane or beside it (fileview.ts). */
+  viewers: Map<string, ViewerFile>;
+  /** Where the viewer sits on a wide window, whether long lines wrap, and whether markdown shows as written: the same for every file, kept on the device. */
+  viewerDock: ViewerDock;
+  viewerWrap: boolean;
+  viewerSource: boolean;
   /** The tether command a session's chip copied, as no window showed it, and whether the clipboard took it: its pane says so a while. */
   attachCopied?: { session: string; command: string; ok: boolean };
   /** The user was working in the pinned prompts: when its ask is replaced by the next one, the focus follows. */
@@ -1552,9 +1559,10 @@ function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, sessi
   tree.setAttribute("aria-label", `Files in ${name}`);
   const rows = ex ? selectFileRows(ex, ui.openDirs.get(place) ?? NO_FOLDERS) : [];
   const picked = ui.picked.get(place);
+  const viewing = ui.viewers.get(session.id)?.rel;
   // One row takes the Tab key, the one picked or else the first; the arrows move from it.
   const current = rows.find((r) => r.key === picked && (r.kind === "dir" || r.kind === "file"))?.key ?? rows.find((r) => r.kind === "dir" || r.kind === "file")?.key;
-  reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current));
+  reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current, viewing));
   const note = block.querySelector<HTMLElement>(".explorer-note")!;
   const words = explorerNote(ex);
   setText(note, words);
@@ -1572,16 +1580,17 @@ function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, sessi
   git.title = line.title;
 }
 
-/** An explorer row: its twisty (a folder's), its mark, its name. A folder or a file is dragged by its path. */
+/** An explorer row: its twisty (a folder's), its mark, its name. A folder or a file is dragged by its path; the file the viewer shows is marked. */
 function createFileRow(): HTMLElement {
   const row = el("div", "file-row");
   row.append(el("span", "file-twisty"), el("span", "file-mark"), el("span", "file-name"));
   return row;
 }
 
-function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined, current: string | undefined): void {
+function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined, current: string | undefined, viewing: string | undefined): void {
   const item = r.kind === "dir" || r.kind === "file";
   setData(row, "kind", r.kind);
+  setData(row, "viewing", r.kind === "file" && r.key === viewing ? "1" : "0");
   setData(row, "rel", r.key);
   setData(row, "path", r.path);
   setData(row, "loading", r.loading ? "1" : "0");

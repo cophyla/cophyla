@@ -337,6 +337,11 @@ export class Tether {
     return this.entries.get(key(ref));
   }
 
+  /** Whether cophylad started a terminal: all it starts are labelled `app: cophylad`, and a window of the user's own is not. */
+  startedHere(ref: TerminalRef): boolean {
+    return this.get(ref)?.info.labels?.["app"] === "cophylad";
+  }
+
   /** The terminal whose program has this pid. */
   byPid(pid: number): TerminalEntry | undefined {
     for (const e of this.entries.values()) if (e.info.pid === pid && e.info.status === "running") return e;

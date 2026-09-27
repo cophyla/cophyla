@@ -1,12 +1,13 @@
 // A Claude session whose id changes in the same process — `/clear`, or a plan's clear-context
 // row — stays the same cophylad session: its origin, task, workspace and terminal stay, the old id
-// stays an alias, its stats count on, and a late hook under the old id ends nothing. The new
+// stays an alias, its stats count on, and a late hook under the old id ends nothing. Its intent
+// is the new conversation's: its first prompt, or the plan a clear-context row carries. The new
 // id is followed from a rewritten registry entry, or from its first hook when the old one's
 // `SessionEnd` said it was clearing. A clear with no new id ends the session once the grace
 // runs out, and a new process that reused the pid is a new session.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeHookEvent, SessionEvent } from "@cophyla/protocol";
 import { ClaudeAdapter, countOn } from "../src/sessions/claude/adapter.ts";
@@ -88,6 +89,38 @@ describe("a session whose id changes in the same process", () => {
     expect(mini.sessions.list().filter((s) => s.native.pid === 400)).toHaveLength(1);
     await Bun.sleep(400);
     expect(mini.sessions.get(rec.session.id)?.status).not.toBe("ended");
+  });
+
+  test("a clear drops the intent: the new conversation's first prompt, or the plan it carries out, says what it is for", async () => {
+    alive.add(700);
+    const dir = join(cwd, "e");
+    mkdirSync(dir, { recursive: true });
+    writeRegistry(registry, { pid: 700, sessionId: "e-old", cwd: dir });
+    await mini.sessions.tick();
+    const rec = mini.sessions.find("claude", "e-old")!;
+    const e = (id: string, event: ClaudeHookEvent["hook_event_name"], extra: Record<string, unknown> = {}) => ({ ...hook(id, event, extra), cwd: dir, transcript_path: join(dir, `${id}.jsonl`) }) as ClaudeHookEvent;
+    await mini.sessions.onHook("claude", e("e-old", "UserPromptSubmit", { prompt: "check the NPC AI" }), { via: "http" });
+    expect(rec.session.intent).toBe("check the NPC AI");
+
+    // `/clear`, then a new task typed.
+    await mini.sessions.onHook("claude", e("e-old", "SessionEnd", { reason: "clear" }), { via: "http" });
+    await mini.sessions.onHook("claude", e("e-mid", "SessionStart", { source: "clear" }), { via: "http" });
+    expect(rec.session.native.id).toBe("e-mid");
+    expect(rec.session.intent).toBeUndefined();
+    expect(mini.store.sessions.get(rec.session.id)?.intent).toBeUndefined();
+    await mini.sessions.onHook("claude", e("e-mid", "UserPromptSubmit", { prompt: "give the gathering skill an aim upgrade" }), { via: "http" });
+    expect(rec.session.intent).toBe("give the gathering skill an aim upgrade");
+
+    // A plan's clear-context row: the new conversation opens on the plan, with no turn typed.
+    await mini.sessions.onHook("claude", e("e-mid", "SessionEnd", { reason: "clear" }), { via: "http" });
+    const plan = { type: "user", origin: { kind: "auto-continuation" }, planContent: "# Aim assist for gathering\n\n## Context\n…", message: { role: "user", content: "Implement the following plan: …" }, timestamp: new Date().toISOString() };
+    writeFileSync(join(dir, "e-new.jsonl"), JSON.stringify(plan) + "\n");
+    await mini.sessions.onHook("claude", e("e-new", "SessionStart", { source: "clear" }), { via: "http" });
+    expect(rec.session.intent).toBeUndefined();
+    clearRegistry(registry, 700);
+    writeRegistry(registry, { pid: 700, sessionId: "e-new", cwd: dir });
+    await mini.sessions.tick();
+    expect(rec.session.intent).toBe("Aim assist for gathering");
   });
 
   test("a clear with no new id ends the session once the grace runs out", async () => {

@@ -12,6 +12,8 @@ export type ClaudeItem =
   | { kind: "tool_call"; id: string; name: string; input: unknown; at: number }
   | { kind: "tool_result"; id: string; name?: string; input?: unknown; content: unknown; isError?: boolean; at: number }
   | { kind: "title"; title: string }
+  /** A plan's clear-context row opened the conversation to carry the plan out; `heading` is the plan's first line. */
+  | { kind: "plan"; heading: string }
   | { kind: "permission_mode"; mode: string }
   | { kind: "queue"; operation: string; content?: string; at: number };
 
@@ -108,6 +110,11 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
       const origin = r["origin"] as Row | undefined;
       if (origin && origin["kind"] === "peer") {
         items.push({ kind: "peer", from: String(origin["from"] ?? "unknown"), text: textOf(content), at: when });
+        break;
+      }
+      if (origin && origin["kind"] === "auto-continuation" && typeof r["planContent"] === "string") {
+        const heading = r["planContent"].split(/\r?\n/).map((l) => l.replace(/^#+\s*/, "").trim()).find((l) => l !== "");
+        if (heading) items.push({ kind: "plan", heading });
         break;
       }
       if (isHumanTurn(r, content)) {

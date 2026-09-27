@@ -23,7 +23,9 @@
 // The engines that speak and transcribe are config.toml's unless the app picked others
 // (`voice.configure`), kept in the store over it, with a voice per speech engine. A new pick
 // loads behind the answer while the engine before it goes on working, and takes its place
-// once it is up; a new voice for the same engine needs no load at all.
+// once it is up; a new voice for the same engine needs no load at all. The speed replies are
+// read at is set there too, one for every engine: each line is made at the engine's own pace
+// and sped up or slowed down on its way out (`tempo.ts`), from the next line on.
 //
 // A local speech or transcription engine is installed on this machine only when the user
 // asks (`voice.install`), after the app has shown its licences: until then its stage is
@@ -52,6 +54,7 @@ import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, Wak
 import { IN_RATE } from "./engines.ts";
 import type { StageState } from "./engines.ts";
 import { speechEngine } from "./catalog.ts";
+import { atSpeed } from "./tempo.ts";
 import { localSttEngine, sherpaEngine, STT_MODELS, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
 import type { VoicePrefs, VoicePrefsStore } from "./prefs.ts";
 
@@ -278,6 +281,11 @@ export class Voice {
     return this.deps.prefs?.read() ?? {};
   }
 
+  /** How fast replies are read, whichever engine reads them. */
+  private speed(): number {
+    return this.prefs().speed ?? 1;
+  }
+
   /** config.toml with the app's picks over it: the engines, and the speech engine's voice when one was set for it. */
   private effective(): VoiceConfig {
     const prefs = this.prefs();
@@ -493,6 +501,7 @@ export class Voice {
       source: prefs.tts !== undefined || prefs.voices?.[config.tts] !== undefined ? "app" : "config",
       ...(voice !== undefined ? { voice } : {}),
       ...(engine?.voices !== undefined ? { voices: engine.voices } : {}),
+      speed: prefs.speed ?? 1,
       stage: stage(this.stages.tts),
       stt: config.stt,
       sttSource: prefs.stt !== undefined ? "app" : "config",
@@ -505,10 +514,10 @@ export class Voice {
 
   /**
    * `voice.configure`: the engine or its voice, set over config.toml, `null` handing either
-   * back. A new engine loads behind the answer; a new voice for the one loaded is used from
-   * its next line.
+   * back. A new engine loads behind the answer; a new voice for the one loaded, and a new
+   * speed for any, is used from its next line.
    */
-  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; stt?: SttEngineId | null }): VoiceSettings {
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null }): VoiceSettings {
     if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
     const before = this.effective();
     const prefs: VoicePrefs = { ...this.prefs() };
@@ -516,6 +525,9 @@ export class Voice {
     else if (patch.tts !== undefined) prefs.tts = patch.tts;
     if (patch.stt === null) delete prefs.stt;
     else if (patch.stt !== undefined) prefs.stt = patch.stt;
+    // The engines' own pace is kept as none.
+    if (patch.speed === null || patch.speed === 1) delete prefs.speed;
+    else if (patch.speed !== undefined) prefs.speed = patch.speed;
     if (patch.voice !== undefined) {
       const engine = prefs.tts ?? this.config.tts;
       const voices = { ...prefs.voices };
@@ -526,7 +538,7 @@ export class Voice {
     }
     this.deps.prefs.write(prefs);
     const after = this.effective();
-    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, stt: after.stt });
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt });
     if (this.config.enabled && !this.stopped) {
       if (after.stt !== before.stt) void this.loadStt();
       if (after.tts !== before.tts) void this.loadTts();
@@ -621,7 +633,8 @@ export class Voice {
       ...(this.wakeModel && !this.phoneWake.has(client.id) ? { wake: this.wakeModel.stream() } : {}),
       vad: () => this.makeVad?.(),
       stt: () => this.sttEngine,
-      tts: () => this.ttsEngine,
+      // Read at the speed set when the line begins.
+      tts: () => this.ttsEngine && atSpeed(this.ttsEngine, this.speed()),
       acksPlayed: client.audio.played === true,
       thinkingTimeoutMs: this.config.thinking_timeout_ms,
       log: this.log.child("conversation"),
@@ -753,6 +766,16 @@ export class Voice {
   ptt(client: Client, active: boolean): void {
     this.hearable(client);
     this.conversation(client)?.ptt(active);
+  }
+
+  /**
+   * `voice.ptt` with `cancel`: this client's utterance, heard or being transcribed, is dropped
+   * unsent and the button let go. Never refused, not even with nothing to transcribe with: there
+   * is nothing to send either way.
+   */
+  cancel(client: Client): void {
+    if (!this.config.enabled || this.stopped) return;
+    this.conversations.get(client.id)?.cancel();
   }
 
   /**

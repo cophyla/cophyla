@@ -118,8 +118,8 @@ export interface NodesDeps {
   remote?: () => RemoteModule | undefined;
   /** This node's profiles, which the primary's clients may set over the link. */
   profiles?: Pick<Profiles, "update">;
-  /** This node's sessions' folders and repositories, which the primary's clients' explorer lists over the link. */
-  files?: Pick<SessionFiles, "list" | "git">;
+  /** This node's sessions' folders, repositories and files, which the primary's clients' explorer lists and viewer reads over the link. */
+  files?: Pick<SessionFiles, "list" | "git" | "read">;
   /** The direct connections, once built: switched from the primary's clients, their state carried up on link. */
   direct?: () => Direct | undefined;
   /** The pipes a stream page rides where there is no route to its desktop, once built. */

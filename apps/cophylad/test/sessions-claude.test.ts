@@ -114,6 +114,19 @@ describe("claude transcript parser", () => {
     expect(titles).toEqual(["Document translations", "certification", "translation-3"]);
   });
 
+  test("a plan's clear-context row yields the plan's heading, not a turn", () => {
+    const s = newClaudeState();
+    const row = {
+      type: "user",
+      origin: { kind: "auto-continuation" },
+      planContent: "\n# Rail rework — sessions grouped by folder\n\n## Context\n…",
+      message: { role: "user", content: "Implement the following plan:\n\n# Rail rework — sessions grouped by folder\n…" },
+      timestamp: "2026-09-27T09:00:00.000Z",
+    };
+    expect(applyClaudeRow(s, row)).toEqual([{ kind: "plan", heading: "Rail rework — sessions grouped by folder" }]);
+    expect(s.stats.turns).toBe(0);
+  });
+
   test("counts usage once per message id and the window from the last message", () => {
     const stats = statsFor(state);
     expect(stats.turns).toBe(1);

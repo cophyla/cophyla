@@ -84,8 +84,12 @@ describe("forwarding over the node link", () => {
     expect(listed.root).toBe(secondary.home);
     expect(listed.dirs[0]!.entries!.some((e) => e.name === "config.toml")).toBe(true);
     expect(await c.request<Record<string, unknown>>("session.git", { id: session.id })).toEqual({});
-    const reads = secondary.store.audit.list({ limit: 80 }).filter((e: AuditEntry) => e.action === "session.files" || e.action === "session.git");
+    const file = await c.request<{ path: string; text?: string }>("session.file", { id: session.id, path: "config.toml" });
+    expect(file.path).toBe("config.toml");
+    expect(file.text).toContain('role = "secondary"');
+    const reads = secondary.store.audit.list({ limit: 80 }).filter((e: AuditEntry) => e.action === "session.files" || e.action === "session.git" || e.action === "session.file");
     expect(reads.map((e) => [e.action, e.principal.kind, e.outcome]).sort()).toEqual([
+      ["session.file", "node", "ok"],
       ["session.files", "node", "ok"],
       ["session.git", "node", "ok"],
     ]);

@@ -77,6 +77,7 @@ describe("a limited phone", () => {
     expect(await code(c, "session.watch", { ids: [one.session.id] })).toBe("ok");
     expect(await code(c, "session.files", { id: two.session.id })).toBe("denied");
     expect(await code(c, "session.git", { id: two.session.id })).toBe("denied");
+    expect(await code(c, "session.file", { id: two.session.id, path: "README.md" })).toBe("denied");
     expect(await code(c, "session.files", { id: one.session.id })).toBe("ok");
     expect(await code(c, "workspace.put", { node: d.identity.id, path: join(primary.scratch, "elsewhere"), name: "x" })).toBe("denied");
     // Node-wide, whatever the scopes say.

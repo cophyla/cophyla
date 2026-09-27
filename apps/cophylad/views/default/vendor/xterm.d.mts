@@ -38,6 +38,35 @@ export interface ILinkHandler {
   allowNonHttpProtocols?: boolean;
 }
 
+/** A link a provider found in a row: where it is (1-based cells, the end included), and what it does. */
+export interface ILink {
+  range: IBufferRange;
+  text: string;
+  decorations?: { pointerCursor?: boolean; underline?: boolean };
+  activate(event: MouseEvent, text: string): void;
+  hover?(event: MouseEvent, text: string): void;
+  leave?(event: MouseEvent, text: string): void;
+}
+
+export interface ILinkProvider {
+  provideLinks(bufferLineNumber: number, callback: (links: ILink[] | undefined) => void): void;
+}
+
+export interface IBufferCell {
+  getChars(): string;
+  getWidth(): number;
+}
+
+export interface IBufferLine {
+  readonly isWrapped: boolean;
+  readonly length: number;
+  getCell(x: number): IBufferCell | undefined;
+}
+
+export interface IBuffer {
+  getLine(y: number): IBufferLine | undefined;
+}
+
 export interface IFunctionIdentifier {
   prefix?: string;
   intermediates?: string;
@@ -70,6 +99,8 @@ export declare class Terminal implements IDisposable {
   readonly unicode: { activeVersion: string };
   readonly parser: IParser;
   readonly modes: IModes;
+  readonly buffer: { readonly active: IBuffer };
+  registerLinkProvider(provider: ILinkProvider): IDisposable;
   open(parent: HTMLElement): void;
   write(data: string | Uint8Array, callback?: () => void): void;
   reset(): void;

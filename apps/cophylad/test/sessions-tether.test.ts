@@ -5,7 +5,8 @@
 // raises the window used on it, or opens one; stop ends the terminal; a session the user
 // started in tether is met with its terminal, and loses it when the terminal goes, also when a
 // wrapper or a shell stands between them, but never through another Claude above it; the
-// brain cannot stop it, the user can, and its process ends while the shell's terminal stays.
+// brain cannot stop it, the user can: in a New terminal's shell the terminal ends with it, in a
+// window of the user's own its process ends and the shell's terminal stays.
 // An agent CLI in a terminal no session holds is marked from one read of the process table
 // when the terminal retitles itself, reads coalesced and spaced, never for a held terminal;
 // a Codex thread the app-server daemon runs takes the one terminal whose CLI fits it.
@@ -335,7 +336,7 @@ describe("a session the user started in tether", () => {
     shell.exit(0);
   });
 
-  test("is stopped by the user alone: its process ends, the shell's terminal stays", async () => {
+  test("is stopped by the user alone: in a window of theirs, its process ends and the shell's terminal stays", async () => {
     const shell = fake.add({ argv: ["pwsh.exe"], cwd }, 8501);
     chains.set(8502, [
       { pid: 8502, name: "claude.exe" },
@@ -361,6 +362,29 @@ describe("a session the user started in tether", () => {
     const unknown = mini.sessions.ensure({ harness: "claude", nativeId: "no-pid", profile: mini.profiles.byHarness("claude")[0]!.id, cwd, transport: "pipe" });
     await expect(mini.sessions.stopSession(unknown.session.id, { as: "user" })).rejects.toMatchObject({ code: "unsupported" });
     shell.exit(0);
+  });
+
+  test("typed into a New terminal's shell, is stopped by the user with the terminal", async () => {
+    const shell = fake.add({ argv: ["pwsh.exe"], cwd, labels: { app: "cophylad" } }, 8511);
+    chains.set(8512, [
+      { pid: 8512, name: "claude.exe" },
+      { pid: 8511, name: "pwsh.exe" },
+    ]);
+    alive.add(8512);
+    writeRegistry(registry, { pid: 8512, sessionId: "typed-in-new-terminal", cwd, status: "idle" });
+    await waitFor(() => tether.byPid(8511));
+    await mini.sessions.tick();
+    await waitFor(() => mini.sessions.find("claude", "typed-in-new-terminal")?.session.native.terminal, 5000);
+    const id = mini.sessions.find("claude", "typed-in-new-terminal")!.session.id;
+    await expect(mini.sessions.stopSession(id)).rejects.toMatchObject({ code: "unsupported" });
+    expect(fake.requests.some((r) => r.op === "kill" && r.body["session"] === shell.id)).toBe(false);
+    await mini.sessions.stopSession(id, { as: "user" });
+    // The host ends the terminal's whole tree, the session's process with it.
+    expect(fake.requests.filter((r) => r.op === "kill" && r.body["session"] === shell.id)).toHaveLength(1);
+    expect(killed).not.toContain(8512);
+    expect(mini.sessions.get(id)?.status).toBe("ended");
+    expect(events(id).at(-1)!.payload).toEqual({ reason: "stopped" });
+    await waitFor(() => tether.get({ host: fake.host.host, id: shell.id })?.info.status === "exited");
   });
 });
 

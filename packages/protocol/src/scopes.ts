@@ -29,6 +29,7 @@ export const requestScopes = {
   "session.watch": "sessions:read",
   "session.files": "sessions:read",
   "session.git": "sessions:read",
+  "session.file": "sessions:read",
   "terminal.list": "sessions:read",
   "terminal.spawn": "terminal",
   "terminal.open": "terminal",

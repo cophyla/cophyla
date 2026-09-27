@@ -17,8 +17,9 @@
 // utterance's stream hears `PRIME_MS` of silence first. An empty
 // utterance ends the turn without waking the brain, so a tap on the button costs nothing,
 // and one the wake word began is abandoned without transcribing when no speech follows or
-// the phone stops sending. While the reply is spoken the wake word keeps running, so a word
-// over the top of it stops the speech and starts the next utterance.
+// the phone stops sending. The user can take an utterance back until its transcript is sent
+// (`voice.ptt` with `cancel`, Escape in the chat). While the reply is spoken the wake word
+// keeps running, so a word over the top of it stops the speech and starts the next utterance.
 //
 // Each spoken line is a numbered reply whose last frame says `end`. A phone that said it
 // reports playback answers that end with `voice.played` once the last of it has left its
@@ -115,6 +116,8 @@ export class Conversation {
   private queue: Int16Array[] = [];
   private pumping = false;
   private pttHeld = false;
+  /** Utterances the user took back, so a transcript that lands after one was is dropped. */
+  private cancels = 0;
   private disposed = false;
   /** The synthesis in flight, so a barge-in can cut it. */
   private speech?: AbortController;
@@ -334,6 +337,30 @@ export class Conversation {
     this.deps.log?.info("utterance abandoned", { client: this.client, why });
   }
 
+  /**
+   * The user took the utterance back (Escape in the chat), however it began: heard or being
+   * transcribed, it ends with nothing sent. The recogniser is dropped, and a transcript already
+   * on its way is thrown away when it lands. The button is let go with it, so its own release
+   * later ends nothing. False when no utterance was in progress.
+   */
+  cancel(): boolean {
+    if (this.disposed) return false;
+    this.pttHeld = false;
+    if (this.state !== "listening" && this.state !== "transcribing") return false;
+    const was = this.state;
+    this.cancels++;
+    this.clearStall();
+    this.stream?.dispose();
+    this.stream = undefined;
+    this.began = undefined;
+    this.leadLeft = 0;
+    this.resetTurn();
+    this.setSpeaking(false);
+    this.setState("idle");
+    this.deps.log?.info("utterance cancelled", { client: this.client, was });
+    return true;
+  }
+
   private async finish(why: "silence" | "button"): Promise<void> {
     this.stamp("speechEnd");
     const stream = this.stream;
@@ -348,8 +375,9 @@ export class Conversation {
       stream.dispose();
       if (this.stream === stream) this.stream = undefined;
     }
+    const cancels = this.cancels;
     const text = stream && heard ? await stream.final() : "";
-    if (this.disposed) return;
+    if (this.disposed || this.cancels !== cancels) return;
     this.stamp("sttFinal");
     if (!text) {
       // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain.

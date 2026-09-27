@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
-import { folderParts, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
+import { decodeText, folderParts, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { stopDaemon, TestClient, testDaemon } from "./helpers.ts";
 
@@ -33,7 +33,7 @@ function linkDir(target: string, at: string): void {
   symlinkSync(target, at, process.platform === "win32" ? "junction" : "dir");
 }
 
-function filesFor(cwd: string, opts: { max?: number; git?: GitRunner } = {}): SessionFiles {
+function filesFor(cwd: string, opts: { max?: number; textMax?: number; git?: GitRunner } = {}): SessionFiles {
   return new SessionFiles({ session: (id) => (id === "s1" ? { cwd } : undefined), ...opts });
 }
 
@@ -114,6 +114,67 @@ describe("a session's folders", () => {
   });
 });
 
+/** What a read was refused with: its code and words. */
+async function refusal(p: Promise<unknown>): Promise<[string, string]> {
+  const e = await p.then(
+    () => undefined,
+    (x: unknown) => x,
+  );
+  expect(e).toBeInstanceOf(RpcError);
+  return [(e as RpcError).error.code, (e as RpcError).error.message];
+}
+
+describe("a session's file", () => {
+  test("its text, by its path under the directory; its size and when it changed", async () => {
+    const root = temp();
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "main.py"), "def main():\n    print('h\u00e9')\n");
+    writeFileSync(join(root, "empty.txt"), "");
+    const files = filesFor(root);
+    const r = await files.read("s1", "src/main.py");
+    expect(r).toMatchObject({ path: "src/main.py", size: 29, text: "def main():\n    print('h\u00e9')\n" });
+    expect(r.modified).toBeGreaterThan(Date.now() - 60_000);
+    expect(r.truncated).toBeUndefined();
+    expect(await files.read("s1", "empty.txt")).toMatchObject({ size: 0, text: "" });
+  });
+
+  test("UTF-16 by its mark, a UTF-8 mark dropped, a NUL is binary, a long file cut short where a character ends", async () => {
+    const root = temp();
+    writeFileSync(join(root, "wide.txt"), Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from("PowerShell wrote this", "utf16le")]));
+    writeFileSync(join(root, "marked.md"), Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from("# Title")]));
+    writeFileSync(join(root, "icon.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]));
+    // "a\u00e9z" is four bytes: cut at two, the \u00e9 is left out rather than shown broken
+    writeFileSync(join(root, "long.txt"), "a\u00e9z");
+    const files = filesFor(root);
+    expect((await files.read("s1", "wide.txt")).text).toBe("PowerShell wrote this");
+    expect((await files.read("s1", "marked.md")).text).toBe("# Title");
+    const png = await files.read("s1", "icon.png");
+    expect(png).toMatchObject({ path: "icon.png", size: 10, binary: true });
+    expect(png.text).toBeUndefined();
+    expect(await filesFor(root, { textMax: 2 }).read("s1", "long.txt")).toEqual({ path: "long.txt", size: 4, modified: expect.any(Number), text: "a", truncated: true });
+    expect(decodeText(new Uint8Array([0x61, 0x00, 0x62]), false)).toBeUndefined();
+    expect(decodeText(new TextEncoder().encode("ok"), false)).toBe("ok");
+  });
+
+  test("nothing above the directory, no folder, nothing missing; an unknown session is not found", async () => {
+    const root = temp();
+    const outside = temp();
+    writeFileSync(join(outside, "secret.txt"), "the secret");
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "a.ts"), "x");
+    linkDir(outside, join(root, "out"));
+    const files = filesFor(root);
+    for (const bad of ["..", "src/../../secret.txt", "/etc/passwd", "C:/Windows/win.ini", "src//a.ts", "./src/a.ts"]) {
+      expect((await refusal(files.read("s1", bad)))[0]).toBe("invalid");
+    }
+    expect(await refusal(files.read("s1", "out/secret.txt"))).toEqual(["denied", "out/secret.txt: outside the session's folder"]);
+    expect(await refusal(files.read("s1", "src"))).toEqual(["invalid", "src: a folder"]);
+    expect(await refusal(files.read("s1", "src/b.ts"))).toEqual(["not_found", "src/b.ts: no such file"]);
+    expect(await refusal(files.read("s1", "src/a.ts/x"))).toEqual(["not_found", "src/a.ts/x: no such file"]);
+    expect((await refusal(filesFor(root).read("s2", "src/a.ts")))[0]).toBe("not_found");
+  });
+});
+
 describe("a session's repository", () => {
   test("git's porcelain read: branch, commit, upstream, ahead and behind, changed files", () => {
     const out = ["# branch.oid 1e0d3291aa5b6c7d8e9f", "# branch.head master", "# branch.upstream origin/master", "# branch.ab +2 -1", "1 .M N... 100644 100644 100644 a b apps/x.ts", "2 R. N... 100644 100644 100644 a b R100 new.ts\told.ts", "u UU N... 1 2 3 4 a b c conflict.ts", "? notes.txt", ""].join("\n");
@@ -181,7 +242,7 @@ describe("a session's repository", () => {
 });
 
 describe("through a daemon", () => {
-  test("session.files and session.git are reads, gated and audited; the audit keeps the counts, not the names", async () => {
+  test("session.files, session.git and session.file are reads, gated and audited; the audit keeps the counts, not the names nor the text", async () => {
     const d = await testDaemon();
     const c = await TestClient.connect(d.api.url);
     try {
@@ -204,6 +265,14 @@ describe("through a daemon", () => {
       expect(row.result?.body).toEqual({ root: dir, dirs: [{ dir: "", entries: 2 }, { dir: "src", entries: 0 }] });
       expect(JSON.stringify(row)).not.toContain("private-name");
       expect(rows.find((e) => e.action === "session.git")?.outcome).toBe("ok");
+      const secret = "the file's own words";
+      writeFileSync(join(dir, "src", "notes.md"), secret);
+      expect(await c.request<{ text?: string }>("session.file", { id: s.id, path: "src/notes.md" })).toMatchObject({ path: "src/notes.md", text: secret });
+      const read = d.store.audit.list({ limit: 50 }).find((e) => e.action === "session.file")!;
+      expect(read.outcome).toBe("ok");
+      expect(read.target).toBe(s.id);
+      expect(read.result?.body).toEqual({ path: "src/notes.md", size: secret.length, chars: secret.length });
+      expect(JSON.stringify(read)).not.toContain(secret);
       const missing = await c.call("session.files", { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" });
       expect("error" in missing && (missing.error.data as { code: string }).code).toBe("not_found");
     } finally {

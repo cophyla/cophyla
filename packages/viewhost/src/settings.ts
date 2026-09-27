@@ -9,8 +9,9 @@
 // for the wake words and which ones the node listens for, whether replies are spoken, the
 // talk key, and what is wrong with the microphone when something is. On every host it holds
 // the node's engines: the one that transcribes and the one that reads replies out
-// (`voice.settings`, set with `voice.configure`), the voice, where each choice came from with
-// a way back to config.toml's, and Hear it (`voice.preview`). A local engine the node has not
+// (`voice.settings`, set with `voice.configure`), the voice, the speed replies are read at,
+// where each choice came from with a way back to config.toml's, and Hear it
+// (`voice.preview`). A local engine the node has not
 // installed shows the licences it comes under, each a link, and an Install button with what
 // it would download (`voice.install`); nothing is installed unless that is pressed. While an
 // engine loads or installs the panel asks again each second, so the status follows it. Then
@@ -339,6 +340,9 @@ export interface SpeechRow {
   /** The voice as the user counts it, from 1, among `voices`; neither when the engine has no choice of voices. */
   voice?: number;
   voices?: number;
+  /** How fast replies are read, among `speeds`; neither for transcription, with speech off, or from a node that cannot say. */
+  speed?: number;
+  speeds?: Choice[];
   /** Hear it can be pressed: the engine is up. */
   canPreview: boolean;
   /** Where the choice came from, in words. */
@@ -365,6 +369,20 @@ export function megabytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / 1_000_000))} MB`;
 }
 
+/** The speeds the speech row offers, the engine's own pace being 1. */
+export const SPEECH_SPEEDS = [0.75, 1, 1.25, 1.5, 1.75, 2, 2.5];
+
+/** "1.5×" */
+export function speedLabel(speed: number): string {
+  return `${speed}×`;
+}
+
+/** The speeds offered, with one set some other way among them. */
+function speedChoices(speed: number): Choice[] {
+  const speeds = SPEECH_SPEEDS.includes(speed) ? SPEECH_SPEEDS : [...SPEECH_SPEEDS, speed].sort((a, b) => a - b);
+  return speeds.map((v) => ({ value: String(v), label: speedLabel(v) }));
+}
+
 /** One stage's part of the Voice section, from the node's `voice.settings`: speech (`tts`) or transcription (`stt`). */
 function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note: string | undefined): SpeechRow {
   const engine = stage === "tts" ? s.tts : s.stt;
@@ -389,6 +407,9 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
   const options = mine.map((e) => ({ value: e.id, label: e.local && e.installed === false ? `${e.label} (not installed)` : e.label }));
   if (!info) options.push({ value: engine, label: engine });
   const many = stage === "tts" && s.voices !== undefined && s.voices > 1;
+  // A node from before the speed could be set says none.
+  const speed = (s as { speed?: number }).speed;
+  const paced = stage === "tts" && s.enabled && engine !== "off" && speed !== undefined;
   const source = stage === "tts" ? s.source : s.sttSource;
   let install: InstallRow | undefined;
   if (info?.local && info.installed === false) {
@@ -408,6 +429,7 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
     status,
     trouble,
     ...(many ? { voice: (s.voice ?? 0) + 1, voices: s.voices } : {}),
+    ...(paced ? { speed, speeds: speedChoices(speed) } : {}),
     canPreview: stage === "tts" && s.enabled && state.status === "ready" && engine !== "off",
     source: source === "app" ? "Picked here." : "From config.toml.",
     reset: source === "app",
@@ -580,6 +602,12 @@ export class SettingsModel {
     return this.configure({ voice: n });
   }
 
+  /** How fast replies are read, whichever engine reads them. */
+  setSpeed(speed: number): Promise<void> {
+    if (!Number.isFinite(speed) || speed === this.speech?.speed) return Promise.resolve();
+    return this.configure({ speed });
+  }
+
   /** A line in the voice set now, spoken to this host. */
   async preview(): Promise<void> {
     this.speechNote = "";
@@ -599,7 +627,7 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; stt?: SttEngineId | null }, stage: "stt" | "tts" = "tts"): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null }, stage: "stt" | "tts" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
     this.setNote(stage, "");
@@ -1001,6 +1029,17 @@ export class SettingsPanel {
       voice.disabled = row.busy;
       voice.addEventListener("change", () => void model.setVoice(Number(voice.value)));
       line.append(span("host-settings-label", "Voice"), voice);
+    }
+    if (row.speeds !== undefined) {
+      const speed = document.createElement("select");
+      speed.dataset["focus"] = "speech:speed";
+      speed.setAttribute("aria-label", "Speed");
+      speed.title = "How fast replies are read, whichever engine reads them";
+      for (const o of row.speeds) speed.append(option(o.value, o.label));
+      speed.value = String(row.speed);
+      speed.disabled = row.busy;
+      speed.addEventListener("change", () => void model.setSpeed(Number(speed.value)));
+      line.append(span("host-settings-label", "Speed"), speed);
     }
     if (tts && !row.install) {
       const hear = document.createElement("button");

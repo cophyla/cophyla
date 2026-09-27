@@ -568,9 +568,10 @@ export class Sessions implements SessionHost {
 
   /**
    * The same process now goes by another session id. The record follows it: origin, task,
-   * workspace, intent and terminal stay, the old id stays an alias so a late hook still
-   * finds it, and the transcript starts over at the new one's. What the session spent under
-   * the old id is kept as the base its stats count on from.
+   * workspace and terminal stay, the old id stays an alias so a late hook still finds it,
+   * and the transcript starts over at the new one's. The intent goes: the new conversation's
+   * first prompt, or the plan it was cleared to carry out, says what it is for now. What the
+   * session spent under the old id is kept as the base its stats count on from.
    */
   rekey(rec: SessionRecord, nativeId: string, at = this.now()): void {
     const live = rec as LiveRecord;
@@ -583,6 +584,7 @@ export class Sessions implements SessionHost {
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
     rec.session.native = { ...rec.session.native, id: nativeId };
     if (rec.session.stats) rec.statsBase = rec.session.stats;
+    delete rec.session.intent;
     delete rec.session.transcript;
     rec.tail = undefined;
     rec.parser = undefined;
@@ -1629,7 +1631,9 @@ export class Sessions implements SessionHost {
    * owns its child; one in a tether terminal is ended by its host, and the windows on it say
    * so; one started straight in a terminal has no child to stop, so its process is ended and
    * its window goes with it. A session of the user's is theirs: `unsupported`, unless the user
-   * asked (`as: user`), when its process ends and the terminal it runs in, their shell's, stays.
+   * asked (`as: user`), when it ends with the terminal it runs in if cophylad started that
+   * terminal, the shell of a New terminal the session was typed into included; in a window of
+   * the user's own, its process ends and their shell stays.
    */
   async stopSession(id: string, opts: { as?: "user" | "brain" } = {}): Promise<void> {
     const rec = this.must(id);
@@ -1650,8 +1654,8 @@ export class Sessions implements SessionHost {
       this.end(rec, "stopped", this.now());
       return;
     }
-    const term = rec.session.origin === "orchestrator" ? rec.session.native.terminal : undefined;
-    if (term && this.deps.tether?.available) {
+    const term = rec.session.native.terminal;
+    if (term && this.deps.tether?.available && (rec.session.origin === "orchestrator" || this.deps.tether.startedHere(term))) {
       try {
         await this.deps.tether.kill(term);
         this.end(rec, "stopped", this.now());

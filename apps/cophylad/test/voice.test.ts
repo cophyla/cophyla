@@ -248,6 +248,28 @@ describe("voice", () => {
     expect(states(phone)).toEqual(["listening", "transcribing", "thinking"]);
   }, 20_000);
 
+  test("an utterance taken back is never sent, and another client's is not the caller's to take", async () => {
+    const { ui, phone, engines } = await start({ voice: `wake = "off"\n` });
+    await phone.request("voice.ptt", { active: true });
+    speak(phone, 6);
+    await waitFor(() => states(phone).at(-1) === "listening");
+    // The desktop has no utterance of its own, nor a microphone: the phone's goes on, and the
+    // desktop is not refused, since taking back needs nothing to transcribe with.
+    await ui.request("voice.ptt", { active: false, cancel: true });
+    await sleep(50);
+    expect(states(phone)).toEqual(["listening"]);
+    await phone.request("voice.ptt", { active: false, cancel: true });
+    await waitFor(() => states(phone).at(-1) === "idle");
+    // The button's own release, after, ends nothing.
+    await phone.request("voice.ptt", { active: false });
+    await sleep(100);
+    expect(states(phone)).toEqual(["listening", "idle"]);
+    expect(engines.finals).toBe(0);
+    expect(ui.notifications.filter(isMethod("chat.message"))).toHaveLength(0);
+    // With nothing in progress it is no error.
+    expect(await phone.call("voice.ptt", { active: false, cancel: true })).toMatchObject({ result: {} });
+  }, 20_000);
+
   test("a tap with nothing said wakes nobody", async () => {
     const { ui, phone } = await start();
     await phone.request("voice.ptt", { active: true });
@@ -441,15 +463,16 @@ async function bare(opts: { stt?: SttEngine; stallMs?: number } = {}) {
   const makeVad = await engines.vad();
   const stt = opts.stt ?? (await engines.stt());
   const seen: VoiceState[] = [];
+  const finals: string[] = [];
   const c = new Conversation({
     client: "cli_bare",
     vad: makeVad,
     stt: () => stt,
     thinkingTimeoutMs: 60_000,
     stallMs: opts.stallMs ?? 150,
-    on: { state: (s) => seen.push(s), partial: () => {}, final: () => {}, speaking: () => {}, audio: () => {} },
+    on: { state: (s) => seen.push(s), partial: () => {}, final: (text) => finals.push(text), speaking: () => {}, audio: () => {} },
   });
-  return { c, seen, engines };
+  return { c, seen, finals, engines };
 }
 
 describe("the wake word on the phone", () => {
@@ -736,6 +759,73 @@ describe("the wake word on the phone", () => {
     c.dispose();
   });
 
+  test("taken back while it is heard, a held press is let go with nothing sent, and its own release ends nothing", async () => {
+    const calls: string[] = [];
+    const stt: SttEngine = { stream: () => ({ accept: () => {}, final: async () => (calls.push("final"), "words"), reset: () => {}, dispose: () => calls.push("dispose") }), close: () => {} };
+    const { c, seen, finals } = await bare({ stt });
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    expect(c.cancel()).toBe(true);
+    expect(seen).toEqual(["listening", "idle"]);
+    // Let go with it: the frames that follow are nobody's, and the button's own release transcribes nothing.
+    c.push(speechChunk());
+    await sleep(10);
+    c.ptt(false);
+    await sleep(20);
+    expect(seen).toEqual(["listening", "idle"]);
+    expect(calls).toEqual(["dispose"]);
+    expect(finals).toEqual([]);
+    // Let go, a phone's word is heard again.
+    expect(c.wakeHeard()).toBe(true);
+    expect(c.cancel()).toBe(true);
+    // The next press is an utterance of its own.
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "thinking");
+    expect(finals).toEqual(["words"]);
+    c.dispose();
+  });
+
+  test("taken back while it is transcribed, the transcript that lands after is dropped", async () => {
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    const calls: string[] = [];
+    const stt: SttEngine = { stream: () => ({ accept: () => {}, final: () => held.then(() => "words"), reset: () => {}, dispose: () => calls.push("dispose") }), close: () => {} };
+    const { c, seen, finals } = await bare({ stt });
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    c.ptt(false);
+    expect(seen).toEqual(["listening", "transcribing"]);
+    expect(c.cancel()).toBe(true);
+    expect(seen).toEqual(["listening", "transcribing", "idle"]);
+    expect(calls).toEqual(["dispose"]);
+    release();
+    await sleep(20);
+    expect(seen).toEqual(["listening", "transcribing", "idle"]);
+    expect(finals).toEqual([]);
+    // Nothing is left to take back, and the wake word may begin the next one.
+    expect(c.cancel()).toBe(false);
+    expect(c.wakeHeard()).toBe(true);
+    c.dispose();
+  });
+
+  test("a wake taken back goes idle at once, with no stall left to fire", async () => {
+    const { c, seen, finals, engines } = await bare({ stallMs: 50 });
+    expect(c.wakeHeard()).toBe(true);
+    c.push(speechChunk());
+    await sleep(10);
+    expect(c.cancel()).toBe(true);
+    await sleep(120);
+    expect(seen).toEqual(["listening", "idle"]);
+    expect(engines.finals).toBe(0);
+    expect(finals).toEqual([]);
+    c.dispose();
+  });
+
   test("a phone that streamed before the stages were up is heard once they are", async () => {
     let open!: () => void;
     const gate = new Promise<void>((r) => (open = r));
@@ -1008,12 +1098,51 @@ describe("the speech engine picked in the app", () => {
     expect(audioFrames(ui)).toEqual([]);
   }, 20_000);
 
+  test("the speed is every engine's, from the next line, at the engine's own pace kept as none", async () => {
+    const { d, ui, phone } = await start({ engines: new FakeEngines({ transcript: TRANSCRIPT, msPerSentence: 500 }) });
+    const ends = () => phone.notifications.filter((n) => n.method === "voice.audio" && (n.params as { end?: boolean }).end).length;
+    /** The samples of the line the phone is sent for a preview. */
+    const heard = async (): Promise<number> => {
+      const before = audioFrames(phone).length;
+      const ended = ends();
+      await phone.request("voice.preview", { text: "One. Two." });
+      await waitFor(() => ends() > ended);
+      return audioFrames(phone)
+        .slice(before)
+        .reduce((n, chunk) => n + Buffer.from(chunk, "base64").length / 2, 0);
+    };
+    expect(await settings(ui)).toMatchObject({ speed: 1, source: "config" });
+    const own = await heard();
+    expect(own).toBe(2 * 12000);
+
+    // The speed is not the engine's pick: config.toml's engine is still the one reading.
+    expect(await configure(ui, { speed: 2 })).toMatchObject({ tts: "piper", speed: 2, source: "config" });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toEqual({ speed: 2 });
+    expect(Math.abs((await heard()) - own / 2)).toBeLessThan(own * 0.01);
+
+    await configure(ui, { tts: "kokoro" });
+    await ready(d, "kokoro");
+    expect(await settings(ui)).toMatchObject({ tts: "kokoro", speed: 2 });
+    expect(Math.abs((await heard()) - own / 2)).toBeLessThan(own * 0.01);
+    // Handing the engine back leaves the speed.
+    expect(await configure(ui, { tts: null, voice: null })).toMatchObject({ tts: "piper", speed: 2 });
+
+    expect(await configure(ui, { speed: 1 })).toMatchObject({ speed: 1 });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+    await configure(ui, { speed: 0.75 });
+    expect(await configure(ui, { speed: null })).toMatchObject({ speed: 1 });
+    expect(await ui.call("voice.configure", { speed: 4 })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await heard()).toBe(own);
+  }, 20_000);
+
   test("a stored pick that no longer parses reads as none", () => {
     const store = new Store(":memory:");
     store.migrate();
     const prefs = storePrefs(store);
-    store.kv.put(VOICE_KV_NS, "prefs", { tts: "espeak", voices: { piper: 7, kokoro: -1, espeak: 2 } });
+    store.kv.put(VOICE_KV_NS, "prefs", { tts: "espeak", voices: { piper: 7, kokoro: -1, espeak: 2 }, speed: 9 });
     expect(prefs.read()).toEqual({ voices: { piper: 7 } });
+    store.kv.put(VOICE_KV_NS, "prefs", { speed: 1.5 });
+    expect(prefs.read()).toEqual({ speed: 1.5 });
     prefs.write({});
     expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
   });

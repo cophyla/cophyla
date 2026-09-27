@@ -1,8 +1,9 @@
 // A message's content blocks as DOM: text as markdown when a model wrote it and as typed
 // when the user did (markdown.ts; never parsed as HTML either way), quotes as blockquotes with
 // a source chip, their words as they were at the source, refs as chips (an unresolved quote is
-// marked). A chip goes to what it names, in the view: a session's opens its tab, a file's shows
-// it in the Files panel of the agent whose folder holds it, and a thread's, a task's, a prompt's
+// marked). A chip goes to what it names, in the view: a session's opens its tab, a file's opens
+// it in the viewer of the agent whose folder holds it, at its line, and shows it in that agent's
+// Files panel, and a thread's, a task's, a prompt's
 // or an audit row's brings that into view in the chat; one whose target the view does not have
 // (an ended session, a thread not loaded, a memory) only names it. A run of text and refs is
 // one flow, the refs' chips standing in the sentence where the model put them, not on lines
@@ -50,12 +51,13 @@ interface Chip {
   /** `goto`: the thread, task, prompt or audit row brought into view, by the chip's kind; a thread's may name a message in it. */
   ref?: string;
   message?: string;
-  /** `reveal-file`: the file the Files panel shows. */
+  /** `reveal-file`: the file the viewer opens and the Files panel shows, and the line it opens at. */
   node?: string;
   path?: string;
+  line?: number;
 }
 
-const CHIP_DATA = ["action", "session", "seq", "ref", "message", "node", "path"] as const;
+const CHIP_DATA = ["action", "session", "seq", "ref", "message", "node", "path", "line"] as const;
 
 /** A session's chip: it opens the session's tab, while it has one. An ended session left the rail, so its chip only names it. */
 function sessionChip(session: string, state: ViewState, suffix = ""): Chip {
@@ -64,10 +66,10 @@ function sessionChip(session: string, state: ViewState, suffix = ""): Chip {
   return { text: `${sessionWho(card.session)}${suffix}`, title: "Open its tab", action: "select", session };
 }
 
-/** A file's chip: it shows the file in the Files panel of the agent whose folder holds it, when one does. */
-function fileChip(node: string, path: string, suffix: string, state: ViewState): Chip {
+/** A file's chip: it opens the file, at `line`, in the viewer of the agent whose folder holds it, when one does. */
+function fileChip(node: string, path: string, suffix: string, state: ViewState, line?: number): Chip {
   const text = `${baseName(path)}${suffix}`;
-  return fileHome(state, node, path) ? { text, title: `Show it in Files: ${path}`, action: "reveal-file", node, path } : { text, title: path };
+  return fileHome(state, node, path) ? { text, title: `Open it: ${path}`, action: "reveal-file", node, path, ...(line !== undefined ? { line } : {}) } : { text, title: path };
 }
 
 /** A chip for something the chat shows: it brings it into view while the chat has it. */
@@ -83,7 +85,7 @@ function sourceChip(source: Source, state: ViewState): Chip {
     }
     case "file": {
       const range = source.lines ? `:${source.lines[0]}${source.lines[1] !== source.lines[0] ? `-${source.lines[1]}` : ""}` : "";
-      return fileChip(source.node, source.path, range, state);
+      return fileChip(source.node, source.path, range, state, source.lines?.[0]);
     }
     case "thread": {
       const chip = gotoChip(`thread ${shortId(source.thread)}`, source.thread, state.threads.has(source.thread), "Show the thread");
@@ -106,7 +108,7 @@ function refChip(block: Extract<ContentBlock, { type: "ref" }>, state: ViewState
   // A prompt shows while it is open, pinned over the pane.
   if (block.ask) return gotoChip(`prompt ${shortId(block.ask)}`, block.ask, state.asks.get(block.ask)?.status === "open", "Show the prompt");
   if (block.audit) return gotoChip(`audit ${shortId(block.audit)}`, block.audit, state.audit.has(block.audit), "Show the audit row");
-  if (block.file) return fileChip(block.file.node, block.file.path, block.file.line ? `:${block.file.line}` : "", state);
+  if (block.file) return fileChip(block.file.node, block.file.path, block.file.line ? `:${block.file.line}` : "", state, block.file.line);
   return { text: "ref", title: "" };
 }
 

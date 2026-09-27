@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceCancellable, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -828,6 +828,30 @@ describe("default view: voice and the phones", () => {
     expect(state.voice).toBeUndefined();
     expect(voiceBusy(state)).toBe(false);
     expect(voiceWords(state)).toBe("");
+  });
+
+  test("Escape can take back this view's own utterance while it is heard or transcribed, and nothing else", () => {
+    const state = paired();
+    expect(voiceCancellable(state)).toBe(false);
+    // Begun by the talk button or the wake word, the node says only whose it is.
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(voiceCancellable(state)).toBe(true);
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id } });
+    expect(voiceCancellable(state)).toBe(true);
+    // Sent: the brain has it, and the reply is not an utterance.
+    apply(state, { type: "voice.state", params: { state: "thinking", client: CLIENT.id } });
+    expect(voiceCancellable(state)).toBe(false);
+    apply(state, { type: "voice.state", params: { state: "speaking", client: CLIENT.id } });
+    expect(voiceCancellable(state)).toBe(false);
+    // A phone's is the phone's.
+    apply(state, { type: "voice.state", params: { state: "listening", client: "cli_phone" } });
+    expect(voiceCancellable(state)).toBe(false);
+    // A view that may not use voice asks nothing.
+    const mute = initialState();
+    apply(mute, { type: "host.ready", params: READY });
+    apply(mute, { type: "host.state", params: { connected: true } });
+    apply(mute, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(voiceCancellable(mute)).toBe(false);
   });
 
   test("with two phones connected the state is shown without guessing whose it is", () => {
@@ -1683,6 +1707,9 @@ describe("default view: the explorer", () => {
     expect(fileHome(s, NODE, "C:/D/site/apps/web/index.html")?.session.id).toBe("sess_app");
     expect(fileHome(s, NODE, "C:\\D\\site")?.rel).toBe("");
     expect(fileHome(s, OTHER, "C:\\D\\site\\README.md")?.session.id).toBe("sess_far");
+    // The agent whose terminal wrote the path comes first where its folder holds it, and only there.
+    expect(fileHome(s, NODE, "C:/D/site/apps/web/index.html", "sess_repo")).toEqual({ session: s.sessions.get("sess_repo")!.session, rel: "apps/web/index.html" });
+    expect(fileHome(s, NODE, "C:/D/site/apps/web/index.html", "sess_far")?.session.id).toBe("sess_app");
     // Beside a folder, not in it; relative; or no agent there at all.
     expect(fileHome(s, NODE, "C:\\D\\sites\\x.ts")).toBeUndefined();
     expect(fileHome(s, NODE, "src\\main.ts")).toBeUndefined();

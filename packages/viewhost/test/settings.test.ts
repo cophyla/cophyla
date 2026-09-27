@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, launchKey, listenerLine, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
+import { joinFlags, launchKey, listenerLine, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -221,6 +221,7 @@ const speech = (over: Partial<VoiceSettings> = {}): VoiceSettings => ({
   source: "config",
   voice: 0,
   voices: 904,
+  speed: 1,
   stage: { status: "ready", engine: "piper" },
   stt: "server",
   sttSource: "config",
@@ -240,6 +241,40 @@ describe("the node's speech", () => {
     expect(speechRow(speech({ tts: "off", stage: { status: "off" } }))).toMatchObject({ status: "Replies are not spoken.", canPreview: false });
     expect(speechRow(speech({ enabled: false }))).toMatchObject({ trouble: true, canPreview: false });
     expect(speechRow(speech({ enabled: false })).status).toContain("config.toml");
+  });
+
+  test("the speed: every one offered, one set some other way among them, and none where nothing is read out", () => {
+    const row = speechRow(speech());
+    expect(row.speed).toBe(1);
+    expect(row.speeds!.map((o) => o.label)).toEqual(["0.75×", "1×", "1.25×", "1.5×", "1.75×", "2×", "2.5×"]);
+    expect(row.speeds!.map((o) => Number(o.value))).toEqual(SPEECH_SPEEDS);
+    expect(speechRow(speech({ speed: 3 })).speeds!.map((o) => o.label).slice(-2)).toEqual(["2.5×", "3×"]);
+    expect(speechRow(speech({ speed: 1.1 })).speeds!.map((o) => o.value).slice(0, 3)).toEqual(["0.75", "1", "1.1"]);
+    // Every engine reads at it, whatever its voices: Chatterbox has one.
+    expect(speechRow(speech({ tts: "chatterbox", voices: 1, speed: 2 }))).toMatchObject({ speed: 2 });
+    expect(speechRow(speech({ tts: "off", stage: { status: "off" } })).speeds).toBeUndefined();
+    expect(speechRow(speech({ enabled: false })).speeds).toBeUndefined();
+    expect(sttRow(speech()).speeds).toBeUndefined();
+    const { speed: _, ...old } = speech();
+    expect(speechRow(old as VoiceSettings).speeds).toBeUndefined();
+  });
+
+  test("a speed goes out as it is, and the one set already, or none, sends nothing", async () => {
+    let now = speech();
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => (now = { ...now, speed: p["speed"] as number }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setSpeed(2);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { speed: 2 } });
+    expect(m.speechRow()?.speed).toBe(2);
+    const before = asked.length;
+    await m.setSpeed(2);
+    await m.setSpeed(Number.NaN);
+    expect(asked.length).toBe(before);
+    m.dispose();
   });
 
   test("a pick sends the engine, a voice goes out counted from 0, and a reset hands both back", async () => {

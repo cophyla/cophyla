@@ -20,16 +20,18 @@
 // (Claude, which takes the mouse) copies with OSC 52, which is honoured, and never read
 // back. A link, a URL in the text or an OSC 8 one, opens in the browser at Ctrl+click (⌘ on
 // a Mac), or a tap where there is no mouse: the host opens it (`host.openLink`), since the
-// frame has no way out. A file or a folder dragged from the explorer onto the screen is typed
-// in as its path, as a paste.
+// frame has no way out. A file's path an agent's terminal writes (`src/app.py`, `x.ts:12`)
+// opens the same way in the view's file viewer, at its line, when the view can place it in an
+// agent's folder (`FileLinks`). A file or a folder dragged from the explorer onto the screen is
+// typed in as its path, as a paste.
 
 import type { Terminal as TerminalRow } from "@cophyla/protocol";
-import { clipboardWrite, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
+import { clipboardWrite, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, pathsIn, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
 import type { TerminalOutput } from "./model.ts";
 import type { FitAddon } from "./vendor/addon-fit.mjs";
 import type { Unicode11Addon } from "./vendor/addon-unicode11.mjs";
 import type { WebLinksAddon } from "./vendor/addon-web-links.mjs";
-import type { Terminal as XTerm } from "./vendor/xterm.mjs";
+import type { ILink, Terminal as XTerm } from "./vendor/xterm.mjs";
 import { ViewRpcError } from "./rpc.ts";
 import type { HostRpc } from "./rpc.ts";
 
@@ -55,6 +57,14 @@ const SCROLLBAR = 14;
 const MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
 /** What a link says while the mouse is on it. */
 const FOLLOW = `Follow link (${MAC ? "⌘" : "Ctrl"}+click)`;
+/** What a file's path says while the mouse is on it. */
+const OPEN_FILE = `Open the file (${MAC ? "⌘" : "Ctrl"}+click)`;
+
+/** The files a terminal's paths name: whether the view can open one, and opening it, at a line. */
+export interface FileLinks {
+  canOpen(path: string): boolean;
+  open(path: string, line?: number): void;
+}
 
 export interface ShowOptions {
   /** Size the terminal to the pane. */
@@ -91,9 +101,12 @@ export class TerminalView {
   /** Why it shows nothing, or why it is read only. */
   note?: string;
 
-  constructor(rpc: HostRpc, changed: () => void) {
+  private files: FileLinks | undefined;
+
+  constructor(rpc: HostRpc, changed: () => void, files?: FileLinks) {
     this.rpc = rpc;
     this.changed = changed;
+    this.files = files;
     this.el = document.createElement("div");
     this.el.className = "term-view";
     const bar = document.createElement("div");
@@ -246,6 +259,7 @@ export class TerminalView {
     term.loadAddon(new x.Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new x.WebLinksAddon((ev, url) => this.openLink(ev, url), { hover: () => this.hoverLink(true), leave: () => this.hoverLink(false) }));
+    if (this.files) term.registerLinkProvider({ provideLinks: (y, callback) => callback(this.fileLinks(term, y)) });
     term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => repeatsTracking(params, term.modes.mouseTrackingMode));
     term.parser.registerOscHandler(52, (data) => {
       const text = clipboardWrite(data);
@@ -383,11 +397,45 @@ export class TerminalView {
     this.rpc.request("host.openLink", { url }).catch((e: unknown) => console.warn(`the link did not open: ${message(e)}`));
   }
 
+  /**
+   * The paths a row names that the view can open, as links: each at the cells its characters
+   * are drawn in (a wide character takes two), opened in the viewer at Ctrl or ⌘+click, or a
+   * tap where there is no mouse. A path a wrapped row splits in two is not found.
+   */
+  private fileLinks(term: XTerm, y: number): ILink[] | undefined {
+    const files = this.files;
+    const row = term.buffer.active.getLine(y - 1);
+    if (!files || !row) return undefined;
+    let text = "";
+    const cols: number[] = [];
+    for (let x = 0; x < row.length; x++) {
+      const cell = row.getCell(x);
+      if (!cell || cell.getWidth() === 0) continue;
+      const chars = cell.getChars() || " ";
+      for (let i = 0; i < chars.length; i++) cols.push(x);
+      text += chars;
+    }
+    const links: ILink[] = [];
+    for (const p of pathsIn(text)) {
+      if (!files.canOpen(p.path)) continue;
+      links.push({
+        range: { start: { x: cols[p.start]! + 1, y }, end: { x: cols[p.end - 1]! + 1, y } },
+        text: text.slice(p.start, p.end),
+        activate: (ev) => {
+          if (ev.ctrlKey || ev.metaKey || touch()) files.open(p.path, p.line);
+        },
+        hover: () => this.hoverLink(true, OPEN_FILE),
+        leave: () => this.hoverLink(false),
+      });
+    }
+    return links.length > 0 ? links : undefined;
+  }
+
   /** The mouse went onto a link or off it: while on, the terminal says how to follow it. */
-  private hoverLink(on: boolean): void {
+  private hoverLink(on: boolean, words = FOLLOW): void {
     const el = this.term?.element;
     if (!el || touch()) return;
-    if (on) el.title = FOLLOW;
+    if (on) el.title = words;
     else el.removeAttribute("title");
   }
 

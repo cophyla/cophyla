@@ -2,7 +2,8 @@
 // text into tokens, and the elements are built from them here with `createElement` and
 // `textContent`, as everything else in the view is: nothing in the text is ever parsed as
 // HTML, so raw HTML in it shows as the text it is. GitHub's flavour (tables, task lists,
-// strikethrough, bare links), and a single newline is a line break, as a chat means it. A
+// strikethrough, bare links), and a single newline is a line break, as a chat means it; in a
+// file the viewer shows, as in a README on GitHub, it is not. A
 // link is drawn as one with its address for a title, and goes nowhere: only a terminal's
 // links open (`host.openLink`). An image is its alt text: the frame has no network. The top-level blocks are
 // reconciled against the source each was read from, so a reply that streams rebuilds only
@@ -15,6 +16,8 @@ import type { MarkedToken, Token, Tokens } from "./vendor/marked.mjs";
 import { SLOT, SLOT_OPEN } from "./model.ts";
 
 const OPTIONS = { gfm: true, breaks: true };
+/** A file's markdown: lines wrapped by hand join into their paragraph. */
+const FILE_OPTIONS = { gfm: true, breaks: false };
 
 const HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
@@ -181,11 +184,11 @@ function block(token: Token): HTMLElement {
 }
 
 /** Keeps `container`'s children in step with the text's top-level blocks, rebuilding only a block whose source changed. */
-function renderMarkdown(container: HTMLElement, text: string): void {
+function renderMarkdown(container: HTMLElement, text: string, options: typeof OPTIONS): void {
   // It held plain text until now, or nothing.
   if (!sources.has(container)) container.replaceChildren();
   sources.set(container, text);
-  const tokens = Lexer.lex(text, OPTIONS).filter((t) => t.type !== "space" && t.type !== "def");
+  const tokens = Lexer.lex(text, options).filter((t) => t.type !== "space" && t.type !== "def");
   const children = Array.from(container.children);
   tokens.forEach((token, i) => {
     const node = children[i];
@@ -201,12 +204,13 @@ function renderMarkdown(container: HTMLElement, text: string): void {
 /**
  * Sets a container's text: as markdown (class `md`) when a model wrote it, else as it was
  * typed, for `white-space: pre-wrap` to show. Text that marked cannot read is shown as typed.
+ * A `file`'s markdown keeps a single newline inside its paragraph.
  */
-export function renderText(container: HTMLElement, text: string, markdown: boolean): void {
+export function renderText(container: HTMLElement, text: string, markdown: boolean, opts: { file?: boolean } = {}): void {
   if (markdown && sources.get(container) === text) return;
   if (markdown) {
     try {
-      renderMarkdown(container, text);
+      renderMarkdown(container, text, opts.file ? FILE_OPTIONS : OPTIONS);
       container.classList.add("md");
       return;
     } catch {

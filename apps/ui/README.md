@@ -234,7 +234,9 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
   told to the page as `voice:ptt {down}`. The page keeps the choice and registers it with
   `ptt_shortcut` at every start; a key another app holds is refused with a word.
 - **The talk button** is the view's: `host.ready` says `talk`, and the default view draws a
-  microphone beside Send that holds `voice.ptt` while pressed.
+  microphone beside Send that holds `voice.ptt` while pressed. Escape in the view takes back
+  what is being heard or transcribed (`voice.ptt` with `cancel`), whether the wake word, the
+  talk key or the button began it.
 - **Settings → Voice** shows what voice is doing, listening for the wake words and speaking
   the replies as switches (kept in the page's storage), and the talk key.
 

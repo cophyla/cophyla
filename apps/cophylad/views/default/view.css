@@ -3509,6 +3509,390 @@ button:disabled {
   padding-right: 14px;
 }
 
+/* --- the file viewer ----------------------------------------------------------------------- */
+
+/* A file of the agent's folder: over the pane as a sheet, the pane showing round its edge, or
+   in a column of its own beside it. Its head says which file and what it is, its tools at the
+   right; the file is monospace in the well, each line numbered in a gutter that stays put as
+   the lines scroll sideways. */
+#panes {
+  position: relative;
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--card);
+}
+
+.viewer[data-dock="over"] {
+  position: absolute;
+  inset: 10px 12px 12px;
+  z-index: 10;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
+}
+
+.viewer[data-dock="beside"] {
+  flex: 0 0 min(48%, 960px);
+  min-width: 360px;
+  border-left: 1px solid var(--line-strong);
+}
+
+.viewer-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 6px 6px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-mark {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  background-color: var(--cophyla-ink);
+  -webkit-mask: var(--glyph) center / 14px no-repeat;
+  mask: var(--glyph) center / 14px no-repeat;
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M3.5 1.5h6l3 3v10h-9z'/%3E%3Cpath d='M9.5 1.5v3h3'/%3E%3C/svg%3E");
+}
+
+.viewer-title {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.viewer-name {
+  flex: 0 0 auto;
+  max-width: 100%;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+}
+
+.viewer-dir {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+
+.viewer-meta {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.viewer-tools {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+/* Preview | Source, and Wrap: small bordered toggles, the one on raised. */
+.viewer-modes {
+  display: inline-flex;
+  margin-right: 4px;
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.viewer-modes button,
+.viewer-wrap {
+  padding: 2px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.viewer-modes button + button {
+  border-left: 1px solid var(--line-strong);
+}
+
+.viewer-wrap {
+  margin-right: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+}
+
+.viewer-modes button:hover,
+.viewer-wrap:hover {
+  color: var(--ink);
+}
+
+.viewer-modes button[aria-pressed="true"],
+.viewer-wrap[aria-pressed="true"] {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.viewer-tool {
+  display: flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+}
+
+.viewer-tool::before {
+  content: "";
+  width: 16px;
+  height: 16px;
+  background-color: currentColor;
+  -webkit-mask: var(--glyph) center / contain no-repeat;
+  mask: var(--glyph) center / contain no-repeat;
+}
+
+.viewer-tool:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.viewer-tool:disabled {
+  opacity: 0.45;
+}
+
+.viewer-refresh {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12.9 7.4A5 5 0 1 1 11.3 4'/%3E%3Cpath d='M12 1.8v2.8H9.2'/%3E%3C/svg%3E");
+}
+
+/* Over the pane, it offers the column beside it; beside, the sheet over it. */
+.viewer-dock[data-dock="over"] {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='1'/%3E%3Cpath d='M9.5 2.5v11'/%3E%3Cpath d='M10 3h4v10h-4z' fill='%23000' stroke='none'/%3E%3C/svg%3E");
+}
+
+.viewer-dock[data-dock="beside"] {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='1'/%3E%3Crect x='4' y='5' width='8' height='6' fill='%23000' stroke='none'/%3E%3C/svg%3E");
+}
+
+.viewer-close {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M4 4l8 8M12 4l-8 8'/%3E%3C/svg%3E");
+}
+
+.viewer-note {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.viewer-note[data-error="1"] {
+  color: var(--rust);
+}
+
+.viewer-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  background: var(--well);
+  outline: 0;
+}
+
+.viewer-body:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--cophyla);
+}
+
+/* A line's height is fixed, so a chunk laid out later takes its room before it is: the scroll
+   stays true across a long file. As wide as its longest line, so the gutter stays put as far
+   as the lines scroll. */
+.viewer-code {
+  --lh: 20px;
+  --gutter: calc(var(--digits, 3) * 1ch + 26px);
+  width: max-content;
+  min-width: 100%;
+  padding: 8px 0 28px;
+  color: #d9d5e2;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: var(--lh);
+  tab-size: 4;
+}
+
+.viewer-code[data-wrap="1"] {
+  width: auto;
+}
+
+.fv-chunk {
+  content-visibility: auto;
+  contain-intrinsic-block-size: auto calc(var(--n) * var(--lh));
+}
+
+/* A chunk scrolled far sideways is no longer painted (Chromium): a file with a line that long
+   lays out every chunk while its lines do not wrap. */
+.viewer-code[data-long="1"]:not([data-wrap="1"]) .fv-chunk {
+  content-visibility: visible;
+}
+
+.fv-line {
+  display: flex;
+  min-height: var(--lh);
+}
+
+.fv-line::before {
+  content: attr(data-n);
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  flex: 0 0 var(--gutter);
+  padding: 0 12px 0 6px;
+  border-right: 1px solid var(--line);
+  background: var(--well);
+  color: var(--faint);
+  text-align: right;
+  user-select: none;
+}
+
+.fv-text {
+  flex: 1 0 auto;
+  padding: 0 20px 0 12px;
+  white-space: pre;
+}
+
+.viewer-code[data-wrap="1"] .fv-text {
+  flex: 1 1 0;
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fv-line:hover::before {
+  color: var(--muted);
+}
+
+.fv-line[data-flash],
+.fv-line[data-flash]::before {
+  background: var(--cophyla-wash);
+}
+
+/* Markdown drawn, as a README reads: a comfortable measure, headings ruled off. */
+.viewer-md {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 18px 28px 32px;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.viewer-md.md h1,
+.viewer-md.md h2 {
+  margin-top: 22px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-md.md h1 {
+  font-size: 1.7em;
+}
+
+.viewer-md.md h2 {
+  font-size: 1.35em;
+}
+
+.viewer-md.md h3 {
+  margin-top: 18px;
+  font-size: 1.12em;
+}
+
+.viewer-md.md p,
+.viewer-md.md ul,
+.viewer-md.md ol,
+.viewer-md.md pre,
+.viewer-md.md blockquote,
+.viewer-md.md .md-table {
+  margin-bottom: 12px;
+}
+
+.viewer-md.md pre {
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+/* A token's colour, by the tokenizer's type: the view's violet for keywords, its moss for
+   strings, its amber for numbers, comments faint. */
+.tk-kwd,
+.tk-section {
+  color: #c9a2f5;
+}
+
+.tk-section {
+  font-weight: 600;
+}
+
+.tk-str,
+.tk-insert {
+  color: #8fd3a6;
+}
+
+.tk-cmnt {
+  color: #767085;
+  font-style: italic;
+}
+
+.tk-num,
+.tk-bool,
+.tk-esc {
+  color: #e6b86a;
+}
+
+.tk-func {
+  color: #84b9f4;
+}
+
+.tk-class,
+.tk-type {
+  color: #eaa982;
+}
+
+.tk-oper {
+  color: #aaa4b8;
+}
+
+.tk-var {
+  color: #ef9b86;
+}
+
+.tk-deleted,
+.tk-err {
+  color: var(--rust);
+}
+
+/* The file the viewer shows, marked in the explorer. */
+.file-row[data-viewing="1"] .file-name {
+  color: var(--cophyla-ink);
+}
+
+.file-row[data-viewing="1"] .file-mark {
+  background-color: var(--cophyla-ink);
+}
+
 /* --- a phone's width: the rail put away, sliding in over the pane from a menu button ------ */
 
 /* The menu button is the host's where it has one, on its bar under the frame (the phone's);
@@ -3648,6 +4032,35 @@ button:disabled {
   .term-bar {
     gap: 8px;
     padding: 6px 8px;
+  }
+
+  /* The file takes the whole pane; its head's buttons are a thumb wide, what it is on a line of its own. */
+  .viewer[data-dock="over"] {
+    inset: 0;
+    border: 0;
+    border-radius: 0;
+    box-shadow: none;
+  }
+
+  .viewer-head {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .viewer-meta {
+    order: 3;
+    flex-basis: 100%;
+    padding-left: 24px;
+  }
+
+  .viewer-tool {
+    flex-basis: 36px;
+    height: 36px;
+  }
+
+  .viewer-modes button,
+  .viewer-wrap {
+    padding: 6px 10px;
   }
 }
 
