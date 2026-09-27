@@ -424,7 +424,9 @@ so nothing here is built. `model.ts` is the pure reducer over what the host send
 (`test/view-default-model.test.ts`), `render.ts` the keyed DOM renderer, `markdown.ts` the
 elements of what a model wrote, built from marked's tokens, `rpc.ts` the postMessage line to
 the host, `terminal.ts` a terminal's screen, `fileview.ts` the file viewer (a file of an
-agent's folder, `session.file`, over the pane or beside it), and `view.ts` the loop. `vendor/`
+agent's folder, `session.file`, or of the folder a bare terminal started in, `terminal.file`,
+over the pane or beside it: code coloured, markdown and SVG drawn, images, search), and
+`view.ts` the loop. `vendor/`
 holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
 uqr, and speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file
 needs them, copied and pinned by `scripts/vendor-view.ts`. A view's `id` is its directory name.

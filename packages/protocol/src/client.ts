@@ -265,7 +265,8 @@ export type GitState = z.infer<typeof GitState>;
  * A file under a session's working directory as a viewer shows it: its path there as it was
  * asked for, its size in bytes and when it last changed (ms since the epoch), and its text,
  * the first MiB of it where `truncated` says; a file that is not text (`binary`) comes
- * without any.
+ * without any. An image asked for as one (`image` in the request) comes whole, as `base64`
+ * with its `mime` type, when it is small enough to show.
  */
 export const FileText = z.object({
   path: z.string(),
@@ -274,8 +275,13 @@ export const FileText = z.object({
   text: z.string().optional(),
   truncated: z.literal(true).optional(),
   binary: z.literal(true).optional(),
+  mime: z.string().max(100).optional(),
+  base64: z.string().optional(),
 });
 export type FileText = z.infer<typeof FileText>;
+
+/** What a viewer asks of a file: its path under the folder, `/` between the names, and whether an image is to come whole. */
+const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).optional() };
 
 /**
  * A session, a workspace and a thread as a client gets them: without the summary and tags
@@ -371,10 +377,11 @@ export const clientRequests = {
   /**
    * A file under a session's working directory, by its path there (`/` between the names), for
    * a viewer: its text, decoded from UTF-8 or from UTF-16 by its byte order mark, or that it is
-   * not text. One that is not under the directory (through `..` or a link that leads out), a
+   * not text; with `image`, a PNG, JPEG, GIF, WebP, BMP, ICO or AVIF whole, as base64, up to
+   * 5 MiB. One that is not under the directory (through `..` or a link that leads out), a
    * folder or anything but a plain file is refused. Answered by the session's node.
    */
-  "session.file": { params: z.object({ id: SessionId, path: z.string().min(1).max(4096) }), result: FileText },
+  "session.file": { params: z.object({ id: SessionId, ...FileAsk }), result: FileText },
   /** The terminals this node's tether hosts hold: harness sessions' own, and any program started in one. */
   "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
   /**
@@ -404,6 +411,12 @@ export const clientRequests = {
   },
   /** Stops this client's view of a terminal; `end` also ends its program. */
   "terminal.close": { params: z.object({ terminal: z.string(), end: z.boolean().optional() }), result: Empty },
+  /**
+   * A file under the folder a terminal started in, as `session.file` reads one under a
+   * session's: for the viewer of a bare terminal's tab. The terminal's scope, since that folder
+   * is often the user's home, where a session's reader has no business.
+   */
+  "terminal.file": { params: z.object({ terminal: z.string(), ...FileAsk }), result: FileText },
   "ask.answer": {
     params: z.object({
       id: AskId,

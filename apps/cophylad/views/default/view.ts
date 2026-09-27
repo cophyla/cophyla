@@ -39,8 +39,8 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, voiceCancellable, watchParams } from "./model.ts";
-import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewState, VoiceSetup } from "./model.ts";
+import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, voiceCancellable, watchParams } from "./model.ts";
+import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -68,6 +68,7 @@ const ui: UiState = {
   picked: new Map(),
   viewers: new Map(),
   viewerDock: "over",
+  viewerWidth: VIEWER_WIDTH.usual,
   viewerWrap: false,
   viewerSource: false,
 };
@@ -297,8 +298,8 @@ rpc.onNotification((n) => {
       dispatch({ type: "session.event", params: e });
       // A tool the agent ran may have written, moved or committed something: its folder, and
       // the file open in its tab, are read again once it settles.
-      if (e.kind === "tool_result" && e.session === ui.selected) {
-        explorerSoon();
+      if (e.kind === "tool_result") {
+        if (e.session === ui.selected) explorerSoon();
         viewerSoon(e.session);
       }
       return;
@@ -1170,7 +1171,7 @@ function revealFile(node: string, path: string, line?: number): void {
   if (home.rel !== "") {
     ui.reveal = { place, rel: home.rel };
     // On a phone the file shows over the pane, and the rail stays away.
-    openFile(home.session, home.rel, line !== undefined ? { line } : {});
+    openFile(home.session.id, { session: home.session.id }, home.rel, line !== undefined ? { line } : {});
   } else {
     // On a phone the rail was put away as the tab opened: it slides in with the files.
     if (phone.matches) ui.rail = "open";
@@ -1290,7 +1291,7 @@ function pickFile(row: HTMLElement, focus = false): void {
   if (!s || rel === undefined) return;
   ui.picked.set(explorerKey(state, s), rel);
   if (row.dataset["kind"] === "dir") toggleFolder(rel);
-  else openFile(s, rel, { focus });
+  else openFile(s.id, { session: s.id }, rel, { focus });
 }
 
 // --- the file viewer ---------------------------------------------------------------------------
@@ -1298,25 +1299,36 @@ function pickFile(row: HTMLElement, focus = false): void {
 /** How many files were opened: each opening's number, so one opened again is read afresh and goes back to its line. */
 let opens = 0;
 
-/** The file open in the selected agent's tab, over its pane or beside it; none under the chat or a bare terminal. */
+/** The folder a viewer's file is read under, while the view may read it: an agent's with `sessions:read`, a bare terminal's with `terminal`. */
+function sourceRoot(from: ViewerSource): string | undefined {
+  if ("session" in from) return state.scopes.includes("sessions:read") ? state.sessions.get(from.session)?.session.cwd : undefined;
+  return state.scopes.includes("terminal") ? state.terminals.get(from.terminal)?.cwd : undefined;
+}
+
+/** The file open in the tab that shows, an agent's or a bare terminal's, over its pane or beside it; none under the chat. */
 function syncViewer(): void {
-  for (const id of ui.viewers.keys()) if (!state.sessions.has(id)) ui.viewers.delete(id);
-  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  const open = card && state.scopes.includes("sessions:read") ? ui.viewers.get(card.session.id) : undefined;
-  if (!card || !open) {
+  // A tab gone, or what its file was read through, takes the file with it.
+  for (const [tab, v] of ui.viewers) {
+    const gone = tab.startsWith("terminal:") ? !state.terminals.has(tab.slice("terminal:".length)) : !state.sessions.has(tab);
+    if (gone || ("session" in v.from ? !state.sessions.has(v.from.session) : !state.terminals.has(v.from.terminal))) ui.viewers.delete(tab);
+  }
+  const tab = viewerTab(ui.selected, ui.terminal);
+  const open = tab !== undefined ? ui.viewers.get(tab) : undefined;
+  const root = open ? sourceRoot(open.from) : undefined;
+  if (!open || root === undefined) {
     viewer.hide();
     return;
   }
   const dock = narrow.matches ? "over" : ui.viewerDock;
-  const target: ViewerTarget = { session: card.session.id, rel: open.rel, root: card.session.cwd, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
+  const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  viewer.show(target, parent, { dock, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !narrow.matches, connected: state.connected });
+  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !narrow.matches, connected: state.connected });
 }
 
-/** Opens a file of an agent's folder in the viewer of its tab, at a line when one is given; on a phone the rail goes, so it shows. */
-function openFile(s: Session, rel: string, opts: { line?: number; focus?: boolean } = {}): void {
-  ui.viewers.set(s.id, { rel, opened: ++opens, ...(opts.line !== undefined ? { line: opts.line } : {}) });
+/** Opens a file in the viewer of a tab, read through `from`, at a line when one is given; on a phone the rail goes, so it shows. */
+function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: number; focus?: boolean } = {}): void {
+  ui.viewers.set(tab, { from, rel, opened: ++opens, ...(opts.line !== undefined ? { line: opts.line } : {}) });
   putRailAway();
   draw();
   if (opts.focus) viewer.focus();
@@ -1330,34 +1342,47 @@ function terminalAgent(): Session | undefined {
 }
 
 /**
- * Where a path an agent's terminal wrote is: a relative one under that agent's folder, an
- * absolute one in whichever live agent's folder holds it, that agent's first; none outside
- * every agent's folder, or in a bare terminal, which has no agent to read it through.
+ * Where a path a terminal wrote is, and what reads it. In an agent's own terminal: a relative
+ * one under that agent's folder, an absolute one in whichever live agent's folder holds it,
+ * that agent's first. In a bare terminal: one under the folder it started in (a shell that
+ * moved elsewhere since writes paths that are not), else an absolute one in a live agent's
+ * folder. None past all of those.
  */
-function pathHome(path: string): { session: Session; rel: string } | undefined {
+function pathHome(path: string): { from: ViewerSource; rel: string } | undefined {
   const s = terminalAgent();
-  if (!s || !state.scopes.includes("sessions:read")) return undefined;
-  const rel = relativeFile(path);
-  if (rel !== undefined) return { session: s, rel };
-  const home = fileHome(state, s.node, path, s.id);
-  return home && home.rel !== "" ? home : undefined;
+  if (s) {
+    if (!state.scopes.includes("sessions:read")) return undefined;
+    const rel = relativeFile(path);
+    if (rel !== undefined) return { from: { session: s.id }, rel };
+    const home = fileHome(state, s.node, path, s.id);
+    return home && home.rel !== "" ? { from: { session: home.session.id }, rel: home.rel } : undefined;
+  }
+  const t = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
+  if (!t) return undefined;
+  if (state.scopes.includes("terminal")) {
+    const rel = relativeFile(path) ?? relUnder(t.cwd, path, state.nodes.get(t.node)?.platform);
+    if (rel !== undefined && rel !== "") return { from: { terminal: t.id }, rel };
+  }
+  if (!state.scopes.includes("sessions:read")) return undefined;
+  const home = fileHome(state, t.node, path);
+  return home && home.rel !== "" ? { from: { session: home.session.id }, rel: home.rel } : undefined;
 }
 
-/** A path Ctrl+clicked in a terminal: the file opens in the viewer at its line, over or beside that terminal, with the focus. */
+/** A path Ctrl+clicked in a terminal: the file opens at its line in the viewer of that terminal's tab, over or beside it, with the focus. */
 function openPath(path: string, line?: number): void {
   const home = pathHome(path);
-  if (!home) return;
-  if (home.session.id !== ui.selected) select(home.session.id);
-  openFile(home.session, home.rel, { focus: true, ...(line !== undefined ? { line } : {}) });
+  const tab = viewerTab(ui.selected, ui.terminal);
+  if (!home || tab === undefined) return;
+  openFile(tab, home.from, home.rel, { focus: true, ...(line !== undefined ? { line } : {}) });
 }
 
-/** Closes the file open in the selected tab; the focus, when it was in the viewer, goes back to the terminal or to the file's row. */
+/** Closes the file open in the tab that shows; the focus, when it was in the viewer, goes back to the terminal or to the file's row. */
 function closeViewer(): void {
-  const s = ui.selected;
-  const open = s !== undefined ? ui.viewers.get(s) : undefined;
-  if (s === undefined || !open) return;
+  const tab = viewerTab(ui.selected, ui.terminal);
+  const open = tab !== undefined ? ui.viewers.get(tab) : undefined;
+  if (tab === undefined || !open) return;
   const focused = viewer.focused;
-  ui.viewers.delete(s);
+  ui.viewers.delete(tab);
   draw();
   if (!focused) return;
   if (terminal.shown !== undefined) terminal.focus();
@@ -1366,15 +1391,16 @@ function closeViewer(): void {
 
 /** A path the viewer was asked for is a folder (a chip names folders too): the Files panel shows it, and the viewer closes. */
 function folderAsked(t: ViewerTarget): void {
-  if (ui.viewers.get(t.session)?.opened === t.opened) ui.viewers.delete(t.session);
+  for (const [tab, v] of ui.viewers) if (v.opened === t.opened) ui.viewers.delete(tab);
   draw();
 }
 
 let viewerTimer: ReturnType<typeof setTimeout> | undefined;
 
-/** The file open in a session's tab, read again once its agent's burst of tool results settles: an edit shows as it lands. */
+/** The file an agent's folder shows in the viewer, read again once the agent's burst of tool results settles: an edit shows as it lands. */
 function viewerSoon(session: string): void {
-  if (viewer.shown?.session !== session) return;
+  const shown = viewer.shown;
+  if (!shown || !("session" in shown.from) || shown.from.session !== session) return;
   clearTimeout(viewerTimer);
   viewerTimer = setTimeout(() => viewer.reload(), FILES_SETTLE_MS);
 }
@@ -1382,19 +1408,94 @@ function viewerSoon(session: string): void {
 // The user was elsewhere, perhaps editing the file: it shows as it is now.
 window.addEventListener("focus", () => viewer.reload());
 
-/** The viewer's choices as the device kept them: where it sits, whether lines wrap, whether markdown shows as written. */
+// Ctrl+F finds in the file shown, wherever the focus is but in a field or a terminal, which keep their own.
+document.addEventListener("keydown", (ev) => {
+  if (ev.defaultPrevented || !(ev.ctrlKey || ev.metaKey) || ev.altKey || ev.key.toLowerCase() !== "f" || !viewer.shown) return;
+  if ((ev.target as Element | null)?.closest?.(".xterm, input, textarea, select, [contenteditable]")) return;
+  ev.preventDefault();
+  viewer.openFind();
+});
+
+/** The viewer's choices as the device kept them: where it sits and how wide, whether lines wrap, whether markdown and SVG show as written. */
 function restoreViewerPrefs(value: unknown): void {
   if (!value || typeof value !== "object") return;
-  const v = value as { dock?: unknown; wrap?: unknown; source?: unknown };
+  const v = value as { dock?: unknown; width?: unknown; wrap?: unknown; source?: unknown };
   if (v.dock === "over" || v.dock === "beside") ui.viewerDock = v.dock;
+  if (!viewerDrag) ui.viewerWidth = viewerWidth(v.width);
   if (typeof v.wrap === "boolean") ui.viewerWrap = v.wrap;
   if (typeof v.source === "boolean") ui.viewerSource = v.source;
 }
 
 function saveViewerPrefs(): void {
-  prefs = { ...prefs, viewer: { dock: ui.viewerDock, wrap: ui.viewerWrap, source: ui.viewerSource } };
+  prefs = { ...prefs, viewer: { dock: ui.viewerDock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource } };
   void rpc.request("host.savePrefs", { prefs }).catch(() => {});
 }
+
+// --- the viewer's divider ------------------------------------------------------------------------
+
+/** The room the pane keeps beside the viewer, whatever the divider is dragged to. */
+const PANE_MIN = 320;
+/** The divider is held: where in the viewer the pointer took it, from its left edge. */
+let viewerDrag: { pointer: number; grab: number } | undefined;
+
+/** The most of the width the viewer may take: what leaves the pane its room beside the rail. */
+function widestViewer(): number | undefined {
+  const body = document.getElementById("body")!.getBoundingClientRect();
+  if (body.width <= 0) return undefined;
+  const rail = railShown() && !phone.matches ? roots.tabs.getBoundingClientRect().width : 0;
+  return ((body.width - rail - PANE_MIN) / body.width) * 100;
+}
+
+/** The share of the width the viewer takes with its left edge at `x`, no more than the widest. */
+function viewerWidthAt(x: number): number | undefined {
+  const body = document.getElementById("body")!.getBoundingClientRect();
+  const most = widestViewer();
+  if (most === undefined) return undefined;
+  return Math.min(((body.right - x) / body.width) * 100, most);
+}
+
+/** The divider moved: the viewer takes the width at once, and the device keeps it once it is let go. */
+function setViewerWidth(value: number, save: boolean): void {
+  ui.viewerWidth = viewerWidth(value);
+  viewer.setWidth(ui.viewerWidth);
+  if (save) saveViewerPrefs();
+}
+
+document.addEventListener("pointerdown", (ev) => {
+  const split = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-split");
+  if (!split || ev.button !== 0) return;
+  ev.preventDefault();
+  split.setPointerCapture(ev.pointerId);
+  viewerDrag = { pointer: ev.pointerId, grab: ev.clientX - viewer.el.getBoundingClientRect().left };
+  split.dataset["dragging"] = "true";
+});
+document.addEventListener("pointermove", (ev) => {
+  if (!viewerDrag || ev.pointerId !== viewerDrag.pointer) return;
+  const at = viewerWidthAt(ev.clientX - viewerDrag.grab);
+  if (at !== undefined) setViewerWidth(at, false);
+});
+for (const type of ["pointerup", "pointercancel"] as const) {
+  document.addEventListener(type, (ev) => {
+    if (!viewerDrag || ev.pointerId !== viewerDrag.pointer) return;
+    viewerDrag = undefined;
+    const split = viewer.el.querySelector<HTMLElement>(".viewer-split");
+    if (split) delete split.dataset["dragging"];
+    setViewerWidth(ui.viewerWidth, true);
+  });
+}
+document.addEventListener("dblclick", (ev) => {
+  if ((ev.target as Element | null)?.closest(".viewer-split")) setViewerWidth(VIEWER_WIDTH.usual, true);
+});
+// From the keyboard: left widens the file, right widens the pane, Shift by more.
+document.addEventListener("keydown", (ev) => {
+  if (!(ev.target as Element | null)?.classList.contains("viewer-split")) return;
+  const step = ev.shiftKey ? 10 : 2;
+  const to = ev.key === "ArrowLeft" ? ui.viewerWidth + step : ev.key === "ArrowRight" ? ui.viewerWidth - step : ev.key === "Home" ? VIEWER_WIDTH.min : ev.key === "End" ? VIEWER_WIDTH.max : undefined;
+  if (to === undefined) return;
+  ev.preventDefault();
+  const most = widestViewer();
+  setViewerWidth(most !== undefined ? Math.min(to, most) : to, true);
+});
 
 /** The explorer's rows the arrows move through: folders and files, in order. */
 function fileRows(): HTMLElement[] {

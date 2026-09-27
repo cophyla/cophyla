@@ -41,6 +41,7 @@ export const actions = {
   // Watching is a read; typing into it (`input`, `drive`) is `exec`, and so is ending it.
   "terminal.open": { risk: "read" },
   "terminal.close": { risk: "read" },
+  "terminal.file": { risk: "read" },
   "workspace.list": { risk: "read" },
   "workspace.put": { risk: "write" },
   annotate: { risk: "write" },

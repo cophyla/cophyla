@@ -1014,7 +1014,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       phones,
     }),
     ...directMethods({ direct, clients: directClients }),
-    ...(terminalRows && terminalStreams ? terminalMethods({ rows: terminalRows, streams: terminalStreams }) : {}),
+    ...(terminalRows && terminalStreams ? terminalMethods({ rows: terminalRows, streams: terminalStreams, files }) : {}),
   }, forwardHost);
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice }), ...(terminalStreams ? terminalSignals({ streams: terminalStreams }) : {}), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;

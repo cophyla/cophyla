@@ -407,12 +407,12 @@ export class NodeServer {
     if (!files) throw new RpcError("unsupported", "this node lists no files");
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { id: string; dirs?: string[]; path?: string };
+    const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true };
     this.confined()?.require(this.deps.local?.session(p.id)?.cwd, "that session");
     const redactResult = method === "session.files" ? (r: unknown) => listingSummary(r as FilesResult) : method === "session.file" ? (r: unknown) => fileSummary(r as FileText) : undefined;
     return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
       if (method === "session.files") return files.list(p.id, p.dirs);
-      if (method === "session.file") return files.read(p.id, p.path ?? "");
+      if (method === "session.file") return files.read(p.id, p.path ?? "", { image: p.image === true });
       const git = await files.git(p.id);
       return git ? { git } : {};
     });

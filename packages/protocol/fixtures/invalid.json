@@ -34,6 +34,8 @@
   { "schema": "client.requests.session.git.result", "why": "commits ahead negative", "value": { "git": { "branch": "main", "ahead": -1, "changes": 0 } } },
   { "schema": "client.requests.session.file.params", "why": "no path", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "" } },
   { "schema": "client.requests.session.file.result", "why": "a size that is not a whole number", "value": { "path": "a.txt", "size": 1.5, "modified": 1, "text": "a" } },
+  { "schema": "client.requests.session.file.params", "why": "image asked as false rather than left out", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "a.png", "image": false } },
+  { "schema": "client.requests.terminal.file.params", "why": "no terminal", "value": { "path": "a.md" } },
   { "schema": "client.notifications.thread.state", "why": "sessions missing", "value": { "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "startedAt": 1 } },
   { "schema": "client.requests.profile.update.params", "why": "launch mode unknown", "value": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "patch": { "launch": { "mode": "yolo", "args": [] } } } },
   { "schema": "client.requests.pair.claim.params", "why": "code has five digits", "value": { "code": "48291", "name": "Pixel" } },

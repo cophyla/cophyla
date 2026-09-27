@@ -7,8 +7,9 @@
 // takes no lock an agent's own git would trip on; one read runs per directory at a time.
 // A file under the directory is read for a viewer by the same rule: its first MiB as text,
 // decoded from UTF-8 or from UTF-16 by its byte order mark, or only that it is not text when
-// a NUL shows in its first 8000 bytes, as git decides; a folder, a pipe or a device is
-// refused before anything opens it, so a read never waits on a writer.
+// a NUL shows in its first 8000 bytes, as git decides; an image asked for as one comes whole,
+// as base64, up to 5 MiB. A folder, a pipe or a device is refused before anything opens it, so
+// a read never waits on a writer. The folder a bare terminal started in is read the same way.
 
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -25,6 +26,32 @@ const GIT_TIMEOUT_MS = 10_000;
 export const FILE_TEXT_MAX = 1024 * 1024;
 /** How far into a file a NUL is looked for: one there makes it binary, as git decides. */
 const SNIFF_BYTES = 8000;
+/** Bytes of an image a viewer is sent whole; a bigger one comes as binary, with nothing to show. */
+export const IMAGE_MAX = 5 * 1024 * 1024;
+
+/** The images a viewer draws, by extension: what a browser shows in an `img`, SVG aside (it is text, and comes as text). */
+const IMAGE_TYPES: Readonly<Record<string, string>> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  bmp: "image/bmp",
+  ico: "image/x-icon",
+  avif: "image/avif",
+};
+
+/** An image's type by its path's extension, or undefined for a path that names none. */
+export function imageMime(path: string): string | undefined {
+  const dot = path.lastIndexOf(".");
+  const ext = dot > path.lastIndexOf("/") ? path.slice(dot + 1).toLowerCase() : "";
+  return Object.hasOwn(IMAGE_TYPES, ext) ? IMAGE_TYPES[ext] : undefined;
+}
+
+export interface ReadOptions {
+  /** An image is to come whole, as base64, when it is small enough. */
+  image?: boolean;
+}
 
 /** Runs git with `args` in `cwd`: its exit code and output, or undefined when there is no git to run. */
 export type GitRunner = (args: string[], cwd: string) => Promise<{ code: number; out: string } | undefined>;
@@ -37,6 +64,8 @@ export interface SessionFilesDeps {
   max?: number;
   /** Bytes of a file read for a viewer; FILE_TEXT_MAX unless a test says. */
   textMax?: number;
+  /** Bytes of an image sent whole; IMAGE_MAX unless a test says. */
+  imageMax?: number;
   platform?: string;
 }
 
@@ -101,7 +130,14 @@ export function decodeText(bytes: Uint8Array, cut: boolean): string | undefined 
 
 /** A file as the audit row keeps it: which, how big, and how much of it was sent, never the text. */
 export function fileSummary(r: FileText): unknown {
-  return { path: r.path, size: r.size, ...(r.text !== undefined ? { chars: r.text.length } : {}), ...(r.truncated ? { truncated: true } : {}), ...(r.binary ? { binary: true } : {}) };
+  return {
+    path: r.path,
+    size: r.size,
+    ...(r.text !== undefined ? { chars: r.text.length } : {}),
+    ...(r.truncated ? { truncated: true } : {}),
+    ...(r.binary ? { binary: true } : {}),
+    ...(r.base64 !== undefined ? { mime: r.mime, base64: r.base64.length } : {}),
+  };
 }
 
 /** A listing as the audit row keeps it: the folders and how many entries each had, not the names. */
@@ -200,16 +236,21 @@ export class SessionFiles {
     }
   }
 
+  /** A file under the session's directory, by its path there, as `readUnder` reads one. */
+  async read(id: string, path: string, opts: ReadOptions = {}): Promise<FileText> {
+    return this.readUnder(this.cwd(id), path, opts);
+  }
+
   /**
-   * A file under the session's directory, by its path there: its text, the first `textMax`
-   * bytes of a longer one, or that it is not text. One outside the directory, through `..` or
-   * a link that leads out, is refused, and so is anything but a plain file.
+   * A file under a folder (a session's directory, or the folder a terminal started in), by its
+   * path there: its text, the first `textMax` bytes of a longer one, or that it is not text; an
+   * image asked for as one comes whole, as base64, up to `imageMax`. One outside the folder,
+   * through `..` or a link that leads out, is refused, and so is anything but a plain file.
    */
-  async read(id: string, path: string): Promise<FileText> {
-    const root = this.cwd(id);
+  async readUnder(root: string, path: string, opts: ReadOptions = {}): Promise<FileText> {
     const platform = this.deps.platform ?? process.platform;
     const parts = folderParts(path, platform);
-    if (!parts || parts.length === 0) throw new RpcError("invalid", `${path}: not a file under the session's folder`);
+    if (!parts || parts.length === 0) throw new RpcError("invalid", `${path}: not a file under the folder`);
     let real: string;
     try {
       real = await realpath(root);
@@ -223,13 +264,15 @@ export class SessionFiles {
       throw readError(path, e);
     }
     // A link inside may lead anywhere: what it leads to must still be under the directory.
-    if (!isWithin(target, real, platform)) throw new RpcError("denied", `${path}: outside the session's folder`);
+    if (!isWithin(target, real, platform)) throw new RpcError("denied", `${path}: outside the folder`);
     try {
       const info = await stat(target);
       if (!info.isFile()) throw new RpcError("invalid", `${path}: ${info.isDirectory() ? "a folder" : "not a file"}`);
+      const mime = opts.image ? imageMime(path) : undefined;
+      const whole = mime !== undefined && info.size <= (this.deps.imageMax ?? IMAGE_MAX);
       const file = await open(target, "r");
       try {
-        const bytes = new Uint8Array(Math.min(info.size, this.deps.textMax ?? FILE_TEXT_MAX));
+        const bytes = new Uint8Array(whole ? info.size : Math.min(info.size, this.deps.textMax ?? FILE_TEXT_MAX));
         let got = 0;
         while (got < bytes.length) {
           const { bytesRead } = await file.read(bytes, got, bytes.length - got, got);
@@ -240,6 +283,7 @@ export class SessionFiles {
         const size = Math.max(info.size, got);
         const cut = got < size;
         const base = { path, size, modified: Math.max(0, Math.round(info.mtimeMs)) };
+        if (whole && !cut) return { ...base, binary: true, mime, base64: Buffer.from(bytes.buffer, bytes.byteOffset, got).toString("base64") };
         const text = decodeText(bytes.subarray(0, got), cut);
         if (text === undefined) return { ...base, binary: true };
         return { ...base, text, ...(cut ? { truncated: true } : {}) };

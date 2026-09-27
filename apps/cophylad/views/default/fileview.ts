@@ -1,8 +1,9 @@
-// A file of the folder an agent works in, shown in the view: read from the agent's node
-// (`session.file`) and laid over the agent's pane or docked beside it, as the user picks, on a
-// window wide enough for that choice; a narrow one always lays it over. The view opens it from
-// the explorer, from a file's chip in the chat and from a path Ctrl+clicked in a terminal, and
-// keeps one open per agent's tab.
+// A file of the folder an agent works in, or of the folder a bare terminal started in, shown in
+// the view: read from its node (`session.file`, `terminal.file`) and laid over the pane or
+// docked beside it, as the user picks, on a window wide enough for that choice; a narrow one
+// always lays it over. Docked, a divider on its left edge sets its share of the width. The view
+// opens it from the explorer, from a file's chip in the chat and from a path Ctrl+clicked in a
+// terminal, and keeps one open per tab.
 //
 // Code is coloured by speed-highlight's tokenizer (vendored, CC0): each language's grammar is
 // loaded the first time a file needs it, and the tokens become elements with `textContent`, as
@@ -12,14 +13,18 @@
 // they are laid out a chunk at a time, only near the screen (`content-visibility`), so a long
 // file opens about as fast as a short one. A copy takes the file's own text between the ends of
 // what is selected, not what the page draws of it. Markdown shows drawn, as a README is on
-// GitHub (markdown.ts, its fenced code coloured too), or as written. A file that is not text,
-// or longer than its node sends, says so over what shows. The view reads it again as the agent
-// works and when the window comes back, and the viewer keeps its place.
+// GitHub (markdown.ts, its fenced code coloured too), or as written, and an SVG drawn or as
+// written the same way. An image comes whole (`image` in the ask) and is drawn fitted to the
+// viewer, a click showing it at its own size. A file that is not text, or longer than its node
+// sends, says so over what shows. Ctrl+F searches what shows: every match marked (the CSS
+// Custom Highlight API, so nothing in the page changes), Enter and Shift+Enter going from one to
+// the next, any case unless Aa is on. The view reads the file again as the agent works and when
+// the window comes back, and the viewer keeps its place and its search.
 
 import type { FileText } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { fileErrorWords, fileLanguage, fileLines, grammarName, joinPath, linesBetween, viewerMeta, viewerNote } from "./model.ts";
-import type { ViewerDock } from "./model.ts";
+import { fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, imageKind, joinPath, linesBetween, viewerMeta, viewerNote } from "./model.ts";
+import type { ViewerDock, ViewerSource } from "./model.ts";
 import { ViewRpcError } from "./rpc.ts";
 import type { HostRpc } from "./rpc.ts";
 import type { ShjLanguageData, ShjToken, tokenizer as Tokenizer } from "./vendor/shj-tokenize.mjs";
@@ -37,9 +42,9 @@ const LAZY_LINE_MAX = 400;
 /** How long the line a chip or a link opened at stays marked. */
 const FLASH_MS = 1600;
 
-/** The file to show: the agent it belongs to, its path under the agent's folder, and the folder, for its full path. */
+/** The file to show: what it is read through, its path under that one's folder, and the folder, for its full path. */
 export interface ViewerTarget {
-  session: string;
+  from: ViewerSource;
   rel: string;
   root: string;
   /** A line to show, and each opening's own number: one opened again goes back to its line, read afresh. */
@@ -49,14 +54,19 @@ export interface ViewerTarget {
 
 export interface ViewerOptions {
   dock: ViewerDock;
+  /** Its share of the width beside the pane, in percent, while docked there. */
+  width: number;
   /** Long lines wrap rather than scroll sideways. */
   wrap: boolean;
-  /** Markdown shows as written rather than drawn. */
+  /** Markdown and SVG show as written rather than drawn. */
   source: boolean;
   /** The window is wide enough for the viewer to sit beside the pane: its dock may be switched. */
   dockable: boolean;
   connected: boolean;
 }
+
+/** The CSS Custom Highlight API, where the engine has it: search marks without touching the page. */
+const highlights: HighlightRegistry | undefined = typeof CSS !== "undefined" && "highlights" in CSS ? CSS.highlights : undefined;
 
 // --- colouring ---------------------------------------------------------------------------------
 
@@ -199,6 +209,16 @@ export class FileViewer {
   private sourceFor?: string;
   /** The line to go to once the file shows. */
   private pendingLine?: number;
+  /** An image's size in pixels, once drawn. */
+  private pixels?: { width: number; height: number };
+  /** The search bar, its field and its count; the matches of what shows, and the one gone to. */
+  private findBar: HTMLElement;
+  private findInput: HTMLInputElement;
+  private findCount: HTMLElement;
+  private findCase: HTMLButtonElement;
+  private matches: Range[] = [];
+  private current = -1;
+  private findTimer?: ReturnType<typeof setTimeout>;
 
   /** `folder` is told when a path it was asked to show turns out to be a folder. */
   constructor(rpc: HostRpc, folder: (target: ViewerTarget) => void) {
@@ -206,34 +226,102 @@ export class FileViewer {
     this.folder = folder;
     this.el = el("aside", "viewer");
     this.el.hidden = true;
+    // The divider on the viewer's left edge, while it sits beside the pane: view.ts drags it.
+    const split = el("div", "viewer-split");
+    split.setAttribute("role", "separator");
+    split.setAttribute("aria-orientation", "vertical");
+    split.setAttribute("aria-label", "The file's width beside the pane");
+    split.setAttribute("aria-valuemin", "0");
+    split.setAttribute("aria-valuemax", "100");
+    split.title = "Drag to widen the file or the pane; double-click for the usual width";
+    split.tabIndex = 0;
     const head = el("header", "viewer-head");
     const title = el("span", "viewer-title");
     title.append(el("span", "viewer-name"), el("span", "viewer-dir"));
     const modes = el("span", "viewer-modes");
     modes.setAttribute("role", "group");
-    modes.setAttribute("aria-label", "Show the markdown");
+    modes.setAttribute("aria-label", "Show the file");
     for (const [mode, label, words] of [
-      ["preview", "Preview", "Show the markdown drawn"],
-      ["source", "Source", "Show the markdown as written"],
+      ["preview", "Preview", "Show the file drawn"],
+      ["source", "Source", "Show the file as written"],
     ] as const) {
       const b = button("viewer-mode", label, words);
       b.dataset["mode"] = mode;
       modes.append(b);
     }
+    const find = el("button", "viewer-find-open viewer-tool");
+    find.type = "button";
+    find.title = "Find in the file (Ctrl+F)";
+    find.setAttribute("aria-label", "Find in the file");
+    find.addEventListener("click", () => this.openFind());
     const tools = el("span", "viewer-tools");
     tools.append(
       modes,
       button("viewer-wrap", "Wrap", "Wrap long lines"),
+      find,
       button("viewer-refresh viewer-tool", "", "Read the file again"),
       button("viewer-dock viewer-tool", "", "Dock beside the pane"),
       button("viewer-close viewer-tool", "", "Close the file (Esc)"),
     );
     head.append(el("span", "viewer-mark"), title, el("span", "viewer-meta"), tools);
+    // The search: its field, which match of how many, Aa, the one before and after, and Close.
+    this.findBar = el("div", "viewer-find");
+    this.findBar.hidden = true;
+    this.findBar.setAttribute("role", "search");
+    this.findInput = el("input", "viewer-find-text");
+    this.findInput.type = "text";
+    this.findInput.placeholder = "Find";
+    this.findInput.setAttribute("aria-label", "Find in the file");
+    this.findInput.autocomplete = "off";
+    this.findInput.spellcheck = false;
+    this.findCount = el("span", "viewer-find-count");
+    this.findCount.setAttribute("aria-live", "polite");
+    this.findCase = this.findTool("viewer-find-case", "Aa", "Match case", () => {
+      this.findCase.setAttribute("aria-pressed", this.findCase.getAttribute("aria-pressed") === "true" ? "false" : "true");
+      this.runFind(true);
+    });
+    this.findCase.setAttribute("aria-pressed", "false");
+    this.findBar.append(
+      this.findInput,
+      this.findCount,
+      this.findCase,
+      this.findTool("viewer-find-prev", "↑", "The match before (Shift+Enter)", () => this.step(-1)),
+      this.findTool("viewer-find-next", "↓", "The match after (Enter)", () => this.step(1)),
+      this.findTool("viewer-find-close", "✕", "Close the search (Esc)", () => this.closeFind()),
+    );
+    this.findInput.addEventListener("input", () => {
+      clearTimeout(this.findTimer);
+      this.findTimer = setTimeout(
+        () => {
+          this.findTimer = undefined;
+          this.runFind(true);
+        },
+        this.lines.length > 20_000 ? 250 : 80,
+      );
+    });
+    this.findInput.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter") {
+        ev.preventDefault();
+        // Typed a moment ago: the search runs now, and shows its first match from here.
+        if (this.findTimer !== undefined) {
+          clearTimeout(this.findTimer);
+          this.findTimer = undefined;
+          this.runFind(true);
+        } else {
+          this.step(ev.shiftKey ? -1 : 1);
+        }
+      } else if (ev.key === "Escape") {
+        // The search closes, not the file: the view's own Escape never hears it.
+        ev.preventDefault();
+        ev.stopPropagation();
+        this.closeFind();
+      }
+    });
     this.note = el("p", "viewer-note");
     this.note.setAttribute("role", "status");
     this.body = el("div", "viewer-body");
     this.body.tabIndex = 0;
-    this.el.append(head, this.note, this.body);
+    this.el.append(split, head, this.findBar, this.note, this.body);
     this.body.addEventListener("copy", (ev) => this.copy(ev));
     this.body.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "a") {
@@ -242,6 +330,30 @@ export class FileViewer {
         if (content) getSelection()?.selectAllChildren(content);
       }
     });
+    this.el.addEventListener("keydown", (ev) => {
+      if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "f") {
+        ev.preventDefault();
+        this.openFind();
+      } else if (ev.key === "F3" || ((ev.ctrlKey || ev.metaKey) && ev.key.toLowerCase() === "g")) {
+        if (this.findBar.hidden) return;
+        ev.preventDefault();
+        this.step(ev.shiftKey ? -1 : 1);
+      }
+    });
+    // An image fits the viewer; a click shows it at its own size, and back.
+    this.body.addEventListener("click", (ev) => {
+      const box = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-image");
+      if (box) box.dataset["fit"] = box.dataset["fit"] === "1" ? "0" : "1";
+    });
+  }
+
+  private findTool(className: string, text: string, title: string, onClick: () => void): HTMLButtonElement {
+    const b = el("button", className, text);
+    b.type = "button";
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    b.addEventListener("click", onClick);
+    return b;
   }
 
   /** The file shown, if one is. */
@@ -259,6 +371,7 @@ export class FileViewer {
       this.body.scrollLeft = left;
     }
     this.el.hidden = false;
+    this.setWidth(opts.width);
     const was = this.target;
     this.target = target;
     this.opts = opts;
@@ -268,6 +381,8 @@ export class FileViewer {
       this.lines = [];
       this.error = undefined;
       this.drawn = undefined;
+      this.pixels = undefined;
+      this.clearMatches();
       this.body.replaceChildren();
       this.body.scrollTop = 0;
       this.sourceFor = target.line !== undefined ? key : undefined;
@@ -284,6 +399,14 @@ export class FileViewer {
     void this.paint();
   }
 
+  /** Its share of the width beside the pane, in percent: its divider moves it without a draw. */
+  setWidth(width: number): void {
+    const value = `${width}%`;
+    if (this.el.style.getPropertyValue("--viewer-width") === value) return;
+    this.el.style.setProperty("--viewer-width", value);
+    this.el.querySelector(".viewer-split")!.setAttribute("aria-valuenow", String(Math.round(width)));
+  }
+
   /** Puts the viewer away; what it read is let go. */
   hide(): void {
     if (this.el.hidden && !this.target) return;
@@ -294,6 +417,8 @@ export class FileViewer {
     this.file = undefined;
     this.lines = [];
     this.drawn = undefined;
+    this.pixels = undefined;
+    this.closeFind(false);
     this.body.replaceChildren();
     this.el.hidden = true;
     this.el.remove();
@@ -325,7 +450,10 @@ export class FileViewer {
     this.loading = true;
     if (!again) this.update();
     try {
-      const file = await this.rpc.request<FileText>("session.file", { id: target.session, path: target.rel });
+      // An image comes whole, to be drawn; an SVG comes as the text it is either way.
+      const ask = { path: target.rel, ...(imageKind(target.rel) !== undefined ? { image: true } : {}) };
+      const from = target.from;
+      const file = "session" in from ? await this.rpc.request<FileText>("session.file", { id: from.session, ...ask }) : await this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
       if (generation !== this.generation) return;
       this.error = undefined;
       this.file = file;
@@ -344,6 +472,7 @@ export class FileViewer {
         this.file = undefined;
         this.lines = [];
         this.drawn = undefined;
+        this.clearMatches();
         this.body.replaceChildren();
       }
       this.error = fileErrorWords(code, message);
@@ -365,15 +494,19 @@ export class FileViewer {
     setText(this.el.querySelector(".viewer-name")!, name);
     setText(this.el.querySelector(".viewer-dir")!, slash > 0 ? target.rel.slice(0, slash) : "");
     this.el.querySelector<HTMLElement>(".viewer-title")!.title = joinPath(target.root, target.rel);
-    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, this.file.text !== undefined ? this.lines.length : undefined) : "");
-    const markdown = fileLanguage(target.rel) === "md" && this.file?.text !== undefined;
+    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, this.file.text !== undefined ? this.lines.length : undefined, this.pixels) : "");
+    const drawable = previewable(target.rel) && this.file?.text !== undefined;
     const source = this.source();
     const modes = this.el.querySelector<HTMLElement>(".viewer-modes")!;
-    modes.hidden = !markdown;
+    modes.hidden = !drawable;
     for (const b of Array.from(modes.querySelectorAll<HTMLButtonElement>("button"))) b.setAttribute("aria-pressed", (b.dataset["mode"] === "source") === source ? "true" : "false");
     const wrap = this.el.querySelector<HTMLButtonElement>(".viewer-wrap")!;
     wrap.setAttribute("aria-pressed", opts.wrap ? "true" : "false");
-    wrap.hidden = markdown && !source;
+    // Wrapping and searching are the text's: a drawing has none, an image has none.
+    wrap.hidden = this.file?.text === undefined || (drawable && !source);
+    const searchable = this.file?.text !== undefined && !(drawable && !source && fileLanguage(target.rel) !== "md");
+    this.el.querySelector<HTMLButtonElement>(".viewer-find-open")!.hidden = !searchable;
+    if (this.file !== undefined && !searchable && !this.findBar.hidden) this.closeFind(false);
     this.el.querySelector<HTMLButtonElement>(".viewer-refresh")!.disabled = !opts.connected || this.loading;
     const dock = this.el.querySelector<HTMLButtonElement>(".viewer-dock")!;
     dock.hidden = !opts.dockable;
@@ -391,7 +524,7 @@ export class FileViewer {
     this.note.dataset["error"] = this.error !== undefined ? "1" : "0";
   }
 
-  /** Markdown shows as written: the user picked it, or it opened at a line. */
+  /** Markdown or an SVG shows as written: the user picked it, or it opened at a line. */
   private source(): boolean {
     const target = this.target;
     return (this.opts?.source ?? false) || (target !== undefined && this.sourceFor === keyOf(target));
@@ -403,7 +536,7 @@ export class FileViewer {
     const file = this.file;
     if (!target || !file) return;
     const language = fileLanguage(target.rel);
-    const want: Drawn = { key: keyOf(target), version: `${file.modified}:${file.size}:${file.text?.length ?? -1}`, preview: language === "md" && !this.source() };
+    const want: Drawn = { key: keyOf(target), version: `${file.modified}:${file.size}:${file.text?.length ?? file.base64?.length ?? -1}`, preview: previewable(target.rel) && !this.source() };
     if (same(this.drawn, want)) return this.goToLine();
     if (same(this.painting, want)) return;
     this.painting = want;
@@ -411,12 +544,16 @@ export class FileViewer {
     if (file.text === undefined) {
       this.painting = undefined;
       this.drawn = want;
-      this.body.replaceChildren();
+      this.clearMatches();
+      this.body.replaceChildren(...(file.base64 !== undefined && file.mime !== undefined ? [this.image(`data:${file.mime};base64,${file.base64}`, target.rel)] : []));
       return;
     }
     const text = file.text.replace(/\r\n?/g, "\n");
     let content: HTMLElement;
-    if (want.preview) {
+    if (want.preview && language !== "md") {
+      // An SVG drawn as an image: in an `img`, where nothing in it runs and it reaches nothing.
+      content = this.image(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(file.text)}`, target.rel);
+    } else if (want.preview) {
       content = el("div", "viewer-md");
       renderText(content, text, true, { file: true });
       for (const code of Array.from(content.querySelectorAll<HTMLElement>("pre[data-lang] > code"))) {
@@ -446,6 +583,142 @@ export class FileViewer {
     this.body.scrollTop = top;
     this.body.scrollLeft = left;
     this.goToLine();
+    // A search open over what was drawn before looks again, at about the same match.
+    if (this.findBar.hidden) this.clearMatches();
+    else this.runFind(false);
+  }
+
+  /** An image, fitted to the viewer until clicked, on a checkerboard its transparent parts show; its size in pixels goes in the head once it is drawn. */
+  private image(src: string, rel: string): HTMLElement {
+    const box = el("div", "viewer-image");
+    box.dataset["fit"] = "1";
+    box.title = "Click for its own size, and again to fit";
+    const img = el("img");
+    img.alt = rel.slice(rel.lastIndexOf("/") + 1);
+    img.decoding = "async";
+    img.addEventListener("load", () => {
+      this.pixels = { width: img.naturalWidth, height: img.naturalHeight };
+      this.update();
+    });
+    img.addEventListener("error", () => {
+      this.error = "This image cannot be drawn: it may be damaged, or of a kind this app does not read.";
+      this.update();
+    });
+    img.src = src;
+    box.append(img);
+    return box;
+  }
+
+  // --- search ------------------------------------------------------------------------------------
+
+  /** Opens the search, or goes back to its field, with what it holds selected so typing replaces it. */
+  openFind(): void {
+    if (this.el.querySelector<HTMLElement>(".viewer-find-open")!.hidden) return;
+    const was = this.findBar.hidden;
+    this.findBar.hidden = false;
+    this.findInput.focus();
+    this.findInput.select();
+    if (was && this.findInput.value !== "") this.runFind(true);
+  }
+
+  /** Closes the search, its marks going; the focus goes back to the file when it was in the search. */
+  closeFind(refocus = true): void {
+    if (this.findBar.hidden) return;
+    const inside = this.findBar.contains(document.activeElement);
+    this.findBar.hidden = true;
+    clearTimeout(this.findTimer);
+    this.findTimer = undefined;
+    this.clearMatches();
+    setText(this.findCount, "");
+    if (refocus && inside) this.focus();
+  }
+
+  private clearMatches(): void {
+    this.matches = [];
+    this.current = -1;
+    highlights?.delete("fv-match");
+    highlights?.delete("fv-current");
+  }
+
+  /**
+   * Finds what the field holds in what shows: in code by the file's own lines, each match
+   * mapped to where its characters are drawn; in drawn markdown within each run of text. From
+   * the view (`fromView`) the match gone to is the first at or under the top of what shows;
+   * otherwise it stays about where it was.
+   */
+  private runFind(fromView: boolean): void {
+    const query = this.findInput.value;
+    const was = this.current;
+    this.clearMatches();
+    const content = this.body.firstElementChild;
+    if (query === "" || !content) {
+      setText(this.findCount, findWords(query, 0, 0));
+      return;
+    }
+    const matchCase = this.findCase.getAttribute("aria-pressed") === "true";
+    if (content.classList.contains("viewer-code")) {
+      const texts = content.querySelectorAll<HTMLElement>(".fv-text");
+      for (const m of findInLines(this.lines, query, matchCase)) {
+        const r = texts[m.line] ? rangeIn(texts[m.line]!, m.start, m.end) : undefined;
+        if (r) this.matches.push(r);
+      }
+    } else {
+      const re = findPattern(query, matchCase);
+      const walker = document.createTreeWalker(content, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode() as Text | null; n && this.matches.length < FIND_MAX; n = walker.nextNode() as Text | null) {
+        re.lastIndex = 0;
+        for (let m = re.exec(n.data); m && this.matches.length < FIND_MAX; m = re.exec(n.data)) {
+          const r = document.createRange();
+          r.setStart(n, m.index);
+          r.setEnd(n, m.index + m[0].length);
+          this.matches.push(r);
+        }
+      }
+    }
+    if (this.matches.length === 0) {
+      setText(this.findCount, findWords(query, 0, 0));
+      return;
+    }
+    highlights?.set("fv-match", new Highlight(...this.matches));
+    this.current = fromView ? this.firstInView() : Math.min(Math.max(was, 0), this.matches.length - 1);
+    this.showMatch();
+  }
+
+  /** The first match at or under the top of what shows, or the first of all when none is. */
+  private firstInView(): number {
+    const top = this.body.getBoundingClientRect().top;
+    const i = this.matches.findIndex((r) => lineOf(r).getBoundingClientRect().bottom > top);
+    return i === -1 ? 0 : i;
+  }
+
+  /** The next match, or the one before, round from the last to the first. */
+  private step(by: 1 | -1): void {
+    if (this.matches.length === 0) {
+      if (this.findInput.value !== "") this.runFind(true);
+      return;
+    }
+    this.current = (this.current + by + this.matches.length) % this.matches.length;
+    this.showMatch();
+  }
+
+  /** The match gone to: marked apart from the rest, and brought into view mid-height, and sideways when it is off the side. */
+  private showMatch(): void {
+    const r = this.matches[this.current];
+    if (!r) return;
+    setText(this.findCount, findWords(this.findInput.value, this.matches.length, this.current));
+    if (highlights) highlights.set("fv-current", new Highlight(r));
+    const box = this.body.getBoundingClientRect();
+    const line = lineOf(r).getBoundingClientRect();
+    if (line.top < box.top + 24 || line.bottom > box.bottom - 24) this.body.scrollTop += line.top - box.top - (box.height - line.height) / 2;
+    const at = r.getBoundingClientRect();
+    const gutter = this.body.querySelector(".fv-line")?.getBoundingClientRect().left ?? box.left;
+    if (at.left < gutter + 48 || at.right > box.right - 24) this.body.scrollLeft += at.left - box.left - box.width / 3;
+    // Where the engine has no highlights, the match is shown as a selection instead.
+    if (!highlights && !this.findBar.contains(document.activeElement)) {
+      const sel = getSelection();
+      sel?.removeAllRanges();
+      sel?.addRange(r);
+    }
   }
 
   /** The line a chip or a link opened the file at, once it shows: scrolled to the middle and marked a moment. */
@@ -515,5 +788,38 @@ function same(a: Drawn | undefined, b: Drawn): boolean {
 }
 
 function keyOf(t: ViewerTarget): string {
-  return `${t.session}\n${t.rel}`;
+  return `${"session" in t.from ? t.from.session : `terminal:${t.from.terminal}`}\n${t.rel}`;
+}
+
+/** Markdown and SVG can be drawn, or shown as written. */
+function previewable(rel: string): boolean {
+  return fileLanguage(rel) === "md" || imageKind(rel) === "SVG";
+}
+
+/** A range over characters `start` to `end` of an element's text, however its text is split into nodes. */
+function rangeIn(el: Element, start: number, end: number): Range | undefined {
+  const r = document.createRange();
+  const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  let at = 0;
+  let started = false;
+  for (let n = walker.nextNode() as Text | null; n; n = walker.nextNode() as Text | null) {
+    const len = n.data.length;
+    if (!started && start < at + len) {
+      r.setStart(n, start - at);
+      started = true;
+    }
+    if (started && end <= at + len) {
+      r.setEnd(n, end - at);
+      return r;
+    }
+    at += len;
+  }
+  return undefined;
+}
+
+/** The element a range's line is drawn in: a file's line, or the run of drawn markdown it is in. */
+function lineOf(r: Range): Element {
+  const node = r.startContainer;
+  const owner = node instanceof Element ? node : node.parentElement!;
+  return owner.closest(".fv-line") ?? owner;
 }

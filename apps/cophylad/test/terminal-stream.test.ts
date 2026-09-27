@@ -9,6 +9,7 @@
 // `terminal.list`, and opening a terminal to type into it is gated as `exec`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Scope } from "@cophyla/protocol";
 import type { ClientNotificationParams, Session, Terminal, Workspace } from "@cophyla/protocol";
@@ -241,9 +242,10 @@ describe("terminals through the daemon", () => {
   let d: Awaited<ReturnType<typeof testDaemon>>;
   let c: TestClient;
   let t: FakeSession;
+  let scratch: string;
 
   beforeAll(async () => {
-    const scratch = tempHome();
+    scratch = tempHome();
     fake = await new FakeTether(join(scratch, "tether")).start();
     t = fake.add({ argv: ["pwsh.exe"], cwd: scratch });
     t.setScreen(["PS> "]);
@@ -280,5 +282,20 @@ describe("terminals through the daemon", () => {
     c.signal("terminal.input", { terminal: t.id, data: "x" });
     await sleep(100);
     expect(t.typed).toEqual([]);
+  });
+
+  test("a file under the folder a terminal started in is read for its viewer, audited without its text", async () => {
+    mkdirSync(join(scratch, "notes"), { recursive: true });
+    writeFileSync(join(scratch, "notes", "todo.md"), "- ship the viewer");
+    writeFileSync(join(scratch, "dot.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00]));
+    expect(await c.request("terminal.file", { terminal: t.id, path: "notes/todo.md" })).toMatchObject({ path: "notes/todo.md", size: 17, text: "- ship the viewer" });
+    expect(await c.request("terminal.file", { terminal: t.id, path: "dot.png", image: true })).toMatchObject({ binary: true, mime: "image/png", base64: "iVBORw0KGgoA" });
+    const outside = await c.call("terminal.file", { terminal: t.id, path: "../x.md" });
+    expect("error" in outside && outside.error.data?.code).toBe("invalid");
+    const gone = await c.call("terminal.file", { terminal: "0c9e41b27a53", path: "notes/todo.md" });
+    expect("error" in gone && gone.error.data?.code).toBe("not_found");
+    const row = d.store.audit.list({ limit: 50 }).find((e) => e.action === "terminal.file" && e.outcome === "ok")!;
+    expect(row.target).toBe(t.id);
+    expect(JSON.stringify(row)).not.toContain("ship the viewer");
   });
 });

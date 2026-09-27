@@ -1258,9 +1258,7 @@ export function fileHome(state: ViewState, node: string, path: string, prefer?: 
   best = preferred ?? best;
   if (!best) return undefined;
   // The rest of the path as it was written: the folded key only chose the folder.
-  const spelled = path.replace(/\\/g, "/").replace(/\/+$/, "");
-  const rel = spelled.slice(best.root.length).replace(/^\/+/, "");
-  return { session: best.session, rel };
+  return { session: best.session, rel: relUnder(best.session.cwd, path, platform) ?? "" };
 }
 
 /** A path under a folder, spelled as its node spells paths: a Windows folder's with backslashes. */
@@ -1370,19 +1368,90 @@ function commits(n: number): string {
 
 // --- the file viewer ---------------------------------------------------------------------------
 
+/** What the viewer reads a file through: an agent's session (its folder), or a bare terminal (the folder it started in). */
+export type ViewerSource = { session: string } | { terminal: string };
+
 /**
- * A file open in the viewer of an agent's tab: its path under the agent's folder, `/` between
- * the names, a line to show first, and which opening this is, so one opened again is read
- * afresh and goes back to its line.
+ * A file open in the viewer of a tab, an agent's or a bare terminal's: what it is read through,
+ * its path under that one's folder, `/` between the names, a line to show first, and which
+ * opening this is, so one opened again is read afresh and goes back to its line.
  */
 export interface ViewerFile {
+  from: ViewerSource;
   rel: string;
   line?: number;
   opened: number;
 }
 
+/** The tab a viewer belongs to, by key: an agent's by its session id, a bare terminal's by its own; none for the chat. */
+export function viewerTab(selected: string | undefined, terminal: string | undefined): string | undefined {
+  return terminal !== undefined ? `terminal:${terminal}` : selected;
+}
+
 /** Where the viewer sits on a wide window: over the pane, or beside it. A narrow one always lays it over. */
 export type ViewerDock = "over" | "beside";
+
+/** The viewer's share of the width beside the pane, in percent: the usual, and the least and most its divider goes to. */
+export const VIEWER_WIDTH = { usual: 48, min: 20, max: 80 } as const;
+
+/** A share for the viewer's divider: a number held to its bounds, anything else the usual. */
+export function viewerWidth(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return VIEWER_WIDTH.usual;
+  return Math.round(Math.min(VIEWER_WIDTH.max, Math.max(VIEWER_WIDTH.min, value)) * 10) / 10;
+}
+
+/** A path under a folder, as the explorer keys it (`/` between the names, spelled as written); undefined for one outside it. */
+export function relUnder(root: string, path: string, platform?: Platform): string | undefined {
+  const key = placeKey(path, platform);
+  const r = placeKey(root, platform);
+  if (key !== r && !key.startsWith(`${r}/`)) return undefined;
+  return path.replace(/\\/g, "/").replace(/\/+$/, "").slice(r.length).replace(/^\/+/, "");
+}
+
+/** The images the viewer draws, by extension, and what each kind is called; SVG comes as text and is drawn from it. */
+const IMAGE_KINDS: Readonly<Record<string, string>> = { png: "PNG", jpg: "JPEG", jpeg: "JPEG", gif: "GIF", webp: "WebP", bmp: "BMP", ico: "ICO", avif: "AVIF", svg: "SVG" };
+
+/** What kind of image a path names, or undefined for one that names none. */
+export function imageKind(path: string): string | undefined {
+  const name = path.slice(path.lastIndexOf("/") + 1);
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+  return Object.hasOwn(IMAGE_KINDS, ext) ? IMAGE_KINDS[ext] : undefined;
+}
+
+/** Past this many matches a search stops counting: marking more costs and helps nobody. */
+export const FIND_MAX = 5000;
+
+/** A match of a search in a file's lines: its line's index and where in it. */
+export interface LineMatch {
+  line: number;
+  start: number;
+  end: number;
+}
+
+/** A search's pattern: the words as written, any case unless `matchCase`. */
+export function findPattern(query: string, matchCase: boolean): RegExp {
+  return new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), matchCase ? "g" : "gi");
+}
+
+/** Where a search matches in a file's lines, in order, `FIND_MAX` of them at most. */
+export function findInLines(lines: readonly string[], query: string, matchCase: boolean): LineMatch[] {
+  const out: LineMatch[] = [];
+  if (query === "") return out;
+  const re = findPattern(query, matchCase);
+  for (let line = 0; line < lines.length && out.length < FIND_MAX; line++) {
+    re.lastIndex = 0;
+    for (let m = re.exec(lines[line]!); m && out.length < FIND_MAX; m = re.exec(lines[line]!)) out.push({ line, start: m.index, end: m.index + m[0].length });
+  }
+  return out;
+}
+
+/** What a search's count says: which match of how many, none, or that it stopped counting. */
+export function findWords(query: string, count: number, current: number): string {
+  if (query === "") return "";
+  if (count === 0) return "No results";
+  return `${current + 1} of ${count >= FIND_MAX ? `${FIND_MAX}+` : count}`;
+}
 
 /** The grammars the viewer colours with (vendor/shj/), by name, and what each language is called. */
 export const GRAMMARS: Readonly<Record<string, string>> = {
@@ -1523,16 +1592,25 @@ function fileSizeWords(n: number): string {
   return `${n} B`;
 }
 
-/** What the viewer's head says of a file: its language, how many lines, how big. */
-export function viewerMeta(file: FileText, lines: number | undefined): string {
+/** The most of an image its node sends whole (the daemon's IMAGE_MAX): past it, there is nothing to draw. */
+const IMAGE_SENT_MAX = 5 * 1024 * 1024;
+
+/** What the viewer's head says of a file: its language or its kind of image, an image's size in pixels once drawn, how many lines, how big. */
+export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }): string {
   const language = fileLanguage(file.path);
-  const kind = file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text";
+  const image = imageKind(file.path);
+  const kind = image ?? (file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
+  const drawn = pixels ? `${pixels.width} × ${pixels.height}` : undefined;
   const counted = lines !== undefined && !file.binary ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : undefined;
-  return [kind, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
+  return [kind, drawn, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
 }
 
 /** What the viewer says over a file it shows only part of, or none of; nothing for one shown whole. */
 export function viewerNote(file: FileText): string {
+  if (file.binary && file.base64 !== undefined) return "";
+  if (file.binary && imageKind(file.path) !== undefined) {
+    return file.size > IMAGE_SENT_MAX ? `This image is too big to show here: ${fileSizeWords(file.size)}, past ${fileSizeWords(IMAGE_SENT_MAX)}.` : "That computer's Cophyla is too old to send images: update it there.";
+  }
   if (file.binary) return "This file is not text, so there is nothing to show.";
   if (file.truncated) return `Only the first ${fileSizeWords(new TextEncoder().encode(file.text ?? "").length)} of ${fileSizeWords(file.size)} shows.`;
   return "";

@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
-import { decodeText, folderParts, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
+import { decodeText, fileSummary, folderParts, imageMime, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { stopDaemon, TestClient, testDaemon } from "./helpers.ts";
 
@@ -33,7 +33,7 @@ function linkDir(target: string, at: string): void {
   symlinkSync(target, at, process.platform === "win32" ? "junction" : "dir");
 }
 
-function filesFor(cwd: string, opts: { max?: number; textMax?: number; git?: GitRunner } = {}): SessionFiles {
+function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner } = {}): SessionFiles {
   return new SessionFiles({ session: (id) => (id === "s1" ? { cwd } : undefined), ...opts });
 }
 
@@ -156,6 +156,27 @@ describe("a session's file", () => {
     expect(decodeText(new TextEncoder().encode("ok"), false)).toBe("ok");
   });
 
+  test("an image asked for as one comes whole as base64, up to a size; not asked, or not an image, it does not", async () => {
+    const root = temp();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    writeFileSync(join(root, "Icon.PNG"), png);
+    writeFileSync(join(root, "blob.bin"), png);
+    writeFileSync(join(root, "logo.svg"), "<svg xmlns='http://www.w3.org/2000/svg'/>");
+    const files = filesFor(root);
+    expect(await files.read("s1", "Icon.PNG", { image: true })).toEqual({ path: "Icon.PNG", size: 10, modified: expect.any(Number), binary: true, mime: "image/png", base64: png.toString("base64") });
+    expect((await files.read("s1", "Icon.PNG")).base64).toBeUndefined();
+    expect(await files.read("s1", "blob.bin", { image: true })).toMatchObject({ binary: true });
+    expect((await files.read("s1", "blob.bin", { image: true })).base64).toBeUndefined();
+    // SVG is text: it comes as text, and the viewer draws it from that.
+    expect(await files.read("s1", "logo.svg", { image: true })).toMatchObject({ text: "<svg xmlns='http://www.w3.org/2000/svg'/>" });
+    const big = await filesFor(root, { imageMax: 9 }).read("s1", "Icon.PNG", { image: true });
+    expect(big).toMatchObject({ size: 10, binary: true });
+    expect(big.base64).toBeUndefined();
+    expect(imageMime("a/b.JPG")).toBe("image/jpeg");
+    expect(imageMime("a.png/readme")).toBeUndefined();
+    expect(fileSummary({ path: "Icon.PNG", size: 10, modified: 1, binary: true, mime: "image/png", base64: "iVBORw0KGgoAAA==" })).toEqual({ path: "Icon.PNG", size: 10, binary: true, mime: "image/png", base64: 16 });
+  });
+
   test("nothing above the directory, no folder, nothing missing; an unknown session is not found", async () => {
     const root = temp();
     const outside = temp();
@@ -167,7 +188,7 @@ describe("a session's file", () => {
     for (const bad of ["..", "src/../../secret.txt", "/etc/passwd", "C:/Windows/win.ini", "src//a.ts", "./src/a.ts"]) {
       expect((await refusal(files.read("s1", bad)))[0]).toBe("invalid");
     }
-    expect(await refusal(files.read("s1", "out/secret.txt"))).toEqual(["denied", "out/secret.txt: outside the session's folder"]);
+    expect(await refusal(files.read("s1", "out/secret.txt"))).toEqual(["denied", "out/secret.txt: outside the folder"]);
     expect(await refusal(files.read("s1", "src"))).toEqual(["invalid", "src: a folder"]);
     expect(await refusal(files.read("s1", "src/b.ts"))).toEqual(["not_found", "src/b.ts: no such file"]);
     expect(await refusal(files.read("s1", "src/a.ts/x"))).toEqual(["not_found", "src/a.ts/x: no such file"]);

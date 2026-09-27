@@ -84,10 +84,11 @@ export interface UiState {
   picked: Map<string, string>;
   /** A file a chip asked the Files panel to show: its row is scrolled to and focused once it is listed. */
   reveal?: { place: string; rel: string };
-  /** The file open in each agent's tab, by session, over its pane or beside it (fileview.ts). */
+  /** The file open in each tab, over its pane or beside it (fileview.ts): an agent's by session, a bare terminal's by `terminal:<id>` (`viewerTab`). */
   viewers: Map<string, ViewerFile>;
-  /** Where the viewer sits on a wide window, whether long lines wrap, and whether markdown shows as written: the same for every file, kept on the device. */
+  /** Where the viewer sits on a wide window and its share of the width beside the pane, whether long lines wrap, and whether markdown and SVG show as written: the same for every file, kept on the device. */
   viewerDock: ViewerDock;
+  viewerWidth: number;
   viewerWrap: boolean;
   viewerSource: boolean;
   /** The tether command a session's chip copied, as no window showed it, and whether the clipboard took it: its pane says so a while. */
@@ -1559,7 +1560,8 @@ function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, sessi
   tree.setAttribute("aria-label", `Files in ${name}`);
   const rows = ex ? selectFileRows(ex, ui.openDirs.get(place) ?? NO_FOLDERS) : [];
   const picked = ui.picked.get(place);
-  const viewing = ui.viewers.get(session.id)?.rel;
+  const shown = ui.viewers.get(session.id);
+  const viewing = shown && "session" in shown.from && shown.from.session === session.id ? shown.rel : undefined;
   // One row takes the Tab key, the one picked or else the first; the arrows move from it.
   const current = rows.find((r) => r.key === picked && (r.kind === "dir" || r.kind === "file"))?.key ?? rows.find((r) => r.kind === "dir" || r.kind === "file")?.key;
   reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current, viewing));

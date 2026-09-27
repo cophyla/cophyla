@@ -34,6 +34,7 @@ export const requestScopes = {
   "terminal.spawn": "terminal",
   "terminal.open": "terminal",
   "terminal.close": "terminal",
+  "terminal.file": "terminal",
   "ask.answer": "asks:answer",
   "task.list": "tasks:read",
   "task.create": "tasks:write",

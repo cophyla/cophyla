@@ -3538,9 +3538,48 @@ button:disabled {
 }
 
 .viewer[data-dock="beside"] {
-  flex: 0 0 min(48%, 960px);
-  min-width: 360px;
+  position: relative;
+  flex: 0 0 var(--viewer-width, 48%);
+  min-width: 320px;
   border-left: 1px solid var(--line-strong);
+}
+
+/* Beside the pane, its left edge is a divider: a strip a pointer can take, a line when held. */
+.viewer-split {
+  display: none;
+}
+
+.viewer[data-dock="beside"] .viewer-split {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -4px;
+  z-index: 3;
+  display: block;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.viewer-split::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 3px;
+  width: 2px;
+  background: transparent;
+  transition: background-color 120ms ease;
+}
+
+.viewer-split:hover::after,
+.viewer-split:focus-visible::after,
+.viewer-split[data-dragging]::after {
+  background: var(--cophyla);
+}
+
+.viewer-split:focus-visible {
+  outline: 0;
 }
 
 .viewer-head {
@@ -3688,6 +3727,111 @@ button:disabled {
 
 .viewer-dock[data-dock="beside"] {
   --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Crect x='1.5' y='2.5' width='13' height='11' rx='1'/%3E%3Crect x='4' y='5' width='8' height='6' fill='%23000' stroke='none'/%3E%3C/svg%3E");
+}
+
+.viewer-find-open {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='7' cy='7' r='4.5'/%3E%3Cpath d='M10.4 10.4l3.6 3.6'/%3E%3C/svg%3E");
+}
+
+/* The search: a field, which match of how many, and its small buttons, on a line under the head. */
+.viewer-find {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.viewer-find-text {
+  flex: 0 1 260px;
+  min-width: 80px;
+  padding: 3px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--well);
+  font-size: 12.5px;
+}
+
+.viewer-find-text:focus {
+  outline: 0;
+  border-color: var(--cophyla);
+}
+
+.viewer-find-count {
+  min-width: 72px;
+  margin: 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.viewer-find button {
+  min-width: 26px;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.viewer-find button:hover {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.viewer-find-case[aria-pressed="true"] {
+  background: var(--raised);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+}
+
+.viewer-find-close {
+  margin-left: auto;
+}
+
+/* Every match, and the one gone to, marked without touching the page (CSS highlights). */
+::highlight(fv-match) {
+  background-color: rgba(226, 174, 77, 0.28);
+}
+
+::highlight(fv-current) {
+  background-color: rgba(226, 174, 77, 0.9);
+  color: #14121a;
+}
+
+/* An image: fitted to the viewer and centred on a checkerboard its transparent parts show, or at its own size, scrolling. */
+.viewer-image {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 16px;
+  cursor: zoom-in;
+}
+
+.viewer-image[data-fit="0"] {
+  width: max-content;
+  min-width: 100%;
+  height: auto;
+  min-height: 100%;
+  cursor: zoom-out;
+}
+
+.viewer-image img {
+  display: block;
+  flex: none;
+  max-width: 100%;
+  max-height: 100%;
+  background: repeating-conic-gradient(#2a2733 0% 25%, #1f1d27 0% 50%) 50% / 16px 16px;
+  box-shadow: 0 0 0 1px var(--line);
+}
+
+.viewer-image[data-fit="0"] img {
+  max-width: none;
+  max-height: none;
 }
 
 .viewer-close {
@@ -4061,6 +4205,17 @@ button:disabled {
   .viewer-modes button,
   .viewer-wrap {
     padding: 6px 10px;
+  }
+
+  .viewer-find button {
+    min-width: 36px;
+    height: 34px;
+  }
+
+  .viewer-find-text {
+    flex: 1 1 auto;
+    padding: 6px 8px;
+    font-size: 16px;
   }
 }
 

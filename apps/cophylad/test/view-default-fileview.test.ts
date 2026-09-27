@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { FileText } from "@cophyla/protocol";
 import { VENDOR_DIR } from "../scripts/vendor-view.ts";
-import { fileErrorWords, fileLanguage, fileLines, GRAMMARS, grammarName, linesBetween, pathsIn, relativeFile, viewerMeta, viewerNote } from "../views/default/model.ts";
+import { FIND_MAX, fileErrorWords, fileLanguage, fileLines, findInLines, findWords, GRAMMARS, grammarName, imageKind, linesBetween, pathsIn, relativeFile, relUnder, VIEWER_WIDTH, viewerMeta, viewerNote, viewerTab, viewerWidth } from "../views/default/model.ts";
 
 const file = (over: Partial<FileText>): FileText => ({ path: "src/main.py", size: 1200, modified: 1, text: "x", ...over });
 
@@ -52,7 +52,7 @@ describe("view default file viewer", () => {
   test("the head says the language, the lines and the size; the note says what does not show", () => {
     expect(viewerMeta(file({}), 42)).toBe("Python · 42 lines · 1.2 KB");
     expect(viewerMeta(file({ path: "notes.txt", size: 10 }), 1)).toBe("Text · 1 line · 10 B");
-    expect(viewerMeta(file({ path: "icon.png", binary: true, text: undefined }), undefined)).toBe("Binary · 1.2 KB");
+    expect(viewerMeta(file({ path: "blob.bin", binary: true, text: undefined }), undefined)).toBe("Binary · 1.2 KB");
     expect(viewerMeta(file({ size: 5 * 1024 * 1024, truncated: true }), 20000)).toBe(`Python · ${(20000).toLocaleString()} lines shown · 5 MB`);
     expect(viewerNote(file({}))).toBe("");
     expect(viewerNote(file({ binary: true, text: undefined }))).toBe("This file is not text, so there is nothing to show.");
@@ -66,7 +66,7 @@ describe("view default file viewer", () => {
     expect(fileErrorWords("unsupported", "session.file is not served over the node link")).toBe("That computer cannot show its files yet: update Cophyla there.");
     expect(fileErrorWords("not_found", "a.md: no such file")).toBe("There is no such file, or it has gone.");
     expect(fileErrorWords("invalid", "src: a folder")).toBe("That is a folder, not a file.");
-    expect(fileErrorWords("denied", "out/x: outside the session's folder")).toBe("out/x: outside the session's folder");
+    expect(fileErrorWords("denied", "out/x: outside the folder")).toBe("out/x: outside the folder");
   });
 
   test("the paths a terminal's row names, with their line; not a URL's, a version's or a word's", () => {
@@ -95,6 +95,57 @@ describe("view default file viewer", () => {
     expect(relativeFile("C:\\repo\\x.ts")).toBeUndefined();
     expect(relativeFile("/etc/hosts")).toBeUndefined();
     expect(relativeFile("src//x.ts")).toBeUndefined();
+  });
+
+  test("a viewer's tab, and its width beside the pane held to its bounds", () => {
+    expect(viewerTab("sess_1", undefined)).toBe("sess_1");
+    expect(viewerTab(undefined, "0c9e41b27a53")).toBe("terminal:0c9e41b27a53");
+    expect(viewerTab(undefined, undefined)).toBeUndefined();
+    expect(viewerWidth(undefined)).toBe(VIEWER_WIDTH.usual);
+    expect(viewerWidth("60")).toBe(VIEWER_WIDTH.usual);
+    expect(viewerWidth(5)).toBe(VIEWER_WIDTH.min);
+    expect(viewerWidth(99)).toBe(VIEWER_WIDTH.max);
+    expect(viewerWidth(55.55)).toBe(55.6);
+  });
+
+  test("a path under a folder, whatever its case or slashes where the folder's disk folds case; none outside it", () => {
+    expect(relUnder("C:\\Users\\me", "c:/users/ME/notes/todo.md", "windows")).toBe("notes/todo.md");
+    expect(relUnder("C:\\Users\\me", "C:\\Users\\me", "windows")).toBe("");
+    expect(relUnder("C:\\Users\\me", "C:\\Users\\meg\\x.md", "windows")).toBeUndefined();
+    expect(relUnder("/home/me", "/home/Me/x.md", "linux")).toBeUndefined();
+    expect(relUnder("/home/me", "/home/me/src/x.md", "linux")).toBe("src/x.md");
+  });
+
+  test("an image by its extension, SVG among them; its size in pixels in the head once drawn; why one does not show", () => {
+    expect(imageKind("Assets/icon.PNG")).toBe("PNG");
+    expect(imageKind("shot.jpg")).toBe("JPEG");
+    expect(imageKind("logo.svg")).toBe("SVG");
+    expect(imageKind("png")).toBeUndefined();
+    expect(imageKind("notes.md")).toBeUndefined();
+    const png = file({ path: "icon.png", size: 2048, binary: true, text: undefined, mime: "image/png", base64: "iVBORw0KGgo=" });
+    expect(viewerMeta(png, undefined, { width: 64, height: 32 })).toBe("PNG · 64 × 32 · 2 KB");
+    expect(viewerNote(png)).toBe("");
+    expect(viewerNote(file({ path: "huge.png", size: 12 * 1024 * 1024, binary: true, text: undefined }))).toBe("This image is too big to show here: 12 MB, past 5 MB.");
+    expect(viewerNote(file({ path: "icon.png", size: 2048, binary: true, text: undefined }))).toBe("That computer's Cophyla is too old to send images: update it there.");
+    expect(viewerMeta(file({ path: "logo.svg", size: 300, text: "<svg/>" }), 1, { width: 24, height: 24 })).toBe("SVG · 24 × 24 · 1 line · 300 B");
+  });
+
+  test("a search's matches by line, any case unless asked, the words taken as written; its count", () => {
+    const lines = ["def ship(job):", "    Ship it (job.retries)", "", "ship ship"];
+    expect(findInLines(lines, "ship", false)).toEqual([
+      { line: 0, start: 4, end: 8 },
+      { line: 1, start: 4, end: 8 },
+      { line: 3, start: 0, end: 4 },
+      { line: 3, start: 5, end: 9 },
+    ]);
+    expect(findInLines(lines, "Ship", true)).toEqual([{ line: 1, start: 4, end: 8 }]);
+    expect(findInLines(lines, "job.retries)", false)).toEqual([{ line: 1, start: 13, end: 25 }]);
+    expect(findInLines(lines, "", false)).toEqual([]);
+    expect(findInLines(Array.from({ length: FIND_MAX + 10 }, () => "x"), "x", false).length).toBe(FIND_MAX);
+    expect(findWords("ship", 4, 1)).toBe("2 of 4");
+    expect(findWords("ship", 0, 0)).toBe("No results");
+    expect(findWords("", 0, 0)).toBe("");
+    expect(findWords("x", FIND_MAX, 0)).toBe(`1 of ${FIND_MAX}+`);
   });
 
   test("a copy takes the file's own text between two points, blank lines and tabs kept", () => {

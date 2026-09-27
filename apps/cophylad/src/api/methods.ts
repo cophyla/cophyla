@@ -212,7 +212,7 @@ export function fileMethods(deps: FileMethodDeps): MethodTable {
     "session.file": {
       target: (p) => p.id,
       redactResult: (r) => fileSummary(r),
-      handler: (p) => deps.files.read(p.id, p.path),
+      handler: (p) => deps.files.read(p.id, p.path, { image: p.image === true }),
     },
   };
 }
@@ -614,6 +614,8 @@ export function backupMethods(deps: BackupMethodDeps): MethodTable {
 export interface TerminalDeps {
   rows: TerminalRows;
   streams: TerminalStreams;
+  /** Reads a file under the folder a terminal started in, for `terminal.file`. */
+  files?: Pick<SessionFiles, "readUnder">;
 }
 
 /**
@@ -641,6 +643,17 @@ export function terminalMethods(deps: TerminalDeps): MethodTable {
       handler: async (p, ctx) => {
         await deps.streams.close(ctx.client.id, p.terminal, p.end === true);
         return {};
+      },
+    },
+    // A file under the folder the terminal started in, for the viewer of its tab; audited as a session's file is, without the text.
+    "terminal.file": {
+      target: (p) => p.terminal,
+      redactResult: (r) => fileSummary(r),
+      handler: (p) => {
+        const row = deps.rows.list().find((t) => t.id === p.terminal);
+        if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
+        if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
+        return deps.files.readUnder(row.cwd, p.path, { image: p.image === true });
       },
     },
   };
