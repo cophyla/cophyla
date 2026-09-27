@@ -122,6 +122,15 @@ describe("quotable", () => {
       { n: 2, text: "b\tc" },
     ]);
     expect(sessionEventText({ session: SESSION, seq: 0, at: 0, kind: "notification", payload: { type: "permission_prompt", message: "Allow?" } })).toBe("· permission_prompt: Allow?");
+    const ask = (payload: Record<string, unknown>) => sessionEventText({ session: SESSION, seq: 0, at: 0, kind: "ask", payload });
+    expect(ask({ ask: "ask_1", phase: "opened", tool: "AskUserQuestion", question: 2, of: 4, title: "Who should approve?", detail: "Approver · 2 of 4", options: ["A second manager", "Anyone"] })).toBe(
+      "? ask opened: AskUserQuestion — Who should approve?\nApprover · 2 of 4\noptions: A second manager | Anyone",
+    );
+    expect(ask({ ask: "ask_1", phase: "opened", kind: "input", title: "Faircase is asking for input" })).toBe("? ask opened — Faircase is asking for input");
+    expect(ask({ ask: "ask_1", phase: "answered", answer: { option: "Anyone", by: { kind: "user" }, at: 1 } })).toBe("? ask answered: Anyone");
+    expect(ask({ ask: "ask_1", phase: "answered", answer: { option: "a", options: ["a", "b"], text: "and c", by: { kind: "user" }, at: 1 } })).toBe('? ask answered: a, b — "and c"');
+    expect(ask({ ask: "ask_1", phase: "answered", answer: { option: "text", text: "use the staging box", by: { kind: "user" }, at: 1 } })).toBe('? ask answered: "use the staging box"');
+    expect(ask({ ask: "ask_1", phase: "closed", reason: "stopped" })).toBe("? ask closed (stopped)");
     expect(messageText({ id: "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", thread: THREAD, at: 0, role: "user", source: "voice", content: [{ type: "audio" }, { type: "text", text: "hi" }] })).toBe("[audio]\nhi");
   });
 });

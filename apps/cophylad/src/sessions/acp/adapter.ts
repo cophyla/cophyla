@@ -16,7 +16,7 @@ import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import { StdioRpc } from "../../rpc/stdio.ts";
 import { claudeEnv } from "../claude/start.ts";
-import { capText, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { askShown, capText, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { AttachedHarness, SessionHost, SessionRecord } from "../model.ts";
 import { permissionDetail } from "../permissions.ts";
 import { askInputFromQuestion, contentForElicitation, questionsFromElicitation } from "../questions.ts";
@@ -550,7 +550,7 @@ export class AcpAdapter {
     );
     this.deps.host.patch(child.rec, { ask: ask.id }, now);
     this.deps.host.setStatus(child.rec, "needs_permission", now);
-    this.deps.host.event(child.rec, "ask", { ask: ask.id, phase: "opened", tool: toolCall["name"] ?? toolCall["kind"], ...(id ? { id } : {}) }, undefined, now);
+    this.deps.host.event(child.rec, "ask", { ask: ask.id, phase: "opened", tool: toolCall["name"] ?? toolCall["kind"], ...(id ? { id } : {}), ...askShown(ask) }, undefined, now);
     this.log.info("acp permission ask opened", { session: child.rec.session.id, ask: ask.id, title });
     return new Promise<unknown>((resolve) => {
       const pending: PendingPermission = { kind: "permission", ask, resolve, requestId, options };
@@ -626,7 +626,7 @@ export class AcpAdapter {
     this.deps.host.patch(child.rec, { ask: ask.id }, now);
     this.deps.host.setStatus(child.rec, "needs_input", now);
     const place = { tool: form.tool, question: form.index + 1, of: form.questions.length, ...(form.toolCallId !== undefined ? { id: form.toolCallId } : {}) };
-    this.deps.host.event(child.rec, "ask", { ask: ask.id, phase: "opened", ...place }, undefined, now);
+    this.deps.host.event(child.rec, "ask", { ask: ask.id, phase: "opened", ...place, ...askShown(ask) }, undefined, now);
     this.log.info("acp question ask opened", { session: child.rec.session.id, ask: ask.id, type: ask.type, ...place });
     void this.deps.asks.wait(ask.id).then((settled) => {
       if (child.pending !== pending) return;

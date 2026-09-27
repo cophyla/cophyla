@@ -5,6 +5,7 @@
 // message's index for `thread.history`, a body line for `memory.read` and `prompt.read`, a
 // hit's position for `recall`.
 
+import { ASK_TEXT_OPTION } from "./entities.ts";
 import type { Hit, Message, SessionEvent, Source } from "./entities.ts";
 import type { NodeId } from "./ids.ts";
 
@@ -58,6 +59,26 @@ export function bodyLines(body: string): QuotableLine[] {
   return body.split(/\r?\n/).map((text, i) => ({ n: i + 1, text }));
 }
 
+/**
+ * An ask event: the phase and the tool, then what was asked when it opened (the question, the
+ * detail under it, the option labels) and what was chosen when it was answered.
+ */
+function askText(p: Record<string, unknown>): string {
+  let text = `? ask ${str(p["phase"])}${p["tool"] ? `: ${str(p["tool"])}` : ""}${p["reason"] ? ` (${str(p["reason"])})` : ""}`;
+  if (typeof p["title"] === "string" && p["title"]) text += ` — ${p["title"]}`;
+  const answer = record(p["answer"]);
+  if (answer) {
+    const ids = Array.isArray(answer["options"]) ? answer["options"] : [answer["option"]];
+    const chosen = ids.filter((o): o is string => typeof o === "string" && o !== ASK_TEXT_OPTION).join(", ");
+    const said = typeof answer["text"] === "string" && answer["text"] ? `"${answer["text"]}"` : "";
+    if (chosen || said) text += `: ${[chosen, said].filter(Boolean).join(" — ")}`;
+  }
+  if (typeof p["detail"] === "string" && p["detail"]) text += `\n${p["detail"]}`;
+  const options = Array.isArray(p["options"]) ? p["options"].filter((o): o is string => typeof o === "string") : [];
+  if (options.length > 0) text += `\noptions: ${options.join(" | ")}`;
+  return text;
+}
+
 /** One line of text per session event, so a session's history reads as a transcript. */
 export function sessionEventText(e: SessionEvent): string {
   const p = record(e.payload) ?? {};
@@ -73,7 +94,7 @@ export function sessionEventText(e: SessionEvent): string {
     case "tool_result":
       return `← ${str(p["tool"])}${p["isError"] ? " (error)" : ""}: ${str(p["result"])}`;
     case "ask":
-      return `? ask ${str(p["phase"])}${p["tool"] ? `: ${str(p["tool"])}` : ""}${p["reason"] ? ` (${str(p["reason"])})` : ""}`;
+      return askText(p);
     case "notification":
       return `· ${str(p["type"])}${p["message"] ? `: ${str(p["message"])}` : p["text"] ? `: ${str(p["text"])}` : ""}`;
     case "ended":

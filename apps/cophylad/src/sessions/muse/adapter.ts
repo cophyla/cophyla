@@ -19,7 +19,7 @@ import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import { scrub } from "../env.ts";
 import type { ProcessTree } from "../focus.ts";
-import { capText, oneLine, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { askShown, capText, oneLine, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HeadlessRunner, HeadlessSpawn, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord, TerminalExpectation } from "../model.ts";
 import { plainPath } from "../paths.ts";
 import { permissionAsk } from "../permissions.ts";
@@ -811,7 +811,7 @@ export class MuseAdapter implements HarnessAdapter {
     o.pending = pending;
     this.host.patch(o.rec, { ask: ask.id }, now);
     this.host.setStatus(o.rec, "needs_permission", now);
-    this.host.event(o.rec, "ask", { ask: ask.id, phase: "opened", tool, ...(typeof p["toolCallId"] === "string" ? { id: p["toolCallId"] } : {}) }, undefined, now);
+    this.host.event(o.rec, "ask", { ask: ask.id, phase: "opened", tool, ...(typeof p["toolCallId"] === "string" ? { id: p["toolCallId"] } : {}), ...askShown(ask) }, undefined, now);
     this.log.info("muse permission ask opened", { session: o.rec.session.id, ask: ask.id, tool });
     void this.opts.asks.wait(ask.id).then((settled) => {
       if (o.pending !== pending) return;
@@ -862,7 +862,7 @@ export class MuseAdapter implements HarnessAdapter {
     o.pending = pending;
     this.host.patch(o.rec, { ask: ask.id }, now);
     this.host.setStatus(o.rec, "needs_input", now);
-    this.host.event(o.rec, "ask", { ask: ask.id, phase: "opened", question: form.index + 1, of: form.questions.length }, undefined, now);
+    this.host.event(o.rec, "ask", { ask: ask.id, phase: "opened", question: form.index + 1, of: form.questions.length, ...askShown(ask) }, undefined, now);
     void asks.wait(ask.id).then((settled) => {
       if (o.pending !== pending) return;
       if (settled.status !== "answered" || !settled.answer) {

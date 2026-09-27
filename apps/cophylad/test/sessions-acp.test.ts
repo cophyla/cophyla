@@ -258,9 +258,9 @@ describe("acp sessions", () => {
     expect(texts[1]).toBe('answer={"action":"accept","content":{"question_0":"Redis","question_0_custom":"managed please","question_1":["ESLint","Prettier"],"question_1_custom":"Biome"}}');
     const askEvents = events(s.id).filter((e) => e.kind === "ask").map((e) => e.payload as Record<string, unknown>);
     expect(askEvents).toEqual([
-      { ask: first.id, phase: "opened", tool: "AskUserQuestion", question: 1, of: 2, id: "tc3" },
+      { ask: first.id, phase: "opened", tool: "AskUserQuestion", question: 1, of: 2, id: "tc3", title: first.title, detail: first.detail, options: first.options.map((o) => o.label) },
       { ask: first.id, phase: "answered", answer: expect.objectContaining({ option: "Redis", text: "managed please" }) },
-      { ask: second.id, phase: "opened", tool: "AskUserQuestion", question: 2, of: 2, id: "tc3" },
+      { ask: second.id, phase: "opened", tool: "AskUserQuestion", question: 2, of: 2, id: "tc3", title: "Which tools?", detail: "Tools · 2 of 2", options: ["ESLint", "Prettier"] },
       { ask: second.id, phase: "answered", answer: expect.objectContaining({ options: ["ESLint", "Prettier"] }) },
     ]);
     expect(events(s.id).find((e) => e.kind === "tool_result")!.payload).toMatchObject({ id: "tc3", tool: "AskUserQuestion", result: expect.stringContaining("accept") });

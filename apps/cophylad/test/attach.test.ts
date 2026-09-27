@@ -216,7 +216,7 @@ describe("attach: sessions over the socket", () => {
     expect(await r.json()).toEqual({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow" } } });
     await waitFor(() => wentBusy(mark));
     expect(askEvents()).toEqual([
-      { ask: ask.id, phase: "opened", tool: "Write" } as never,
+      { ask: ask.id, phase: "opened", tool: "Write", title: ask.title, detail: ask.detail, options: ask.options.map((o) => o.label) } as never,
       { ask: ask.id, phase: "answered", answer: expect.objectContaining({ option: "allow" }) } as never,
     ]);
     expect(d.store.asks.get(ask.id)?.status).toBe("answered");
@@ -315,7 +315,7 @@ describe("attach: sessions over the socket", () => {
     await waitFor(() => wentBusy(mark));
     expect(d.store.sessions.get(session.id)?.ask).toBeUndefined();
     expect(askEvents().slice(-2)).toEqual([
-      { ask: ask.id, phase: "opened", tool: "AskUserQuestion", question: 1, of: 1 } as never,
+      { ask: ask.id, phase: "opened", tool: "AskUserQuestion", question: 1, of: 1, title: "Which cache?", detail: "Cache", options: ["Redis", "Memcached"] } as never,
       { ask: ask.id, phase: "answered", answer: expect.objectContaining({ option: "Redis" }) } as never,
     ]);
   });

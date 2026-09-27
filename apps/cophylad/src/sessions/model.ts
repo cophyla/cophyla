@@ -2,7 +2,7 @@
 // persisted `Session`, the adapter interface, the normalised hook, and the small helpers
 // that shape event payloads. Status rules and the ask lifecycle live in index.ts.
 
-import type { ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, MuseHookEvent, NodeId, ProfileId, Session, SessionEvent, SessionEventKind, SessionOrigin, SessionStats, SessionStatus, SessionTransport, SessionWaiting, TerminalRef } from "@cophyla/protocol";
+import type { Ask, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, MuseHookEvent, NodeId, ProfileId, Session, SessionEvent, SessionEventKind, SessionOrigin, SessionStats, SessionStatus, SessionTransport, SessionWaiting, TerminalRef } from "@cophyla/protocol";
 import type { HookMeta } from "../api/hooks.ts";
 import type { SessionsConfig } from "../config/schema.ts";
 import { redact } from "../gate/audit.ts";
@@ -332,6 +332,20 @@ export const TOOL_RESULT_CAP = 4096;
 export const TEXT_CAP = 8192;
 export const RAW_CAP = 16384;
 export const INTENT_CAP = 200;
+export const ASK_DETAIL_CAP = 1024;
+
+/**
+ * What an opened `ask` event carries of the ask: its question, the detail under it and the
+ * option labels. The ask closes and is not part of the history, so without these a reader
+ * of the session's events (the brain's History, recall) sees that the agent asked, and not what.
+ */
+export function askShown(ask: Pick<Ask, "title" | "detail" | "options">): { title: string; detail?: string; options?: string[] } {
+  return {
+    title: ask.title,
+    ...(ask.detail ? { detail: capText(ask.detail, ASK_DETAIL_CAP) } : {}),
+    ...(ask.options.length > 0 ? { options: ask.options.map((o) => o.label) } : {}),
+  };
+}
 
 /** JSON with keys sorted, so equal inputs compare equal whatever their key order. */
 export function stableStringify(value: unknown): string {

@@ -43,7 +43,7 @@ import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } fr
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
 import { Injections } from "./injections.ts";
 import type { PendingSend } from "./injections.ts";
-import { capText, normaliseHook, oneLine, rawIfSmall, stableStringify, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "./model.ts";
+import { askShown, capText, normaliseHook, oneLine, rawIfSmall, stableStringify, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "./model.ts";
 import type { AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
 import { terminalCommand as museCommand } from "./muse/locate.ts";
 import { promptInput as musePromptInput, waitingOn as museWaitingOn } from "./muse/screen.ts";
@@ -2359,7 +2359,7 @@ export class Sessions implements SessionHost {
     rec.session.ask = ask.id;
     rec.session.lastActivity = now;
     this.deps.store.sessions.update(rec.session);
-    this.event(rec, "ask", { ask: ask.id, phase: "opened", ...opened }, raw, now);
+    this.event(rec, "ask", { ask: ask.id, phase: "opened", ...opened, ...askShown(ask) }, raw, now);
     this.event(rec, "status", { status, ask: ask.id }, undefined, now);
     this.broadcast(rec, true);
     this.log.info("harness ask opened", { session: rec.session.id, ask: ask.id, type: input.type, ...opened });
@@ -2521,7 +2521,7 @@ export class Sessions implements SessionHost {
     rec.session.ask = ask.id;
     rec.session.lastActivity = now;
     this.deps.store.sessions.update(rec.session);
-    this.event(rec, "ask", { ask: ask.id, phase: "opened", kind: "input" }, raw, now);
+    this.event(rec, "ask", { ask: ask.id, phase: "opened", kind: "input", ...askShown(ask) }, raw, now);
     this.event(rec, "status", { status: "needs_input", ask: ask.id }, undefined, now);
     this.broadcast(rec, true);
     return {};
