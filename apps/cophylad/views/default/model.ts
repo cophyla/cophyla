@@ -18,7 +18,7 @@
 // bar has it.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /** The conversation on a controller, as the view last heard it. */
 export interface VoiceRow {
@@ -150,6 +150,8 @@ export interface Streaming {
   id: string;
   at: number;
   blocks: ContentBlock[];
+  /** What the turn did before the reply began, folded above it as the stored message will have it. */
+  steps?: TurnStep[];
 }
 
 export interface ViewState {
@@ -177,6 +179,8 @@ export interface ViewState {
   threads: Map<string, Thread>;
   messages: Map<string, Message>;
   streaming: Map<string, Streaming>;
+  /** The orchestrator's turn while it runs: what it has done so far and whether it is thinking. */
+  progress?: TurnProgress;
   tasks: Map<string, Task>;
   /** What voice is doing now; absent when nothing is. */
   voice?: VoiceRow;
@@ -247,6 +251,8 @@ export type Action =
   | { type: "chat.delta"; params: { message: string; block: number; delta: ContentBlock } }
   /** A provisional reply was abandoned: its placeholder goes. */
   | { type: "chat.retract"; params: { message: string } }
+  /** The orchestrator's turn as it goes; `turn` absent once it is over. */
+  | { type: "chat.progress"; params: { turn?: TurnProgress } }
   | { type: "chat.loading" }
   /** A load that failed: nothing is marked loaded, so the button that asked for it asks again. */
   | { type: "chat.failed" }
@@ -474,6 +480,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       if (!state.connected) {
         for (const c of state.sessions.values()) c.loading = false;
         state.streaming.clear();
+        delete state.progress;
         state.chatLoading = false;
         state.chatLoaded = false;
         // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
@@ -618,7 +625,8 @@ export function apply(state: ViewState, action: Action): ViewState {
       if (state.messages.has(p.message)) return state;
       let s = state.streaming.get(p.message);
       if (!s) {
-        s = { id: p.message, at: Date.now(), blocks: [] };
+        const steps = state.progress?.steps.filter((step) => step.status !== "running") ?? [];
+        s = { id: p.message, at: Date.now(), blocks: [], ...(steps.length > 0 ? { steps } : {}) };
         state.streaming.set(p.message, s);
       }
       const existing = s.blocks[p.block];
@@ -628,6 +636,10 @@ export function apply(state: ViewState, action: Action): ViewState {
     }
     case "chat.retract":
       state.streaming.delete(action.params.message);
+      return state;
+    case "chat.progress":
+      if (action.params.turn) state.progress = action.params.turn;
+      else delete state.progress;
       return state;
     case "chat.loading":
       state.chatLoading = true;
@@ -843,12 +855,52 @@ export function chatButton(state: ViewState): (HistoryButton & { action: "chat-h
 
 // --- selectors -----------------------------------------------------------------------------
 
+/** Where a ref's chip goes in a message's text: private-use characters no one types. */
+export const SLOT_OPEN = "";
+export const SLOT = /(\d+)/g;
+
+export function slot(i: number): string {
+  return `${SLOT_OPEN}${i}`;
+}
+
+/** A part of a message: a run of text and refs read as one text, or a block that stands apart. */
+export type Part = { type: "flow"; text: string; refs: Extract<ContentBlock, { type: "ref" }>[] } | Extract<ContentBlock, { type: "quote" | "audio" }>;
+
+/** A message's blocks as parts: each ref in a run of text becomes a slot in the run's text, where its chip goes, so it reads in its sentence. */
+export function parts(blocks: ContentBlock[]): Part[] {
+  const out: Part[] = [];
+  let flow: Extract<Part, { type: "flow" }> | undefined;
+  for (const block of blocks) {
+    if (block.type === "text" || block.type === "ref") {
+      if (!flow) out.push((flow = { type: "flow", text: "", refs: [] }));
+      if (block.type === "text") flow.text += block.text;
+      else {
+        flow.text += slot(flow.refs.length);
+        flow.refs.push(block);
+      }
+      continue;
+    }
+    flow = undefined;
+    out.push(block);
+  }
+  return out;
+}
+
+/** Past this many characters a chip may be cut short, and its title says it whole. */
+export const CHIP_CHARS = 30;
+
+/** A chip's title: what it does, after its words when they may not all show. */
+export function chipTitle(text: string, title: string): string {
+  return text.length > CHIP_CHARS ? (title ? `${text}\n${title}` : text) : title;
+}
+
 export type StreamItem =
   | { kind: "ask"; at: number; ask: Ask }
   | { kind: "audit"; at: number; entry: AuditEntry }
   | { kind: "thread"; at: number; thread: Thread }
   | { kind: "message"; at: number; message: Message }
   | { kind: "streaming"; at: number; streaming: Streaming }
+  | { kind: "progress"; at: number; progress: TurnProgress }
   | { kind: "task"; at: number; task: Task };
 
 export function openAsks(state: ViewState): Ask[] {
@@ -865,7 +917,9 @@ export function pinnedAsks(state: ViewState, onScreen?: string): Ask[] {
 
 /**
  * The asks pinned, then thread dividers, messages, open tasks and audit rows in time order,
- * oldest at the top. `onScreen` is the session whose terminal the pane shows, if any.
+ * oldest at the top, and last what the orchestrator is doing while its turn runs, until the
+ * reply starts streaming: the reply is then what it is doing. `onScreen` is the session whose
+ * terminal the pane shows, if any.
  */
 export function selectStream(state: ViewState, onScreen?: string): { pinned: Ask[]; items: StreamItem[] } {
   const items: StreamItem[] = [];
@@ -875,6 +929,8 @@ export function selectStream(state: ViewState, onScreen?: string): { pinned: Ask
   for (const task of state.tasks.values()) items.push({ kind: "task", at: task.createdAt, task });
   for (const entry of state.audit.values()) items.push({ kind: "audit", at: entry.at, entry });
   items.sort((a, b) => a.at - b.at || rank(a) - rank(b) || keyOf(a).localeCompare(keyOf(b)));
+  const p = state.progress;
+  if (p && state.streaming.size === 0 && (p.thinking || p.steps.length > 0 || p.about !== undefined)) items.push({ kind: "progress", at: Number.POSITIVE_INFINITY, progress: p });
   return { pinned: pinnedAsks(state, onScreen), items };
 }
 
@@ -904,6 +960,8 @@ export function keyOf(item: StreamItem): string {
       return `message:${item.message.id}`;
     case "streaming":
       return `message:${item.streaming.id}`;
+    case "progress":
+      return "progress";
     case "task":
       return `task:${item.task.id}`;
   }
@@ -1103,6 +1161,12 @@ export function sessionLabel(session: Session): string {
   return lastPart(session.cwd);
 }
 
+/** What a chip naming a session says: its harness, and its title or intent when it has one. */
+export function sessionWho(session: Session): string {
+  const name = session.title ?? session.intent;
+  return `${session.harness}${name ? `: ${name}` : ""}`;
+}
+
 export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean } | { kind: "send"; key: string; send: PendingSend };
 
 /**
@@ -1169,6 +1233,30 @@ export function openFolders(open: ReadonlySet<string>): string[] {
   });
   shown.sort((a, b) => a.split("/").length - b.split("/").length || (a < b ? -1 : a > b ? 1 : 0));
   return ["", ...shown].slice(0, FOLDERS_PER_ASK);
+}
+
+/**
+ * Where the Files panel can show a file of `node`: the live session whose folder holds it, the
+ * innermost such folder first and then the session worked in last, with the file's path under
+ * that folder as the explorer keys it. A relative path, or one no session's folder holds, has none.
+ */
+export function fileHome(state: ViewState, node: string, path: string): { session: Session; rel: string } | undefined {
+  if (!/^([A-Za-z]:)?[\\/]/.test(path)) return undefined;
+  const platform = state.nodes.get(node)?.platform;
+  const key = placeKey(path, platform);
+  let best: { session: Session; root: string } | undefined;
+  for (const card of state.sessions.values()) {
+    const s = card.session;
+    if (s.node !== node || s.status === "ended") continue;
+    const root = placeKey(s.cwd, platform);
+    if (key !== root && !key.startsWith(`${root}/`)) continue;
+    if (!best || root.length > best.root.length || (root.length === best.root.length && s.lastActivity > best.session.lastActivity)) best = { session: s, root };
+  }
+  if (!best) return undefined;
+  // The rest of the path as it was written: the folded key only chose the folder.
+  const spelled = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const rel = spelled.slice(best.root.length).replace(/^\/+/, "");
+  return { session: best.session, rel };
 }
 
 /** A path under a folder, spelled as its node spells paths: a Windows folder's with backslashes. */

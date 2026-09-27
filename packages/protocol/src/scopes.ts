@@ -99,6 +99,7 @@ export const notificationScopes = {
   "chat.message": "chat",
   "chat.delta": "chat",
   "chat.retract": "chat",
+  "chat.progress": "chat",
   "session.state": "sessions:read",
   "session.event": "sessions:read",
   "terminal.state": "sessions:read",

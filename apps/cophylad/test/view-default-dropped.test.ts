@@ -1,11 +1,12 @@
 // Files dropped on the default view from the desktop. In WebView2 the view hands it the files
 // with an id, the shell's answer under that id is their paths, and an answer short of a path or
 // none at all fails the drop. Elsewhere the view asks its host by the files' names, and an
-// answer short of a path, or one that is not paths, fails the drop too. WebView2 wins where the
-// frame has it.
+// answer short of a path, or one that is not paths, fails the drop too. Files the page was
+// shown nothing of (WebKitGTK) are asked for with no names, and need at least one path back.
+// WebView2 wins where the frame has it.
 
 import { describe, expect, test } from "bun:test";
-import { DroppedPaths, FILES_MESSAGE, webView2 } from "../views/default/dropped.ts";
+import { DroppedPaths, FILES_MESSAGE, linkText, webView2 } from "../views/default/dropped.ts";
 import type { AskHost, WebView2 } from "../views/default/dropped.ts";
 
 function fake() {
@@ -19,8 +20,8 @@ function fake() {
 }
 
 /** A host that answers with `answer(names)`, keeping what it was asked. */
-function host(answer: (names: string[]) => unknown) {
-  const asked: string[][] = [];
+function host(answer: (names?: string[]) => unknown) {
+  const asked: (string[] | undefined)[] = [];
   const ask: AskHost = async (names) => {
     asked.push(names);
     return answer(names);
@@ -93,6 +94,20 @@ describe("files dropped on the default view, elsewhere", () => {
     await expect(new DroppedPaths(undefined, () => Promise.reject(new Error("no files were dropped just now"))).paths(files)).rejects.toThrow("no files were dropped");
   });
 
+  test("files the page was shown none of are asked for with no names, and every path comes back", async () => {
+    const { ask, asked } = host(() => ({ paths: ["/home/u/drop me/a.txt", "/home/u/drop me/sub folder"] }));
+    expect(await new DroppedPaths(undefined, ask).hidden()).toEqual(["/home/u/drop me/a.txt", "/home/u/drop me/sub folder"]);
+    expect(asked).toEqual([undefined]);
+  });
+
+  test("with no names, an empty answer, one that is not paths, or a refusal fails the drop", async () => {
+    await expect(new DroppedPaths(undefined, host(() => ({ paths: [] })).ask).hidden()).rejects.toThrow("could not say where the files are");
+    for (const odd of [undefined, null, {}, { paths: "/x/a" }, { paths: ["/x/a", null] }]) {
+      await expect(new DroppedPaths(undefined, host(() => odd).ask).hidden()).rejects.toThrow("not paths");
+    }
+    await expect(new DroppedPaths(undefined, () => Promise.reject(new Error("unavailable: no files were dropped just now"))).hidden()).rejects.toThrow("no files were dropped");
+  });
+
   test("where the frame has WebView2 the host is never asked", async () => {
     const { webview, posted, answer } = fake();
     const { ask, asked } = host(() => ({ paths: ["/elsewhere"] }));
@@ -102,5 +117,13 @@ describe("files dropped on the default view, elsewhere", () => {
     expect(await got).toEqual(["C:\\D\\a"]);
     expect(posted).toHaveLength(1);
     expect(asked).toEqual([]);
+  });
+});
+
+describe("a link dropped on a field", () => {
+  test("goes in as its URLs, the comments left out", () => {
+    expect(linkText("https://example.com/a")).toBe("https://example.com/a");
+    expect(linkText("# from a browser\r\nhttps://example.com/a\r\n\r\nhttps://example.com/b c\r\n")).toBe("https://example.com/a https://example.com/b c");
+    expect(linkText("# nothing but a comment\n")).toBe("");
   });
 });

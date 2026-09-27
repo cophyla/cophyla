@@ -559,7 +559,7 @@ export class Store {
     insert: (m: Message): void => {
       this.db.transaction(() => {
         this.db
-          .query("INSERT INTO messages (id, thread, at, role, source, content, streaming) VALUES ($id, $thread, $at, $role, $source, $content, $streaming)")
+          .query("INSERT INTO messages (id, thread, at, role, source, content, streaming, steps) VALUES ($id, $thread, $at, $role, $source, $content, $streaming, $steps)")
           .run(messageParams(m));
         this.index.chunks.putMessage(m);
       })();
@@ -568,7 +568,7 @@ export class Store {
     },
     update: (m: Message): void => {
       this.db.transaction(() => {
-        this.db.query("UPDATE messages SET thread = $thread, at = $at, role = $role, source = $source, content = $content, streaming = $streaming WHERE id = $id").run(messageParams(m));
+        this.db.query("UPDATE messages SET thread = $thread, at = $at, role = $role, source = $source, content = $content, streaming = $streaming, steps = $steps WHERE id = $id").run(messageParams(m));
         this.index.chunks.putMessage(m);
       })();
       this.index.kick();
@@ -579,8 +579,8 @@ export class Store {
       this.db.transaction(() => {
         this.db
           .query(
-            `INSERT INTO messages (id, thread, at, role, source, content, streaming) VALUES ($id, $thread, $at, $role, $source, $content, $streaming)
-             ON CONFLICT(id) DO UPDATE SET thread = excluded.thread, at = excluded.at, role = excluded.role, source = excluded.source, content = excluded.content, streaming = excluded.streaming`,
+            `INSERT INTO messages (id, thread, at, role, source, content, streaming, steps) VALUES ($id, $thread, $at, $role, $source, $content, $streaming, $steps)
+             ON CONFLICT(id) DO UPDATE SET thread = excluded.thread, at = excluded.at, role = excluded.role, source = excluded.source, content = excluded.content, streaming = excluded.streaming, steps = excluded.steps`,
           )
           .run(messageParams(m));
         this.index.chunks.putMessage(m);
@@ -1272,15 +1272,17 @@ interface MessageRow {
   source: string;
   content: string;
   streaming: number;
+  steps: string | null;
 }
 
 function messageParams(m: Message) {
-  return { id: m.id, thread: m.thread, at: m.at, role: m.role, source: m.source, content: json(m.content), streaming: m.streaming ? 1 : 0 };
+  return { id: m.id, thread: m.thread, at: m.at, role: m.role, source: m.source, content: json(m.content), streaming: m.streaming ? 1 : 0, steps: m.steps?.length ? json(m.steps) : null };
 }
 
 function messageFromRow(r: MessageRow): Message {
   const m: Message = { id: r.id, thread: r.thread, at: r.at, role: r.role as Message["role"], source: r.source as Message["source"], content: JSON.parse(r.content) as Message["content"] };
   if (r.streaming) m.streaming = true;
+  if (r.steps) m.steps = JSON.parse(r.steps) as NonNullable<Message["steps"]>;
   return m;
 }
 

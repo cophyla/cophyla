@@ -99,12 +99,14 @@ fn main() {
                 // The host page never leaves the app's own origin (or `tauri dev`'s server when
                 // one is configured). A view's frame is governed by the host CSP's frame-src;
                 // WebView2 never shows this callback a frame's navigation, WebKit (macOS,
-                // Linux) does, so the view origin is allowed here too: the frame is sandboxed
-                // without `allow-top-navigation`, so nothing can take the host itself there.
+                // Linux) does, so the view origin is allowed here too (`view://localhost`
+                // there, whose origin the URL standard leaves opaque, so it is matched by its
+                // parts): the frame is sandboxed without `allow-top-navigation`, so nothing can
+                // take the host itself there.
                 .on_navigation(move |url| {
                     let local = url.scheme() == "tauri"
                         || url.host_str() == Some("tauri.localhost")
-                        || url.origin().ascii_serialization() == views::ORIGIN
+                        || views::is_view(url)
                         || dev_origin.as_deref().is_some_and(|o| url.origin().ascii_serialization() == o);
                     if !local {
                         log::warn!("refused navigation to {url}");

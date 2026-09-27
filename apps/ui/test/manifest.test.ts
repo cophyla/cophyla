@@ -128,7 +128,8 @@ const conf = JSON.parse(read("tauri.conf.json")) as { app: { security: { csp: st
 describe("shell configuration", () => {
   test("the host CSP confines frames to the view origin and scripts to the app", () => {
     const csp = conf.app.security.csp;
-    expect(csp).toContain("frame-src http://view.localhost");
+    // WebView2's form of the view origin and WebKit's (ORIGIN in views.rs), and nothing else
+    expect(/frame-src ([^;]*)/.exec(csp)?.[1]?.split(" ").sort()).toEqual(["http://view.localhost", "view://localhost"]);
     expect(csp).toMatch(/script-src 'self'(;|$| )/);
     expect(csp).toContain("default-src 'none'");
   });
@@ -325,7 +326,12 @@ describe("installer configuration", () => {
     expect(views).toContain('webview_label() != HOST_LABEL');
     expect(views).toContain("connect-src 'none'");
     expect(views).toContain("frame-ancestors {host}");
-    expect(views).toContain('pub const HOST_ORIGIN: &str = "http://tauri.localhost"');
+    // WebView2 serves the app's schemes as http://<scheme>.localhost, WebKit (macOS, Linux) as <scheme>://localhost.
+    const notWindows = (name: string) => new RegExp(`#\\[cfg\\(not\\(windows\\)\\)\\]\\s*\\r?\\n\\s*pub const ${name}: &str = "([^"]+)";`).exec(views)?.[1];
+    expect(rustOsConsts(views, "ORIGIN").windows).toBe("http://view.localhost");
+    expect(notWindows("ORIGIN")).toBe("view://localhost");
+    expect(rustOsConsts(views, "HOST_ORIGIN").windows).toBe("http://tauri.localhost");
+    expect(notWindows("HOST_ORIGIN")).toBe("tauri://localhost");
     expect(views).toContain("ACCESS_CONTROL_ALLOW_ORIGIN");
     expect(views).toContain("X_CONTENT_TYPE_OPTIONS");
   });

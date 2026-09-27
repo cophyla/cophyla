@@ -16,7 +16,8 @@ export interface Served {
 
 /**
  * What the frame may do. The same policy as the desktop shell's (`apps/ui/src-tauri/src/views.rs`)
- * with this listener's origin in place of `http://view.localhost`: no network of its own, and
+ * with this listener's origin in place of the view origin (`http://view.localhost` on Windows,
+ * `view://localhost` on macOS and Linux): no network of its own, and
  * only the page that framed it may embed it.
  */
 export function viewCsp(origin: string): string {

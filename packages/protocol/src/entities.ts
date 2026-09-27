@@ -505,6 +505,13 @@ export const ContentBlock = z.discriminatedUnion("type", [
 ]);
 export type ContentBlock = z.infer<typeof ContentBlock>;
 
+/** One thing an orchestrator's turn did or is doing, in the user's words: "Reading plan.md" while it runs, "Read plan.md" once it has. */
+export const TurnStep = z.object({
+  text: z.string().max(200),
+  status: z.enum(["running", "done", "failed"]),
+});
+export type TurnStep = z.infer<typeof TurnStep>;
+
 export const Message = z.object({
   id: MessageId,
   thread: ThreadId,
@@ -513,6 +520,8 @@ export const Message = z.object({
   source: MessageSource,
   content: z.array(ContentBlock),
   streaming: z.boolean().optional(),
+  /** An orchestrator's reply: what its turn did to get there, oldest first. */
+  steps: z.array(TurnStep).optional(),
 });
 export type Message = z.infer<typeof Message>;
 

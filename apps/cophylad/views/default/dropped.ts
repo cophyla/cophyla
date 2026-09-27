@@ -8,7 +8,9 @@
 // host page, in a process of its own, could not hand it on. Elsewhere (WebKit: macOS, Linux)
 // it asks its host by the files' names, `host.filePaths { names }`, and the shell answers
 // `{ paths }` in the names' order from the drop it saw pass into the page, once, and only while
-// the drop is fresh.
+// the drop is fresh. WebKitGTK (Linux) shows the page no dropped file at all, not even a name,
+// only an empty `text/uri-list`: there the view asks with no names, `host.filePaths {}`, and
+// the Linux shell answers all that drop's paths.
 
 /** What the frame reaches of WebView2 where the desktop app runs it. */
 export interface WebView2 {
@@ -16,14 +18,27 @@ export interface WebView2 {
   addEventListener(type: "message", listener: (ev: { data: unknown }) => void): void;
 }
 
-/** Asks the host where the files just dropped under these names are: `host.filePaths`, answered `{ paths }`. */
-export type AskHost = (names: string[]) => Promise<unknown>;
+/** Asks the host where the files just dropped under these names are, or with none all of them: `host.filePaths`, answered `{ paths }`. */
+export type AskHost = (names?: string[]) => Promise<unknown>;
 
 /** The mark on the ask and on its answer. */
 export const FILES_MESSAGE = "cophyla.filePaths";
 
 /** How long the shell has to answer: it reads the paths at once, so a longer wait is none coming. */
 export const FILES_TIMEOUT_MS = 5000;
+
+/**
+ * The links a `text/uri-list` carries, as a field puts them in: every line but the comments,
+ * with a space between. A link dragged onto a field the view took the drag for (WebKitGTK's
+ * hidden files look like a link until the drop) is put in by the view, as the field would have.
+ */
+export function linkText(list: string): string {
+  return list
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"))
+    .join(" ");
+}
 
 /** The frame's WebView2, where it has one. */
 export function webView2(win: unknown): WebView2 | undefined {
@@ -52,8 +67,15 @@ export class DroppedPaths {
     return paths;
   }
 
-  private async fromHost(files: File[]): Promise<string[]> {
-    const answer = (await this.askHost(files.map((f) => f.name))) as { paths?: unknown } | null;
+  /** The paths of files dropped where the page was shown none of them (WebKitGTK), all the drop's, from the host. */
+  async hidden(): Promise<string[]> {
+    const paths = await this.fromHost();
+    if (paths.length === 0) throw new Error("the app could not say where the files are");
+    return paths;
+  }
+
+  private async fromHost(files?: File[]): Promise<string[]> {
+    const answer = (await this.askHost(files?.map((f) => f.name))) as { paths?: unknown } | null;
     const paths = answer?.paths;
     if (!Array.isArray(paths) || !paths.every((p) => typeof p === "string")) throw new Error("the app's answer is not paths");
     return paths;

@@ -6,10 +6,13 @@
 // link is drawn as one with its address for a title, and goes nowhere: only a terminal's
 // links open (`host.openLink`). An image is its alt text: the frame has no network. The top-level blocks are
 // reconciled against the source each was read from, so a reply that streams rebuilds only
-// its last block, and a text that did not change is not read again.
+// its last block, and a text that did not change is not read again. A slot marker in the
+// text (model.ts's `slot(i)`) becomes an empty `span.slot` where it stands, in a sentence or wherever
+// else, for the caller to put a chip in: that is how a reference sits in the words around it.
 
 import { Lexer } from "./vendor/marked.mjs";
 import type { MarkedToken, Token, Tokens } from "./vendor/marked.mjs";
+import { SLOT, SLOT_OPEN } from "./model.ts";
 
 const OPTIONS = { gfm: true, breaks: true };
 
@@ -17,6 +20,22 @@ const HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 
 /** The text a container was last rendered from, and the source each top-level block was built from. */
 const sources = new WeakMap<Node, string>();
+/** The text a container shows as typed, when it has slots in it. */
+const typed = new WeakMap<Node, string>();
+
+
+/** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill. */
+function withSlots(parent: HTMLElement, text: string): void {
+  let at = 0;
+  for (const m of text.matchAll(SLOT)) {
+    if (m.index > at) parent.append(text.slice(at, m.index));
+    const span = el("span", "slot");
+    span.dataset["slot"] = m[1]!;
+    parent.append(span);
+    at = m.index + m[0].length;
+  }
+  if (at < text.length) parent.append(text.slice(at));
+}
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -39,20 +58,23 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
     switch (t.type) {
       case "text":
         if (t.tokens) inline(parent, t.tokens);
-        else parent.append(t.text);
+        else withSlots(parent, t.text);
         break;
       case "escape":
       case "html":
-        parent.append(t.text);
+        withSlots(parent, t.text);
         break;
       case "strong":
       case "em":
       case "del":
         parent.append(inline(el(t.type), t.tokens));
         break;
-      case "codespan":
-        parent.append(el("code", undefined, t.text));
+      case "codespan": {
+        const code = el("code");
+        withSlots(code, t.text);
+        parent.append(code);
         break;
+      }
       case "br":
         parent.append(el("br"));
         break;
@@ -72,7 +94,7 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
         parent.append(checkbox(t.checked));
         break;
       default:
-        parent.append(t.raw);
+        withSlots(parent, t.raw);
     }
   }
   return parent;
@@ -111,7 +133,9 @@ function block(token: Token): HTMLElement {
       const pre = el("pre");
       const lang = t.lang?.split(/\s/)[0];
       if (lang) pre.dataset["lang"] = lang;
-      pre.append(el("code", undefined, t.text));
+      const code = el("code");
+      withSlots(code, t.text);
+      pre.append(code);
       return pre;
     }
     case "blockquote":
@@ -143,10 +167,16 @@ function block(token: Token): HTMLElement {
     }
     case "hr":
       return el("hr");
-    case "html":
-      return el("p", "md-html", t.text.trimEnd());
-    default:
-      return el("p", undefined, t.raw);
+    case "html": {
+      const p = el("p", "md-html");
+      withSlots(p, t.text.trimEnd());
+      return p;
+    }
+    default: {
+      const p = el("p");
+      withSlots(p, t.raw);
+      return p;
+    }
   }
 }
 
@@ -184,5 +214,14 @@ export function renderText(container: HTMLElement, text: string, markdown: boole
     }
   }
   container.classList.remove("md");
-  if (sources.delete(container) || container.textContent !== text) container.textContent = text;
+  const was = sources.delete(container);
+  if (!text.includes(SLOT_OPEN)) {
+    typed.delete(container);
+    if (was || container.textContent !== text) container.textContent = text;
+    return;
+  }
+  if (!was && typed.get(container) === text) return;
+  typed.set(container, text);
+  container.replaceChildren();
+  withSlots(container, text);
 }

@@ -376,6 +376,7 @@
       { "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", "block": 0, "delta": { "type": "text", "text": "ne." } }
     ],
     "chat.retract": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" }],
+    "chat.progress": [{ "turn": { "steps": [{ "text": "Checked agent sessions", "status": "done" }], "thinking": true } }, { "turn": { "about": "Heard: the build agent finished", "steps": [], "thinking": false } }, {}],
     "session.state": [
       {
         "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",

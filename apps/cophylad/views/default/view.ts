@@ -36,17 +36,18 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
+import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, watchParams } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewState, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
-import { DroppedPaths, webView2 } from "./dropped.ts";
+import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
-import { TerminalView } from "./terminal.ts";
+import { copyText, TerminalView } from "./terminal.ts";
 
 const rpc = new HostRpc();
-const dropped = new DroppedPaths(webView2(window), (names) => rpc.request("host.filePaths", { names }));
+const webview = webView2(window);
+const dropped = new DroppedPaths(webview, (names) => rpc.request("host.filePaths", names ? { names } : {}));
 const state: ViewState = initialState();
 const ui: UiState = { expanded: new Set(), pinnedFocus: false, opening: new Set(), modes: new Map(), fit: false, scale: 100, folded: new Set(), directBusy: new Set(), railTab: "files", railSplit: RAIL_SPLIT.usual, openDirs: new Map(), picked: new Map() };
 const roots: Roots = {
@@ -63,10 +64,11 @@ const terminal = new TerminalView(rpc, () => draw());
 /** The width at which the rail is put away until asked for (view.css has the same). */
 const phone = matchMedia("(max-width: 640px)");
 
-/** Renders, then puts the terminal screen where the selected tab shows one. */
+/** Renders, then puts the terminal screen where the selected tab shows one, and a file a chip asked for in view. */
 function draw(opts: RenderOptions = {}): void {
   render(roots, state, ui, { ...opts, railShown: railShown() });
   syncTerminal();
+  revealListed();
 }
 
 /** Whether the rail shows: as the user left it, else beside the pane on a desk and away on a phone. */
@@ -219,6 +221,9 @@ rpc.onNotification((n) => {
       return;
     case "chat.retract":
       dispatch({ type: "chat.retract", params: n.params as { message: string } });
+      return;
+    case "chat.progress":
+      dispatch({ type: "chat.progress", params: n.params as { turn?: TurnProgress } });
       return;
     case "task.state":
       dispatch({ type: "task.state", params: n.params as Task });
@@ -1029,12 +1034,112 @@ async function killSession(session: string): Promise<void> {
   draw();
 }
 
+/** How long the pane says the tether command was copied. */
+const COPIED_MS = 8000;
+let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Sessions whose chip was pressed and whose answer is on its way: a second press waits for it. */
+const focusing = new Set<string>();
+
+/**
+ * Raises the window a session runs in. Where none shows it, the node opens none (`open: false`)
+ * and answers with the tether command that shows the session in a terminal of the user's own
+ * (a background job attached into one first): it goes on the clipboard, and the pane says so.
+ */
 async function focus(session: string): Promise<void> {
+  if (focusing.has(session)) return;
+  focusing.add(session);
   try {
-    await rpc.request("session.focus", { id: session });
+    const r = await rpc.request<{ attach?: string }>("session.focus", { id: session, open: false });
+    if (r.attach) {
+      const ok = await copyText(r.attach);
+      ui.attachCopied = { session, command: r.attach, ok };
+      clearTimeout(copiedTimer);
+      copiedTimer = setTimeout(() => {
+        ui.attachCopied = undefined;
+        draw();
+      }, COPIED_MS);
+      draw();
+    }
   } catch (e) {
     fail("focus", e);
+  } finally {
+    focusing.delete(session);
   }
+}
+
+/** How long an item a chip brought into view stays outlined. */
+const FLASH_MS = 1500;
+
+/** Brings what a chat chip names into view and outlines it a moment: a thread (or a message in it), a task, an audit row, or an open prompt. */
+function goto(kind: string, id: string, message?: string): void {
+  if (ui.selected !== undefined || ui.terminal !== undefined) select(undefined);
+  let target: HTMLElement | null = null;
+  switch (kind) {
+    case "thread":
+      target = (message !== undefined ? roots.stream.querySelector<HTMLElement>(`.message[data-message="${CSS.escape(message)}"]`) : null) ?? roots.stream.querySelector<HTMLElement>(`.thread[data-thread="${CSS.escape(id)}"]`);
+      break;
+    case "task":
+      target = roots.stream.querySelector<HTMLElement>(`.task[data-task="${CSS.escape(id)}"]`);
+      break;
+    case "audit":
+      target = roots.stream.querySelector<HTMLElement>(`.audit[data-audit="${CSS.escape(id)}"]`);
+      break;
+    case "ask":
+      // Pinned over the pane: unfolded, and its first answer takes the focus.
+      if (ui.pinnedFolded) {
+        ui.pinnedFolded = false;
+        draw();
+      }
+      target = roots.pinned.querySelector<HTMLElement>(`.ask[data-ask="${CSS.escape(id)}"]`);
+      target?.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus({ preventScroll: true });
+      break;
+  }
+  if (!target) return;
+  // Mid-pane, clear of the prompts floating over its top.
+  target.scrollIntoView({ block: "center" });
+  target.dataset["flash"] = "1";
+  const shown = target;
+  setTimeout(() => delete shown.dataset["flash"], FLASH_MS);
+}
+
+/**
+ * Shows a file in the Files panel: the tab of the agent whose folder holds it opens, with Files
+ * picked and the rail out, the folders down to it open, and the file picked and scrolled to
+ * once it is listed.
+ */
+function revealFile(node: string, path: string): void {
+  const home = fileHome(state, node, path);
+  if (!home) return;
+  const place = explorerKey(state, home.session);
+  let dirs = ui.openDirs.get(place);
+  if (!dirs) {
+    dirs = new Set();
+    ui.openDirs.set(place, dirs);
+  }
+  const parts = home.rel.split("/");
+  for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
+  if (home.rel !== "") ui.picked.set(place, home.rel);
+  ui.railTab = "files";
+  const opened = select(home.session.id);
+  // On a phone the rail was put away as the tab opened: it slides in with the files.
+  if (phone.matches) ui.rail = "open";
+  if (home.rel !== "") ui.reveal = { place, rel: home.rel };
+  draw();
+  // A tab that opened on a desk listed them already.
+  if (!opened || phone.matches) refreshExplorer();
+}
+
+/** The file a chip asked for, once its row is listed: scrolled to and focused. */
+function revealListed(): void {
+  const r = ui.reveal;
+  const s = shownExplorer();
+  if (!r || !s || explorerKey(state, s) !== r.place) return;
+  const row = roots.tabs.querySelector<HTMLElement>(`.explorer-tree .file-row[data-rel="${CSS.escape(r.rel)}"]`);
+  if (!row) return;
+  ui.reveal = undefined;
+  row.scrollIntoView({ block: "nearest" });
+  row.focus({ preventScroll: true });
 }
 
 /** Pause, resume or complete a task from its row: a `task.update` the platform confirms with `task.state`. */
@@ -1205,12 +1310,16 @@ const PATH_TYPE = "application/x-cophyla-path";
 /**
  * What a drag brings that lands as paths: an explorer row, or files and folders from the
  * desktop (Explorer, the Finder, a file manager) when the host can say where they are, since a
- * page learns only their names (dropped.ts).
+ * page learns only their names (dropped.ts). WebKitGTK shows a page no dropped file at all,
+ * only a `text/uri-list` it keeps empty ("uri"); a link dragged in has that type too, and the
+ * two are told apart at the drop, the first moment a page may read what a drag carries.
  */
-function dragKind(data: DataTransfer | null): "row" | "files" | undefined {
+function dragKind(data: DataTransfer | null): "row" | "files" | "uri" | undefined {
   if (!data) return undefined;
   if (data.types.includes(PATH_TYPE)) return "row";
-  if (state.hostFilePaths && data.types.includes("Files")) return "files";
+  if (!state.hostFilePaths) return undefined;
+  if (data.types.includes("Files")) return "files";
+  if (data.types.includes("text/uri-list") && !webview) return "uri";
   return undefined;
 }
 
@@ -1247,7 +1356,8 @@ document.addEventListener("dragover", (ev) => {
   const kind = dragKind(ev.dataTransfer);
   if (!kind) return;
   const where = dropTarget(ev.target);
-  // A text field takes a row's text itself; files it would not.
+  // A text field takes a row's text itself; files it would not, nor those WebKitGTK hid, of
+  // which it would take the first one's URI.
   if (where === undefined || (where === "field" && kind === "row")) return;
   ev.preventDefault();
   ev.dataTransfer!.dropEffect = "copy";
@@ -1258,12 +1368,30 @@ document.addEventListener("drop", (ev) => {
   if (!kind) return;
   const where = dropTarget(ev.target);
   if (where === undefined || (where === "field" && kind === "row")) return;
+  // A link has its URL in the list; files WebKitGTK hid leave the list empty. A field, which
+  // would have put the link in had the view not taken the drag, is given it; elsewhere it is
+  // the web view's.
+  const links = kind === "uri" ? ev.dataTransfer!.getData("text/uri-list") : "";
+  if (links !== "") {
+    if (where !== "field") return;
+    ev.preventDefault();
+    const text = linkText(links);
+    if (text !== "") land(where, text, ev.target as HTMLInputElement);
+    return;
+  }
   ev.preventDefault();
   if (kind === "row") {
     land(where, dropText(ev.dataTransfer!.getData(PATH_TYPE)));
     return;
   }
   const field = where === "field" ? (ev.target as HTMLInputElement) : undefined;
+  if (kind === "uri") {
+    dropped.hidden().then(
+      (paths) => land(where, dropTexts(paths), field),
+      (e: unknown) => console.warn(`the dropped files did not land: ${e instanceof Error ? e.message : String(e)}`),
+    );
+    return;
+  }
   const files = Array.from(ev.dataTransfer!.files);
   if (files.length === 0) return;
   dropped.paths(files).then(
@@ -1302,6 +1430,8 @@ function openTab(): void {
   // A Kill or End left unconfirmed on the tab before is dropped; one on its way carries on.
   if (ui.kill?.phase === "asking") ui.kill = undefined;
   if (ui.end?.phase === "asking") ui.end = undefined;
+  // A file a chip asked for belonged to the tab before.
+  ui.reveal = undefined;
   dispatch({ type: "tab.open", session: ui.selected });
   watch();
   if (ui.selected !== undefined && state.connected && loadsHistory(state)) void loadEarlier(ui.selected);
@@ -1309,9 +1439,9 @@ function openTab(): void {
   refreshExplorer();
 }
 
-/** Shows a session's tab, or the chat when `session` is undefined, and puts the cursor in its input. */
-function select(session: string | undefined): void {
-  if (session !== undefined && !state.sessions.has(session)) return;
+/** Shows a session's tab, or the chat when `session` is undefined, and puts the cursor in its input. Says whether another tab was showing. */
+function select(session: string | undefined): boolean {
+  if (session !== undefined && !state.sessions.has(session)) return false;
   const changed = session !== ui.selected || ui.terminal !== undefined;
   ui.selected = session;
   ui.terminal = undefined;
@@ -1319,6 +1449,7 @@ function select(session: string | undefined): void {
   if (changed) openTab();
   draw();
   roots.composer.querySelector<HTMLInputElement>("form:not([hidden]) input[type=text]")?.focus();
+  return changed;
 }
 
 /** Shows a bare terminal's tab: no session's events stream meanwhile. */
@@ -1351,6 +1482,12 @@ document.addEventListener("click", (ev) => {
     case "focus":
       if (target.dataset["session"]) void focus(target.dataset["session"]);
       return;
+    case "goto":
+      if (target.dataset["kind"] && target.dataset["ref"]) goto(target.dataset["kind"], target.dataset["ref"], target.dataset["message"]);
+      return;
+    case "reveal-file":
+      if (target.dataset["node"] && target.dataset["path"]) revealFile(target.dataset["node"], target.dataset["path"]);
+      return;
     case "session-kill":
       if (target.dataset["session"]) ui.kill = { session: target.dataset["session"], phase: "asking" };
       draw();
@@ -1367,9 +1504,15 @@ document.addEventListener("click", (ev) => {
     case "task-complete":
       if (target.dataset["task"]) void taskAction(target.dataset["task"], target.dataset["action"].slice("task-".length) as "pause" | "resume" | "complete");
       return;
-    case "select":
-      select(target.dataset["session"]);
+    case "select": {
+      // A prompt only its terminal answers opens the session on its terminal.
+      const session = target.dataset["session"];
+      const onTerminal = session !== undefined && target.dataset["mode"] === "terminal";
+      if (onTerminal) ui.modes.set(session, "terminal");
+      select(session);
+      if (onTerminal) terminal.focus();
       return;
+    }
     case "select-terminal":
       if (target.dataset["terminal"]) selectTerminal(target.dataset["terminal"]);
       return;

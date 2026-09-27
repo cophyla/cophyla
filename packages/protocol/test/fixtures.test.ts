@@ -37,6 +37,7 @@ const cap = read("capability.json") as {
   events: Record<string, unknown>;
   requests: Record<string, { params: unknown; results: unknown }>;
   notices: Record<string, unknown>;
+  signals: Record<string, unknown>;
 };
 add("capability.hello", registry.capability.hello, cap.hello);
 for (const [name, schema] of Object.entries(registry.capability.events)) add(`capability.events.${name}`, schema, cap.events[name]);
@@ -45,6 +46,7 @@ for (const [name, def] of Object.entries(registry.capability.requests)) {
   add(`capability.requests.${name}.result`, def.result, cap.requests[name]?.results);
 }
 for (const [name, schema] of Object.entries(registry.capability.notices)) add(`capability.notices.${name}`, schema, cap.notices[name]);
+for (const [name, schema] of Object.entries(registry.capability.signals)) add(`capability.signals.${name}`, schema, cap.signals[name]);
 
 const cli = read("client.json") as {
   requests: Record<string, { params: unknown; results: unknown }>;

@@ -475,4 +475,14 @@ export class Tether {
     if (!this.exePath) throw new Error("tether is not on this node");
     return [this.exePath, ...this.dirArgs()];
   }
+
+  /**
+   * What the user types in a terminal of their own to show a terminal there: `tether` by name
+   * where the PATH finds it (the platform puts it there), else this node's own copy.
+   */
+  attachCommand(ref: TerminalRef): string {
+    if (!this.exePath) throw new Error("tether is not on this node");
+    const bin = Bun.which("tether") ? "tether" : this.exePath;
+    return [bin, ...this.dirArgs(), "attach", ref.id].map((w) => (/[\s"'&|<>^()]/.test(w) ? `"${w}"` : w)).join(" ");
+  }
 }

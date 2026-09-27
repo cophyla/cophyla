@@ -41,7 +41,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
-import { SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange } from "./capability.ts";
+import { SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -313,7 +313,15 @@ export const clientRequests = {
     params: z.object({ id: SessionId, text: z.string() }),
     result: SendResult,
   },
-  "session.focus": { params: z.object({ id: SessionId }), result: Empty },
+  /**
+   * Raises the window a session runs in, or opens one. With `open: false` none is opened: where
+   * no window shows a session in a tether terminal, or a background job it attaches into one,
+   * `attach` is the command that shows it in a terminal of the user's own.
+   */
+  "session.focus": {
+    params: z.object({ id: SessionId, open: z.boolean().optional() }),
+    result: z.object({ attach: z.string().optional() }),
+  },
   /**
    * Ends a session by the user's hand: one cophylad started as the brain's `session.stop` would,
    * and one of the user's own too, whose process ends and whose terminal stays. A session
@@ -705,6 +713,8 @@ export const clientNotifications = {
   "chat.delta": z.object({ message: MessageId, block: z.number().int().nonnegative(), delta: ContentBlock }),
   /** A provisional reply was abandoned: no `chat.message` will take its id, so the placeholder goes. */
   "chat.retract": z.object({ message: MessageId }),
+  /** What the orchestrator is doing in the turn it is running, whole each time; `turn` absent once it is over. */
+  "chat.progress": z.object({ turn: TurnProgress.optional() }),
   /**
    * A session's row, debounced, to every client when it starts, ends or changes what it is
    * doing (its status, ask, title, intent); a change of `lastActivity` or `stats` alone

@@ -249,7 +249,7 @@ export class TerminalView {
     term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => repeatsTracking(params, term.modes.mouseTrackingMode));
     term.parser.registerOscHandler(52, (data) => {
       const text = clipboardWrite(data);
-      if (text !== undefined) copy(text);
+      if (text !== undefined) void copyText(text);
       return true;
     });
     term.attachCustomKeyEventHandler((ev) => keyed(term, ev));
@@ -373,7 +373,7 @@ export class TerminalView {
     if (!this.pressed) return;
     this.pressed = false;
     setTimeout(() => {
-      if (this.reselected && this.term?.hasSelection()) copy(this.term.getSelection());
+      if (this.reselected && this.term?.hasSelection()) void copyText(this.term.getSelection());
     });
   }
 
@@ -453,7 +453,7 @@ function keyed(term: XTerm, ev: KeyboardEvent): boolean {
   const key = ev.key.toLowerCase();
   if (key === "v") return false;
   if (key === "c" && (ev.shiftKey || term.hasSelection())) {
-    if (term.hasSelection()) copy(term.getSelection());
+    if (term.hasSelection()) void copyText(term.getSelection());
     term.clearSelection();
     ev.preventDefault();
     return false;
@@ -465,8 +465,9 @@ function keyed(term: XTerm, ev: KeyboardEvent): boolean {
  * Puts text on the clipboard. The frame may not use the Clipboard API, which its host never
  * allows it, so it answers a copy of its own instead: the browser allows that while the user's
  * last click or key is fresh. The API is tried where that fails, for a host that allows it.
+ * Says whether the text got there.
  */
-function copy(text: string): void {
+export async function copyText(text: string): Promise<boolean> {
   let done = false;
   const answer = (e: ClipboardEvent) => {
     e.clipboardData?.setData("text/plain", text);
@@ -480,7 +481,13 @@ function copy(text: string): void {
   } finally {
     document.removeEventListener("copy", answer, true);
   }
-  if (!done) navigator.clipboard?.writeText(text).catch(() => undefined);
+  if (done) return true;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function button(className: string, text: string): HTMLButtonElement {

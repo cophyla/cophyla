@@ -1033,6 +1033,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       remote: remoteModule.states(),
       account: cloud.state(),
       direct: direct.states(),
+      ...(brain?.progress ? { progress: brain.progress } : {}),
     };
   };
   const onDisconnect = (client: Node extends never ? never : { id: string }) => {

@@ -47,8 +47,8 @@ export interface ViewHostDeps {
   openLink?: (url: string) => Promise<void>;
   /** Where views' prefs are kept; absent, this page's localStorage, when it has one. */
   store?: Pick<Storage, "getItem" | "setItem">;
-  /** Where the files just dropped on a view from the desktop are, by their names, for a view's `host.filePaths`: the desktop app's shell. */
-  filePaths?: (names: string[]) => Promise<string[]>;
+  /** Where the files just dropped on a view from the desktop are, by their names or with none, for a view's `host.filePaths`: the desktop app's shell. */
+  filePaths?: (names?: string[]) => Promise<string[]>;
   onError?: (message: string) => void;
 }
 

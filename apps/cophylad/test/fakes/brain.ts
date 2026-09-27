@@ -12,7 +12,8 @@
 // result, and "$prev" the id of the previous one, so a `cite` can name the request whose
 // result it quotes. `once` runs a handler at most
 // once; `nth: n` runs it only on the nth matching event, so two handlers can share an event
-// name. `crashAfter: n` exits after n responses; `cancelOnUserMessage` sends `cancel` for
+// name. A request with `notify: true` goes out as a signal, with no id and nothing to wait
+// for. `crashAfter: n` exits after n responses; `cancelOnUserMessage` sends `cancel` for
 // every request in flight when a user message arrives. Every frame in and out
 // is appended to FAKE_BRAIN_LOG as `{dir, frame}` JSONL when set. The script file is read
 // again at every event, so a test can rewrite it once the daemon is up. Run from a release
@@ -25,7 +26,7 @@ import { createInterface } from "node:readline";
 interface Handler {
   event: string;
   match?: Record<string, string>;
-  requests: { method: string; params?: unknown }[];
+  requests: { method: string; params?: unknown; notify?: boolean }[];
   /** Run at most once. */
   once?: boolean;
   /** Run only on the nth matching event (1-based), so two handlers can share an event name. */
@@ -158,6 +159,10 @@ async function run(handler: Handler, event: unknown): Promise<void> {
   const ctx: Ctx = { event, last: undefined, ids: [], results: [] };
   for (const step of handler.requests) {
     const params = substitute(step.params, ctx);
+    if (step.notify) {
+      send({ jsonrpc: "2.0", method: step.method, params });
+      continue;
+    }
     const { id, done } = request(step.method, params);
     ctx.ids.push(id);
     const outcome = await done;

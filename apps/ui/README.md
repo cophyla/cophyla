@@ -23,7 +23,8 @@ at `-j 12`; `target/` is gitignored and reaches 3.5 GB. Pointing `CARGO_TARGET_D
 07's `target/` reuses its compiled crates and brings the first build under a minute.
 
 `bun run dev` passes `--no-dev-server`, so the host page is embedded exactly as in a build
-and served from `http://tauri.localhost`; a change under `host/` needs `bun run build:host`
+and served from the app's own scheme (`http://tauri.localhost` on Windows, `tauri://localhost`
+on macOS and Linux); a change under `host/` needs `bun run build:host`
 and a rebuild. Two things `tauri dev` does that the app itself never does: it restarts the
 app when `src-tauri/` changes by killing the app's whole process tree, cophylad included, and
 it takes that tree down when the dev session ends the same way. Run the built exe to see
@@ -93,13 +94,18 @@ icon from `versions/<v>/icons/`.
 The host page never holds the token: the shell says `hello` itself and pumps frames to the
 page as `cophylad:frame` events; the page sends through `cophylad_send`, which refuses `hello`.
 The page fetches a view with `view.get` on that connection and hands its files to
-`view_stage`; the shell serves them from memory at
-`http://view.localhost/<id>/<version>/<path>` to the `host` webview only, with
-`Content-Security-Policy: default-src 'none'; script-src http://view.localhost; style-src
-http://view.localhost 'unsafe-inline'; img-src http://view.localhost data:; font-src
-http://view.localhost; connect-src 'none'; frame-ancestors http://tauri.localhost; base-uri
-'none'; form-action 'none'`, `Access-Control-Allow-Origin: *` (a module script from an opaque
-origin is a CORS fetch) and `X-Content-Type-Options: nosniff`. The page loads the entry in
+`view_stage`; the shell serves them from memory on the `view` scheme, at
+`<view origin>/<id>/<version>/<path>`, to the `host` webview only. The web view decides the
+scheme's form: WebView2 serves it as `http://view.localhost` and the host page as
+`http://tauri.localhost` (Windows), WebKit as `view://localhost` and `tauri://localhost`
+(macOS, Linux); `ORIGIN` and `HOST_ORIGIN` in `views.rs` follow, and the host CSP's
+`frame-src` names both forms. Each file goes out with `Content-Security-Policy: default-src
+'none'; script-src <view origin>; style-src <view origin> 'unsafe-inline'; img-src <view
+origin> data:; font-src <view origin>; connect-src 'none'; frame-ancestors <host origin>;
+base-uri 'none'; form-action 'none'`, `Access-Control-Allow-Origin: *` (a module script from
+an opaque origin is a CORS fetch) and `X-Content-Type-Options: nosniff`. The URL standard
+gives `view://` an opaque origin, which matches none, so the shell tells a URL on the view
+origin by its scheme, host and port (`views::is_view`). The page loads the entry in
 `<iframe sandbox="allow-scripts allow-forms">`, so the document has an opaque origin: no
 storage, no cookies, no IPC, and by its CSP no network and nowhere for a form to submit to
 (`allow-forms` only lets a form's `submit` event fire; without it Chromium drops the
@@ -139,11 +145,16 @@ carries files, so the shell reads the paths natively as the drop passes into the
 (`dropped/macos.rs` wraps wry's `performDragOperation:` and reads the Finder's
 `NSFilenamesPboardType`, `dropped/linux.rs` reads the file URIs WebKitGTK is handed on
 `drag-data-received` and keeps them on `drag-drop`) and keeps the last drop's, then lets
-WebKit hand the drop to the page as usual. The view asks the bridge, `host.filePaths
-{ names }` with the dropped `File`s' names; the host page asks the shell (`dropped_paths`),
-which answers the paths in the names' order only when the drop is under five seconds old, has
-as many files and each name is one of its paths' own, and hands a drop over once whatever
-the answer. Tauri's own drag and drop stays off: it would take every drop from the page.
+WebKit hand the drop to the page as usual. On macOS the view asks the bridge,
+`host.filePaths { names }` with the dropped `File`s' names; the host page asks the shell
+(`dropped_paths`), which answers the paths in the names' order only when the drop is under
+five seconds old, has as many files and each name is one of its paths' own. WebKitGTK shows a
+page no dropped file at all (`DataTransfer::allowsFileAccess` is false for its drags,
+webkit.org/b/271957): the drop comes as a `text/uri-list` with nothing in it and no `Files`.
+So on Linux the view, seeing that, asks `host.filePaths {}` with no names, and the shell
+answers every path of a drop under five seconds old, in its order; elsewhere it refuses to
+answer without names. Either way it hands a drop over once, whatever the answer. Tauri's own
+drag and drop stays off: it would take every drop from the page.
 
 ### Probe results (Windows 11, WebView2 153, tauri 2.11.5)
 
@@ -163,6 +174,27 @@ Measured before any host code was written, with a probe view staged by the shell
 - `on_navigation` does not see a frame's navigation; the host CSP's `frame-src
   http://view.localhost` is what keeps a frame from navigating elsewhere.
 
+### Probe results (Linux, WebKitGTK 2.52, tauri 2.11.5)
+
+Measured in WSL on a headless X server, with a probe view set as the node's default:
+
+- A frame on `view://localhost` renders under the `tauri://localhost` page, with no CORS
+  registration of the scheme; its module scripts run, and its origin is `"null"`.
+  `postMessage` works both ways, and `frame-ancestors tauri://localhost` holds.
+- In the frame: `localStorage`, `sessionStorage` and `indexedDB` throw (`SecurityError`);
+  `document.cookie` reads empty and a write is dropped; `fetch` to `ipc://localhost`,
+  `http://ipc.localhost`, cophylad, the host's assets, the view origin and the internet are
+  refused by the CSP (`TypeError: Load failed`); `new WebSocket` throws.
+- Tauri's init script runs in the main frame only: the frame has no `__TAURI_INTERNALS__`.
+  WebKit gives every frame `window.webkit.messageHandlers.ipc`, so the frame can post to
+  Tauri's IPC, but never with the invoke key the init script holds: Tauri refuses a post
+  without it and one with a wrong key, and no command runs (a talk key posted that way
+  registered nothing).
+- `on_navigation` sees the frame's navigation, which `views::is_view` allows. A link dropped
+  where the page does not take it is loaded in the main frame by WebKit, and refused there.
+- The host page's `localStorage` on `tauri://localhost` keeps what a view saves with
+  `host.savePrefs` across a relaunch.
+
 The `srcdoc` fallback (`host/inliner.ts`) is kept and tested for a platform where a
 custom-protocol frame does not load. Its limits: the document inherits the host's CSP, so
 inlined scripts and styles need the host's per-launch nonce, and a module cannot import
@@ -174,8 +206,8 @@ Spike 07 found that a `#[tauri::command]` registered in `generate_handler!` is c
 every web view unless the app manifest names it, and nothing warns. `build.rs` declares the
 commands from `commands.txt`; `test/manifest.test.ts` fails when the Rust sources,
 `generate_handler!`, `commands.txt` and the `allow-*` grants in `capabilities/` disagree,
-when a grant goes to any window but `host`, when the host CSP lacks `frame-src
-http://view.localhost`, or when an updater plugin appears in `Cargo.toml`. Adding a command
+when a grant goes to any window but `host`, when the host CSP's `frame-src` is not both forms
+of the view origin, or when an updater plugin appears in `Cargo.toml`. Adding a command
 means adding it in all four places, and the test says which one was missed.
 
 ## Voice

@@ -1881,38 +1881,42 @@ export class Sessions implements SessionHost {
   /**
    * Raises the window a session is shown in. A session in a tether terminal is raised through
    * the window used on it most recently, and gets a window when none is on it; any other is
-   * raised through the window that owns its process.
+   * raised through the window that owns its process. With `open: false` no window is opened:
+   * where none shows a session in tether, or a background job attached into one, the answer is
+   * the command that attaches one (`attach`), for the user to run in a terminal of their own.
    */
-  async focus(id: string): Promise<void> {
+  async focus(id: string, opts: { open?: false } = {}): Promise<{ attach?: string }> {
     const rec = this.must(id);
     const term = rec.session.native.terminal;
     const tether = this.deps.tether;
     if (term && tether?.available) {
       await tether.info(term).catch(() => undefined);
       for (const w of tether.windows(term)) {
-        if (w.pid !== undefined && (await this.deps.raiser.raise(w.pid)) === "raised") return;
+        if (w.pid !== undefined && (await this.deps.raiser.raise(w.pid)) === "raised") return {};
       }
+      if (opts.open === false) return { attach: tether.attachCommand(term) };
       const opened = await this.openWindow(term, rec.session.title ?? (sessionName(rec.session.intent ?? "") || this.where(rec)), rec.session.cwd);
       if (!opened) throw new RpcError("not_found", "no window shows the session, and [tether].window opens none");
-      return;
+      return {};
     }
     if (rec.session.native.job !== undefined && rec.session.harness === "claude") {
-      await this.attachJob(rec, rec.session.native.job);
-      return;
+      const attached = await this.attachJob(rec, rec.session.native.job, opts);
+      return opts.open === false ? { attach: tether!.attachCommand(attached) } : {};
     }
     const pid = rec.session.native.pid;
     if (pid === undefined) throw new RpcError("unsupported", "the session's process is not known");
     const r = await this.deps.raiser.raise(pid);
     if (r === "unsupported") throw new RpcError("unsupported", "raising windows is not supported on this platform");
     if (r === "not_found") throw new RpcError("not_found", "no window owns the session's process");
+    return {};
   }
 
   /**
    * A background job has no window of its own: `claude attach <job>` in a tether terminal is one
    * on it, and becomes the session's terminal, shown in the apps and typed into as the user.
-   * A window opens on it when `[tether].window` says to.
+   * A window opens on it when `[tether].window` says to, unless the caller opens none (`open: false`).
    */
-  private async attachJob(rec: LiveRecord, job: string): Promise<void> {
+  private async attachJob(rec: LiveRecord, job: string, opts: { open?: false } = {}): Promise<TerminalRef> {
     const tether = this.deps.tether;
     const profile = this.deps.profiles.get(rec.session.profile);
     if (!tether?.available || !profile) throw new RpcError("unsupported", `this node cannot open a terminal on a background job; run \`claude attach ${job}\``);
@@ -1920,9 +1924,11 @@ export class Sessions implements SessionHost {
     const term = (await tether.spawn({ argv: [this.claudeBinary(profile), "attach", job], cwd: rec.session.cwd, env: this.claudeSpawnEnv(profile), labels: { app: "cophylad", "cophylad.attach": job } })).ref;
     if (rec.session.status !== "ended") this.patch(rec, { native: { ...rec.session.native, terminal: term } });
     this.log.info("background job attached in a terminal", { session: rec.session.id, job, terminal: term.id });
+    if (opts.open === false) return term;
     await this.openWindow(term, title, rec.session.cwd).catch((e: unknown) => {
       this.log.warn("no window opened on the job's terminal", { terminal: term.id, error: e instanceof Error ? e.message : String(e) });
     });
+    return term;
   }
 
   /**

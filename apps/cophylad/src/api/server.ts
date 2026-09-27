@@ -62,7 +62,7 @@ import {
   success,
   validateAccess,
 } from "@cophyla/protocol";
-import type { Access, Ask, AudioCodec, Client, ClientNotificationName, ClientNotificationParams, ClientRequestName, ClientResult, ClientSignalName, Controller, Node, NodeRecord, PairedLan, RelayAccess, RiskClass, RpcRequest, Session, Task, Terminal, Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AudioCodec, Client, ClientNotificationName, ClientNotificationParams, ClientRequestName, ClientResult, ClientSignalName, Controller, Node, NodeRecord, PairedLan, RelayAccess, RiskClass, RpcRequest, Session, Task, Terminal, TurnProgress, Workspace } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Config } from "../config/schema.ts";
 import type { Asks } from "../gate/asks.ts";
@@ -103,6 +103,8 @@ export interface InitialState {
   updates?: UpdateState[];
   /** The voice conversations in flight and the engine bootstrap, if one is running. */
   voice?: { states?: VoiceStateParams[]; setup?: VoiceSetupParams[] };
+  /** The brain's turn in progress, if one is running: a client that connects mid-turn sees what it is doing. */
+  progress?: TurnProgress;
   /** Open asks held on other nodes, sent after this node's own. */
   asks?: Ask[];
   /** Every node of the user, sent as `node.state` after the workspaces. */
@@ -345,6 +347,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("chat.message", (message) => broadcast("chat.message", { message })),
           deps.bus.on("chat.delta", (delta) => broadcast("chat.delta", delta)),
           deps.bus.on("chat.retract", (retract) => broadcast("chat.retract", retract)),
+          deps.bus.on("chat.progress", (progress) => broadcast("chat.progress", progress)),
           deps.bus.on("task.state", (task) => broadcast("task.state", task)),
           deps.bus.on("thread.state", (thread) => registry.broadcastThread(thread)),
           deps.bus.on("update.state", (state) => broadcast("update.state", state)),
@@ -398,6 +401,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }
     if (client.scopes.includes("account") && initial.account) tell("account.state", initial.account);
     if (client.scopes.includes("account")) for (const state of initial.direct ?? []) tell("direct.state", state);
+    if (initial.progress) tell("chat.progress", { turn: initial.progress });
   };
 
   /** The phone's first frame: a code for a token of its own, before it can say `hello`. */

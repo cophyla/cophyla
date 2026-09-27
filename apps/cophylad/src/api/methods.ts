@@ -145,10 +145,7 @@ export function attachMethods(deps: AttachDeps): MethodTable {
     },
     "session.focus": {
       target: (p) => p.id,
-      handler: async (p) => {
-        await deps.sessions.focus(p.id);
-        return {};
-      },
+      handler: (p) => deps.sessions.focus(p.id, p.open === false ? { open: false } : {}),
     },
     "session.stop": {
       target: (p) => p.id,

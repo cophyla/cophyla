@@ -51,7 +51,8 @@ const viewhost = new ViewHost({
   container: viewEl,
   host: streams.host,
   openLink: (url) => io.invoke<void>("open_link", { url }),
-  filePaths: (names) => io.invoke<string[]>("dropped_paths", { names }),
+  // With no names on Linux, whose web view shows a page no dropped file (dropped.rs).
+  filePaths: (names) => io.invoke<string[]>("dropped_paths", { names: names ?? null }),
   // The app has a microphone and no bar of its own: the view draws the talk button.
   talk: true,
   voice,

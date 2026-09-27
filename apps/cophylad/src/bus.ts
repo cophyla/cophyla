@@ -1,7 +1,8 @@
 // In-process notifications between daemon modules. The gate raises `ask.state` and
 // `audit.entry`; `sessions` raises `session.state` and `session.event`; `workspaces` raises
 // `workspace.state`; `chat` raises `chat.message`, `thread.state`, `user.message` and
-// `user.activity`, and brain-link's reply stream `chat.delta` and `chat.retract`; `tasks`
+// `user.activity`, brain-link's reply stream `chat.delta` and `chat.retract`, and the
+// brain's `chat.progress`; `tasks`
 // raises `task.state` and `task.ready`; `update` raises `update.state`; `editable` raises
 // `tools.changed`, `prompts.changed`, `memory.changed`, `events.changed` and
 // `view.changed`; `voice` raises `voice.state`, `voice.transcript` and
@@ -69,6 +70,8 @@ export interface BusEvents {
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;
   "chat.retract": ClientNotificationParams<"chat.retract">;
+  /** The brain's turn in progress, relayed from its `ui.progress` signal; `turn` absent once it is over. */
+  "chat.progress": ClientNotificationParams<"chat.progress">;
   "task.state": Task;
   "task.ready": TaskReadyEvent;
   "thread.state": Thread;

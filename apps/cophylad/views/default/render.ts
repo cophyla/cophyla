@@ -38,11 +38,11 @@
 // member) and its end, and Remove, asked in place; and on the desktop, for this node itself,
 // Join another computer while it is alone and Leave once it joined one.
 
-import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -81,6 +81,10 @@ export interface UiState {
   openDirs: Map<string, Set<string>>;
   /** The explorer's row the user last picked, per folder it shows. */
   picked: Map<string, string>;
+  /** A file a chip asked the Files panel to show: its row is scrolled to and focused once it is listed. */
+  reveal?: { place: string; rel: string };
+  /** The tether command a session's chip copied, as no window showed it, and whether the clipboard took it: its pane says so a while. */
+  attachCopied?: { session: string; command: string; ok: boolean };
   /** The user was working in the pinned prompts: when its ask is replaced by the next one, the focus follows. */
   pinnedFocus: boolean;
   /** The user folded the pinned prompts away to their bar's one line. */
@@ -257,6 +261,28 @@ function askSource(ask: Ask, state: ViewState): string {
   }
 }
 
+/**
+ * A chip naming a live session, as the chat's do: it opens the session's tab (`select`). Rows
+ * that name one keep it beside their words, shown in their place while the session is live.
+ */
+function sessionChip(className: string): HTMLButtonElement {
+  const chip = el("button", `chip ref ${className}`);
+  chip.type = "button";
+  chip.dataset["action"] = "select";
+  return chip;
+}
+
+/** Shows `chip` for the session `card` in place of `words`, or `words` alone when there is no live session to go to. */
+function updateSessionChip(chip: HTMLElement, words: HTMLElement, card: SessionCard | undefined, title = "Open its tab"): void {
+  setHidden(chip, card === undefined);
+  setHidden(words, card !== undefined);
+  if (!card) return;
+  const who = sessionWho(card.session);
+  setText(chip, who);
+  setData(chip, "session", card.session.id);
+  chip.title = chipTitle(who, title);
+}
+
 /** An ask is a form: a single choice answers on the click, a multiple one or a bare field on Answer (or Enter). */
 function createAsk(): HTMLElement {
   const root = el("article", "ask");
@@ -264,7 +290,7 @@ function createAsk(): HTMLElement {
   form.append(el("div", "ask-options"), el("div", "ask-extra"));
   root.append(el("div", "ask-head"), el("pre", "ask-detail"), form, el("p", "ask-note"));
   const head = root.querySelector(".ask-head")!;
-  head.append(el("span", "ask-title"), el("span", "ask-source"));
+  head.append(el("span", "ask-title"), el("span", "ask-source"), sessionChip("ask-session"));
   return root;
 }
 
@@ -326,7 +352,15 @@ function updateAsk(node: HTMLElement, ask: Ask, state: ViewState): void {
   setData(node, "type", ask.type);
   setData(node, "multiple", ask.multiple ? "1" : "0");
   setText(node.querySelector(".ask-title")!, ask.title);
-  setText(node.querySelector(".ask-source")!, askSource(ask, state));
+  const source = node.querySelector<HTMLElement>(".ask-source")!;
+  setText(source, askSource(ask, state));
+  // The session that asks, a press away; one only its terminal answers opens on the terminal, where the view can show it.
+  const card = ask.source.kind === "harness" ? state.sessions.get(ask.source.session) : undefined;
+  const chip = node.querySelector<HTMLElement>(".ask-session")!;
+  const inTerminal = card !== undefined && ask.status === "open" && ask.answerableBy.length === 0 && sessionTerminal(state, card.session) !== undefined;
+  updateSessionChip(chip, source, card, inTerminal ? "Answer it in its terminal" : "Open its tab");
+  if (inTerminal) setData(chip, "mode", "terminal");
+  else delete chip.dataset["mode"];
   const detail = node.querySelector<HTMLElement>(".ask-detail")!;
   setText(detail, ask.detail ?? "");
   setHidden(detail, !ask.detail);
@@ -1418,8 +1452,8 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
   renderRailMenu(root, state, ui);
-  // The chat tab pulses while a reply streams, and while a phone is in a conversation.
-  setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && !voiceBusy(state));
+  // The chat tab pulses while the orchestrator works or a reply streams, and while a phone is in a conversation.
+  setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && state.progress === undefined && !voiceBusy(state));
 
   const groups = selectGroups(state);
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
@@ -1654,8 +1688,11 @@ function createPane(): HTMLElement {
   const chip = el("button", "chip");
   chip.type = "button";
   chip.dataset["action"] = "focus";
-  chip.title = "Raise the terminal";
   chip.append(el("span", "dot"), el("span", "chip-harness"), el("span", "chip-profile"));
+  // The tether command the chip copied, on a line of its own under the head while it is fresh.
+  const copied = el("p", "session-copied");
+  copied.setAttribute("role", "status");
+  copied.append(el("span", "session-copied-words"), el("code", "session-copied-command"));
   // Timeline | Terminal, when the session runs in a terminal the node holds.
   const modes = el("div", "pane-mode");
   modes.setAttribute("role", "group");
@@ -1677,7 +1714,7 @@ function createPane(): HTMLElement {
   );
   const actions = el("div", "session-actions");
   actions.append(modes, kill);
-  head.append(chip, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions);
+  head.append(chip, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied);
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
@@ -1704,10 +1741,20 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
   const chip = node.querySelector<HTMLElement>(".chip")!;
   setData(chip, "session", s.id);
-  // A background job has no window of its own: the chip opens one on it.
-  const attach = s.native.job !== undefined && s.native.terminal === undefined;
-  chip.setAttribute("aria-label", `${s.harness}, ${statusWord(s)}; ${attach ? "open it in a terminal" : "raise the terminal"}`);
-  chip.title = attach ? `Open in a terminal (claude attach ${s.native.job})` : "";
+  // The window the session runs in, raised; a session in tether that no window shows, or a
+  // background job, which has none, gets the tether command that opens one copied instead.
+  const copies = s.native.terminal !== undefined || s.native.job !== undefined;
+  const word = copies ? "raise its terminal window, or copy the tether command that opens one" : "raise its terminal window";
+  chip.setAttribute("aria-label", `${s.harness}, ${statusWord(s)}; ${word}`);
+  chip.title = copies ? "Raise its terminal window, or copy the tether command that opens one" : "Raise its terminal window";
+  const copied = node.querySelector<HTMLElement>(".session-copied")!;
+  const c = ui.attachCopied?.session === s.id ? ui.attachCopied : undefined;
+  setHidden(copied, c === undefined);
+  if (c) {
+    setData(copied, "ok", c.ok ? "1" : "0");
+    setText(copied.querySelector(".session-copied-words")!, c.ok ? "Tether command copied: paste it in a terminal to open this session" : "Copy this tether command and run it in a terminal to open this session");
+    setText(copied.querySelector(".session-copied-command")!, c.command);
+  }
   setText(chip.querySelector(".chip-harness")!, s.harness);
   setText(chip.querySelector(".chip-profile")!, profileName(state, s));
   const dot = chip.querySelector<HTMLElement>(".dot")!;
@@ -1895,7 +1942,7 @@ function principalWord(e: AuditEntry, state: ViewState): string {
 function createAudit(): HTMLElement {
   const root = el("div", "audit");
   const line = el("div", "audit-line");
-  line.append(el("span", "audit-time"), el("span", "audit-who"), el("span", "audit-action"), el("span", "audit-target"), el("span", "audit-outcome"), el("span", "audit-duration"), el("button", "audit-toggle"));
+  line.append(el("span", "audit-time"), el("span", "audit-who"), sessionChip("audit-session"), el("span", "audit-action"), el("span", "audit-target"), el("span", "audit-outcome"), el("span", "audit-duration"), el("button", "audit-toggle"));
   const toggle = line.querySelector<HTMLButtonElement>(".audit-toggle")!;
   toggle.type = "button";
   toggle.dataset["action"] = "toggle";
@@ -1904,10 +1951,13 @@ function createAudit(): HTMLElement {
 }
 
 function updateAudit(node: HTMLElement, entry: AuditEntry, state: ViewState, ui: UiState): void {
+  setData(node, "audit", entry.id);
   setData(node, "decision", entry.decision);
   setData(node, "outcome", entry.outcome ?? "pending");
   setText(node.querySelector(".audit-time")!, clock(entry.at));
-  setText(node.querySelector(".audit-who")!, principalWord(entry, state));
+  const who = node.querySelector<HTMLElement>(".audit-who")!;
+  setText(who, principalWord(entry, state));
+  updateSessionChip(node.querySelector<HTMLElement>(".audit-session")!, who, entry.principal.kind === "harness" ? state.sessions.get(entry.principal.session) : undefined);
   setText(node.querySelector(".audit-action")!, entry.action);
   const target = node.querySelector<HTMLElement>(".audit-target")!;
   setText(target, entry.target ?? "");
@@ -1957,8 +2007,41 @@ function createMessage(): HTMLElement {
   const root = el("article", "message");
   const head = el("header", "message-head");
   head.append(el("span", "message-who"), el("span", "message-time"));
-  root.append(head, el("div", "message-body"));
+  root.append(head, createSteps(), el("div", "message-body"));
   return root;
+}
+
+/** What a reply's turn did, folded to one line above its words: the count and the steps, opened for the list. */
+function createSteps(): HTMLElement {
+  const root = el("details", "message-steps");
+  const summary = el("summary");
+  summary.append(el("span", "steps-count"), el("span", "steps-line"));
+  root.append(summary, el("ol", "steps-list"));
+  root.hidden = true;
+  return root;
+}
+
+function updateSteps(node: HTMLElement, steps: TurnStep[] | undefined): void {
+  const root = node.querySelector<HTMLElement>(".message-steps")!;
+  setHidden(root, !steps?.length);
+  if (!steps?.length) return;
+  setText(root.querySelector(".steps-count")!, steps.length === 1 ? "1 step" : `${steps.length} steps`);
+  setText(root.querySelector(".steps-line")!, steps.map((s) => s.text).join(" · "));
+  reconcile(
+    root.querySelector<HTMLElement>(".steps-list")!,
+    steps.map((step, i) => ({ step, i })),
+    (s) => String(s.i),
+    () => {
+      const li = el("li", "progress-step");
+      li.append(el("span", "progress-mark"), el("span", "progress-text"));
+      return li;
+    },
+    (li, { step }) => {
+      setData(li, "status", step.status);
+      setText(li.querySelector(".progress-mark")!, STEP_MARK[step.status]);
+      setText(li.querySelector(".progress-text")!, step.text);
+    },
+  );
 }
 
 const ROLE_WORD: Record<Message["role"], string> = { user: "you", orchestrator: "Cophyla", system: "system" };
@@ -1974,6 +2057,7 @@ function updateMessage(node: HTMLElement, message: Message, state: ViewState): v
   setData(node, "source", message.source);
   setText(node.querySelector(".message-who")!, ROLE_WORD[message.role]);
   setText(node.querySelector(".message-time")!, clock(message.at));
+  updateSteps(node, message.steps);
   renderBlocks(node.querySelector<HTMLElement>(".message-body")!, message.content, state, message.role !== "user");
 }
 
@@ -1982,19 +2066,60 @@ function createStreaming(): HTMLElement {
   const root = el("article", "message streaming");
   const head = el("header", "message-head");
   head.append(el("span", "message-who", "Cophyla"), el("span", "message-time"), el("span", "pulse"));
-  root.append(head, el("div", "message-body"));
+  root.append(head, createSteps(), el("div", "message-body"));
   return root;
 }
 
 function updateStreaming(node: HTMLElement, streaming: Streaming, state: ViewState): void {
   setData(node, "message", streaming.id);
   setData(node, "role", "orchestrator");
+  updateSteps(node, streaming.steps);
   renderBlocks(node.querySelector<HTMLElement>(".message-body")!, streaming.blocks.filter((b) => b !== undefined), state, true);
+}
+
+/** What the orchestrator is doing while its turn runs: why it woke when the user did not wake it, each step so far, and Thinking while a model call is out. */
+function createProgress(): HTMLElement {
+  const root = el("div", "progress");
+  root.setAttribute("role", "status");
+  root.setAttribute("aria-label", "What Cophyla is doing");
+  const now = el("div", "progress-now");
+  now.append(el("span", "pulse"), el("span", "progress-text", "Thinking…"));
+  root.append(el("div", "progress-about"), el("ol", "progress-steps"), now);
+  return root;
+}
+
+const STEP_MARK: Record<TurnStep["status"], string> = { running: "", done: "✓", failed: "✕" };
+
+function updateProgress(node: HTMLElement, progress: TurnProgress): void {
+  const about = node.querySelector<HTMLElement>(".progress-about")!;
+  setText(about, progress.about ?? "");
+  setHidden(about, progress.about === undefined);
+  const steps = node.querySelector<HTMLElement>(".progress-steps")!;
+  // Steps only ever grow within a turn, and change in place from running to done.
+  reconcile(
+    steps,
+    progress.steps.map((step, i) => ({ step, i })),
+    (s) => String(s.i),
+    () => {
+      const li = el("li", "progress-step");
+      li.append(el("span", "progress-mark"), el("span", "progress-text"));
+      return li;
+    },
+    (li, { step }) => {
+      setData(li, "status", step.status);
+      const mark = li.querySelector<HTMLElement>(".progress-mark")!;
+      setText(mark, STEP_MARK[step.status]);
+      mark.classList.toggle("pulse", step.status === "running");
+      setText(li.querySelector(".progress-text")!, step.text);
+    },
+  );
+  setHidden(steps, progress.steps.length === 0);
+  setHidden(node.querySelector<HTMLElement>(".progress-now")!, !progress.thinking);
 }
 
 function createTask(): HTMLElement {
   const root = el("div", "task");
-  root.append(el("span", "task-status"), el("span", "task-title"), el("span", "task-trigger"), el("span", "task-blocker"), el("span", "task-workspace"), el("span", "task-actions"));
+  root.append(el("span", "task-status"), el("span", "task-title"), el("span", "task-trigger"), el("span", "task-blocker"), sessionChip("task-session"), el("span", "task-workspace"), el("span", "task-actions"));
   return root;
 }
 
@@ -2029,7 +2154,9 @@ function updateTask(node: HTMLElement, task: Task, state: ViewState): void {
   const blocker = node.querySelector<HTMLElement>(".task-blocker")!;
   const word = blockerWord(task, state);
   setText(blocker, word);
-  setHidden(blocker, word === "");
+  // Waiting with an agent still at it: the agent's chip in the words' place.
+  updateSessionChip(node.querySelector<HTMLElement>(".task-session")!, blocker, task.blocker?.kind === "session" ? state.sessions.get(task.blocker.session) : undefined);
+  if (word === "") setHidden(blocker, true);
   const ws = task.workspace ? state.workspaces.get(task.workspace)?.name : undefined;
   const wsEl = node.querySelector<HTMLElement>(".task-workspace")!;
   setText(wsEl, ws ?? "");
@@ -2069,6 +2196,8 @@ function createItem(item: StreamItem): HTMLElement {
       return createMessage();
     case "streaming":
       return createStreaming();
+    case "progress":
+      return createProgress();
     case "task":
       return createTask();
   }
@@ -2086,6 +2215,8 @@ function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: U
       return updateMessage(node, item.message, state);
     case "streaming":
       return updateStreaming(node, item.streaming, state);
+    case "progress":
+      return updateProgress(node, item.progress);
     case "task":
       return updateTask(node, item.task, state);
   }

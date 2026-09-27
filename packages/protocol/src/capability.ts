@@ -1,5 +1,5 @@
 // The capability protocol: events flow into the brain, requests flow out, every request
-// crosses a gate. JSON-RPC over stdio between brain-link and the brain, and over /ws/node
+// crosses a gate; a signal out changes nothing and crosses none. JSON-RPC over stdio between brain-link and the brain, and over /ws/node
 // between primary and secondary. See architecture.md, "Capability protocol".
 
 import { z } from "zod";
@@ -17,6 +17,7 @@ import {
   NodeRole,
   ProfileLimits,
   Prompt,
+  TurnStep,
   Session,
   SessionEvent,
   SessionStatus,
@@ -376,7 +377,8 @@ export const capabilityRequests = {
     result: z.object({ hits: z.array(Hit) }),
   },
   "voice.speak": { params: z.object({ blocks: z.array(OutBlock), interrupt: z.boolean() }), result: Empty },
-  "ui.say": { params: z.object({ blocks: z.array(OutBlock) }), result: z.object({ message: MessageId }) },
+  /** `steps`: what the turn did to get here, kept with the reply. */
+  "ui.say": { params: z.object({ blocks: z.array(OutBlock), steps: z.array(TurnStep).max(64).optional() }), result: z.object({ message: MessageId }) },
   "ui.ask": {
     params: z.object({
       question: z.string(),
@@ -452,6 +454,28 @@ export const capabilityNotices = {
 } as const;
 
 export type CapabilityNoticeName = keyof typeof capabilityNotices;
+
+// ---------------------------------------------------------------------------------------
+// Signals → platform: what the brain says without a request. No response, no gate and no
+// audit row, because a signal changes nothing: it is shown and forgotten.
+
+/** The turn the brain is running, as the chat shows it while the user waits. */
+export const TurnProgress = z.object({
+  /** Why the turn runs when the user did not start it: a scheduled task, something the loop was listening for, an answer coming back. */
+  about: z.string().max(200).optional(),
+  /** What the turn has done so far, oldest first; the last may still be running. */
+  steps: z.array(TurnStep).max(64),
+  /** A model call is in flight: the loop is thinking about what to do or say next. */
+  thinking: z.boolean(),
+});
+export type TurnProgress = z.infer<typeof TurnProgress>;
+
+export const capabilitySignals = {
+  /** The turn in progress, whole each time; `turn` absent once it is over. */
+  "ui.progress": z.object({ turn: TurnProgress.optional() }),
+} as const;
+
+export type CapabilitySignalName = keyof typeof capabilitySignals;
 
 /** Error codes the capability protocol returns, and where each comes from. */
 export const capabilityErrors = {

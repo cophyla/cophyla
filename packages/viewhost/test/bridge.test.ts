@@ -200,8 +200,8 @@ describe("bridge", () => {
     expect(bareOut[0]).toMatchObject({ error: { data: { code: "unsupported" } } });
   });
 
-  test("host.filePaths says where files dropped on a view are, by their names, for any view where the host has the seam, and never reaches cophylad", async () => {
-    const asked: string[][] = [];
+  test("host.filePaths says where files dropped on a view are, by their names or with none, for any view where the host has the seam, and never reaches cophylad", async () => {
+    const asked: (string[] | undefined)[] = [];
     const toCophylad: unknown[] = [];
     const toView: RpcMessage[] = [];
     const answer = (id: string) => toView.find((f) => (f as { id: unknown }).id === id);
@@ -212,6 +212,8 @@ describe("bridge", () => {
         instance: 1,
         filePaths: async (names) => {
           asked.push(names);
+          // with no names, the whole drop (the Linux shell's answer)
+          if (!names) return ["/home/u/drop me/a.txt", "/home/u/drop me/sub folder"];
           if (names.includes("gone.txt")) throw new Error("unavailable: no files were dropped just now");
           return names.map((n) => `/home/u/drop me/${n}`);
         },
@@ -225,13 +227,16 @@ describe("bridge", () => {
     for (const [id, names] of [["r3", []], ["r4", ["../a"]], ["r5", ["a\0b"]], ["r6", [""]], ["r7", [7]], ["r8", "a.txt"], ["r9", ["x".repeat(1025)]], ["r10", Array(4097).fill("a")]] as const) {
       bridge.fromView(req(id, "host.filePaths", { names }));
     }
-    bridge.fromView(req("r11", "host.filePaths", {}));
+    bridge.fromView(req("r11", "host.filePaths", { names: null }));
+    bridge.fromView(req("r13", "host.filePaths", {}));
+    bridge.fromView(req("r14", "host.filePaths"));
     await Bun.sleep(0);
     expect(answer("r1")).toEqual({ jsonrpc: "2.0", id: "r1", result: { paths: ["/home/u/drop me/a.txt", "/home/u/drop me/b c.txt", "/home/u/drop me/café"] } });
     expect(answer("r2")).toMatchObject({ error: { data: { code: "invalid", message: expect.stringContaining("no files were dropped") } } });
     for (const id of ["r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "r11"]) expect(answer(id)).toMatchObject({ error: { data: { code: "invalid" } } });
-    // only well-formed names reach the shell
-    expect(asked).toEqual([["a.txt", "b c.txt", "café"], ["gone.txt"]]);
+    for (const id of ["r13", "r14"]) expect(answer(id)).toMatchObject({ result: { paths: ["/home/u/drop me/a.txt", "/home/u/drop me/sub folder"] } });
+    // only well-formed names, or none, reach the shell
+    expect(asked).toEqual([["a.txt", "b c.txt", "café"], ["gone.txt"], undefined, undefined]);
     expect(toCophylad).toEqual([]);
     // a host without the seam says nothing of it and answers unsupported
     const { bridge: bare, toView: bareOut } = make();

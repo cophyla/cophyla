@@ -316,6 +316,12 @@ describe("store: milestone 3 tables", () => {
     m.content = [{ type: "quote", text: "q", source: { kind: "session", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", seq: [1, 2] } }];
     s.messages.update(m);
     expect(s.messages.get(ids[9]!)).toEqual(m);
+    // A reply keeps the steps its turn took; one with none has no field.
+    expect(Object.keys(first)).not.toContain("steps");
+    m.steps = [{ text: "Checked agent sessions", status: "done" }, { text: "Reading notes.md", status: "failed" }];
+    s.messages.update(m);
+    expect(s.messages.get(ids[9]!)).toEqual(m);
+    expect(MessageSchema.safeParse(s.messages.get(ids[9]!)).success).toBe(true);
     s.close();
   });
 

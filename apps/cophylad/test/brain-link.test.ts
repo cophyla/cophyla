@@ -7,12 +7,14 @@
 // and a `chat.retract` for a reply step that ended in a tool call; a crash restarted with the
 // message sent meanwhile delivered and the brain's asks cancelled; unsupported requests
 // answered `unsupported`; the brain's listeners added unasked, their fires heard after the
-// event that caused them, and one removed by the user.
+// event that caused them, and one removed by the user; the brain's `ui.progress` signal
+// relayed as `chat.progress`, told to a client that connects mid-turn and cleared when the
+// brain exits.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AuditEntry, Hit, Message, Task } from "@cophyla/protocol";
+import type { AuditEntry, Hit, Message, Task, TurnProgress } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 import type { GeminiFake, Script } from "./fakes/gemini.ts";
@@ -391,6 +393,55 @@ describe("brain-link", () => {
     const llm = brainAudit(d).find((e) => e.action === "llm.complete")!;
     expect(llm.target).toBe("fast");
     expect(llm.outcome).toBe("ok");
+  });
+
+  test("ui.progress reaches the chat as chat.progress, is told to a client connecting mid-turn, and a brain that exits clears it", async () => {
+    const turn: TurnProgress = { steps: [{ text: "Checked agent sessions", status: "done" }, { text: "Reading plan.md", status: "running" }], thinking: false };
+    const { d, c } = await start({
+      on: [
+        {
+          event: "user.message",
+          requests: [
+            // A malformed one is dropped; the good one goes to the clients.
+            { method: "ui.progress", notify: true, params: { turn: { steps: "nope", thinking: 1 } } },
+            { method: "ui.progress", notify: true, params: { turn } },
+          ],
+        },
+      ],
+    });
+    await waitFor(() => d.brain?.state === "up");
+    await c.request("chat.send", { text: "what's the plan?" });
+    const seen = await c.next(isMethod("chat.progress"));
+    expect(seen.params).toEqual({ turn });
+    expect(d.brain!.progress).toEqual(turn);
+    // A client that says hello now hears the turn right after.
+    const late = await TestClient.connect(d.api.url);
+    try {
+      await late.hello(d.token, { name: "late" });
+      const told = await late.next(isMethod("chat.progress"));
+      expect(told.params).toEqual({ turn });
+    } finally {
+      late.close();
+    }
+    // A brain that exits mid-turn leaves nothing in progress.
+    d.brain!.kill();
+    const cleared = await c.next(isMethod("chat.progress", (p) => (p as { turn?: unknown }).turn === undefined));
+    expect(cleared.params).toEqual({});
+    expect(d.brain!.progress).toBeUndefined();
+    expect(brainAudit(d).some((e) => e.action === "ui.progress")).toBe(false);
+  });
+
+  test("a reply keeps the steps its turn took: in the chat.message, the store and chat.load", async () => {
+    const steps: TurnProgress["steps"] = [{ text: "Checked agent sessions", status: "done" }, { text: "Reading notes.md", status: "failed" }];
+    const { d, c } = await start({ on: [{ event: "user.message", requests: [{ method: "ui.say", params: { blocks: [{ type: "text", text: "Done." }], steps } }] }] });
+    await waitFor(() => d.brain?.state === "up");
+    await c.request("chat.send", { text: "anything?" });
+    const reply = await c.next(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "orchestrator"));
+    const m = (reply.params as { message: Message }).message;
+    expect(m.steps).toEqual(steps);
+    expect(d.store.messages.get(m.id)!.steps).toEqual(steps);
+    const loaded = (await c.request("chat.load", {})) as { messages: Message[] };
+    expect(loaded.messages.find((x) => x.id === m.id)!.steps).toEqual(steps);
   });
 
   /** Every placeholder a client saw ended: in the `chat.message` that took its id, or in a `chat.retract`. */

@@ -22,11 +22,13 @@
 // pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
 // own, so a view with the voice scope may draw one that holds `voice.ptt`. `host.filePaths`
 // says where the files just dropped on the view from the desktop are, by the names the view
-// saw them under (a page learns only a dropped file's name), to any view, and only where the
-// host has the seam, which `filePaths` in `host.ready` says; the shell hands a drop over
-// once, and only while it is fresh. On Windows the view asks WebView2 itself instead, past
-// this bridge: WebView2 grants a dropped file to the frame's process alone, so only the frame
-// can hand it on (apps/ui/src-tauri/src/dropped.rs). DOM-free.
+// saw them under (a page learns only a dropped file's name), or with no names where the page
+// saw none (WebKitGTK, which shows a page no dropped file: the Linux shell answers all the
+// drop's paths then, and no other does), to any view, and only where the host has the seam,
+// which `filePaths` in `host.ready` says; the shell hands a drop over once, and only while it
+// is fresh. On Windows the view asks WebView2 itself instead, past this bridge: WebView2
+// grants a dropped file to the frame's process alone, so only the frame can hand it on
+// (apps/ui/src-tauri/src/dropped.rs). DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -95,8 +97,8 @@ export interface BridgeConfig {
   openLink?: (url: string) => Promise<void>;
   /** Keeps the view's prefs (`host.savePrefs`); absent, it answers `unsupported`. */
   prefs?: PrefsStore;
-  /** Where the files just dropped on the view are, by their names, in their order (`host.filePaths`); absent, it answers `unsupported`. */
-  filePaths?: (names: string[]) => Promise<string[]>;
+  /** Where the files just dropped on the view are, by their names, in their order, or with no names all of them where the shell allows it (`host.filePaths`); absent, it answers `unsupported`. */
+  filePaths?: (names?: string[]) => Promise<string[]>;
 }
 
 /** The requests a view may make of the host itself, by method. */
@@ -116,9 +118,10 @@ export function viewPrefs(params: unknown): ViewPrefs {
 /** The most files one `host.filePaths` may name. */
 export const DROPPED_MAX = 4096;
 
-/** The names a `host.filePaths` asks about: 1 to `DROPPED_MAX` file names, each 1 to 1024 characters with no slash or NUL. */
-export function droppedNames(params: unknown): string[] {
+/** The names a `host.filePaths` asks about: none, or 1 to `DROPPED_MAX` file names, each 1 to 1024 characters with no slash or NUL. */
+export function droppedNames(params: unknown): string[] | undefined {
   const names = (params as { names?: unknown } | null)?.names;
+  if (names === undefined) return undefined;
   if (!Array.isArray(names) || names.length === 0 || names.length > DROPPED_MAX) throw new Error(`host.filePaths needs names, 1 to ${DROPPED_MAX} of them`);
   for (const name of names) {
     if (typeof name !== "string" || name === "" || name.length > 1024 || /[/\0]/.test(name)) throw new Error("a dropped file's name is not a file name");
@@ -164,7 +167,7 @@ export class Bridge {
   /** `host.savePrefs`, and the prefs `host.ready` carries. */
   private prefs?: PrefsStore;
   private savePrefs?: HostRequests;
-  /** `host.filePaths`: the paths, once the names are file names. */
+  /** `host.filePaths`: the paths, once the names, if any, are file names. */
   private filePaths?: HostRequests;
   private n = 0;
   /** wire id → the view's own id and method. */

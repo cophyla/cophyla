@@ -309,6 +309,7 @@
     },
     "ui.say": {
       "params": [
+        { "blocks": [{ "type": "text", "text": "Next is the progress line." }], "steps": [{ "text": "Read plan.md", "status": "done" }] },
         {
           "blocks": [
             { "type": "text", "text": "Here is what it said:" },
@@ -383,6 +384,14 @@
     "llm.delta": [
       { "id": 12, "delta": { "type": "text", "text": "Nothing " } },
       { "id": 12, "delta": { "type": "tool_use", "id": "tu_1", "name": "Tasks", "inputJson": "{\"action\":\"List\"}" } }
+    ]
+  },
+  "signals": {
+    "ui.progress": [
+      { "turn": { "steps": [], "thinking": true } },
+      { "turn": { "steps": [{ "text": "Checked agent sessions", "status": "done" }, { "text": "Reading plan.md", "status": "running" }], "thinking": false } },
+      { "turn": { "about": "Scheduled: morning summary", "steps": [{ "text": "Couldn't read notes.md", "status": "failed" }], "thinking": true } },
+      {}
     ]
   }
 }

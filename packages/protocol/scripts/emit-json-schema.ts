@@ -28,6 +28,7 @@ for (const [name, def] of Object.entries(registry.capability.requests)) {
   emit(["capability", "requests", name, "result"], def.result);
 }
 for (const [name, schema] of Object.entries(registry.capability.notices)) emit(["capability", "notices", name], schema);
+for (const [name, schema] of Object.entries(registry.capability.signals)) emit(["capability", "signals", name], schema);
 for (const [name, def] of Object.entries(registry.client.requests)) {
   emit(["client", "requests", name, "params"], def.params);
   emit(["client", "requests", name, "result"], def.result);

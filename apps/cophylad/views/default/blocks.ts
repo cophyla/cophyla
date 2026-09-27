@@ -1,12 +1,19 @@
 // A message's content blocks as DOM: text as markdown when a model wrote it and as typed
 // when the user did (markdown.ts; never parsed as HTML either way), quotes as blockquotes with
-// a source chip, their words as they were at the source (a session chip opens the session's
-// tab; file, thread and memory chips name where the words came from; an unresolved quote is
-// marked), refs as chips. Reconciled by block index so a streaming message grows in place.
+// a source chip, their words as they were at the source, refs as chips (an unresolved quote is
+// marked). A chip goes to what it names, in the view: a session's opens its tab, a file's shows
+// it in the Files panel of the agent whose folder holds it, and a thread's, a task's, a prompt's
+// or an audit row's brings that into view in the chat; one whose target the view does not have
+// (an ended session, a thread not loaded, a memory) only names it. A run of text and refs is
+// one flow, the refs' chips standing in the sentence where the model put them, not on lines
+// of their own; a quote stands apart. A chip's words are cut short past a width, and its
+// title then says them whole. Reconciled by index, a flow and a quote each one part, so a
+// streaming message grows in place.
 
 import type { ContentBlock, Source } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import type { ViewState } from "./model.ts";
+import { chipTitle, fileHome, parts, sessionWho } from "./model.ts";
+import type { Part, ViewState } from "./model.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
@@ -32,27 +39,56 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** What a session chip does: open the session's tab, while it has one. An ended session left the rail, so its chip only names it. */
-function sessionAction(session: string, state: ViewState): { title: string; action?: string; session?: string } {
-  return state.sessions.has(session) ? { title: "Open its tab", action: "select", session } : { title: "This session has ended" };
+/** What a chip says and does: its action, and what the action goes to, ride on it as data. */
+interface Chip {
+  text: string;
+  title: string;
+  action?: "select" | "goto" | "reveal-file";
+  /** `select`: the session whose tab opens. A quote's also carries the first seq quoted, for a later jump to it. */
+  session?: string;
+  seq?: number;
+  /** `goto`: the thread, task, prompt or audit row brought into view, by the chip's kind; a thread's may name a message in it. */
+  ref?: string;
+  message?: string;
+  /** `reveal-file`: the file the Files panel shows. */
+  node?: string;
+  path?: string;
 }
 
-/** What a source chip says and does. A session chip carries the first seq quoted, for a later jump to it. */
-function sourceChip(source: Source, state: ViewState): { text: string; title: string; action?: string; session?: string; seq?: number } {
+const CHIP_DATA = ["action", "session", "seq", "ref", "message", "node", "path"] as const;
+
+/** A session's chip: it opens the session's tab, while it has one. An ended session left the rail, so its chip only names it. */
+function sessionChip(session: string, state: ViewState, suffix = ""): Chip {
+  const card = state.sessions.get(session);
+  if (!card) return { text: `session ${shortId(session)}${suffix}`, title: "This session has ended" };
+  return { text: `${sessionWho(card.session)}${suffix}`, title: "Open its tab", action: "select", session };
+}
+
+/** A file's chip: it shows the file in the Files panel of the agent whose folder holds it, when one does. */
+function fileChip(node: string, path: string, suffix: string, state: ViewState): Chip {
+  const text = `${baseName(path)}${suffix}`;
+  return fileHome(state, node, path) ? { text, title: `Show it in Files: ${path}`, action: "reveal-file", node, path } : { text, title: path };
+}
+
+/** A chip for something the chat shows: it brings it into view while the chat has it. */
+function gotoChip(text: string, id: string, shown: boolean, title: string): Chip {
+  return shown ? { text, title, action: "goto", ref: id } : { text, title: id };
+}
+
+function sourceChip(source: Source, state: ViewState): Chip {
   switch (source.kind) {
     case "session": {
-      const card = state.sessions.get(source.session);
-      const name = card ? (card.session.title ?? card.session.intent) : undefined;
-      const who = card ? `${card.session.harness}${name ? `: ${name}` : ""}` : `session ${shortId(source.session)}`;
       const range = source.seq ? ` · ${source.seq[0] === source.seq[1] ? `#${source.seq[0]}` : `#${source.seq[0]}–${source.seq[1]}`}` : "";
-      return { text: `${who}${range}`, ...sessionAction(source.session, state), ...(source.seq ? { seq: source.seq[0] } : {}) };
+      return { ...sessionChip(source.session, state, range), ...(source.seq ? { seq: source.seq[0] } : {}) };
     }
     case "file": {
       const range = source.lines ? `:${source.lines[0]}${source.lines[1] !== source.lines[0] ? `-${source.lines[1]}` : ""}` : "";
-      return { text: `${baseName(source.path)}${range}`, title: source.path };
+      return fileChip(source.node, source.path, range, state);
     }
-    case "thread":
-      return { text: `thread ${shortId(source.thread)}`, title: source.thread };
+    case "thread": {
+      const chip = gotoChip(`thread ${shortId(source.thread)}`, source.thread, state.threads.has(source.thread), "Show the thread");
+      return chip.action && source.message && state.messages.has(source.message) ? { ...chip, title: "Show the message", message: source.message } : chip;
+    }
     case "memory": {
       const range = source.lines ? `:${source.lines[0]}${source.lines[1] !== source.lines[0] ? `-${source.lines[1]}` : ""}` : "";
       return { text: `memory ${source.name}${range}`, title: source.name };
@@ -60,26 +96,37 @@ function sourceChip(source: Source, state: ViewState): { text: string; title: st
   }
 }
 
-function refChip(block: Extract<ContentBlock, { type: "ref" }>, state: ViewState): { text: string; title: string; action?: string; session?: string } {
-  if (block.session) {
-    const card = state.sessions.get(block.session);
-    const name = card ? (card.session.title ?? card.session.intent) : undefined;
-    return { text: card ? `${card.session.harness}${name ? `: ${name}` : ""}` : `session ${shortId(block.session)}`, ...sessionAction(block.session, state) };
-  }
+function refChip(block: Extract<ContentBlock, { type: "ref" }>, state: ViewState): Chip {
+  if (block.session) return sessionChip(block.session, state);
   if (block.task) {
     const task = state.tasks.get(block.task);
-    return { text: task ? task.title : `task ${shortId(block.task)}`, title: block.task };
+    return gotoChip(task ? task.title : `task ${shortId(block.task)}`, block.task, task !== undefined, "Show the task");
   }
-  if (block.thread) return { text: `thread ${shortId(block.thread)}`, title: block.thread };
-  if (block.ask) return { text: `prompt ${shortId(block.ask)}`, title: block.ask };
-  if (block.audit) return { text: `audit ${shortId(block.audit)}`, title: block.audit };
-  if (block.file) return { text: `${baseName(block.file.path)}${block.file.line ? `:${block.file.line}` : ""}`, title: block.file.path };
+  if (block.thread) return gotoChip(`thread ${shortId(block.thread)}`, block.thread, state.threads.has(block.thread), "Show the thread");
+  // A prompt shows while it is open, pinned over the pane.
+  if (block.ask) return gotoChip(`prompt ${shortId(block.ask)}`, block.ask, state.asks.get(block.ask)?.status === "open", "Show the prompt");
+  if (block.audit) return gotoChip(`audit ${shortId(block.audit)}`, block.audit, state.audit.has(block.audit), "Show the audit row");
+  if (block.file) return fileChip(block.file.node, block.file.path, block.file.line ? `:${block.file.line}` : "", state);
   return { text: "ref", title: "" };
 }
 
-function createBlock(block: ContentBlock): HTMLElement {
-  switch (block.type) {
-    case "text":
+/** Puts what a chip says and does on its button; one with no action is disabled, and so is every one while the node is away. */
+function applyChip(chip: HTMLButtonElement, c: Chip, state: ViewState): void {
+  setText(chip, c.text);
+  chip.title = chipTitle(c.text, c.title);
+  for (const name of CHIP_DATA) {
+    const value = c[name];
+    if (value !== undefined) setData(chip, name, String(value));
+    else delete chip.dataset[name];
+  }
+  chip.disabled = !c.action || !state.connected;
+}
+
+type Ref = Extract<ContentBlock, { type: "ref" }>;
+
+function createPart(part: Part): HTMLElement {
+  switch (part.type) {
+    case "flow":
       return el("div", "block-text");
     case "quote": {
       const q = el("blockquote", "quote");
@@ -88,63 +135,48 @@ function createBlock(block: ContentBlock): HTMLElement {
       chip.type = "button";
       return q;
     }
-    case "ref": {
-      const chip = el("button", "chip ref");
-      chip.type = "button";
-      return chip;
-    }
     case "audio":
       return el("span", "block-audio", "[audio]");
   }
 }
 
-function updateBlock(node: HTMLElement, block: ContentBlock, state: ViewState, markdown: boolean): void {
-  switch (block.type) {
-    case "text":
-      renderText(node, block.text, markdown);
+function updateRef(chip: HTMLButtonElement, block: Ref, state: ViewState): void {
+  setData(chip, "kind", block.session ? "session" : block.task ? "task" : block.thread ? "thread" : block.ask ? "ask" : block.audit ? "audit" : "file");
+  applyChip(chip, refChip(block, state), state);
+}
+
+/** The flow's text, then a chip in each of its slots; a slot the text lost (inside a link's address) gets one at the end. */
+function updateFlow(node: HTMLElement, part: Extract<Part, { type: "flow" }>, state: ViewState, markdown: boolean): void {
+  renderText(node, part.text, markdown);
+  part.refs.forEach((block, i) => {
+    let holder = node.querySelector<HTMLElement>(`.slot[data-slot="${i}"]`);
+    if (!holder) {
+      holder = el("span", "slot");
+      holder.dataset["slot"] = String(i);
+      node.append(holder);
+    }
+    let chip = holder.firstElementChild as HTMLButtonElement | null;
+    if (!chip) {
+      chip = el("button", "chip ref");
+      chip.type = "button";
+      holder.append(chip);
+    }
+    updateRef(chip, block, state);
+  });
+}
+
+function updatePart(node: HTMLElement, part: Part, state: ViewState, markdown: boolean): void {
+  switch (part.type) {
+    case "flow":
+      updateFlow(node, part, state, markdown);
       return;
     case "quote": {
-      setText(node.querySelector(".quote-text")!, block.text);
-      setData(node, "unresolved", block.unresolved ? "1" : "0");
+      setText(node.querySelector(".quote-text")!, part.text);
+      setData(node, "unresolved", part.unresolved ? "1" : "0");
       const chip = node.querySelector<HTMLButtonElement>(".chip")!;
-      if (block.source) {
-        const c = sourceChip(block.source, state);
-        setText(chip, c.text);
-        chip.title = c.title;
-        setData(chip, "kind", block.source.kind);
-        if (c.action) {
-          setData(chip, "action", c.action);
-          if (c.session) setData(chip, "session", c.session);
-        } else {
-          delete chip.dataset["action"];
-          delete chip.dataset["session"];
-        }
-        if (c.seq !== undefined) setData(chip, "seq", String(c.seq));
-        else delete chip.dataset["seq"];
-        chip.hidden = false;
-      } else {
-        setText(chip, block.unresolved ? "source unknown" : "");
-        chip.title = "";
-        setData(chip, "kind", "none");
-        delete chip.dataset["action"];
-        chip.hidden = !block.unresolved;
-      }
-      chip.disabled = !chip.dataset["action"] || !state.connected;
-      return;
-    }
-    case "ref": {
-      const c = refChip(block, state);
-      setText(node, c.text);
-      node.title = c.title;
-      setData(node, "kind", block.session ? "session" : block.task ? "task" : block.thread ? "thread" : block.ask ? "ask" : block.audit ? "audit" : "file");
-      if (c.action) {
-        setData(node, "action", c.action);
-        if (c.session) setData(node, "session", c.session);
-      } else {
-        delete node.dataset["action"];
-        delete node.dataset["session"];
-      }
-      (node as HTMLButtonElement).disabled = !c.action || !state.connected;
+      setData(chip, "kind", part.source?.kind ?? "none");
+      applyChip(chip, part.source ? sourceChip(part.source, state) : { text: part.unresolved ? "source unknown" : "", title: "" }, state);
+      chip.hidden = !part.source && !part.unresolved;
       return;
     }
     case "audio":
@@ -152,19 +184,20 @@ function updateBlock(node: HTMLElement, block: ContentBlock, state: ViewState, m
   }
 }
 
-/** Keeps `container`'s children in step with the blocks, by index; a block that changed type is rebuilt. Text is markdown when `markdown`. */
+/** Keeps `container`'s children in step with the blocks' parts, by index; a part that changed type is rebuilt. Text is markdown when `markdown`. */
 export function renderBlocks(container: HTMLElement, blocks: ContentBlock[], state: ViewState, markdown: boolean): void {
   const children = Array.from(container.children) as HTMLElement[];
-  blocks.forEach((block, i) => {
+  const list = parts(blocks);
+  list.forEach((part, i) => {
     let node = children[i];
-    if (!node || node.dataset["type"] !== block.type) {
-      const fresh = createBlock(block);
-      fresh.dataset["type"] = block.type;
+    if (!node || node.dataset["type"] !== part.type) {
+      const fresh = createPart(part);
+      fresh.dataset["type"] = part.type;
       if (node) node.replaceWith(fresh);
       else container.append(fresh);
       node = fresh;
     }
-    updateBlock(node, block, state, markdown);
+    updatePart(node, part, state, markdown);
   });
-  for (const stale of children.slice(blocks.length)) stale.remove();
+  for (const stale of children.slice(list.length)) stale.remove();
 }

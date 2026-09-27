@@ -304,6 +304,7 @@ export const notificationFilters = {
   "chat.message": "global",
   "chat.delta": "global",
   "chat.retract": "global",
+  "chat.progress": "global",
   "session.state": (p) => sessionTarget(p),
   "session.event": (p) => ({ session: p.session }),
   "terminal.state": (p) => terminalTarget(p),

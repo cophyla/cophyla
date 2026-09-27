@@ -3,15 +3,17 @@
 // brain's own hello and protocol range; a brain outside the range is refused. Every request
 // from the brain crosses the gate with `principal: brain`; a held one is reported as
 // `pending`; `cancel` withdraws one in flight; `llm.delta` streams a completion back, and
-// the completions flagged `reply` double as the view's provisional reply. A brain that exits is restarted with backoff, its
-// open asks cancelled and its in-flight requests aborted; events raised while it is down wait
+// the completions flagged `reply` double as the view's provisional reply. The brain's one
+// signal, `ui.progress`, is the turn it is running, relayed to the chat as `chat.progress`
+// and kept for a client that connects mid-turn. A brain that exits is restarted with backoff, its
+// open asks cancelled, its in-flight requests aborted and its turn's progress cleared; events raised while it is down wait
 // in an outbox and are flushed after the next handshake. The brain is located again before
 // every spawn, after the update module has promoted a staged release, and an installed or
 // bundled brain is verified against its signed release entry first: one that fails is
 // refused and the previous one put back.
 
-import { CapabilityHello, capabilityRequests, PROTOCOL_VERSION, RpcError, ulid } from "@cophyla/protocol";
-import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId } from "@cophyla/protocol";
+import { CapabilityHello, capabilityRequests, capabilitySignals, PROTOCOL_VERSION, RpcError, ulid } from "@cophyla/protocol";
+import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId, TurnProgress } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Chat } from "../chat/index.ts";
 import type { BrainConfig } from "../config/schema.ts";
@@ -100,6 +102,7 @@ export class BrainLink {
   private starts = 0;
   private restarting = false;
   private locationValue?: BrainLocation;
+  private progressValue?: TurnProgress;
 
   constructor(deps: BrainLinkDeps) {
     this.deps = deps;
@@ -147,6 +150,11 @@ export class BrainLink {
   /** Where the last spawn found the brain. */
   get location(): BrainLocation | undefined {
     return this.locationValue;
+  }
+
+  /** The turn the brain is running, as its last `ui.progress` said; absent between turns. */
+  get progress(): TurnProgress | undefined {
+    return this.progressValue;
   }
 
   private now(): number {
@@ -206,7 +214,7 @@ export class BrainLink {
       env: this.brainEnv(),
       log,
       onRequest: (method, params, id) => this.onRequest(rpc, method, params, id),
-      onNotification: (method, params) => log.debug("notification from the brain ignored", { method, params }),
+      onNotification: (method, params) => this.onSignal(rpc, method, params),
       onExit: (code, signal) => this.onExit(rpc, code, signal),
       onStderr: (line) => log.info("brain", { line: line.slice(0, 500) }),
     });
@@ -258,6 +266,7 @@ export class BrainLink {
       f.controller.abort();
     }
     this.stream.reset();
+    this.setProgress(undefined);
     if (this.restarting && !this.stopping) {
       this.restarting = false;
       this.stateValue = "down";
@@ -315,6 +324,29 @@ export class BrainLink {
   /** Kills the brain process; the link restarts it as after any exit. For tests and `talk.ts`. */
   kill(): void {
     this.rpc?.kill();
+  }
+
+  // --- signals -----------------------------------------------------------------------------
+
+  /** A notification from the brain: `ui.progress` is shown, anything else is ignored. */
+  private onSignal(rpc: StdioRpc, method: string, params: unknown): void {
+    if (this.rpc !== rpc) return;
+    if (method !== "ui.progress") {
+      this.log.debug("notification from the brain ignored", { method });
+      return;
+    }
+    const parsed = capabilitySignals["ui.progress"].safeParse(params ?? {});
+    if (!parsed.success) {
+      this.log.debug("bad ui.progress from the brain", { error: parsed.error.message.slice(0, 300) });
+      return;
+    }
+    this.setProgress(parsed.data.turn);
+  }
+
+  private setProgress(turn: TurnProgress | undefined): void {
+    if (turn === undefined && this.progressValue === undefined) return;
+    this.progressValue = turn;
+    this.deps.bus.emit("chat.progress", turn ? { turn } : {});
   }
 
   // --- events ------------------------------------------------------------------------------

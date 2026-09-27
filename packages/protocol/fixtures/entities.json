@@ -308,6 +308,7 @@
     }
   ],
   "Message": [
+    { "id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB9", "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "at": 1758196800000, "role": "orchestrator", "source": "brain", "content": [{ "type": "text", "text": "Next is the progress line." }], "steps": [{ "text": "Checked agent sessions", "status": "done" }, { "text": "Reading notes.md", "status": "failed" }] },
     {
       "id": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4",
       "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",

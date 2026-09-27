@@ -403,6 +403,38 @@ describe("Claude's background jobs and agents screen", () => {
     expect(mini.sessions.get(id)?.status).toBe("ended");
   });
 
+  test("focus that opens no window (`open: false`): a window on it is raised, and with none the answer is the tether command that opens one", async () => {
+    alive.add(8711);
+    writeRegistry(registry, { pid: 8711, sessionId: "job-y-0000", cwd, status: "idle", kind: "bg", jobId: "joby" });
+    await mini.sessions.tick();
+    const rec = mini.sessions.find("claude", "job-y-0000")!;
+    runs.length = 0;
+    // A job has no terminal: it is attached into one, and no window opens on it.
+    const first = await mini.sessions.focus(rec.session.id, { open: false });
+    const att = [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.attach"] === "joby")!;
+    expect(att.spawn.argv.slice(1)).toEqual(["attach", "joby"]);
+    expect(mini.sessions.get(rec.session.id)!.native.terminal).toEqual({ host: fake.host.host, id: att.id });
+    expect(runs.some((a) => a[0] === "open")).toBe(false);
+    // `tether` by name where the PATH has it, else the node's copy; the state folder the node runs it with.
+    expect(first.attach).toMatch(new RegExp(`^(tether|\\S*tether(\\.exe)?|".*tether(\\.exe)?") --dir .+ attach ${att.id}$`));
+    // A window on its terminal: raised, and nothing to copy.
+    att.attachWindow(4711);
+    windowPids.add(4711);
+    await waitFor(() => tether.windows(mini.sessions.get(rec.session.id)!.native.terminal!).length > 0);
+    expect(await mini.sessions.focus(rec.session.id, { open: false })).toEqual({});
+    expect(raised.at(-1)).toBe(4711);
+    // The window gone: the command again, still no window opened and no second attach.
+    windowPids.delete(4711);
+    att.clients = [];
+    expect((await mini.sessions.focus(rec.session.id, { open: false })).attach).toBe(first.attach);
+    expect(runs.some((a) => a[0] === "open")).toBe(false);
+    expect([...fake.sessions.values()].filter((x) => x.spawn.labels["cophylad.attach"] === "joby")).toHaveLength(1);
+    // One outside tether is raised through its process as ever: with none known, `unsupported`.
+    const outside = mini.sessions.ensure({ harness: "claude", nativeId: "outside", profile: mini.profiles.byHarness("claude")[0]!.id, cwd, transport: "pipe" });
+    await expect(mini.sessions.focus(outside.session.id, { open: false })).rejects.toMatchObject({ code: "unsupported" });
+    att.exit(0);
+  });
+
   test("a window parked on the agents screen: its terminal is Claude's agents, until the window takes a conversation again", async () => {
     const shell = fake.add({ argv: ["pwsh.exe"], cwd }, 8801);
     chains.set(8802, [

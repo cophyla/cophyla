@@ -12,11 +12,12 @@
 // into a terminal joined to its turn, and how a followed screen picks its font. Which
 // sessions the user can kill from their pane, and the workspaces New terminal offers. The
 // prompts pinned over the pane, less a session's own while its terminal shows.
-// The explorer: its folders as listed, its rows, the paths they drag, and the repository's line.
+// The explorer: its folders as listed, its rows, the paths they drag, and the repository's line;
+// which agent's Files panel shows a file a chip names, and what a chip calls a session.
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -440,6 +441,35 @@ describe("default view model", () => {
     apply(s, { type: "chat.retract", params: { message: "msg_1" } });
     apply(s, { type: "chat.retract", params: { message: "msg_x" } });
     expect(s.messages.size).toBe(1);
+  });
+
+  test("the orchestrator's turn shows last while it works, gives way to its streaming reply, and goes when it ends or the node does", () => {
+    const s = ready();
+    apply(s, { type: "chat.message", params: { message: message("msg_1", "thr_1", 100, "user", "What's the plan?") } });
+    const turn = { steps: [{ text: "Checked agent sessions", status: "done" as const }], thinking: true };
+    apply(s, { type: "chat.progress", params: { turn } });
+    const items = selectStream(s).items;
+    expect(items.map((i) => i.kind)).toEqual(["thread", "message", "progress"]);
+    expect(keyOf(items[2]!)).toBe("progress");
+    // A later message still comes before it: it is always what is happening now.
+    apply(s, { type: "chat.message", params: { message: message("msg_2", "thr_1", 9e15, "user", "and the tests?") } });
+    expect(selectStream(s).items.map((i) => i.kind).at(-1)).toBe("progress");
+    // While the reply streams, the reply is what it is doing, and it carries the steps folded above it.
+    apply(s, { type: "chat.progress", params: { turn: { steps: [...turn.steps, { text: "Reading plan.md", status: "running" }], thinking: true } } });
+    apply(s, { type: "chat.delta", params: { message: "msg_3", block: 0, delta: { type: "text", text: "The plan" } } });
+    expect(selectStream(s).items.map((i) => i.kind)).not.toContain("progress");
+    expect(s.streaming.get("msg_3")!.steps).toEqual(turn.steps);
+    apply(s, { type: "chat.retract", params: { message: "msg_3" } });
+    expect(selectStream(s).items.map((i) => i.kind).at(-1)).toBe("progress");
+    // A turn with nothing to show yet shows nothing.
+    apply(s, { type: "chat.progress", params: { turn: { steps: [], thinking: false } } });
+    expect(selectStream(s).items.map((i) => i.kind)).not.toContain("progress");
+    apply(s, { type: "chat.progress", params: {} });
+    expect(s.progress).toBeUndefined();
+    expect(selectStream(s).items.map((i) => i.kind)).not.toContain("progress");
+    apply(s, { type: "chat.progress", params: { turn } });
+    apply(s, { type: "host.state", params: { connected: false } });
+    expect(s.progress).toBeUndefined();
   });
 
   test("a second chat.load prepends an earlier thread with its divider; a short page sets exhausted", () => {
@@ -1639,5 +1669,34 @@ describe("default view: the explorer", () => {
     expect(filesErrorWords("unsupported", "session.files is not served over the node link")).toBe("That computer cannot show its files yet: update Cophyla there.");
     expect(filesErrorWords("denied", "session.files reaches past this access")).toBe("This view may not list these files.");
     expect(filesErrorWords("not_found", "C:\\x: no such folder")).toBe("C:\\x: no such folder");
+  });
+
+  test("a file chip's home: the live agent whose folder holds the file, the innermost first, then the one worked in last", () => {
+    const s = ready();
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    apply(s, { type: "session.state", params: session("sess_repo", 1, { cwd: "C:\\D\\site", lastActivity: 5 }) });
+    apply(s, { type: "session.state", params: session("sess_repo2", 2, { cwd: "c:/d/site/", lastActivity: 9 }) });
+    apply(s, { type: "session.state", params: session("sess_app", 3, { cwd: "C:\\D\\site\\apps\\web", lastActivity: 1 }) });
+    apply(s, { type: "session.state", params: session("sess_far", 4, { cwd: "C:\\D\\site", node: OTHER, lastActivity: 99 }) });
+    // The rest of the path is spelled as it was written, the folder matched whatever the case or the slashes.
+    expect(fileHome(s, NODE, "C:\\D\\Site\\src\\main.ts")).toEqual({ session: s.sessions.get("sess_repo2")!.session, rel: "src/main.ts" });
+    expect(fileHome(s, NODE, "C:/D/site/apps/web/index.html")?.session.id).toBe("sess_app");
+    expect(fileHome(s, NODE, "C:\\D\\site")?.rel).toBe("");
+    expect(fileHome(s, OTHER, "C:\\D\\site\\README.md")?.session.id).toBe("sess_far");
+    // Beside a folder, not in it; relative; or no agent there at all.
+    expect(fileHome(s, NODE, "C:\\D\\sites\\x.ts")).toBeUndefined();
+    expect(fileHome(s, NODE, "src\\main.ts")).toBeUndefined();
+    expect(fileHome(s, "node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "C:\\D\\site\\x.ts")).toBeUndefined();
+    apply(s, { type: "session.state", params: session("sess_app", 3, { cwd: "C:\\D\\site\\apps\\web", status: "ended" }) });
+    expect(fileHome(s, NODE, "C:/D/site/apps/web/index.html")).toEqual({ session: s.sessions.get("sess_repo2")!.session, rel: "apps/web/index.html" });
+    // A POSIX node's folder, case kept.
+    apply(s, { type: "session.state", params: session("sess_nix", 5, { cwd: "/home/me/Code", node: OTHER }) });
+    expect(fileHome(s, OTHER, "/home/me/Code/a/b.rs")?.rel).toBe("a/b.rs");
+  });
+
+  test("a chip names a session by its harness, and its title or intent when it has one", () => {
+    expect(sessionWho(session("sess_a", 1, { title: "Tidy the build", intent: "fix it" }))).toBe("claude: Tidy the build");
+    expect(sessionWho(session("sess_a", 1, { intent: "fix it" }))).toBe("claude: fix it");
+    expect(sessionWho(session("sess_a", 1, { harness: "codex" }))).toBe("codex");
   });
 });

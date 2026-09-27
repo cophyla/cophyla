@@ -248,7 +248,7 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       handler: (p) => {
         const blocks = expandBlocks(p.blocks, deps.quotes, nodeId());
         const streamed = deps.stream.take();
-        const message = deps.chat.say(blocks, streamed ? { message: streamed } : {});
+        const message = deps.chat.say(blocks, { ...(streamed ? { message: streamed } : {}), ...(p.steps?.length ? { steps: p.steps } : {}) });
         return { message: message.id };
       },
     },

@@ -127,4 +127,19 @@ describe("snapshot cache", () => {
     c.clear();
     expect(c.direct.size).toBe(0);
   });
+
+  test("keeps the brain's turn while it runs, replayed last, and forgets it when the turn ends", () => {
+    const c = new SnapshotCache();
+    const turn = { steps: [{ text: "Checked agent sessions", status: "done" }], thinking: true };
+    c.upsert(n("chat.progress", { turn }));
+    c.upsert(n("account.state", { plan: "pro", limits: {} }));
+    expect(c.replay().map((x) => x.method)).toEqual(["account.state", "chat.progress"]);
+    expect(c.replay()[1]!.params).toEqual({ turn });
+    c.upsert(n("chat.progress", {}));
+    expect(c.progress).toBeUndefined();
+    expect(c.replay().map((x) => x.method)).toEqual(["account.state"]);
+    c.upsert(n("chat.progress", { turn }));
+    c.clear();
+    expect(c.progress).toBeUndefined();
+  });
 });

@@ -5,7 +5,7 @@
 // result.
 
 import { newId, RpcError } from "@cophyla/protocol";
-import type { Ask, ContentBlock, Message, MessageSource, Thread } from "@cophyla/protocol";
+import type { Ask, ContentBlock, Message, MessageSource, Thread, TurnStep } from "@cophyla/protocol";
 import type { Bus, UserMessageEvent } from "../bus.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Store } from "../store/index.ts";
@@ -179,8 +179,8 @@ export class Chat {
     return m;
   }
 
-  /** Stores the brain's reply, blocks already expanded, under `message` when a stream allocated it. */
-  say(blocks: ContentBlock[], opts: { message?: string; source?: MessageSource } = {}): Message {
+  /** Stores the brain's reply, blocks already expanded, under `message` when a stream allocated it, with the steps its turn took. */
+  say(blocks: ContentBlock[], opts: { message?: string; source?: MessageSource; steps?: TurnStep[] } = {}): Message {
     const thread = this.current();
     const now = this.now();
     const m: Message = {
@@ -190,6 +190,7 @@ export class Chat {
       role: "orchestrator",
       source: opts.source ?? "brain",
       content: blocks,
+      ...(opts.steps?.length ? { steps: opts.steps } : {}),
     };
     this.deps.store.messages.insert(m);
     this.deps.bus.emit("chat.message", m);

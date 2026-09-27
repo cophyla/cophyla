@@ -19,7 +19,7 @@ export * from "./release.ts";
 export * from "./audio.ts";
 
 import { entities } from "./entities.ts";
-import { CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests } from "./capability.ts";
+import { CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";
 import { clientNotifications, clientRequests, clientSignals } from "./client.ts";
 import { hooks } from "./hooks.ts";
 import { serverAuthHttp, serverLinkFrames, serverLinkInbound, serverLinkRequests } from "./server-link.ts";
@@ -37,6 +37,7 @@ export const registry = {
     events: capabilityEvents,
     requests: capabilityRequests,
     notices: capabilityNotices,
+    signals: capabilitySignals,
   },
   client: {
     requests: clientRequests,

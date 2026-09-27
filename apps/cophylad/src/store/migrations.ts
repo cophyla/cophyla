@@ -318,4 +318,9 @@ export const MIGRATIONS: string[] = [
   `
   CREATE INDEX chunks_prose ON chunks(id) WHERE prose = 1;
   `,
+  // 11: what an orchestrator's turn did to get to its reply, kept with the reply for the chat
+  // to fold above it (JSON, a list of steps); none on anything else.
+  `
+  ALTER TABLE messages ADD COLUMN steps TEXT;
+  `,
 ];
