@@ -8,7 +8,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AskAnswer } from "@cophyla/protocol";
 import { launchFlags, launchOf, permissionModeOf, permissionSettings, readLaunch } from "../src/sessions/claude/launch.ts";
-import { freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, inputText, permissionAsk, permissionDecision, permissionDetail, planOf, planOptions } from "../src/sessions/permissions.ts";
+import { freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, inputText, permissionAsk, permissionDecision, permissionDetail, planCallInput, planOf, planOptions } from "../src/sessions/permissions.ts";
 import { tempHome } from "./helpers.ts";
 
 const by = { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" } as const;
@@ -179,30 +179,46 @@ describe("permissions: a tool's input in words", () => {
 
 describe("permissions: the decision", () => {
   test("a tool's allow and deny are unchanged, and no mode moves", () => {
-    expect(permissionDecision(answer({ option: "allow" }), false)).toEqual({ behavior: "allow" });
-    expect(permissionDecision(answer({ option: "deny" }), false)).toEqual({ behavior: "deny", message: "Denied through cophylad" });
-    expect(permissionDecision(answer({ option: "deny", text: "not that file" }), false)).toEqual({ behavior: "deny", message: "not that file" });
+    expect(permissionDecision(answer({ option: "allow" }))).toEqual({ behavior: "allow" });
+    expect(permissionDecision(answer({ option: "deny" }))).toEqual({ behavior: "deny", message: "Denied through cophylad" });
+    expect(permissionDecision(answer({ option: "deny", text: "not that file" }))).toEqual({ behavior: "deny", message: "not that file" });
   });
 
-  test("a plan's allow sets the mode the session goes on in", () => {
-    expect(permissionDecision(answer({ option: "allow" }), true)).toEqual({
+  // The call as the CLI shows it to the hook: the plan and its file read in from disk.
+  const CALL = { plan: PLAN, planFilePath: "C:\\Users\\me\\.claude\\plans\\steady-aho.md" };
+  const held = { input: CALL };
+
+  test("a plan's allow sets the mode the session goes on in, and hands back the model's own call", () => {
+    expect(permissionDecision(answer({ option: "allow" }), held)).toEqual({
       behavior: "allow",
+      updatedInput: {},
       updatedPermissions: [{ type: "setMode", mode: "default", destination: "session" }],
     });
-    expect(permissionDecision(answer({ option: "accept_edits" }), true)).toEqual({
+    expect(permissionDecision(answer({ option: "accept_edits" }), held)).toEqual({
       behavior: "allow",
+      updatedInput: {},
       updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }],
     });
-    expect(permissionDecision(answer({ option: "bypass" }), true)).toEqual({
+    expect(permissionDecision(answer({ option: "bypass" }), held)).toEqual({
       behavior: "allow",
+      updatedInput: {},
       updatedPermissions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }],
     });
-    expect(permissionDecision(answer({ option: "auto" }), true)).toEqual({
+    expect(permissionDecision(answer({ option: "auto" }), held)).toEqual({
       behavior: "allow",
+      updatedInput: {},
       updatedPermissions: [{ type: "setMode", mode: "auto", destination: "session" }],
     });
     // A plan's rows mean nothing on a tool's ask.
-    expect(permissionDecision(answer({ option: "bypass" }), false)).toEqual({ behavior: "deny", message: "Denied through cophylad" });
+    expect(permissionDecision(answer({ option: "bypass" }))).toEqual({ behavior: "deny", message: "Denied through cophylad" });
+  });
+
+  test("the call handed back: what the CLI read in from disk goes, the model's own fields stay", () => {
+    expect(planCallInput(CALL)).toEqual({});
+    expect(planCallInput({ ...CALL, allowedPrompts: [{ tool: "Bash", prompt: "run tests" }] })).toEqual({ allowedPrompts: [{ tool: "Bash", prompt: "run tests" }] });
+    // With no plan file the plan is the model's own argument.
+    expect(planCallInput({ plan: PLAN })).toEqual({ plan: PLAN });
+    expect(planCallInput(undefined)).toEqual({});
   });
 
   test("a plan handed to a fresh session ends the old turn; the fresh one starts from the plan", () => {
@@ -215,9 +231,9 @@ describe("permissions: the decision", () => {
   });
 
   test("keeping planning denies, and a note is the message; text alone is a note", () => {
-    expect(permissionDecision(answer({ option: "deny" }), true)).toEqual({ behavior: "deny", message: "Keep planning" });
-    expect(permissionDecision(answer({ option: "deny", text: "use the other library" }), true)).toEqual({ behavior: "deny", message: "use the other library" });
-    expect(permissionDecision(answer({ option: "text", text: "split it in two" }), true)).toEqual({ behavior: "deny", message: "split it in two" });
-    expect(permissionDecision(undefined, true)).toEqual({ behavior: "deny", message: "Keep planning" });
+    expect(permissionDecision(answer({ option: "deny" }), held)).toEqual({ behavior: "deny", message: "Keep planning" });
+    expect(permissionDecision(answer({ option: "deny", text: "use the other library" }), held)).toEqual({ behavior: "deny", message: "use the other library" });
+    expect(permissionDecision(answer({ option: "text", text: "split it in two" }), held)).toEqual({ behavior: "deny", message: "split it in two" });
+    expect(permissionDecision(undefined, held)).toEqual({ behavior: "deny", message: "Keep planning" });
   });
 });

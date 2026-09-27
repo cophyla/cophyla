@@ -6,7 +6,8 @@
 // a call. Its input is the plan itself, in markdown, and a wall of quoted newlines is no way
 // to ask whether to build it: the plan becomes the ask's detail, and the options are the rows
 // the terminal offers, each carrying the mode the session goes on in, because allowing the
-// tool alone would release a session that is still planning. Which "Yes, and …" row the
+// tool alone would release a session that is still planning, and the call it answers, without
+// which the CLI drops the allow and keeps its own dialog up. Which "Yes, and …" row the
 // terminal shows depends on what the session was started with (bypass when it may, auto mode
 // when it runs in it, accepting edits otherwise), so the caller says which. "Yes, clear
 // context" is offered whenever the plan can go on that way: a hook cannot clear a context, so
@@ -220,19 +221,34 @@ export function goOnLabel(mode: GoOnMode): string {
 }
 
 /**
+ * The call a plan's allow hands back. Claude Code takes a hook's allow for a tool that must
+ * ask the user (`ExitPlanMode`, as `AskUserQuestion`) only with the input it answers for:
+ * without one the allow is dropped and the terminal's dialog stays up. The hook is shown the
+ * call with the plan and its file read in from disk (`plan`, `planFilePath`), and a `plan`
+ * handed back reads to the CLI as the user's edit of it, so those two go and the call is the
+ * model's own, as the terminal's own "Yes" gives it. A plan with no file is the model's own
+ * argument, and stays.
+ */
+export function planCallInput(toolInput: unknown): Record<string, unknown> {
+  if (toolInput === null || typeof toolInput !== "object" || Array.isArray(toolInput)) return {};
+  const { plan, planFilePath, ...own } = toolInput as Record<string, unknown>;
+  return typeof planFilePath === "string" || plan === undefined ? own : { ...own, plan };
+}
+
+/**
  * The `PermissionRequest` decision an answered ask releases. Anything but an allow is a deny
  * carrying the text as its message, which is how a note on a plan ("use the other library")
- * reaches the agent that is to keep planning. `clear` is not decided here: the caller starts
- * the fresh session first.
+ * reaches the agent that is to keep planning. A plan's allow carries its call and the mode it
+ * goes on in. `clear` is not decided here: the caller starts the fresh session first.
  */
-export function permissionDecision(answer: AskAnswer | undefined, plan: boolean): Record<string, unknown> {
+export function permissionDecision(answer: AskAnswer | undefined, plan?: { input: unknown }): Record<string, unknown> {
   const option = answer?.option;
   const mode = plan && option !== undefined ? MODE_OF[option] : undefined;
   if (option !== ALLOW && mode === undefined) {
     return { behavior: "deny", message: answer?.text ?? (plan ? "Keep planning" : "Denied through cophylad") };
   }
   // Leaving plan mode is the mode change, not the tool call: the harness makes it for us.
-  if (mode !== undefined) return { behavior: "allow", updatedPermissions: [{ type: "setMode", mode, destination: "session" }] };
+  if (plan && mode !== undefined) return { behavior: "allow", updatedInput: planCallInput(plan.input), updatedPermissions: [{ type: "setMode", mode, destination: "session" }] };
   return { behavior: "allow" };
 }
 

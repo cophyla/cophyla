@@ -1,7 +1,7 @@
 // A plan held from a terminal session, through `Sessions` with the fake ACP agent: the rows
 // its ask offers follow what the session was started with (its command line, read through
-// the raiser, and the modes it was seen in), the row's answer moves the session into that
-// mode, and "Yes, clear context" builds the plan in a fresh session in the same directory
+// the raiser, and the modes it was seen in), the row's answer hands back the call and moves
+// the session into that mode, and "Yes, clear context" builds the plan in a fresh session in the same directory
 // and mode, starting from the plan, while the old session's turn ends; when no session can
 // start, the plan is built where it is. A session in a tether terminal that shows the CLI's
 // own clear-context row has that row pressed by key instead, in the same terminal, pressed
@@ -118,7 +118,7 @@ describe("plan approval from a terminal session", () => {
       ["deny", "No, keep planning"],
     ]);
     mini.asks.answer(ask.id, { option: "bypass" }, { kind: "user", client: CLIENT });
-    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }] });
+    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedInput: {}, updatedPermissions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }] });
   });
 
   test("a session seen in auto mode is offered auto mode; one with no such sign, accepting edits", async () => {
@@ -128,7 +128,7 @@ describe("plan approval from a terminal session", () => {
     expect(first.ask.options.map((o) => o.id)).toEqual(["clear", "auto", "allow", "deny"]);
     expect(first.ask.options[0]!.label).toBe("Yes, clear context and use auto mode");
     mini.asks.answer(first.ask.id, { option: "auto" }, { kind: "user", client: CLIENT });
-    expect(await decisionOf(first.decision)).toEqual({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "auto", destination: "session" }] });
+    expect(await decisionOf(first.decision)).toEqual({ behavior: "allow", updatedInput: {}, updatedPermissions: [{ type: "setMode", mode: "auto", destination: "session" }] });
 
     const plain = attached("plain-1", 5002);
     const second = await exitPlan(plain);
@@ -175,7 +175,7 @@ describe("plan approval from a terminal session", () => {
     const { ask, decision } = await exitPlan(s, blocked);
     expect(ask.options[0]!.id).toBe("clear");
     mini.asks.answer(ask.id, { option: "clear" }, { kind: "user", client: CLIENT });
-    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }] });
+    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedInput: {}, updatedPermissions: [{ type: "setMode", mode: "bypassPermissions", destination: "session" }] });
     const note = events(s.id).find((e) => e.kind === "notification" && (e.payload as { type?: string }).type === "plan_continued")!;
     expect((note.payload as { message: string }).message).toContain("A new session could not start");
     expect(mini.sessions.get(s.id)?.status).toBe("busy");
@@ -273,6 +273,23 @@ describe("plan approval in a tether terminal", () => {
     await waitFor(() => term.typed.includes("paste:User feedback on this plan: keep it small"), 5000);
   });
 
+  test("a terminal whose Claude draws the ASCII pointer has its row pressed the same way, and the note typed after", async () => {
+    // As 2.1.283 draws it where the environment names no Unicode terminal.
+    const asciiEmpty = ["", RULE, "> ", RULE, "  ⏸ plan mode on (shift+tab to cycle)"];
+    const { s, term } = inTether("tether-clear-ascii", 6105);
+    term.setScreen(asciiEmpty);
+    const { ask, decision } = await exitPlanIn(s);
+    term.setScreen([RULE, " Ready to code?", " Claude has written up a plan and is ready to execute. Would you like to proceed?", "", " > 1. Yes, clear context (5% used) and auto-accept edits", "   2. Yes, auto-accept edits", "   3. Yes, manually approve edits", "   4. Tell Claude what to change", "      shift+tab to approve with this feedback"]);
+    tm.asks.answer(ask.id, { option: "clear", text: "keep it small" }, { kind: "user", client: CLIENT });
+    expect(await decision).toEqual({});
+    await waitFor(() => term.typed.includes("keys:Enter"), 5000);
+    expect(term.typed).toEqual(["keys:1", "keys:Enter"]);
+    term.setScreen(asciiEmpty);
+    const note = await waitFor(() => continued(s.id), 5000);
+    expect((note.payload as { message: string }).message).toBe("The plan is being built in this terminal with a clear context");
+    await waitFor(() => term.typed.includes("paste:User feedback on this plan: keep it small"), 5000);
+  });
+
   test("a press the CLI dropped, taken before it had the hook's answer, is pressed again", async () => {
     const { s, term } = inTether("tether-clear-3", 6104);
     const { ask, decision } = await exitPlanIn(s);
@@ -306,7 +323,7 @@ describe("plan approval in a tether terminal", () => {
     // No ACP here, so no fresh session either: there is no clear row to offer.
     expect(ask.options.map((o) => o.id)).toEqual(["accept_edits", "allow", "deny"]);
     tm.asks.answer(ask.id, { option: "accept_edits" }, { kind: "user", client: CLIENT });
-    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
+    expect(await decisionOf(decision)).toEqual({ behavior: "allow", updatedInput: { plan: PLAN }, updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
     expect(term.typed).toEqual([]);
   });
 });

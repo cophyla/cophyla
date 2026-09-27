@@ -1,13 +1,18 @@
 // Reading Claude Code's screen, as tether gives it (rows of styled runs). Everything here is
-// Claude's own layout, measured on 2.1.280 in spike 15, and is used as a check rather than a
-// source: hooks say whether a session is idle, asking or busy, and the screen only says what a
-// hook cannot — whether the prompt holds text the user has half typed, which row of a dialog
-// is which, and what a session that has not registered is waiting on.
+// Claude's own layout, measured on 2.1.280 in spike 15 and again on 2.1.283, and is used as a
+// check rather than a source: hooks say whether a session is idle, asking or busy, and the
+// screen only says what a hook cannot — whether the prompt holds text the user has half typed,
+// which row of a dialog is which, and what a session that has not registered is waiting on.
 //
-// The prompt is the row that starts with `❯` directly under a rule of `─`; a past turn echoed
-// in the transcript starts with `❯` too, but never under a rule. An empty prompt shows a
-// suggestion in dim text, which is not the user's. A dialog's rows are numbered, the
-// selected one marked with `❯`.
+// Claude draws its pointer as `❯` only where its environment names a terminal it trusts with
+// Unicode; on Windows that is WT_SESSION, TERM_PROGRAM=vscode or a TERM such as
+// xterm-256color, and a terminal started from anywhere else (a console, a service, a daemon
+// launched without them) gets the ASCII `>`. Either is the pointer here.
+//
+// The prompt is the row that starts with the pointer directly under a rule of `─`; a past
+// turn echoed in the transcript starts with it too, but never under a rule. An empty prompt
+// shows a suggestion in dim text, which is not the user's. A dialog's rows are numbered, the
+// selected one marked with the pointer.
 
 import type { Run, Screen } from "@tether-pty/client";
 
@@ -20,7 +25,7 @@ export function rowsOf(s: ScreenLike): string[] {
 }
 
 const RULE = /^\s*─{8,}/;
-const PROMPT = /^❯[  ]?/;
+const PROMPT = /^[❯>][  ]?/;
 
 function isRule(row: string | undefined): boolean {
   return row !== undefined && RULE.test(row);
@@ -62,7 +67,7 @@ export interface DialogRow {
   selected: boolean;
 }
 
-const ROW = /^\s*(❯)?\s*(\d)\.\s+(.*\S)\s*$/;
+const ROW = /^\s*([❯>])?\s*(\d)\.\s+(.*\S)\s*$/;
 
 /** A numbered dialog's rows, in order; empty when none is on the screen. */
 export function dialogRows(s: ScreenLike): DialogRow[] {
@@ -70,7 +75,7 @@ export function dialogRows(s: ScreenLike): DialogRow[] {
   for (const row of rowsOf(s)) {
     const m = ROW.exec(row.replace(/ /g, " "));
     if (!m) continue;
-    out.push({ digit: Number(m[2]), label: m[3]!, selected: m[1] === "❯" });
+    out.push({ digit: Number(m[2]), label: m[3]!, selected: m[1] !== undefined });
   }
   // Only a run numbered from 1 is a dialog; a numbered list in the transcript above is not.
   const start = out.findIndex((r, i) => r.digit === 1 && out.slice(i).every((x, k) => x.digit === k + 1));

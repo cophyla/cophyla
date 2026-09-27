@@ -49,3 +49,30 @@ describe("claude screen", () => {
     expect(promptInput({ lines: ["hi", "────────────────", "❯ fix the tests", "  and the docs", "────────────────", "  ⏵⏵ accept edits on"] })).toBe("fix the tests\nand the docs");
   });
 });
+
+// Where the terminal's environment names no Unicode terminal, the CLI's pointer is `>`.
+describe("claude screen with the ASCII pointer", () => {
+  test("an empty prompt is empty even while its suggestion shows", () => {
+    expect(promptInput(screens["emptyAscii"]!)).toBe("");
+  });
+
+  test("a half-typed prompt holds its text, and the turn echoed above the plan dialog is not the prompt", () => {
+    expect(promptInput({ lines: ["> an earlier turn", "", "────────────────", "> fix the tests", "────────────────", "  ⏸ plan mode on"] })).toBe("fix the tests");
+    expect(promptInput(screens["planAscii"]!)).toBeUndefined();
+  });
+
+  test("the plan dialog's rows, and the clear-context row by its label", () => {
+    const rows = dialogRows(screens["planAscii"]!);
+    expect(rows.map((r) => r.digit)).toEqual([1, 2, 3, 4]);
+    expect(rows[0]).toEqual({ digit: 1, label: "Yes, clear context (5% used) and auto-accept edits", selected: true });
+    expect(rows.slice(1).some((r) => r.selected)).toBe(false);
+    expect(clearContextRow(screens["planAscii"]!)?.digit).toBe(1);
+    expect(clearContextRow(screens["emptyAscii"]!)).toBeUndefined();
+  });
+
+  test("the selection moves with the pointer", () => {
+    const moved: ScreenLike = { lines: ["   1. Yes, clear context (40% used) and bypass permissions", " > 2. Yes, and bypass permissions", "   3. No"] };
+    expect(dialogRows(moved).map((r) => r.selected)).toEqual([false, true, false]);
+    expect(clearContextRow(moved)?.selected).toBe(false);
+  });
+});

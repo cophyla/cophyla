@@ -153,6 +153,8 @@ interface Held {
 /** A plan held for approval: in full, for a fresh session to start from, and the mode its "Yes, and …" row goes on in. */
 interface HeldPlan {
   text: string;
+  /** The call as the hook was shown it; an allow hands it back. */
+  input: unknown;
   goOn: GoOnMode;
   /** "Yes, clear context" is the CLI's own row, pressed in the session's terminal. */
   inPlace: boolean;
@@ -2173,7 +2175,7 @@ export class Sessions implements SessionHost {
     const input = this.permissionInput(rec, shape, now);
     // A plan is answered with what to change as often as with yes or no.
     input.allowsText = true;
-    const held = this.openHeldAsk(rec, key, input, "needs_permission", { tool: hook.toolName }, raw, now, undefined, undefined, { text: plan, goOn, inPlace });
+    const held = this.openHeldAsk(rec, key, input, "needs_permission", { tool: hook.toolName }, raw, now, undefined, undefined, { text: plan, input: hook.toolInput, goOn, inPlace });
     return this.waitHeld(rec, held, meta);
   }
 
@@ -2247,7 +2249,7 @@ export class Sessions implements SessionHost {
       const error = e instanceof Error ? e.message : String(e);
       this.log.warn("fresh session not started; the plan goes on in its own", { session: rec.session.id, mode: plan.goOn, error });
       this.event(rec, "notification", { type: "plan_continued", mode: plan.goOn, message: `A new session could not start, so the plan is built here: ${error}` });
-      return permissionDecision({ ...answer, option: goOnOption(plan.goOn) }, true);
+      return permissionDecision({ ...answer, option: goOnOption(plan.goOn) }, plan);
     }
   }
 
@@ -2440,7 +2442,7 @@ export class Sessions implements SessionHost {
       void this.buildInFreshSession(rec, plan, answer).then((d) => this.release(rec, held, this.hookOutput(d), d["behavior"] === "allow" ? "busy" : "idle"));
       return;
     } else {
-      decision = this.hookOutput(permissionDecision(ask.answer, held.plan !== undefined), rec.session.harness);
+      decision = this.hookOutput(permissionDecision(ask.answer, held.plan), rec.session.harness);
     }
     held.settled = true;
     rec.held = undefined;

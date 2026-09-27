@@ -408,7 +408,7 @@ describe("attach: sessions over the socket", () => {
     expect(ask.options.map((o) => o.id)).toEqual(["clear", "accept_edits", "allow", "deny"]);
     expect(d.store.sessions.get(session.id)?.status).toBe("needs_permission");
     await c.request("ask.answer", { id: ask.id, option: "accept_edits" });
-    expect(await decisionOf(inFlight)).toEqual({ behavior: "allow", updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
+    expect(await decisionOf(inFlight)).toEqual({ behavior: "allow", updatedInput: { plan }, updatedPermissions: [{ type: "setMode", mode: "acceptEdits", destination: "session" }] });
 
     // Keeping planning is a deny, and the note goes back as its message.
     const kept = post(exitPlan(plan, "x-2"));
