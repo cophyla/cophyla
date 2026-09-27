@@ -1,7 +1,7 @@
 // A message's content blocks as DOM: text as markdown when a model wrote it and as typed
 // when the user did (markdown.ts; never parsed as HTML either way), quotes as blockquotes with
-// a source chip, their words as they were at the source (a session chip raises the terminal;
-// file, thread and memory chips name where the words came from; an unresolved quote is
+// a source chip, their words as they were at the source (a session chip opens the session's
+// tab; file, thread and memory chips name where the words came from; an unresolved quote is
 // marked), refs as chips. Reconciled by block index so a streaming message grows in place.
 
 import type { ContentBlock, Source } from "@cophyla/protocol";
@@ -32,6 +32,11 @@ function baseName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
+/** What a session chip does: open the session's tab, while it has one. An ended session left the rail, so its chip only names it. */
+function sessionAction(session: string, state: ViewState): { title: string; action?: string; session?: string } {
+  return state.sessions.has(session) ? { title: "Open its tab", action: "select", session } : { title: "This session has ended" };
+}
+
 /** What a source chip says and does. A session chip carries the first seq quoted, for a later jump to it. */
 function sourceChip(source: Source, state: ViewState): { text: string; title: string; action?: string; session?: string; seq?: number } {
   switch (source.kind) {
@@ -40,7 +45,7 @@ function sourceChip(source: Source, state: ViewState): { text: string; title: st
       const name = card ? (card.session.title ?? card.session.intent) : undefined;
       const who = card ? `${card.session.harness}${name ? `: ${name}` : ""}` : `session ${shortId(source.session)}`;
       const range = source.seq ? ` · ${source.seq[0] === source.seq[1] ? `#${source.seq[0]}` : `#${source.seq[0]}–${source.seq[1]}`}` : "";
-      return { text: `${who}${range}`, title: "Raise the terminal", action: "focus", session: source.session, ...(source.seq ? { seq: source.seq[0] } : {}) };
+      return { text: `${who}${range}`, ...sessionAction(source.session, state), ...(source.seq ? { seq: source.seq[0] } : {}) };
     }
     case "file": {
       const range = source.lines ? `:${source.lines[0]}${source.lines[1] !== source.lines[0] ? `-${source.lines[1]}` : ""}` : "";
@@ -59,7 +64,7 @@ function refChip(block: Extract<ContentBlock, { type: "ref" }>, state: ViewState
   if (block.session) {
     const card = state.sessions.get(block.session);
     const name = card ? (card.session.title ?? card.session.intent) : undefined;
-    return { text: card ? `${card.session.harness}${name ? `: ${name}` : ""}` : `session ${shortId(block.session)}`, title: "Raise the terminal", action: "focus", session: block.session };
+    return { text: card ? `${card.session.harness}${name ? `: ${name}` : ""}` : `session ${shortId(block.session)}`, ...sessionAction(block.session, state) };
   }
   if (block.task) {
     const task = state.tasks.get(block.task);
