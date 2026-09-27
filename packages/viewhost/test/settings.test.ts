@@ -3,10 +3,11 @@
 // launch came from), what a save and a reset send, and the note a failure leaves beside
 // what failed. Then the node's speech: the engine, its voice counted from 1, its status in
 // words, what a pick and a reset send, and the second-by-second read while an engine loads.
+// Last, what Cophyla listens for: each listener's line, a Remove, and a node with none.
 
 import { describe, expect, test } from "bun:test";
-import type { HarnessProfile, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, launchKey, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
+import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
+import { joinFlags, launchKey, listenerLine, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -378,5 +379,46 @@ describe("the node's speech", () => {
     await m.preview();
     expect(m.speechRow()?.note).toBe("Could not play it: unavailable: speech is loading");
     m.dispose();
+  });
+});
+
+describe("listening for", () => {
+  const listener = (over: Partial<Listener> & Pick<Listener, "on">): Listener => ({ id: "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", deliver: "wake", why: "why", createdAt: 1, fired: 0, ...over });
+
+  test("a listener's line: on what and for what, how it tells, the fires left and made", () => {
+    expect(listenerLine(listener({ on: ["session.idle", "session.ask"], session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", until: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", fired: 2 }))).toBe(
+      "a session finishes or a session asks · session sess_…5FB2 · until task_…5FB2 is over · wakes Cophyla · until removed · fired twice",
+    );
+    expect(listenerLine(listener({ on: ["metric"], node: DESK, metric: { resource: "cpu", above: 90, forS: 10 }, deliver: "notify", times: 1 }))).toBe("CPU above 90% for 10 s · machine node_…5FAV · tells you in a line · 1 fire left · not fired yet");
+    expect(listenerLine(listener({ on: ["custom"], name: "ci.failed", match: { branch: "main" }, deliver: "note", cooldownS: 30, times: 3, fired: 5 }))).toBe(
+      'the event ci.failed · branch = "main" · a note for the next time you talk · at most once in 30 s · 3 fires left · fired 5 times',
+    );
+    expect(listenerLine(listener({ on: ["session.tool"], origin: "user", harness: "codex", tool: "Bash", fired: 1 }))).toBe("a session uses a tool · Codex · your sessions · tool Bash · wakes Cophyla · until removed · fired once");
+  });
+
+  test("the listeners are read, one is removed and the list read again, a failed removal says why, and a node that has none leaves the section out", async () => {
+    let listeners = [listener({ on: ["node.pressure"] }), listener({ id: "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", on: ["session.said"] })];
+    const { request, asked } = fakeConnection({
+      "listener.list": () => ({ listeners }),
+      "listener.remove": (p) => {
+        if (p["id"] === "lst_01ARZ3NDEKTSV4RRFFQ69G5FC9") throw new Error("not_found: no listener lst_01ARZ3NDEKTSV4RRFFQ69G5FC9");
+        listeners = listeners.filter((l) => l.id !== p["id"]);
+        return {};
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadListeners();
+    expect(m.listeners?.map((l) => l.on)).toEqual([["node.pressure"], ["session.said"]]);
+    await m.removeListener("lst_01ARZ3NDEKTSV4RRFFQ69G5FC1");
+    expect(asked.map((a) => a.method)).toEqual(["listener.list", "listener.remove", "listener.list"]);
+    expect(asked[1]!.params).toEqual({ id: "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1" });
+    expect(m.listeners?.map((l) => l.id)).toEqual(["lst_01ARZ3NDEKTSV4RRFFQ69G5FC2"]);
+    expect(m.removing.size).toBe(0);
+    await m.removeListener("lst_01ARZ3NDEKTSV4RRFFQ69G5FC9");
+    expect(m.listenerNotes.get("lst_01ARZ3NDEKTSV4RRFFQ69G5FC9")).toBe("Not removed: not_found: no listener lst_01ARZ3NDEKTSV4RRFFQ69G5FC9");
+    expect(asked).toHaveLength(4);
+    const old = new SettingsModel(fakeConnection({}).request, () => {});
+    await old.loadListeners();
+    expect(old.listeners).toBeUndefined();
   });
 });

@@ -1,13 +1,28 @@
 // Thresholds with hysteresis: a resource going up crosses `warn` and `critical` at once;
 // coming down it must sit below the threshold less `hysteresis` for `holdSamples` readings
 // before the level falls, so a load that hovers at the line raises one event, not a stream.
-// `update` returns the new level only when it changed, `normal` included.
+// `update` returns the new level only when it changed, `normal` included. `readings` is each
+// resource of a sample as a percentage, which the thresholds and the brain's metric listeners
+// both read.
 
 import type { z } from "zod";
-import type { PressureLevel, PressureResource } from "@cophyla/protocol";
+import type { MetricsSample, PressureLevel, PressureResource } from "@cophyla/protocol";
 
 export type Level = z.infer<typeof PressureLevel>;
 export type Resource = z.infer<typeof PressureResource>;
+
+/** Each resource of a sample in percent: the CPU, memory used of total, and the busiest GPU and its memory when the node has one. */
+export function readings(s: MetricsSample): [Resource, number][] {
+  const out: [Resource, number][] = [
+    ["cpu", s.cpu],
+    ["memory", s.memory.total > 0 ? (s.memory.used / s.memory.total) * 100 : 0],
+  ];
+  if (s.gpu && s.gpu.length > 0) {
+    out.push(["gpu", Math.max(...s.gpu.map((g) => g.util))]);
+    out.push(["vram", Math.max(...s.gpu.map((g) => (g.vramTotal > 0 ? (g.vramUsed / g.vramTotal) * 100 : 0)))]);
+  }
+  return out;
+}
 
 export interface PressureOptions {
   warn: number;

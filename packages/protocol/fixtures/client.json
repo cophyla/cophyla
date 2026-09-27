@@ -238,6 +238,8 @@
     "node.leave": { "params": [{}], "results": [{}] },
     "node.promote": { "params": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "node.restart": { "params": [{}, { "force": true }], "results": [{}] },
+    "listener.list": { "params": [{}], "results": [{ "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },
+    "listener.remove": { "params": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3" }], "results": [{}] },
     "profile.list": {
       "params": [{}],
       "results": [

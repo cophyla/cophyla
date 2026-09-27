@@ -96,9 +96,12 @@ export interface NodesDeps {
   gate: Gate;
   policy: Policy;
   clients: ClientRegistry;
+  /** A metrics watcher that is not a client (`listener:<id>`): its samples of another node go here; undefined for a client's. */
+  samples?: (client: string, sample: MetricsSample) => boolean | undefined;
   events: EventStream;
   editable: Editable;
-  scheduler: TaskScheduler;
+  /** What runs only on the primary beside the brain: the task scheduler and the brain's listeners. */
+  scheduler: Pick<TaskScheduler, "start" | "stop">;
   tasks: Tasks;
   asks: Asks;
   chat: Chat;
@@ -276,6 +279,7 @@ export class Nodes {
       gate: deps.gate,
       policy: deps.policy,
       clients: deps.clients,
+      ...(deps.samples ? { samples: deps.samples } : {}),
       relayHost: deps.relayHost,
       replicator: this.replicator,
       heartbeatMs: deps.config.nodes.heartbeat_ms,

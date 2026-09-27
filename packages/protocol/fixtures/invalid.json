@@ -67,5 +67,9 @@
   { "schema": "entities.Grant", "why": "a node's grant under a client id", "value": { "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "kind": "node", "name": "x", "access": { "scopes": ["chat"], "messages": "send" }, "status": "active", "createdAt": 1, "connected": false } },
   { "schema": "client.requests.grant.invite.params", "why": "a kind that is neither a phone nor a node", "value": { "kind": "tablet", "name": "x" } },
   { "schema": "client.requests.invite.redeem.params", "why": "a secret that is not 32 bytes", "value": { "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "abc", "name": "Work phone" } },
-  { "schema": "nodeLink.requests.node.enroll.result", "why": "no key", "value": { "grant": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1", "cluster": "c1a0b2c3d4e5f607", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "full" } }
+  { "schema": "nodeLink.requests.node.enroll.result", "why": "no key", "value": { "grant": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1", "cluster": "c1a0b2c3d4e5f607", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "full" } },
+  { "schema": "capability.requests.listener.add.params", "why": "a listener that hears nothing", "value": { "on": [], "deliver": "wake", "why": "x" } },
+  { "schema": "capability.requests.listener.add.params", "why": "a delivery that is not one", "value": { "on": ["session.idle"], "deliver": "shout", "why": "x" } },
+  { "schema": "capability.requests.listener.add.params", "why": "a metric held for no time", "value": { "on": ["metric"], "metric": { "resource": "cpu", "above": 90, "forS": 0 }, "deliver": "wake", "why": "x" } },
+  { "schema": "client.requests.listener.remove.params", "why": "an id that is not a listener's", "value": { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" } }
 ]

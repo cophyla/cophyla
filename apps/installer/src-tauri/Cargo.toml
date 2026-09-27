@@ -1,6 +1,6 @@
 [package]
 name = "cophyla-launcher"
-version = "0.11.0"
+version = "0.12.0"
 description = "Cophyla: the fixed entry point of an installed Cophyla; starts the current version of the desktop app and rotates staged releases"
 license = "Apache-2.0"
 edition = "2021"

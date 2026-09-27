@@ -12,7 +12,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { Node, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
-import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
+import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
@@ -46,6 +46,7 @@ import type { Config } from "./config/schema.ts";
 import { EventCatalogue } from "./events/catalogue.ts";
 import { recordCustomEvents } from "./events/recorder.ts";
 import { EventStream } from "./events/stream.ts";
+import { Listeners } from "./listeners/index.ts";
 import { Asks } from "./gate/asks.ts";
 import { Audit } from "./gate/audit.ts";
 import { Gate } from "./gate/index.ts";
@@ -228,6 +229,7 @@ export interface Daemon {
   activity: Activity;
   tasks: Tasks;
   scheduler: TaskScheduler;
+  listeners: Listeners;
   tools: Tools;
   prompts: Prompts;
   memory: MemoryFiles;
@@ -551,6 +553,34 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...(opts.metrics?.now ? { now: opts.metrics.now } : {}),
     ...(opts.metrics?.manual ? { manual: true } : {}),
   });
+  // The brain's listeners: on the primary, beside the scheduler; a metric one watches its node's samples.
+  const listeners = new Listeners({
+    store,
+    bus,
+    stream: events,
+    nodeId: identity.id,
+    knownEvent: (name) => catalogue.ownerOf(name) !== undefined,
+    knownNode: (id) => nodes?.forwardHost.registryList().some((n) => n.id === id) ?? false,
+    session: (id) => sessions.get(id) ?? nodes?.forwardHost.mirrorSessions().find((s) => s.id === id),
+    task: (id) => tasks.get(id),
+    metrics,
+    remote: {
+      watch: (client, node, intervalMs) => nodes!.forwardHost.remoteMetrics.subscribe(client, node, intervalMs, "owners"),
+      unwatch: (client) => nodes!.forwardHost.remoteMetrics.unsubscribe(client),
+    },
+    log: log.child("listeners"),
+  });
+  /** What runs on the primary alone beside the brain, started and stopped with the role. */
+  const automation = {
+    start: () => {
+      scheduler.start();
+      listeners.start();
+    },
+    stop: () => {
+      scheduler.stop();
+      listeners.stop();
+    },
+  };
 
   const affinity = opts.voice?.affinity === null ? undefined : (opts.voice?.affinity ?? (config.voice.enabled ? resolveAffinity(config.voice.cpu_affinity, log.child("voice")) : undefined));
   const voiceLog = log.child("voice");
@@ -713,7 +743,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   // The nodes module: the role, the links, the mirrors. The brain is started and stopped
   // through it, since a promotion or a step-down moves the brain with the role.
-  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, metrics, remote, ...(limits ? { limits } : {}) };
+  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, metrics, remote, listeners, ...(limits ? { limits } : {}) };
   // The link is built before anything can raise an event, so a hook's first emit or a
   // trigger missed while the daemon was down waits in its outbox for the handshake; the
   // brain itself is spawned once everything it can ask for is there.
@@ -770,9 +800,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     gate,
     policy,
     clients,
+    samples: (client, sample) => (client.startsWith("listener:") ? listeners.sample(client, sample) : undefined),
     events,
     editable,
-    scheduler,
+    scheduler: automation,
     tasks,
     asks,
     chat,
@@ -836,7 +867,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     linkedBackups: () => nodes!.attachedBackups(),
     stopBrain,
     startBrain,
-    scheduler,
+    scheduler: automation,
     tasks,
     asks,
     editable,
@@ -952,6 +983,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...chatMethods({ chat }),
     ...taskMethods({ tasks }),
     ...eventMethods({ catalogue }),
+    ...listenerMethods({ listeners }),
     ...updateMethods({ update }),
     ...pairingMethods({
       pairing,
@@ -1133,7 +1165,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   if (primary) buildBrain();
 
   await editable.start();
-  if (primary) scheduler.start();
+  if (primary) automation.start();
 
   // The recall index: memory reconciled now, the backfill and the model in the background.
   // Startup never waits on the model; recall is full-text only until it is up.
@@ -1202,6 +1234,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     activity,
     tasks,
     scheduler,
+    listeners,
     tools,
     prompts,
     memory,
@@ -1246,7 +1279,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await remote.stop();
       await sidecars.stopAll();
       pairing.dispose();
-      scheduler.stop();
+      automation.stop();
       await editable.stop();
       await hooks.dispose();
       stopRecorder();

@@ -94,6 +94,8 @@ export interface InboundDeps {
   gate: Gate;
   policy: Policy;
   clients: ClientRegistry;
+  /** A metrics watcher that is not a client (the brain's metric listeners, `listener:<id>`): its samples go here; undefined for a client's. */
+  samples?: (client: string, sample: MetricsSample) => boolean | undefined;
   relayHost: () => RelayHost | undefined;
   replicator: Replicator;
   heartbeatMs: number;
@@ -862,7 +864,7 @@ export class Inbound {
     const recent = this.recentSamples.get(node) ?? [];
     for (const sample of recent) feed.count(sample);
     const latest = recent.at(-1);
-    if (latest && !this.deps.clients.send(client, "metrics.sample", feed.now(latest))) this.metricsWatchers.delete(client);
+    if (latest && !this.sendSample(client, feed.now(latest))) this.metricsWatchers.delete(client);
     return totals ? { spend: totals } : {};
   }
 
@@ -902,8 +904,13 @@ export class Inbound {
     const slack = slackFor(this.subscription(node)?.intervalMs ?? 0);
     for (const [client, nodes] of [...this.metricsWatchers]) {
       const due = nodes.get(node)?.offer(sample, slack);
-      if (due && !this.deps.clients.send(client, "metrics.sample", due)) this.metricsWatchers.delete(client);
+      if (due && !this.sendSample(client, due)) this.metricsWatchers.delete(client);
     }
+  }
+
+  /** A sample to a watcher: a client's as `metrics.sample`, or one of the daemon's own through `samples`. */
+  private sendSample(client: string, sample: MetricsSample): boolean {
+    return this.deps.samples?.(client, sample) ?? this.deps.clients.send(client, "metrics.sample", sample);
   }
 
   /** A client went: its watch on another node goes with it. */

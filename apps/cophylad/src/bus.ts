@@ -8,10 +8,11 @@
 // `voice.setup`, and a stage of it coming up raises `node.state`; `metrics` raises
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
-// raise `terminal.state`. The api forwards the client-protocol ones to connected clients; the
-// event stream turns the rest into capability events.
+// raise `terminal.state`; `listeners` raises `listener.fired` and `listener.removed`. The
+// api forwards the client-protocol ones to connected clients; the event stream turns the
+// rest into capability events.
 
-import type { Ask, AuditEntry, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
 
 export interface UserMessageEvent {
@@ -96,6 +97,10 @@ export interface BusEvents {
   "entitlement.updated": { at: number; token: string };
   /** The account as this node sees it changed: signed in or out, the plan, the link, the usage. */
   "account.state": ClientNotificationParams<"account.state">;
+  /** A listener of the brain's heard what it listens for: the brain hears it as the same event. */
+  "listener.fired": CapabilityEventParams<"listener.fired">;
+  /** A listener is gone, whatever took it: the brain hears it as the same event. */
+  "listener.removed": CapabilityEventParams<"listener.removed">;
 }
 
 type Handler<T> = (payload: T) => void;

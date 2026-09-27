@@ -267,6 +267,9 @@ export const requestFilters = {
   "node.restart": { names: "global" },
   "node.join": { names: "global" },
   "node.leave": { names: "global" },
+  // The node's brain, not any one session's.
+  "listener.list": { names: "global" },
+  "listener.remove": { names: "global" },
   "profile.list": { names: "global" },
   "profile.limits": { names: "global" },
   "profile.update": { names: "global" },

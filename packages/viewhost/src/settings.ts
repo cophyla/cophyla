@@ -1,7 +1,11 @@
 // The host's settings: a layer over the frame that is the host's own, like the view picker,
 // so any view opens the same one by asking `host.settings` and none has to draw it. It is
-// made of sections, and more will join. Voice comes first on a host with a microphone of its
-// own (the desktop app; the phone keeps its switches in its bar's menu): whether it listens
+// made of sections, and more will join. Listening for comes first: what wakes Cophyla
+// besides the user's messages, the listeners it set with its tools (`listener.list`), each
+// with why it listens, on what, how it tells, the fires left and made, and a Remove
+// (`listener.remove`); a node from before there were listeners leaves the section out.
+// Voice follows on a host with a microphone of its own (the desktop app; the phone keeps
+// its switches in its bar's menu): whether it listens
 // for the wake words and which ones the node listens for, whether replies are spoken, the
 // talk key, and what is wrong with the microphone when something is. On every host it holds
 // the node's engines: the one that transcribes and the one that reads replies out
@@ -18,10 +22,11 @@
 // where the launch in use came from (set here, config.toml, or the user's own last session
 // there) and a Reset. It reads with the host's own connection and writes with
 // `profile.update`. It closes on its ✕, on Escape and on a click outside its card, and says
-// what failed beside what failed. `settingsRows`, `speechRow` and `SettingsModel` are DOM-free; the panel
-// draws them. Its look is `settings.css`, which each host page links.
+// what failed beside what failed. `settingsRows`, `speechRow`, `listenerLine` and
+// `SettingsModel` are DOM-free; the panel draws them. Its look is `settings.css`, which each
+// host page links.
 
-import type { HarnessProfile, LaunchMode, Node, ProfileLimits, SpeechLicence, SttEngineId, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import type { HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, SpeechLicence, SttEngineId, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -36,6 +41,58 @@ export const LAUNCH_MODES: readonly { value: "" | LaunchMode; label: string }[] 
 ];
 
 const HARNESS_LABEL: Record<string, string> = { claude: "Claude", codex: "Codex", muse: "Muse" };
+
+/** What a listener listens on, as the settings name it. */
+const KIND_LABEL: Record<ListenerKind, string> = {
+  "session.started": "a session starts",
+  "session.idle": "a session finishes",
+  "session.waiting": "a session waits on its shell or you",
+  "session.ask": "a session asks",
+  "session.said": "a session says something",
+  "session.tool": "a session uses a tool",
+  "session.ended": "a session ends",
+  "task.ready": "a task is ready",
+  "node.pressure": "a machine is short of a resource",
+  "node.joined": "a machine joins",
+  "node.left": "a machine leaves",
+  metric: "a reading",
+  custom: "a hook's event",
+};
+
+const DELIVER_LABEL: Record<Listener["deliver"], string> = { wake: "wakes Cophyla", note: "a note for the next time you talk", notify: "tells you in a line" };
+
+const RESOURCE_LABEL: Record<string, string> = { cpu: "CPU", memory: "memory", gpu: "GPU", vram: "GPU memory" };
+
+/** An id as a line has room for: its kind and its last four characters. */
+function shortId(id: string): string {
+  const m = /^([a-z]+)_[0-9A-Z]{22}([0-9A-Z]{4})$/.exec(id);
+  return m ? `${m[1]}_…${m[2]}` : id;
+}
+
+/**
+ * The line under a listener's why: what it listens on and for, how a fire tells, the fires
+ * left and made. E.g. `a session finishes or a session asks · session sess_…5FB2 · until
+ * task_…5FB2 is over · wakes Cophyla · until removed · fired twice`.
+ */
+export function listenerLine(l: Listener): string {
+  const on = l.on.map((k) => (k === "metric" && l.metric ? `${RESOURCE_LABEL[l.metric.resource] ?? l.metric.resource} ${l.metric.above !== undefined ? `above ${l.metric.above}%` : `below ${l.metric.below}%`} for ${l.metric.forS} s` : k === "custom" && l.name ? `the event ${l.name}` : KIND_LABEL[k]));
+  const parts = [on.length > 1 ? `${on.slice(0, -1).join(", ")} or ${on.at(-1)}` : on[0]!];
+  if (l.session) parts.push(`session ${shortId(l.session)}`);
+  if (l.task) parts.push(`task ${shortId(l.task)}`);
+  if (l.workspace) parts.push(`workspace ${shortId(l.workspace)}`);
+  if (l.harness) parts.push(HARNESS_LABEL[l.harness] ?? l.harness);
+  if (l.origin) parts.push(l.origin === "user" ? "your sessions" : "sessions Cophyla started");
+  if (l.node) parts.push(`machine ${shortId(l.node)}`);
+  if (l.tool) parts.push(`tool ${l.tool}`);
+  if (l.level) parts.push(`level ${l.level}`);
+  if (l.match) parts.push(Object.entries(l.match).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join(", "));
+  if (l.until) parts.push(`until ${shortId(l.until)} is over`);
+  parts.push(DELIVER_LABEL[l.deliver]);
+  if (l.cooldownS) parts.push(`at most once in ${l.cooldownS} s`);
+  parts.push(l.times === undefined ? "until removed" : `${l.times} ${l.times === 1 ? "fire" : "fires"} left`);
+  parts.push(l.fired === 0 ? "not fired yet" : l.fired === 1 ? "fired once" : l.fired === 2 ? "fired twice" : `fired ${l.fired} times`);
+  return parts.join(" · ");
+}
 
 const STATUS_LABEL: Record<HarnessProfile["status"], string> = { ok: "Signed in", unauthenticated: "Not signed in", missing: "Its folder is missing" };
 
@@ -393,6 +450,11 @@ export class SettingsModel {
   speechBusy = false;
   speechNote = "";
   sttNote = "";
+  /** The brain's listeners, once read; absent while reading and on a node from before there were any. */
+  listeners?: Listener[];
+  /** Why a listener could not be removed, by id. */
+  readonly listenerNotes = new Map<string, string>();
+  readonly removing = new Set<string>();
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
   private request: SettingsRequest;
@@ -428,6 +490,34 @@ export class SettingsModel {
       this.limits = {};
     }
     this.changed();
+  }
+
+  /** What Cophyla listens for. A node from before there were listeners leaves the section out. */
+  async loadListeners(): Promise<void> {
+    try {
+      this.listeners = (await this.request<{ listeners: Listener[] }>("listener.list", {})).listeners;
+    } catch {
+      this.listeners = undefined;
+    }
+    this.changed();
+  }
+
+  /** Takes a listener away; the list is read again after, so a fire or another removal meanwhile shows too. */
+  async removeListener(id: string): Promise<void> {
+    if (this.removing.has(id)) return;
+    this.removing.add(id);
+    this.listenerNotes.delete(id);
+    this.changed();
+    try {
+      await this.request("listener.remove", { id });
+      this.listeners = this.listeners?.filter((l) => l.id !== id);
+    } catch (e) {
+      this.listenerNotes.set(id, `Not removed: ${message(e)}`);
+    } finally {
+      this.removing.delete(id);
+    }
+    this.changed();
+    if (!this.listenerNotes.has(id)) await this.loadListeners();
   }
 
   /** The node's speech. A node that cannot say (one from before it could) leaves the part out. */
@@ -700,6 +790,7 @@ export class SettingsPanel {
     close.focus();
     void model.load();
     void model.loadSpeech();
+    void model.loadListeners();
   }
 
   close(): void {
@@ -735,12 +826,39 @@ export class SettingsPanel {
       : speech
         ? this.speechOnly(speech, model)
         : undefined;
-    body.replaceChildren(...(voice ? [voice] : []), agents);
+    const listening = model.listeners ? this.listeningSection(model.listeners, model) : undefined;
+    body.replaceChildren(...(listening ? [listening] : []), ...(voice ? [voice] : []), agents);
     if (focusKey) {
       const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
       again?.focus();
       if (again instanceof HTMLInputElement && caret && caret[0] !== null && caret[1] !== null) again.setSelectionRange(caret[0], caret[1]);
     }
+  }
+
+  private listeningSection(listeners: Listener[], model: SettingsModel): HTMLElement {
+    const box = section("Listening for", "What wakes Cophyla besides your messages: what it set itself to hear when you asked, and the agents it started. Each fire is a model call.");
+    box.dataset["section"] = "listening";
+    if (listeners.length === 0) box.append(paragraph("host-settings-note", "Only your messages wake Cophyla."));
+    for (const l of listeners) {
+      const card = document.createElement("div");
+      card.className = "host-settings-profile";
+      card.dataset["listener"] = l.id;
+      const top = document.createElement("div");
+      top.className = "host-settings-profile-top";
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "host-settings-reset host-settings-remove";
+      remove.dataset["focus"] = `listener:${l.id}`;
+      remove.textContent = model.removing.has(l.id) ? "Removing…" : "Remove";
+      remove.disabled = model.removing.has(l.id);
+      remove.addEventListener("click", () => void model.removeListener(l.id));
+      top.append(span("host-settings-name", l.why), remove);
+      card.append(top, paragraph("host-settings-usage", listenerLine(l)));
+      const note = model.listenerNotes.get(l.id);
+      if (note) card.append(paragraph("host-settings-error", note));
+      box.append(card);
+    }
+    return box;
   }
 
   private voiceSection(voice: VoiceSettings, speech: SpeechRow | undefined, model: SettingsModel): HTMLElement {

@@ -32,8 +32,12 @@ import {
   Workspace,
   HarnessKind,
   Tags,
+  Listener,
+  ListenerSpec,
+  PressureLevel,
+  PressureResource,
 } from "./entities.ts";
-import { AskId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AskId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
 /** The protocol version this package describes. Bumped only for incompatible change. */
@@ -66,8 +70,6 @@ export type EditableProblem = z.infer<typeof EditableProblem>;
 
 export const UserMessageSource = z.enum(["ui", "voice", "controller"]);
 export const ActivityState = z.enum(["typing", "speaking", "idle"]);
-export const PressureResource = z.enum(["cpu", "memory", "gpu", "vram"]);
-export const PressureLevel = z.enum(["normal", "warn", "critical"]);
 
 export const capabilityEvents = {
   "session.discovered": event({ session: Session }),
@@ -99,6 +101,14 @@ export const capabilityEvents = {
   "memory.changed": event({}),
   "events.changed": event({ problems: z.array(EditableProblem).optional() }),
   "entitlement.updated": event({ token: z.string() }),
+  /**
+   * A listener of the brain's heard what it listens for: the event that fired it (a capability
+   * event's name and params, or `metric` with the node's reading) and the listener after the
+   * fire. `last`: this fire spent it and it is gone.
+   */
+  "listener.fired": event({ listener: Listener, event: z.object({ name: z.string(), params: z.record(z.string(), z.unknown()) }), last: z.boolean() }),
+  /** A listener is gone: spent, its `until` settled or ended, or removed by the user or the brain. */
+  "listener.removed": event({ id: ListenerId, why: z.enum(["spent", "until", "user", "brain"]) }),
 } as const;
 
 export type CapabilityEventName = keyof typeof capabilityEvents;
@@ -413,6 +423,10 @@ export const capabilityRequests = {
       at: Timestamp,
     }),
   },
+  /** What the brain listens for beyond the user: the platform matches events against it and counts the fires. */
+  "listener.add": { params: ListenerSpec, result: z.object({ listener: Listener }) },
+  "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
+  "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
   cancel: { params: z.object({ id: RpcId }), result: Empty },
 } as const;
 

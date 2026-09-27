@@ -4,7 +4,7 @@
 // milestone 7 `event.list`; milestone 8 pairing, `view.stage` and the voice methods;
 // milestone 9 the metrics methods; milestone 10 the remote desktop methods; milestone 11
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
-// `session.files` and `session.git`.
+// `session.files` and `session.git`; the brain's listeners as the settings show them.
 
 import { RpcError } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
@@ -18,6 +18,7 @@ import type { EventCatalogue } from "../events/catalogue.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { GateContext } from "../gate/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
+import type { Listeners } from "../listeners/index.ts";
 import type { Metrics } from "../metrics/index.ts";
 import { listingSummary } from "../sessions/files.ts";
 import type { SessionFiles } from "../sessions/files.ts";
@@ -271,6 +272,28 @@ export function taskMethods(deps: TaskDeps): MethodTable {
       target: (p) => p.id,
       handler: (p, ctx) => {
         deps.tasks.update(p.id, p.patch, ctx.principal);
+        return {};
+      },
+    },
+  };
+}
+
+export interface ListenerDeps {
+  listeners?: Pick<Listeners, "list" | "remove">;
+}
+
+/** What the brain listens for, which the user sees in the settings and may take away. */
+export function listenerMethods(deps: ListenerDeps): MethodTable {
+  const need = () => {
+    if (!deps.listeners) throw new RpcError("unsupported", "this node keeps no listeners");
+    return deps.listeners;
+  };
+  return {
+    "listener.list": { handler: () => ({ listeners: need().list() }) },
+    "listener.remove": {
+      target: (p) => p.id,
+      handler: (p) => {
+        if (!need().remove(p.id, "user")) throw new RpcError("not_found", `no listener ${p.id}`);
         return {};
       },
     },

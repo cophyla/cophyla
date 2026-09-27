@@ -284,6 +284,11 @@
       "updatedAt": 1758196000000
     }
   ],
+  "Listener": [
+    { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 },
+    { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "on": ["metric"], "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "metric": { "resource": "cpu", "above": 90, "forS": 10 }, "deliver": "notify", "times": 1, "cooldownS": 60, "why": "the user wants to hear when the CPU is busy", "createdAt": 1758196000000, "fired": 1, "lastFiredAt": 1758196800000 },
+    { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }
+  ],
   "Thread": [
     {
       "id": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",

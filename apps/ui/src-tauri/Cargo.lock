@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "cophyla"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "auto-launch",
  "base64 0.22.1",

@@ -22,6 +22,7 @@ import {
   HarnessProfile,
   LaunchMode,
   IceServer,
+  Listener,
   Message,
   MetricsSample,
   Node,
@@ -39,7 +40,7 @@ import {
   VoiceState,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ControllerId, GrantRef, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
@@ -495,6 +496,9 @@ export const clientRequests = {
    * prompt or a brain request in flight), unless `force`.
    */
   "node.restart": { params: z.object({ force: z.boolean().optional() }), result: Empty },
+  /** What the brain listens for beyond the user's messages, as its tools set it; the user sees them in the settings and may remove one. */
+  "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
+  "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
   "profile.list": { params: z.object({ node: NodeId.optional() }), result: z.object({ profiles: z.array(HarnessProfile) }) },
   /** Each profile's plan limits, read now when the last reading is old; a node's alone when one is named. */
   "profile.limits": { params: z.object({ node: NodeId.optional() }), result: z.object({ limits: z.record(ProfileId, ProfileLimits) }) },

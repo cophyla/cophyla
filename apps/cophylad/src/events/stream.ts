@@ -5,10 +5,11 @@
 // or a new title: the intent, summary, tags or title) becomes `session.updated` without an
 // `event`; a session that ended becomes `session.ended`; an open harness ask `session.ask`;
 // task, thread and workspace changes their `*.updated`; a user message, the user's
-// activity, a node's pressure and the editable layer's notices pass through. `custom` turns a hook's emit into
-// `event.custom` with its payload as plain JSON, carrying the hook's name as `origin` so the
-// hook never hears its own, and the emit depth so a ping-pong between hooks ends. Nothing is
-// announced at a brain handshake: `prime` marks the live sessions known.
+// activity, a node's pressure, the editable layer's notices and the brain's listeners' fires
+// and removals pass through. `custom` turns a hook's emit into `event.custom` with its
+// payload as plain JSON, carrying the hook's name as `origin` so the hook never hears its
+// own, and the emit depth so a ping-pong between hooks ends. Nothing is announced at a brain
+// handshake: `prime` marks the live sessions known.
 
 import type { CapabilityEventName, CapabilityEventParams, Session } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
@@ -104,6 +105,8 @@ export class EventStream {
       bus.on("node.joined", (node) => this.emit({ name: "node.joined", params: { at: this.now(), node } })),
       bus.on("node.left", (e) => this.emit({ name: "node.left", params: { at: e.at, node: e.node } })),
       bus.on("entitlement.updated", (e) => this.emit({ name: "entitlement.updated", params: { at: e.at, token: e.token } })),
+      bus.on("listener.fired", (e) => this.emit({ name: "listener.fired", params: e })),
+      bus.on("listener.removed", (e) => this.emit({ name: "listener.removed", params: e })),
     );
   }
 

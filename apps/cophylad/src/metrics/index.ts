@@ -3,8 +3,9 @@
 // into a rollup in the store, watches the thresholds, counts the tokens the platform routed
 // and the sessions spent, carries each profile's plan limits (`limits.ts`, read while a
 // client subscribes), and delivers samples to the clients that subscribed at the rate
-// each asked for (see `delivery.ts`), and sums a range's spend per profile for a client
-// that shows it. The timer is an unref'd `setTimeout` chain, never an interval: a tick
+// each asked for (see `delivery.ts`), and to the in-process watchers the brain's metric
+// listeners hold (`watchInternal`, which move the rate as a subscriber does but read no plan
+// limits), and sums a range's spend per profile for a client that shows it. The timer is an unref'd `setTimeout` chain, never an interval: a tick
 // that runs long delays the next rather than piling up, and a sampler alone never keeps the
 // process alive. `tick` is public so the tests drive it without a clock.
 
@@ -17,7 +18,7 @@ import type { Store } from "../store/index.ts";
 import { addProfiles, SampleFeed, slackFor } from "./delivery.ts";
 import type { ProcessDetail } from "./delivery.ts";
 import type { MetricsEngine, RawSample } from "./engine.ts";
-import { PressureTracker } from "./pressure.ts";
+import { PressureTracker, readings } from "./pressure.ts";
 import type { Level, Resource } from "./pressure.ts";
 import { mergeHistory, MINUTE_MS, minuteOf, rollup } from "./rollup.ts";
 import { Sampler } from "./sampler.ts";
@@ -46,6 +47,7 @@ export interface MetricsDeps {
 export interface MetricsSnapshot {
   intervalMs: number;
   subscribers: { client: string; intervalMs: number; processes: ProcessDetail }[];
+  internal: { id: string; intervalMs: number }[];
   ring: number;
   pressure: { resource: Resource; level: Level }[];
   engine: string;
@@ -78,6 +80,8 @@ export class Metrics {
   private openMinute?: number;
   private latestSample?: MetricsSample;
   private subscribers = new Map<string, SampleFeed>();
+  /** In-process watchers of this node's samples (the brain's metric listeners): not clients, so no plan limits are read for them. */
+  private internal = new Map<string, { feed: SampleFeed; on: (sample: MetricsSample) => void }>();
   private timer?: ReturnType<typeof setTimeout>;
   private ticking?: Promise<void>;
   private started = false;
@@ -106,6 +110,7 @@ export class Metrics {
   intervalMs(): number {
     let min = Infinity;
     for (const s of this.subscribers.values()) min = Math.min(min, s.intervalMs);
+    for (const w of this.internal.values()) min = Math.min(min, w.feed.intervalMs);
     return min === Infinity ? this.deps.config.idle_interval_ms : Math.max(min, this.deps.config.min_interval_ms);
   }
 
@@ -191,6 +196,15 @@ export class Metrics {
       const due = feed.offer(sample, slack);
       if (due && !this.deps.deliver(client, due)) this.subscribers.delete(client);
     }
+    for (const [id, w] of [...this.internal]) {
+      const due = w.feed.offer(sample, slack);
+      if (!due) continue;
+      try {
+        w.on(due);
+      } catch (e) {
+        this.log.warn("sample watcher failed", { id, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
   }
 
   /** Writes the open minute's rollup and prunes now and then. */
@@ -211,15 +225,7 @@ export class Metrics {
   }
 
   private watch(s: MetricsSample): void {
-    const readings: [Resource, number][] = [
-      ["cpu", s.cpu],
-      ["memory", s.memory.total > 0 ? (s.memory.used / s.memory.total) * 100 : 0],
-    ];
-    if (s.gpu && s.gpu.length > 0) {
-      readings.push(["gpu", Math.max(...s.gpu.map((g) => g.util))]);
-      readings.push(["vram", Math.max(...s.gpu.map((g) => (g.vramTotal > 0 ? (g.vramUsed / g.vramTotal) * 100 : 0)))]);
-    }
-    for (const [resource, pct] of readings) {
+    for (const [resource, pct] of readings(s)) {
       const level = this.pressure.update(resource, pct);
       if (level === undefined) continue;
       this.log.info("node pressure", { resource, level, pct: Math.round(pct) });
@@ -252,6 +258,20 @@ export class Metrics {
     this.refreshLimits();
     this.arm();
     return spend ? this.spend(this.deps.nodeId, spend) : undefined;
+  }
+
+  /**
+   * An in-process watcher of this node's samples every `intervalMs` (floored): the sampler runs
+   * at least that fast while it is there, and back at its own pace once the returned function
+   * removes it. Unlike a client's subscription it reads no plan limits. None while metrics are off.
+   */
+  watchInternal(id: string, intervalMs: number, on: (sample: MetricsSample) => void): () => void {
+    if (!this.enabled) return () => {};
+    this.internal.set(id, { feed: new SampleFeed(Math.max(intervalMs, this.deps.config.min_interval_ms), "owners"), on });
+    this.arm();
+    return () => {
+      if (this.internal.delete(id)) this.arm();
+    };
   }
 
   unsubscribe(client: string): boolean {
@@ -336,6 +356,7 @@ export class Metrics {
     return {
       intervalMs: this.intervalMs(),
       subscribers: [...this.subscribers].map(([client, s]) => ({ client, intervalMs: s.intervalMs, processes: s.processes })),
+      internal: [...this.internal].map(([id, w]) => ({ id, intervalMs: w.feed.intervalMs })),
       ring: this.ring.length,
       pressure: this.pressure.raised(),
       engine: this.deps.engine.name,

@@ -13,6 +13,7 @@ import type { EventCatalogue } from "../events/catalogue.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Prompts } from "../editable/prompts.ts";
 import type { GateContext } from "../gate/index.ts";
+import type { Listeners } from "../listeners/index.ts";
 import type { Llm } from "../llm/index.ts";
 import type { Metrics } from "../metrics/index.ts";
 import type { Sessions } from "../sessions/index.ts";
@@ -77,6 +78,8 @@ export interface BrainMethodDeps {
   remote?: Remote;
   /** The profiles' plan limits, read now when old; absent where they are not read, and `profile.limits` then answers none. */
   limits?: LimitsReader;
+  /** The brain's listeners; absent on a node that keeps none, and `listener.*` is then `unsupported`. */
+  listeners?: Listeners;
 }
 
 /** What `profile.limits` reads: `PlanLimits.fresh`. */
@@ -316,6 +319,18 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
         return { samples: deps.metrics.query(p.node, p.range) };
       },
     },
+    "listener.add": {
+      target: (p) => p.on.join(","),
+      handler: (p) => ({ listener: listenersOf(deps).add(p) }),
+    },
+    "listener.remove": {
+      target: (p) => p.id,
+      handler: (p) => {
+        if (!listenersOf(deps).remove(p.id, "brain")) throw new RpcError("not_found", `no listener ${p.id}`);
+        return {};
+      },
+    },
+    "listener.list": { handler: () => ({ listeners: listenersOf(deps).list() }) },
     // The host's own gate asks: the viewer's name is the target, so an answer can be remembered per viewer.
     "remote.pair": {
       target: (p) => p.name,
@@ -334,6 +349,11 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     // `cancel` is served by the link itself, before the table.
   };
+}
+
+function listenersOf(deps: { listeners?: Listeners }): Listeners {
+  if (!deps.listeners) throw new RpcError("unsupported", "this node keeps no listeners");
+  return deps.listeners;
 }
 
 /** Refuses a store request on a namespace the daemon keeps for itself. */

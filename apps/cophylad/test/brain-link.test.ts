@@ -6,7 +6,8 @@
 // `chat.message` under one id for a completion flagged `reply`, nothing for one that is not,
 // and a `chat.retract` for a reply step that ended in a tool call; a crash restarted with the
 // message sent meanwhile delivered and the brain's asks cancelled; unsupported requests
-// answered `unsupported`.
+// answered `unsupported`; the brain's listeners added unasked, their fires heard after the
+// event that caused them, and one removed by the user.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -133,6 +134,51 @@ describe("brain-link", () => {
       expect(e.correlation).toBe(params.eventId);
       expect(e.thread).toBe(m.thread);
     }
+  });
+
+  test("listeners: the brain adds them unasked, a fire reaches it after the event that caused it, the last one removes it, the user removes one, the store refuses their namespace", async () => {
+    const { d, c, log } = await start({
+      on: [
+        {
+          event: "hello",
+          requests: [
+            { method: "listener.add", params: { on: ["node.pressure"], level: "critical", deliver: "wake", times: 1, why: "the machine is struggling" } },
+            { method: "listener.add", params: { on: ["session.said"], origin: "user", deliver: "note", why: "what the user's agents say" } },
+            { method: "store.put", params: { ns: "listeners", key: "x", value: {} } },
+          ],
+        },
+      ],
+    });
+    await waitFor(() => brainAudit(d).filter((e) => e.action.startsWith("listener.") || e.action === "store.put").length === 3);
+    const adds = brainAudit(d).filter((e) => e.action === "listener.add");
+    expect(adds.map((e) => e.decision)).toEqual(["allow", "allow"]);
+    expect(adds.every((e) => e.outcome === "ok")).toBe(true);
+    expect(brainAudit(d).find((e) => e.action === "store.put")?.outcome).toBe("error");
+    const listed = await c.request<{ listeners: { id: string; on: string[]; fired: number }[] }>("listener.list", {});
+    expect(listed.listeners.map((l) => l.on)).toEqual([["node.pressure"], ["session.said"]]);
+    const [pressure, said] = listed.listeners;
+    // A warn is not what it listens for; a critical is, once.
+    d.bus.emit("node.pressure", { at: Date.now(), node: d.identity.id, resource: "cpu", level: "warn" });
+    d.bus.emit("node.pressure", { at: Date.now(), node: d.identity.id, resource: "cpu", level: "critical" });
+    await waitFor(() => brainFrames(log).some((f) => f.dir === "in" && f.frame["method"] === "listener.removed"));
+    const seen = brainFrames(log).filter((f) => f.dir === "in" && typeof f.frame["method"] === "string" && ["node.pressure", "listener.fired", "listener.removed"].includes(f.frame["method"] as string));
+    expect(seen.map((f) => f.frame["method"])).toEqual(["node.pressure", "node.pressure", "listener.fired", "listener.removed"]);
+    const fired = seen[2]!.frame["params"] as { listener: { id: string; fired: number; times: number }; event: { name: string; params: { level: string; at: number } }; last: boolean; eventId: string };
+    expect(fired.listener).toMatchObject({ id: pressure!.id, fired: 1, times: 0 });
+    expect(fired.event.name).toBe("node.pressure");
+    expect(fired.event.params.level).toBe("critical");
+    expect(typeof fired.event.params.at).toBe("number");
+    expect(fired.last).toBe(true);
+    expect(fired.eventId).toMatch(/^evt_/);
+    expect(seen[3]!.frame["params"]).toMatchObject({ id: pressure!.id, why: "spent" });
+    // The user takes the other away: the brain hears why.
+    await c.request("listener.remove", { id: said!.id });
+    await waitFor(() => brainFrames(log).filter((f) => f.dir === "in" && f.frame["method"] === "listener.removed").length === 2);
+    expect(brainFrames(log).filter((f) => f.dir === "in" && f.frame["method"] === "listener.removed")[1]!.frame["params"]).toMatchObject({ id: said!.id, why: "user" });
+    expect((await c.request<{ listeners: unknown[] }>("listener.list", {})).listeners).toEqual([]);
+    const gone = await c.call("listener.remove", { id: said!.id });
+    expect("error" in gone && gone.error.data?.code).toBe("not_found");
+    expect(d.store.kv.list("listeners")).toEqual([]);
   });
 
   test("a brain whose protocol range excludes ours is refused and not restarted", async () => {

@@ -253,6 +253,13 @@
   background: #2f2b3a;
 }
 
+.host-settings-remove {
+  margin-left: auto;
+  min-height: 26px;
+  padding: 2px 10px;
+  font-size: 12px;
+}
+
 .host-settings-reset[hidden] {
   display: none;
 }

@@ -8,6 +8,7 @@ import {
   ClientId,
   ControllerId,
   GrantRef,
+  ListenerId,
   MessageId,
   NodeId,
   ProfileId,
@@ -364,6 +365,88 @@ export const Task = z.object({
   completedAt: Timestamp.optional(),
 });
 export type Task = z.infer<typeof Task>;
+
+// ---------------------------------------------------------------------------------------
+// Listener
+
+/** A node resource, as pressure and metric conditions name it. */
+export const PressureResource = z.enum(["cpu", "memory", "gpu", "vram"]);
+export const PressureLevel = z.enum(["normal", "warn", "critical"]);
+
+/**
+ * What a listener hears. The session kinds are read off the session's events: `session.idle`
+ * is idle and done, `session.waiting` idle but waiting on its shells or the user, `session.said`
+ * its assistant text, `session.tool` a tool call. `metric` is a condition on the node's samples,
+ * `custom` an event a hook raised.
+ */
+export const ListenerKind = z.enum([
+  "session.started",
+  "session.idle",
+  "session.waiting",
+  "session.ask",
+  "session.said",
+  "session.tool",
+  "session.ended",
+  "task.ready",
+  "node.pressure",
+  "node.joined",
+  "node.left",
+  "metric",
+  "custom",
+]);
+export type ListenerKind = z.infer<typeof ListenerKind>;
+
+/** What a fire does: a turn now, a note for the brain's next turn, or a turn with no tools that tells the user in a line or two. */
+export const ListenerDelivery = z.enum(["wake", "note", "notify"]);
+export type ListenerDelivery = z.infer<typeof ListenerDelivery>;
+
+/** A resource past a line for a while: every sample of the last `forS` seconds above (or below) `pct` percent. */
+export const MetricCondition = z.object({
+  resource: PressureResource,
+  above: z.number().min(0).max(100).optional(),
+  below: z.number().min(0).max(100).optional(),
+  forS: z.number().int().positive().max(3600),
+});
+export type MetricCondition = z.infer<typeof MetricCondition>;
+
+/** What a listener hears, without the platform's bookkeeping: what `listener.add` takes. */
+export const ListenerSpec = z.object({
+  on: z.array(ListenerKind).min(1),
+  /** Filters, all optional; an absent one matches anything. */
+  session: SessionId.optional(),
+  workspace: WorkspaceId.optional(),
+  harness: HarnessKind.optional(),
+  origin: SessionOrigin.optional(),
+  node: NodeId.optional(),
+  task: TaskId.optional(),
+  /** `session.tool`: the tool's name. */
+  tool: z.string().optional(),
+  /** `node.pressure`: the level reached. */
+  level: PressureLevel.optional(),
+  /** `custom`: the event's name, and the payload values it must have (a shallow match, as a task trigger's). */
+  name: z.string().optional(),
+  match: z.record(z.string(), z.unknown()).optional(),
+  /** Required when `on` has `metric`; its node is `node`, the primary when absent. */
+  metric: MetricCondition.optional(),
+  deliver: ListenerDelivery,
+  /** Fires left; unlimited when absent. The listener is removed when it reaches 0. */
+  times: z.number().int().nonnegative().optional(),
+  /** The fewest seconds between two fires. */
+  cooldownS: z.number().int().nonnegative().optional(),
+  /** A task or session id: the listener is removed when that task settles or that session ends. */
+  until: z.union([TaskId, SessionId]).optional(),
+  /** One line from the brain: why it listens, shown in the fire's seed and in the app's settings. */
+  why: z.string().min(1).max(200),
+});
+export type ListenerSpec = z.infer<typeof ListenerSpec>;
+
+export const Listener = ListenerSpec.extend({
+  id: ListenerId,
+  createdAt: Timestamp,
+  fired: z.number().int().nonnegative(),
+  lastFiredAt: Timestamp.optional(),
+});
+export type Listener = z.infer<typeof Listener>;
 
 // ---------------------------------------------------------------------------------------
 // Thread, Message, Source, Hit
@@ -1074,6 +1157,7 @@ export const entities = {
   SessionEvent,
   Terminal,
   Task,
+  Listener,
   Thread,
   Message,
   Source,

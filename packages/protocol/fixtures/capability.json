@@ -159,7 +159,12 @@
     "prompts.changed": [{ "at": 1758196800000 }],
     "memory.changed": [{ "at": 1758196800000 }],
     "events.changed": [{ "at": 1758196800000 }, { "at": 1758196800000, "problems": [{ "file": "hooks/ci-watch.ts", "message": "ci-watch.ts: on must be an object" }] }],
-    "entitlement.updated": [{ "at": 1758196800000, "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }]
+    "entitlement.updated": [{ "at": 1758196800000, "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }],
+    "listener.fired": [
+      { "at": 1758196800000, "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, "event": { "name": "session.updated", "params": { "at": 1758196800000, "session": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" } } }, "last": false },
+      { "at": 1758196800000, "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "on": ["metric"], "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "metric": { "resource": "cpu", "above": 90, "forS": 10 }, "deliver": "notify", "times": 1, "cooldownS": 60, "why": "the user wants to hear when the CPU is busy", "createdAt": 1758196000000, "fired": 1, "lastFiredAt": 1758196800000 }, "event": { "name": "metric", "params": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "resource": "cpu", "value": 94, "forS": 10 } }, "last": true }
+    ],
+    "listener.removed": [{ "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "why": "until" }, { "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "why": "spent" }]
   },
   "requests": {
     "node.list": { "params": [{}], "results": [{ "nodes": [] }] },
@@ -352,6 +357,9 @@
     "metrics.query": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "range": { "from": 1758100000000, "to": 1758196800000 } }], "results": [{ "samples": [] }] },
     "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "study web" }], "results": [{}] },
     "remote.screenshot": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "display": 0 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "image": { "mime": "image/jpeg", "base64": "/9j/4AAQSkZJRg==" }, "width": 1280, "height": 800, "display": 0, "at": 1758196800000 }] },
+    "listener.add": { "params": [{ "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build" }, { "on": ["metric"], "metric": { "resource": "cpu", "below": 100, "forS": 5 }, "deliver": "wake", "times": 2, "why": "the user asked to hear when the CPU is under 100%" }, { "on": ["session.tool"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "harness": "claude", "origin": "user", "tool": "Bash", "deliver": "note", "cooldownS": 30, "why": "shell use in the site" }], "results": [{ "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 } }] },
+    "listener.remove": { "params": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
+    "listener.list": { "params": [{}], "results": [{ "listeners": [] }, { "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },
     "cancel": { "params": [{ "id": 7 }, { "id": "req-9" }], "results": [{}] }
   },
   "notices": {

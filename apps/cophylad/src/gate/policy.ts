@@ -43,6 +43,8 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:annotate": "allow",
   "brain:store.put": "allow",
   "brain:store.delete": "allow",
+  "brain:listener.add": "allow",
+  "brain:listener.remove": "allow",
   "brain:memory.write": "allow",
   "brain:prompt.write": "allow",
   "brain:session.spawn": "allow",

@@ -44,6 +44,8 @@ export function builtinEvents(node: string): EventDefinition[] {
     def("node.pressure", "a node crossed a resource threshold"),
     def("node.joined", "a node came"),
     def("node.left", "a node went"),
+    def("listener.fired", "a listener of the brain's heard what it listens for; the listener and the event that fired it are inside"),
+    def("listener.removed", "a listener of the brain's is gone: spent, its task or session over, or removed"),
   ];
 }
 
