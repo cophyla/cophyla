@@ -5,7 +5,7 @@
 // watch, whether to load history unasked) are small functions here too. A session's card
 // holds a timeline only while its tab is open: the events streamed since, and the pages
 // loaded; a session that ends leaves, card and all. The rail groups the live sessions by the
-// folder they work in. A node's spend is the node's own totals for the day, with the live
+// folder they work in, a workspace inside another's under it. A node's spend is the node's own totals for the day, with the live
 // samples added, beside each login's plan limits as the node's latest sample carries them.
 // The node's terminals are rows too: a session's own is reached from its pane, and the bare
 // ones (a shell the user started here, in a workspace they picked) get tabs of their own,
@@ -994,13 +994,24 @@ export function keyOf(item: StreamItem): string {
   }
 }
 
-/** The folder a group of tabs stands for, and its live sessions in the order they started. */
+/**
+ * The folder a group of tabs stands for, its live sessions in the order they started, and the
+ * workspaces inside it where a session is open, each a group of its own, by name.
+ */
 export interface SessionGroup {
   key: string;
-  /** The workspace's name, or the folder's; with the machine's when it is another node's. */
+  /** The workspace's name, or the folder's; with the machine's when it is another node's and outermost. */
   name: string;
   path: string;
   sessions: SessionCard[];
+  groups: SessionGroup[];
+  /** Its sessions and every one in the groups inside it: what its heading says it holds while folded. */
+  count: number;
+}
+
+/** A rail heading: its name, and while folded how many tabs it holds out of sight. */
+export function groupHeading(name: string, count: number, folded: boolean): string {
+  return folded ? `${name} (${count})` : name;
 }
 
 /** A path as the node's filesystem compares it: forward slashes, no trailing one, case-folded on Windows and macOS. */
@@ -1011,11 +1022,13 @@ export function placeKey(path: string, platform?: Platform): string {
 }
 
 /**
- * The rail's tabs grouped by folder, the groups by name and the tabs in each in the order
- * their sessions started, so nothing moves as sessions work. A session's
- * folder is its workspace's, or its own cwd without one; a folder inside another that a live
- * session works in (a worktree under its repository, a subfolder) joins that one, so each
- * group is the outermost folder of a node where a session is open.
+ * The rail's tabs as a tree of folders, each level by name and the tabs in each in the order
+ * their sessions started, so nothing moves as sessions work. A session's folder is its
+ * workspace's, or its own cwd without one. A workspace inside another folder where a live
+ * session works (a worktree under its repository, a repository under a folder of them) is a
+ * group under the innermost such group; a session with no workspace whose cwd is inside a
+ * group's folder joins the innermost such group rather than heading one. The outermost groups
+ * are the outermost folders of a node where a session is open.
  */
 export function selectGroups(state: ViewState): SessionGroup[] {
   interface Place {
@@ -1023,6 +1036,8 @@ export function selectGroups(state: ViewState): SessionGroup[] {
     key: string;
     path: string;
     name: string;
+    /** A workspace's folder, not only some session's cwd: inside another, it heads a group of its own. */
+    workspace: boolean;
   }
   const places = new Map<string, Place>();
   const own = new Map<SessionCard, Place>();
@@ -1035,28 +1050,58 @@ export function selectGroups(state: ViewState): SessionGroup[] {
     const id = `${s.node}\n${key}`;
     let place = places.get(id);
     if (!place) {
-      place = { node: s.node, key, path, name: w?.name ?? lastPart(path) };
+      place = { node: s.node, key, path, name: w?.name ?? lastPart(path), workspace: w !== undefined };
       places.set(id, place);
+    } else if (w && !place.workspace) {
+      // A bare cwd met first, then the workspace at the same folder: the workspace names it.
+      place.name = w.name;
+      place.workspace = true;
     }
     own.set(card, place);
   }
-  const within = (inner: string, outer: string) => inner === outer || inner.startsWith(outer + "/");
+  // Nesting is by path on one node; a folder is not inside itself.
+  const inside = (inner: Place, outer: Place) => inner.node === outer.node && inner.key.startsWith(outer.key + "/");
+  const innermost = (place: Place, among: Iterable<Place>): Place | undefined => {
+    let best: Place | undefined;
+    for (const p of among) if (inside(place, p) && (best === undefined || p.key.length > best.key.length)) best = p;
+    return best;
+  };
+  // A workspace's folder heads a group, and so does a folder inside no other. The outermost
+  // folder around any place heads one, so every place has a head at or around it.
+  const heads = new Set<Place>();
+  for (const p of places.values()) if (p.workspace || innermost(p, places.values()) === undefined) heads.add(p);
   const groups = new Map<Place, SessionGroup>();
+  for (const head of heads) groups.set(head, { key: `${head.node}\n${head.key}`, name: head.name, path: head.path, sessions: [], groups: [], count: 0 });
   for (const [card, place] of own) {
-    let root = place;
-    for (const p of places.values()) if (p.node === place.node && p.key.length < root.key.length && within(place.key, p.key)) root = p;
-    let group = groups.get(root);
-    if (!group) {
-      const other = root.node !== state.node ? state.nodes.get(root.node)?.name : undefined;
-      group = { key: `${root.node}\n${root.key}`, name: other ? `${root.name} · ${other}` : root.name, path: root.path, sessions: [] };
-      groups.set(root, group);
+    const head = heads.has(place) ? place : innermost(place, heads)!;
+    groups.get(head)!.sessions.push(card);
+  }
+  const roots: SessionGroup[] = [];
+  for (const [head, group] of groups) {
+    const parent = innermost(head, heads);
+    if (parent) {
+      groups.get(parent)!.groups.push(group);
+      continue;
     }
-    group.sessions.push(card);
+    const other = head.node !== state.node ? state.nodes.get(head.node)?.name : undefined;
+    if (other) group.name = `${group.name} · ${other}`;
+    roots.push(group);
   }
   const byStart = (a: SessionCard, b: SessionCard) => a.session.startedAt - b.session.startedAt || (a.session.id < b.session.id ? -1 : 1);
-  const out = [...groups.values()];
-  for (const g of out) g.sessions.sort(byStart);
-  return out.sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const byName = (a: SessionGroup, b: SessionGroup) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  // Each level in order, and each group's count with everything under it.
+  const settle = (level: SessionGroup[]): number => {
+    level.sort(byName);
+    let total = 0;
+    for (const g of level) {
+      g.sessions.sort(byStart);
+      g.count = g.sessions.length + settle(g.groups);
+      total += g.count;
+    }
+    return total;
+  };
+  settle(roots);
+  return roots;
 }
 
 function lastPart(path: string): string {

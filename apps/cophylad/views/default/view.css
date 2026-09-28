@@ -511,6 +511,16 @@ button:disabled {
   gap: 2px;
 }
 
+/* The workspaces inside a folder's, under its tabs: stepped in along a faint line down from
+   its heading, each headed and folded as the outer one is, and so on down. */
+.tab-subgroups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 0 10px;
+  border-left: 1px solid var(--line);
+}
+
 .tab-groups .tab,
 .tab-terminals .tab {
   padding-top: 5px;

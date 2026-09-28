@@ -3,7 +3,8 @@
 // and the frame does not flicker. The rail on the left holds, on the desktop, a dot for the
 // line to cophylad at the very top, one tab for the chat, fixed,
 // and under it one tab per open session, the agent's mark and its name, grouped under the
-// folder they work in, the bare terminals under Terminals, each named by the folder it works
+// folder they work in, a workspace inside another's indented under it, a folded heading
+// saying how many tabs it holds, the bare terminals under Terminals, each named by the folder it works
 // in, then a card per node with its machine's bars, its processes folded
 // away, and its desktop (the host's state, its viewers, and Connect, a PIN or a phone code),
 // each login's plan limits and spend, and the account, its details folded away. While an
@@ -43,7 +44,7 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -528,24 +529,28 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
   tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}`;
 }
 
-/** A folder's heading and its sessions' tabs. */
+/** A folder's heading, its sessions' tabs, and the workspaces inside it, each a group like this one. */
 function createGroup(): HTMLElement {
   const group = el("div", "tab-group");
-  // The name folds the group's tabs away and back.
-  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"));
+  // The name folds the group's tabs and the groups inside it away and back.
+  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"), el("div", "tab-subgroups"));
   return group;
 }
 
 function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, ui: UiState): void {
-  const name = node.querySelector<HTMLElement>(".tab-group-name")!;
+  // Its own parts only: the groups inside it hold the same ones.
+  const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
   const folded = ui.folded.has(group.key);
-  setText(name, group.name);
+  setText(name, groupHeading(group.name, group.count, folded));
   name.title = group.path;
   setData(name, "group", group.key);
   name.setAttribute("aria-expanded", folded ? "false" : "true");
-  const list = node.querySelector<HTMLElement>(".tab-group-list")!;
+  const list = node.querySelector<HTMLElement>(":scope > .tab-group-list")!;
   setHidden(list, folded);
   reconcile(list, group.sessions, (c) => c.session.id, createTab, (tab, c) => updateTab(tab, c, state, ui));
+  const inner = node.querySelector<HTMLElement>(":scope > .tab-subgroups")!;
+  setHidden(inner, folded || group.groups.length === 0);
+  reconcile(inner, group.groups, (g) => g.key, createGroup, (n, g) => updateGroup(n, g, state, ui));
 }
 
 function createTermTab(): HTMLElement {
@@ -560,6 +565,7 @@ function renderTerminals(node: HTMLElement, terminals: Terminal[], state: ViewSt
   setHidden(node, terminals.length === 0);
   const name = node.querySelector<HTMLElement>(".tab-group-name")!;
   const folded = ui.folded.has(TERMINALS_GROUP);
+  setText(name, groupHeading("Terminals", terminals.length, folded));
   name.setAttribute("aria-expanded", folded ? "false" : "true");
   const list = node.querySelector<HTMLElement>(".tab-terminals")!;
   setHidden(list, folded);

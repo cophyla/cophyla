@@ -17,8 +17,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
-import type { HostReady, ViewState } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
+import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLIENT: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["sessions:read", "sessions:write", "asks:answer", "audit:read", "chat", "tasks:read"], via: "direct", audio: { in: false, out: false }, connectedAt: 1 };
@@ -92,6 +92,26 @@ function ready(client: Partial<Client> = {}): ViewState {
   return s;
 }
 
+/** A workspace the node registered, as `workspace.state` streams it. */
+function putWorkspace(s: ViewState, id: string, path: string, name: string, node = NODE): void {
+  apply(s, { type: "workspace.state", params: { id, node, path, name, origin: "discovered", lastActivity: 1 } });
+}
+
+/** Another machine, online, named laptop. */
+function addLaptop(s: ViewState, id: string): void {
+  apply(s, { type: "nodes", nodes: [{ id, name: "laptop", role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false }, versions: { platform: "0.3.0", protocol: 1 }, lastSeen: 1 }] });
+}
+
+/** A rail group as [name, its sessions, the groups inside], the last left off where there are none. */
+type GroupShape = [string, string[]] | [string, string[], GroupShape[]];
+
+function shape(groups: SessionGroup[]): GroupShape[] {
+  return groups.map((g) => {
+    const ids = g.sessions.map((c) => c.session.id);
+    return g.groups.length > 0 ? [g.name, ids, shape(g.groups)] : [g.name, ids];
+  });
+}
+
 /** Opens a session's tab, as selecting it does, and returns the opening a history page is asked for under. */
 function open(s: ViewState, id: string): number {
   apply(s, { type: "tab.open", session: id });
@@ -124,30 +144,30 @@ describe("default view model", () => {
     expect(ids()).toEqual(["sess_a"]);
   });
 
-  test("tabs group under the folder their sessions work in, the groups by name; a folder inside another where a session is open joins it", () => {
+  test("tabs group under the folder their sessions work in, the groups by name; a workspace inside another where a session is open is a group under it", () => {
     const s = ready();
     const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
-    const workspace = (id: string, path: string, name: string, node = NODE) => apply(s, { type: "workspace.state", params: { id, node, path, name, origin: "discovered", lastActivity: 1 } });
-    workspace("wks_cophyla", "C:\\D\\orchestrator", "orchestrator");
-    workspace("wks_m15", "C:\\D\\orchestrator\\.claude\\worktrees\\m15", "m15");
-    workspace("wks_old", "C:\\D\\orchestrator-old", "orchestrator-old");
-    workspace("wks_site", "C:\\D\\site", "site");
-    workspace("wks_far", "C:\\D\\orchestrator", "orchestrator", OTHER);
-    const groups = () => selectGroups(s).map((g) => [g.name, g.sessions.map((c) => c.session.id)]);
+    putWorkspace(s, "wks_cophyla", "C:\\D\\orchestrator", "orchestrator");
+    putWorkspace(s, "wks_m15", "C:\\D\\orchestrator\\.claude\\worktrees\\m15", "m15");
+    putWorkspace(s, "wks_old", "C:\\D\\orchestrator-old", "orchestrator-old");
+    putWorkspace(s, "wks_site", "C:\\D\\site", "site");
+    putWorkspace(s, "wks_far", "C:\\D\\orchestrator", "orchestrator", OTHER);
+    const groups = () => shape(selectGroups(s));
     // A worktree's session alone is a group of its own.
     apply(s, { type: "session.state", params: session("sess_1", 50, { workspace: "wks_m15", cwd: "C:\\D\\orchestrator\\.claude\\worktrees\\m15", lastActivity: 500 }) });
     expect(groups()).toEqual([["m15", ["sess_1"]]]);
-    // Once a session is open in the repository, the worktree's joins it, in the order they started.
+    // Once a session is open in the repository, the worktree's group goes under the repository's.
     apply(s, { type: "session.state", params: session("sess_2", 20, { workspace: "wks_cophyla", cwd: "C:\\D\\orchestrator", lastActivity: 100 }) });
-    expect(groups()).toEqual([["orchestrator", ["sess_2", "sess_1"]]]);
+    expect(groups()).toEqual([["orchestrator", ["sess_2"], [["m15", ["sess_1"]]]]]);
     expect(selectGroups(s)[0]!.path).toBe("C:\\D\\orchestrator");
+    expect(selectGroups(s)[0]!.groups[0]!.path).toBe("C:\\D\\orchestrator\\.claude\\worktrees\\m15");
     // A name that only starts the same is another folder; a session without a workspace is
-    // placed by its cwd, compared case-folded on Windows.
+    // placed by its cwd, compared case-folded on Windows, and joins the group its folder is in.
     apply(s, { type: "session.state", params: session("sess_3", 30, { workspace: "wks_old", cwd: "C:\\D\\orchestrator-old", lastActivity: 300 }) });
     apply(s, { type: "session.state", params: session("sess_4", 60, { cwd: "c:\\d\\site\\docs", lastActivity: 50 }) });
     apply(s, { type: "session.state", params: session("sess_5", 40, { workspace: "wks_site", cwd: "C:\\D\\site", lastActivity: 40 }) });
-    const all = [
-      ["orchestrator", ["sess_2", "sess_1"]],
+    const all: GroupShape[] = [
+      ["orchestrator", ["sess_2"], [["m15", ["sess_1"]]]],
       ["orchestrator-old", ["sess_3"]],
       ["site", ["sess_5", "sess_4"]],
     ];
@@ -156,10 +176,10 @@ describe("default view model", () => {
     apply(s, { type: "session.state", params: session("sess_4", 60, { cwd: "c:\\d\\site\\docs", status: "busy", lastActivity: 9000 }) });
     expect(groups()).toEqual(all);
     // The same folder on another machine is another group, named with the machine.
-    apply(s, { type: "nodes", nodes: [{ id: OTHER, name: "laptop", role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false }, versions: { platform: "0.3.0", protocol: 1 }, lastSeen: 1 }] });
+    addLaptop(s, OTHER);
     apply(s, { type: "session.state", params: session("sess_6", 10, { node: OTHER, workspace: "wks_far", cwd: "C:\\D\\orchestrator", lastActivity: 200 }) });
     expect(groups()).toEqual([
-      ["orchestrator", ["sess_2", "sess_1"]],
+      ["orchestrator", ["sess_2"], [["m15", ["sess_1"]]]],
       ["orchestrator · laptop", ["sess_6"]],
       ["orchestrator-old", ["sess_3"]],
       ["site", ["sess_5", "sess_4"]],
@@ -167,6 +187,92 @@ describe("default view model", () => {
     // The repository's session ends: the worktree's is a group of its own again.
     apply(s, { type: "session.state", params: session("sess_2", 20, { workspace: "wks_cophyla", status: "ended" }) });
     expect(groups().map(([name]) => name)).toEqual(["m15", "orchestrator · laptop", "orchestrator-old", "site"]);
+  });
+
+  test("groups nest as deep as the workspaces do, under the innermost one open, each counting every tab under it", () => {
+    const s = ready();
+    const STUDIO = "C:\\D\\FarEastStudios";
+    const PORTAL = `${STUDIO}\\far-east-client-portal`;
+    const BILLING = `${PORTAL}\\.claude\\worktrees\\billing`;
+    const SITE = `${STUDIO}\\far-east-studios-website`;
+    putWorkspace(s, "wks_studio", STUDIO, "FarEastStudios");
+    putWorkspace(s, "wks_portal", PORTAL, "far-east-client-portal");
+    putWorkspace(s, "wks_billing", BILLING, "billing");
+    putWorkspace(s, "wks_site", SITE, "far-east-studios-website");
+    const put = (id: string, startedAt: number, cwd: string, extra: Partial<Session> = {}) => apply(s, { type: "session.state", params: session(id, startedAt, { cwd, ...extra }) });
+    put("sess_a", 10, STUDIO, { workspace: "wks_studio" });
+    put("sess_b", 20, PORTAL, { workspace: "wks_portal" });
+    put("sess_c", 30, BILLING, { workspace: "wks_billing" });
+    put("sess_d", 5, BILLING, { workspace: "wks_billing" });
+    put("sess_e", 40, SITE, { workspace: "wks_site" });
+    // No workspace, in a folder of the portal's, cased otherwise: a tab of the portal's group, not a group of its own.
+    put("sess_f", 50, "c:\\d\\fareaststudios\\far-east-client-portal\\apps\\web");
+    expect(shape(selectGroups(s))).toEqual([
+      [
+        "FarEastStudios",
+        ["sess_a"],
+        [
+          ["far-east-client-portal", ["sess_b", "sess_f"], [["billing", ["sess_d", "sess_c"]]]],
+          ["far-east-studios-website", ["sess_e"]],
+        ],
+      ],
+    ]);
+    const counts = (groups: SessionGroup[]): unknown[] => groups.map((g) => (g.groups.length > 0 ? [g.name, g.count, counts(g.groups)] : [g.name, g.count]));
+    expect(counts(selectGroups(s))).toEqual([["FarEastStudios", 6, [["far-east-client-portal", 4, [["billing", 2]]], ["far-east-studios-website", 1]]]]);
+    // The portal's own session ends: the worktree goes up to the innermost group still open
+    // around it, and the portal's bare folder joins that one too.
+    put("sess_b", 20, PORTAL, { workspace: "wks_portal", status: "ended" });
+    expect(shape(selectGroups(s))).toEqual([["FarEastStudios", ["sess_a", "sess_f"], [["billing", ["sess_d", "sess_c"]], ["far-east-studios-website", ["sess_e"]]]]]);
+    expect(selectGroups(s)[0]!.count).toBe(5);
+    // Then the studio's: each is outermost now, the bare folder a group of its own, named by it.
+    put("sess_a", 10, STUDIO, { workspace: "wks_studio", status: "ended" });
+    expect(shape(selectGroups(s))).toEqual([
+      ["billing", ["sess_d", "sess_c"]],
+      ["far-east-studios-website", ["sess_e"]],
+      ["web", ["sess_f"]],
+    ]);
+  });
+
+  test("a folder only a session's cwd is heads a group when it is inside no other folder, and a workspace at the same folder names it", () => {
+    const s = ready();
+    putWorkspace(s, "wks_site", "C:\\D\\site", "Website");
+    const groups = () => shape(selectGroups(s));
+    // In the site's folder before its workspace is known, then one in the workspace: one group, the workspace's name.
+    apply(s, { type: "session.state", params: session("sess_x", 10, { cwd: "C:\\D\\site" }) });
+    expect(groups()).toEqual([["site", ["sess_x"]]]);
+    apply(s, { type: "session.state", params: session("sess_y", 20, { workspace: "wks_site", cwd: "C:\\D\\site" }) });
+    expect(groups()).toEqual([["Website", ["sess_x", "sess_y"]]]);
+    // A session with no workspace in the folder around it heads the outermost group, the workspace's under it.
+    apply(s, { type: "session.state", params: session("sess_z", 30, { cwd: "C:\\D" }) });
+    expect(groups()).toEqual([["D", ["sess_z"], [["Website", ["sess_x", "sess_y"]]]]]);
+    expect(selectGroups(s)[0]!.count).toBe(3);
+  });
+
+  test("another machine's groups nest on that machine alone, its name on the outermost only", () => {
+    const s = ready();
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    addLaptop(s, OTHER);
+    putWorkspace(s, "wks_here", "C:\\D\\orchestrator", "orchestrator");
+    putWorkspace(s, "wks_far", "C:\\D\\orchestrator", "orchestrator", OTHER);
+    putWorkspace(s, "wks_far_wt", "C:\\D\\orchestrator\\wt", "wt", OTHER);
+    apply(s, { type: "session.state", params: session("sess_a", 10, { workspace: "wks_here", cwd: "C:\\D\\orchestrator" }) });
+    apply(s, { type: "session.state", params: session("sess_b", 20, { node: OTHER, workspace: "wks_far_wt", cwd: "C:\\D\\orchestrator\\wt" }) });
+    // The laptop's worktree is not under this machine's repository at the same path.
+    expect(shape(selectGroups(s))).toEqual([
+      ["orchestrator", ["sess_a"]],
+      ["wt · laptop", ["sess_b"]],
+    ]);
+    apply(s, { type: "session.state", params: session("sess_c", 30, { node: OTHER, workspace: "wks_far", cwd: "C:\\D\\orchestrator" }) });
+    expect(shape(selectGroups(s))).toEqual([
+      ["orchestrator", ["sess_a"]],
+      ["orchestrator · laptop", ["sess_c"], [["wt", ["sess_b"]]]],
+    ]);
+  });
+
+  test("a folded heading says how many tabs it holds; an open one is its name alone", () => {
+    expect(groupHeading("orchestrator", 3, true)).toBe("orchestrator (3)");
+    expect(groupHeading("orchestrator", 3, false)).toBe("orchestrator");
+    expect(groupHeading("Terminals", 1, true)).toBe("Terminals (1)");
   });
 
   test("a tab's mark: its colours at work, yellow on an ask, green once done until its tab is opened, grey otherwise", () => {
