@@ -1,12 +1,12 @@
 // The desktop app's voice over fakes: the hello's audio, the talk key and the switches kept
-// in the page's storage, the Voice section's words, and the talk key from the shell reaching
+// in the page's storage, the microphone picked and kept, the Voice section's words, and the talk key from the shell reaching
 // the node as `voice.ptt`. No web view: the link, the shell's commands and events, and the
 // storage are injected, and the audio is never opened.
 
 import { describe, expect, test } from "bun:test";
 import type { LinkSnapshot } from "@cophyla/viewhost";
 import type { VoiceView } from "@cophyla/voicehost";
-import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
+import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, MIC_KEY, readMic, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
 
 class MapStore {
   readonly map = new Map<string, string>();
@@ -54,7 +54,7 @@ function fixture(opts: { stored?: Record<string, string>; refuseKey?: string } =
   return { voice, store, requests, invoked, handlers };
 }
 
-const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"] };
+const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, recording: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"], mics: [] };
 
 describe("the desktop app's voice", () => {
   test("the hello says a microphone, a speaker, the codecs this web view speaks and played acks", async () => {
@@ -99,6 +99,23 @@ describe("the desktop app's voice", () => {
     ptt({ down: false });
     await Bun.sleep(0);
     expect(requests.filter((r) => r.method === "voice.ptt").map((r) => r.params)).toEqual([{ active: true }, { active: false }]);
+  });
+
+  test("the microphone picked is kept as its id and name, starts the next launch, and the default is kept as none", async () => {
+    const usb = { id: "usb-1", label: "Microphone (USB Advanced Audio Device)" };
+    const { voice, store } = fixture({ stored: { [MIC_KEY]: JSON.stringify(usb) } });
+    expect(voice.host.view.micChoice).toEqual(usb);
+    expect(voice.state()).toMatchObject({ micChoice: usb, mics: [] });
+    // An id the list does not hold is not a pick.
+    await voice.setMic("gone");
+    expect(store.map.get(MIC_KEY)).toBe(JSON.stringify(usb));
+    await voice.setMic("");
+    expect(store.map.get(MIC_KEY)).toBe("");
+    expect(voice.host.view.micChoice).toBeUndefined();
+    expect(readMic("")).toBeUndefined();
+    expect(readMic("not json")).toBeUndefined();
+    expect(readMic(JSON.stringify({ id: "", label: "x" }))).toBeUndefined();
+    expect(readMic(JSON.stringify(usb))).toEqual(usb);
   });
 
   test("the Voice section says what voice is doing", () => {

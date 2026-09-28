@@ -1155,6 +1155,15 @@ export type ModelRef = z.infer<typeof ModelRef>;
 export const VoiceState = z.enum(["idle", "listening", "transcribing", "thinking", "speaking"]);
 export type VoiceState = z.infer<typeof VoiceState>;
 
+/**
+ * Why an utterance the button held came to nothing, sent with the `idle` that ends it: no audio
+ * reached the node from the microphone (`no-audio`), only digital silence did, as from a
+ * microphone unplugged or muted (`silence`), sound with no speech in it did (`no-speech`), or
+ * speech did and the recogniser made no words of it (`no-words`).
+ */
+export const VoiceUnheard = z.enum(["no-audio", "silence", "no-speech", "no-words"]);
+export type VoiceUnheard = z.infer<typeof VoiceUnheard>;
+
 /** Every entity schema by the name entities.md uses, for fixtures and the JSON Schema dump. */
 export const entities = {
   Node,

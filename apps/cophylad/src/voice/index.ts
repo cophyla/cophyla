@@ -640,8 +640,8 @@ export class Voice {
       log: this.log.child("conversation"),
       ...(this.deps.now ? { now: this.deps.now } : {}),
       on: {
-        state: (state) => {
-          this.deps.bus.emit("voice.state", { state, client: client.id });
+        state: (state, unheard) => {
+          this.deps.bus.emit("voice.state", { state, client: client.id, ...(unheard ? { unheard } : {}) });
           this.holdSpeech();
         },
         partial: (text) => this.deps.bus.emit("voice.transcript", { at: this.now(), text }),

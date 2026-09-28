@@ -336,7 +336,13 @@ the VAD stay local. `onnxruntime-node` is imported before
 wins, and sherpa ships the older. Each engine runs on two threads with spinning off, and on a
 hybrid CPU the threads are pinned to the performance cores. Audio arrives as base64 int16
 inside `voice.audio` and belongs to one controller at a time: speech goes back to that phone
-alone, while `voice.state` — which names the controller — reaches every client.
+alone, while `voice.state` — which names the controller — reaches every client. An utterance
+the button held that comes to nothing wakes no one, and its `idle` says why (`unheard`): no
+frame came (`no-audio`, once it was held a second), only digital silence did (`silence`, what
+a microphone unplugged or muted sends), no speech was in it (`no-speech`), or the recogniser
+made no words of it (`no-words`); the log's `utterance was empty` line says the same with the
+frames and the loudest sample. One the wake word began gives no reason: a false accept is
+not the user's to hear about.
 
 Replies are read out by Piper unless `tts` names another: Piper, a VITS voice, starts about a
 tenth of a second after the reply on two threads; Kokoro sounds more natural and runs at about
@@ -425,7 +431,9 @@ so nothing here is built. `model.ts` is the pure reducer over what the host send
 elements of what a model wrote, built from marked's tokens, `rpc.ts` the postMessage line to
 the host, `terminal.ts` a terminal's screen, `fileview.ts` the file viewer (a file of an
 agent's folder, `session.file`, or of the folder a bare terminal started in, `terminal.file`,
-over the pane or beside it: code coloured, markdown and SVG drawn, images, search), and
+over the pane or beside it: code coloured, markdown and SVG drawn, images, search),
+`waves.ts` the host's microphone drawn over the input while it records (`host.recording`,
+`host.levels`) and `waveclock.ts` where each level of it falls (`test/view-waves.test.ts`), and
 `view.ts` the loop. `vendor/`
 holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
 uqr, and speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file

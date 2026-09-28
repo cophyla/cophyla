@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, launchKey, listenerLine, megabytes, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
+import { joinFlags, launchKey, listenerLine, megabytes, micOptions, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -455,5 +455,29 @@ describe("listening for", () => {
     const old = new SettingsModel(fakeConnection({}).request, () => {});
     await old.loadListeners();
     expect(old.listeners).toBeUndefined();
+  });
+});
+
+describe("the microphone row", () => {
+  const base = { listening: true, speak: true, talkKey: "", phrases: [], status: "" };
+  const usb = { id: "usb-1", label: "Microphone (USB Advanced Audio Device)" };
+  const brio = { id: "brio-1", label: "Microphone (Brio 101)" };
+
+  test("the system's default comes first, named when the host knows it, then each device", () => {
+    const { options, value } = micOptions({ ...base, mics: [usb, brio], defaultMic: usb.label });
+    expect(options).toEqual([{ value: "", label: `System default (${usb.label})` }, { value: "usb-1", label: usb.label }, { value: "brio-1", label: brio.label }]);
+    expect(value).toBe("");
+    expect(micOptions({ ...base }).options).toEqual([{ value: "", label: "System default" }]);
+  });
+
+  test("a pick is selected by its id, or by its name when its id moved", () => {
+    expect(micOptions({ ...base, mics: [usb, brio], micChoice: brio }).value).toBe("brio-1");
+    expect(micOptions({ ...base, mics: [usb, brio], micChoice: { id: "brio-old", label: brio.label } }).value).toBe("brio-1");
+  });
+
+  test("a pick that is not connected stays listed, marked, so the choice still shows", () => {
+    const { options, value } = micOptions({ ...base, mics: [brio], micChoice: usb });
+    expect(options.at(-1)).toEqual({ value: "usb-1", label: `${usb.label} (not connected)` });
+    expect(value).toBe("usb-1");
   });
 });

@@ -16,7 +16,19 @@
 //
 // The queue is flushed whenever the node says the conversation is no longer speaking: the
 // node stops sending mid-sentence on a barge-in, and the phone must stop playing it too.
+//
+// Capture runs on the microphone picked (`choice`) when it is connected, on the system's
+// default otherwise (mics.ts). A device that goes away ends its track: the capture is taken
+// down and `onMicEnded` says whose it was, for the host to ask again. Turning the microphone
+// on and off is queued, so a switch never races a pause.
+//
+// The tones that say recording started and stopped (cues.ts) play on the speaker's context
+// too, straight to its output: muting the replies leaves them.
 
+import { playCue } from "./cues.ts";
+import type { CueKind } from "./cues.ts";
+import { listMics, resolveMic } from "./mics.ts";
+import type { MicChoice, MicInUse, MicList } from "./mics.ts";
 import { decodeChunk, toFloat } from "./pcm.ts";
 import { SpeechDecoder } from "./opus.ts";
 
@@ -253,6 +265,8 @@ export interface AudioDeps {
   onPlayed?: (reply: number, stats: PlayStats) => void;
   /** Where the worklet module is served from. */
   workletUrl?: string;
+  /** The microphone's device went away (unplugged, turned off): capture is down, and this was its name. */
+  onMicEnded?: (label: string) => void;
   onNote?: (message: string) => void;
 }
 
@@ -261,11 +275,20 @@ export class Audio {
   private ctx?: AudioContext;
   private out?: AudioContext;
   private stream?: MediaStream;
+  private source?: MediaStreamAudioSourceNode;
   private node?: AudioWorkletNode;
+  /** Turning the microphone on and off, one after another. */
+  private micQueue: Promise<void> = Promise.resolve();
+  /** The microphone the user picked; the system's default when none. */
+  choice?: MicChoice;
+  /** The pick's name, when capture last started on the default because it was not connected. */
+  missing?: string;
   private playback?: PlaybackQueue;
   private decoder?: SpeechDecoder;
   private opening?: Promise<void>;
   private floorMs = TARGET_LAN_MS;
+  /** When the last cue ends, on the speaker's clock. */
+  private cueEnd = 0;
   /** Bumped by a flush, so speech still being decoded from before it is dropped. */
   private generation = 0;
   /** Frames dropped because they could not be decoded, and what came in each codec. */
@@ -340,22 +363,52 @@ export class Audio {
     this.deps.onNote?.(`audio ${ctx.sampleRate} Hz in, ${out.sampleRate} Hz out, ${ctx.state}`);
   }
 
-  /** Asks for the microphone and starts the worklet; idempotent. */
-  async mic(on: boolean): Promise<void> {
-    if (!on) {
-      this.node?.disconnect();
-      this.node = undefined;
-      for (const track of this.stream?.getAudioTracks() ?? []) track.stop();
-      this.stream = undefined;
-      return;
-    }
+  /** The device capture runs on, while it runs. */
+  get micDevice(): MicInUse | undefined {
+    const track = this.stream?.getAudioTracks()[0];
+    if (!track || track.readyState === "ended") return undefined;
+    const s = track.getSettings();
+    return { label: track.label || "the microphone", ...(s.deviceId ? { id: s.deviceId } : {}), ...(s.groupId ? { groupId: s.groupId } : {}) };
+  }
+
+  /** The microphones the web view lists; none where it cannot list them. */
+  async microphones(): Promise<MicList> {
+    const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+    if (!media?.enumerateDevices) return { devices: [] };
+    return listMics(media);
+  }
+
+  /** Asks for the microphone and starts the worklet, or stops both; idempotent, and each call waits for the one before. */
+  mic(on: boolean): Promise<void> {
+    const next = this.micQueue.then(() => (on ? this.micOn() : this.micOff()));
+    this.micQueue = next.catch(() => {});
+    return next;
+  }
+
+  private micOff(): void {
+    this.source?.disconnect();
+    this.source = undefined;
+    this.node?.disconnect();
+    this.node = undefined;
+    for (const track of this.stream?.getAudioTracks() ?? []) track.stop();
+    this.stream = undefined;
+  }
+
+  private async micOn(): Promise<void> {
     const ctx = this.ctx;
     if (!ctx || this.node) return;
+    // The pick is looked for among what is connected now; gone, the default stands in.
+    const want = this.choice ? resolveMic(this.choice, await this.microphones().catch(() => ({ devices: [] }))) : {};
+    if (want.missing !== undefined) this.missing = want.missing;
+    else delete this.missing;
     const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, sampleRate: IN_RATE, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+      audio: { ...(want.id !== undefined ? { deviceId: { exact: want.id } } : {}), channelCount: 1, sampleRate: IN_RATE, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       video: false,
     });
     this.stream = stream;
+    const track = stream.getAudioTracks()[0];
+    // `stop()` never fires it: only the device itself going away does.
+    track?.addEventListener("ended", () => this.micEnded(stream));
     const source = ctx.createMediaStreamSource(stream);
     const node = new AudioWorkletNode(ctx, "capture");
     node.port.onmessage = (ev: MessageEvent) => this.deps.onFrame(new Int16Array(ev.data as ArrayBuffer));
@@ -365,8 +418,32 @@ export class Audio {
     mute.gain.value = 0;
     node.connect(mute);
     mute.connect(ctx.destination);
+    this.source = source;
     this.node = node;
-    this.deps.onNote?.(`microphone on: ${stream.getAudioTracks()[0]?.label ?? "a device"}`);
+    this.deps.onNote?.(`microphone on: ${track?.label ?? "a device"}`);
+  }
+
+  /** The device under the capture went away: it is taken down, and the host is told whose it was. */
+  private micEnded(stream: MediaStream): void {
+    if (this.stream !== stream) return;
+    const label = stream.getAudioTracks()[0]?.label || "The microphone";
+    this.deps.onNote?.(`microphone ended: ${label}`);
+    void this.mic(false).then(() => this.deps.onMicEnded?.(label));
+  }
+
+  /**
+   * The tone that says recording started or stopped, on the speaker's context and around the
+   * replies' mute, which quiets replies alone. One that comes while the last still sounds
+   * waits for it, so a press let go at once is still heard as up then down.
+   */
+  cue(kind: CueKind): void {
+    const out = this.out;
+    if (!out || out.state === "closed") return;
+    try {
+      this.cueEnd = playCue(out, kind, this.cueEnd);
+    } catch (e) {
+      this.deps.onNote?.(`cue: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** Speech from the node: decoded by its codec and queued at its rate; the reply's end is passed on after its last samples. */

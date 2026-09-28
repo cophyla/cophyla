@@ -34,7 +34,9 @@ hears one of the node's wake words ("Cophyla", "Hey Phyla") does the page send `
 stops listening. The menu's switch turns that off, and the page remembers the off
 (`cophyla.controller.listen` in its storage) until it is turned back on. Push-to-talk skips the
 wake word: hold it, speak, release. Either way the frames go up as `voice.audio` and the
-answer comes back the same way. A node that cannot hand the phone the word — an older one,
+answer comes back the same way; a tone rises as the recording starts and falls as it stops,
+and the view draws the microphone's wave over its input meanwhile (`host.recording`,
+`host.levels`). A node that cannot hand the phone the word — an older one,
 or one configured with a head this build does not carry — gets the microphone streamed while
 the phone listens and detects the word itself, as before; so does any node when the worker
 fails. With the wake word off on the node the status line says so, and only the button sends

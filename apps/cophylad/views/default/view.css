@@ -1061,6 +1061,11 @@ button:disabled {
   background: var(--cophyla);
 }
 
+/* a press that reached the node with no sound, or the host's microphone off */
+.dot[data-status="trouble"] {
+  background: var(--rust);
+}
+
 .dot[data-status="connected"] {
   background: var(--moss);
 }
@@ -2058,6 +2063,12 @@ button:disabled {
 
 .talk:disabled {
   opacity: 0.45;
+}
+
+/* the host's microphone is off: the button still presses, and says why on hover */
+.talk[data-mic="off"] {
+  border-color: var(--rust);
+  color: var(--rust);
 }
 
 .talk[hidden] {
@@ -3162,6 +3173,54 @@ button:disabled {
   font-size: 12.5px;
 }
 
+/* --- the microphone's wave, over the input while it records -------------------------------- */
+
+/* A line of no height between the pane and the input, as wide as the input's form; the strip
+   floats up from it over the pane's foot, so nothing moves when it comes and goes. Under a
+   terminal, where there is no input, it floats over the terminal's foot. */
+.waves {
+  position: relative;
+  z-index: 12;
+  flex: 0 0 0;
+  width: 100%;
+  max-width: 960px;
+  height: 0;
+  margin: 0 auto;
+  pointer-events: none;
+}
+
+.waves[hidden] {
+  display: none;
+}
+
+.waves-strip {
+  position: absolute;
+  right: 20px;
+  bottom: 6px;
+  left: 20px;
+  display: flex;
+  height: 44px;
+  padding: 0 16px;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 45%, var(--line-strong));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 90%, transparent);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transform: translateY(6px);
+}
+
+.waves[data-state="on"] .waves-strip {
+  opacity: 1;
+  transform: none;
+}
+
+.waves canvas {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+}
+
 /* A message the user spoke is marked, so a thread reads the same on the phone and the desk. */
 .message[data-source="voice"] .message-who::after {
   content: " · spoken";
@@ -4246,6 +4305,11 @@ button:disabled {
   .talk,
   .threads-earlier {
     transition: border-color 120ms ease, background-color 120ms ease;
+  }
+
+  /* waves.ts waits as long (FADE_MS) before it hides the strip */
+  .waves-strip {
+    transition: opacity 180ms ease, transform 180ms ease;
   }
 
   .fold::before,

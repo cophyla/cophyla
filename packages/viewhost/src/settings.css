@@ -315,6 +315,17 @@
   flex: 0 1 220px;
 }
 
+/* which microphone: its names are long ("Microphone (USB Advanced Audio Device)") */
+.host-settings-mic {
+  align-items: center;
+  margin-top: 8px;
+}
+
+.host-settings-mic select {
+  flex: 0 1 340px;
+  min-width: 0;
+}
+
 /* the node's speech: the engine, its voice and Hear it on one line, what it is like below */
 .host-settings-speech {
   margin: 12px 0 0;

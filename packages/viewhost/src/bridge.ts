@@ -20,7 +20,13 @@
 // things of its own as notifications, never scoped: `host.ready` and `host.state`, and
 // `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
 // pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
-// own, so a view with the voice scope may draw one that holds `voice.ptt`. `host.filePaths`
+// own, so a view with the voice scope may draw one that holds `voice.ptt`; such a host says
+// `host.mic` whenever its microphone goes off or comes back, with why it is off, so the view
+// can say so beside the button (and again after `host.ready` while it is off). A host with a
+// microphone says `host.recording` when it starts or stops recording an utterance, however it
+// began, and `host.levels` with how loud each 20 ms of it is meanwhile, so the view can draw
+// it: to a view with the voice scope alone, and `host.recording` again after `host.ready`
+// while it records. `host.filePaths`
 // says where the files just dropped on the view from the desktop are, by the names the view
 // saw them under (a page learns only a dropped file's name), or with no names where the page
 // saw none (WebKitGTK, which shows a page no dropped file: the Linux shell answers all the
@@ -64,6 +70,11 @@ export interface HostReady {
   prefs?: ViewPrefs;
   /** The host says where files dropped on the view from the desktop are (`host.filePaths`): the desktop app. */
   filePaths?: boolean;
+}
+
+/** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
+export interface HostMic {
+  error?: string;
 }
 
 /** A view's own record on the device it runs on: plain JSON, a few kilobytes at most. */
@@ -170,6 +181,10 @@ export class Bridge {
   /** `host.filePaths`: the paths, once the names, if any, are file names. */
   private filePaths?: HostRequests;
   private n = 0;
+  /** The host's microphone as last said, so a view that loads while it is off hears it. */
+  private micState: HostMic = {};
+  /** The host's microphone records an utterance, so a view that loads meanwhile hears it. */
+  private recordingNow = false;
   /** wire id → the view's own id and method. */
   private pending = new Map<string, { id: RpcId; method: string }>();
 
@@ -312,11 +327,32 @@ export class Bridge {
     if (this.filePaths) params.filePaths = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
+    if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));
+    if (this.recordingNow && this.scopes.includes("voice")) this.io.toView(notification("host.recording", { active: true }));
   }
 
   /** The host's menu button was pressed: what it shows or hides is the view's. */
   menu(): void {
     if (this.hasMenu) this.io.toView(notification("host.menu", {}));
+  }
+
+  /** The host's microphone went off, or came back: a view that draws the talk button is told. */
+  mic(state: HostMic): void {
+    if (!this.hasTalk || state.error === this.micState.error) return;
+    this.micState = state.error !== undefined ? { error: state.error } : {};
+    this.io.toView(notification("host.mic", this.micState));
+  }
+
+  /** The host's microphone started or stopped recording an utterance: a view that may hear voice is told. */
+  recording(active: boolean): void {
+    if (active === this.recordingNow) return;
+    this.recordingNow = active;
+    if (this.scopes.includes("voice")) this.io.toView(notification("host.recording", { active }));
+  }
+
+  /** How loud the microphone was over its last frame, while it records, 0 to 1 per 20 ms. */
+  levels(levels: number[]): void {
+    if (this.recordingNow && this.scopes.includes("voice")) this.io.toView(notification("host.levels", { levels }));
   }
 
   /** Fails every request in flight and tells the view the line is down. */

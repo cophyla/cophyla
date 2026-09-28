@@ -4,16 +4,18 @@
 // window is hidden in the tray, so a wake word reaches Cophyla whether or not the app is in
 // front. The talk key comes from the shell as `voice:ptt`; a view draws a talk button of its
 // own and holds `voice.ptt` itself (`talk` in `host.ready`); replies play through the
-// speakers. What the user chose — listening, speaking, the talk key — is kept in the page's
-// storage and shown in the Voice section of the host's settings.
+// speakers. What the user chose — listening, speaking, the talk key, the microphone — is kept
+// in the page's storage and shown in the Voice section of the host's settings.
 
 import type { LinkSnapshot, VoiceSettings, VoiceSettingsState } from "@cophyla/viewhost";
 import { VoiceHost } from "@cophyla/voicehost";
-import type { VoiceLink, VoiceView } from "@cophyla/voicehost";
+import type { MicChoice, VoiceLink, VoiceView } from "@cophyla/voicehost";
 
 export const LISTEN_KEY = "cophyla.voice.listen";
 export const SPEAK_KEY = "cophyla.voice.speak";
 export const TALK_KEY = "cophyla.voice.talkKey";
+/** The microphone picked, as `{ id, label }`; the system's default when absent. */
+export const MIC_KEY = "cophyla.voice.mic";
 /** The talk key unless the user chose another; the shell's `DEFAULT_PTT`. */
 export const DEFAULT_TALK_KEY = "Ctrl+Alt+Space";
 /** How long the audio may take to start on its own before the page waits for a click. */
@@ -34,6 +36,9 @@ export interface DesktopVoiceDeps {
   invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
   listen<T>(event: string, handler: (payload: T) => void): Promise<() => void>;
   store?: Store;
+  /** Recording an utterance started or stopped, and how loud it is meanwhile: for the view to draw. */
+  onRecording?: (on: boolean) => void;
+  onLevels?: (levels: number[]) => void;
   log?: (message: string) => void;
 }
 
@@ -66,12 +71,16 @@ export class DesktopVoice implements VoiceSettings {
 
   constructor(deps: DesktopVoiceDeps) {
     this.deps = deps;
+    const mic = readMic(this.read(MIC_KEY));
     this.host = new VoiceHost({
       link: deps.link,
       // The files are the app's own, served from its own assets.
       wake: { verify: false },
       listening: this.read(LISTEN_KEY) !== "off",
+      ...(mic ? { mic } : {}),
       onChange: () => this.changed(),
+      ...(deps.onRecording ? { onRecording: deps.onRecording } : {}),
+      ...(deps.onLevels ? { onLevels: deps.onLevels } : {}),
       ...(deps.log ? { log: deps.log } : {}),
     });
     this.host.mute(this.read(SPEAK_KEY) === "off");
@@ -140,6 +149,11 @@ export class DesktopVoice implements VoiceSettings {
       phrases: v.phrases,
       status: statusWords(v, this.deps.link.connected),
       ...(v.micError ? { micError: v.micError } : {}),
+      ...(v.mic ? { mic: v.mic } : {}),
+      ...(v.micNote ? { micNote: v.micNote } : {}),
+      ...(v.micChoice ? { micChoice: v.micChoice } : {}),
+      mics: v.mics.map((m) => ({ id: m.id, label: m.label })),
+      ...(v.defaultMic ? { defaultMic: v.defaultMic } : {}),
     };
   }
 
@@ -171,6 +185,20 @@ export class DesktopVoice implements VoiceSettings {
     await this.host.start();
   }
 
+  /** Listens on a microphone from the list, or on the system's default for `""`; kept for the next launch. */
+  async setMic(id: string): Promise<void> {
+    const device = id === "" ? undefined : this.host.view.mics.find((m) => m.id === id);
+    const choice: MicChoice | undefined = device ? { id: device.id, label: device.label } : undefined;
+    // An id no longer listed keeps the pick as it was.
+    if (id !== "" && !choice) return;
+    this.write(MIC_KEY, choice ? JSON.stringify(choice) : "");
+    await this.host.setMic(choice);
+  }
+
+  listMics(): void {
+    void this.host.listMics();
+  }
+
   private changed(): void {
     for (const s of this.subscribers) s();
   }
@@ -198,4 +226,15 @@ export class DesktopVoice implements VoiceSettings {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** The microphone kept in storage, when what is kept reads as one. */
+export function readMic(raw: string | null): MicChoice | undefined {
+  if (!raw) return undefined;
+  try {
+    const v = JSON.parse(raw) as { id?: unknown; label?: unknown };
+    return typeof v.id === "string" && v.id !== "" && typeof v.label === "string" ? { id: v.id, label: v.label } : undefined;
+  } catch {
+    return undefined;
+  }
 }

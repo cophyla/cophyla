@@ -226,6 +226,16 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
   on Linux, both for the app's own origin only; on macOS WebKit asks the system with the text
   in `Info.plist`. Windows' own privacy switch for desktop apps still applies; a refused
   microphone shows in Settings with a retry.
+- **Which microphone**: the system's default, followed as it moves (a headset plugged in and
+  made the default is listened on), or one picked in Settings, kept by its id and its name; a
+  pick that is not connected falls back to the default until it is back. A device that goes
+  away (unplugged, turned off) ends the capture: the page asks at once for what is there now,
+  and with nothing there says the microphone is off, in Settings and beside the view's talk
+  button (`host.mic`), until a device arrives.
+- **Recording, heard and seen**: whenever the microphone records an utterance, however it
+  began (the wake word, the talk key, the view's talk button), a short tone rises as it starts
+  and falls as it stops, played past the replies' mute, and the view draws the microphone's
+  wave just over its input meanwhile (`host.recording`, `host.levels`). The phone does the same.
 - **Audio from launch**: WebView2 is started with `--autoplay-policy=no-user-gesture-required`
   (with wry's own flags repeated, since the argument replaces them). Where there is no such
   switch the page starts its audio at the first click the view passes up.
@@ -236,9 +246,11 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
 - **The talk button** is the view's: `host.ready` says `talk`, and the default view draws a
   microphone beside Send that holds `voice.ptt` while pressed. Escape in the view takes back
   what is being heard or transcribed (`voice.ptt` with `cancel`), whether the wake word, the
-  talk key or the button began it.
+  talk key or the button began it. A press that came to nothing says why in the view's voice
+  row for a few seconds: no sound reached the node, only silence did (a microphone unplugged
+  or muted sends that), no speech was in it, or no words were made of it (`unheard`).
 - **Settings → Voice** shows what voice is doing, listening for the wake words and speaking
-  the replies as switches (kept in the page's storage), and the talk key.
+  the replies as switches (kept in the page's storage), the talk key, and the microphone.
 
 `window.__cophylaWake` and `window.__cophylaVoice` show where the wake word and the audio
 stand, for Playwright over WebView2's debugger (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=

@@ -10,8 +10,10 @@ frames from the node and the link's changes.
 
 | File | Holds |
 |---|---|
-| `src/voicehost.ts` | `VoiceHost`: the audio, the detector and where each frame goes (`route`: up to the node, into the wake word, both, or nowhere), the `voice.wakeword` negotiation on every connect, `voice.wake` followed by the frames from 160 ms before the word fired (`lead`, for the recogniser: the next word often starts before the word fires) and those the worker was still scoring, `voice.ptt`, listening and mute, the background and a remote desktop standing it down; `view` is what a host shows, `wakeState`/`audioState` what a test reads |
-| `src/audio.ts` | two `AudioContext`s: capture through the worklet at 16 kHz, and playback at the device's rate through `PlaybackQueue`, the jitter buffer (target, underruns, the played report), flushed when the node stops speaking |
+| `src/voicehost.ts` | `VoiceHost`: the audio, the detector and where each frame goes (`route`: up to the node, into the wake word, both, or nowhere), the microphone kept alive (a device that goes away is replaced at once by what is there, a device that arrives starts one that had none, the pick or the moving default followed: `setMic`, `listMics`), the `voice.wakeword` negotiation on every connect, `voice.wake` followed by the frames from 160 ms before the word fired (`lead`, for the recogniser: the next word often starts before the word fires) and those the worker was still scoring, `voice.ptt`, listening and mute, the background and a remote desktop standing it down, and whether it records an utterance however it began (`recordingOf`: the button held, a word heard here, the node listening), with a cue at each start and stop and the levels handed out meanwhile (`onRecording`, `onLevels`); `view` is what a host shows, `wakeState`/`audioState` what a test reads |
+| `src/cues.ts` | what recording sounds and looks like: the tones, two soft sine notes a fifth apart rising as it starts and falling as it stops, made on the speaker's context and past the replies' mute (`playCue`, one waiting for the last), and how loud each 20 ms of a frame is, 0 to 1 from -60 to -12 dBFS (`levelsOf`) |
+| `src/mics.ts` | which microphone: the devices the web view lists and the default read from Chromium's alias of it (`listMics`), the pick found by its id or its name (`resolveMic`), whether capture runs on another than it should (`micMisplaced`), and why one could not be had in words (`micWords`). Pure but for `listMics` |
+| `src/audio.ts` | two `AudioContext`s: capture through the worklet at 16 kHz on the pick or the default, taken down and said when its device goes away, and playback at the device's rate through `PlaybackQueue`, the jitter buffer (target, underruns, the played report), flushed when the node stops speaking; the cues play on the playback context (`cue`) |
 | `src/worklet.ts`, `src/chunk.ts` | the capture worklet and the resampling behind it: whatever rate the device gives → 16 kHz mono, 640-sample frames, carried across callbacks |
 | `src/opus.ts` | Opus through WebCodecs both ways, when the web view has it: the microphone's 40 ms frames as two 20 ms packets, the speech decoded in order |
 | `src/pcm.ts`, `src/uplink.ts` | base64 of little-endian int16; each frame up numbered, and shed rather than queued behind a backed-up link |
@@ -28,7 +30,7 @@ frames from the node and the link's changes.
 `test/voicehost.test.ts` covers the parts over fakes: 16 and 48 kHz chunking with the carry,
 clamping, PCM on the wire, playback scheduling, the jitter target and the played report, the
 flush, frames shed on a backed-up link, the Opus fallback, the wake word's reducer, the frame
-ring, and the detector over a fake worker (the files fetched, pinned, cached and handed over,
+ring, the microphone's list, pick and default, and the detector over a fake worker (the files fetched, pinned, cached and handed over,
 a mismatch refused, a worker that fails, several heads configured).
 `packages/wake/test/parity.live.test.ts` holds the worker's runtime to the node's, chunk by
 chunk, when the wake model is present.

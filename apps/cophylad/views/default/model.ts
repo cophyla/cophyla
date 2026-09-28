@@ -18,7 +18,16 @@
 // bar has it.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+
+/** A press of this view's that came to nothing, and why, until the next utterance or `VOICE_NOTE_MS`. */
+export interface VoiceNote {
+  unheard: VoiceUnheard;
+  at: number;
+}
+
+/** How long the voice row says why a press came to nothing. */
+export const VOICE_NOTE_MS = 8000;
 
 /** The conversation on a controller, as the view last heard it. */
 export interface VoiceRow {
@@ -162,6 +171,8 @@ export interface ViewState {
   hostMenu: boolean;
   /** The host has a microphone and no talk button: the composer has one (the desktop app). */
   hostTalk: boolean;
+  /** Why the host's microphone is off, while it is (`host.mic`): its device went away, or none could be had. */
+  hostMic?: string;
   /** The host names files dropped from the desktop, so a drop of them lands as their paths. */
   hostFilePaths: boolean;
   connected: boolean;
@@ -184,6 +195,8 @@ export interface ViewState {
   tasks: Map<string, Task>;
   /** What voice is doing now; absent when nothing is. */
   voice?: VoiceRow;
+  /** Why this view's last press came to nothing, for a while after (`unheard` on its `idle`). */
+  voiceNote?: VoiceNote;
   /** An engine being set up on the node, while it runs. */
   setup?: VoiceSetup;
   /** The pairing window, while it is open. */
@@ -260,7 +273,10 @@ export type Action =
   | { type: "task.state"; params: Task }
   /** A thread's row changed: opened, closed, or given a topic or a workspace. Its messages stay. */
   | { type: "thread.state"; params: Thread }
-  | { type: "voice.state"; params: { state: VoiceState; client?: string } }
+  | { type: "voice.state"; params: { state: VoiceState; client?: string; unheard?: VoiceUnheard } }
+  /** The note a press left has had its time. */
+  | { type: "voice.note.expired"; at: number }
+  | { type: "host.mic"; params: { error?: string } }
   | { type: "voice.setup"; params: VoiceSetup }
   | { type: "pairing"; offer?: PairingOffer }
   | { type: "controllers"; controllers: Controller[] }
@@ -677,11 +693,22 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.threads.set(action.params.id, action.params);
       return state;
     case "voice.state": {
-      const { state: voice, client } = action.params;
+      const { state: voice, client, unheard } = action.params;
       if (voice === "idle") delete state.voice;
       else state.voice = { state: voice, ...(client !== undefined ? { client } : {}), at: Date.now() };
+      // Only this view's own press is its to explain; the next utterance takes the note away.
+      const mine = client === undefined || client === state.client?.id;
+      if (voice === "idle" && unheard !== undefined && mine) state.voiceNote = { unheard, at: Date.now() };
+      else if (voice !== "idle" && mine) delete state.voiceNote;
       return state;
     }
+    case "voice.note.expired":
+      if (state.voiceNote && state.voiceNote.at <= action.at) delete state.voiceNote;
+      return state;
+    case "host.mic":
+      if (action.params.error !== undefined) state.hostMic = action.params.error;
+      else delete state.hostMic;
+      return state;
     case "voice.setup":
       // A step that ended says so once and then there is nothing to show.
       if (action.params.step === "ready" || action.params.step === "failed") delete state.setup;
@@ -1688,16 +1715,53 @@ export function voiceCancellable(state: ViewState): boolean {
   return state.connected && state.scopes.includes("voice") && (v.client === undefined || v.client === state.client?.id);
 }
 
-/** What the voice row says: the state, the phone it belongs to, or the setup step. */
+/**
+ * What the voice row says: the state, the phone it belongs to, or the setup step; with none of
+ * those, why this view's last press came to nothing, then why the host's microphone is off.
+ */
 export function voiceWords(state: ViewState): string {
   if (state.setup) {
     const percent = state.setup.progress === undefined ? "" : ` ${Math.round(state.setup.progress * 100)}%`;
     const step = SETUP_WORD[state.setup.step] ?? state.setup.step;
     return `${state.setup.engine}: ${step}${percent}`;
   }
-  if (!state.voice) return "";
-  const who = state.voice.client ? namedController(state) : undefined;
-  return who ? `${state.voice.state} · ${who}` : state.voice.state;
+  if (state.voice) {
+    const who = state.voice.client ? namedController(state) : undefined;
+    return who ? `${state.voice.state} · ${who}` : state.voice.state;
+  }
+  if (state.voiceNote) return unheardWords(state.voiceNote.unheard, micOff(state));
+  const off = micOff(state);
+  return off !== undefined ? `The microphone is off: ${off}` : "";
+}
+
+/** The voice row's dot: the voice state, an engine set up, or trouble when a press or the microphone went wrong. */
+export function voiceDot(state: ViewState): string {
+  if (state.setup) return "setup";
+  if (state.voice) return state.voice.state;
+  if (state.voiceNote) return state.voiceNote.unheard === "no-audio" || state.voiceNote.unheard === "silence" ? "trouble" : "idle";
+  return micOff(state) !== undefined ? "trouble" : "idle";
+}
+
+/** Why the host's microphone is off, where the host draws no talk button of its own and so says. */
+export function micOff(state: ViewState): string | undefined {
+  return state.hostTalk ? state.hostMic : undefined;
+}
+
+/**
+ * Why a press came to nothing, in words: what the node heard of it, and, when no sound came,
+ * why the host's microphone is off when the host said.
+ */
+export function unheardWords(unheard: VoiceUnheard, off?: string): string {
+  switch (unheard) {
+    case "no-audio":
+      return off !== undefined ? `Nothing was heard: the microphone is off (${off})` : "Nothing was heard: no sound came from the microphone";
+    case "silence":
+      return off !== undefined ? `Nothing was heard: the microphone is off (${off})` : "Nothing was heard: the microphone sent only silence. Is it unplugged or muted?";
+    case "no-speech":
+      return "No speech was heard";
+    case "no-words":
+      return "Nothing could be made out of what was said";
+  }
 }
 
 /**

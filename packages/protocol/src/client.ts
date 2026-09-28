@@ -38,6 +38,7 @@ import {
   Usage,
   ViewManifest,
   VoiceState,
+  VoiceUnheard,
   Workspace,
 } from "./entities.ts";
 import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
@@ -798,8 +799,11 @@ export const clientNotifications = {
   /** A workspace's row when it is added or changed; one that moved only `lastActivity` is not streamed. */
   "workspace.state": ClientWorkspace,
   "ask.state": Ask,
-  /** `client` is the controller whose conversation the state belongs to; absent when idle with none. */
-  "voice.state": z.object({ state: VoiceState, client: ClientId.optional() }),
+  /**
+   * `client` is the controller whose conversation the state belongs to; absent when idle with none.
+   * `unheard` says why an utterance the button held ended with nothing sent.
+   */
+  "voice.state": z.object({ state: VoiceState, client: ClientId.optional(), unheard: VoiceUnheard.optional() }),
   /**
    * Speech for one controller: base64 of int16 samples (`pcm`, the default) or of
    * length-prefixed Opus packets, at `rate` (24 kHz when absent). `reply` numbers the reply

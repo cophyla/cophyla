@@ -1,7 +1,7 @@
 // Voice on the client's side over fakes: the audio frames cut from a microphone at any rate,
 // the PCM on the wire, the jitter buffer's hold, target and played report, the frames shed on
 // a backed-up link, the Opus fallback, the wake word's bookkeeping, frame ring and detector,
-// and which way each frame goes. No browser: the timers, the audio context and the worker are
+// which way each frame goes, and which microphone the host listens on. No browser: the timers, the audio context and the worker are
 // all injected.
 
 import { describe, expect, test } from "bun:test";
@@ -9,6 +9,7 @@ import { Chunker, FRAME, toInt16 } from "../src/chunk.ts";
 import { decodeChunk, encodeChunk, toFloat } from "../src/pcm.ts";
 import { PlaybackQueue, TARGET_LAN_MS, TARGET_RELAY_MS, TARGET_UP_MS } from "../src/audio.ts";
 import type { PlayStats, Timers } from "../src/audio.ts";
+import { listMics, micMisplaced, micWords, resolveMic } from "../src/mics.ts";
 import { detectCodecs, SpeechDecoder } from "../src/opus.ts";
 import { SHED_BYTES, Uplink } from "../src/uplink.ts";
 import { BUNDLED_FILES, BUNDLED_HEADS } from "../src/wake/bundled.ts";
@@ -573,5 +574,64 @@ describe("the wake detector", () => {
     });
     d.configure({ mode: "phone", head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" });
     expect(worker.sent.at(-1)!.msg).toEqual({ type: "configure", heads: [{ head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" }] });
+  });
+});
+
+describe("the microphone", () => {
+  const lister = (devices: { deviceId: string; label: string; groupId: string; kind?: string }[]) => ({
+    enumerateDevices: async () => devices.map((d) => ({ kind: "audioinput", ...d })),
+  });
+  const usb = { id: "usb-1", label: "Microphone (USB Advanced Audio Device)", groupId: "g-usb" };
+  const brio = { id: "brio-1", label: "Microphone (Brio 101)", groupId: "g-brio" };
+
+  test("lists the devices, reads the default from Chromium's alias of it, and lists neither alias as a device", async () => {
+    const list = await listMics(
+      lister([
+        { deviceId: "default", label: "Default - Microphone (USB Advanced Audio Device)", groupId: "g-usb" },
+        { deviceId: "communications", label: "Communications - Microphone (Brio 101)", groupId: "g-brio" },
+        { deviceId: usb.id, label: usb.label, groupId: usb.groupId },
+        { deviceId: brio.id, label: brio.label, groupId: brio.groupId },
+        { deviceId: "speakers", label: "Speakers", groupId: "g-usb", kind: "audiooutput" },
+      ]),
+    );
+    expect(list).toEqual({ devices: [usb, brio], defaultLabel: usb.label, defaultGroup: "g-usb" });
+  });
+
+  test("a device with no name yet (before the microphone was allowed) is still listed", async () => {
+    const list = await listMics(lister([{ deviceId: "x", label: "", groupId: "g" }]));
+    expect(list.devices).toEqual([{ id: "x", label: "A microphone", groupId: "g" }]);
+    expect(list.defaultLabel).toBeUndefined();
+  });
+
+  test("the pick is found by its id, by its name when the id moved, and is missing when neither is connected", () => {
+    const list = { devices: [usb, brio] };
+    expect(resolveMic(undefined, list)).toEqual({});
+    expect(resolveMic({ id: "brio-1", label: brio.label }, list)).toEqual({ id: "brio-1" });
+    expect(resolveMic({ id: "brio-old", label: brio.label }, list)).toEqual({ id: "brio-1" });
+    expect(resolveMic({ id: "usb-1", label: usb.label }, { devices: [brio] })).toEqual({ missing: usb.label });
+  });
+
+  test("capture moves back to the pick once it is connected, and follows the default when there is no pick", () => {
+    const both = { devices: [usb, brio], defaultLabel: usb.label, defaultGroup: "g-usb" };
+    // Picked the USB one, running on the Brio while it was gone: back now, so move.
+    expect(micMisplaced({ id: "default", label: brio.label, groupId: "g-brio" }, { id: "usb-1", label: usb.label }, both)).toBe(true);
+    expect(micMisplaced({ id: "usb-1", label: usb.label, groupId: "g-usb" }, { id: "usb-1", label: usb.label }, both)).toBe(false);
+    // No pick: the default is the USB one, and capture is on the Brio.
+    expect(micMisplaced({ id: "default", label: brio.label, groupId: "g-brio" }, undefined, both)).toBe(true);
+    expect(micMisplaced({ id: "default", label: usb.label, groupId: "g-usb" }, undefined, both)).toBe(false);
+    // The pick is still gone: stay on the default, and move only if the default moved.
+    const onlyBrio = { devices: [brio], defaultLabel: brio.label, defaultGroup: "g-brio" };
+    expect(micMisplaced({ id: "default", label: brio.label, groupId: "g-brio" }, { id: "usb-1", label: usb.label }, onlyBrio)).toBe(false);
+    // Nothing to tell by: never a move.
+    expect(micMisplaced({ label: brio.label }, undefined, { devices: [brio] })).toBe(false);
+  });
+
+  test("why the microphone could not be had is said in words", () => {
+    const named = (name: string) => Object.assign(new Error("raw"), { name });
+    expect(micWords(named("NotAllowedError"))).toBe("the microphone was not allowed");
+    expect(micWords(named("NotFoundError"))).toBe("no microphone is connected");
+    expect(micWords(named("OverconstrainedError"))).toBe("the microphone picked is not connected");
+    expect(micWords(named("NotReadableError"))).toContain("could not be read");
+    expect(micWords(new Error("something else"))).toBe("something else");
   });
 });

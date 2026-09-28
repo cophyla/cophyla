@@ -131,6 +131,9 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     ...(platform.wake ? { wake: platform.wake } : {}),
     listening: state.listening,
     onChange: () => paint(),
+    // The view draws the microphone while it records, over its input.
+    onRecording: (on) => viewhost.recording(on),
+    onLevels: (levels) => viewhost.levels(levels),
     onCodecs: (codecs) => {
       io.codecs = codecs;
     },

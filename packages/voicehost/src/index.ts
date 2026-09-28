@@ -2,11 +2,15 @@ export { Audio, IN_RATE, OUT_RATE, PlaybackQueue, TARGET_DOWN_MS, TARGET_LAN_MS,
 export type { AudioDeps, AudioInfo, LinkVia, PlaybackOptions, PlayStats, SpeechFrame, Timers } from "./audio.ts";
 export { Chunker, FRAME, toInt16 } from "./chunk.ts";
 export { detectCodecs, MicEncoder, SpeechDecoder } from "./opus.ts";
+export { listMics, micMisplaced, micWords, resolveMic } from "./mics.ts";
+export type { DeviceLister, MicChoice, MicDevice, MicInUse, MicList } from "./mics.ts";
 export { decodeChunk, encodeChunk, toFloat } from "./pcm.ts";
 export { SHED_BYTES, Uplink } from "./uplink.ts";
 export type { UplinkDeps } from "./uplink.ts";
-export { LEAD_FRAMES, route, VoiceHost } from "./voicehost.ts";
-export type { Route, RouteInput, VoiceHostOptions, VoiceLink, VoiceView } from "./voicehost.ts";
+export { CUE_S, cueNotes, LEVELS_PER_FRAME, levelsOf, playCue } from "./cues.ts";
+export type { CueContext, CueKind } from "./cues.ts";
+export { DEVICES_SETTLE_MS, LEAD_FRAMES, recordingOf, route, VoiceHost } from "./voicehost.ts";
+export type { RecordingInput, Route, RouteInput, VoiceHostOptions, VoiceLink, VoiceView } from "./voicehost.ts";
 export { BUNDLED, BUNDLED_FILES, BUNDLED_HEADS, WAKE_DIR } from "./wake/bundled.ts";
 export type { BundledFile } from "./wake/bundled.ts";
 export { indexedDbCache } from "./wake/cache.ts";

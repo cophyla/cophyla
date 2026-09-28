@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceCancellable, voiceWords, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -852,6 +852,56 @@ describe("default view: voice and the phones", () => {
     apply(mute, { type: "host.state", params: { connected: true } });
     apply(mute, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
     expect(voiceCancellable(mute)).toBe(false);
+  });
+
+  test("a press of this view's that came to nothing says why for a while; a phone's is not this view's to explain", () => {
+    const state = paired(controller("ctl_1", "Pixel", { connected: true }));
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id, unheard: "no-speech" } });
+    expect(voiceWords(state)).toBe("No speech was heard");
+    expect(voiceDot(state)).toBe("idle");
+    // A newer note is not cleared by an older one's time running out.
+    const at = state.voiceNote!.at;
+    apply(state, { type: "voice.note.expired", at: at - 1 });
+    expect(state.voiceNote).toBeDefined();
+    apply(state, { type: "voice.note.expired", at });
+    expect(voiceWords(state)).toBe("");
+    // No sound at all is trouble, and the next utterance takes the note away.
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id, unheard: "silence" } });
+    expect(voiceWords(state)).toContain("the microphone sent only silence");
+    expect(voiceDot(state)).toBe("trouble");
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(state.voiceNote).toBeUndefined();
+    // A phone's.
+    apply(state, { type: "voice.state", params: { state: "idle", client: "cli_phone", unheard: "no-audio" } });
+    expect(state.voiceNote).toBeUndefined();
+  });
+
+  test("the host's microphone off is said in the voice row, beside a press that came to nothing, and only where the view draws the talk button", () => {
+    const state = paired();
+    state.hostTalk = true;
+    apply(state, { type: "host.mic", params: { error: "Microphone (USB Advanced Audio Device) went away: unplugged, or turned off" } });
+    expect(micOff(state)).toContain("went away");
+    expect(voiceWords(state)).toBe("The microphone is off: Microphone (USB Advanced Audio Device) went away: unplugged, or turned off");
+    expect(voiceDot(state)).toBe("trouble");
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id, unheard: "no-audio" } });
+    expect(voiceWords(state)).toBe("Nothing was heard: the microphone is off (Microphone (USB Advanced Audio Device) went away: unplugged, or turned off)");
+    apply(state, { type: "host.mic", params: {} });
+    expect(micOff(state)).toBeUndefined();
+    expect(voiceWords(state)).toBe("Nothing was heard: no sound came from the microphone");
+    // A host with a talk button of its own (the phone) is not the view's to speak for.
+    const phone = paired();
+    apply(phone, { type: "host.mic", params: { error: "off" } });
+    expect(micOff(phone)).toBeUndefined();
+    expect(voiceWords(phone)).toBe("");
+  });
+
+  test("each reason a press came to nothing has its words", () => {
+    expect(unheardWords("no-audio")).toBe("Nothing was heard: no sound came from the microphone");
+    expect(unheardWords("silence")).toBe("Nothing was heard: the microphone sent only silence. Is it unplugged or muted?");
+    expect(unheardWords("no-speech")).toBe("No speech was heard");
+    expect(unheardWords("no-words")).toBe("Nothing could be made out of what was said");
+    expect(unheardWords("silence", "none could be had")).toBe("Nothing was heard: the microphone is off (none could be had)");
   });
 
   test("with two phones connected the state is shown without guessing whose it is", () => {

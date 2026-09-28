@@ -7,7 +7,8 @@
 // Voice follows on a host with a microphone of its own (the desktop app; the phone keeps
 // its switches in its bar's menu): whether it listens
 // for the wake words and which ones the node listens for, whether replies are spoken, the
-// talk key, and what is wrong with the microphone when something is. On every host it holds
+// talk key, which microphone it listens on (the system's default, or one picked, which
+// `micOptions` lists), and what is wrong with the microphone when something is. On every host it holds
 // the node's engines: the one that transcribes and the one that reads replies out
 // (`voice.settings`, set with `voice.configure`), the voice, the speed replies are read at,
 // where each choice came from with a way back to config.toml's, and Hear it
@@ -722,8 +723,33 @@ export interface VoiceSettingsState {
   phrases: string[];
   /** What voice is doing now, in words: listening for the words, the microphone refused, voice off on the node. */
   status: string;
-  /** The microphone could not be had, and why. */
+  /** The microphone could not be had, or its device went away, and why. */
   micError?: string;
+  /** The device the microphone runs on, by name. */
+  mic?: string;
+  /** Why it runs on another than the one it did or the one picked. */
+  micNote?: string;
+  /** The microphone picked; the system's default when absent. */
+  micChoice?: { id: string; label: string };
+  /** The microphones there are to pick from, once the host listed them. */
+  mics?: { id: string; label: string }[];
+  /** The system's default microphone, by name, when the host can say. */
+  defaultMic?: string;
+}
+
+/**
+ * The Microphone row's choices: the system's default first, named when the host knows it, then
+ * each device. A pick that is not connected stays listed, marked, so what was picked still shows.
+ */
+export function micOptions(v: VoiceSettingsState): { options: { value: string; label: string }[]; value: string } {
+  const options = [{ value: "", label: v.defaultMic ? `System default (${v.defaultMic})` : "System default" }];
+  for (const m of v.mics ?? []) options.push({ value: m.id, label: m.label });
+  const choice = v.micChoice;
+  if (!choice) return { options, value: "" };
+  const listed = options.find((o) => o.value !== "" && o.value === choice.id) ?? options.find((o) => o.value !== "" && o.label === choice.label);
+  if (listed) return { options, value: listed.value };
+  options.push({ value: choice.id, label: `${choice.label} (not connected)` });
+  return { options, value: choice.id };
 }
 
 /** A host's own voice, for the Voice section: the desktop app's. */
@@ -737,6 +763,10 @@ export interface VoiceSettings {
   setTalkKey(accelerator: string): Promise<string>;
   /** Asks for the microphone again. */
   retry(): Promise<void>;
+  /** Listens on the microphone with this id from `mics`, or on the system's default for `""`. */
+  setMic?(id: string): Promise<void>;
+  /** Lists the microphones again: the section is open, and devices may have come and gone. */
+  listMics?(): void;
 }
 
 export interface SettingsPanelDeps {
@@ -814,6 +844,7 @@ export class SettingsPanel {
     this.model = model;
     document.addEventListener("keydown", this.onKey);
     this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
+    this.deps.voice?.listMics?.();
     this.render();
     close.focus();
     void model.load();
@@ -903,6 +934,8 @@ export class SettingsPanel {
       retry.addEventListener("click", () => void voice.retry().catch(() => {}));
       box.append(retry);
     }
+    if (voice.setMic) box.append(this.micRow(voice, v));
+    if (v.micNote) box.append(paragraph("host-settings-source", v.micNote));
     const words = v.phrases.length > 0 ? v.phrases.map((p) => `“${titleCase(p)}”`).join(", ") : "the node's wake words";
     box.append(
       toggle("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)),
@@ -951,6 +984,22 @@ export class SettingsPanel {
     if (stt) box.append(this.speech(stt, model));
     if (speech) box.append(this.speech(speech, model));
     return box;
+  }
+
+  /** Which microphone the host listens on: the system's default, or one picked. */
+  private micRow(voice: VoiceSettings, v: VoiceSettingsState): HTMLElement {
+    const line = document.createElement("div");
+    line.className = "host-settings-controls host-settings-mic";
+    const select = document.createElement("select");
+    select.dataset["focus"] = "voice:mic";
+    select.setAttribute("aria-label", "Microphone");
+    select.title = v.mic ? `Listening on ${v.mic}` : "No microphone is on";
+    const { options, value } = micOptions(v);
+    for (const o of options) select.append(option(o.value, o.label));
+    select.value = value;
+    select.addEventListener("change", () => void voice.setMic?.(select.value).catch(() => {}));
+    line.append(span("host-settings-label", "Microphone"), select);
+    return line;
   }
 
   /** The Voice section on a host with no microphone of its own: the node's engines alone. */

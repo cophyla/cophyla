@@ -40,6 +40,7 @@
   { "schema": "client.requests.profile.update.params", "why": "launch mode unknown", "value": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "id": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "patch": { "launch": { "mode": "yolo", "args": [] } } } },
   { "schema": "client.requests.pair.claim.params", "why": "code has five digits", "value": { "code": "48291", "name": "Pixel" } },
   { "schema": "entities.Controller", "why": "wrong id prefix", "value": { "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "x", "pairedAt": 1, "connected": false } },
+  { "schema": "client.notifications.voice.state", "why": "a reason no one gives", "value": { "state": "idle", "unheard": "muffled" } },
   { "schema": "client.notifications.voice.setup", "why": "unknown step", "value": { "stage": "tts", "engine": "chatterbox", "step": "compiling" } },
   { "schema": "client.requests.voice.wakeword.result", "why": "phone mode without the head it runs", "value": { "mode": "phone", "threshold": 0.7, "scale": "int16" } },
   { "schema": "client.requests.voice.wakeword.result", "why": "a head listed without its threshold", "value": { "mode": "phone", "head": "a.onnx", "threshold": 0.7, "scale": "int16", "heads": [{ "head": "a.onnx", "scale": "int16" }] } },

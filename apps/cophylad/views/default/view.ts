@@ -25,7 +25,10 @@
 // line under the files (`session.git`) is read again as the agent works and every few
 // seconds, since nothing says a push or a fetch happened. The divider between the sessions
 // and that lower half moves, the same under every tab, and where the user left it is kept on
-// the device (`host.savePrefs`, back in `host.ready`). Runs in a sandboxed frame with no
+// the device (`host.savePrefs`, back in `host.ready`). While the host's microphone records an
+// utterance (`host.recording`), however it began, its wave shows just over the input
+// (`host.levels`, waves.ts), and over a terminal's foot where there is no input. Runs in a
+// sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
 //
@@ -38,8 +41,8 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, voiceCancellable, watchParams } from "./model.ts";
+import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
@@ -48,6 +51,7 @@ import { FileViewer } from "./fileview.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
+import { Waves } from "./waves.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -84,6 +88,9 @@ const roots: Roots = {
 };
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => pathHome(path) !== undefined, open: (path, line) => openPath(path, line) });
 const viewer = new FileViewer(rpc, (t) => folderAsked(t));
+/** The microphone's wave, just over the input, while the host records. */
+const waves = new Waves();
+roots.composer.before(waves.el);
 /** The width at which the rail is put away until asked for (view.css has the same). */
 const phone = matchMedia("(max-width: 640px)");
 /** Under this width the file viewer lies over the pane, however it is docked: beside it, both would be too narrow. */
@@ -187,6 +194,17 @@ rpc.onNotification((n) => {
     case "host.menu":
       toggleRail();
       return;
+    case "host.mic":
+      dispatch({ type: "host.mic", params: n.params as { error?: string } });
+      return;
+    case "host.recording":
+      waves.show((n.params as { active?: unknown } | undefined)?.active === true);
+      return;
+    case "host.levels": {
+      const levels = (n.params as { levels?: unknown } | undefined)?.levels;
+      if (Array.isArray(levels)) waves.push(levels.filter((l): l is number => typeof l === "number"));
+      return;
+    }
     case "host.state": {
       const p = n.params as { connected: boolean };
       // The line is back: a restart asked for is done. Gone, the node let go of the button itself.
@@ -205,6 +223,7 @@ rpc.onNotification((n) => {
         openTab();
       } else {
         typing(false);
+        waves.show(false);
         stopPairingClock();
         stopLoginClock();
         stopInviteClock();
@@ -256,9 +275,16 @@ rpc.onNotification((n) => {
     case "task.state":
       dispatch({ type: "task.state", params: n.params as Task });
       return;
-    case "voice.state":
-      dispatch({ type: "voice.state", params: n.params as { state: VoiceState; client?: string } });
+    case "voice.state": {
+      const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard };
+      dispatch({ type: "voice.state", params: p });
+      // Why a press came to nothing shows for a while, then the row goes back to what it was.
+      if (p.unheard !== undefined) {
+        const at = Date.now();
+        setTimeout(() => dispatch({ type: "voice.note.expired", at }), VOICE_NOTE_MS);
+      }
       return;
+    }
     case "voice.setup":
       dispatch({ type: "voice.setup", params: n.params as VoiceSetup });
       return;

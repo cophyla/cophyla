@@ -362,6 +362,27 @@ describe("bridge", () => {
     expect((without.toView[0] as { params: object }).params).not.toHaveProperty("talk");
   });
 
+  test("a host that draws no talk button says when its microphone goes off and comes back, and again after ready while it is off", () => {
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, talk: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    const mics = () => toView.filter((f) => (f as { method?: string }).method === "host.mic").map((f) => (f as { params: unknown }).params);
+    bridge.ready(HELLO);
+    expect(mics()).toEqual([]);
+    bridge.mic({ error: "Microphone (USB) went away" });
+    bridge.mic({ error: "Microphone (USB) went away" });
+    expect(mics()).toEqual([{ error: "Microphone (USB) went away" }]);
+    // A view loaded again while it is off hears it after its ready.
+    bridge.ready(HELLO);
+    expect(mics()).toHaveLength(2);
+    expect(toView.at(-1)).toEqual({ jsonrpc: "2.0", method: "host.mic", params: { error: "Microphone (USB) went away" } });
+    bridge.mic({});
+    expect(mics().at(-1)).toEqual({});
+    // A host with its own talk button keeps its microphone to itself.
+    const without = make();
+    without.bridge.mic({ error: "off" });
+    expect(without.toView).toEqual([]);
+  });
+
   test("two instances never share a wire id", () => {
     const a = make(MANIFEST, 1);
     const b = make(MANIFEST, 2);

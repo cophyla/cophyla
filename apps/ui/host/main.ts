@@ -41,6 +41,9 @@ const voice = new DesktopVoice({
       return undefined;
     }
   })(),
+  // The view draws the microphone while it records, over its input.
+  onRecording: (on) => viewhost.recording(on),
+  onLevels: (levels) => viewhost.levels(levels),
   log: (m) => console.info(m),
 });
 const streams = new StreamWindows({ invoke: io.invoke, request: (method, params) => conn.request(method, params), log: (m) => console.warn(m) });

@@ -7,7 +7,10 @@
 // submission may go is the frame's CSP's, `form-action 'none'`, so it goes nowhere.
 // Messages are accepted only from that frame's window, and posted only to it. The host's
 // view picker (`ViewChooser`) lies over the frame when a view asks for it (`host.chooseView`),
-// and so do its settings (`SettingsPanel`, `host.settings`). A link a view asks it to open
+// and so do its settings (`SettingsPanel`, `host.settings`). A host that draws no talk button
+// of its own tells the view when its microphone goes off or comes back (`host.mic`). A host
+// with a microphone tells it when recording starts and stops and how loud it is meanwhile
+// (`recording`, `levels`: `host.recording`, `host.levels`). A link a view asks it to open
 // (`host.openLink`) opens only on a fresh click: a click in the frame activates this page too,
 // so a view cannot open pages the user never asked for. What a view saves with `host.savePrefs`
 // is kept in this page's storage, under the view's id, and comes back in its `host.ready`.
@@ -16,7 +19,7 @@
 
 import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
-import type { HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
+import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
 import type { VoiceSettings } from "./settings.ts";
@@ -111,6 +114,12 @@ function pageStorage(): Storage | undefined {
   }
 }
 
+/** What `host.mic` says of the host's voice: why its microphone is off, while it is. */
+function hostMic(voice: VoiceSettings): HostMic {
+  const error = voice.state().micError;
+  return error !== undefined ? { error } : {};
+}
+
 /** Milliseconds `view.changed` notices are gathered for before one `view.list` asks what moved. */
 export const CHANGED_COALESCE_MS = 300;
 
@@ -125,6 +134,7 @@ export class ViewHost {
   private changedTimer?: ReturnType<typeof setTimeout>;
   private chooser: ViewChooser;
   private settings: SettingsPanel;
+  private recordingNow = false;
 
   constructor(deps: ViewHostDeps) {
     this.deps = deps;
@@ -140,6 +150,9 @@ export class ViewHost {
       ...(deps.voice ? { voice: deps.voice } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
+    // A view that draws the talk button hears when the microphone behind it goes off.
+    const voice = deps.voice;
+    if (deps.talk && voice) voice.subscribe(() => this.mounted?.bridge.mic(hostMic(voice)));
     window.addEventListener("message", (ev) => this.onMessage(ev));
   }
 
@@ -192,6 +205,9 @@ export class ViewHost {
       },
     );
     this.mounted = { frame, bridge, manifest };
+    // Kept by the bridge until the view is ready to hear it.
+    if (this.deps.talk && this.deps.voice) bridge.mic(hostMic(this.deps.voice));
+    if (this.recordingNow) bridge.recording(true);
     frame.addEventListener("load", () => {
       if (this.mounted?.frame !== frame) return;
       if (conn.connected && conn.state.hello) {
@@ -229,6 +245,17 @@ export class ViewHost {
   /** The host's menu button: the mounted view is told, and shows or hides what it keeps there. */
   menu(): void {
     this.mounted?.bridge.menu();
+  }
+
+  /** The host's microphone started or stopped recording an utterance: the mounted view is told, and one mounted later. */
+  recording(active: boolean): void {
+    this.recordingNow = active;
+    this.mounted?.bridge.recording(active);
+  }
+
+  /** How loud the microphone was over its last frame, while it records. */
+  levels(levels: number[]): void {
+    this.mounted?.bridge.levels(levels);
   }
 
   /** Every frame from cophylad that is not the host's own response. */

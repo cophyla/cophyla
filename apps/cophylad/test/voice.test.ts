@@ -12,7 +12,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { Client, Message, RpcNotification, VoiceSettings, VoiceState, WakewordMode } from "@cophyla/protocol";
+import type { Client, Message, RpcNotification, VoiceSettings, VoiceState, VoiceUnheard, WakewordMode } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { ClientRegistry } from "../src/api/clients.ts";
 import { Bus } from "../src/bus.ts";
@@ -29,7 +29,7 @@ import { FakeEngines, WAKE_MARKER, b64, silenceChunk, speechChunk, wakeChunk } f
 import { parseConfig } from "../src/config/load.ts";
 import { Conversation, OUT_FRAME, PLAYBACK_SLACK_MS } from "../src/voice/conversation.ts";
 import { OpusDecoder, OpusEncoder } from "../src/voice/opus.ts";
-import type { SttEngine } from "../src/voice/engines.ts";
+import type { SttEngine, VadEngine } from "../src/voice/engines.ts";
 import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 
 const FAKE_BRAIN = join(import.meta.dir, "fakes", "brain.ts");
@@ -270,13 +270,15 @@ describe("voice", () => {
     expect(await phone.call("voice.ptt", { active: false, cancel: true })).toMatchObject({ result: {} });
   }, 20_000);
 
-  test("a tap with nothing said wakes nobody", async () => {
+  test("a tap with nothing said wakes nobody, and its idle says why", async () => {
     const { ui, phone } = await start();
     await phone.request("voice.ptt", { active: true });
     await sleep(40);
     await phone.request("voice.ptt", { active: false });
     await waitFor(() => states(phone).at(-1) === "idle");
     expect(states(phone)).toEqual(["listening", "transcribing", "idle"]);
+    const idle = phone.notifications.filter(isMethod("voice.state")).at(-1)!.params as { unheard?: VoiceUnheard };
+    expect(idle.unheard).toBe("no-speech");
     await sleep(100);
     expect(ui.notifications.filter(isMethod("chat.message"))).toHaveLength(0);
   }, 20_000);
@@ -458,11 +460,12 @@ const idByName = (d: Daemon, name: string): string => d.clients.list().find((c) 
 const userMessages = (c: TestClient) => c.notifications.filter(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
 
 /** A conversation on its own, over the fake engines, for the timers a daemon test would wait seconds on. */
-async function bare(opts: { stt?: SttEngine; stallMs?: number } = {}) {
+async function bare(opts: { stt?: SttEngine; vad?: () => VadEngine; stallMs?: number; now?: () => number } = {}) {
   const engines = new FakeEngines({ transcript: TRANSCRIPT });
-  const makeVad = await engines.vad();
+  const makeVad = opts.vad ?? (await engines.vad());
   const stt = opts.stt ?? (await engines.stt());
   const seen: VoiceState[] = [];
+  const unheard: VoiceUnheard[] = [];
   const finals: string[] = [];
   const c = new Conversation({
     client: "cli_bare",
@@ -470,9 +473,19 @@ async function bare(opts: { stt?: SttEngine; stallMs?: number } = {}) {
     stt: () => stt,
     thinkingTimeoutMs: 60_000,
     stallMs: opts.stallMs ?? 150,
-    on: { state: (s) => seen.push(s), partial: () => {}, final: (text) => finals.push(text), speaking: () => {}, audio: () => {} },
+    ...(opts.now ? { now: opts.now } : {}),
+    on: {
+      state: (s, why) => {
+        seen.push(s);
+        if (why) unheard.push(why);
+      },
+      partial: () => {},
+      final: (text) => finals.push(text),
+      speaking: () => {},
+      audio: () => {},
+    },
   });
-  return { c, seen, finals, engines };
+  return { c, seen, unheard, finals, engines };
 }
 
 describe("the wake word on the phone", () => {
@@ -736,6 +749,65 @@ describe("the wake word on the phone", () => {
     c.ptt(false);
     await waitFor(() => seen.at(-1) === "idle");
     expect(calls).toEqual(["dispose"]);
+    c.dispose();
+  });
+
+  test("a press no frame reached says no audio came, once it was held a second; a quicker tap says only that nothing was heard", async () => {
+    let at = 0;
+    const { c, seen, unheard } = await bare({ now: () => at });
+    c.ptt(true);
+    at += 1500;
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "idle");
+    c.ptt(true);
+    at += 300;
+    c.ptt(false);
+    await waitFor(() => seen.length === 6);
+    expect(unheard).toEqual(["no-audio", "no-speech"]);
+    c.dispose();
+  });
+
+  test("a press that heard only digital silence says so: an unplugged or muted microphone sends that", async () => {
+    const { c, seen, unheard, finals } = await bare();
+    c.ptt(true);
+    for (let i = 0; i < 10; i++) c.push(silenceChunk());
+    await sleep(20);
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "idle");
+    expect(unheard).toEqual(["silence"]);
+    expect(finals).toEqual([]);
+    c.dispose();
+  });
+
+  test("a press with sound and no speech in it, and one with speech the recogniser made no words of, each say which", async () => {
+    const deaf: VadEngine = { feed: () => false, heard: false, reset: () => {}, close: () => {} };
+    const quiet = await bare({ vad: () => deaf });
+    quiet.c.ptt(true);
+    for (let i = 0; i < 5; i++) quiet.c.push(speechChunk(40));
+    await sleep(20);
+    quiet.c.ptt(false);
+    await waitFor(() => quiet.seen.at(-1) === "idle");
+    expect(quiet.unheard).toEqual(["no-speech"]);
+    quiet.c.dispose();
+
+    const stt: SttEngine = { stream: () => ({ accept: () => {}, final: async () => "", reset: () => {}, dispose: () => {} }), close: () => {} };
+    const mumbled = await bare({ stt });
+    mumbled.c.ptt(true);
+    for (let i = 0; i < 5; i++) mumbled.c.push(speechChunk());
+    await sleep(20);
+    mumbled.c.ptt(false);
+    await waitFor(() => mumbled.seen.at(-1) === "idle");
+    expect(mumbled.unheard).toEqual(["no-words"]);
+    mumbled.c.dispose();
+  });
+
+  test("a wake that comes to nothing gives no reason: a false accept is not the user's to hear about", async () => {
+    const { c, seen, unheard } = await bare();
+    c.wakeHeard();
+    c.push(speechChunk());
+    for (let i = 0; i < 20; i++) c.push(silenceChunk());
+    await waitFor(() => seen.at(-1) === "idle" || seen.at(-1) === "thinking");
+    expect(unheard).toEqual([]);
     c.dispose();
   });
 

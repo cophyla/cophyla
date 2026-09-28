@@ -43,7 +43,7 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceWords, workspaceName } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -2283,7 +2283,7 @@ function micIcon(): SVGSVGElement {
   return svg;
 }
 
-/** What the phone is doing, over the composer: the dot, the word and whose phone it is. */
+/** What the phone is doing, over the composer: the dot, the word and whose phone it is; or why a press or the microphone went wrong. */
 function renderVoice(root: HTMLElement, state: ViewState): void {
   let row = root.querySelector<HTMLElement>(".voice-row");
   if (!row) {
@@ -2294,7 +2294,7 @@ function renderVoice(root: HTMLElement, state: ViewState): void {
   const words = voiceWords(state);
   setHidden(row, words === "");
   if (words === "") return;
-  setData(row.querySelector<HTMLElement>(".dot")!, "status", state.setup ? "setup" : (state.voice?.state ?? "idle"));
+  setData(row.querySelector<HTMLElement>(".dot")!, "status", voiceDot(state));
   setText(row.querySelector(".voice-words")!, words);
 }
 
@@ -2348,7 +2348,9 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   setHidden(talk, !state.hostTalk);
   talk.disabled = !canTalk;
   talk.setAttribute("aria-pressed", ui.talking ? "true" : "false");
-  const talkWords = !state.connected ? "Waiting for cophylad" : canTalk ? "Hold to talk" : "This view may not listen";
+  const off = micOff(state);
+  setData(talk, "mic", off !== undefined ? "off" : "on");
+  const talkWords = !state.connected ? "Waiting for cophylad" : !canTalk ? "This view may not listen" : off !== undefined ? `The microphone is off: ${off}` : "Hold to talk";
   if (talk.title !== talkWords) {
     talk.title = talkWords;
     talk.setAttribute("aria-label", talkWords);

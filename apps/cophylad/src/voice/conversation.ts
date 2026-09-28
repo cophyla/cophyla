@@ -17,8 +17,11 @@
 // utterance's stream hears `PRIME_MS` of silence first. An empty
 // utterance ends the turn without waking the brain, so a tap on the button costs nothing,
 // and one the wake word began is abandoned without transcribing when no speech follows or
-// the phone stops sending. The user can take an utterance back until its transcript is sent
-// (`voice.ptt` with `cancel`, Escape in the chat). While the reply is spoken the wake word
+// the phone stops sending. One the button held that comes to nothing says why with the
+// `idle` that ends it (`unheard`): no audio came, only digital silence did (a microphone
+// unplugged or muted sends that), no speech was in it, or no words were made of it. The user
+// can take an utterance back until its transcript is sent (`voice.ptt` with `cancel`, Escape
+// in the chat). While the reply is spoken the wake word
 // keeps running, so a word over the top of it stops the speech and starts the next utterance.
 //
 // Each spoken line is a numbered reply whose last frame says `end`. A phone that said it
@@ -27,7 +30,7 @@
 // the audio it sent will have played, as it always did. Each turn's stages are timed and
 // the times logged as one `voice turn` line, to tell the network's delay from the pipeline's.
 
-import type { VoiceState } from "@cophyla/protocol";
+import type { VoiceState, VoiceUnheard } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import { sayNames } from "./compose.ts";
 import type { SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
@@ -54,9 +57,15 @@ export const LISTEN_STALL_MS = 4000;
 export const LEAD_FRAMES = 4;
 /** Silence a recogniser hears before an utterance's first frame. */
 export const PRIME_MS = 200;
+/**
+ * How long the button must be held before an utterance no frame reached is `no-audio`: a
+ * quicker tap can end before the first frame after the press arrives.
+ */
+export const NO_AUDIO_MS = 1000;
 
 export interface ConversationHandlers {
-  state(state: VoiceState): void;
+  /** `unheard` comes with the `idle` that ends an utterance the button held with nothing sent. */
+  state(state: VoiceState, unheard?: VoiceUnheard): void;
   partial(text: string): void;
   final(text: string): void;
   /** The edges of the user speaking, for `user.activity`. */
@@ -109,6 +118,10 @@ export class Conversation {
   private began?: "wake" | "button";
   /** Samples the utterance has seen, for the no-speech abandon. */
   private samples = 0;
+  /** The utterance's frames, the loudest of their samples, and when it began: what an empty one says it heard. */
+  private heardFrames = 0;
+  private peak = 0;
+  private beganAt = 0;
   /** The last frames the wake word heard, for the recogniser once it fires. */
   private recent: Int16Array[] = [];
   /** Frames still to come that were captured before the phone's word fired: the recogniser's alone. */
@@ -154,10 +167,10 @@ export class Conversation {
     return (this.deps.now ?? Date.now)();
   }
 
-  private setState(next: VoiceState): void {
+  private setState(next: VoiceState, unheard?: VoiceUnheard): void {
     if (this.state === next) return;
     this.state = next;
-    this.deps.on.state(next);
+    this.deps.on.state(next, unheard);
   }
 
   /**
@@ -232,6 +245,8 @@ export class Conversation {
       }
     }
     if (this.state !== "listening") return;
+    this.heardFrames++;
+    this.peak = Math.max(this.peak, peakOf(pcm));
     if (this.leadLeft > 0) {
       this.leadLeft--;
       this.stream?.accept(pcm);
@@ -288,6 +303,9 @@ export class Conversation {
     this.stream = undefined;
     this.began = why;
     this.samples = 0;
+    this.heardFrames = 0;
+    this.peak = 0;
+    this.beganAt = this.now();
     this.leadLeft = 0;
     const stt = this.deps.stt?.();
     if (stt) {
@@ -365,6 +383,8 @@ export class Conversation {
   private async finish(why: "silence" | "button"): Promise<void> {
     this.stamp("speechEnd");
     const stream = this.stream;
+    const began = this.began;
+    const heldMs = this.now() - this.beganAt;
     this.clearStall();
     this.began = undefined;
     this.setState("transcribing");
@@ -381,10 +401,12 @@ export class Conversation {
     if (this.disposed || this.cancels !== cancels) return;
     this.stamp("sttFinal");
     if (!text) {
-      // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain.
-      this.deps.log?.debug("utterance was empty", { client: this.client, why });
+      // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain. One the
+      // button held says why, so a dead microphone is not mistaken for a deaf node.
+      const unheard = this.unheard(heard, heldMs);
+      this.deps.log?.info("utterance was empty", { client: this.client, why, began, unheard, frames: this.heardFrames, peak: this.peak, heldMs });
       this.setSpeaking(false);
-      this.setState("idle");
+      this.setState("idle", began === "button" ? unheard : undefined);
       return;
     }
     this.deps.log?.info("utterance", { client: this.client, why, chars: text.length });
@@ -392,6 +414,13 @@ export class Conversation {
     this.setSpeaking(false);
     this.setState("thinking");
     this.armThinking();
+  }
+
+  /** What an utterance that came to nothing heard: no frames, frames of nothing, sound with no speech, or speech with no words. */
+  private unheard(heard: boolean, heldMs: number): VoiceUnheard {
+    if (this.heardFrames === 0) return heldMs >= NO_AUDIO_MS ? "no-audio" : "no-speech";
+    if (this.peak === 0) return "silence";
+    return heard ? "no-words" : "no-speech";
   }
 
   private setSpeaking(active: boolean): void {
@@ -595,4 +624,14 @@ export class Conversation {
     this.stream = undefined;
     void this.vad?.close();
   }
+}
+
+/** The loudest sample in a frame, as a magnitude. */
+function peakOf(pcm: Int16Array): number {
+  let peak = 0;
+  for (let i = 0; i < pcm.length; i++) {
+    const v = Math.abs(pcm[i]!);
+    if (v > peak) peak = v;
+  }
+  return peak;
 }

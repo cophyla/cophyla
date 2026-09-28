@@ -456,7 +456,7 @@
         "expiresAt": 1758204000000
       }
     ],
-    "voice.state": [{ "state": "idle" }, { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" }],
+    "voice.state": [{ "state": "idle" }, { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" }, { "state": "idle", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "unheard": "silence" }],
     "voice.audio": [
       { "chunk": "AAAA" },
       { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },
