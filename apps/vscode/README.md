@@ -9,7 +9,9 @@ so and opens nothing. Closing the tab ends the shell and whatever runs in it, as
 terminal would; Ctrl-] detaches instead and leaves it running in tether (`tether ls`,
 `tether attach`).
 
-It also puts the terminal of a session Cophyla starts in this window's panel, beside your own.
+It also puts the terminal of a session Cophyla starts in this window's panel, beside your own,
+and shows the one a session runs in when you raise that session from Cophyla: the tab comes
+forward and the window with it.
 
 ## Why an extension at all
 
@@ -26,6 +28,15 @@ working directory. A request without the token is refused, and the listener is b
 
 With no window listening, cophylad opens a terminal of the platform's own instead — the feature
 works without this extension, it just lands outside the editor.
+
+Raising a session goes through the same door. cophylad posts the session's process chain (its
+pid and its ancestors) to every window's `/focus`; the window whose terminal runs one of those
+processes shows that terminal and answers `{"focused": true}`, the others `false`. No
+extension API raises a window, but the product's command line does, since opening a folder a
+window already has open focuses that window: the extension runs `code <its folder>` (the
+product's own name, from `product.json`), with `--user-data-dir` of its own instance where its
+socket says which, so a second instance with another profile is not the one raised. A
+terminal whose process never started is passed over after a second.
 
 ## Build and install
 

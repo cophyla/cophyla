@@ -17,6 +17,15 @@ describe("paths", () => {
     expect(pathKey(dir, "linux")).toBe(dir);
   });
 
+  test("macOS takes a name spelled in either Unicode form as the same; NTFS and ext4 do not", () => {
+    const nfc = resolve("Belgeler", "Caf\u00e9");
+    const nfd = resolve("Belgeler", "Cafe\u0301");
+    expect(samePath(nfc, nfd, "darwin")).toBe(true);
+    expect(isWithin(resolve(nfd, "notes.md"), nfc, "darwin")).toBe(true);
+    expect(samePath(nfc, nfd, "linux")).toBe(false);
+    expect(samePath(nfc, nfd, "win32")).toBe(false);
+  });
+
   test("pathKey resolves and keeps the host's separators", () => {
     expect(pathKey("a/../b", "linux")).toBe(resolve("b"));
     expect(pathKey(resolve("x"), "linux")).toBe(resolve("x"));

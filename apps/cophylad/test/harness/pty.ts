@@ -53,6 +53,34 @@ export interface Tui {
   kill(): void;
 }
 
+/**
+ * Past what a fresh folder asks before the prompt box: the trust dialog, answered yes. Claude
+ * Code 2.1.28x draws it as "❯ No, exit / Yes, I trust this folder" with No picked, so Enter
+ * alone would end the session: Down first. Older ones picked "Yes, proceed", where Enter is it.
+ */
+export async function passTrust(t: Tui): Promise<void> {
+  for (let i = 0; i < 3; i++) {
+    const m = await t.waitFor(/trust|Yes, proceed|Enter to confirm|›|❯|>\s*$/i, 90_000, t.mark() - 4000);
+    await sleep(300);
+    const screen = t.text(1500);
+    if (/Yes, I trust this folder/.test(screen)) {
+      if (/❯\s*No, exit/.test(screen)) {
+        t.write("\x1b[B");
+        await sleep(300);
+      }
+      t.write("\r");
+      await sleep(1500);
+      continue;
+    }
+    if (/trust|proceed|confirm/i.test(m[0]) && !/›|❯/.test(t.text(300))) {
+      t.write("\r");
+      await sleep(1500);
+      continue;
+    }
+    break;
+  }
+}
+
 /** The terminal, as the two hosts expose it: node-pty in this process, or through the Node broker. */
 interface PtyHandle {
   pid: number;

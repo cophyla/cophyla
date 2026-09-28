@@ -9,8 +9,8 @@ import { join } from "node:path";
 import { createLogger } from "../src/log.ts";
 import { claudeArgv, claudeEnv, newSessionId, sessionName } from "../src/sessions/claude/start.ts";
 import { scrub } from "../src/sessions/env.ts";
-import { OsTerminalOpener, cmdQuote, launchScript, pickOpener, shellQuote, windowsCommandLine } from "../src/sessions/terminals.ts";
-import type { TerminalOpener, TerminalRequest } from "../src/sessions/terminals.ts";
+import { itermWindowScript, OsTerminalOpener, cmdQuote, launchScript, pickOpener, shellQuote, windowsCommandLine } from "../src/sessions/terminals.ts";
+import type { LaunchResult, TerminalOpener, TerminalRequest } from "../src/sessions/terminals.ts";
 
 const log = createLogger("error");
 
@@ -135,16 +135,59 @@ describe("opening one", () => {
     expect(script.split("\n").slice(0, 2)).toEqual(["#!/bin/sh", "unset CLAUDE_CONFIG_DIR"]);
   });
 
+  /** A macOS opener whose launcher answers `result`, with the given apps installed. */
+  function mac(opts: { apps?: string[]; result?: LaunchResult; terminal?: string; console?: boolean } = {}) {
+    const launched: { command: string; args: string[] }[] = [];
+    const dataDir = mkdtempSync(join(tmpdir(), "cophyla-terminals-"));
+    const o = new OsTerminalOpener({
+      platform: "darwin",
+      dataDir,
+      log,
+      env: { HOME: "/Users/me" },
+      which: (c) => (c === "open" ? "/usr/bin/open" : null),
+      exists: (p) => (opts.apps ?? []).includes(p),
+      ownsConsole: () => opts.console ?? true,
+      launch: async (command, args) => {
+        launched.push({ command, args });
+        return opts.result ?? { code: 0, err: "" };
+      },
+      ...(opts.terminal ? { terminal: opts.terminal } : {}),
+    });
+    return { o, launched, dataDir };
+  }
+
   test("macOS opens a script Terminal knows how to run", async () => {
-    const { opener: o, spawned, dataDir } = opener("darwin", { found: ["open"] });
+    const { o, launched, dataDir } = mac();
     expect(await o.available()).toBe(true);
     await o.open(request({ cwd: "/Users/me/app" }));
-    expect(spawned[0]!.command).toBe("open");
-    const [dashA, terminal, script] = spawned[0]!.args;
+    expect(launched[0]!.command).toBe("open");
+    const [dashA, terminal, script] = launched[0]!.args;
     expect([dashA, terminal]).toEqual(["-a", "Terminal"]);
     expect(script!.startsWith(join(dataDir, "launch"))).toBe(true);
     expect(script!.endsWith(".command")).toBe(true);
     expect(readFileSync(script!, "utf8")).toContain("cd '/Users/me/app' || exit 1");
+  });
+
+  test("macOS takes iTerm2 when it is installed, in either Applications folder, unless Terminal is named", async () => {
+    for (const app of ["/Applications/iTerm.app", "/Users/me/Applications/iTerm.app"]) {
+      const { o, launched } = mac({ apps: [app] });
+      await o.open(request({ cwd: "/Users/me/app" }));
+      expect(launched[0]!.command).toBe("osascript");
+      expect(launched[0]!.args[1]).toMatch(/^tell application "iTerm2" to create window with default profile command "\/bin\/sh '.*\.sh'"$/);
+    }
+    const named = mac({ apps: ["/Applications/iTerm.app"], terminal: "terminal" });
+    await named.o.open(request({ cwd: "/Users/me/app" }));
+    expect(named.launched[0]!.command).toBe("open");
+    expect(itermWindowScript("/a b/c\"d.sh")).toBe(`tell application "iTerm2" to create window with default profile command "/bin/sh '/a b/c\\"d.sh'"`);
+  });
+
+  test("macOS reports a launcher's refusal, leaves one on the Automation prompt to finish, and opens nothing off the console", async () => {
+    const refused = mac({ result: { code: 1, err: "Unable to find application named 'Terminal'" } });
+    await expect(refused.o.open(request({ cwd: "/Users/me/app" }))).rejects.toThrow("Unable to find application");
+    const waiting = mac({ apps: ["/Applications/iTerm.app"], result: { code: null, err: "", running: true } });
+    await waiting.o.open(request({ cwd: "/Users/me/app" }));
+    expect(waiting.launched).toHaveLength(1);
+    expect(await mac({ console: false }).o.available()).toBe(false);
   });
 
   test("Linux takes the first terminal it finds, and TERMINAL before any of them", async () => {

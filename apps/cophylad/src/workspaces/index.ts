@@ -13,6 +13,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { newId, RpcError } from "@cophyla/protocol";
 import type { NodeId, NodeScope, Workspace, WorkspaceOrigin } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
+import { NotSettled, protectedFolders } from "../sessions/protected.ts";
+import type { ProtectedFolders } from "../sessions/protected.ts";
 import type { Store } from "../store/index.ts";
 
 export interface WorkspacesDeps {
@@ -22,6 +24,8 @@ export interface WorkspacesDeps {
   now?: () => number;
   /** Which workspace node owns a folder, and whose items the machine's own apps never see; absent, every workspace is the machine's. */
   owners?: { ownerOf(path: string): string | undefined; isPrivate(node: string): boolean };
+  /** macOS's protected folders: a directory in one is read only once its first read has settled (protected.ts). */
+  guard?: ProtectedFolders;
 }
 
 /** One workspace node's workspaces: what its link lists and puts. */
@@ -119,6 +123,20 @@ export class Workspaces {
     this.deps = deps;
   }
 
+  private get guard(): ProtectedFolders {
+    return this.deps.guard ?? protectedFolders;
+  }
+
+  /** Called with a macOS protected folder once it may be read: what `fromSession` refused there resolves now. */
+  onSettled(fn: (root: string) => void): () => void {
+    return this.guard.onSettled(fn);
+  }
+
+  /** Resolves once a directory can be read without waiting on the user (at once off macOS). */
+  settle(dir: string): Promise<void> {
+    return this.guard.settle(dir);
+  }
+
   private now(): number {
     return (this.deps.now ?? Date.now)();
   }
@@ -159,6 +177,7 @@ export class Workspaces {
   put(input: { id?: string; node: NodeId; path: string; name: string }, part?: string): Workspace {
     const owners = this.deps.owners;
     if (part === undefined ? (owners?.isPrivate(input.node) ?? false) : input.node !== part) throw new RpcError("not_found", `no node ${input.node}`);
+    if (!this.guard.settled(input.path)) throw new RpcError("unavailable", `macOS is asking whether Cophyla may read ${this.guard.rootOf(input.path)}; try again once it is answered`);
     const path = normalisePath(input.path);
     if (!isDirectory(path)) throw new RpcError("not_found", `no directory at ${path}`);
     const owner = owners?.ownerOf(path);
@@ -178,7 +197,12 @@ export class Workspaces {
   /** One workspace per path in a `workspaces` scope; nothing for a `machine` scope. */
   fromScope(scope: NodeScope): Workspace[] {
     if (scope.kind !== "workspaces") return [];
-    return scope.paths.map((p) => this.upsertDiscovered(p, "scope"));
+    const out: Workspace[] = [];
+    for (const p of scope.paths) {
+      if (this.guard.settled(p)) out.push(this.upsertDiscovered(p, "scope"));
+      else void this.guard.settle(p).then(() => this.upsertDiscovered(p, "scope"));
+    }
+    return out;
   }
 
   /**
@@ -208,6 +232,8 @@ export class Workspaces {
 
   /** The workspace a session's working directory belongs to, on the session's node: its repository root, or the directory itself. */
   fromSession(cwd: string, node: NodeId = this.deps.nodeId): Workspace {
+    // A folder macOS has not been asked about yet: reading it now would wait on the user.
+    if (!this.guard.settled(cwd)) throw new NotSettled(this.guard.rootOf(cwd)!);
     const repo = findRepo(cwd);
     const root = repo ? repo.root : cwd;
     const at = this.clampRoot ? this.clampRoot(root, cwd, node) : root;

@@ -4,8 +4,8 @@
 
 import { describe, expect, test } from "bun:test";
 import { createLogger } from "../src/log.ts";
-import { DarwinRaiser, LinuxRaiser, UnsupportedRaiser, WindowsRaiser, defaultRaiser, parsePsTable, parseProcStatus, parseUnixIds, parseWmctrlList, splitWindowsCommandLine, walkUp } from "../src/sessions/focus.ts";
-import type { Exec, ExecResult } from "../src/sessions/focus.ts";
+import { DarwinRaiser, LinuxRaiser, UnsupportedRaiser, WindowsRaiser, defaultRaiser, itermSessionScript, parsePsTable, parseProcStatus, parseUnixIds, parseWmctrlList, splitWindowsCommandLine, terminalTabScript, tmuxSocketArgs, walkUp, withTmux } from "../src/sessions/focus.ts";
+import type { Exec, ExecResult, RaiseResult, WindowRaiser } from "../src/sessions/focus.ts";
 
 type Call = { file: string; args: string[] };
 
@@ -39,13 +39,15 @@ describe("darwin raiser", () => {
     expect(table.get(345)).toEqual({ ppid: 1, name: "iTerm2" });
     expect(walkUp(600, (p) => table.get(p)).map((p) => `${p.pid}:${p.name}`)).toEqual(["600:sh", "520:node", "401:-zsh", "400:login", "345:iTerm2", "1:launchd"]);
     expect(walkUp(999, (p) => table.get(p))).toEqual([]);
+    // Claude Code's native install runs a file named by its version
+    expect(parsePsTable("  700   401 /Users/u/.local/share/claude/versions/2.1.243\n").get(700)).toEqual({ ppid: 401, name: "claude" });
     // a cycle ends the walk
     expect(walkUp(7, (p) => ({ 7: { ppid: 8, name: "a" }, 8: { ppid: 7, name: "b" } })[p]).map((p) => p.pid)).toEqual([7, 8]);
   });
 
   test("raises the nearest ancestor that System Events lists as a GUI process", async () => {
     const { exec, calls } = canned({
-      ps: ok(PS),
+      "ps -axo pid=,ppid=,comm=": ok(PS.replace("iTerm.app/Contents/MacOS/iTerm2", "Ghostty.app/Contents/MacOS/ghostty")),
       'tell application "System Events" to get unix id of every process whose background only is false': ok("345, 1201, 1288\n"),
       'tell application "System Events" to set frontmost of (first process whose unix id is 345) to true': ok(""),
     });
@@ -56,6 +58,39 @@ describe("darwin raiser", () => {
     expect(calls[3]!.args[1]).toContain("unix id is 345");
   });
 
+  test("in Terminal or iTerm2 the session's own tab is selected by its tty, the front window only when that cannot be", async () => {
+    const terminalPs = PS.replace("/Applications/iTerm.app/Contents/MacOS/iTerm2", "/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal");
+    const answers = (tab: ExecResult) =>
+      canned({
+        "ps -axo pid=,ppid=,comm=": ok(terminalPs),
+        "ps -o tty= -p 520": ok("ttys044\n"),
+        'tell application "System Events" to get unix id of every process whose background only is false': ok("345"),
+        [terminalTabScript("/dev/ttys044")]: tab,
+        'tell application "System Events" to set frontmost of (first process whose unix id is 345) to true': ok(""),
+      });
+    const found = answers(ok("raised\n"));
+    expect(await new DarwinRaiser({ exec: found.exec }).raise(520)).toBe("raised");
+    expect(found.calls.at(-1)!.args[1]).toContain('if tty of t is "/dev/ttys044" then');
+    expect(found.calls.some((c) => c.args[1]?.includes("set frontmost"))).toBe(false);
+    // Terminal's own permission refused: the app's front window, through System Events
+    const refused = answers({ code: 1, out: "", err: "Not authorized to send Apple events to Terminal. (-1743)" });
+    expect(await new DarwinRaiser({ exec: refused.exec }).raise(520)).toBe("raised");
+    expect(refused.calls.at(-1)!.args[1]).toContain("set frontmost");
+    // iTerm2 selects the split pane too; a tty is quoted as an AppleScript string
+    expect(itermSessionScript("/dev/ttys7")).toContain('if tty of s is "/dev/ttys7" then');
+    expect(terminalTabScript('a"b\\c')).toContain('"a\\"b\\\\c"');
+  });
+
+  test("a shell under iTermServer, which launchd adopted, is found in iTerm2 by its tty", async () => {
+    const { exec, calls } = canned({
+      "ps -axo pid=,ppid=,comm=": ok("    1     0 /sbin/launchd\n  700     1 /Applications/iTerm.app/Contents/MacOS/iTermServer-3.5.4\n  710   700 -zsh\n  720   710 claude\n"),
+      "ps -o tty= -p 720": ok("ttys009\n"),
+      [itermSessionScript("/dev/ttys009")]: ok("raised\n"),
+    });
+    expect(await new DarwinRaiser({ exec }).raise(720)).toBe("raised");
+    expect(calls.some((c) => c.args[1]?.includes("System Events"))).toBe(false);
+  });
+
   test("not_found when no ancestor is a GUI process or the pid is unknown; parses the id list loosely", async () => {
     const { exec } = canned({ ps: ok(PS), 'tell application "System Events" to get unix id of every process whose background only is false': ok("1201, 1288") });
     expect(await new DarwinRaiser({ exec }).raise(520)).toBe("not_found");
@@ -64,20 +99,74 @@ describe("darwin raiser", () => {
     expect([...parseUnixIds("")]).toEqual([]);
   });
 
-  test("the Automation permission refused (-1743) is unsupported, with a warning that names the setting", async () => {
+  test("the Automation permission refused (-1743) is denied, with a warning that names the setting", async () => {
     const lines: string[] = [];
     const log = createLogger("warn", (l) => lines.push(l));
     const { exec } = canned({
       ps: ok(PS),
       osascript: { code: 1, out: "", err: "execution error: Not authorized to send Apple events to System Events. (-1743)\n" },
     });
-    expect(await new DarwinRaiser({ exec, log }).raise(520)).toBe("unsupported");
+    expect(await new DarwinRaiser({ exec, log }).raise(520)).toBe("denied");
     expect(lines.some((l) => l.includes("Privacy & Security") && l.includes("Automation"))).toBe(true);
   });
 
-  test("osascript missing is unsupported", async () => {
+  test("osascript still waiting at the timeout is the permission's prompt, unanswered; osascript missing is unsupported", async () => {
+    const waiting = canned({ ps: ok(PS), osascript: { code: null, out: "", err: "", timedOut: true } });
+    expect(await new DarwinRaiser({ exec: waiting.exec }).raise(520)).toBe("waiting");
     const { exec } = canned({ ps: ok(PS), osascript: { code: null, out: "", err: "" } });
     expect(await new DarwinRaiser({ exec }).raise(520)).toBe("unsupported");
+  });
+});
+
+describe("tmux", () => {
+  // claude 900 in pane %3 of window @2 in session $1; the server 700 was adopted by launchd
+  const chain = [
+    { pid: 900, name: "claude" },
+    { pid: 800, name: "zsh" },
+    { pid: 700, name: "tmux" },
+    { pid: 1, name: "launchd" },
+  ];
+  const inner = () => {
+    const raised: number[] = [];
+    const r: WindowRaiser = {
+      ancestors: async (pid) => (pid === 900 ? chain : []),
+      commandLine: async () => ["tmux", "-L", "work", "new-session"],
+      raise: async (pid): Promise<RaiseResult> => {
+        raised.push(pid);
+        return "raised";
+      },
+    };
+    return { r, raised };
+  };
+  const tmux = (clients: string) =>
+    canned({
+      "tmux -L work list-panes -a -F #{pane_pid}\t#{session_id}\t#{window_id}\t#{pane_id}": ok("111\t$0\t@0\t%0\n800\t$1\t@2\t%3\n"),
+      "tmux -L work list-clients -F #{client_pid}\t#{session_id}": ok(clients),
+      "tmux -L work select-window -t @2": ok(""),
+      "tmux -L work select-pane -t %3": ok(""),
+    });
+
+  test("the pane is selected and the window of the client attached to its session is raised", async () => {
+    const { r, raised } = inner();
+    const { exec, calls } = tmux("555\t$0\n560\t$1\n");
+    expect(await withTmux(r, { exec }).raise(900)).toBe("raised");
+    expect(raised).toEqual([560]);
+    expect(calls.map((c) => c.args.slice(2, 4).join(" "))).toEqual(["list-panes -a", "select-window -t", "select-pane -t", "list-clients -F"]);
+  });
+
+  test("a detached session has no window; a chain without tmux goes straight to the raiser", async () => {
+    const { r, raised } = inner();
+    expect(await withTmux(r, { exec: tmux("555\t$0\n").exec }).raise(900)).toBe("not_found");
+    expect(raised).toEqual([]);
+    expect(await withTmux(r, { exec: tmux("").exec }).raise(42)).toBe("raised");
+    expect(raised).toEqual([42]);
+  });
+
+  test("the server's socket is read off its command line", () => {
+    expect(tmuxSocketArgs(["tmux", "-L", "work", "new"])).toEqual(["-L", "work"]);
+    expect(tmuxSocketArgs(["tmux", "-S/tmp/s", "attach"])).toEqual(["-S", "/tmp/s"]);
+    expect(tmuxSocketArgs(["tmux", "new-session", "-L", "x"])).toEqual([]);
+    expect(tmuxSocketArgs(undefined)).toEqual([]);
   });
 });
 

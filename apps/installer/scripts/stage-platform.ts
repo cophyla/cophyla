@@ -49,7 +49,8 @@ if (!values["skip-shell-build"]) {
     // A bundle per version: the shell's own identity, Dock icon and Info.plist (the Automation
     // usage string) live in it. The bundler signs it with the identity from the environment,
     // ad-hoc when none is set; notarization is the installer's, over the DMG.
-    const overlay = { bundle: { active: true, targets: ["app"], macOS: { signingIdentity, minimumSystemVersion: "11.0" } } };
+    // Its entitlements (the microphone, Apple Events): the bundler signs it under the hardened runtime.
+    const overlay = { bundle: { active: true, targets: ["app"], macOS: { signingIdentity, minimumSystemVersion: "11.0", entitlements: join(INSTALLER, "entitlements-shell.plist") } } };
     const overlayPath = join(ensureDir(STAGE), "ui-overlay.json");
     writeFileSync(overlayPath, JSON.stringify(overlay, null, 2) + "\n");
     if (signingIdentity === "-") log("APPLE_SIGNING_IDENTITY is not set: the shell bundle is signed ad-hoc");
@@ -160,6 +161,12 @@ for (const os of readdirSync(ortBin)) {
     rmSync(join(ortBin, os, arch), { recursive: true, force: true });
   }
   if (readdirSync(join(ortBin, os)).length === 0) rmSync(join(ortBin, os), { recursive: true, force: true });
+}
+// On macOS the package carries its library twice, `libonnxruntime.1.dylib` (what the binding
+// links, `@rpath/libonnxruntime.1.dylib`) and a byte-identical `libonnxruntime.<version>.dylib`: 44 MB.
+const ortHere = join(ortBin, process.platform, process.arch);
+if (OS === "macos" && existsSync(join(ortHere, "libonnxruntime.1.dylib"))) {
+  for (const name of readdirSync(ortHere)) if (/^libonnxruntime\.\d+\.\d+\.\d+\.dylib$/.test(name)) rmSync(join(ortHere, name));
 }
 log(`embedding model staged; onnxruntime-node pruned to ${process.platform}/${process.arch}`);
 

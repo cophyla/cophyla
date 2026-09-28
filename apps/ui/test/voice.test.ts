@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LinkSnapshot } from "@cophyla/viewhost";
 import type { VoiceView } from "@cophyla/voicehost";
-import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, MIC_KEY, readMic, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
+import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, MAC_TALK_KEY, MIC_KEY, readMic, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
 
 class MapStore {
   readonly map = new Map<string, string>();
@@ -18,7 +18,7 @@ class MapStore {
   }
 }
 
-function fixture(opts: { stored?: Record<string, string>; refuseKey?: string } = {}) {
+function fixture(opts: { stored?: Record<string, string>; refuseKey?: string; mac?: boolean } = {}) {
   const store = new MapStore();
   for (const [k, v] of Object.entries(opts.stored ?? {})) store.setItem(k, v);
   const requests: { method: string; params: unknown }[] = [];
@@ -50,6 +50,7 @@ function fixture(opts: { stored?: Record<string, string>; refuseKey?: string } =
       return () => handlers.delete(event);
     },
     log: () => {},
+    mac: opts.mac ?? false,
   });
   return { voice, store, requests, invoked, handlers };
 }
@@ -71,6 +72,17 @@ describe("the desktop app's voice", () => {
     expect(voice.state()).toMatchObject({ listening: true, speak: true });
     expect(store.map.get(LISTEN_KEY)).toBe("on");
     expect(store.map.get(SPEAK_KEY)).toBe("on");
+  });
+
+  test("a Mac starts with Ctrl+Shift+Space: Ctrl+Option+Space is its own input-source key; a key chosen is kept", async () => {
+    const mac = fixture({ mac: true });
+    await mac.voice.start().catch(() => {});
+    await Bun.sleep(0);
+    expect(mac.invoked[0]).toEqual({ cmd: "ptt_shortcut", args: { accelerator: MAC_TALK_KEY } });
+    const chosen = fixture({ mac: true, stored: { [TALK_KEY]: "Ctrl+Alt+Space" } });
+    await chosen.voice.start().catch(() => {});
+    await Bun.sleep(0);
+    expect(chosen.invoked[0]).toEqual({ cmd: "ptt_shortcut", args: { accelerator: "Ctrl+Alt+Space" } });
   });
 
   test("the talk key is the default until one is chosen; a refused one is said and not kept", async () => {

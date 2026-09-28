@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The desktop shell's bundle under the hardened runtime, which the bundler signs with this
+	     file (stage-platform.ts's overlay). The launcher starts the shell as its own responsible
+	     process, so the privacy prompts for it and for what it starts are in its name. -->
+	<!-- The microphone the host page's web view captures for the wake words and the talk key:
+	     the hardened runtime refuses audio input without it, whatever the user allowed. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- `session.focus`: cophylad's `osascript` asks System Events to bring a terminal forward,
+	     and `tether open` asks iTerm2 for a window; a hardened app without it is refused
+	     (-1743) before the Automation prompt is ever shown. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>

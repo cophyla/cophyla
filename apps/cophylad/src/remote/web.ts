@@ -138,13 +138,18 @@ export class MoonlightWeb {
     return this.url() !== undefined;
   }
 
-  /** The release on disk: fetched and unpacked when missing. Returns the package directory. */
-  private async ensureRelease(): Promise<string> {
+  /** The server to run: `[remote] web_server` when set, else the release on disk, fetched and unpacked when missing. */
+  private async ensureRelease(): Promise<{ dir: string; exe: string }> {
+    const own = this.deps.config.web_server;
+    if (own) {
+      if (!existsSync(own)) throw new RpcError("unavailable", `[remote] web_server names ${own}, and there is nothing there`);
+      return { dir: dirname(own), exe: own };
+    }
     const dir = join(this.deps.root, WEB_VERSION);
     const exe = join(dir, "package", process.platform === "win32" ? "web-server.exe" : "web-server");
-    if (existsSync(exe)) return join(dir, "package");
+    if (existsSync(exe)) return { dir: join(dir, "package"), exe };
     const asset = webAssetFor(this.target);
-    if (!asset) throw new RpcError("unsupported", `moonlight-web has no build for ${this.target}`);
+    if (!asset) throw new RpcError("unsupported", `moonlight-web publishes no build for ${this.target}: build it from source and set [remote] web_server to its web-server`);
     mkdirSync(dir, { recursive: true });
     const archive = join(this.deps.root, `${WEB_VERSION}.${asset.kind}`);
     this.deps.progress?.(`fetching moonlight-web ${WEB_VERSION}`, 0);
@@ -162,7 +167,7 @@ export class MoonlightWeb {
     else await extractTarGz(archive, dir, { tar });
     rmSync(archive, { force: true });
     if (!existsSync(exe)) throw new Error(`moonlight-web ${WEB_VERSION} unpacked without ${exe}`);
-    return join(dir, "package");
+    return { dir: join(dir, "package"), exe };
   }
 
   /** Starts the sidecar, or returns the one running; the release is fetched first when it is not here. */
@@ -178,8 +183,7 @@ export class MoonlightWeb {
         cwd = this.deps.root;
         mkdirSync(cwd, { recursive: true });
       } else {
-        cwd = await this.ensureRelease();
-        command = join(cwd, process.platform === "win32" ? "web-server.exe" : "web-server");
+        ({ dir: cwd, exe: command } = await this.ensureRelease());
       }
       const lan = this.deps.lanIps().filter((ip) => ip !== "127.0.0.1");
       const script = this.writeIceScript();

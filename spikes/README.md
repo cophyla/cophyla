@@ -52,7 +52,8 @@ The design docs are kept private.
 
 ## Still untested
 
-macOS for everything, Linux beyond WSL. Sunshine (Apollo is tested; the fallback is written
+macOS beyond the build account (a clean account, the microphone, notarization: spike 09
+has the run of 2026-09-28), Linux beyond WSL. Sunshine (Apollo is tested; the fallback is written
 against the shared API). Two machines on a real LAN (spike 13 ran the node link's discovery
 between the host and WSL, milestone 9's two-node runs are two homes on this machine and WSL,
 and spike 14 streamed this desktop to itself). Proxy peers. A custom-trained wake phrase, and

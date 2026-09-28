@@ -1,7 +1,7 @@
 // The ways into tether for the user's own work. A running `claude` cannot move into a
 // pseudo-terminal, so a session is typeable only if it started in one; plain `claude` is left
 // alone, and these are opt-in entry points beside it. A Windows Terminal profile (a fragment
-// tether writes) runs `tether run -- claude <launch> --settings <cophylad's file>`, so the session
+// tether writes; on a Mac with iTerm2, an iTerm2 dynamic profile) runs `tether run -- claude <launch> --settings <cophylad's file>`, so the session
 // is the user's own, started as their sessions under Claude's own directory are, with the plan
 // dialog's clear-context row on. The tether VS Code extension's
 // "tether" terminal is the window's own shell in tether, and `<home>/editors/tether.json` tells
@@ -59,9 +59,9 @@ export async function writeEntryPoints(opts: { tether: Tether; profiles: Profile
   const { args, settings } = launchFlags(profile?.launch);
   const argv = [command, ...entrySafe(args), "--settings", cophyladSettings(opts.dataDir, undefined, settings !== undefined ? { settings, cwd: homedir() } : undefined)];
   try {
-    const wt = await opts.tether.installProfile({ app: PROFILE_APP, name: PROFILE_NAME, argv });
-    if (wt) opts.log.info("Windows Terminal profile in place", { path: wt });
+    const path = await opts.tether.installProfile({ app: PROFILE_APP, name: PROFILE_NAME, argv });
+    if (path) opts.log.info("terminal profile in place", { path });
   } catch (e) {
-    opts.log.warn("Windows Terminal profile not written", { error: e instanceof Error ? e.message : String(e) });
+    opts.log.warn("terminal profile not written", { error: e instanceof Error ? e.message : String(e) });
   }
 }

@@ -6,6 +6,7 @@ import { COMMANDS, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
 import { ConfigError } from "./config/load.ts";
 import { startDaemon } from "./daemon.ts";
+import { loginEnv } from "./login-env.ts";
 import { RESTART_ENV, waitForExit } from "./restart.ts";
 
 const command = Bun.argv[2];
@@ -52,10 +53,16 @@ if (predecessor !== undefined && !(await waitForExit(Number(predecessor)))) {
   process.exit(3);
 }
 
+// A Mac app started from the Finder or at login has launchd's bare PATH and no LANG: the
+// user's own, before anything looks a command up or starts one (login-env.ts).
+const login = await loginEnv(process.env);
+if (login) Object.assign(process.env, login.vars);
+
 try {
   const daemon = await startDaemon({
     ...(values.home !== undefined ? { home: values.home } : {}),
     ...(values.port !== undefined ? { port: Number(values.port) } : {}),
+    ...(login ? { loginEnv: login.note } : {}),
   });
   const shutdown = async () => {
     await daemon.stop();

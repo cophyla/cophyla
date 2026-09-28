@@ -181,7 +181,7 @@ describe("shell configuration", () => {
     expect(read("..", "host", "main.ts")).toContain('"stream:closed"');
   });
 
-  test("notifications: WinRT toasts tagged by ask on Windows, notify-rust on Linux and on macOS with the UNUserNotificationCenter backend; no notification plugin", () => {
+  test("notifications: WinRT toasts tagged by ask on Windows, notify-rust on Linux, its UNUserNotificationCenter backend on macOS with a wait that a dismissal stops; no notification plugin", () => {
     const cargo = read("Cargo.toml");
     expect(cargo).not.toContain("tauri-plugin-notification");
     expect(cargo).toMatch(/\[target\.'cfg\(target_os = "linux"\)'\.dependencies\]\s*\r?\nnotify-rust = "4\.18"/);
@@ -191,15 +191,21 @@ describe("shell configuration", () => {
     expect(notify).toContain("toast.SetTag(&HSTRING::from(&ask.id))");
     expect(notify).toContain("RemoveGroupedTagWithId");
     expect(notify).toContain('#[cfg(any(target_os = "linux", target_os = "macos"))]');
-    expect(notify).toContain("wait_for_action");
+    expect(notify).toContain("notify_rust::handle_action");
     expect(notify).toContain('"__closed"');
+    // macOS: the backend itself, each wait racing the stop `dismiss` and `clear` fire
+    expect(cargo).toMatch(/mac-usernotifications = "0\.3\.1"\s*\r?\nfutures-lite = "2"\s*\r?\nfutures-channel = "0\.3"/);
+    expect(notify).toContain("future::or(async { handle.response().await.ok() }");
+    expect(notify).toContain("let _ = n.stop.send(());");
   });
 
   test("launch at login uses a launch agent on macOS under the launcher's identifier, and the Dock follows the window", () => {
     const tray = read("src", "tray.rs");
     expect(tray).toContain(".set_use_launch_agent(true)");
     expect(tray).toContain('pub const AUTOSTART_NAME: &str = "com.fareaststudios.cophyla.launcher"');
-    expect(tray).toContain(".icon_as_template(false)");
+    // a template image the menu bar draws in its own colour, made from the frog
+    expect(tray).toContain(".icon_as_template(true)");
+    expect(tray).toContain("template_rgba(icon.rgba())");
     const main = read("src", "main.rs");
     expect(main).toContain("set_dock_visibility(visible)");
     expect(main).toContain("RunEvent::Reopen");
@@ -302,6 +308,14 @@ describe("installer configuration", () => {
     expect(readInstaller("hooks.nsh")).toContain('Delete "$INSTDIR\\launcher"');
     const entitlements = readInstaller("entitlements.plist");
     for (const key of ["com.apple.security.cs.allow-jit", "com.apple.security.cs.allow-unsigned-executable-memory", "com.apple.security.cs.disable-executable-page-protection"]) expect(entitlements).toContain(`<key>${key}</key>`);
+    // The shell's own: its web view's microphone and the Apple Events focus sends, signed in by the bundler.
+    const shell = readInstaller("entitlements-shell.plist");
+    for (const key of ["com.apple.security.device.audio-input", "com.apple.security.automation.apple-events"]) expect(shell).toContain(`<key>${key}</key>`);
+    expect(readInstaller("scripts", "stage-platform.ts")).toContain('entitlements: join(INSTALLER, "entitlements-shell.plist")');
+    // codesign's parser keeps to XML: a double hyphen inside a comment fails every signing
+    for (const file of ["entitlements.plist", "entitlements-shell.plist", "entitlements-net.plist"]) {
+      for (const [, body] of readInstaller(file).matchAll(/<!--([\s\S]*?)-->/g)) expect(body!.includes("--"), file).toBe(false);
+    }
   });
 
   test("neither crate carries the updater plugin; the launcher depends on tauri without its default features", () => {

@@ -17,10 +17,13 @@
 
 mod layout;
 mod seed;
+#[cfg(target_os = "macos")]
+mod spawn_mac;
 
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "macos"))]
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -77,12 +80,55 @@ fn launch(dir: &Path, version: &str, passthrough: &[String], launcher: &Path, lo
     let vdir = layout::version_dir(dir, version);
     let shell = vdir.join(layout::SHELL);
     log.line(&format!("starting {} {}", shell.display(), passthrough.join(" ")));
-    let mut command = Command::new(&shell);
+    let mut child = match start(&shell, passthrough, &vdir, dir, launcher) {
+        Ok(c) => c,
+        Err(e) => return Launch::Failed(format!("spawn failed: {e}")),
+    };
+    let started = Instant::now();
+    while started.elapsed() < WATCH_CHILD {
+        match child.try_wait() {
+            Ok(Some((true, _))) => {
+                log.line(&format!("{version} exited 0 after {:?} (another instance took over)", started.elapsed()));
+                return Launch::Ok;
+            }
+            Ok(Some((false, status))) => return Launch::Failed(format!("{version} exited with {status} after {:?}", started.elapsed())),
+            Ok(None) => std::thread::sleep(POLL),
+            Err(e) => return Launch::Failed(format!("cannot watch {version}: {e}")),
+        }
+    }
+    log.line(&format!("{version} running (pid {})", child.id()));
+    Launch::Ok
+}
+
+/// The shell started with the launcher's variables: on macOS as its own responsible process
+/// (`spawn_mac.rs`), elsewhere through `Command`; on Unix in its own process group.
+#[cfg(target_os = "macos")]
+fn start(shell: &Path, passthrough: &[String], vdir: &Path, dir: &Path, launcher: &Path) -> std::io::Result<spawn_mac::Spawned> {
+    spawn_mac::spawn(shell, passthrough, vdir, &[("COPHYLA_INSTALL_DIR", dir.as_os_str()), ("COPHYLA_PLATFORM_DIR", vdir.as_os_str()), ("COPHYLA_LAUNCHER", launcher.as_os_str())])
+}
+
+#[cfg(not(target_os = "macos"))]
+struct Started(std::process::Child);
+
+#[cfg(not(target_os = "macos"))]
+impl Started {
+    fn id(&self) -> u32 {
+        self.0.id()
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<(bool, String)>> {
+        Ok(self.0.try_wait()?.map(|s| (s.success(), s.to_string())))
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn start(shell: &Path, passthrough: &[String], vdir: &Path, dir: &Path, launcher: &Path) -> std::io::Result<Started> {
+    let mut command = Command::new(shell);
     command
         .args(passthrough)
-        .current_dir(&vdir)
+        .current_dir(vdir)
         .env("COPHYLA_INSTALL_DIR", dir)
-        .env("COPHYLA_PLATFORM_DIR", &vdir)
+        .env("COPHYLA_PLATFORM_DIR", vdir)
         .env("COPHYLA_LAUNCHER", launcher)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -92,26 +138,7 @@ fn launch(dir: &Path, version: &str, passthrough: &[String], launcher: &Path, lo
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match command.spawn() {
-        Ok(c) => c,
-        Err(e) => return Launch::Failed(format!("spawn failed: {e}")),
-    };
-    let started = Instant::now();
-    while started.elapsed() < WATCH_CHILD {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if status.success() {
-                    log.line(&format!("{version} exited 0 after {:?} (another instance took over)", started.elapsed()));
-                    return Launch::Ok;
-                }
-                return Launch::Failed(format!("{version} exited with {status} after {:?}", started.elapsed()));
-            }
-            Ok(None) => std::thread::sleep(POLL),
-            Err(e) => return Launch::Failed(format!("cannot watch {version}: {e}")),
-        }
-    }
-    log.line(&format!("{version} running (pid {})", child.id()));
-    Launch::Ok
+    command.spawn().map(Started)
 }
 
 #[cfg(windows)]
@@ -186,6 +213,39 @@ fn places(exe: &Path, env_root: Option<PathBuf>) -> Places {
     Places { root: env_root.filter(|p| !p.as_os_str().is_empty()).unwrap_or(root), seed }
 }
 
+/// macOS: where an app is run from that it must not be installed from. An app first opened from
+/// the disk image is on a read-only volume under `/Volumes` (an app kept on a drive of its own
+/// is on a writable one); one opened where it was downloaded, still quarantined, is run by
+/// macOS from a random read-only copy under `…/AppTranslocation/`. Either path would be
+/// written to the `launcher` file and the login item, and gone by the next start.
+fn not_installed_place(exe: &Path, writable: impl Fn(&Path) -> bool) -> bool {
+    let s = exe.to_string_lossy();
+    // …/Cophyla.app/Contents/MacOS/Cophyla -> the folder the app is in
+    let folder = exe.ancestors().nth(4).unwrap_or(exe);
+    cfg!(target_os = "macos") && (s.contains("/AppTranslocation/") || (s.starts_with("/Volumes/") && !writable(folder)))
+}
+
+#[cfg(unix)]
+fn writable(dir: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    std::ffi::CString::new(dir.as_os_str().as_bytes()).is_ok_and(|c| unsafe { libc::access(c.as_ptr(), libc::W_OK) } == 0)
+}
+
+#[cfg(not(unix))]
+fn writable(_dir: &Path) -> bool {
+    true
+}
+
+/// Tells the user to move the app, in a dialog of the system's: the launcher has no window.
+#[cfg(target_os = "macos")]
+fn ask_to_move() {
+    let script = "display alert \"Move Cophyla to Applications\" message \"Cophyla runs from your Applications folder. Drag it there from the disk image or the Downloads folder, then open it from Applications.\" as warning buttons {\"OK\"} default button \"OK\"";
+    let _ = std::process::Command::new("/usr/bin/osascript").args(["-e", script]).status();
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ask_to_move() {}
+
 fn main() {
     let exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("Cophyla"));
     let Places { root: dir, seed } = places(&exe, std::env::var_os("COPHYLA_INSTALL_DIR").map(PathBuf::from));
@@ -193,6 +253,11 @@ fn main() {
     let mut log = Log::open(&dir.join("launcher.log"));
     let args = parse_args(std::env::args().skip(1));
     log.line(&format!("launcher {} in {}", env!("CARGO_PKG_VERSION"), dir.display()));
+    if not_installed_place(&exe, writable) {
+        log.line(&format!("not started from {}: the app must be moved to Applications first", exe.display()));
+        ask_to_move();
+        std::process::exit(0);
+    }
     if let Err(e) = layout::write_text(&dir.join(layout::LAUNCHER_FILE), &format!("{}\n", exe.display())) {
         log.line(&format!("cannot write {}: {e}", layout::LAUNCHER_FILE));
     }
@@ -254,6 +319,19 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_disk_image_or_a_translocated_copy_is_not_an_installed_place() {
+        let translocated = Path::new("/private/var/folders/xy/abc/T/AppTranslocation/0A1B2C/d/Cophyla.app/Contents/MacOS/Cophyla");
+        let mounted = Path::new("/Volumes/Cophyla/Cophyla.app/Contents/MacOS/Cophyla");
+        let installed = Path::new("/Applications/Cophyla.app/Contents/MacOS/Cophyla");
+        let read_only = |_: &Path| false;
+        assert_eq!(not_installed_place(translocated, |_| true), cfg!(target_os = "macos"));
+        assert_eq!(not_installed_place(mounted, read_only), cfg!(target_os = "macos"));
+        // an app kept on a drive of its own runs where it is
+        assert!(!not_installed_place(mounted, |d| d == Path::new("/Volumes/Cophyla")));
+        assert!(!not_installed_place(installed, read_only));
+    }
 
     #[test]
     fn args_split_the_launcher_flags_from_the_shells() {

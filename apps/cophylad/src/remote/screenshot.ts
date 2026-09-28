@@ -5,7 +5,12 @@
 // "malicious content", while capture → scale → `Save(path, Jpeg)` passes, so the file is
 // read back here and encoded here. macOS uses `screencapture` and `sips`; Linux `grim` on
 // Wayland, ImageMagick's `import` on X11, and answers `unsupported` with no display at all.
+// Without Screen Recording, macOS's `screencapture` still exits 0 with a picture of the
+// wallpaper alone, so the permission is checked first (CoreGraphics' preflight, which answers
+// for the app cophylad runs under); the first refusal also asks, which puts Cophyla in the
+// Screen Recording list for the user to switch on.
 
+import { dlopen, FFIType } from "bun:ffi";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
@@ -31,7 +36,33 @@ export interface ScreenshotDeps {
   log: Logger;
   exec?: RunExec;
   env?: Record<string, string | undefined>;
+  /** macOS: whether the app may record the screen; `ask` shows the system's request. */
+  screenAccess?: ScreenAccess;
 }
+
+export interface ScreenAccess {
+  allowed(): boolean;
+  ask(): void;
+}
+
+let coreGraphics: { preflight: () => boolean; request: () => boolean } | undefined;
+
+/** CoreGraphics' Screen Recording preflight and request, through bun:ffi. */
+export function darwinScreenAccess(): ScreenAccess {
+  const cg = () => {
+    if (!coreGraphics) {
+      const lib = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", {
+        CGPreflightScreenCaptureAccess: { args: [], returns: FFIType.bool },
+        CGRequestScreenCaptureAccess: { args: [], returns: FFIType.bool },
+      });
+      coreGraphics = { preflight: () => lib.symbols.CGPreflightScreenCaptureAccess(), request: () => lib.symbols.CGRequestScreenCaptureAccess() };
+    }
+    return coreGraphics;
+  };
+  return { allowed: () => cg().preflight(), ask: () => void cg().request() };
+}
+
+export const SCREEN_RECORDING_REFUSED = "macOS has not allowed Cophyla to record the screen: switch it on in System Settings → Privacy & Security → Screen Recording, then quit and reopen Cophyla";
 
 /** The dimensions from a JPEG's SOF marker, so every platform reports them the same way. */
 export function jpegSize(bytes: Uint8Array): { width: number; height: number } | undefined {
@@ -82,6 +113,8 @@ $scaled.Dispose()
 export function screenshotter(deps: ScreenshotDeps): Capture {
   const exec = deps.exec ?? runCommand;
   const env = deps.env ?? process.env;
+  let access = deps.screenAccess;
+  let asked = false;
   return async (display, maxWidth) => {
     const index = display ?? 0;
     mkdirSync(deps.dir, { recursive: true });
@@ -96,6 +129,14 @@ export function screenshotter(deps: ScreenshotDeps): Capture {
           break;
         }
         case "macos": {
+          access ??= darwinScreenAccess();
+          if (!access.allowed()) {
+            if (!asked) {
+              asked = true;
+              access.ask();
+            }
+            throw new RpcError("unavailable", SCREEN_RECORDING_REFUSED);
+          }
           const r = await exec("screencapture", ["-x", "-t", "jpg", "-D", String(index + 1), out], { timeoutMs: 20_000 });
           if (r.code !== 0 || !existsSync(out)) throw new RpcError("unavailable", `screencapture failed: ${r.err.trim().slice(0, 300) || `exit ${r.code}`}`);
           const s = await exec("sips", ["-Z", String(maxWidth), out], { timeoutMs: 20_000 });

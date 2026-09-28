@@ -60,7 +60,7 @@ again.
 | `update/` | 4, 8 | the public release feed read on a schedule (`feed.ts`: signed, this OS/arch/channel, inside our protocol version), downloads checked by size and hash (`download.ts`), platform versions staged behind the `staged` pointer (`platform.ts`), brain releases under `data/brain/` verified before every spawn (`brain.ts`), voice models unpacked under `data/models/<name>/<version>/` and checked against their own manifest (`models.ts`), and `update.check`/`update.apply`/`update.state` (`index.ts`); the release keys' public halves in `keys.ts` |
 | `voice/` | 8, 14 | the three stages behind engine interfaces (`engines.ts`) with the local ones beside them — `openwakeword.ts` (the sessions; the streaming pipeline is `@cophyla/wake`'s, which the phone runs too), `silero.ts` (on onnxruntime-node, which ships), `nemotron.ts`, `sherpa-stt.ts` (Moonshine and Whisper, read whole), `sherpa-tts.ts` (Piper, Kokoro and Supertonic, with `pieces.ts` cutting a reply into what each makes whole), `chatterbox.ts` — assembled by `local.ts` and `fake.ts`, the transcription and speech engines running in the speech process (`speech-process.ts` starts it for a turn and kills it after; `speech-worker.ts` is the process), and the online ones over the `stt` and `tts` routes (`online.ts`, with `wav-stream.ts`); `catalog.ts` names what each local engine needs, where it comes from and its licences, and `install.ts` installs one when asked; `prefs.ts` keeps the engines and voice the app picked; `runtime.ts` fixes the ONNX load order, `affinity.ts` finds the performance cores, `models.ts` and `manifest.ts` resolve and check a model directory, `conversation.ts` is the per-controller state machine, `compose.ts` turns blocks into speakable text with a lead-in for each quote, and `index.ts` is the module the daemon holds |
 | `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a rotated log under `data/sidecars/`, the daemon's own CPU mask (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
-| `metrics/` | 9 | the machine sampled without a shell: the engines behind one interface (`windows.ts` through `bun:ffi` and `NtQuerySystemInformation`, `linux.ts` over `/proc`, `macos.ts` over libproc, `nvml.ts` for the GPU, `fake.ts` for tests), owners from the process tree (`owners.ts`), the sample built from two raw readings (`sampler.ts`), pressure with hysteresis (`pressure.ts`), per-minute rollups (`rollup.ts`), the price table and the token counters (`prices.ts`, `tokens.ts`), each login's plan limits from Claude's usage endpoint, Codex's rollouts or Muse's host (`limits.ts`), each subscriber's share of the samples with the counts it skipped carried on and the rows summed per owner (`delivery.ts`), and the module with its ring, its subscribers and in-process watchers (a metric listener's, which move the rate and read no plan limits), its adaptive rate and a range's spend (`index.ts`) |
+| `metrics/` | 9 | the machine sampled without a shell: the engines behind one interface (`windows.ts` through `bun:ffi` and `NtQuerySystemInformation`, `linux.ts` over `/proc`, `macos.ts` over libproc, `nvml.ts` for an NVIDIA GPU and `apple-gpu.ts` for a Mac's (IOKit's IOAccelerator statistics: utilisation and the unified memory it holds, no per-process share), `fake.ts` for tests), owners from the process tree (`owners.ts`), the sample built from two raw readings (`sampler.ts`), pressure with hysteresis (`pressure.ts`), per-minute rollups (`rollup.ts`), the price table and the token counters (`prices.ts`, `tokens.ts`), each login's plan limits from Claude's usage endpoint, Codex's rollouts or Muse's host (`limits.ts`), each subscriber's share of the samples with the counts it skipped carried on and the rows summed per owner (`delivery.ts`), and the module with its ring, its subscribers and in-process watchers (a metric listener's, which move the rate and read no plan limits), its adaptive rate and a range's spend (`index.ts`) |
 | `remote/` | 10 | the remote desktop: the host found or installed with the package manager (`install.ts`), its API with the cookie login, the blind PIN and the viewer grant (`host.ts`), the Windows service or a spawned host (`service.ts`), moonlight-qt driven by its CLI (`moonlight.ts`), the moonlight-web sidecar fetched from its pinned release (`manifest.ts`, `web.ts`), the tickets and the reverse proxy under `/remote` (`proxy.ts`), the OS screenshot (`screenshot.ts`), and the module with `remote.state` and the viewers (`index.ts`) |
 | `nodes/` | 0, 9, 12, 17 | this node's identity (`self.ts`); the sealed sockets every link runs in (`sealed-link.ts`) and redeeming an invite (`enroll.ts`); confinement to the folders a join shares (`confine.ts`); the registry in the `nodes` table (`registry.ts`), the mirrors of remote sessions, asks and workspaces (`mirror.ts`), the link's peer (`peer.ts`), the primary's side of the link with the relay host and the fan-out (`inbound.ts`), the secondary's side with reconnect, heartbeat and the upward stream over a direct socket or a relay tunnel (`outbound.ts`), the requests a secondary serves as principal `node` (`served.ts`), forwarding over both method tables (`forward.ts`), UDP discovery (`discovery.ts`), replication to a backup (`replication.ts`), the role machine with its epoch (`role.ts`), and the module with the server registry's grants folded into the role (`index.ts`) |
 
@@ -164,15 +164,21 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   process (`/clear`, the clear-context row) re-keys the record (`Sessions.rekey`), and a
   plan's "Yes, clear context" is pressed by key in the terminal. `entry.ts` writes the
   Windows Terminal profile that starts the user's own `claude` in tether, and
-  `<home>/editors/tether.json`, the tether command the VS Code extension's terminal runs.
+  `<home>/editors/tether.json`, the tether command the VS Code extension's terminal runs (on a
+  Mac with iTerm2, an iTerm2 dynamic profile in place of Windows Terminal's).
   `command.ts` gives an installed platform's user a `tether` command: a copy of the staged
   binary in the root's `bin/`, that folder added once to the user's PATH on Windows (the
-  registry value keeps its kind; running programs are told) and linked as `~/.local/bin/tether`
-  elsewhere, never over another tether. A copy a host still runs is renamed aside, since
+  registry value keeps its kind; running programs are told) and linked elsewhere into the first
+  of `~/.local/bin`, `~/bin` their shells' PATH names (or `/usr/local/bin` when it is on it and
+  theirs to write), else `~/.local/bin`, never over another tether. Which PATH is the user's:
+  the login shell's on a Mac started outside a terminal (`login-env.ts` keeps it), which is
+  also where `attachCommand` looks for `tether` by name. A copy a host still runs is renamed aside, since
   Windows will not overwrite it, and removed at a later start.
   `streams.ts` serves terminals to clients (`terminal.*`): one subscription per terminal,
   output batched per connection, a repaint for a client that fell behind. Without tether,
-  sessions start in a terminal window of their own as before. A Muse session cophylad starts
+  sessions start in a terminal window of their own as before: on a Mac iTerm2 when it is
+  installed (or `[tether] window` names `terminal` or `iterm2`), else Terminal, only while
+  this user owns the console, and a launcher's refusal is an error, not a window nobody sees. A Muse session cophylad starts
   runs `muse` in tether as the user does, and the adapter claims the session whose
   SessionStart comes from below the terminal's process; with `launch = "acp"` or no tether,
   it runs headless on its host, its approvals and questions as asks.
@@ -187,17 +193,42 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   state folder when it is not the default, by name where the PATH has `tether`), which the
   app copies. Otherwise it raises the terminal that runs a session by walking the process
   tree up from its pid (`sessions/focus.ts`): PowerShell and `SetForegroundWindow` on
-  Windows; `ps` and System Events on macOS, which asks for the Automation permission the
-  first time (denied, focus is `unsupported` and the log names System Settings › Privacy &
-  Security › Automation; the prompt appears only for cophylad run under the installed app,
-  whose bundle declares the usage); `/proc` and `xdotool` (or `wmctrl`) on Linux, over X11
+  Windows; the metrics engine's libproc table (`ps` where it cannot be read) and System
+  Events on macOS, which asks for the Automation permission the first time (refused, focus
+  answers `unavailable` and the log names System Settings › Privacy & Security › Automation;
+  while the prompt is still up it answers that it is waiting, and opens no second window; the
+  prompt appears only for cophylad run under the installed app, whose bundle declares the
+  usage and carries the Apple Events entitlement). In Terminal and iTerm2 the session's own
+  tab (and iTerm2's split pane) is selected by its tty, and a shell under iTerm2's
+  `iTermServer`, which launchd adopts, is found in iTerm2 that way too. On every platform a
+  session in an editor's terminal is shown by the window that runs it (`editors.ts`: the
+  chain goes to each VS Code window's `/focus`, and the one whose terminal runs it shows that
+  tab and comes forward), and a session in tmux is raised through the client attached to its
+  session, after its pane is selected (`withTmux`: the tmux server is adopted by launchd or
+  init, so no window is above it). `/proc` and `xdotool` (or `wmctrl`) on Linux, over X11
   and XWayland windows, `unsupported` without a display. Under WSL a terminal is not an X
   window, so a session there is `not_found` unless it runs in an `xterm` under WSLg. Codex's
   and Muse's pids are learned from the same walk, wherever raising works or not.
 - **Paths and platforms.** One code path on Windows, macOS and Linux: paths compare
-  case-folded on the two case-insensitive platforms (`sessions/paths.ts`), the Codex hook
+  case-folded on the two case-insensitive platforms, and in NFC on a Mac, whose file system
+  takes either Unicode form of a name as the same (`sessions/paths.ts`), the Codex hook
   file carries the sh and the PowerShell command forms, and a macOS Claude login is found in
-  the Keychain (`Claude Code-credentials`).
+  the Keychain: `Claude Code-credentials` for `~/.claude`, and with `-` and the first 8 hex
+  digits of the directory's SHA-256 for any other (`claudeKeychainServices`, Claude Code's
+  own rule), which is also where the plan limits read the login from on a Mac. A daemon a
+  Mac starts outside a terminal (the Finder, a login item: launchd's bare PATH, no `LANG`)
+  takes the user's login-shell PATH and locale before anything else (`login-env.ts`), and
+  a terminal cophylad opens starts `$SHELL -l` there. The Mac process table names
+  another user's processes too (root's `login` sits between Terminal and every shell), a
+  natively installed Claude by its install rather than its version file, and a process's
+  arguments are read whole (`KERN_PROCARGS2`), spaces and all. macOS asks the user before an
+  app first reads Desktop, Documents, Downloads, iCloud Drive or a volume, and the read waits
+  for the answer: the first read of each is made off the daemon's thread
+  (`sessions/protected.ts`), a session met in one is listed at once and gets its workspace
+  when the folder settles, and the brain's tools are told to try again meanwhile. A Mac
+  without the developer tools has only Apple's stub at `/usr/bin/git`, which opens their
+  installer's dialog at every run, so no repository is read there (`findGit`). A node's name,
+  unset, is a Mac's Computer Name ("Ada's MacBook Pro"), not its `.local` host name.
 
 **Codex liveness caveat.** With trusted hooks and the thread's process found, a Codex
 thread's state is exact. Without them, a thread that predates the daemon is listed while it
@@ -420,6 +451,19 @@ Apollo's code and `art://` link, and `remote.revoke` ends a web session or unpai
 `screencapture` and `sips` on macOS, `grim` or ImageMagick's `import` on Linux, scaled to
 `screenshot_width`. Pins, codes, passphrases, the link's query and the stream URL's ticket are
 redacted in audit rows, and any `base64` field is kept as its size, so no frame is stored there.
+
+On a Mac the host is Sunshine (Apollo is Windows-only): `brew install
+lizardbyte/homebrew/sunshine`, with `brew` taken from the PATH or Homebrew's own folders, and
+the viewer `brew install --cask moonlight`. Sunshine runs as a sidecar, so macOS asks for
+Screen Recording and Accessibility in Cophyla's name. The screenshot checks Screen Recording
+first (CoreGraphics' preflight): without it `screencapture` still succeeds with the wallpaper
+alone, so it answers `unavailable` instead and asks the system once, which lists Cophyla under
+Privacy & Security for the user to switch on (the grant takes effect at the next start).
+moonlight-web publishes no macOS build, so a Mac serves phones from one built from source
+(`apps/installer/scripts/build-moonlight-web.ts`: the pinned tag, its frontend as `static/`
+beside `web-server` and `streamer`, OpenSSL linked in statically) and named by `[remote]
+web_server` until its archive is published and pinned in `manifest.ts`; with neither,
+`remote.open` from a phone answers `unsupported`.
 
 ## Views
 

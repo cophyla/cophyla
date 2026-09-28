@@ -86,8 +86,16 @@ survives updates; from a checkout it registers this executable; the item is disa
 launcher is known. On Unix cophylad and a relaunched launcher get their own process group, so
 launchd ending the shell's group at login never takes the daemon with it. On macOS the Dock
 icon is there while the window is: closing the window hides both, a click on the app in the
-Finder or the Dock (`Reopen`) shows them again, and Cmd+Q hides. Notifications take their
-icon from `versions/<v>/icons/`.
+Finder or the Dock (`Reopen`) shows them again, and Cmd+Q hides. Cmd+Q is the app menu's own
+"Close Cophyla": the stock Quit is AppKit's `terminate:`, which tao ends the process on
+before `ExitRequested` could hold it; "Quit Cophyla" in that menu, with no key, ends it as the
+tray's Quit does. The menu keeps Edit, which gives the web view copy and paste. A launch
+agent left naming another launcher (the app moved) is written again for this one. The
+notification permission is asked on a thread of its own: the first time it waits on the
+user's answer, and the window, the tray and the daemon never wait on it. Notifications take
+their icon from `versions/<v>/icons/`. The menu bar's icon is a template image made from the
+frog when the tray is built (its shape in black, its white eyes open), so the menu bar draws it
+in its own colour on a light or dark bar, as it does its own icons.
 
 ## How a view is isolated
 
@@ -223,9 +231,11 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
 
 - **The microphone** is granted to the host page without a prompt and to nothing else
   (`voice.rs`): WebView2's `PermissionRequested` on Windows, WebKitGTK's `permission-request`
-  on Linux, both for the app's own origin only; on macOS WebKit asks the system with the text
-  in `Info.plist`. Windows' own privacy switch for desktop apps still applies; a refused
-  microphone shows in Settings with a retry.
+  on Linux, both for the app's own origin only; on macOS the UI delegate's media request,
+  granted for the host page's own frame and the microphone alone (wry's grants every origin
+  every device, camera included, so its method is replaced once for the class), and the system
+  then asks with the text in `Info.plist`. Windows' own privacy switch for desktop apps still
+  applies; a refused microphone shows in Settings with a retry.
 - **Which microphone**: the system's default, followed as it moves (a headset plugged in and
   made the default is listened on), or one picked in Settings, kept by its id and its name; a
   pick that is not connected falls back to the default until it is back. A device that goes
@@ -239,7 +249,8 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
 - **Audio from launch**: WebView2 is started with `--autoplay-policy=no-user-gesture-required`
   (with wry's own flags repeated, since the argument replaces them). Where there is no such
   switch the page starts its audio at the first click the view passes up.
-- **The talk key**, Ctrl+Alt+Space unless the user sets another in Settings, is a global
+- **The talk key**, Ctrl+Alt+Space (Ctrl+Shift+Space on a Mac, where Control+Option+Space is
+  the system's "Select next source in Input menu") unless the user sets another in Settings, is a global
   shortcut (`tauri-plugin-global-shortcut`): held anywhere on the desktop it is push-to-talk,
   told to the page as `voice:ptt {down}`. The page keeps the choice and registers it with
   `ptt_shortcut` at every start; a key another app holds is refused with a word.
@@ -275,6 +286,12 @@ dev run says "Cophyla" rather than the name of the shell that launched it; miles
 installer shortcut carries the same id. Linux: `org.freedesktop.Notifications` over D-Bus
 through `notify-rust`, with the app name, the desktop entry and the icon, buttons where the
 desktop shows actions (GNOME, KDE, dunst). macOS: `UNUserNotificationCenter` through
-`notify-rust`'s `preview-macos-un` backend, which needs a code-signed bundle with an
-identifier, so a dev run from a checkout gets `unsupported`; the installed app asks for
-permission once at start, and the buttons sit under the notification's Options.
+`mac-usernotifications` (`notify-rust`'s `preview-macos-un` backend, used directly), which
+needs a code-signed bundle with an identifier, so a dev run from a checkout gets
+`unsupported`; the installed app asks for permission once at start, the buttons sit under
+the notification's Options, and the body is the default action (no "Open" button). macOS
+says nothing when an app takes its own notification down, so each one's wait races a stop
+that `dismiss` and `clear` fire, and its thread ends with it. The permission is kept per
+code signature: an ad-hoc build at a new path was answered `false` without a prompt until the
+user switched it on in System Settings, which a Developer ID signature should keep across
+updates.

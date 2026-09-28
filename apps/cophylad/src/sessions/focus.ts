@@ -2,7 +2,9 @@
 // tree up from the pid to the nearest ancestor that has a window. One raiser per platform:
 // Windows walks with PowerShell and `SetForegroundWindow`; macOS walks with `ps` and asks
 // System Events for the nearest ancestor that is a GUI process, which needs the Automation
-// permission; Linux walks `/proc` and activates through `xdotool` (X11 and XWayland windows)
+// permission, and in Terminal and iTerm2 selects the session's own tab by its tty (iTerm2
+// runs its shells under an `iTermServer` that launchd adopts, so the app is not an ancestor
+// at all); Linux walks `/proc` and activates through `xdotool` (X11 and XWayland windows)
 // or `wmctrl`, and is unsupported without a display. Every command runs through an
 // injectable `Exec`, so the parsers are tested with canned output on any host. The process
 // walk stands on its own as `ProcessTree`: Codex's pid discovery needs it where raising is
@@ -14,8 +16,13 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { Logger } from "../log.ts";
+import { darwinArgv, installNameOf } from "../metrics/macos.ts";
 
-export type RaiseResult = "raised" | "not_found" | "unsupported";
+/**
+ * `denied`: the OS refused the permission raising needs (macOS's Automation); `waiting`: the
+ * request for it is still on screen, unanswered.
+ */
+export type RaiseResult = "raised" | "not_found" | "unsupported" | "denied" | "waiting";
 
 export interface ProcessInfo {
   pid: number;
@@ -90,6 +97,8 @@ export interface ExecResult {
   code: number | null;
   out: string;
   err: string;
+  /** Killed at the timeout, rather than never started. */
+  timedOut?: boolean;
 }
 
 export type Exec = (file: string, args: string[], opts?: { timeoutMs?: number }) => Promise<ExecResult>;
@@ -110,14 +119,18 @@ export function runCommand(file: string, args: string[], opts: { timeoutMs?: num
     child.stdout?.on("data", (d: string) => (out += d));
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (d: string) => (err += d));
-    const timer = setTimeout(() => child.kill(), opts.timeoutMs ?? 15000);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, opts.timeoutMs ?? 15000);
     child.on("error", () => {
       clearTimeout(timer);
       resolve({ code: null, out, err });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      resolve({ code, out, err });
+      resolve(timedOut ? { code: null, out, err, timedOut } : { code, out, err });
     });
   });
 }
@@ -228,12 +241,15 @@ export class WindowsRaiser implements WindowRaiser {
 
 // --- macOS --------------------------------------------------------------------------------
 
-/** `pid ppid command` per line, as `ps -axo pid=,ppid=,comm=` prints it; the command may hold spaces. */
+/**
+ * `pid ppid command` per line, as `ps -axo pid=,ppid=,comm=` prints it; the command may hold
+ * spaces. A versioned install's executable (`…/claude/versions/2.1.243`) is named after it.
+ */
 export function parsePsTable(text: string): Map<number, { ppid: number; name: string }> {
   const table = new Map<number, { ppid: number; name: string }>();
   for (const line of text.split(/\r?\n/)) {
     const m = /^\s*(\d+)\s+(\d+)\s+(.*\S)\s*$/.exec(line);
-    if (m) table.set(Number(m[1]), { ppid: Number(m[2]), name: basename(m[3]!) });
+    if (m) table.set(Number(m[1]), { ppid: Number(m[2]), name: installNameOf(m[3]!) ?? basename(m[3]!) });
   }
   return table;
 }
@@ -279,6 +295,61 @@ export function withProcessTable(raiser: WindowRaiser, read: () => Promise<{ pid
   };
 }
 
+/** The `-L name` or `-S path` a tmux server was started with, so its clients are asked on its socket. */
+export function tmuxSocketArgs(argv: string[] | undefined): string[] {
+  if (!argv) return [];
+  for (let i = 1; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "-L" || a === "-S") return argv[i + 1] ? [a, argv[i + 1]!] : [];
+    const joined = /^-(L|S)(.+)$/.exec(a);
+    if (joined) return [`-${joined[1]}`, joined[2]!];
+    if (!a.startsWith("-")) break;
+  }
+  return [];
+}
+
+/** Tab-separated tmux output as rows of fields, blank lines left out. */
+function tmuxRows(text: string): string[][] {
+  return text
+    .split(/\r?\n/)
+    .filter((l) => l.trim())
+    .map((l) => l.split("\t"));
+}
+
+/**
+ * A raiser that follows a session into tmux: the tmux server, which runs every pane, is
+ * adopted by launchd (or init), so no window is ever above it. The pane whose process is in
+ * the session's chain is selected in its window, and the window of a client attached to that
+ * pane's session is raised instead. A session in a detached tmux has no window at all.
+ */
+export function withTmux(raiser: WindowRaiser, opts: { exec?: Exec; argv?: (pid: number) => string[] | undefined } = {}): WindowRaiser {
+  const exec = opts.exec ?? runCommand;
+  const tmux = (socket: string[], args: string[]) => exec("tmux", [...socket, ...args], { timeoutMs: 5000 });
+  return {
+    ancestors: (pid) => raiser.ancestors(pid),
+    ...(raiser.ancestorsOf ? { ancestorsOf: (pids: number[]) => raiser.ancestorsOf!(pids) } : {}),
+    commandLine: (pid) => raiser.commandLine(pid),
+    async raise(pid) {
+      const chain = await raiser.ancestors(pid).catch(() => []);
+      const at = chain.findIndex((p) => p.name === "tmux" || p.name.startsWith("tmux:"));
+      if (at <= 0) return raiser.raise(pid);
+      const server = chain[at]!;
+      const paneProcess = chain[at - 1]!.pid;
+      const socket = tmuxSocketArgs(opts.argv ? opts.argv(server.pid) : await raiser.commandLine(server.pid).catch(() => undefined));
+      const panes = await tmux(socket, ["list-panes", "-a", "-F", "#{pane_pid}\t#{session_id}\t#{window_id}\t#{pane_id}"]);
+      if (panes.code !== 0) return "not_found";
+      const pane = tmuxRows(panes.out).find((r) => Number(r[0]) === paneProcess);
+      if (!pane || pane.length < 4) return "not_found";
+      const [, session, window, paneId] = pane as [string, string, string, string];
+      await tmux(socket, ["select-window", "-t", window]);
+      await tmux(socket, ["select-pane", "-t", paneId]);
+      const clients = await tmux(socket, ["list-clients", "-F", "#{client_pid}\t#{session_id}"]);
+      const client = clients.code === 0 ? tmuxRows(clients.out).find((r) => r[1] === session) : undefined;
+      return client ? raiser.raise(Number(client[0])) : "not_found";
+    },
+  };
+}
+
 /** The pids in a System Events answer such as `345, 1201, 1288`. */
 export function parseUnixIds(text: string): Set<number> {
   const ids = new Set<number>();
@@ -288,13 +359,70 @@ export function parseUnixIds(text: string): Set<number> {
 
 const NOT_AUTHORIZED = /-1743|not authori[sz]ed|not permitted/i;
 
+/** A string as an AppleScript literal. */
+function appleString(s: string): string {
+  return `"${s.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+}
+
+/** Terminal: the window and tab on `tty` selected and brought forward; "not_found" when no tab is on it. */
+export function terminalTabScript(tty: string): string {
+  return [
+    'tell application "Terminal"',
+    "  repeat with w in windows",
+    "    repeat with t in tabs of w",
+    `      if tty of t is ${appleString(tty)} then`,
+    "        if miniaturized of w then set miniaturized of w to false",
+    "        set selected tab of w to t",
+    "        set index of w to 1",
+    "        activate",
+    '        return "raised"',
+    "      end if",
+    "    end repeat",
+    "  end repeat",
+    "end tell",
+    'return "not_found"',
+  ].join("\n");
+}
+
+/** iTerm2: the window, tab and split pane on `tty` selected and brought forward. */
+export function itermSessionScript(tty: string): string {
+  return [
+    'tell application "iTerm2"',
+    "  repeat with w in windows",
+    "    repeat with t in tabs of w",
+    "      repeat with s in sessions of t",
+    `        if tty of s is ${appleString(tty)} then`,
+    "          select w",
+    "          select t",
+    "          select s",
+    "          activate",
+    '          return "raised"',
+    "        end if",
+    "      end repeat",
+    "    end repeat",
+    "  end repeat",
+    "end tell",
+    'return "not_found"',
+  ].join("\n");
+}
+
+/** The terminal apps whose tab a session runs in is found by its tty, by the name of the chain's GUI process. */
+const TAB_APPS: Record<string, (tty: string) => string> = { Terminal: terminalTabScript, iTerm2: itermSessionScript };
+
+/** iTerm2's per-session server, adopted by launchd: its shells' app is iTerm2, found by name. */
+const ITERM_SERVER = /^iTermServer/;
+
 export class DarwinRaiser implements WindowRaiser {
   private exec: Exec;
   private log: Logger | undefined;
 
-  constructor(opts: { exec?: Exec; log?: Logger } = {}) {
+  private argv: (pid: number) => string[] | undefined;
+
+  constructor(opts: { exec?: Exec; log?: Logger; argv?: (pid: number) => string[] | undefined } = {}) {
     this.exec = opts.exec ?? runCommand;
     this.log = opts.log;
+    // a test that scripts `ps` scripts the arguments with it
+    this.argv = opts.argv ?? (opts.exec ? () => undefined : darwinArgv);
   }
 
   async ancestors(pid: number): Promise<ProcessInfo[]> {
@@ -304,35 +432,69 @@ export class DarwinRaiser implements WindowRaiser {
     return walkUp(pid, (p) => table.get(p));
   }
 
-  /** `ps` prints the arguments joined by spaces, so one holding a space reads as two. */
+  /**
+   * The arguments exactly, from `sysctl(KERN_PROCARGS2)` (`darwinArgv`); `ps`, which joins them
+   * with spaces so one holding a space reads as two, only where that cannot be read.
+   */
   async commandLine(pid: number): Promise<string[] | undefined> {
+    const exact = this.argv(pid);
+    if (exact && exact.length > 0) return exact;
     const r = await this.exec("ps", ["-ww", "-o", "args=", "-p", String(pid)], { timeoutMs: COMMAND_LINE_TIMEOUT_MS });
     const args = r.out.trim().split(/\s+/).filter(Boolean);
     return r.code === 0 && args.length > 0 ? args : undefined;
   }
 
-  private async osascript(script: string): Promise<ExecResult & { denied: boolean }> {
+  /** The terminal device a process runs on, `/dev/ttys003`; none for one without a terminal. */
+  private async ttyOf(pid: number): Promise<string | undefined> {
+    const r = await this.exec("ps", ["-o", "tty=", "-p", String(pid)]);
+    const tty = r.out.trim();
+    return r.code === 0 && /^tty\w+$/.test(tty) ? `/dev/${tty}` : undefined;
+  }
+
+  /**
+   * Runs a script; `blocked` says why it could not run: `denied` when the Automation permission
+   * is refused, `waiting` when osascript is still waiting at the timeout (the permission's
+   * prompt is up), `unsupported` when osascript could not be started at all.
+   */
+  private async osascript(script: string, app: string): Promise<ExecResult & { blocked?: "denied" | "waiting" | "unsupported" }> {
     const r = await this.exec("osascript", ["-e", script]);
-    const denied = r.code !== 0 && NOT_AUTHORIZED.test(r.err + r.out);
-    if (denied) {
-      this.log?.warn("session.focus needs the Automation permission for System Events: System Settings › Privacy & Security › Automation", {
+    if (r.code !== 0 && NOT_AUTHORIZED.test(r.err + r.out)) {
+      this.log?.warn(`session.focus needs the Automation permission for ${app}: System Settings › Privacy & Security › Automation`, {
         error: r.err.trim() || r.out.trim(),
       });
+      return { ...r, blocked: "denied" };
     }
-    return { ...r, denied };
+    if (r.code === null) return { ...r, blocked: r.timedOut ? "waiting" : "unsupported" };
+    return r;
+  }
+
+  /** Selects the tab on the session's tty in a terminal app that can say which tab that is. */
+  private async raiseTab(app: string, pid: number): Promise<RaiseResult> {
+    const script = TAB_APPS[app];
+    const tty = script ? await this.ttyOf(pid) : undefined;
+    if (!script || !tty) return "not_found";
+    const r = await this.osascript(script(tty), app);
+    if (r.blocked) return r.blocked;
+    return r.code === 0 && r.out.trim() === "raised" ? "raised" : "not_found";
   }
 
   async raise(pid: number): Promise<RaiseResult> {
     const chain = await this.ancestors(pid);
     if (chain.length === 0) return "not_found";
-    const gui = await this.osascript('tell application "System Events" to get unix id of every process whose background only is false');
-    if (gui.denied || gui.code === null) return "unsupported";
+    if (chain.some((p) => ITERM_SERVER.test(p.name))) return this.raiseTab("iTerm2", pid);
+    const gui = await this.osascript('tell application "System Events" to get unix id of every process whose background only is false', "System Events");
+    if (gui.blocked) return gui.blocked;
     if (gui.code !== 0) return "not_found";
     const ids = parseUnixIds(gui.out);
     const target = chain.find((p) => ids.has(p.pid));
     if (!target) return "not_found";
-    const set = await this.osascript(`tell application "System Events" to set frontmost of (first process whose unix id is ${target.pid}) to true`);
-    if (set.denied || set.code === null) return "unsupported";
+    if (TAB_APPS[target.name]) {
+      // the tab when the app says which; its permission refused, the app's front window as before
+      const tab = await this.raiseTab(target.name, pid);
+      if (tab === "raised" || tab === "waiting") return tab;
+    }
+    const set = await this.osascript(`tell application "System Events" to set frontmost of (first process whose unix id is ${target.pid}) to true`, "System Events");
+    if (set.blocked) return set.blocked;
     return set.code === 0 ? "raised" : "not_found";
   }
 }

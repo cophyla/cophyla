@@ -62,6 +62,65 @@ fn hide_window<R: Runtime>(app: &AppHandle<R>) {
     dock(app, false);
 }
 
+/// The macOS menu bar: the system's usual menus (Edit is what gives the web view copy and
+/// paste), with ⌘Q as the app's own item. The stock Quit is AppKit's `terminate:`, which ends
+/// the process before `RunEvent::ExitRequested` could hold it (tao registers no
+/// `applicationShouldTerminate:`), while Cophyla stays in the menu bar when its window goes:
+/// ⌘Q closes the window, as the close button does. "Quit Cophyla", with no key, ends it, as
+/// Quit in the tray does.
+#[cfg(target_os = "macos")]
+mod app_menu {
+    use tauri::menu::{AboutMetadata, Menu, MenuItem, PredefinedMenuItem, Submenu};
+    use tauri::{AppHandle, Runtime};
+
+    pub const CLOSE: &str = "app-close";
+    pub const QUIT: &str = "app-quit";
+
+    pub fn build<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+        let sep = || PredefinedMenuItem::separator(app);
+        let about = AboutMetadata { name: Some("Cophyla".into()), version: Some(app.package_info().version.to_string()), ..Default::default() };
+        let cophyla = Submenu::with_items(
+            app,
+            "Cophyla",
+            true,
+            &[
+                &PredefinedMenuItem::about(app, Some("About Cophyla"), Some(about))?,
+                &sep()?,
+                &PredefinedMenuItem::services(app, None)?,
+                &sep()?,
+                &PredefinedMenuItem::hide(app, None)?,
+                &PredefinedMenuItem::hide_others(app, None)?,
+                &PredefinedMenuItem::show_all(app, None)?,
+                &sep()?,
+                &MenuItem::with_id(app, CLOSE, "Close Cophyla", true, Some("CmdOrCtrl+Q"))?,
+                &MenuItem::with_id(app, QUIT, "Quit Cophyla", true, None::<&str>)?,
+            ],
+        )?;
+        let edit = Submenu::with_items(
+            app,
+            "Edit",
+            true,
+            &[
+                &PredefinedMenuItem::undo(app, None)?,
+                &PredefinedMenuItem::redo(app, None)?,
+                &sep()?,
+                &PredefinedMenuItem::cut(app, None)?,
+                &PredefinedMenuItem::copy(app, None)?,
+                &PredefinedMenuItem::paste(app, None)?,
+                &PredefinedMenuItem::select_all(app, None)?,
+            ],
+        )?;
+        let view = Submenu::with_items(app, "View", true, &[&PredefinedMenuItem::fullscreen(app, None)?])?;
+        let window = Submenu::with_items(
+            app,
+            "Window",
+            true,
+            &[&PredefinedMenuItem::minimize(app, None)?, &PredefinedMenuItem::maximize(app, None)?, &sep()?, &PredefinedMenuItem::close_window(app, None)?],
+        )?;
+        Menu::with_items(app, &[&cophyla, &edit, &view, &window])
+    }
+}
+
 fn main() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     // Before any window: the id a toast is attributed to belongs to the process.
@@ -69,7 +128,14 @@ fn main() {
     let hidden = std::env::args().skip(1).any(|a| a == HIDDEN_FLAG);
     let install = install::Install::detect();
 
-    let app = tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(target_os = "macos")]
+    let builder = builder.menu(app_menu::build).on_menu_event(|app, event| match event.id().as_ref() {
+        app_menu::CLOSE => hide_window(app),
+        app_menu::QUIT => app.exit(0),
+        _ => {}
+    });
+    let app = builder
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| tray::show_window(app)))
         .plugin(voice::plugin())
         .manage(cophylad::Link::new())
@@ -133,6 +199,8 @@ fn main() {
                 dock(app.handle(), false);
             } else {
                 let _ = window.show();
+                // started by the launcher, which is gone by then: in front, not behind the Finder
+                let _ = window.set_focus();
             }
             tauri::async_runtime::spawn(cophylad::run_link(app.handle().clone()));
             Ok(())

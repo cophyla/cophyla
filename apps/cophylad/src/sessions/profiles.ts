@@ -20,6 +20,7 @@
 // so they follow what the user does without a restart.
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -63,6 +64,20 @@ export const PROFILE_KV_NS = [KV_NS, KV_USUAL, KV_LAUNCH, KV_MIRROR];
 export const CLAUDE_KEYCHAIN_SERVICE = "Claude Code-credentials";
 
 /**
+ * The Keychain items a Claude login under a directory may be kept in. Claude Code (2.1.28x)
+ * names the item `Claude Code-credentials` while CLAUDE_CONFIG_DIR is unset, and otherwise
+ * appends `-` and the first 8 hex digits of the variable's SHA-256, taken of its value as set
+ * (NFC, not resolved): the value the user's shell set is not known here, so the directory as
+ * configured and as resolved, with and without a trailing slash, are each asked. Claude's own
+ * `~/.claude` is also the unset name.
+ */
+export function claudeKeychainServices(configured: string, resolved: string, home: boolean): string[] {
+  const values = new Set([configured, resolved, resolved.replace(/\/+$/, "") + "/"].map((v) => v.normalize("NFC")));
+  const hashed = [...values].map((v) => `${CLAUDE_KEYCHAIN_SERVICE}-${createHash("sha256").update(v).digest("hex").slice(0, 8)}`);
+  return home ? [CLAUDE_KEYCHAIN_SERVICE, ...hashed] : hashed;
+}
+
+/**
  * `security find-generic-password -s <service>` exits 0 when an item exists: metadata only,
  * no `-w`, so the keychain is never asked to reveal the secret and never prompts.
  */
@@ -72,6 +87,22 @@ export function keychainHas(service: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * macOS: the text of the Keychain item a Claude login under `configDir` is kept in, read with
+ * `security … -w` as Claude Code reads it (the item's access list trusts `/usr/bin/security`,
+ * so it never prompts); undefined when there is none. The text is a secret: never logged.
+ */
+export async function claudeKeychainSecret(configDir: string, home = homedir()): Promise<string | undefined> {
+  for (const service of claudeKeychainServices(configDir, configDir, isClaudeHome(configDir, home))) {
+    const proc = Bun.spawn(["/usr/bin/security", "find-generic-password", "-w", "-s", service], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+    const timer = setTimeout(() => proc.kill(), 5000);
+    const [text, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    clearTimeout(timer);
+    if (code === 0 && text.trim()) return text.trim();
+  }
+  return undefined;
 }
 
 /** The directory as a key: resolved, and case-folded where the filesystem is (`pathKey`). */
@@ -370,21 +401,21 @@ export class Profiles {
       configDir,
       env: origin === "user" && named ? { [dirVar[harness].key]: dirVar[harness].value, ...pc.env } : { ...pc.env },
       origin,
-      status: harness === "claude" ? claudeStatus(configDir, this.home, env, this.keychain()) : harness === "codex" ? codexStatus(configDir, env) : museStatus(configDir),
+      status: harness === "claude" ? claudeStatus(configDir, this.home, env, this.keychain(pc.config_dir, configDir)) : harness === "codex" ? codexStatus(configDir, env) : museStatus(configDir),
     };
     if (pc.command !== undefined) p.exec = { command: pc.command, args: pc.args };
     return { profile: p, configDefault: pc.default, configArgs: [...pc.args] };
   }
 
   /**
-   * The Keychain probe on macOS, where a login leaves no `.credentials.json`. One item serves
-   * every profile: Claude Code keys it by service name, not by config directory, so a second
-   * profile counts as logged in when the first is (E3 on the Mac records whether that holds).
+   * The Keychain probe on macOS, where a login leaves no `.credentials.json`: the profile's own
+   * item, since Claude Code keeps one per config directory (`claudeKeychainServices`).
    */
-  private keychain(): (() => boolean) | undefined {
+  private keychain(configured: string, configDir: string): (() => boolean) | undefined {
     if ((this.deps.platform ?? process.platform) !== "darwin") return undefined;
     const has = this.deps.keychainHas ?? keychainHas;
-    return () => has(CLAUDE_KEYCHAIN_SERVICE);
+    const services = claudeKeychainServices(configured, configDir, isClaudeHome(configDir, this.home));
+    return () => services.some((s) => has(s));
   }
 
   private stableId(harness: ProfileHarness, configDir: string): string {

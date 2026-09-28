@@ -52,10 +52,15 @@ function refOf(key: string): TerminalRef {
   return { host: key.slice(0, i), id: key.slice(i + 1) };
 }
 
-/** The user's shell: PowerShell 7 where it is installed, else Windows PowerShell; `$SHELL` elsewhere. */
-export function shellOf(env: Record<string, string>): string[] {
-  if (process.platform === "win32") return [Bun.which("pwsh", { PATH: env["PATH"] ?? env["Path"] ?? "" }) ? "pwsh.exe" : "powershell.exe", "-NoLogo"];
-  return [env["SHELL"] || "/bin/sh"];
+/**
+ * The user's shell: PowerShell 7 where it is installed, else Windows PowerShell; `$SHELL`
+ * elsewhere, a login shell on macOS as Terminal starts it, so `/etc/zprofile` and
+ * `~/.zprofile` (Homebrew's `shellenv`) run.
+ */
+export function shellOf(env: Record<string, string>, platform: NodeJS.Platform = process.platform): string[] {
+  if (platform === "win32") return [Bun.which("pwsh", { PATH: env["PATH"] ?? env["Path"] ?? "" }) ? "pwsh.exe" : "powershell.exe", "-NoLogo"];
+  const shell = env["SHELL"] || "/bin/sh";
+  return platform === "darwin" ? [shell, "-l"] : [shell];
 }
 
 export interface TerminalRowsDeps {

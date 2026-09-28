@@ -52,7 +52,11 @@ attribute), rotates `staged` into `current` (the old current becomes `previous`)
 `versions/<current>/<shell>` with `COPHYLA_INSTALL_DIR`, `COPHYLA_PLATFORM_DIR` and
 `COPHYLA_LAUNCHER` (on Unix in its own process group, since launchd ends a login item's group
 when the item exits), and rolls the pointer back if the shell exits with a failure within
-ten seconds, marking the version `.broken`. `Cophyla --rollback` does the same on request;
+ten seconds, marking the version `.broken`. On macOS a launcher run from the disk image or,
+still quarantined, from where it was downloaded (a read-only volume, or macOS's
+`AppTranslocation` copy) starts nothing and asks the user to move the app to Applications:
+its path would go into the `launcher` file and the login item, and be gone by the next
+start. `Cophyla --rollback` does the same on request;
 `--wait-pid <n>` waits for a running shell first (the shell relaunches through the launcher
 so the single instance is released).
 
@@ -102,9 +106,26 @@ What is signed, per OS, through the one `sign.ts` fed by the environment:
   on plain Mach-O files: the runtime and every Mach-O under cophylad's `node_modules`
   (`sign.ts --tree`) by `stage-platform.ts`, the brain by `release-brain.ts`. The shell
   bundle, the launcher bundle and the DMG are signed (and notarized and stapled, once the
-  variables are set) by the Tauri bundler from the same `APPLE_*` environment. The identity
-  is `APPLE_SIGNING_IDENTITY`, ad-hoc (`-`) when unset.
+  variables are set) by the Tauri bundler from the same `APPLE_*` environment; the shell
+  bundle with `entitlements-shell.plist` (the web view's microphone, and Apple Events for
+  `session.focus` and `tether open`). The launcher starts the shell with its
+  responsibility disclaimed (`src-tauri/src/spawn_mac.rs`), so macOS asks for the
+  microphone, Automation and the local network in the shell's name, under its bundle's
+  usage texts, and not the launcher's, which declares none and exits ten seconds in. The
+  identity is `APPLE_SIGNING_IDENTITY`, ad-hoc (`-`) when unset. A Developer ID signature
+  is timestamped by Apple's server or the signing fails (notarization refuses one without),
+  unless `COPHYLA_SIGN_UNSTAMPED=1` says the build is never to be notarized.
 - **Linux.** Nothing; the `.deb` is what it is.
+
+The phone's web viewer on a Mac: upstream's moonlight-web publishes no macOS build, so
+`scripts/build-moonlight-web.ts` (on an Apple Silicon Mac, with `brew install openssl@3`) clones
+the tag `remote/manifest.ts` pins, builds its frontend and its two binaries (upstream's npm and
+cargo build scripts run, on the nightly it pins), checks they link only the system's libraries,
+and writes `stage/moonlight-web/moonlight-web-aarch64-apple-darwin.tar.gz` in upstream's
+layout, with the GPL's text and a `SOURCE` note. It prints the `WEB_ASSETS` entry the archive
+takes once published (it is GPL: the source offer goes with it); until then `[remote]
+web_server` names the unpacked `package/web-server`. Built on 2026-09-28: 14,639,235 bytes,
+the frontend identical to upstream's Linux release, healthy under cophylad's sidecar.
 
 Files under `stage/` are hashed by a release entry, so `sign.ts` leaves them as they are
 unless called with `--staged`: the bundler would otherwise re-sign every executable it
@@ -290,7 +311,13 @@ Build on the Mac (`uname -m` says `arm64`); accept as a second, clean macOS user
 on the same machine, with the dev account serving the feed on loopback
 (`serve-feed.ts --host 127.0.0.1`; the acceptance config from
 `sandbox.ts --print-config --host 127.0.0.1`). The prerequisites above; a signing identity
-is optional until it exists.
+is optional until it exists. PM1 to PM6 were rehearsed on the build account on 2026-09-28
+against a scratch `COPHYLA_HOME` and `COPHYLA_INSTALL_DIR` (spikes/09-unix/README.md has the
+run); the clean account, notarization and the microphone remain. Two things a script needs:
+the DMG carries the licence, so `hdiutil attach` is answered (`yes | PAGER=cat hdiutil
+attach -nobrowse …`); and `open --env` hands the app the caller's whole environment, so a
+start as the Finder makes it is `env -i HOME=… USER=… SHELL=… TMPDIR=…
+PATH=/usr/bin:/bin:/usr/sbin:/sbin open -n --env COPHYLA_HOME=… Cophyla.app`.
 
 - **PM1, the package.** `Cophyla_<v>_aarch64.dmg` holds `Cophyla.app` with
   `Contents/Resources/seed/{versions/<v>,brain,current}`, `LSUIElement` and

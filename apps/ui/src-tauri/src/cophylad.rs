@@ -128,6 +128,16 @@ pub struct CophyladCommand {
     pub env: Vec<(String, String)>,
 }
 
+/// The bun a checkout runs the daemon with: the PATH's, else the one Bun's installer puts in
+/// `~/.bun/bin`, since an app the Finder or the Dock starts has only the system's PATH.
+fn checkout_bun(path: Option<std::ffi::OsString>, home: Option<PathBuf>, is_file: impl Fn(&Path) -> bool) -> String {
+    let name = if cfg!(windows) { "bun.exe" } else { "bun" };
+    if path.is_some_and(|p| std::env::split_paths(&p).any(|d| is_file(&d.join(name)))) {
+        return "bun".into();
+    }
+    home.map(|h| h.join(".bun").join("bin").join(name)).filter(|p| is_file(p)).map_or_else(|| "bun".into(), |p| p.to_string_lossy().into_owned())
+}
+
 /// `COPHYLAD_COMMAND` (+ `COPHYLAD_ARGS`, whitespace-split) when set; installed, the shipped
 /// runtime over the daemon in this version directory, told where the install is; otherwise
 /// the daemon from this repository, run by bun on the resolved home.
@@ -156,12 +166,13 @@ pub fn resolve_command(paths: &Paths, install: Option<&Install>) -> CophyladComm
     }
     let repo = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(3).map(Path::to_path_buf).unwrap_or_default();
     let main = repo.join("apps").join("cophylad").join("src").join("main.ts");
-    CophyladCommand { program: "bun".into(), args: vec!["run".into(), main.to_string_lossy().into_owned(), "--home".into(), home], cwd: None, env: Vec::new() }
+    let bun = checkout_bun(std::env::var_os("PATH"), std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from), Path::is_file);
+    CophyladCommand { program: bun, args: vec!["run".into(), main.to_string_lossy().into_owned(), "--home".into(), home], cwd: None, env: Vec::new() }
 }
 
-/// Starts cophylad detached: no console of its own, stdout and stderr appended to the log, the
-/// child handle dropped so nothing waits on it and nothing ends it when the app exits.
-pub fn spawn(paths: &Paths, cmd: &CophyladCommand) -> Result<u32, String> {
+/// Starts cophylad detached: no console of its own, stdout and stderr appended to the log.
+/// Nothing ends it when the app exits; the handle is kept only to tell whether it still runs.
+pub fn spawn(paths: &Paths, cmd: &CophyladCommand) -> Result<std::process::Child, String> {
     if let Some(dir) = paths.log.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("cannot create {}: {e}", dir.display()))?;
     }
@@ -190,10 +201,7 @@ pub fn spawn(paths: &Paths, cmd: &CophyladCommand) -> Result<u32, String> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let child = command.spawn().map_err(|e| format!("cannot start {} {}: {e}", cmd.program, cmd.args.join(" ")))?;
-    let pid = child.id();
-    drop(child);
-    Ok(pid)
+    command.spawn().map_err(|e| format!("cannot start {} {}: {e}", cmd.program, cmd.args.join(" ")))
 }
 
 // --- link state ----------------------------------------------------------------------------
@@ -334,11 +342,23 @@ struct Spawner {
     paths: Paths,
     install: Option<Install>,
     last: Option<Instant>,
+    /// The daemon this shell started last, while it may still be starting.
+    child: Option<std::process::Child>,
 }
 
 impl Spawner {
-    /// Starts cophylad unless one was started within the cooldown. Returns what happened, for the snapshot.
+    /// Starts cophylad unless the one started last still runs, or one was started within the
+    /// cooldown. A daemon still running is waited for however long it takes to answer (a first
+    /// start on a Mac can wait on a permission prompt): a second one would race it for the
+    /// store and the token. Returns what happened, for the snapshot.
     fn maybe(&mut self) -> Result<Option<u32>, String> {
+        if let Some(child) = self.child.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return Ok(None),
+                // gone, and reaped
+                _ => self.child = None,
+            }
+        }
         if let Some(last) = self.last {
             if last.elapsed() < SPAWN_COOLDOWN {
                 return Ok(None);
@@ -347,7 +367,10 @@ impl Spawner {
         self.last = Some(Instant::now());
         let cmd = resolve_command(&self.paths, self.install.as_ref());
         log::info!("starting cophylad: {} {}", cmd.program, cmd.args.join(" "));
-        spawn(&self.paths, &cmd).map(Some)
+        let child = spawn(&self.paths, &cmd)?;
+        let pid = child.id();
+        self.child = Some(child);
+        Ok(Some(pid))
     }
 }
 
@@ -390,7 +413,7 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
     let install = Install::detect();
     log::info!("shell {OWN_VERSION}, {}", crate::install::describe(install.as_ref()));
     let mut rx = link.rx.lock().ok().and_then(|mut r| r.take()).expect("run_link runs once");
-    let mut spawner = Spawner { paths: paths.clone(), install: install.clone(), last: None };
+    let mut spawner = Spawner { paths: paths.clone(), install: install.clone(), last: None, child: None };
     let mut backoff = BACKOFF_MIN;
 
     loop {
@@ -605,7 +628,18 @@ mod tests {
         assert_eq!(cmd.cwd.as_deref(), Some(vdir.join("cophylad").join("apps").join("cophylad").as_path()));
         assert!(cmd.env.iter().any(|(k, v)| k == "COPHYLA_INSTALL_DIR" && Path::new(v) == root));
         let checkout = resolve_command(&paths, None);
-        assert_eq!(checkout.program, "bun");
+        assert!(checkout.program == "bun" || Path::new(&checkout.program).ends_with(Path::new(".bun").join("bin").join(BUN)), "{}", checkout.program);
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_checkout_started_from_the_finder_finds_bun_where_its_installer_put_it() {
+        let installed = PathBuf::from("/Users/u").join(".bun").join("bin").join(BUN);
+        let has = |p: &Path| p == installed.as_path() || p == Path::new("/opt/bin").join(BUN).as_path();
+        let path = |dirs: &[&str]| std::env::join_paths(dirs).ok();
+        assert_eq!(checkout_bun(path(&["/opt/bin", "/usr/bin"]), Some(PathBuf::from("/Users/u")), has), "bun");
+        assert_eq!(checkout_bun(path(&["/usr/bin", "/bin"]), Some(PathBuf::from("/Users/u")), has), installed.to_string_lossy());
+        assert_eq!(checkout_bun(path(&["/usr/bin"]), Some(PathBuf::from("/Users/v")), has), "bun");
+        assert_eq!(checkout_bun(None, None, has), "bun");
     }
 }

@@ -10,7 +10,12 @@
 // a NUL shows in its first 8000 bytes, as git decides; an image asked for as one comes whole,
 // as base64, up to 5 MiB. A folder, a pipe or a device is refused before anything opens it, so
 // a read never waits on a writer. The folder a bare terminal started in is read the same way.
+// On a Mac without the developer tools `/usr/bin/git` is Apple's stub, which opens the tools'
+// install dialog every time it runs: that git is used only when the active developer folder
+// (`xcode-select -p`) has a git in it, and a Mac with neither reads no repository.
 
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
@@ -145,9 +150,40 @@ export function listingSummary(r: FilesResult): unknown {
   return { root: r.root, dirs: r.dirs.map((d) => ({ dir: d.dir, ...(d.entries ? { entries: d.entries.length } : {}), ...(d.truncated ? { truncated: true } : {}), ...(d.error ? { error: d.error } : {}) })) };
 }
 
+export interface GitLookup {
+  platform: NodeJS.Platform;
+  which: (name: string) => string | null;
+  /** The active developer folder, as `xcode-select -p` prints it; undefined when there is none. */
+  developerDir: () => string | undefined;
+  exists: (path: string) => boolean;
+}
+
+const lookupDefaults: GitLookup = {
+  platform: process.platform,
+  which: (name) => Bun.which(name),
+  developerDir: () => {
+    const r = spawnSync("/usr/bin/xcode-select", ["-p"], { encoding: "utf8", timeout: 5000 });
+    return r.status === 0 ? r.stdout.trim() || undefined : undefined;
+  },
+  exists: existsSync,
+};
+
+/** The git to run: the PATH's, except macOS's stub when the developer tools it stands for are not installed. */
+export function findGit(deps: GitLookup = lookupDefaults): string | undefined {
+  const found = deps.which("git");
+  if (!found) return undefined;
+  if (deps.platform !== "darwin" || found !== "/usr/bin/git") return found;
+  const dev = deps.developerDir();
+  return dev && deps.exists(`${dev}/usr/bin/git`) ? found : undefined;
+}
+
+let git: string | null | undefined;
+
 function spawnGit(args: string[], cwd: string) {
+  git ??= findGit() ?? null;
+  if (!git) return undefined; // no git on this machine
   try {
-    return Bun.spawn(["git", ...args], { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true });
+    return Bun.spawn([git, ...args], { cwd, env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", GIT_TERMINAL_PROMPT: "0" }, stdin: "ignore", stdout: "pipe", stderr: "ignore", windowsHide: true });
   } catch {
     return undefined; // no git on this machine
   }

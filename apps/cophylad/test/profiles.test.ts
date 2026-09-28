@@ -8,15 +8,18 @@ import { join } from "node:path";
 import { newId } from "@cophyla/protocol";
 import { parseConfig } from "../src/config/load.ts";
 import { silentLogger } from "../src/log.ts";
-import { CLAUDE_KEYCHAIN_SERVICE, Profiles, profileKey } from "../src/sessions/profiles.ts";
+import { CLAUDE_KEYCHAIN_SERVICE, claudeKeychainServices, Profiles, profileKey } from "../src/sessions/profiles.ts";
 import type { ProfileChange } from "../src/sessions/profiles.ts";
 import { Store } from "../src/store/index.ts";
 import { tempHome, tomlString } from "./helpers.ts";
 
+/** The machine's own Keychain is never asked: a Mac signed in to Claude would count every profile. */
+const noKeychain = () => false;
+
 function profiles(toml: string, env: Record<string, string | undefined>, home: string): Profiles {
   const store = new Store(":memory:");
   store.migrate();
-  return new Profiles({ store, nodeId: newId("node"), config: parseConfig(toml), log: silentLogger, home, env });
+  return new Profiles({ store, nodeId: newId("node"), config: parseConfig(toml), log: silentLogger, home, env, keychainHas: noKeychain });
 }
 
 describe("profiles", () => {
@@ -71,8 +74,39 @@ describe("profiles", () => {
     expect(profileKey("codex", join(dir, ".", "..", "Extra"))).toBe(`codex:${expected}`);
     const store = new Store(":memory:");
     store.migrate();
-    const p = new Profiles({ store, nodeId: newId("node"), config: parseConfig(`[[profiles]]\nharness = "claude"\nname = "x"\nconfig_dir = ${tomlString(dir)}\n`), log: silentLogger, home: tempHome(), env: {} });
+    const p = new Profiles({ store, nodeId: newId("node"), config: parseConfig(`[[profiles]]\nharness = "claude"\nname = "x"\nconfig_dir = ${tomlString(dir)}\n`), log: silentLogger, home: tempHome(), env: {}, keychainHas: noKeychain });
     expect(store.kv.get("profiles", `claude:${expected}`)).toBe(p.byHarness("claude").find((x) => x.name === "x")!.id);
+  });
+
+  test("a Claude profile's Keychain item is its own: the unset name for ~/.claude, a hash of the directory for any other", () => {
+    // Claude Code 2.1.283's rule: `-` and the first 8 hex digits of sha256(CLAUDE_CONFIG_DIR)
+    const hash = (v: string) => new Bun.CryptoHasher("sha256").update(v).digest("hex").slice(0, 8);
+    expect(claudeKeychainServices("/Users/u/.claude-accounts/extra", "/Users/u/.claude-accounts/extra", false)).toEqual([
+      `Claude Code-credentials-${hash("/Users/u/.claude-accounts/extra")}`,
+      `Claude Code-credentials-${hash("/Users/u/.claude-accounts/extra/")}`,
+    ]);
+    expect(claudeKeychainServices("~/x/../y", "/Users/u/y", false)).toHaveLength(3);
+    expect(claudeKeychainServices("/Users/u/.claude", "/Users/u/.claude", true)[0]).toBe("Claude Code-credentials");
+
+    const home = tempHome();
+    const extra = join(home, ".claude-accounts", "extra");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    mkdirSync(extra, { recursive: true });
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }));
+    writeFileSync(join(extra, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }));
+    const build = (items: string[]) => {
+      const store = new Store(":memory:");
+      store.migrate();
+      const toml = `[[profiles]]\nharness = "claude"\nname = "extra"\nconfig_dir = ${tomlString(extra)}\n`;
+      return new Profiles({ store, nodeId: newId("node"), config: parseConfig(toml), log: silentLogger, home, env: {}, platform: "darwin", keychainHas: (s) => items.includes(s) });
+    };
+    const statusOf = (p: Profiles) => Object.fromEntries(p.byHarness("claude").map((x) => [x.name, x.status]));
+    // only the usual account signed in: the second is not
+    expect(statusOf(build([CLAUDE_KEYCHAIN_SERVICE]))).toMatchObject({ extra: "unauthenticated" });
+    // the second signed in under its own item
+    const own = `Claude Code-credentials-${hash(extra)}`;
+    const both = statusOf(build([own]));
+    expect(both["extra"]).toBe("ok");
   });
 
   test("on darwin a Keychain item counts as a login; elsewhere the Keychain is never asked", () => {
@@ -138,7 +172,7 @@ function twoAccounts(): { home: string; own: string; work: string; toml: string 
 
 function build(toml: string, home: string, store = new Store(":memory:"), nodeId = newId("node")): { p: Profiles; store: Store; nodeId: string } {
   store.migrate();
-  return { p: new Profiles({ store, nodeId, config: parseConfig(toml), log: silentLogger, home, env: {} }), store, nodeId };
+  return { p: new Profiles({ store, nodeId, config: parseConfig(toml), log: silentLogger, home, env: {}, keychainHas: noKeychain }), store, nodeId };
 }
 
 function userSession(store: Store, node: string, profile: string, startedAt: number, origin: "user" | "orchestrator" = "user"): void {
@@ -274,12 +308,14 @@ describe("login files, looked at", () => {
     const store = new Store(":memory:");
     store.migrate();
     const p = new Profiles({ store, nodeId: newId("node"), config: parseConfig(""), log: silentLogger, home, env: {}, platform: "darwin", keychainHas: () => (asked++, false) });
-    expect(asked).toBe(1);
+    // one look is a few names (claudeKeychainServices), all asked while none is there
+    const look = asked;
+    expect(look).toBeGreaterThan(0);
     for (let i = 0; i < 5; i++) p.check();
-    expect(asked).toBe(1);
+    expect(asked).toBe(look);
     writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true }));
     p.check();
-    expect(asked).toBe(2);
+    expect(asked).toBe(2 * look);
   });
 
   test("a signed-in Claude's global config, which its sessions rewrite all the time, is not looked at", () => {

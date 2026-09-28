@@ -978,7 +978,7 @@ export class SettingsPanel {
     });
     save.addEventListener("click", set);
     key.append(span("host-settings-label", "Hold to talk"), input, save);
-    box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Alt+Space or Ctrl+Shift+F9; empty for none."));
+    box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Shift+Space or Ctrl+Shift+F9; empty for none."));
     if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
     const stt = model.sttRow();
     if (stt) box.append(this.speech(stt, model));

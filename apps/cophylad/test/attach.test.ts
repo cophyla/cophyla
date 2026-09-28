@@ -88,7 +88,10 @@ describe("attach: sessions over the socket", () => {
     );
     const { startDaemon } = await import("../src/daemon.ts");
     const { silentLogger } = await import("../src/log.ts");
-    d = Object.assign(await startDaemon({ home, port: 0, log: silentLogger, brain: false }), { home });
+    // The session's pid is this process: the machine's own raiser would find the terminal the
+    // tests run in and bring it forward.
+    const { UnsupportedRaiser } = await import("../src/sessions/focus.ts");
+    d = Object.assign(await startDaemon({ home, port: 0, log: silentLogger, brain: false, raiser: new UnsupportedRaiser() }), { home });
     hookUrl = `http://127.0.0.1:${d.api.port}/hooks/claude`;
     c = await TestClient.connect(d.api.url);
     await c.hello(d.token, { name: "attach" });

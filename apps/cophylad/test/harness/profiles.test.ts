@@ -11,7 +11,7 @@ import { withCophyladHooks } from "../../src/sessions/claude/hooks.ts";
 import type { Daemon } from "../../src/daemon.ts";
 import { samePath } from "../../src/sessions/paths.ts";
 import { stopDaemon, tempHome, TestClient, tomlString, waitFor } from "../helpers.ts";
-import { CLAUDE, HARNESS, scrubbedEnv, sleep, spawnTui } from "./pty.ts";
+import { CLAUDE, HARNESS, passTrust, scrubbedEnv, spawnTui } from "./pty.ts";
 import type { Tui } from "./pty.ts";
 
 const EXTRA = process.env["COPHYLA_EXTRA_CLAUDE_DIR"] ?? join(homedir(), ".claude-accounts", "extra");
@@ -44,15 +44,7 @@ describe.skipIf(!run)("harness: a second Claude profile", () => {
       env: scrubbedEnv({ CLAUDE_CONFIG_DIR: EXTRA }),
       rawLog: join(d.home, "claude-extra.raw"),
     });
-    for (let i = 0; i < 3; i++) {
-      const m = await tui.waitFor(/trust|Yes, proceed|Enter to confirm|›|❯|>\s*$/i, 90_000, tui.mark() - 4000);
-      if (/trust|proceed|confirm/i.test(m[0]) && !/›|❯/.test(tui.text(300))) {
-        tui.write("\r");
-        await sleep(1500);
-        continue;
-      }
-      break;
-    }
+    await passTrust(tui);
   }, 180_000);
 
   afterAll(async () => {
