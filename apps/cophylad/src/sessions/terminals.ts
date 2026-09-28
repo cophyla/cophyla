@@ -29,7 +29,7 @@
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { Logger } from "../log.ts";
 
 export interface TerminalRequest {
@@ -101,7 +101,7 @@ const LINUX_TERMINALS: { command: string; args: (script: string) => string[] }[]
 
 /** Whether iTerm2 is installed: in `/Applications`, or in the user's own `~/Applications`. */
 export function itermInstalled(home: string = homedir(), exists: (path: string) => boolean = existsSync): boolean {
-  return exists("/Applications/iTerm.app") || exists(join(home, "Applications", "iTerm.app"));
+  return exists("/Applications/iTerm.app") || exists(posix.join(home, "Applications", "iTerm.app"));
 }
 
 /** The AppleScript that opens an iTerm2 window running `script`: iTerm2 splits `command` as a shell would. */

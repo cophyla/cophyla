@@ -18,7 +18,7 @@
 
 import { accessSync, constants, existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import type { Logger } from "../../log.ts";
 import { placeBinary, placeFile } from "../../update/place.ts";
 import { BUN_NAMES } from "../../update/platform.ts";
@@ -112,7 +112,7 @@ function writable(dir: string): boolean {
 
 /** macOS and Linux: the folder the link goes in, for a user whose shells have `userPath`. */
 export function linkDirFor(userPath: string, home: string, canWrite: (dir: string) => boolean = writable): string {
-  const own = [join(home, ".local", "bin"), join(home, "bin")];
+  const own = [posix.join(home, ".local", "bin"), posix.join(home, "bin")];
   const named = own.find((d) => pathHas(userPath, d, "linux"));
   if (named) return named;
   if (pathHas(userPath, "/usr/local/bin", "linux") && canWrite("/usr/local/bin")) return "/usr/local/bin";

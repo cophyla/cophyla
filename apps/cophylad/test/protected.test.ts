@@ -41,7 +41,8 @@ describe("protected folders", () => {
     expect(reads.asked).toEqual([]);
   });
 
-  test("macOS: the home's four and every volume; a folder's first read is made once, and it settles either way", async () => {
+  // macOS's paths as literals, which a Windows runner resolves onto its own drive
+  test.skipIf(process.platform === "win32")("macOS: the home's four and every volume; a folder's first read is made once, and it settles either way", async () => {
     const reads = heldReads();
     const g = new ProtectedFolders({ platform: "darwin", home: "/Users/u", firstRead: reads.firstRead });
     expect(g.rootOf("/Users/u/Desktop/proj/src")).toBe("/Users/u/Desktop");

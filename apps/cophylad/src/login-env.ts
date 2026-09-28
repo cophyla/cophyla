@@ -10,8 +10,11 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, isAbsolute, join } from "node:path";
+import { posix } from "node:path";
 import type { Exec, ExecResult } from "./sessions/focus.ts";
+
+// macOS's paths and PATH, whichever platform runs the tests
+const { delimiter, isAbsolute, join } = posix;
 
 const MARK = "__COPHYLA_LOGIN_ENV__";
 /** A login shell that sources a slow profile (nvm, conda) still answers well within this. */
