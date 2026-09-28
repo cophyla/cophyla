@@ -666,6 +666,8 @@
     { "scopes": ["sessions:read", "sessions:write"], "paths": ["C:\\src\\app"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "reply" }
   ],
   "MessagesRule": ["none", "reply", "send"],
+  "GuestState": ["unlinked", "seeking", "linked", "stopped"],
+  "GuestInfo": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" }, { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "notes", "folder": "/home/me/notes", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "state": "unlinked", "expiresAt": 1758196800000 }],
   "Grant": [
     {
       "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1",

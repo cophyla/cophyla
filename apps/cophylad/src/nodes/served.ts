@@ -11,9 +11,11 @@
 // sessions' files and their viewer a file's text.
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
-// requests are checked: a session, a workspace or a path outside is refused, the lists and
-// the searches answer what is inside, editable and network tools, the desktop and this node's
-// profiles are refused. On a node that answers its asks itself (`--answer-here`), the
+// requests are checked: a session, a workspace or a path outside is refused, and so is the
+// state of a repository whose root is above them; the lists and the searches answer what is
+// inside, and the audit row keeps that answer; editable and network tools, the desktop and
+// this node's profiles are refused. An ask this node does not hold, or one about something
+// outside, is `not_found`. On a node that answers its asks itself (`--answer-here`), the
 // primary answers none of them.
 
 import { capabilityRequests, clientRequests, RpcError } from "@cophyla/protocol";
@@ -31,6 +33,7 @@ import type { Profiles } from "../sessions/profiles.ts";
 import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { FilesResult, SessionFiles } from "../sessions/files.ts";
 import type { Direct } from "../direct/index.ts";
+import { findRepo } from "../workspaces/index.ts";
 
 /** The capability requests a node answers for its primary. */
 export const NODE_SERVED: readonly CapabilityRequestName[] = [
@@ -126,7 +129,7 @@ export interface ServeDeps {
   log: Logger;
   /** Reports a held request up the link. */
   onPending: (id: RpcId, ask: Ask) => void;
-  metrics?: Metrics;
+  metrics?: Pick<Metrics, "subscribe" | "unsubscribe" | "history">;
   /** The subscriber id the metrics module delivers this link's samples to. */
   metricsSubscriber: string;
   remote?: Remote;
@@ -193,9 +196,11 @@ export class NodeServer {
     const local = this.deps.local;
     const c = this.confined();
     if (name === "ask.answer") {
-      const ask = local?.ask(String(p["id"]));
+      // An ask this node does not hold, or one about something outside, is not the primary's to know of.
+      const id = String(p["id"]);
+      const ask = local?.ask(id);
+      if (local && (!ask || (c && !c.ask(ask, (s) => local.session(s))))) throw new RpcError("not_found", `no ask ${id}`);
       if (ask && this.deps.answerHere?.()) throw new RpcError("denied", "this node answers its own asks");
-      if (c && ask && !c.ask(ask, (id) => local?.session(id))) throw new RpcError("denied", "that ask is about something outside the folders this node shares");
       return;
     }
     if (!c) return;
@@ -286,7 +291,7 @@ export class NodeServer {
 
   async serve(method: string, params: unknown, id: RpcId): Promise<unknown> {
     if (method === "cancel") return this.cancel(params);
-    if ((NODE_SERVED_METRICS as readonly string[]).includes(method)) return this.shape(method, await this.serveMetrics(method as (typeof NODE_SERVED_METRICS)[number], params));
+    if ((NODE_SERVED_METRICS as readonly string[]).includes(method)) return this.serveMetrics(method as (typeof NODE_SERVED_METRICS)[number], params);
     if ((NODE_SERVED_REMOTE as readonly string[]).includes(method)) {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not its desktop");
       return this.serveRemote(method as (typeof NODE_SERVED_REMOTE)[number], params);
@@ -327,7 +332,8 @@ export class NodeServer {
           ...(ask ? { ask } : {}),
           sessionKey: this.deps.sessionKey,
         },
-        (gctx) => {
+        // Shaped inside, so the audit row keeps what the primary was answered, not the whole list.
+        async (gctx) => {
           const ctx: BrainMethodContext = {
             audit: gctx.audit,
             id,
@@ -335,11 +341,11 @@ export class NodeServer {
             delta: () => undefined,
             onPending: (ask) => this.deps.onPending(id, ask),
           };
-          return (impl as { handler: (p: unknown, c: BrainMethodContext) => unknown }).handler(p, ctx);
+          return this.shape(name, await (impl as { handler: (p: unknown, c: BrainMethodContext) => unknown }).handler(p, ctx));
         },
         { onPending: (ask) => this.deps.onPending(id, ask), signal: controller.signal },
       );
-      return this.shape(name, result);
+      return result;
     } catch (e) {
       if (e instanceof RpcError) throw e;
       this.deps.log.error("forwarded request failed", { method, error: e });
@@ -408,7 +414,14 @@ export class NodeServer {
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
     const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true };
-    this.confined()?.require(this.deps.local?.session(p.id)?.cwd, "that session");
+    const c = this.confined();
+    const cwd = this.deps.local?.session(p.id)?.cwd;
+    c?.require(cwd, "that session");
+    // A repository's state names files from its root: one whose root is above the folders would show what is outside.
+    if (c && method === "session.git" && cwd !== undefined) {
+      const repo = findRepo(cwd);
+      if (repo && !c.contains(repo.root, true)) throw new RpcError("denied", "that session's repository reaches above the folders this node shares");
+    }
     const redactResult = method === "session.files" ? (r: unknown) => listingSummary(r as FilesResult) : method === "session.file" ? (r: unknown) => fileSummary(r as FileText) : undefined;
     return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
       if (method === "session.files") return files.list(p.id, p.dirs);
@@ -434,7 +447,7 @@ export class NodeServer {
         metrics.unsubscribe(this.deps.metricsSubscriber);
         return {};
       }
-      return { samples: metrics.history(p.node!, p.range ?? {}) };
+      return this.shape(method, { samples: metrics.history(p.node!, p.range ?? {}) });
     });
   }
 }

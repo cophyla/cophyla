@@ -16,6 +16,12 @@
 // otherwise, because the brain is an agent reading untrusted content, which is what the
 // harness's framing of peer messages is for. Muse has no such channel: whatever reaches a Muse
 // session in a terminal is typed.
+//
+// A session is the machine's or a workspace node's, decided once when its record is made: a
+// session started into a workspace is that workspace's node's, one discovered is the owner's
+// of the folder it runs in. What reads or acts on a session by id sees the machine's alone,
+// and a workspace node's through `view`; a session of another partition is "no session" to
+// it. A workspace node's sessions are started headless.
 
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -100,6 +106,31 @@ export interface SessionsDeps {
   isAlive?: (pid: number) => boolean;
   /** How long a terminal waits to be looked at for its CLI, and the least time between looks; a test shortens them. */
   cliTiming?: { debounceMs?: number; gapMs?: number };
+  /** Which workspace node owns a folder, and whose items the machine's own apps never see; absent, every session is the machine's. */
+  owners?: SessionOwners;
+}
+
+/** Which node owns what on this machine: the folders lent to workspace nodes, and the ids kept private. */
+export interface SessionOwners {
+  ownerOf(path: string): string | undefined;
+  isPrivate(node: string): boolean;
+}
+
+/** One workspace node's sessions: what its link lists, reads, starts, messages and stops. */
+export interface SessionsView {
+  list(filter?: SessionListFilter): Session[];
+  get(id: string): Session | undefined;
+  history(id: string, opts?: { before?: number; around?: number; limit?: number }): SessionEvent[];
+  annotate(id: string, patch: { intent?: string; summary?: string; tags?: string[] }): Session;
+  send(id: string, text: string, opts?: { from?: "user" | "brain" }): Promise<{ status: "queued" | "held"; ref: string }>;
+  stopSession(id: string, opts?: { as?: "user" | "brain" }): Promise<void>;
+  spawn(params: SpawnParams, opts: SpawnOptions): Promise<Session>;
+  pids(): Map<number, string>;
+}
+
+/** Where a spawn finds its profile. */
+export interface SpawnOptions {
+  profiles: { get(id: string): HarnessProfile | undefined; defaultFor(h: SpawnParams["harness"]): HarnessProfile | undefined; launch?(id: string): Launch | undefined };
 }
 
 /** A command run to its end, its output and error text together. */
@@ -313,7 +344,8 @@ export class Sessions implements SessionHost {
       cancel: (t) => clearTimeout(t as ReturnType<typeof setTimeout>),
       onTimeout: (p) => this.onReceiptTimeout(p),
     });
-    this.unsubscribe.push(deps.bus.on("ask.state", (ask) => this.onAskState(ask)));
+    // a held hook is released by its ask's answer, whichever partition answered it
+    this.unsubscribe.push(deps.bus.onAll("ask.state", (ask) => this.onAskState(ask)));
     if (deps.tether) {
       const tether = deps.tether;
       this.clis = new TerminalClis({
@@ -541,14 +573,38 @@ export class Sessions implements SessionHost {
     return n;
   }
 
-  /** The root pid of every live session that has one, by session id: what the metrics tree walk claims from. */
-  pids(): Map<number, string> {
+  /** The root pid of every live session of a partition (the machine's unless named) that has one, by session id. */
+  pids(part?: string): Map<number, string> {
+    const out = new Map<number, string>();
+    for (const rec of this.byId.values()) {
+      const pid = rec.session.native.pid;
+      if (rec.session.status !== "ended" && pid !== undefined && this.inPart(rec.session, part)) out.set(pid, rec.session.id);
+    }
+    return out;
+  }
+
+  /** Every partition's: what the metrics tree walk claims from. */
+  pidsAll(): Map<number, string> {
     const out = new Map<number, string>();
     for (const rec of this.byId.values()) {
       const pid = rec.session.native.pid;
       if (rec.session.status !== "ended" && pid !== undefined) out.set(pid, rec.session.id);
     }
     return out;
+  }
+
+  /** Whether a session is in a partition: a workspace node's own (`part`), or, unset, the machine's. */
+  private inPart(s: Pick<Session, "node">, part?: string): boolean {
+    return part === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) : s.node === part;
+  }
+
+  /** The node a new session belongs to: the one its workspace is on when it was started into one, else the owner of the folder it runs in. */
+  private ownerFor(seed: SessionSeed): NodeId {
+    if (seed.workspace !== undefined) {
+      const w = this.deps.workspaces.getAny(seed.workspace);
+      if (w) return w.node;
+    }
+    return this.deps.owners?.ownerOf(seed.cwd) ?? this.nodeId;
   }
 
   /** Prompts in flight or queued on the sessions cophylad spawned, over ACP or on a harness's own host. */
@@ -641,6 +697,11 @@ export class Sessions implements SessionHost {
   merge(from: SessionRecord, into: SessionRecord, at = this.now()): void {
     const f = from.session;
     const s = into.session;
+    // What one partition started is never another's to take on.
+    if (f.node !== s.node) {
+      this.log.info("a job and the conversation it went on from are on different nodes; not merged", { from: f.id, into: s.id });
+      return;
+    }
     const patch: Partial<Session> = {};
     if (f.origin === "orchestrator" && s.origin !== "orchestrator") patch.origin = "orchestrator";
     if (f.workspace !== undefined && s.workspace === undefined) patch.workspace = f.workspace;
@@ -916,9 +977,10 @@ export class Sessions implements SessionHost {
           this.revive(rec, seed, now);
         }
       } else {
+        const node = this.ownerFor(seed);
         const session: Session = {
           id: newId("session", now),
-          node: this.nodeId,
+          node,
           harness: seed.harness,
           profile: seed.profile,
           native: { id: seed.nativeId, transport: seed.transport },
@@ -940,7 +1002,7 @@ export class Sessions implements SessionHost {
         if (seed.workspace !== undefined) session.workspace = seed.workspace;
         else {
           try {
-            session.workspace = this.deps.workspaces.fromSession(seed.cwd).id;
+            session.workspace = this.deps.workspaces.fromSession(seed.cwd, node).id;
           } catch (e) {
             this.log.warn("workspace lookup failed", { cwd: seed.cwd, error: e instanceof Error ? e.message : String(e) });
           }
@@ -1054,7 +1116,8 @@ export class Sessions implements SessionHost {
    */
   private queueMirror(rec: LiveRecord, at: number): void {
     const s = rec.session;
-    if (s.harness !== "claude" || s.origin !== "user" || s.native.pid === undefined || this.stopped) return;
+    // A workspace node's session is the other cluster's: its launch is no model for the machine's profile.
+    if (s.harness !== "claude" || s.origin !== "user" || s.native.pid === undefined || this.stopped || !this.inPart(s)) return;
     const was = this.deps.profiles.mirroredAt(s.profile);
     if (was !== undefined && was >= at) return;
     const queued = this.mirrorQueue.get(s.profile);
@@ -1218,9 +1281,10 @@ export class Sessions implements SessionHost {
 
   // --- queries ------------------------------------------------------------------------
 
-  list(filter: SessionListFilter = {}): Session[] {
+  /** The live sessions of a partition, the machine's unless named. */
+  list(filter: SessionListFilter = {}, part?: string): Session[] {
     return [...this.byId.values()]
-      .filter((r) => r.session.status !== "ended")
+      .filter((r) => r.session.status !== "ended" && this.inPart(r.session, part))
       .map((r) => ({ ...r.session }))
       .filter((s) => filter.node === undefined || s.node === filter.node)
       .filter((s) => filter.harness === undefined || s.harness === filter.harness)
@@ -1234,39 +1298,86 @@ export class Sessions implements SessionHost {
    * The one-line fields the brain and the user may write. A session that ended before this
    * run is annotated in the store and announced from its row.
    */
-  annotate(id: string, patch: { intent?: string; summary?: string; tags?: string[] }): Session {
+  annotate(id: string, patch: { intent?: string; summary?: string; tags?: string[] }, part?: string): Session {
     const p: Partial<Session> = {};
     if (patch.intent !== undefined) p.intent = oneLine(patch.intent);
     if (patch.summary !== undefined) p.summary = oneLine(patch.summary, 500);
     if (patch.tags !== undefined) p.tags = patch.tags;
     const rec = this.byId.get(id);
     if (rec) {
+      if (!this.inPart(rec.session, part)) throw new RpcError("not_found", `no session ${id}`);
       this.patch(rec, p);
       return { ...rec.session };
     }
     const stored = this.deps.store.sessions.get(id);
-    if (!stored) throw new RpcError("not_found", `no session ${id}`);
+    if (!stored || !this.inPart(stored, part)) throw new RpcError("not_found", `no session ${id}`);
     const next: Session = { ...stored, ...p };
     this.deps.store.sessions.update(next);
     if (!this.stopped) this.deps.bus.emit("session.state", { ...next });
     return next;
   }
 
-  get(id: string): Session | undefined {
+  /** A session of the machine's, or of the partition named. */
+  get(id: string, part?: string): Session | undefined {
+    const s = this.getAny(id);
+    return s && this.inPart(s, part) ? s : undefined;
+  }
+
+  /** A session of any partition: for what follows it wherever it is. */
+  getAny(id: string): Session | undefined {
     const rec = this.byId.get(id);
     return rec ? { ...rec.session } : this.deps.store.sessions.get(id);
   }
 
-  history(id: string, opts: { before?: number; around?: number; limit?: number } = {}): SessionEvent[] {
-    if (!this.byId.has(id) && !this.deps.store.sessions.get(id)) throw new RpcError("not_found", `no session ${id}`);
+  history(id: string, opts: { before?: number; around?: number; limit?: number } = {}, part?: string): SessionEvent[] {
+    if (!this.get(id, part)) throw new RpcError("not_found", `no session ${id}`);
     return this.deps.store.sessionEvents.history(id, { limit: opts.limit ?? 50, ...(opts.before !== undefined ? { before: opts.before } : {}), ...(opts.around !== undefined ? { around: opts.around } : {}) });
   }
 
-  private must(id: string): LiveRecord {
+  private must(id: string, part?: string): LiveRecord {
     const rec = this.byId.get(id);
-    if (!rec) throw new RpcError("not_found", `no session ${id}`);
+    if (!rec || !this.inPart(rec.session, part)) throw new RpcError("not_found", `no session ${id}`);
     if (rec.session.status === "ended") throw new RpcError("conflict", `session ${id} has ended`);
     return rec;
+  }
+
+  /** One workspace node's sessions, as its link serves them: the machine's own are none of its. */
+  view(node: string): SessionsView {
+    return {
+      list: (filter = {}) => this.list(filter, node),
+      get: (id) => this.get(id, node),
+      history: (id, opts = {}) => this.history(id, opts, node),
+      annotate: (id, patch) => this.annotate(id, patch, node),
+      send: (id, text, opts = {}) => this.send(id, text, opts, node),
+      stopSession: (id, opts = {}) => this.stopSession(id, opts, node),
+      spawn: (params, opts) => this.spawn(params, opts, node),
+      pids: () => this.pids(node),
+    };
+  }
+
+  /**
+   * Ends every live session of a workspace node that is going: the ones started for its
+   * cluster stop; one the user started in the folder runs on, and its record ends.
+   */
+  async endAll(node: string): Promise<void> {
+    for (const rec of [...this.byId.values()]) {
+      if (rec.session.node !== node || rec.session.status === "ended") continue;
+      try {
+        await this.stopSession(rec.session.id, { as: "brain" }, node);
+      } catch (e) {
+        this.log.debug("a workspace node's session could not be stopped; its record ends", { id: rec.session.id, error: e instanceof Error ? e.message : String(e) });
+      }
+      this.end(rec, "stopped");
+    }
+  }
+
+  /** A workspace node's data was taken away: its records, ended, leave memory too; the store keeps their tombstones. */
+  forget(node: string): void {
+    for (const [id, rec] of [...this.byId]) {
+      if (rec.session.node !== node || rec.session.status !== "ended") continue;
+      this.byId.delete(id);
+      for (const [key, value] of [...this.byNative]) if (value === id) this.byNative.delete(key);
+    }
   }
 
   // --- spawn and stop ---------------------------------------------------------------------
@@ -1280,14 +1391,15 @@ export class Sessions implements SessionHost {
    * Claude session starts with the profile's launch (a mode and flags), and the model the brain
    * named over the launch's own.
    */
-  async spawn(
-    params: SpawnParams,
-    opts: { profiles: { get(id: string): HarnessProfile | undefined; defaultFor(h: SpawnParams["harness"]): HarnessProfile | undefined; launch?(id: string): Launch | undefined } },
-  ): Promise<Session> {
+  async spawn(params: SpawnParams, opts: SpawnOptions, part?: string): Promise<Session> {
     if (!this.acp) throw new RpcError("unsupported", "this daemon does not spawn sessions");
-    const workspace = this.deps.workspaces.get(params.workspace);
+    const workspace = this.deps.workspaces.get(params.workspace, part);
     if (!workspace) throw new RpcError("not_found", `no workspace ${params.workspace}`);
-    if (workspace.node !== this.nodeId) throw new RpcError("unsupported", `workspace ${params.workspace} is on another node`);
+    if (workspace.node !== (part ?? this.nodeId)) throw new RpcError("unsupported", `workspace ${params.workspace} is on another node`);
+    // A folder lent to a workspace node is the other cluster's: what starts there would be theirs.
+    if (part === undefined && this.deps.owners?.ownerOf(workspace.path) !== undefined) throw new RpcError("conflict", `${workspace.path} is lent to a workspace node: a session started there would be the other cluster's`);
+    // A workspace node's sessions run headless: no window, no terminal of the owner's.
+    const headless = part !== undefined;
     let profile: HarnessProfile | undefined;
     if (params.profile !== undefined) {
       profile = opts.profiles.get(params.profile);
@@ -1299,9 +1411,9 @@ export class Sessions implements SessionHost {
     }
     if (profile.status === "missing") throw new RpcError("unavailable", `profile ${profile.name} has no configuration directory`);
     const model = params.model && "model" in params.model ? params.model.model.slice(params.model.model.indexOf("/") + 1) : undefined;
-    if (params.harness === "muse") return this.spawnMuse(params, workspace, profile, model);
+    if (params.harness === "muse") return this.spawnMuse(params, workspace, profile, model, headless);
     const launch = params.harness === "claude" ? opts.profiles.launch?.(profile.id) : undefined;
-    if (params.harness === "claude" && this.config.launch === "terminal") {
+    if (params.harness === "claude" && this.config.launch === "terminal" && !headless) {
       const started = await this.spawnInTerminal(params, workspace, profile, launch, model);
       if (started) return started;
     }
@@ -1510,10 +1622,10 @@ export class Sessions implements SessionHost {
    * `sessions.launch` says a terminal and tether is here; headless on the profile's own
    * `muse serve` host otherwise, or when the terminal cannot be had.
    */
-  private async spawnMuse(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, model: string | undefined): Promise<Session> {
+  private async spawnMuse(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, model: string | undefined, headless = false): Promise<Session> {
     const adapter = this.adapters.get("muse");
     if (!adapter?.headless) throw new RpcError("unsupported", "this daemon does not run Muse sessions");
-    if (this.config.launch === "terminal" && this.deps.tether?.available) {
+    if (this.config.launch === "terminal" && this.deps.tether?.available && !headless) {
       if (await adapter.hooked?.(profile.id)) {
         const started = await this.spawnMuseInTether(adapter, params, workspace, profile, model);
         if (started) return started;
@@ -1635,8 +1747,8 @@ export class Sessions implements SessionHost {
    * terminal, the shell of a New terminal the session was typed into included; in a window of
    * the user's own, its process ends and their shell stays.
    */
-  async stopSession(id: string, opts: { as?: "user" | "brain" } = {}): Promise<void> {
-    const rec = this.must(id);
+  async stopSession(id: string, opts: { as?: "user" | "brain" } = {}, part?: string): Promise<void> {
+    const rec = this.must(id, part);
     if (rec.session.native.transport === "acp") {
       if (!this.acp) throw new RpcError("unsupported", "only a session cophylad started can be stopped");
       await this.acp.stop(id);
@@ -1694,8 +1806,8 @@ export class Sessions implements SessionHost {
    * headless is prompted through what runs it. Anything else goes over the harness's own
    * channel, which a Claude session reads as another agent's message.
    */
-  async send(id: string, text: string, opts: { from?: "user" | "brain" } = {}): Promise<{ status: "queued" | "held"; ref: string }> {
-    const rec = this.must(id);
+  async send(id: string, text: string, opts: { from?: "user" | "brain" } = {}, part?: string): Promise<{ status: "queued" | "held"; ref: string }> {
+    const rec = this.must(id, part);
     if (this.typesInto(rec) && (opts.from !== "brain" || this.config.brain_sends === "typed" || rec.session.harness === "muse")) {
       const ref = `cophylad-${ulid(this.now())}`;
       this.queueTyped(rec, text, ref);
@@ -2243,7 +2355,8 @@ export class Sessions implements SessionHost {
     try {
       const profile = this.deps.profiles.get(rec.session.profile);
       if (!this.acp || !profile) throw new Error("this node cannot start a session under the profile");
-      const workspace = rec.session.workspace ?? this.deps.workspaces.fromSession(rec.session.cwd).id;
+      // the fresh session is on the node this one is on: its workspace's
+      const workspace = rec.session.workspace ?? this.deps.workspaces.fromSession(rec.session.cwd, rec.session.node).id;
       const fresh = await this.acp.spawn({
         harness: "claude",
         profile,
@@ -2413,7 +2526,7 @@ export class Sessions implements SessionHost {
     rec.held = undefined;
     this.askOwners.delete(held.ask.id);
     const now = this.now();
-    if (this.deps.asks.get(held.ask.id)?.status === "open") this.deps.asks.cancel(held.ask.id);
+    if (this.deps.asks.getAny(held.ask.id)?.status === "open") this.deps.asks.cancel(held.ask.id);
     this.event(rec, "ask", { ask: held.ask.id, phase: "closed", reason }, undefined, now);
     this.log.info("harness ask closed", { session: rec.session.id, ask: held.ask.id, type: held.ask.type, reason });
     for (const w of held.waiters) w({});
@@ -2537,7 +2650,7 @@ export class Sessions implements SessionHost {
     rec.inputAsk = undefined;
     this.askOwners.delete(ask.id);
     const now = this.now();
-    if (this.deps.asks.get(ask.id)?.status === "open") this.deps.asks.cancel(ask.id);
+    if (this.deps.asks.getAny(ask.id)?.status === "open") this.deps.asks.cancel(ask.id);
     this.event(rec, "ask", { ask: ask.id, phase: "closed", reason }, undefined, now);
     if (rec.session.ask === ask.id) delete rec.session.ask;
     if (rec.session.status === "needs_input") {

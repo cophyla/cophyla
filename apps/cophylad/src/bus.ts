@@ -11,7 +11,8 @@
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
 // raise `terminal.state`; `listeners` raises `listener.fired` and `listener.removed`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
-// rest into capability events.
+// rest into capability events. The machine's events and each workspace node's are kept
+// apart (`Bus`).
 
 import type { Ask, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
@@ -108,22 +109,95 @@ export interface BusEvents {
 
 type Handler<T> = (payload: T) => void;
 
+/** The partition of the machine's own node. */
+export const MACHINE = "machine";
+/** A handler that hears every partition. */
+const ALL = "*";
+
+/**
+ * How an event's partition is told: which node ids are a workspace node's (or were: a removed
+ * one's stay private), and the node of a session, for `session.event`.
+ */
+export interface Partitions {
+  isPrivate(node: string): boolean;
+  sessionNode(id: string): string | undefined;
+}
+
+/** The bus as one workspace node's components use it: they hear and raise their own partition's events alone. */
+export interface ScopedBus {
+  on<K extends keyof BusEvents>(name: K, handler: Handler<BusEvents[K]>): () => void;
+  emit<K extends keyof BusEvents>(name: K, payload: BusEvents[K]): void;
+}
+
+interface Entry {
+  scope: string;
+  fn: Handler<never>;
+}
+
+/**
+ * Split by partition, private by default. `on` hears the machine's own events alone, so every
+ * consumer that sends to the machine's clients, its brain, its phones or its store is kept
+ * from a workspace node's. `emit` tells an event's partition by its payload: its `node`, its
+ * `id`, or, for `session.event`, the session's node. A workspace node's own components (its
+ * registry, event stream and link) hear and raise through `for(node)`, whose events never
+ * reach `on` whatever ids they carry. `onAll` hears every partition: for what must follow an
+ * item wherever it is (a held hook released by its ask's answer). Handlers run in the order
+ * they were added, across partitions.
+ */
 export class Bus {
-  private handlers = new Map<keyof BusEvents, Set<Handler<never>>>();
+  private handlers = new Map<keyof BusEvents, Set<Entry>>();
+  /** Unset, every event is the machine's. */
+  partitions?: Partitions;
 
   on<K extends keyof BusEvents>(name: K, handler: Handler<BusEvents[K]>): () => void {
+    return this.add(name, MACHINE, handler);
+  }
+
+  /** Every partition's events: only for what follows an item wherever it is. */
+  onAll<K extends keyof BusEvents>(name: K, handler: Handler<BusEvents[K]>): () => void {
+    return this.add(name, ALL, handler);
+  }
+
+  /** One workspace node's partition. */
+  for(node: string): ScopedBus {
+    return {
+      on: (name, handler) => this.add(name, node, handler),
+      emit: (name, payload) => this.deliver(name, payload, node),
+    };
+  }
+
+  emit<K extends keyof BusEvents>(name: K, payload: BusEvents[K]): void {
+    this.deliver(name, payload, this.partitionOf(name, payload));
+  }
+
+  /** The partition an event is in, by what its payload says. */
+  partitionOf<K extends keyof BusEvents>(name: K, payload: BusEvents[K]): string {
+    const p = this.partitions;
+    if (!p || payload === null || typeof payload !== "object") return MACHINE;
+    const o = payload as { node?: unknown; id?: unknown; session?: unknown };
+    if (name === "session.event") {
+      const node = typeof o.session === "string" ? p.sessionNode(o.session) : undefined;
+      return node !== undefined && p.isPrivate(node) ? node : MACHINE;
+    }
+    if (typeof o.node === "string" && p.isPrivate(o.node)) return o.node;
+    if (typeof o.id === "string" && p.isPrivate(o.id)) return o.id;
+    return MACHINE;
+  }
+
+  private add<K extends keyof BusEvents>(name: K, scope: string, handler: Handler<BusEvents[K]>): () => void {
     let set = this.handlers.get(name);
     if (!set) {
       set = new Set();
       this.handlers.set(name, set);
     }
-    set.add(handler as Handler<never>);
-    return () => set!.delete(handler as Handler<never>);
+    const entry: Entry = { scope, fn: handler as Handler<never> };
+    set.add(entry);
+    return () => set!.delete(entry);
   }
 
-  emit<K extends keyof BusEvents>(name: K, payload: BusEvents[K]): void {
+  private deliver<K extends keyof BusEvents>(name: K, payload: BusEvents[K], scope: string): void {
     const set = this.handlers.get(name);
     if (!set) return;
-    for (const h of set) (h as Handler<BusEvents[K]>)(payload);
+    for (const h of set) if (h.scope === ALL || h.scope === scope) (h.fn as Handler<BusEvents[K]>)(payload);
   }
 }

@@ -3,6 +3,11 @@
 // tasks, workspaces, kv) announce each write through `onWrite` and `onWrites`, which is how
 // a backup node and the cloud backup get them; a backup applies them and a whole snapshot
 // through the replica methods, which are silent and go through no module above the store.
+//
+// A workspace node's rows (`privateNodes`) are this machine's alone: its workspaces are never
+// announced, so neither a backup node nor the cloud backup gets them, a snapshot applied
+// here leaves them, recall answers the machine without them, and `purgePartition` takes
+// them away, leaving its sessions' ids as tombstones.
 
 import { Database } from "bun:sqlite";
 import type { Ask, AuditEntry, Decision, Message, MetricsSample, NodeRecord, Outcome, Principal, ReplicaSnapshot, ReplicaTable, ReplicaWrite, Session, SessionEvent, SessionStatus, Task, TaskStatus, Thread, Workspace } from "@cophyla/protocol";
@@ -69,13 +74,19 @@ export class Store {
   onWrite?: (w: StoreWrite) => void;
   private writeListeners = new Set<(w: StoreWrite) => void>();
   private applying = false;
+  /** The workspace nodes' ids, now and once: rows of theirs never leave the machine. */
+  privateNodes: () => readonly string[] = () => [];
 
   constructor(path: string) {
     this.db = new Database(path, { create: true, strict: true });
     this.db.exec("PRAGMA journal_mode = WAL");
     this.db.exec("PRAGMA foreign_keys = ON");
     this.db.exec("PRAGMA busy_timeout = 5000");
-    this.index = new SearchIndex(this.db);
+    this.index = new SearchIndex(this.db, () => this.privateNodes());
+  }
+
+  private isPrivate(node: string | undefined): boolean {
+    return node !== undefined && this.privateNodes().includes(node);
   }
 
   /** Applies the migrations past `user_version`, each in its own transaction. */
@@ -125,6 +136,8 @@ export class Store {
   private wrote(table: ReplicaTable, op: "upsert" | "delete", row: unknown): void {
     if (this.applying) return;
     if (!this.onWrite && this.writeListeners.size === 0) return;
+    // a workspace node's workspace is replicated and backed up nowhere
+    if (table === "workspaces" && this.isPrivate((row as { node?: string }).node)) return;
     const w: StoreWrite = { table, op, row };
     this.onWrite?.(w);
     for (const fn of this.writeListeners) fn(w);
@@ -462,8 +475,9 @@ export class Store {
       return row ? workspaceFromRow(row) : undefined;
     },
     delete: (id: string): boolean => {
+      const node = this.workspaces.get(id)?.node;
       const gone = this.db.query("DELETE FROM workspaces WHERE id = $id").run({ id }).changes > 0;
-      if (gone) this.wrote("workspaces", "delete", { id });
+      if (gone) this.wrote("workspaces", "delete", { id, ...(node !== undefined ? { node } : {}) });
       return gone;
     },
     getByPath: (node: string, path: string): Workspace | undefined => {
@@ -936,7 +950,9 @@ export class Store {
         this.db.exec("DELETE FROM messages");
         this.db.exec("DELETE FROM threads");
         this.db.exec("DELETE FROM tasks");
-        this.db.query("DELETE FROM workspaces WHERE node != $node").run({ node: opts.selfNode });
+        // this node's own workspaces stay, and so do its workspace nodes', which no snapshot holds
+        const kept = [opts.selfNode, ...this.privateNodes()];
+        this.db.query(`DELETE FROM workspaces WHERE node NOT IN (${kept.map((_, i) => `$n${i}`).join(", ")})`).run(Object.fromEntries(kept.map((n, i) => [`n${i}`, n])));
         const keep = opts.keepKvNs;
         if (keep.length === 0) this.db.exec("DELETE FROM kv");
         else this.db.query(`DELETE FROM kv WHERE ns NOT IN (${keep.map((_, i) => `$ns${i}`).join(", ")})`).run(Object.fromEntries(keep.map((ns, i) => [`ns${i}`, ns])));
@@ -944,6 +960,7 @@ export class Store {
         for (const m of snapshot.tables.messages as Message[]) this.messages.upsert(m);
         for (const t of snapshot.tables.tasks as Task[]) this.tasks.upsert(t);
         for (const w of snapshot.tables.workspaces as Workspace[]) {
+          if (this.isPrivate(w.node)) continue;
           if (opts.rehome !== undefined && opts.rehome !== opts.selfNode && w.node === opts.rehome) this.replicaWorkspace({ ...w, node: opts.selfNode });
           else if (w.node !== opts.selfNode) this.replicaWorkspace(w);
         }
@@ -961,9 +978,43 @@ export class Store {
       threads: this.threads.dump(),
       messages: this.messages.dump(),
       tasks: this.tasks.dump(),
-      workspaces: this.workspaces.list(),
+      workspaces: this.workspaces.list().filter((w) => !this.isPrivate(w.node)),
       kv: this.kv.dump(excludeKvNs),
     };
+  }
+
+  // --- a workspace node removed ------------------------------------------------------------
+
+  /**
+   * Takes away what a workspace node left in this store, in one transaction: its sessions'
+   * events, chunks (their full-text rows and vectors with them) and transcript marks, its
+   * asks, its audit rows and its workspaces. Its sessions stay as tombstones: ended, their
+   * words gone, their ids and harness ids kept, so one met again stays the node's, which is
+   * retired and private.
+   */
+  purgePartition(node: string, now = Date.now()): { sessions: number; events: number; asks: number; audit: number; workspaces: number } {
+    const ids = (this.db.query("SELECT id FROM harness_sessions WHERE node = $node").all({ node }) as { id: string }[]).map((r) => r.id);
+    let events = 0;
+    const out = this.db.transaction(() => {
+      for (const id of ids) {
+        this.index.chunks.deleteSession(id);
+        events += this.db.query("DELETE FROM session_events WHERE session = $id").run({ id }).changes;
+        this.db.query("DELETE FROM transcript_tails WHERE session = $id").run({ id });
+      }
+      const asks = this.db.query("DELETE FROM asks WHERE node = $node").run({ node }).changes;
+      const audit = this.db.query("DELETE FROM audit WHERE node = $node").run({ node }).changes;
+      const workspaces = this.db.query("DELETE FROM workspaces WHERE node = $node").run({ node }).changes;
+      this.db
+        .query(
+          `UPDATE harness_sessions SET title = NULL, intent = NULL, summary = NULL, tags = '[]', ask = NULL, stats = NULL,
+             transcript_path = NULL, workspace = NULL, task = NULL, native_pid = NULL, status = 'ended',
+             ended_at = COALESCE(ended_at, $now) WHERE node = $node`,
+        )
+        .run({ node, now });
+      return { sessions: ids.length, events, asks: Number(asks), audit: Number(audit), workspaces: Number(workspaces) };
+    })();
+    this.index.kick();
+    return out;
   }
 
   // --- policy: remembered gate answers ------------------------------------------------------

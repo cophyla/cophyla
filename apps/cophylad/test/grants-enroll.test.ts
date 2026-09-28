@@ -292,6 +292,18 @@ describe("joining and leaving", () => {
     expect(await outcome(p.d.nodes.join(await inviteOn(q)))).toMatch(/other nodes, or open invites, in it/);
   }, 30_000);
 
+  test("a primary alone that joins as hands hears its old cluster's registry no more", async () => {
+    const p = await primaryUp();
+    const alone = await startPrimary();
+    primaries.push(alone);
+    const signals = () => (alone.d.nodes as unknown as { offArbiter: unknown[] }).offArbiter.length;
+    expect(signals()).toBeGreaterThan(0);
+    await alone.d.nodes.join(await inviteOn(p, { role: "hands" }));
+    await linked(alone.d);
+    expect(alone.d.nodes.member()?.role).toBe("hands");
+    expect(signals()).toBe(0);
+  }, 30_000);
+
   test("a revoked grant's link closes, the node is forgotten, and it is refused after", async () => {
     const p = await primaryUp();
     const s = await startSecondary(p);

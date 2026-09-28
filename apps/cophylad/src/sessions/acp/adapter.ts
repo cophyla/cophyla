@@ -662,7 +662,7 @@ export class AcpAdapter {
     if (!pending) return;
     child.pending = undefined;
     const now = this.deps.host.now();
-    if (this.deps.asks.get(pending.ask.id)?.status === "open") this.deps.asks.cancel(pending.ask.id);
+    if (this.deps.asks.getAny(pending.ask.id)?.status === "open") this.deps.asks.cancel(pending.ask.id);
     let outcome: unknown;
     if (pending.kind === "permission") {
       const reject = pending.options.find((o) => o.kind.startsWith("reject"));

@@ -2,6 +2,11 @@
 // `~/.cophyla` itself (the `cophyla` workspace, where agents write the editable layer), from the
 // working directory of every discovered session resolved to its repository root, and from
 // `workspace.put`. Every change is streamed as `workspace.state`.
+//
+// A workspace is the machine's or a workspace node's: a session's is its session's node's, a
+// put one the node it names. What reads or writes one by id sees the machine's alone, and a
+// workspace node's through `view`. A folder lent to a workspace node takes no workspace of
+// the machine's.
 
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
@@ -15,6 +20,16 @@ export interface WorkspacesDeps {
   nodeId: NodeId;
   bus: Bus;
   now?: () => number;
+  /** Which workspace node owns a folder, and whose items the machine's own apps never see; absent, every workspace is the machine's. */
+  owners?: { ownerOf(path: string): string | undefined; isPrivate(node: string): boolean };
+}
+
+/** One workspace node's workspaces: what its link lists and puts. */
+export interface WorkspacesView {
+  list(): Workspace[];
+  get(id: string): Workspace | undefined;
+  put(input: { id?: string; node: NodeId; path: string; name: string }): Workspace;
+  annotate(id: string, patch: { summary?: string; tags?: string[] }): Workspace;
 }
 
 const TOUCH_COALESCE_MS = 1000;
@@ -108,26 +123,54 @@ export class Workspaces {
     return (this.deps.now ?? Date.now)();
   }
 
-  /** Every workspace, or one node's. */
-  list(filter: { node?: string } = {}): Workspace[] {
-    const all = this.deps.store.workspaces.list();
+  /** Whether a workspace is in a partition: a workspace node's own (`part`), or, unset, the machine's. */
+  private inPart(w: Pick<Workspace, "node">, part?: string): boolean {
+    return part === undefined ? !(this.deps.owners?.isPrivate(w.node) ?? false) : w.node === part;
+  }
+
+  /** Every workspace of a partition (the machine's unless named), or one node's of it. */
+  list(filter: { node?: string } = {}, part?: string): Workspace[] {
+    const all = this.deps.store.workspaces.list().filter((w) => this.inPart(w, part));
     return filter.node === undefined ? all : all.filter((w) => w.node === filter.node);
   }
 
-  get(id: string): Workspace | undefined {
+  /** A workspace of the machine's, or of the partition named. */
+  get(id: string, part?: string): Workspace | undefined {
+    const w = this.deps.store.workspaces.get(id);
+    return w && this.inPart(w, part) ? w : undefined;
+  }
+
+  /** A workspace of any partition: for what follows it wherever it is. */
+  getAny(id: string): Workspace | undefined {
     return this.deps.store.workspaces.get(id);
   }
 
-  /** Adds or renames a workspace by hand. */
-  put(input: { id?: string; node: NodeId; path: string; name: string }): Workspace {
+  /** One workspace node's workspaces. */
+  view(node: string): WorkspacesView {
+    return {
+      list: () => this.list({}, node),
+      get: (id) => this.get(id, node),
+      put: (input) => this.put(input, node),
+      annotate: (id, patch) => this.annotate(id, patch, node),
+    };
+  }
+
+  /** Adds or renames a workspace by hand, in a partition: the machine's unless named. */
+  put(input: { id?: string; node: NodeId; path: string; name: string }, part?: string): Workspace {
+    const owners = this.deps.owners;
+    if (part === undefined ? (owners?.isPrivate(input.node) ?? false) : input.node !== part) throw new RpcError("not_found", `no node ${input.node}`);
     const path = normalisePath(input.path);
     if (!isDirectory(path)) throw new RpcError("not_found", `no directory at ${path}`);
-    const existing = (input.id ? this.deps.store.workspaces.get(input.id) : undefined) ?? this.deps.store.workspaces.getByPath(input.node, path);
+    const owner = owners?.ownerOf(path);
+    // A lent folder is its workspace node's alone, and that node's workspaces are inside it.
+    if (part === undefined && owner !== undefined) throw new RpcError("conflict", `${path} is lent to a workspace node`);
+    if (part !== undefined && owner !== part) throw new RpcError("denied", `${path} is outside the folder this node owns`);
+    const existing = (input.id ? this.get(input.id, part) : undefined) ?? this.deps.store.workspaces.getByPath(input.node, path);
     const now = this.now();
     const w: Workspace = existing
       ? { ...existing, path, name: input.name, origin: "user", lastActivity: now }
       : { id: newId("workspace", now), node: input.node, path, name: input.name, origin: "user", tags: [], lastActivity: now };
-    const repo = findRepo(path);
+    const repo = this.allowedRepo(w.node, findRepo(path));
     if (repo && !w.repo) w.repo = repo;
     return this.save(w);
   }
@@ -149,21 +192,33 @@ export class Workspaces {
     return this.save({ ...w, name: HOME_NAME, lastActivity: this.now() });
   }
 
-  /** The workspace a session's working directory belongs to: its repository root, or the directory itself. */
-  /** On a node that shares some folders alone, the folder a session's workspace is recorded at when its repository reaches above them. */
-  clampRoot?: (root: string, cwd: string) => string;
+  /** The folder a session's workspace is recorded at when its repository reaches above the folders its node may show: a confined node's, a workspace node's. */
+  clampRoot?: (root: string, cwd: string, node: NodeId) => string;
 
-  fromSession(cwd: string): Workspace {
-    const repo = findRepo(cwd);
-    const root = repo ? repo.root : cwd;
-    const at = this.clampRoot ? this.clampRoot(root, cwd) : root;
-    return this.upsertDiscovered(at, "discovered", at === root ? repo : undefined);
+  /**
+   * Whether a repository may be recorded on a workspace of `node`: on a node that shares some
+   * folders alone, one whose root is inside them. A repository above would tell the primary
+   * its remote and, through its state, what is outside.
+   */
+  repoInside?: (node: NodeId, root: string) => boolean;
+
+  private allowedRepo(node: NodeId, repo: RepoInfo | undefined): RepoInfo | undefined {
+    return repo && (this.repoInside?.(node, repo.root) ?? true) ? repo : undefined;
   }
 
-  private upsertDiscovered(path: string, origin: WorkspaceOrigin, repo?: RepoInfo): Workspace {
+  /** The workspace a session's working directory belongs to, on the session's node: its repository root, or the directory itself. */
+  fromSession(cwd: string, node: NodeId = this.deps.nodeId): Workspace {
+    const repo = findRepo(cwd);
+    const root = repo ? repo.root : cwd;
+    const at = this.clampRoot ? this.clampRoot(root, cwd, node) : root;
+    return this.upsertDiscovered(at, "discovered", at === root ? repo : undefined, node);
+  }
+
+  private upsertDiscovered(path: string, origin: WorkspaceOrigin, repo?: RepoInfo, node: NodeId = this.deps.nodeId): Workspace {
     const norm = normalisePath(path);
-    const existing = this.deps.store.workspaces.getByPath(this.deps.nodeId, norm);
+    const existing = this.deps.store.workspaces.getByPath(node, norm);
     const now = this.now();
+    repo = this.allowedRepo(node, repo);
     if (existing) {
       let changed = false;
       if (repo && !existing.repo) {
@@ -175,21 +230,21 @@ export class Workspaces {
     }
     const w: Workspace = {
       id: newId("workspace", now),
-      node: this.deps.nodeId,
+      node,
       path: norm,
       name: basename(norm) || norm,
       origin,
       tags: [],
       lastActivity: now,
     };
-    const found = repo ?? findRepo(norm);
+    const found = repo ?? this.allowedRepo(w.node, findRepo(norm));
     if (found) w.repo = found;
     return this.save(w);
   }
 
   /** The one-line summary and the tags, written by the brain when it archives or by the user. */
-  annotate(id: string, patch: { summary?: string; tags?: string[] }): Workspace {
-    const w = this.deps.store.workspaces.get(id);
+  annotate(id: string, patch: { summary?: string; tags?: string[] }, part?: string): Workspace {
+    const w = this.get(id, part);
     if (!w) throw new RpcError("not_found", `no workspace ${id}`);
     const next: Workspace = { ...w };
     if (patch.summary !== undefined) next.summary = patch.summary;

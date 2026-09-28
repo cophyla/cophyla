@@ -508,6 +508,66 @@ describe("store: milestone 3 tables", () => {
     backup.close();
   });
 
+  test("a workspace node's workspaces are never announced, never in a snapshot, and a snapshot applied here keeps them", () => {
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const primary = open();
+    const machine = open();
+    machine.privateNodes = () => [GUEST];
+    const seen: string[] = [];
+    machine.onWrite = (w) => seen.push(`${w.op} ${(w.row as { id: string }).id}`);
+    const mine = { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FC1", node: OTHER, path: "/mine", name: "mine", origin: "scope", tags: [], lastActivity: 1 } as const;
+    const lent = { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FC2", node: GUEST, path: "/lent", name: "lent", origin: "discovered", tags: [], lastActivity: 1 } as const;
+    machine.workspaces.upsert({ ...mine, tags: [] });
+    machine.workspaces.upsert({ ...lent, tags: [] });
+    machine.workspaces.delete(lent.id);
+    machine.workspaces.upsert({ ...lent, tags: [] });
+    expect(seen).toEqual([`upsert ${mine.id}`]);
+    expect((machine.replicaSnapshot([]).workspaces as { id: string }[]).map((w) => w.id)).toEqual([mine.id]);
+    // the machine as a backup of another primary: the snapshot replaces the rest, never the workspace node's
+    primary.workspaces.upsert({ id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", node: NODE, path: "/p", name: "p", origin: "user", tags: [], lastActivity: 1 });
+    machine.applySnapshot({ epoch: 2, seq: 10, tables: primary.replicaSnapshot([]), files: [] }, { selfNode: OTHER, keepKvNs: [] });
+    expect(machine.workspaces.list().map((w) => w.path).sort()).toEqual(["/lent", "/mine", "/p"]);
+    primary.close();
+    machine.close();
+  });
+
+  test("a workspace node purged: its events, chunks, marks, asks, audit and workspaces go; its sessions stay as tombstones", () => {
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    const s = open();
+    s.privateNodes = () => [GUEST];
+    const ws = { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FC2", node: GUEST, path: "/lent", name: "lent", origin: "discovered" as const, tags: [], lastActivity: 1 };
+    s.workspaces.upsert(ws);
+    const theirs = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC3", node: GUEST, harness: "claude" as const, profile: "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", native: { id: "native-g", transport: "pipe" as const, pid: 42 }, origin: "orchestrator" as const, workspace: ws.id, cwd: "/lent", title: "their canary title", intent: "their canary intent", tags: ["canary"], status: "idle" as const, startedAt: 1, lastActivity: 2 };
+    const ours = { ...theirs, id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC4", node: NODE, native: { id: "native-m", transport: "pipe" as const }, title: "ours", workspace: undefined };
+    s.sessions.insert(theirs);
+    s.sessions.insert(ours);
+    s.sessionEvents.append({ session: theirs.id, at: 3, kind: "assistant_text", payload: { text: "the canary words of theirs" } });
+    s.sessionEvents.append({ session: ours.id, at: 3, kind: "assistant_text", payload: { text: "our own canary words" } });
+    s.sessions.setTail(theirs.id, "/lent/t.jsonl", 10);
+    s.asks.insert({ id: "ask_01ARZ3NDEKTSV4RRFFQ69G5FC5", node: GUEST, type: "permission", source: { kind: "harness", session: theirs.id }, title: "t", options: [], answerableBy: ["user"], status: "open", createdAt: 1 });
+    s.audit.insert({ id: "aud_01ARZ3NDEKTSV4RRFFQ69G5FC6", node: GUEST, at: 1, principal: { kind: "node", id: NODE }, action: "session.list", args: {}, decision: "allow" });
+    s.audit.insert({ id: "aud_01ARZ3NDEKTSV4RRFFQ69G5FC7", node: NODE, at: 1, principal: { kind: "user", client: "c" }, action: "session.list", args: {}, decision: "allow" });
+    const before = s.index.chunks.count();
+    const gone = s.purgePartition(GUEST, 99);
+    expect(gone).toEqual({ sessions: 1, events: 1, asks: 1, audit: 1, workspaces: 1 });
+    expect(s.index.chunks.count()).toBe(before - 1);
+    expect(s.sessionEvents.count(theirs.id)).toBe(0);
+    expect(s.sessionEvents.count(ours.id)).toBe(1);
+    expect(s.sessions.tail(theirs.id)).toBeUndefined();
+    expect(s.asks.get("ask_01ARZ3NDEKTSV4RRFFQ69G5FC5")).toBeUndefined();
+    expect(s.audit.get("aud_01ARZ3NDEKTSV4RRFFQ69G5FC6")).toBeUndefined();
+    expect(s.audit.get("aud_01ARZ3NDEKTSV4RRFFQ69G5FC7")).toBeDefined();
+    expect(s.workspaces.get(ws.id)).toBeUndefined();
+    // the tombstone: ended, its words gone, its ids kept
+    const stone = s.sessions.get(theirs.id)!;
+    expect(stone).toMatchObject({ id: theirs.id, node: GUEST, status: "ended", endedAt: 99, native: { id: "native-g" }, tags: [] });
+    expect(JSON.stringify(stone)).not.toContain("canary");
+    expect(s.sessions.getByNative("claude", "native-g")?.id).toBe(theirs.id);
+    expect(s.sessions.get(ours.id)?.title).toBe("ours");
+    s.close();
+  });
+
   test("events insert and page by name, node and range", () => {
     const s = open();
     for (let i = 0; i < 5; i++) s.events.insert({ node: NODE, name: i % 2 ? "node.pressure" : "my.ci", at: 100 + i, payload: { i } });

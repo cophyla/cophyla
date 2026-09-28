@@ -153,10 +153,21 @@ describe("what a confined node serves", () => {
       "remote.screenshot": { handler: () => (ran.push("screenshot"), {}) },
       "ask.answer": { handler: answer },
     };
-    const localAsk = { id: newId("ask"), node: NODE, type: "permission", source: { kind: "gate", action: "x", principal: { kind: "user" } }, title: "t", options: [], answerableBy: ["user"], status: "open", createdAt: 1 };
+    const localAsk = { id: newId("ask"), node: NODE, type: "permission", source: { kind: "gate", action: "x", principal: { kind: "node", id: "node_p" } }, title: "t", options: [], answerableBy: ["user"], status: "open", createdAt: 1 };
+    // a harness's ask about the session outside: not the primary's to know of
+    const outsideAsk = { ...localAsk, id: newId("ask"), source: { kind: "harness", session: outside.id } };
+    const asks = new Map([localAsk, outsideAsk].map((a) => [a.id, a]));
     const confinement = new Confinement([t.shared]);
+    /** What the gate's audit row keeps of each result: what the handler inside it returned. */
+    const audited: { action: string; result: unknown }[] = [];
     const s = new NodeServer({
-      gate: { run: (_req: unknown, fn: (ctx: unknown) => unknown) => fn({ audit: {} }) } as never,
+      gate: {
+        run: async (req: { action: string }, fn: (ctx: unknown) => unknown) => {
+          const result = await fn({ audit: {} });
+          audited.push({ action: req.action, result });
+          return result;
+        },
+      } as never,
       table: table as never,
       principal: { kind: "node", id: "node_p" },
       sessionKey: "link-1",
@@ -165,7 +176,7 @@ describe("what a confined node serves", () => {
       metricsSubscriber: "link:link-1",
       confine: () => confinement,
       answerHere: () => answerHere,
-      local: { session: (id) => sessions.get(id), workspace: (id) => workspaces.get(id), ask: (id) => (id === localAsk.id ? (localAsk as never) : undefined) },
+      local: { session: (id) => sessions.get(id), workspace: (id) => workspaces.get(id), ask: (id) => asks.get(id) as never },
       tools: { source: (name) => (name === "mine" ? "editable" : "builtin"), risk: (name) => (name === "http.get" ? "network" : "read") },
       files: {
         list: async (id) => (ran.push(`files ${id}`), { root: "", dirs: [] }),
@@ -173,7 +184,7 @@ describe("what a confined node serves", () => {
         read: async (id, path) => (ran.push(`read ${id} ${path}`), { path, size: 0, modified: 0, text: "" }),
       },
     });
-    return { s, inside, outside, wsIn, wsOut, ran, localAsk };
+    return { s, inside, outside, wsIn, wsOut, ran, localAsk, outsideAsk, audited };
   }
 
   const refused = (p: Promise<unknown>) => p.then(() => "served", (e: unknown) => (e instanceof Error ? e.message : String(e)));
@@ -210,6 +221,34 @@ describe("what a confined node serves", () => {
     expect(((await call("tool.list", {})) as { tools: { name: string }[] }).tools.map((x) => x.name)).toEqual(["fs.read"]);
   });
 
+  test("the audit row keeps the answer the primary got, not the whole list", async () => {
+    const t = tree();
+    const { s, outside, wsOut, audited } = server(t);
+    let n = 0;
+    for (const method of ["session.list", "workspace.list", "recall", "event.history", "metrics.query", "tool.list"]) await s.serve(method, method === "recall" ? { query: "x" } : method === "metrics.query" ? { node: NODE } : {}, ++n);
+    expect(audited.map((a) => a.action)).toEqual(["session.list", "workspace.list", "recall", "event.history", "metrics.query", "tool.list"]);
+    const kept = JSON.stringify(audited);
+    for (const leak of [outside.id, wsOut.id, '"out"', '"mem"', '"b"', "http.get", "mine"]) expect(kept).not.toContain(leak);
+  });
+
+  test("an ask this node does not hold, or one about something outside, is not found", async () => {
+    const t = tree();
+    const { s, localAsk, outsideAsk } = server(t);
+    expect(await refused(s.serve("ask.answer", { id: newId("ask"), option: "a" }, 1))).toMatch(/^no ask/);
+    expect(await refused(s.serve("ask.answer", { id: outsideAsk.id, option: "a" }, 2))).toBe(`no ask ${outsideAsk.id}`);
+    expect(await refused(s.serve("ask.answer", { id: localAsk.id, option: "a" }, 3))).toBe("served");
+  });
+
+  test("a repository whose root is above the folder shows no state", async () => {
+    const t = tree();
+    mkdirSync(join(t.root, ".git"));
+    const { s, inside } = server(t);
+    expect(await refused(s.serve("session.git", { id: inside.id }, 1))).toMatch(/repository reaches above/);
+    // one of the folder's own is shown
+    mkdirSync(join(t.shared, ".git"));
+    expect(await refused(s.serve("session.git", { id: inside.id }, 2))).toBe("served");
+  });
+
   test("a node that answers its own asks answers them alone", async () => {
     const t = tree();
     const { s, localAsk } = server(t, true);
@@ -220,6 +259,9 @@ describe("what a confined node serves", () => {
 describe("a confined guest, end to end", () => {
   test("the primary sees the shared folder alone, spawns there, and reads nothing outside, not through a junction either", async () => {
     const t = tree();
+    // a repository above the shared folder: its remote is not the primary's to see
+    mkdirSync(join(t.root, ".git"));
+    writeFileSync(join(t.root, ".git", "config"), '[remote "origin"]\n\turl = https://example.invalid/the-secret-repo.git\n');
     // Heartbeats at a second: a slow runner's stall during the spawn must not drop the link.
     const p = await startPrimary({ heartbeatMs: 1000 });
     primaries.push(p);
@@ -237,6 +279,7 @@ describe("a confined guest, end to end", () => {
     const theirs = await seen();
     expect(theirs.map((w) => w.name)).toEqual(["shared"]);
     expect(theirs.map((w) => w.id)).not.toContain(outsideWs.id);
+    expect(JSON.stringify(theirs)).not.toContain("the-secret-repo");
     // forwarded as the primary would: a spawn in the shared folder runs; one in the other is refused
     const inbound = (p.d.nodes as unknown as { inbound: { forward(node: string, method: string, params: unknown): Promise<unknown> } }).inbound;
     const outcome = (x: Promise<unknown>) => x.then(() => "ok", (e: unknown) => (e instanceof Error ? e.message : String(e)));

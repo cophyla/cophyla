@@ -80,6 +80,24 @@ describe("replication to a backup", () => {
     expect(loaded.threads.map((t: Thread) => t.id)).toEqual(primary.d.chat.load({}).threads.map((t: Thread) => t.id));
   }, 30_000);
 
+  test("a workspace node's workspace never reaches a backup, in the snapshot or live", async () => {
+    primary = await startPrimary();
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    primary.d.store.privateNodes = () => [GUEST];
+    const lent = (n: number) => ({ id: `ws_01ARZ3NDEKTSV4RRFFQ69G5FC${n}`, node: GUEST, path: `/lent-canary-${n}`, name: `lent canary ${n}`, origin: "discovered" as const, tags: [], lastActivity: 1 });
+    primary.d.store.workspaces.upsert(lent(1));
+    backup = await startSecondary(primary, { backup: true });
+    await linked(backup);
+    await waitFor(() => backup!.nodes.replicaState?.snapshots === 1, 10_000);
+    const before = backup.nodes.replicaState!.position.seq;
+    primary.d.store.workspaces.upsert(lent(2));
+    // a write after it, of the primary's own, arrives; the workspace node's never does
+    primary.d.store.kv.put("wake", "after", { a: 1 });
+    await waitFor(() => backup!.store.kv.get("wake", "after") !== undefined, 10_000);
+    expect(backup.nodes.replicaState!.position.seq).toBe(before + 1);
+    expect(JSON.stringify(backup.store.workspaces.list())).not.toContain("canary");
+  }, 30_000);
+
   test("editable files replicate and hooks stay inactive on the backup; the backup's client hears nothing of the primary's work", async () => {
     primary = await startPrimary({ brain: { script: { on: [{ event: "user.message", requests: [{ method: "ui.say", params: { blocks: [{ type: "text", text: "noted" }] } }, { method: "task.create", params: { title: "t", trigger: { kind: "at", at: 1 } } }] }] } } });
     await waitFor(() => primary!.d.brain?.state === "up");

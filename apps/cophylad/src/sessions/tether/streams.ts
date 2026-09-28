@@ -17,6 +17,10 @@
 // through a connection of its own to the host holding a sizing subscription, so the host's
 // own rule applies: whoever typed or resized last, a window or this client, has the size, and
 // when the client goes, the window has it back.
+//
+// A terminal started in a folder lent to a workspace node is that node's, decided when it is
+// first seen: the machine's clients neither list it nor open it, start one there, nor hear
+// its row.
 
 import { homedir } from "node:os";
 import { RpcError } from "@cophyla/protocol";
@@ -68,6 +72,8 @@ export interface TerminalRowsDeps {
   onAgents?: (fn: (ref: TerminalRef) => void) => () => void;
   /** The agent CLI running in a terminal. */
   cliOf?: (ref: TerminalRef) => HarnessKind | undefined;
+  /** Which workspace node owns a folder; absent, every terminal is the machine's. */
+  owners?: { ownerOf(path: string): string | undefined; isPrivate(node: string): boolean };
   log: Logger;
   rowMs?: number;
 }
@@ -79,12 +85,15 @@ export class TerminalRows {
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   /** The terminal each live session was last seen in. */
   private links = new Map<string, string>();
+  /** The workspace node each terminal started in a lent folder is, decided when it is first seen. */
+  private owners = new Map<string, string | undefined>();
   private offs: (() => void)[] = [];
 
   constructor(deps: TerminalRowsDeps) {
     this.deps = deps;
     this.offs.push(deps.tether.onChange((c) => this.onChange(c)));
-    this.offs.push(deps.bus.on("session.state", (s) => this.onSession(s)));
+    // a session in a terminal of any partition moves that terminal's row
+    this.offs.push(deps.bus.onAll("session.state", (s) => this.onSession(s)));
     if (deps.onAgents) this.offs.push(deps.onAgents((ref) => this.schedule(keyOf(ref))));
   }
 
@@ -94,15 +103,36 @@ export class TerminalRows {
     this.timers.clear();
   }
 
+  /** The machine's terminals. */
   list(): Terminal[] {
-    return this.deps.tether.list().map((e) => this.row(e));
+    return this.deps.tether
+      .list()
+      .filter((e) => this.visible(e))
+      .map((e) => this.row(e));
   }
 
-  /** Its CLI counts only while no session stands for it and it shows no agents screen. */
+  /** The workspace node a terminal is, when it started in a lent folder; undefined for the machine's. */
+  private ownerOf(entry: TerminalEntry): string | undefined {
+    const key = keyOf(entry.ref);
+    if (this.owners.has(key)) return this.owners.get(key);
+    const owner = this.deps.owners?.ownerOf(entry.info.cwd);
+    this.owners.set(key, owner);
+    return owner;
+  }
+
+  /** Whether a terminal is the machine's, which its clients may see and open. */
+  visible(entry: TerminalEntry): boolean {
+    return this.ownerOf(entry) === undefined;
+  }
+
+  /** Its CLI counts only while no session stands for it and it shows no agents screen; a session of another partition is not named. */
   row(entry: TerminalEntry): Terminal {
-    const session = this.deps.sessionOf(entry.ref)?.id;
+    const owner = this.ownerOf(entry);
+    const s = this.deps.sessionOf(entry.ref);
+    const same = s !== undefined && (owner === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) : s.node === owner);
+    const session = same ? s.id : undefined;
     const agents = this.deps.agentsOf?.(entry.ref);
-    return this.deps.tether.toTerminal(entry, session, agents, session || agents ? undefined : this.deps.cliOf?.(entry.ref));
+    return this.deps.tether.toTerminal(entry, session, agents, session || agents ? undefined : this.deps.cliOf?.(entry.ref), owner);
   }
 
   /**
@@ -120,6 +150,8 @@ export class TerminalRows {
       cwd = ws.path;
       workspace = ws.id;
     }
+    // A lent folder is the other cluster's: a terminal started there would be theirs.
+    if (this.deps.owners?.ownerOf(cwd ?? homedir()) !== undefined) throw new RpcError("conflict", `${cwd ?? homedir()} is lent to a workspace node`);
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(this.deps.env)) if (v !== undefined) env[k] = v;
     const argv = p.argv ?? shellOf(env);
@@ -144,7 +176,8 @@ export class TerminalRows {
     clearTimeout(this.timers.get(key));
     this.timers.delete(key);
     this.told.delete(key);
-    const row = this.deps.tether.toTerminal(c.entry);
+    const row = this.deps.tether.toTerminal(c.entry, undefined, undefined, undefined, this.ownerOf(c.entry));
+    this.owners.delete(key);
     this.deps.bus.emit("terminal.state", { ...row, status: "exited" });
   }
 
@@ -219,7 +252,7 @@ interface Feed {
 export interface TerminalStreamsDeps {
   tether: Tether;
   registry: Pick<ClientRegistry, "get" | "send">;
-  rows: Pick<TerminalRows, "row">;
+  rows: Pick<TerminalRows, "row" | "visible">;
   log: Logger;
 }
 
@@ -244,7 +277,7 @@ export class TerminalStreams {
   /** Opens a terminal for a client, replacing the view it had of it. */
   async open(client: string, id: string, opts: { input?: boolean; drive?: TerminalSize }): Promise<ClientResult<"terminal.open">> {
     const entry = this.deps.tether.byId(id);
-    if (!entry) throw new RpcError("not_found", `no terminal ${id}`);
+    if (!entry || !this.deps.rows.visible(entry)) throw new RpcError("not_found", `no terminal ${id}`);
     await this.close(client, id);
     const feed = this.feed(entry.ref);
     const v: Viewer = { client, feed, input: opts.input === true || opts.drive !== undefined, decoder: new TextDecoder(), at: 0, cols: 0, rows: 0, held: [], text: [], bytes: 0, live: false, closed: false };
@@ -271,7 +304,7 @@ export class TerminalStreams {
     if (v) this.dropViewer(v);
     if (!end) return;
     const entry = this.deps.tether.byId(id);
-    if (!entry) throw new RpcError("not_found", `no terminal ${id}`);
+    if (!entry || !this.deps.rows.visible(entry)) throw new RpcError("not_found", `no terminal ${id}`);
     await this.deps.tether.kill(entry.ref);
   }
 

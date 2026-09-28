@@ -619,9 +619,11 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
       if (controller) deps.auth.grants!.touch(controller.id, now);
       if (p.forward) ws.data.forward = true;
-      // Linked to a primary: the primary answers this hello and serves the client from here on.
+      // Linked to a primary: the primary answers this hello and serves the client from here on,
+      // unless it is a terminal command of this machine asking to be served here.
       const relay = deps.nodes?.relay;
-      if (relay?.linked()) {
+      const local = p.local === true && listener === "loopback";
+      if (relay?.linked() && !local) {
         const peer = ws.data.provisional;
         const port = portOf(ws);
         const info: HelloInfo = { kind: p.kind, audio: p.audio, ...(p.name !== undefined ? { name: p.name } : {}), ...(client.node !== undefined ? { node: client.node } : {}) };

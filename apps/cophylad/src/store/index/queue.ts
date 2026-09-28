@@ -21,6 +21,8 @@ export interface EmbedQueueDeps {
   batch: number;
   /** Characters of a chunk the model reads. */
   maxChars: number;
+  /** The nodes whose sessions' chunks are never embedded: a workspace node's, when the embedder is the account's. */
+  skipNodes?: () => readonly string[];
 }
 
 export const BACKFILL_PENDING = 100;
@@ -49,11 +51,23 @@ export class EmbedQueue {
     });
   }
 
+  /** The chunks left out, as SQL over `c` and its session `s`, and its params. */
+  private skipped(): { join: string; where: string; params: Record<string, string> } {
+    const nodes = this.deps.skipNodes?.() ?? [];
+    if (nodes.length === 0) return { join: "", where: "", params: {} };
+    return {
+      join: " LEFT JOIN harness_sessions s ON c.session = s.id",
+      where: ` AND (c.corpus != 'session' OR s.node NOT IN (${nodes.map((_, i) => `$skip${i}`).join(", ")}))`,
+      params: Object.fromEntries(nodes.map((n, i) => [`skip${i}`, n])),
+    };
+  }
+
   /** Chunks still waiting for a vector. */
   pending(): number {
+    const skip = this.skipped();
     const row = this.deps.db
-      .query("SELECT COUNT(*) AS n FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk = c.id AND v.model = $model WHERE c.prose = 1 AND v.chunk IS NULL")
-      .get({ model: this.deps.embedder.model }) as { n: number };
+      .query(`SELECT COUNT(*) AS n FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk = c.id AND v.model = $model${skip.join} WHERE c.prose = 1 AND v.chunk IS NULL${skip.where}`)
+      .get({ model: this.deps.embedder.model, ...skip.params }) as { n: number };
     return row.n;
   }
 
@@ -90,12 +104,13 @@ export class EmbedQueue {
     const insert = db.query("INSERT OR REPLACE INTO chunk_vectors (chunk, model, dim, scale, q) VALUES ($chunk, $model, $dim, $scale, $q)");
     while (!this.stopped) {
       this.kicked = false;
+      const skip = this.skipped();
       const rows = db
         .query(
-          `SELECT c.id AS id, c.text AS text FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk = c.id AND v.model = $model
-           WHERE c.prose = 1 AND v.chunk IS NULL ORDER BY c.id DESC LIMIT $limit`,
+          `SELECT c.id AS id, c.text AS text FROM chunks c LEFT JOIN chunk_vectors v ON v.chunk = c.id AND v.model = $model${skip.join}
+           WHERE c.prose = 1 AND v.chunk IS NULL${skip.where} ORDER BY c.id DESC LIMIT $limit`,
         )
-        .all({ model: embedder.model, limit: batch }) as { id: number; text: string }[];
+        .all({ model: embedder.model, limit: batch, ...skip.params }) as { id: number; text: string }[];
       if (rows.length === 0) return;
       let vecs: Float32Array[];
       try {

@@ -895,7 +895,7 @@ export class MuseAdapter implements HarnessAdapter {
     o.pending = undefined;
     const now = this.host.now();
     const asks = this.opts.asks;
-    if (asks && asks.get(pending.ask.id)?.status === "open") asks.cancel(pending.ask.id);
+    if (asks && asks.getAny(pending.ask.id)?.status === "open") asks.cancel(pending.ask.id);
     if (tell) {
       if (pending.kind === "approval") {
         const reject = pending.choices.find((c) => c.decision === "abort") ?? pending.choices.find((c) => c.decision === "denied");

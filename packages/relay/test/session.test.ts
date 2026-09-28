@@ -131,6 +131,27 @@ describe("peer session", () => {
     node.reply = (t) => `echo:${t}`;
   });
 
+  test("what was sent just before a close leaves before the socket closes, and nothing after it is taken", async () => {
+    node.reply = () => undefined;
+    node.received.length = 0;
+    const closes: number[] = [];
+    const s = new PeerSession({ url: origin(), token: "rly_good", peer: PEER, psk: pskFromHex(PSK_HEX) }, { onClose: (c) => closes.push(c) });
+    await s.connect();
+    // a node leaving says so, then closes at once
+    for (let i = 0; i < 5; i++) s.send(`frame ${i}`);
+    s.send("node.leave");
+    s.close(1000, "left");
+    expect(s.open).toBe(false);
+    s.send("too late");
+    await Bun.sleep(150);
+    expect(node.received).toEqual(["frame 0", "frame 1", "frame 2", "frame 3", "frame 4", "node.leave"]);
+    expect(closes).toEqual([1000]);
+    s.close();
+    expect(closes).toEqual([1000]);
+    node.received.length = 0;
+    node.reply = (t) => `echo:${t}`;
+  });
+
   test("a record the session cannot open closes it with 4403", async () => {
     node.reply = () => undefined;
     const closed = new Promise<number>((r) => {

@@ -377,6 +377,39 @@ describe("store index: vectors", () => {
     s.close();
   });
 
+  test("a workspace node's sessions: out of the machine's recall on both legs, its own alone for it; a hosted embedder never gets them", async () => {
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    for (const hosted of [false, true]) {
+      const s = open();
+      s.privateNodes = () => [GUEST];
+      const embedder = Object.assign(new FakeEmbedder(), hosted ? { hosted: true } : {});
+      s.threads.insert(thread(THREAD));
+      s.sessions.insert(session(SESSION, { node: GUEST }));
+      s.sessions.insert(session(SESSION2, { node: NODE }));
+      s.messages.insert(message(THREAD, "zebra crossing notes of the machine", 1));
+      s.sessionEvents.append({ session: SESSION, at: 2, kind: "assistant_text", payload: { text: "zebra crossing secret of the guest" } });
+      s.sessionEvents.append({ session: SESSION2, at: 3, kind: "assistant_text", payload: { text: "zebra crossing work of the machine" } });
+      await s.index.start({ embedder, log: silentLogger });
+      await s.index.settled();
+      // the vector leg has what it may: everything with a local model, the machine's alone with a hosted one
+      expect(s.index.vectorCount).toBe(hosted ? 2 : 3);
+      expect(embedder.texts.some((t) => t.includes("guest"))).toBe(!hosted);
+      const machine = await s.index.recall({ query: "zebra crossing" });
+      expect(machine.length).toBe(2);
+      expect(machine.some((h) => h.snippet.includes("guest"))).toBe(false);
+      // a vector-only query, with nothing to match on full text, finds nothing of the guest either
+      const vec = await s.index.recall({ query: "secret guest" });
+      expect(vec.some((h) => h.source.kind === "session" && h.source.session === SESSION)).toBe(false);
+      const calls = embedder.calls;
+      const theirs = await s.index.recall({ query: "zebra crossing" }, { only: GUEST });
+      expect(theirs.map((h) => h.source)).toEqual([{ kind: "session", session: SESSION, seq: [0, 0] }]);
+      // its query goes to no hosted embedder
+      expect(embedder.calls).toBe(hosted ? calls : calls + 1);
+      await s.index.stop();
+      s.close();
+    }
+  });
+
   test("messages.update drops the stale vector until the queue re-embeds it", async () => {
     const s = open();
     const embedder = new FakeEmbedder();

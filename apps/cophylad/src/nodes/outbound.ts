@@ -23,14 +23,13 @@
 import { nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
 import type { Ask, AuditEntry, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
-import type { ClientRegistry, ClientSocket } from "../api/clients.ts";
+import type { ClientSocket } from "../api/clients.ts";
 import type { RelayUplink } from "../api/server.ts";
 import type { BrainMethodTable } from "../brain-link/methods.ts";
 import type { Bus } from "../bus.ts";
 import type { EventStream } from "../events/stream.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
-import type { Metrics } from "../metrics/index.ts";
 import type { Direct } from "../direct/index.ts";
 import type { Remote } from "../remote/index.ts";
 import { LinkDirect } from "./direct.ts";
@@ -118,13 +117,16 @@ export interface OutboundDeps {
   workspaces: () => Workspace[];
   asks: () => Ask[];
   registry: Registry;
-  bus: Bus;
-  events: EventStream;
+  bus: Pick<Bus, "on">;
+  events: Pick<EventStream, "on">;
   gate: Gate;
-  clients: ClientRegistry;
   /** The table served to the primary, built once its id is known. */
   served: (primaryId: string) => BrainMethodTable;
-  metrics?: Metrics;
+  metrics?: ServeDeps["metrics"];
+  /** The metrics subscriber a link's samples are delivered under: `link:<id>` for the machine's own. */
+  metricsSubscriber?: (linkId: string) => string;
+  /** What a row going up looks like: a workspace node's leave out where the machine keeps its terminals and transcripts. */
+  outgoing?: (name: string, params: unknown) => unknown;
   /** The remote module, so the primary's clients can invite to and revoke on this desktop, and its state goes up on link. */
   remote?: Remote;
   /** This node's profiles, which the primary's clients may set. */
@@ -243,7 +245,16 @@ export class Outbound {
 
   /** The metrics subscriber id this link's samples are delivered under. */
   get metricsSubscriber(): string | undefined {
-    return this.linkedInfo ? `link:${this.linkedInfo.linkId}` : undefined;
+    return this.linkedInfo ? this.subscriberFor(this.linkedInfo.linkId) : undefined;
+  }
+
+  private subscriberFor(linkId: string): string {
+    return this.deps.metricsSubscriber?.(linkId) ?? `link:${linkId}`;
+  }
+
+  /** A row as it goes up. */
+  private out(name: string, params: unknown): unknown {
+    return this.deps.outgoing ? this.deps.outgoing(name, params) : params;
   }
 
   // --- the handshake ---------------------------------------------------------------------------
@@ -363,7 +374,7 @@ export class Outbound {
         log: this.log,
         onPending: (id, ask) => void peer.notify("pending", { id, ask, at: this.now() }),
         ...(this.deps.metrics ? { metrics: this.deps.metrics } : {}),
-        metricsSubscriber: `link:${j.linkId}`,
+        metricsSubscriber: this.subscriberFor(j.linkId),
         ...(this.deps.remote ? { remote: this.deps.remote } : {}),
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
@@ -426,7 +437,7 @@ export class Outbound {
     this.linkDirect?.stop();
     this.linkDirect = undefined;
     if (info) this.deps.streams?.gone(info.primary);
-    if (info && this.deps.metrics) this.deps.metrics.unsubscribe(`link:${info.linkId}`);
+    if (info && this.deps.metrics) this.deps.metrics.unsubscribe(this.subscriberFor(info.linkId));
     for (const [peerId, port] of [...this.relayed]) {
       this.relayed.delete(peerId);
       port.close(4409, "link to the primary lost");
@@ -462,8 +473,9 @@ export class Outbound {
     const workspaces = this.deps.workspaces();
     const asks = this.deps.asks();
     const c = this.confined();
-    if (!c) return { sessions, workspaces, asks };
-    return { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)) };
+    const shown = c ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)) } : { sessions, workspaces, asks };
+    if (!this.deps.outgoing) return shown;
+    return { sessions: shown.sessions.map((s) => this.out("session.state", s) as Session), workspaces: shown.workspaces.map((w) => this.out("workspace.state", w) as Workspace), asks: shown.asks.map((a) => this.out("ask.state", a) as Ask) };
   }
 
   /** Whether a row goes up: this node's own, and, on a confined node, about what is inside. */
@@ -521,13 +533,13 @@ export class Outbound {
     for (const name of UPWARD_NOTIFICATIONS) {
       this.unsubscribe.push(
         this.deps.bus.on(name, (params) => {
-          if (this.sendsUp(name, params)) void peer.notify(name, params);
+          if (this.sendsUp(name, params)) void peer.notify(name, this.out(name, params));
         }),
       );
     }
     this.unsubscribe.push(
       this.deps.events.on((e) => {
-        if (UPWARD_EVENTS.has(e.name) && this.eventGoesUp(e.name, e.params)) peer.notify(e.name, e.params);
+        if (UPWARD_EVENTS.has(e.name) && this.eventGoesUp(e.name, e.params)) peer.notify(e.name, this.out(e.name, e.params));
       }),
     );
   }

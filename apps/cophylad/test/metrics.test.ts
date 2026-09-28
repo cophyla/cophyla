@@ -38,7 +38,7 @@ interface Rig {
   dispose(): void;
 }
 
-function rig(toml = "", opts: { sessions?: Session[]; limits?: MetricsDeps["limits"] } = {}): Rig {
+function rig(toml = "", opts: { sessions?: Session[]; limits?: MetricsDeps["limits"]; pids?: Map<number, string>; partitions?: MetricsDeps["partitions"] } = {}): Rig {
   const config = parseConfig(toml).metrics;
   const store = new Store(":memory:");
   store.migrate();
@@ -58,7 +58,8 @@ function rig(toml = "", opts: { sessions?: Session[]; limits?: MetricsDeps["limi
     bus,
     log: silentLogger,
     engine,
-    sessions: { pids: () => new Map([[30, SESSION]]), list: () => opts.sessions ?? [] },
+    sessions: { pids: () => opts.pids ?? new Map([[30, SESSION]]), list: () => opts.sessions ?? [] },
+    ...(opts.partitions ? { partitions: opts.partitions } : {}),
     brainPid: () => 21,
     sidecarPids: () => new Map([[22, "tts-py"]]),
     deliver: (client, sample) => {
@@ -343,6 +344,54 @@ describe("metrics module", () => {
     r.metrics.unsubscribe("cli_a");
     await r.step();
     expect(refreshes).toBe(2);
+    r.dispose();
+  });
+
+  test("a workspace node's sessions are `other` to the machine's audience; its own link gets its sessions, the machine's totals, and nothing of the owner's", async () => {
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    const THEIRS = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC3";
+    const nodes: Record<string, string> = { [SESSION]: NODE, [THEIRS]: GUEST };
+    let readings: Record<string, ProfileLimits> | undefined = { [PROFILE]: { at: T0, session: { percent: 4 } } };
+    let refreshes = 0;
+    const r = rig("", {
+      pids: new Map([
+        [30, SESSION],
+        [50, THEIRS],
+      ]),
+      partitions: { sessionNode: (id) => nodes[id], isPrivate: (n) => n === GUEST },
+      limits: { latest: () => readings, refresh: async () => void refreshes++ },
+    });
+    await r.step();
+    r.metrics.countLlm("gemini/x", { in: 5, out: 1 });
+    r.metrics.subscribe(`guest:${GUEST}:link-1`, 1000, "owners");
+    // a workspace node's link reads no plan limits
+    expect(refreshes).toBe(0);
+    r.metrics.subscribe("cli_a", 1000, "owners");
+    const machine = (await r.step())!;
+    const owners = (s: MetricsSample) => s.processes.map((p) => (p.owner.kind === "session" ? p.owner.session : p.owner.kind));
+    // the machine's own: its session, and the workspace node's as part of `other`
+    expect(owners(machine)).toContain(SESSION);
+    expect(JSON.stringify(machine)).not.toContain(THEIRS);
+    expect(JSON.stringify(r.metrics.history(NODE))).not.toContain(THEIRS);
+    expect(JSON.stringify(r.delivered.get("cli_a"))).not.toContain(THEIRS);
+    // the workspace node's: its id, its session, the rest as `other`, the machine's totals, no counts, spend or limits
+    const theirs = r.delivered.get(`guest:${GUEST}:link-1`)!.at(-1)!;
+    expect(theirs.node).toBe(GUEST);
+    expect(owners(theirs).sort()).toEqual([THEIRS, "other"].sort());
+    expect(theirs.cpu).toBe(machine.cpu);
+    expect(theirs.memory).toEqual(machine.memory);
+    expect(theirs.llm).toEqual({});
+    expect(theirs.profiles).toBeUndefined();
+    expect(theirs.limits).toBeUndefined();
+    expect(JSON.stringify(theirs)).not.toContain(SESSION);
+    expect(MetricsSampleSchema.safeParse(theirs).success).toBe(true);
+    // the whole is conserved: what the workspace node's `other` holds is everything but its own
+    const cpuOf = (s: MetricsSample) => s.processes.reduce((n, p) => n + p.cpu, 0);
+    expect(Math.round(cpuOf(theirs) * 10)).toBe(Math.round(cpuOf(machine) * 10));
+    expect(r.metrics.guestLatest(GUEST)[0]!.node).toBe(GUEST);
+    // no spend for it either
+    expect(r.metrics.subscribe(`guest:${GUEST}:link-1`, 1000, "owners", { from: 0 })).toBeUndefined();
+    readings = undefined;
     r.dispose();
   });
 

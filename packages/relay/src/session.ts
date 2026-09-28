@@ -71,6 +71,10 @@ export class PeerSession {
   /** Frames handed to `send` and not yet sealed, and the size of the last one on the wire, for `buffered`. */
   private sealing = 0;
   private lastFrame = 0;
+  /** The frames handed to `send`, each sealed and on the wire (or dropped) in turn: a close waits for them. */
+  private outbound: Promise<void> = Promise.resolve();
+  /** A close was asked for: nothing more is taken, and the socket closes once what is being sealed has left. */
+  private closing = false;
   /** The records arriving, opened in order; a close from the server is applied after the last of them. */
   private inbound: Promise<void> = Promise.resolve();
   /** The node at the far end, once open. */
@@ -88,7 +92,7 @@ export class PeerSession {
   }
 
   get open(): boolean {
-    return this.tunnel !== undefined && !this.closed;
+    return this.tunnel !== undefined && !this.closed && !this.closing;
   }
 
   /** Bytes waiting to leave: what the socket has not sent, and the frames still being sealed at about the last one's size. */
@@ -200,10 +204,10 @@ export class PeerSession {
   /** Seals one frame of the inner protocol and sends it; the order of calls is the order on the wire. */
   send(text: string): void {
     const t = this.tunnel;
-    if (!t || this.closed || !this.node) return;
+    if (!t || this.closed || this.closing || !this.node) return;
     const peer = this.node;
     this.sealing++;
-    void t
+    const sent = t
       .seal(text)
       .then((frame) => {
         this.sealing--;
@@ -216,6 +220,7 @@ export class PeerSession {
         this.sealing--;
         this.close(1000, e instanceof TunnelError ? e.message : "seal failed");
       });
+    this.outbound = this.outbound.then(() => sent);
   }
 
   private onClosed(code: number, reason: string): void {
@@ -226,16 +231,25 @@ export class PeerSession {
     this.events.onClose?.(code, reason);
   }
 
+  /**
+   * Closes once the frames already handed to `send` have left, as a sealed LAN socket does: a
+   * node's `node.leave` said just before its close reaches the far end. Nothing more is taken
+   * meanwhile; the owner hears the close once.
+   */
   close(code = 1000, reason = "closed"): void {
-    const ws = this.ws;
-    const wasOpen = !this.closed;
-    this.onClosed(code, reason);
-    if (ws && wasOpen) {
-      try {
-        ws.close(code >= 3000 && code < 5000 ? code : 1000, reason.slice(0, 120));
-      } catch {
-        // already gone
+    if (this.closed || this.closing) return;
+    this.closing = true;
+    void this.outbound.then(() => {
+      const ws = this.ws;
+      const wasOpen = !this.closed;
+      this.onClosed(code, reason);
+      if (ws && wasOpen) {
+        try {
+          ws.close(code >= 3000 && code < 5000 ? code : 1000, reason.slice(0, 120));
+        } catch {
+          // already gone
+        }
       }
-    }
+    });
   }
 }

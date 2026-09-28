@@ -17,7 +17,7 @@ import type { Logger } from "../src/log.ts";
 import { UnsupportedRaiser } from "../src/sessions/focus.ts";
 import type { WindowRaiser } from "../src/sessions/focus.ts";
 import { Sessions } from "../src/sessions/index.ts";
-import type { SessionsDeps } from "../src/sessions/index.ts";
+import type { SessionOwners, SessionsDeps } from "../src/sessions/index.ts";
 import type { HarnessAdapter, SessionHost } from "../src/sessions/model.ts";
 import { Profiles } from "../src/sessions/profiles.ts";
 import { Store } from "../src/store/index.ts";
@@ -45,7 +45,7 @@ export interface Mini {
 export async function miniSessions(
   configToml: string,
   adapters: (host: SessionHost, log: Logger, asks: Asks) => HarnessAdapter[],
-  opts: { raiser?: WindowRaiser; port?: number; log?: Logger; acp?: (config: Config) => { config: Config["acp"]; env: Record<string, string | undefined> }; deps?: Partial<SessionsDeps>; storePath?: string } = {},
+  opts: { raiser?: WindowRaiser; port?: number; log?: Logger; acp?: (config: Config) => { config: Config["acp"]; env: Record<string, string | undefined> }; deps?: Partial<SessionsDeps>; storePath?: string; owners?: SessionOwners } = {},
 ): Promise<Mini> {
   const home = tempHome(configToml);
   const p = paths(home);
@@ -58,9 +58,10 @@ export async function miniSessions(
   store.migrate();
   const nodeId = newId("node");
   const bus = new Bus();
-  const asks = new Asks(store, nodeId, bus);
+  const owners = opts.owners;
+  const asks = new Asks(store, nodeId, bus, owners ? { isPrivate: (n) => owners.isPrivate(n) } : {});
   const profiles = new Profiles({ store, nodeId, config, log });
-  const workspaces = new Workspaces({ store, nodeId, bus });
+  const workspaces = new Workspaces({ store, nodeId, bus, ...(owners ? { owners } : {}) });
   const sessions = new Sessions({
     store,
     bus,
@@ -75,8 +76,13 @@ export async function miniSessions(
     hookToken: "hook-token",
     dataDir: p.data,
     ...(opts.acp ? { acp: opts.acp(config) } : {}),
+    ...(owners ? { owners } : {}),
     ...opts.deps,
   });
+  if (owners) {
+    bus.partitions = { isPrivate: (n) => owners.isPrivate(n), sessionNode: (id) => sessions.getAny(id)?.node };
+    asks.sessionNode = (id) => sessions.getAny(id)?.node;
+  }
   await sessions.start({ port: opts.port ?? 0 });
   return {
     home,

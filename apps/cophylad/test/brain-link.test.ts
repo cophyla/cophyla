@@ -14,6 +14,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { newId } from "@cophyla/protocol";
 import type { AuditEntry, Hit, Message, Task, TurnProgress } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
@@ -337,6 +338,11 @@ describe("brain-link", () => {
             { method: "ui.say", params: { blocks: [{ type: "quote", cite: { request: "$prev", lines: [2, 3] } }, { type: "ref", file: { node, path: "C:\\notes.md", line: 2 } }] } },
           ],
         },
+        {
+          event: "user.message",
+          match: { text: "cite" },
+          requests: [{ method: "ui.say", params: { blocks: [{ type: "quote", cite: { request: "$text[1]", lines: [2, 3] }, text: "not mine" }] } }],
+        },
       ],
     }));
     await waitFor(() => d.brain?.state === "up");
@@ -362,6 +368,18 @@ describe("brain-link", () => {
     const read = brainAudit(d).find((e) => e.action === "tool.run")!;
     expect(read.target).toBe("fs.read");
     expect((read.result!.body as { result: { text: string } }).result.text).toContain("2\tline two");
+
+    // The same read in another node's row of the table (a workspace node's, say) is not the brain's to quote.
+    const replied = (ms: TestClient["notifications"][number][]) => (p: unknown) => (p as { message: Message }).message.role === "orchestrator" && !ms.some((r) => (r.params as { message: Message }).message.id === (p as { message: Message }).message.id);
+    const foreign: AuditEntry = { ...read, id: newId("audit"), node: newId("node") };
+    d.store.audit.insert(foreign);
+    await c.request("chat.send", { text: `cite ${foreign.id}` });
+    const reply3 = await c.next(isMethod("chat.message", replied([reply, reply2])));
+    expect((reply3.params as { message: Message }).message.content).toEqual([{ type: "quote", text: "not mine", unresolved: true }]);
+    // this node's own row, cited by its id, resolves
+    await c.request("chat.send", { text: `cite ${read.id}` });
+    const reply4 = await c.next(isMethod("chat.message", replied([reply, reply2, reply3])));
+    expect((reply4.params as { message: Message }).message.content[0]).toMatchObject({ type: "quote", text: ["line two", "line three"].join("\n") });
   });
 
   test("llm.complete deltas become chat.delta on a provisional id that the ui.say then stores under", async () => {

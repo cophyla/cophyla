@@ -153,6 +153,11 @@ export class Chunks {
     this.deleteWhere("corpus = $corpus", { corpus });
   }
 
+  /** Every chunk of one session's events: a workspace node's, purged. */
+  deleteSession(session: string): void {
+    this.deleteWhere("session = $session", { session });
+  }
+
   deleteMemory(name: string): void {
     this.deleteWhere("memory = $memory", { memory: name });
   }

@@ -441,11 +441,12 @@ export class Tether {
    * A terminal as the client protocol carries it, with the session running in it when there is
    * one, the harness whose agents screen it shows, or the harness whose CLI runs in it.
    */
-  toTerminal(entry: TerminalEntry, session?: string, agents?: HarnessKind, harness?: HarnessKind): Terminal {
+  /** A terminal's row: on this node, or on the workspace node whose folder it started in. */
+  toTerminal(entry: TerminalEntry, session?: string, agents?: HarnessKind, harness?: HarnessKind, node?: string): Terminal {
     const i = entry.info;
     return {
       id: entry.ref.id,
-      node: this.opts.nodeId,
+      node: node ?? this.opts.nodeId,
       host: entry.ref.host,
       ...(i.name ? { name: i.name } : {}),
       argv0: basename(i.argv[0] ?? ""),

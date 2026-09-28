@@ -8,6 +8,10 @@
 // limits), and sums a range's spend per profile for a client that shows it. The timer is an unref'd `setTimeout` chain, never an interval: a tick
 // that runs long delays the next rather than piling up, and a sampler alone never keeps the
 // process alive. `tick` is public so the tests drive it without a clock.
+//
+// A workspace node's sessions are owned like any others, then kept apart (`guest.ts`): the
+// machine's samples, its ring, rollups and subscribers, have their processes as `other`; a
+// workspace node's link, subscribed as `guest:<node>:<link>`, gets a sample of its own.
 
 import { RpcError } from "@cophyla/protocol";
 import type { MetricsSample, ProfileLimits, Session, SpendTotals } from "@cophyla/protocol";
@@ -18,6 +22,7 @@ import type { Store } from "../store/index.ts";
 import { addProfiles, SampleFeed, slackFor } from "./delivery.ts";
 import type { ProcessDetail } from "./delivery.ts";
 import type { MetricsEngine, RawSample } from "./engine.ts";
+import { foldSessions, guestOfSubscriber, guestSample } from "./guest.ts";
 import { PressureTracker, readings } from "./pressure.ts";
 import type { Level, Resource } from "./pressure.ts";
 import { mergeHistory, MINUTE_MS, minuteOf, rollup } from "./rollup.ts";
@@ -32,7 +37,10 @@ export interface MetricsDeps {
   bus: Bus;
   log: Logger;
   engine: MetricsEngine;
+  /** Every live session's root pid, of every partition, and the machine's sessions. */
   sessions: { pids(): Map<number, string>; list(): Session[] };
+  /** A session's node, and whether a node is a workspace node's: whose processes the machine's audience does not see. */
+  partitions?: { sessionNode(id: string): string | undefined; isPrivate(node: string): boolean };
   brainPid: () => number | undefined;
   sidecarPids: () => Map<number, string>;
   /** Delivers one sample to one subscriber; false when the subscriber is gone. */
@@ -79,6 +87,8 @@ export class Metrics {
   private open: MetricsSample[] = [];
   private openMinute?: number;
   private latestSample?: MetricsSample;
+  /** The latest sample before the workspace nodes' processes were folded: what their own are cut from. */
+  private latestWhole?: MetricsSample;
   private subscribers = new Map<string, SampleFeed>();
   /** In-process watchers of this node's samples (the brain's metric listeners): not clients, so no plan limits are read for them. */
   private internal = new Map<string, { feed: SampleFeed; on: (sample: MetricsSample) => void }>();
@@ -177,10 +187,13 @@ export class Metrics {
     };
     // The counters are drained only into a sample: what was counted before the priming reading belongs to no sample.
     const primed = this.sampler.primed;
-    const sample = this.sampler.build(raw, roots, primed ? this.llm.drain() : {}, primed ? this.profileSpend.drain() : undefined);
-    if (!sample) return;
+    const whole = this.sampler.build(raw, roots, primed ? this.llm.drain() : {}, primed ? this.profileSpend.drain() : undefined);
+    if (!whole) return;
+    this.latestWhole = whole;
+    // the machine's audience: the workspace nodes' sessions are `other` to it, before the ring, the rollups and the feeds
+    const sample = this.forMachine(whole);
     // The limits are read only while someone looks at them; each sample carries the latest.
-    if (this.subscribers.size > 0) this.refreshLimits();
+    if ([...this.subscribers.keys()].some((c) => guestOfSubscriber(c) === undefined)) this.refreshLimits();
     const limits = this.deps.limits?.latest();
     if (limits) sample.limits = limits;
     this.latestSample = sample;
@@ -193,7 +206,8 @@ export class Metrics {
     this.watch(sample);
     const slack = slackFor(this.intervalMs());
     for (const [client, feed] of [...this.subscribers]) {
-      const due = feed.offer(sample, slack);
+      const guest = guestOfSubscriber(client);
+      const due = feed.offer(guest !== undefined ? this.forGuest(whole, guest) : sample, slack);
       if (due && !this.deps.deliver(client, due)) this.subscribers.delete(client);
     }
     for (const [id, w] of [...this.internal]) {
@@ -205,6 +219,27 @@ export class Metrics {
         this.log.warn("sample watcher failed", { id, error: e instanceof Error ? e.message : String(e) });
       }
     }
+  }
+
+  /** A sample as the machine's own audience sees it: every workspace node's sessions folded into `other`. */
+  private forMachine(whole: MetricsSample): MetricsSample {
+    const parts = this.deps.partitions;
+    if (!parts) return whole;
+    return foldSessions(whole, (session) => {
+      const node = parts.sessionNode(session);
+      return node !== undefined && parts.isPrivate(node);
+    });
+  }
+
+  /** A sample as one workspace node's link sees it. */
+  private forGuest(whole: MetricsSample, node: string): MetricsSample {
+    return guestSample(whole, node, (session) => this.deps.partitions?.sessionNode(session) === node);
+  }
+
+  /** A workspace node's latest sample, for its primary's queries: nothing of the machine's own counts, and no history. */
+  guestLatest(node: string): MetricsSample[] {
+    if (!this.enabled) throw new RpcError("unsupported", "metrics are off on this node");
+    return this.latestWhole ? [this.forGuest(this.latestWhole, node)] : [];
   }
 
   /** Writes the open minute's rollup and prunes now and then. */
@@ -245,7 +280,9 @@ export class Metrics {
   subscribe(client: string, intervalMs: number, processes: ProcessDetail = "all", spend?: TimeRange): SpendTotals | undefined {
     if (!this.enabled) throw new RpcError("unsupported", "metrics are off on this node");
     const floored = Math.max(intervalMs, this.deps.config.min_interval_ms);
-    const latest = this.latestSample;
+    const guest = guestOfSubscriber(client);
+    // a workspace node's link: its own samples, no spend, and no plan limits read for it
+    const latest = guest !== undefined ? (this.latestWhole ? this.forGuest(this.latestWhole, guest) : undefined) : this.latestSample;
     let feed = this.subscribers.get(client);
     if (feed) {
       feed.intervalMs = floored;
@@ -255,8 +292,9 @@ export class Metrics {
       this.subscribers.set(client, feed);
     }
     if (latest && !this.deps.deliver(client, feed.now(latest))) this.subscribers.delete(client);
-    this.refreshLimits();
     this.arm();
+    if (guest !== undefined) return undefined;
+    this.refreshLimits();
     return spend ? this.spend(this.deps.nodeId, spend) : undefined;
   }
 

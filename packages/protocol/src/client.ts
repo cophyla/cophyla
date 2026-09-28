@@ -19,6 +19,7 @@ import {
   Grant,
   GrantKind,
   GrantRole,
+  GuestInfo,
   HarnessProfile,
   LaunchMode,
   IceServer,
@@ -308,6 +309,11 @@ export const clientRequests = {
        * loopback one): `remote.open` answers it a path to fetch through it, not a URL.
        */
       forward: z.boolean().optional(),
+      /**
+       * On the loopback listener, a terminal command of this machine: served by this node even
+       * while it is a node of a cluster, never relayed to the primary.
+       */
+      local: z.boolean().optional(),
     }),
     result: z.object({
       client: Client,
@@ -550,6 +556,24 @@ export const clientRequests = {
   },
   /** This node leaves the primary it joined: the link closes and the grant is forgotten here. */
   "node.leave": { params: Empty, result: Empty },
+  /**
+   * Lends a folder of this machine to another person's cluster, as a workspace node that
+   * redeems `invite` (a hands invite that cluster's primary minted). Without `invite` the
+   * folder is only checked, and the name it would go by answered. On this machine's loopback
+   * listener alone; the invite is kept in no audit row.
+   */
+  "guest.add": {
+    params: z.object({ folder: z.string().min(1).max(4096), name: z.string().min(1).max(64).optional(), profile: ProfileId.optional(), invite: z.string().min(1).optional() }),
+    result: z.object({ folder: z.string(), name: z.string(), guest: GuestInfo.optional() }),
+  },
+  /** The workspace nodes this machine hosts. */
+  "guest.list": { params: Empty, result: z.object({ guests: z.array(GuestInfo) }) },
+  /** A workspace node in no cluster joins one with a fresh invite; joining another cluster than its last takes away what it held. */
+  "guest.join": { params: z.object({ name: z.string().min(1), invite: z.string().min(1) }), result: z.object({ guest: GuestInfo }) },
+  /** A workspace node leaves its cluster for good; what it holds on the machine stays. */
+  "guest.leave": { params: z.object({ name: z.string().min(1) }), result: z.object({ guest: GuestInfo }) },
+  /** A workspace node is removed: it leaves, what it held goes (its sessions' ids kept as tombstones), its id is retired. */
+  "guest.remove": { params: z.object({ name: z.string().min(1) }), result: Empty },
   /** Hands the primary role to a backup by the user's choice; the current primary steps down and rejoins. */
   "node.promote": { params: z.object({ id: NodeId }), result: Empty },
   /**

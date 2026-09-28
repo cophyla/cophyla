@@ -4,7 +4,7 @@
 
 import type { Database } from "bun:sqlite";
 import { filterSql } from "./filters.ts";
-import type { RecallFilter } from "./filters.ts";
+import type { RecallFilter, RecallScope } from "./filters.ts";
 
 export interface FtsHit {
   id: number;
@@ -31,10 +31,10 @@ export function ftsQuery(text: string): { and: string; or?: string } | undefined
 
 export const SNIPPET_TOKENS = 32;
 
-export function searchFts(db: Database, text: string, filter: RecallFilter, limit: number): FtsHit[] {
+export function searchFts(db: Database, text: string, filter: RecallFilter, limit: number, scope?: RecallScope): FtsHit[] {
   const q = ftsQuery(text);
   if (!q) return [];
-  const f = filterSql(filter);
+  const f = filterSql(filter, scope);
   const where = ["chunks_fts MATCH $match", ...f.where].join(" AND ");
   const sql = `SELECT c.id AS id, bm25(chunks_fts) AS rank, snippet(chunks_fts, 0, '', '', '…', ${SNIPPET_TOKENS}) AS snippet
     FROM chunks_fts JOIN chunks c ON c.id = chunks_fts.rowid

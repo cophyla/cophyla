@@ -83,6 +83,8 @@ import type { LinkTarget } from "./outbound.ts";
 import { Registry } from "./registry.ts";
 import { Replica, Replicator } from "./replication.ts";
 import { RoleMachine } from "./role.ts";
+import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
+import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
 import type { RoleState } from "./role.ts";
 import { openRelayLink } from "./sealed-link.ts";
@@ -157,6 +159,8 @@ export interface NodesDeps {
   signedIn?: () => boolean;
   /** The role taken or given up: what the cloud backup's sender starts and stops on. */
   onRole?: (primary: boolean) => void;
+  /** The workspace nodes here: the machine joins none of their clusters, and takes no invite from a node they know. */
+  guests?: () => { clusters(): string[]; knows(node: string): boolean } | undefined;
   now?: () => number;
 }
 
@@ -195,10 +199,9 @@ export class Nodes {
   private discovery?: DiscoverySocket;
   private beaconTimer?: ReturnType<typeof setTimeout>;
   private queryTimer?: ReturnType<typeof setTimeout>;
-  private seekTimer?: ReturnType<typeof setTimeout>;
   private waitTimer?: ReturnType<typeof setTimeout>;
-  private seeking = false;
-  private backoffMs: number;
+  /** The loop that tries the ways to the primary while this node seeks it. */
+  private seeker: Seeker;
   /** Primaries heard on the network, newest first. */
   private heard: Candidate[] = [];
   /** An endpoint to try first at the next seek: the primary that told us where to go. */
@@ -222,7 +225,6 @@ export class Nodes {
   constructor(deps: NodesDeps) {
     this.deps = deps;
     this.log = deps.log;
-    this.backoffMs = deps.config.nodes.reconnect_ms;
     const epoch = Number(deps.store.meta.get("epoch") ?? "1") || 1;
     const configured: NodeRole = deps.config.node.role;
     const membership = readLinkFile(deps.paths.linkFile);
@@ -318,7 +320,6 @@ export class Nodes {
       bus: deps.bus,
       events: deps.events,
       gate: deps.gate,
-      clients: deps.clients,
       served: deps.served,
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
@@ -337,6 +338,19 @@ export class Nodes {
       onTakeover: (epoch) => this.promoteSelf(epoch, "takeover"),
       onLeave: (reason, primary) => this.onPrimaryLeaving(reason, primary),
       ...(deps.now ? { now: deps.now } : {}),
+    });
+    this.seeker = new Seeker({
+      candidates: () => this.candidates(),
+      connect: (target) => this.outbound.connect(target),
+      active: () => this.role.state === "seeking" && !this.stopped,
+      reconnectMs: deps.config.nodes.reconnect_ms,
+      reconnectMaxMs: deps.config.nodes.reconnect_max_ms,
+      linked: () => {
+        this.preferred = undefined;
+        this.preferRelay = false;
+      },
+      missed: () => this.missed(),
+      log: this.log,
     });
   }
 
@@ -737,7 +751,7 @@ export class Nodes {
         return;
       case "seeking":
         this.aimAt(primary, epoch);
-        if (!this.seeking) this.kickSeek();
+        if (!this.seeker.seeking) this.kickSeek();
         return;
       default:
         return;
@@ -803,8 +817,9 @@ export class Nodes {
   }
 
   private clearTimers(): void {
-    for (const t of [this.beaconTimer, this.queryTimer, this.seekTimer, this.waitTimer]) if (t) clearTimeout(t);
-    this.beaconTimer = this.queryTimer = this.seekTimer = this.waitTimer = undefined;
+    for (const t of [this.beaconTimer, this.queryTimer, this.waitTimer]) if (t) clearTimeout(t);
+    this.beaconTimer = this.queryTimer = this.waitTimer = undefined;
+    this.seeker.clearTimer();
   }
 
   private announce(): void {
@@ -878,7 +893,7 @@ export class Nodes {
       this.log.info("the registry granted the promotion", { epoch, cause });
     }
     this.clearTimers();
-    this.seeking = false;
+    this.seeker.abandon();
     this.role.setEpoch(epoch);
     this.role.go("promoting");
     this.log.warn("promoting to primary", { epoch: this.role.epoch, cause });
@@ -958,24 +973,24 @@ export class Nodes {
 
   /** Runs one round of attempts now, then again after the backoff while still seeking. */
   private kickSeek(): void {
-    if (this.seekTimer) clearTimeout(this.seekTimer);
-    this.seekTimer = undefined;
-    void this.seekOnce();
+    this.seeker.kick();
   }
 
   /** The LAN endpoints to try, in order. */
   private endpointCandidates(): string[] {
-    const out: string[] = [];
-    const push = (e: string | undefined) => {
-      if (e && !out.includes(e)) out.push(e);
+    return endpointCandidates(this.candidateSources());
+  }
+
+  private candidateSources(): CandidateSources {
+    return {
+      ...(this.preferred !== undefined ? { preferred: this.preferred } : {}),
+      ...(this.deps.config.nodes.primary !== undefined ? { configured: this.deps.config.nodes.primary } : {}),
+      membership: this.membership?.endpoints ?? [],
+      heard: this.heard,
+      registryPrimary: this.registry.primary()?.endpoints ?? [],
+      registryBackups: this.registry.backups().map((b) => b.endpoints),
+      self: this.selfEndpoints(),
     };
-    push(this.preferred);
-    push(this.deps.config.nodes.primary);
-    for (const e of this.membership?.endpoints ?? []) push(e);
-    for (const c of [...this.heard].sort((a, b) => b.heardAt - a.heardAt)) push(c.endpoint);
-    for (const e of this.registry.primary()?.endpoints ?? []) push(e);
-    for (const b of this.registry.backups()) for (const e of b.endpoints) push(e);
-    return out.filter((e) => !this.selfEndpoints().includes(e));
   }
 
   /**
@@ -984,54 +999,29 @@ export class Nodes {
    * relay first after a step-down to a node with no endpoint.
    */
   private candidates(): LinkTarget[] {
-    const direct: LinkTarget[] = this.endpointCandidates().map((endpoint) => ({ kind: "direct", endpoint }));
     const m = this.membership;
     const relay = m?.relay;
-    if (!m || !relay || !this.deps.config.nodes.relay) return direct;
-    const target: LinkTarget = {
-      kind: "relay",
-      open: () => openRelayLink({ url: relay.url, token: relay.token, peer: m.grant, psk: pskFromHex(m.key), kind: "node", timeoutMs: this.deps.config.nodes.hello_timeout_ms }),
-    };
-    return this.preferRelay ? [target, ...direct] : [...direct, target];
+    const target: LinkTarget | undefined =
+      m && relay && this.deps.config.nodes.relay
+        ? { kind: "relay", open: () => openRelayLink({ url: relay.url, token: relay.token, peer: m.grant, psk: pskFromHex(m.key), kind: "node", timeoutMs: this.deps.config.nodes.hello_timeout_ms }) }
+        : undefined;
+    return linkCandidates({ ...this.candidateSources(), ...(target ? { relay: target, relayFirst: this.preferRelay } : {}) });
   }
 
-  private async seekOnce(): Promise<void> {
-    if (this.seeking || this.stopped || this.role.state !== "seeking") return;
-    this.seeking = true;
-    try {
-      const tried = new Set<string>();
-      const queue = this.candidates();
-      while (queue.length > 0 && this.role.state === "seeking" && !this.stopped) {
-        const target = queue.shift()!;
-        const key = target.kind === "direct" ? target.endpoint : "relay";
-        if (tried.has(key)) continue;
-        tried.add(key);
-        try {
-          await this.outbound.connect(target);
-          this.preferred = undefined;
-          this.preferRelay = false;
-          this.backoffMs = this.deps.config.nodes.reconnect_ms;
-          return;
-        } catch (e) {
-          const hint = e instanceof RpcError ? (e.error.data as { primary?: string } | undefined)?.primary : undefined;
-          this.log.debug("candidate refused", { endpoint: key, error: e instanceof Error ? e.message : String(e), ...(hint ? { primary: hint } : {}) });
-          if (hint && !tried.has(hint)) queue.unshift({ kind: "direct", endpoint: hint });
-        }
-      }
-    } finally {
-      this.seeking = false;
-    }
-    if (this.role.state !== "seeking" || this.stopped) return;
-    // A backup that found no primary asks the registry at its own epoch: granted only once the holder's lease lapsed.
+  /**
+   * A round found no primary. A backup asks the registry at its own epoch (granted only once
+   * the holder's lease lapsed) and takes the role when granted; the network is asked again.
+   */
+  private async missed(): Promise<boolean> {
     if (this.role.backup && this.arbiterActive()) {
       const arb = this.arbiter()!;
       try {
         const answer = await arb.claim(this.role.epoch);
-        if (this.role.state !== "seeking" || this.stopped) return;
+        if (this.role.state !== "seeking" || this.stopped) return true;
         if (answer.granted) {
           this.log.warn("no primary reachable and the registry's lease lapsed: taking the role", { epoch: answer.epoch });
           void this.promoteGranted(answer.epoch ?? this.role.epoch + 1);
-          return;
+          return true;
         }
         if (answer.primary) this.aimAt(answer.primary, answer.epoch);
       } catch (e) {
@@ -1039,18 +1029,13 @@ export class Nodes {
       }
     }
     this.query();
-    this.seekTimer = setTimeout(() => {
-      this.seekTimer = undefined;
-      void this.seekOnce();
-    }, this.backoffMs);
-    if (typeof this.seekTimer === "object" && "unref" in this.seekTimer) this.seekTimer.unref();
-    this.backoffMs = Math.min(this.backoffMs * 2, this.deps.config.nodes.reconnect_max_ms);
+    return false;
   }
 
   /** A grant the registry gave a seeking backup: the role, taken without a second claim. */
   private async promoteGranted(epoch: number): Promise<void> {
     this.clearTimers();
-    this.seeking = false;
+    this.seeker.abandon();
     this.role.setEpoch(epoch);
     this.role.go("promoting");
     this.log.warn("promoting to primary", { epoch: this.role.epoch, cause: "registry" });
@@ -1188,7 +1173,7 @@ export class Nodes {
         return;
       }
       case "seeking": {
-        if (!this.seeking) {
+        if (!this.seeker.seeking) {
           this.preferred = c.endpoint;
           this.kickSeek();
         }
@@ -1389,6 +1374,7 @@ export class Nodes {
     }
     this.mayJoin();
     if (this.joining) throw new RpcError("conflict", "a join is in flight");
+    if (this.deps.guests?.()?.knows(body.node.id)) throw new RpcError("conflict", "that invite is from a cluster a workspace node here is in: the machine joins a cluster of its own");
     // The folders to share must be there, and absolute, before anything is redeemed.
     const paths = (opts.paths ?? []).map((p) => resolvePath(p));
     for (const p of paths) {
@@ -1399,6 +1385,7 @@ export class Nodes {
       const account = this.deps.account?.();
       const answer = await redeemNodeInvite(body, { id: this.deps.identity.id, name: this.deps.identity.name }, { timeoutMs: this.helloTimeoutMs, log: this.log.child("enroll"), now: this.now(), ...(account !== undefined ? { account } : {}) });
       this.mayJoin();
+      if (this.deps.guests?.()?.clusters().includes(answer.cluster)) throw new RpcError("conflict", "a workspace node here is in that cluster: the machine joins a cluster of its own");
       if (this.role.role === "primary") await this.abdicate("joined another primary");
       this.deps.grants.forgetCluster();
       const file: LinkFile = {
@@ -1426,7 +1413,7 @@ export class Nodes {
       this.armMembershipClock();
       // `[nodes] primary` still comes first; the endpoints the enrollment gave follow it.
       this.preferRelay = file.endpoints === undefined && file.relay !== undefined;
-      this.backoffMs = this.deps.config.nodes.reconnect_ms;
+      this.seeker.resetBackoff();
       this.startSeeking();
       this.announce();
       return { primary: answer.primary, role: answer.role };
@@ -1441,6 +1428,9 @@ export class Nodes {
     this.log.info("giving up the primary role", { reason });
     this.stopBeacon();
     this.stopRegistryHeartbeat();
+    // The registry's signals were this cluster's: a node joining as hands must not hear them.
+    for (const off of this.offArbiter) off();
+    this.offArbiter = [];
     await this.deps.stopBrain();
     this.deps.scheduler.stop();
     this.replicator.stop();
@@ -1555,7 +1545,7 @@ export class Nodes {
     }
     this.clearTimers();
     this.stopMembershipClock();
-    this.seeking = false;
+    this.seeker.abandon();
     this.role.go("unlinked");
     closeLink();
     this.replica?.dispose();

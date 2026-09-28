@@ -115,6 +115,8 @@ delete pkg.devDependencies;
 delete pkg.scripts;
 writeFileSync(join(cophyladDir, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
 cpSync(join(COPHYLAD, "src"), join(cophyladDir, "src"), { recursive: true });
+// the `cophyla` command's own entry point, which the launcher in <root>/bin runs from the version current names
+if (!existsSync(join(cophyladDir, "src", "cophyla.ts"))) fail("the staged tree has no src/cophyla.ts for the cophyla command");
 cpSync(join(COPHYLAD, "views"), join(cophyladDir, "views"), { recursive: true, filter: (src) => !src.endsWith("tsconfig.json") });
 log("installing cophylad's dependencies (production, no optional, hoisted)…");
 await run(["bun", "install", "--production", "--omit=optional", "--linker=hoisted", "--no-summary"], { cwd: cophyladDir });

@@ -10,6 +10,12 @@ import type { CapabilityParams } from "@cophyla/protocol";
 
 export type RecallFilter = Omit<CapabilityParams<"recall">, "query" | "limit">;
 
+/**
+ * Whose rows a recall may answer from: the machine's, every workspace node's session chunks
+ * left out (`exclude`); or one workspace node's, its own sessions' chunks alone (`only`).
+ */
+export type RecallScope = { exclude: readonly string[] } | { only: string };
+
 export interface FilterSql {
   /** The LEFT JOINs after `FROM chunks c`. */
   joins: string;
@@ -24,9 +30,16 @@ export const OWNER_JOINS = `LEFT JOIN threads t ON c.thread = t.id
 
 const tagIn = (column: string, param: string) => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE value = ${param})`;
 
-export function filterSql(f: RecallFilter): FilterSql {
+export function filterSql(f: RecallFilter, scope?: RecallScope): FilterSql {
   const where: string[] = [];
   const params: Record<string, string | number> = {};
+  if (scope && "only" in scope) {
+    where.push("(c.corpus = 'session' AND s.node = $scope_only)");
+    params["scope_only"] = scope.only;
+  } else if (scope && scope.exclude.length > 0) {
+    where.push(`(c.corpus != 'session' OR s.node NOT IN (${scope.exclude.map((_, i) => `$scope_x${i}`).join(", ")}))`);
+    scope.exclude.forEach((n, i) => (params[`scope_x${i}`] = n));
+  }
   if (f.in && f.in.length > 0) {
     where.push(`c.corpus IN (${f.in.map((_, i) => `$in${i}`).join(", ")})`);
     f.in.forEach((v, i) => (params[`in${i}`] = v));
@@ -74,6 +87,6 @@ export function filterSql(f: RecallFilter): FilterSql {
 }
 
 /** `true` when the filter narrows anything, so the vector leg needs an eligible set. */
-export function narrows(f: RecallFilter): boolean {
-  return filterSql(f).where.length > 0;
+export function narrows(f: RecallFilter, scope?: RecallScope): boolean {
+  return filterSql(f, scope).where.length > 0;
 }

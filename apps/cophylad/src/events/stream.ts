@@ -20,7 +20,7 @@ export type StreamEvent = { [N in CapabilityEventName]: { name: N; params: Capab
 export type StreamListener = (event: StreamEvent) => void;
 
 export interface EventStreamDeps {
-  bus: Bus;
+  bus: Pick<Bus, "on">;
   sessions: { get(id: string): Session | undefined; list(): Session[] };
   log?: Logger;
   now?: () => number;

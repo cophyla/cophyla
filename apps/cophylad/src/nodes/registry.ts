@@ -9,7 +9,7 @@ import type { Store } from "../store/index.ts";
 
 export interface RegistryDeps {
   store: Store;
-  bus: Bus;
+  bus: Pick<Bus, "emit">;
   self: () => Node;
   /** How this node is reached: the LAN listener's endpoints. */
   selfEndpoints: () => string[];

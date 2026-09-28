@@ -13,6 +13,8 @@ export interface Embedder {
   /** Names the vectors on disk, so a model change re-embeds instead of mixing spaces. */
   readonly model: string;
   readonly dim: number;
+  /** Runs on the account's server, not on this machine: a workspace node's text is never sent to it. */
+  readonly hosted?: boolean;
   embed(texts: string[]): Promise<Float32Array[]>;
   close(): Promise<void>;
 }

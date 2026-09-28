@@ -95,11 +95,11 @@ export class Audit {
     this.bus = bus;
   }
 
-  /** Records the request and the decision. The outcome comes with `complete`. */
-  open(input: AuditOpen, now = Date.now()): AuditEntry {
+  /** Records the request and the decision, on `node`'s behalf (a workspace node's gate names its own). The outcome comes with `complete`. */
+  open(input: AuditOpen, now = Date.now(), node?: NodeId): AuditEntry {
     const entry: AuditEntry = {
       id: newId("audit", now),
-      node: this.nodeId,
+      node: node ?? this.nodeId,
       at: now,
       principal: input.principal,
       action: input.action,

@@ -238,6 +238,26 @@ describe("cloud backup", () => {
     expect(JSON.stringify(audit)).not.toContain("correct horse");
   }, 30_000);
 
+  test("a workspace node's workspace is never backed up, at enable or after", async () => {
+    const fake = newFake();
+    const s = await start({ fake });
+    const { d, c } = s;
+    const GUEST = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+    d.store.privateNodes = () => [GUEST];
+    const lent = (n: number) => ({ id: `ws_01ARZ3NDEKTSV4RRFFQ69G5FC${n}`, node: GUEST, path: `/lent-${n}`, name: `lent ${n}`, origin: "discovered" as const, tags: [], lastActivity: 1 });
+    d.store.workspaces.upsert(lent(1));
+    await c.request("backup.enable", { passphrase: "pp" });
+    await synced(s);
+    const mine = d.store.workspaces.list().filter((w) => w.node !== GUEST).length;
+    expect(puts(fake, "workspaces").length).toBe(mine);
+    d.store.workspaces.upsert(lent(2));
+    d.store.workspaces.delete(lent(1).id);
+    await sleep(400);
+    await synced(s);
+    expect(puts(fake, "workspaces").length).toBe(mine);
+    expect(deletes(fake, "workspaces").length).toBe(0);
+  }, 30_000);
+
   test("a change while the link is down is caught up at the next link-up; a restart of the daemon sends nothing unchanged", async () => {
     const fake = newFake();
     let s = await start({ fake });

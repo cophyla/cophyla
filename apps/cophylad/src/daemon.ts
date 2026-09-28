@@ -16,6 +16,7 @@ import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals,
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
+import { guestMethods } from "./grants/guest-methods.ts";
 import { grantMethods } from "./grants/methods.ts";
 import { PhoneInvites } from "./grants/phones.ts";
 import { Grants } from "./grants/store.ts";
@@ -66,6 +67,9 @@ import { withForwarding } from "./nodes/forward.ts";
 import { Nodes } from "./nodes/index.ts";
 import { loadNodeIdentity, selfNode } from "./nodes/self.ts";
 import type { NodeIdentity } from "./nodes/self.ts";
+import { readGuests, readRetired } from "./nodes/guest-files.ts";
+import { Guests } from "./nodes/guests.ts";
+import { Owners } from "./nodes/owners.ts";
 import { nodeServedTable } from "./nodes/served.ts";
 import { Remote } from "./remote/index.ts";
 import type { RemoteDeps } from "./remote/index.ts";
@@ -93,7 +97,7 @@ import { Profiles } from "./sessions/profiles.ts";
 import { OsTerminalOpener } from "./sessions/terminals.ts";
 import type { TerminalOpener } from "./sessions/terminals.ts";
 import { Tether } from "./sessions/tether/index.ts";
-import { putCommandOnPath } from "./sessions/tether/command.ts";
+import { putCommandOnPath, putCophylaOnPath } from "./sessions/tether/command.ts";
 import { writeEntryPoints } from "./sessions/tether/entry.ts";
 import { TerminalRows, TerminalStreams } from "./sessions/tether/streams.ts";
 import { Push } from "./push/index.ts";
@@ -259,6 +263,10 @@ export interface Daemon {
   pipes: PipeHub;
   direct: Direct;
   nodes: Nodes;
+  /** The workspace nodes this machine hosts. */
+  guests: Guests;
+  /** Which workspace node owns a folder here. */
+  owners: Owners;
   push: Push;
   /** The LAN listener, when `[controller]` is on, other nodes may link here or this node is a backup, and its certificate could be made. */
   controller?: ApiServer;
@@ -278,6 +286,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   log.info("store open", { path: p.db, schema: version });
 
   const identity = loadNodeIdentity(store, config);
+  const env = opts.env ?? process.env;
+  // Where this daemon is installed, if it is: the update module's, and where tether ships.
+  const install = opts.update?.installDir
+    ? detectInstall({ COPHYLA_INSTALL_DIR: opts.update.installDir, COPHYLA_PLATFORM_DIR: join(opts.update.installDir, "versions", PLATFORM_VERSION) })
+    : detectInstall(env);
+  // The folders lent to workspace nodes, and whose items the machine's own apps never see:
+  // what every session, ask, workspace and terminal is stamped by when it is made.
+  const owners = new Owners({ guests: readGuests(p.data).map((g) => ({ id: g.manifest.id, folder: g.manifest.folder })), retired: readRetired(p.data), cophylaHome: p.home, ...(install ? { installRoot: install.dir } : {}) });
+  // what the store never replicates, backs up or recalls for the machine
+  store.privateNodes = () => [...owners.guests(), ...owners.retired()];
   const token = loadOrCreateToken(p.clientToken);
   const hookToken = loadOrCreateToken(p.hookToken);
   // Before grants every node of a cluster shared data/node.token. It opens nothing now: each
@@ -289,8 +307,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   if (config.nodes.token !== undefined) log.warn("[nodes] token is ignored: each node holds a grant of its own now; it can be removed from config.toml");
 
   const bus = new Bus();
+  // `sessions` is built below; only a session's own events ask for its node.
+  bus.partitions = { isPrivate: (node) => owners.isPrivate(node), sessionNode: (id) => sessions.getAny(id)?.node };
   const policy = new Policy(config.gate, store);
-  const asks = new Asks(store, identity.id, bus);
+  const asks = new Asks(store, identity.id, bus, { isPrivate: (node) => owners.isPrivate(node) });
   const stale = asks.closeStale();
   if (stale > 0) log.info("closed asks left open by the previous run", { count: stale });
   const audit = new Audit(store, identity.id, config.gate.audit_result_cap, bus);
@@ -300,11 +320,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // `voice`, `nodes` and `remote` are built further down and consulted here, so a stage coming up, a role change or the desktop host changes the node's row.
   let voice: Voice | undefined;
   let nodes: Nodes | undefined;
+  /** The workspace nodes this machine hosts, built after `nodes`. */
+  let guests: Guests | undefined;
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
   let backup: BackupSync | undefined;
   const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct");
-  const workspaces = new Workspaces({ store, nodeId: identity.id, bus });
+  const workspaces = new Workspaces({ store, nodeId: identity.id, bus, owners });
   workspaces.fromScope(config.node.scope);
   workspaces.home(p.home);
   const views = new Views({
@@ -323,7 +345,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const prompts = new Prompts(p.prompts);
   const memory = new MemoryFiles(p.memory);
   memory.onChange = (name, m) => store.index.reindexMemory(name, m);
-  const env = opts.env ?? process.env;
   // The account before the llm router, the update module and the voice pipeline, which each take a seam from it.
   const cloud = new Cloud({
     config: config.cloud,
@@ -372,10 +393,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     return (await processEngine.sample()).processes;
   };
   const raiser = opts.raiser ?? withProcessTable(defaultRaiser(process.platform, { env, log: sessionsLog.child("focus") }), processes);
-  // Where this daemon is installed, if it is: the update module's, and where tether ships.
-  const install = opts.update?.installDir
-    ? detectInstall({ COPHYLA_INSTALL_DIR: opts.update.installDir, COPHYLA_PLATFORM_DIR: join(opts.update.installDir, "versions", PLATFORM_VERSION) })
-    : detectInstall(env);
   // tether, which the sessions cophylad starts run in, so what the user sends them is typed as theirs.
   const tether =
     opts.tether ??
@@ -421,7 +438,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ]),
     ...(tether ? { tether, env: scrub(env), processes } : {}),
     pricer: (model, tokens) => pricer.cost(model, tokens),
+    owners,
   });
+  // a harness's ask about a session is on the session's node
+  asks.sessionNode = (id) => sessions.getAny(id)?.node;
   // What an explorer shows of a session: the folders under its directory, and its repository.
   const files = new SessionFiles({ session: (id) => sessions.get(id) });
 
@@ -458,7 +478,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   /** What a stop now would cut off, for an update and a restart alike. Empty means idle. */
   const busyReasons = (): string[] => {
     const reasons: string[] = [];
-    const open = asks.listOpen().length;
+    const open = asks.listOpenAll().length;
     if (open > 0) reasons.push(plural(open, "open ask"));
     const held = sessions.heldCount();
     if (held > 0) reasons.push(plural(held, "held hook response"));
@@ -543,12 +563,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     bus,
     log: metricsLog,
     engine: opts.metrics?.engine ?? (config.metrics.enabled ? hostEngine({ gpu: config.metrics.gpu, log: metricsLog }) : { name: "off", sample: () => ({ at: Date.now(), monoNs: 0n, cores: 1, cpu: { busyNs: 0, totalNs: 0 }, memory: { used: 0, total: 0 }, processes: [] }) }),
-    sessions: { pids: () => sessions.pids(), list: () => sessions.list() },
+    // every partition's sessions are owned; the workspace nodes' are then kept from the machine's audience
+    sessions: { pids: () => sessions.pidsAll(), list: () => sessions.list() },
+    partitions: { sessionNode: (id) => sessions.getAny(id)?.node, isPrivate: (node) => owners.isPrivate(node) },
     brainPid: () => brain?.pid,
     // tether's hosts count as sidecars: what a session's own tree does not claim of them (a terminal's console host) is theirs.
     sidecarPids: () => new Map([...sidecars.list().flatMap((s) => (s.pid !== undefined ? [[s.pid, s.name] as [number, string]] : [])), ...(tether?.hostPids() ?? []).map((pid) => [pid, "tether"] as [number, string]), ...(direct.pid !== undefined ? [[direct.pid, "cophyla-net"] as [number, string]] : [])]),
-    // A subscriber named `link:…` is the primary watching this node: its samples go up the node link.
-    deliver: (id, sample) => (id.startsWith("link:") ? (nodes?.deliverSample(sample) ?? false) : clients.send(id, "metrics.sample", sample)),
+    // A subscriber named `link:…` is the primary watching this node: its samples go up the node link;
+    // one named `guest:<node>:…` is a workspace node's primary, whose go up that node's link alone.
+    deliver: (id, sample) => (id.startsWith("guest:") ? (guests?.deliverSample(id, sample) ?? false) : id.startsWith("link:") ? (nodes?.deliverSample(sample) ?? false) : clients.send(id, "metrics.sample", sample)),
     ...(limits ? { limits } : {}),
     ...(opts.metrics?.now ? { now: opts.metrics.now } : {}),
     ...(opts.metrics?.manual ? { manual: true } : {}),
@@ -846,11 +869,36 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       // what this node ends by itself follows the role
       grantClock?.arm(true);
     },
+    guests: () => guests,
     ...(opts.nodes?.now ? { now: opts.nodes.now } : {}),
   });
   const forwardHost = nodes.forwardHost;
+  // The workspace nodes: each a hands member of another person's cluster, over one folder.
+  guests = new Guests({
+    paths: p,
+    config,
+    bus,
+    asks,
+    audit,
+    sessions,
+    workspaces,
+    profiles,
+    tools,
+    store,
+    metrics,
+    owners,
+    identity,
+    machine: { cluster: () => nodes!.member()?.cluster, knows: (id) => nodes!.registry.get(id) !== undefined },
+    platformVersion: PLATFORM_VERSION,
+    log: log.child("guests"),
+    ...(opts.nodes?.now ? { now: opts.nodes.now } : {}),
+  });
   // On a node that shares some folders alone, a session's workspace is recorded inside them.
-  workspaces.clampRoot = (root, cwd) => nodes?.confinement()?.clamp(root, cwd) ?? root;
+  // A workspace node's are recorded inside the folder it owns.
+  const confinementOf = (node: string) => (node === identity.id ? nodes?.confinement() : owners.confinement(node));
+  workspaces.clampRoot = (root, cwd, node) => confinementOf(node)?.clamp(root, cwd) ?? root;
+  // and a repository is kept on it only when its root is inside them too
+  workspaces.repoInside = (node, root) => confinementOf(node)?.contains(root) ?? true;
   // What a limited client's requests and rows are about is looked up the way the forwarder routes them.
   clients.look = nodes.lookup;
   // The cloud backup's sender: hears the store and the editable layer, sends on the primary, restores onto a fresh install.
@@ -935,7 +983,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     return { token, client: { ...row, relay: true }, relay, ...(lanPin ? { lan: lanPin } : {}) };
   };
   // The node's terminals as clients see them: a row each, and the screens a client opens.
-  const terminalRows = tether ? new TerminalRows({ tether, bus, nodeId: identity.id, workspaces, env: scrub(env), sessionOf: (ref) => sessions.sessionOfTerminal(ref), agentsOf: (ref) => sessions.agentsOf(ref), onAgents: (fn) => sessions.onAgents(fn), cliOf: (ref) => sessions.cliOf(ref), log: sessionsLog.child("terminals") }) : undefined;
+  const terminalRows = tether ? new TerminalRows({ tether, bus, nodeId: identity.id, workspaces, env: scrub(env), sessionOf: (ref) => sessions.sessionOfTerminal(ref), agentsOf: (ref) => sessions.agentsOf(ref), onAgents: (fn) => sessions.onAgents(fn), cliOf: (ref) => sessions.cliOf(ref), owners, log: sessionsLog.child("terminals") }) : undefined;
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: clients, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
   /** A phone's grant ended: its sockets close, the server forgets its relay peer (and a pending invite's), its push device goes. */
   const revokeController = (id: string): void => {
@@ -1013,6 +1061,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       revokeController,
       phones,
     }),
+    ...guestMethods({ guests }),
     ...directMethods({ direct, clients: directClients }),
     ...(terminalRows && terminalStreams ? terminalMethods({ rows: terminalRows, streams: terminalStreams, files }) : {}),
   }, forwardHost);
@@ -1138,11 +1187,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     if (now === harnessesOk) return;
     harnessesOk = now;
     bus.emit("node.state", node());
+    guests?.announce();
     if (tether?.available && config.tether.profiles) void writeEntryPoints({ tether, profiles, dataDir: p.data, editorsDir: join(p.home, "editors"), log: sessionsLog.child("tether") });
   });
   // The `tether` command in the user's own shells: an installed platform's, never a checkout's or a test's (whose tether is given).
   if (tether?.exe && !opts.tether && install && config.tether.on_path) {
     void putCommandOnPath({ exe: tether.exe, root: install.dir, env, log: sessionsLog.child("tether") });
+  }
+  // and `cophyla` beside it, for this home: an installed platform's, never a checkout's or a test's
+  if (install && config.tether.on_path && env["NODE_ENV"] !== "test") {
+    void putCophylaOnPath({ root: install.dir, home: p.home, env, log: sessionsLog.child("tether") });
   }
   tasks.prime(sessions.list());
   events.start(sessions.list());
@@ -1157,6 +1211,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The role settles here: a configured primary listens for a live one first, so the brain
   // never starts under a primary of a higher epoch; a secondary begins seeking.
   await nodes.start();
+  // the workspace nodes after the machine's own membership
+  guests.start();
 
   // The brain runs only while this node is the primary; a promotion later starts it through
   // `nodes`. Its link is built now, ahead of the hooks and the scheduler, and the brain is
@@ -1263,6 +1319,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     pipes,
     direct,
     nodes,
+    guests,
+    owners,
     push,
     ...(controller ? { controller } : {}),
     stop: async () => {
@@ -1271,6 +1329,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await cloud.stop();
       metrics.dispose();
       update.dispose();
+      await guests!.stop();
       await nodes!.stop();
       directClients.stop();
       await direct.stop();

@@ -51,6 +51,8 @@ export interface GateDeps {
   asks: Asks;
   audit: Audit;
   log: Logger;
+  /** The node this gate decides for: a workspace node's gate stamps its asks and audit rows with its own id; the machine's otherwise. */
+  node?: string;
 }
 
 const DETAIL_CHARS = 2000;
@@ -109,7 +111,7 @@ export class Gate {
         ],
         answerableBy: ["user"],
         ...(config.ask_timeout_ms > 0 ? { expiresAt: startedAt + config.ask_timeout_ms } : {}),
-      });
+      }, startedAt, this.deps.node);
     }
 
     const entry = audit.open({
@@ -123,7 +125,7 @@ export class Gate {
       ...(req.thread !== undefined ? { thread: req.thread } : {}),
       ...(req.task !== undefined ? { task: req.task } : {}),
       ...(req.correlation !== undefined ? { correlation: req.correlation } : {}),
-    });
+    }, Date.now(), this.deps.node);
     log.debug("gate", { id: entry.id, action: req.action, principal: req.principal.kind, decision: verdict.decision, source: verdict.source, rule: verdict.rule });
 
     if (verdict.decision === "deny") {

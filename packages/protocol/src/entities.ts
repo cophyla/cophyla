@@ -940,6 +940,32 @@ export const Grant = z.object({
 });
 export type Grant = z.infer<typeof Grant>;
 
+/** A workspace node's membership: in no cluster, seeking its primary, linked, or its daemon stopping. */
+export const GuestState = z.enum(["unlinked", "seeking", "linked", "stopped"]);
+export type GuestState = z.infer<typeof GuestState>;
+
+/**
+ * A workspace node as the terminal on its machine lists it: one folder of the machine, lent
+ * to another person's cluster as a hands node of it. Never shown to the machine's own apps.
+ */
+export const GuestInfo = z.object({
+  id: NodeId,
+  name: z.string(),
+  /** The folder it owns, absolute. */
+  folder: z.string(),
+  /** The profile its sessions run on; absent, each harness's usual one on the machine. */
+  profile: ProfileId.optional(),
+  state: GuestState,
+  /** The cluster it is in, and the primary it joined. */
+  cluster: z.string().regex(/^[0-9a-f]{16}$/).optional(),
+  primary: z.object({ id: NodeId, name: z.string() }).optional(),
+  /** How it reaches its primary, while linked. */
+  via: Via.optional(),
+  /** When its grant ends by itself. */
+  expiresAt: Timestamp.optional(),
+});
+export type GuestInfo = z.infer<typeof GuestInfo>;
+
 // ---------------------------------------------------------------------------------------
 // Entitlement, usage, releases
 
@@ -1201,6 +1227,8 @@ export const entities = {
   GrantKind,
   GrantRole,
   GrantStatus,
+  GuestState,
+  GuestInfo,
   PushPlatform,
   Scope,
   Entitlement,

@@ -5,6 +5,7 @@
         { "token": "6f1d…", "kind": "ui", "name": "desktop", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "audio": { "in": false, "out": false } },
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true } },
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "forward": true },
+        { "token": "6f1d…", "kind": "ui", "name": "cophyla", "audio": { "in": false, "out": false }, "local": true },
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }
       ],
       "results": [
@@ -252,6 +253,14 @@
       "results": [{ "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "hands" }]
     },
     "node.leave": { "params": [{}], "results": [{}] },
+    "guest.add": {
+      "params": [{ "folder": "/home/me/work/friend" }, { "folder": "/home/me/work/friend", "name": "friend", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "invite": "cophyla-invite:eyJ2IjoxfQ" }],
+      "results": [{ "folder": "/home/me/work/friend", "name": "friend" }, { "folder": "/home/me/work/friend", "name": "friend", "guest": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" } }]
+    },
+    "guest.list": { "params": [{}], "results": [{ "guests": [] }, { "guests": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" }, { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "notes", "folder": "/home/me/notes", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "state": "unlinked", "expiresAt": 1758196800000 }] }] },
+    "guest.join": { "params": [{ "name": "friend", "invite": "cophyla-invite:eyJ2IjoxfQ" }], "results": [{ "guest": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" } }] },
+    "guest.leave": { "params": [{ "name": "friend" }], "results": [{ "guest": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "notes", "folder": "/home/me/notes", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "state": "unlinked", "expiresAt": 1758196800000 } }] },
+    "guest.remove": { "params": [{ "name": "friend" }], "results": [{}] },
     "node.promote": { "params": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "node.restart": { "params": [{}, { "force": true }], "results": [{}] },
     "listener.list": { "params": [{}], "results": [{ "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },

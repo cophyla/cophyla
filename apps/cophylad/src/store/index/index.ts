@@ -4,6 +4,11 @@
 // the backfill and the embed queue run in the background. `reindexMemory` is the one entry
 // point for memory changes: the daemon calls it on every `memory.write` and `memory.delete`
 // today; the milestone-7 watcher will call the same.
+//
+// Recall answers the machine without its workspace nodes' sessions, and a workspace node
+// from its own alone (`RecallScope`). With the account's hosted embedder, a workspace node's
+// chunks are never embedded and its recall is full text only: its text never reaches the
+// owner's account.
 
 import type { Database } from "bun:sqlite";
 import type { CapabilityParams, Hit, Memory } from "@cophyla/protocol";
@@ -12,6 +17,7 @@ import { backfill, reconcileMemory } from "./backfill.ts";
 import { Chunks } from "./chunks.ts";
 import type { Embedder } from "./embed.ts";
 import { EmbedQueue } from "./queue.ts";
+import type { RecallScope } from "./filters.ts";
 import { recall } from "./recall.ts";
 import { JsVectorIndex } from "./vectors.ts";
 import type { VectorIndex } from "./vectors.ts";
@@ -43,9 +49,12 @@ export class SearchIndex {
   private queue?: EmbedQueue;
   private stopped = false;
   private starting?: Promise<void>;
+  /** The workspace nodes, now and once: left out of the machine's recall. */
+  private privateNodes: () => readonly string[];
 
-  constructor(db: Database) {
+  constructor(db: Database, privateNodes: () => readonly string[] = () => []) {
     this.db = db;
+    this.privateNodes = privateNodes;
     this.chunks = new Chunks(db, (id) => this.vectors?.remove(id));
   }
 
@@ -83,7 +92,7 @@ export class SearchIndex {
       const vectors = new JsVectorIndex(embedder.dim, this.config.vector_max_rows);
       const loaded = vectors.load(this.db, embedder.model);
       this.vectors = vectors;
-      this.queue = new EmbedQueue({ db: this.db, embedder, vectors, log: opts.log, batch: this.config.embed_batch, maxChars: this.config.embed_max_chars });
+      this.queue = new EmbedQueue({ db: this.db, embedder, vectors, log: opts.log, batch: this.config.embed_batch, maxChars: this.config.embed_max_chars, ...(embedder.hosted ? { skipNodes: this.privateNodes } : {}) });
       const pending = this.queue.pending();
       opts.log.info("vector index ready", { model: embedder.model, loaded, pending });
       if (pending > 0) this.queue.kick();
@@ -112,8 +121,10 @@ export class SearchIndex {
     this.queue?.kick();
   }
 
-  recall(params: CapabilityParams<"recall">): Promise<Hit[]> {
-    return recall({ db: this.db, ...(this.embedder ? { embedder: this.embedder } : {}), ...(this.vectors ? { vectors: this.vectors } : {}) }, params);
+  /** The machine's recall, unless a scope says whose; a workspace node's is full text only on a hosted embedder. */
+  recall(params: CapabilityParams<"recall">, scope: RecallScope = { exclude: this.privateNodes() }): Promise<Hit[]> {
+    const vectors = this.embedder && this.vectors && !("only" in scope && this.embedder.hosted);
+    return recall({ db: this.db, scope, ...(vectors ? { embedder: this.embedder!, vectors: this.vectors! } : {}) }, params);
   }
 
   /** A memory file changed (`memory` given) or went (absent). */

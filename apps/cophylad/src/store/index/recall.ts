@@ -11,7 +11,7 @@ import type { CapabilityParams, Hit, Source } from "@cophyla/protocol";
 import type { ChunkRow } from "./chunks.ts";
 import type { Embedder } from "./embed.ts";
 import { filterSql } from "./filters.ts";
-import type { RecallFilter } from "./filters.ts";
+import type { RecallFilter, RecallScope } from "./filters.ts";
 import { searchFts } from "./fts.ts";
 import type { VectorIndex } from "./vectors.ts";
 
@@ -24,6 +24,8 @@ export interface RecallDeps {
   db: Database;
   embedder?: Embedder;
   vectors?: VectorIndex;
+  /** Whose rows it answers from; both legs keep to it. */
+  scope?: RecallScope;
 }
 
 interface Candidate {
@@ -41,8 +43,8 @@ export function clipSnippet(text: string, max = SNIPPET_MAX_CHARS): string {
 }
 
 /** Chunks the filter admits, for the vector leg's masked scan; `undefined` when it admits all. */
-function eligible(db: Database, filter: RecallFilter): Set<number> | undefined {
-  const f = filterSql(filter);
+function eligible(db: Database, filter: RecallFilter, scope?: RecallScope): Set<number> | undefined {
+  const f = filterSql(filter, scope);
   if (f.where.length === 0) return undefined;
   const rows = db.query(`SELECT c.id AS id FROM chunks c ${f.joins} WHERE c.prose = 1 AND ${f.where.join(" AND ")}`).all(f.params) as { id: number }[];
   return new Set(rows.map((r) => r.id));
@@ -82,7 +84,7 @@ export async function recall(deps: RecallDeps, params: CapabilityParams<"recall"
   };
 
   let legs = 1;
-  const fts = searchFts(deps.db, query, filter, perLeg);
+  const fts = searchFts(deps.db, query, filter, perLeg, deps.scope);
   fts.forEach((h, i) => credit(h.id, i + 1, h.snippet));
 
   if (deps.embedder && deps.vectors && deps.vectors.size > 0) {
@@ -95,7 +97,7 @@ export async function recall(deps: RecallDeps, params: CapabilityParams<"recall"
     }
     if (qv) {
       legs = 2;
-      const hits = deps.vectors.search(qv, perLeg, eligible(deps.db, filter));
+      const hits = deps.vectors.search(qv, perLeg, eligible(deps.db, filter, deps.scope));
       hits.forEach((h, i) => credit(h.id, i + 1));
     }
   }

@@ -121,12 +121,13 @@ export class Tools {
     }));
   }
 
-  async run(name: string, args: unknown, opts: { signal?: AbortSignal; confine?: ToolConfinement } = {}): Promise<unknown> {
+  /** Runs a tool; `workspaces` resolves a workspace id where the caller's differ from the machine's (a workspace node's). */
+  async run(name: string, args: unknown, opts: { signal?: AbortSignal; confine?: ToolConfinement; workspaces?: WorkspaceLookup } = {}): Promise<unknown> {
     const entry = this.tools.get(name);
     if (!entry) throw new RpcError("not_found", `no tool ${name}`);
     const parsed = entry.schema.validate(args ?? {});
     if (!parsed.ok) throw new RpcError("invalid", `bad arguments for ${name}: ${parsed.issues.map((i) => `${i.path.join(".") || "(args)"}: ${i.message}`).join("; ")}`, parsed.issues);
-    const ctx: ToolContext = { config: this.deps.config, workspaces: this.deps.workspaces, log: this.deps.log.child(name), home: this.deps.home };
+    const ctx: ToolContext = { config: this.deps.config, workspaces: opts.workspaces ?? this.deps.workspaces, log: this.deps.log.child(name), home: this.deps.home };
     if (opts.signal) ctx.signal = opts.signal;
     if (opts.confine) ctx.confine = opts.confine;
     return entry.tool.run(parsed.data, ctx);

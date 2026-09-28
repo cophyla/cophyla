@@ -18,7 +18,7 @@ import { parseArgs } from "node:util";
 import { encode } from "uqr";
 import { ACCESS_PRESETS, request } from "@cophyla/protocol";
 import type { AccessPreset } from "@cophyla/protocol";
-import type { ClientResult, RpcMessage } from "@cophyla/protocol";
+import type { ClientRequestName, ClientResult, RpcMessage } from "@cophyla/protocol";
 import { loadConfig, paths, resolveHome } from "./config/load.ts";
 
 export const COMMANDS = ["invite", "join", "leave"] as const;
@@ -55,8 +55,11 @@ export function terminalQr(text: string): string {
   return lines.join("\n") + "\n";
 }
 
-/** One request to the daemon on loopback, after hello; rejects with the daemon's message. */
-async function call<N extends "grant.invite" | "node.join" | "node.leave">(opts: { home?: string; port?: string }, method: N, params: unknown): Promise<ClientResult<N>> {
+/**
+ * One request to the daemon on loopback, after hello; rejects with the daemon's message.
+ * `local`: served by this machine's daemon even while it is a node of a cluster.
+ */
+export async function call<N extends ClientRequestName>(opts: { home?: string; port?: string }, method: N, params: unknown, how: { local?: boolean; name?: string } = {}): Promise<ClientResult<N>> {
   const p = paths(resolveHome(opts.home));
   const config = loadConfig(p, { writeDefault: false });
   const port = opts.port !== undefined ? Number(opts.port) : config.api.port;
@@ -88,14 +91,14 @@ async function call<N extends "grant.invite" | "node.join" | "node.leave">(opts:
       ws.send(JSON.stringify(request(id, m, prm)));
     });
   try {
-    await send("hello", { token, kind: "ui", name: "cophylad cli", audio: { in: false, out: false } });
+    await send("hello", { token, kind: "ui", name: how.name ?? "cophylad cli", audio: { in: false, out: false }, ...(how.local ? { local: true } : {}) });
     return (await send(method, params)) as ClientResult<N>;
   } finally {
     ws.close();
   }
 }
 
-async function readInvite(file: string | undefined): Promise<string> {
+export async function readInvite(file: string | undefined): Promise<string> {
   let text = "";
   if (file !== undefined && file !== "-") text = readFileSync(file, "utf8");
   else {
@@ -110,7 +113,10 @@ async function readInvite(file: string | undefined): Promise<string> {
   return text;
 }
 
-export async function runCommand(command: Command, argv: string[]): Promise<number> {
+/** One of the commands; `prog` names the program in what it prints, `local` keeps it on this machine. */
+export async function runCommand(command: Command, argv: string[], how: { local?: boolean; prog?: string } = {}): Promise<number> {
+  const prog = how.prog ?? "cophylad";
+  const as = { ...(how.local ? { local: true } : {}), name: `${prog} cli` };
   const { values } = parseArgs({
     args: argv,
     options: {
@@ -141,7 +147,7 @@ export async function runCommand(command: Command, argv: string[]): Promise<numb
           const preset = (values.access ?? "full") as AccessPreset;
           if (!(preset in ACCESS_PRESETS)) throw new Error("--access is full, sessions or view");
           if (values.role !== undefined) throw new Error("a phone has --access, not --role");
-          const r = await call(where, "grant.invite", { kind: "controller", name: values.name ?? "phone", access: ACCESS_PRESETS[preset], ...ends });
+          const r = await call(where, "grant.invite", { kind: "controller", name: values.name ?? "phone", access: ACCESS_PRESETS[preset], ...ends }, as);
           process.stderr.write(`An invite for the phone ${r.grant.name} (${preset}), good until ${new Date(r.invite.expiresAt).toLocaleString()}.\n`);
           if (process.stderr.isTTY) process.stderr.write(`Scan this with the phone's camera, or paste the line under it in the Cophyla app:\n\n${terminalQr(r.invite.link)}\n`);
           else process.stderr.write("Paste this line in the Cophyla app on the phone:\n\n");
@@ -151,26 +157,26 @@ export async function runCommand(command: Command, argv: string[]): Promise<numb
         if (values.access !== undefined) throw new Error("a node has --role, not --access");
         const role = values.role ?? "hands";
         if (role !== "hands" && role !== "full") throw new Error("--role is hands or full");
-        const r = await call(where, "grant.invite", { kind: "node", name: values.name ?? "new node", role, ...ends });
-        process.stderr.write(`An invite for ${r.grant.name} (${role}), good until ${new Date(r.invite.expiresAt).toLocaleString()}.\nOn the new machine: cophylad join, then paste this line:\n\n`);
+        const r = await call(where, "grant.invite", { kind: "node", name: values.name ?? "new node", role, ...ends }, as);
+        process.stderr.write(`An invite for ${r.grant.name} (${role}), good until ${new Date(r.invite.expiresAt).toLocaleString()}.\nOn the new machine: ${prog} join (or, to lend it one folder, cophyla node add), then paste this line:\n\n`);
         process.stdout.write(r.invite.text + "\n");
         return 0;
       }
       case "join": {
         const invite = await readInvite(values.file);
         const paths = (values.workspace ?? []).map((w) => resolve(w));
-        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}) });
+        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}) }, as);
         process.stdout.write(`Joined ${r.primary.name} as ${r.role === "hands" ? "hands" : "a full member"}.\n`);
         return 0;
       }
       case "leave": {
-        await call(where, "node.leave", {});
+        await call(where, "node.leave", {}, as);
         process.stdout.write("Left the cluster; this machine runs alone now.\n");
         return 0;
       }
     }
   } catch (e) {
-    process.stderr.write(`cophylad ${command}: ${e instanceof Error ? e.message : String(e)}\n`);
+    process.stderr.write(`${prog} ${command}: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
   }
 }

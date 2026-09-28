@@ -1,5 +1,9 @@
 // One Ask for every prompt source: a harness, the gate or the brain. Opening one persists
 // it and streams `ask.state`; answering it does the same and wakes whoever is waiting.
+//
+// An ask is the machine's or a workspace node's: a harness's takes its session's node, the
+// gate's the node it was built for. What reads or answers one by id sees the machine's alone,
+// and a workspace node's through `view`; an ask of another partition is "no ask" to it.
 
 import { ASK_TEXT_OPTION, newId, RpcError } from "@cophyla/protocol";
 import type { Ask, AskAnswer, NodeId, Principal, Remember } from "@cophyla/protocol";
@@ -23,17 +27,34 @@ interface Waiter {
   resolve: (ask: Ask) => void;
 }
 
+/** One workspace node's asks: what its link reads and answers. */
+export interface AsksView {
+  get(id: string): Ask | undefined;
+  listOpen(): Ask[];
+  answer(id: string, input: AnswerInput, by: Principal): Ask;
+}
+
 export class Asks {
   private waiters = new Map<string, Waiter[]>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
   private store: Store;
   private nodeId: NodeId;
   private bus: Bus;
+  /** Whether a node's asks are kept from the machine's own apps: a workspace node's, now or once. */
+  private isPrivate: (node: string) => boolean;
+  /** The node of a session, which a harness's ask about it takes; set once the sessions are built. */
+  sessionNode?: (id: string) => string | undefined;
 
-  constructor(store: Store, nodeId: NodeId, bus: Bus) {
+  constructor(store: Store, nodeId: NodeId, bus: Bus, opts: { isPrivate?: (node: string) => boolean } = {}) {
     this.store = store;
     this.nodeId = nodeId;
     this.bus = bus;
+    this.isPrivate = opts.isPrivate ?? (() => false);
+  }
+
+  /** Whether an ask is in a partition: a workspace node's own (`part`), or, unset, the machine's. */
+  private inPart(ask: Ask, part?: string): boolean {
+    return part === undefined ? !this.isPrivate(ask.node) : ask.node === part;
   }
 
   /** Asks left open by a previous run cannot be answered: the request that waited is gone. */
@@ -48,8 +69,10 @@ export class Asks {
     return n;
   }
 
-  open(input: AskInput, now = Date.now()): Ask {
-    const ask: Ask = { ...input, id: newId("ask", now), node: this.nodeId, status: "open", createdAt: now };
+  /** Opens an ask on `node`'s behalf; a harness's takes its session's node, anything else the machine's. */
+  open(input: AskInput, now = Date.now(), node?: string): Ask {
+    const owner = node ?? (input.source.kind === "harness" ? this.sessionNode?.(input.source.session) : undefined) ?? this.nodeId;
+    const ask: Ask = { ...input, id: newId("ask", now), node: owner, status: "open", createdAt: now };
     this.store.asks.insert(ask);
     if (ask.expiresAt !== undefined) {
       const delay = Math.max(0, ask.expiresAt - now);
@@ -61,12 +84,33 @@ export class Asks {
     return ask;
   }
 
-  get(id: string): Ask | undefined {
+  /** An ask of the machine's, or of the partition named. */
+  get(id: string, part?: string): Ask | undefined {
+    const ask = this.store.asks.get(id);
+    return ask && this.inPart(ask, part) ? ask : undefined;
+  }
+
+  /** An ask of any partition: for what follows it wherever it is. */
+  getAny(id: string): Ask | undefined {
     return this.store.asks.get(id);
   }
 
-  listOpen(): Ask[] {
+  listOpen(part?: string): Ask[] {
+    return this.store.asks.listOpen().filter((a) => this.inPart(a, part));
+  }
+
+  /** Every partition's open asks: what a stop would cut off. */
+  listOpenAll(): Ask[] {
     return this.store.asks.listOpen();
+  }
+
+  /** One workspace node's asks. */
+  view(node: string): AsksView {
+    return {
+      get: (id) => this.get(id, node),
+      listOpen: () => this.listOpen(node),
+      answer: (id, input, by) => this.answer(id, input, by, Date.now(), node),
+    };
   }
 
   /** Resolves when the ask leaves `open`, with its final state. */
@@ -81,8 +125,8 @@ export class Asks {
     });
   }
 
-  answer(id: string, input: AnswerInput, by: Principal, now = Date.now()): Ask {
-    const ask = this.store.asks.get(id);
+  answer(id: string, input: AnswerInput, by: Principal, now = Date.now(), part?: string): Ask {
+    const ask = this.get(id, part);
     if (!ask) throw new RpcError("not_found", `no ask ${id}`);
     if (ask.status !== "open") throw new RpcError("conflict", `ask ${id} is ${ask.status}`);
     if ((by.kind === "user" || by.kind === "brain") && !ask.answerableBy.includes(by.kind)) {

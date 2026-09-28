@@ -24,7 +24,7 @@ export interface GrantMethodDeps {
 }
 
 /** Joining and leaving are this machine's to decide: asked on its loopback listener, never from a phone or through the primary. */
-function onThisMachine(ctx: MethodContext, what: string): void {
+export function onThisMachine(ctx: MethodContext, what: string): void {
   if (ctx.listener !== "loopback") throw new RpcError("denied", `${what} is asked on this machine alone`);
 }
 

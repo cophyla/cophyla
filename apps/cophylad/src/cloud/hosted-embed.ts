@@ -19,6 +19,7 @@ const PROBE_TEXT = "cophyla";
 export class ServerEmbedder implements Embedder {
   readonly model: string;
   readonly dim: number;
+  readonly hosted = true;
   private deps: HostedDeps;
   private now: () => number;
   /** Until when a `quota_exceeded` holds every call back. */

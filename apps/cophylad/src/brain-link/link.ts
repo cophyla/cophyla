@@ -368,9 +368,11 @@ export class BrainLink {
 
   // --- requests -------------------------------------------------------------------------
 
+  /** The audit entry a quote cites: this node's own alone, whatever else the table holds. */
   private auditEntry(request: string): AuditEntry | undefined {
     const id = request.startsWith("aud_") ? request : this.auditIds.get(request);
-    return id ? this.deps.store.audit.get(id) : undefined;
+    const entry = id ? this.deps.store.audit.get(id) : undefined;
+    return entry?.node === this.deps.nodeId ? entry : undefined;
   }
 
   private remember(requestId: RpcId, auditId: string): void {

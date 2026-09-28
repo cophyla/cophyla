@@ -36,6 +36,9 @@ if (values.help) {
   cophylad join [--file F|-] [--workspace P]... [--answer-here]
                  this machine joins the primary whose invite is read from F or stdin
   cophylad leave    this machine leaves the primary it joined
+
+  Lending one folder to another person's cluster is the cophyla command's:
+  cophyla node add <folder> | list | join <name> | leave <name> | remove <name>
 `);
   process.exit(0);
 }
