@@ -1,10 +1,10 @@
 // Composing a reply for the ear: the lead-in a quote gets from its own source, what a
-// reference is read out as, and the markdown that is stripped because it renders on screen
-// and is noise in a speaker. Pure: no engines, no daemon.
+// reference is read out as, the name respelled as it is said, and the markdown that is stripped
+// because it renders on screen and is noise in a speaker. Pure: no engines, no daemon.
 
 import { describe, expect, test } from "bun:test";
 import type { ContentBlock } from "@cophyla/protocol";
-import { composeSpeech, leadIn, plain, refWords } from "../src/voice/compose.ts";
+import { composeSpeech, leadIn, plain, refWords, sayNames } from "../src/voice/compose.ts";
 
 const names = {
   session: (id: string) => (id === "sess_1" ? "orchestrator" : undefined),
@@ -21,6 +21,13 @@ describe("plain", () => {
     expect(plain("- one\n- two")).toBe("one\ntwo");
     // A star inside a word is not emphasis.
     expect(plain("2*3 and a_b_c")).toBe("2*3 and a_b_c");
+  });
+});
+
+describe("sayNames", () => {
+  test("respells the name as it is said, and leaves the word it looks like", () => {
+    expect(sayNames("Cophyla's here. Ask cophyla, or say Hey Phyla, or hey, phyla.")).toBe("Kohfilla's here. Ask Kohfilla, or say Hey Filla, or hey, Filla.");
+    expect(sayNames("cophylad restarted; animal phyla differ")).toBe("cophylad restarted; animal phyla differ");
   });
 });
 

@@ -29,6 +29,7 @@
 
 import type { VoiceState } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
+import { sayNames } from "./compose.ts";
 import type { SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 
@@ -459,7 +460,7 @@ export class Conversation {
     const rate = engine.sampleRate || OUT_RATE;
     let sent = 0;
     try {
-      for await (const chunk of engine.synth(text, { signal: controller.signal })) {
+      for await (const chunk of engine.synth(sayNames(text), { signal: controller.signal })) {
         if (controller.signal.aborted || this.disposed) break;
         this.stamp("firstChunk");
         for (let off = 0; off < chunk.length; off += OUT_FRAME) {

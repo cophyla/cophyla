@@ -2,7 +2,7 @@
 
 # Cophyla
 
-Cophyla (say "ko-FY-la") gives you one place to see and drive every AI coding session on your
+Cophyla (say "ko-FILL-uh") gives you one place to see and drive every AI coding session on your
 machines. Claude Code, Codex and the others keep running in their own terminals, where you
 started them. Cophyla watches them and puts every prompt that waits on you, from any machine, in
 front of you: on the desktop, on your phone, or spoken aloud. It starts new sessions for you,

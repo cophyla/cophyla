@@ -33,6 +33,15 @@ export function plain(text: string): string {
     .trim();
 }
 
+/**
+ * The name respelled as it is said, ko-FILL-uh, which espeak-ng (Piper's and Kokoro's
+ * phonemizer) makes of "Kohfilla"; "Cophyla" by its letters it reads as KAH-fih-luh. "Phyla"
+ * alone is the plural of phylum; only after "Hey" is it the name.
+ */
+export function sayNames(text: string): string {
+  return text.replace(/\bcophyla\b/gi, "Kohfilla").replace(/\b(hey,?\s+)phyla\b/gi, "$1Filla");
+}
+
 /** The words before a quote, naming where it came from. */
 export function leadIn(source: Source | undefined, names: SpeechNames = {}): string {
   if (!source) return "Quote:";

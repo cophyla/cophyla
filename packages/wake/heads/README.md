@@ -8,8 +8,12 @@ carry copies (`packages/voicehost/src/wake/bundled.ts`, pinned by sha256).
 
 | File | Says | Threshold | Validation (19.8 h of negatives, 5,000 positives) |
 |---|---|---|---|
-| `cophyla_v0.1.onnx` | "Cophyla", ko-FY-la | 0.7 | 91.6% recall, no false accepts; 93.6% with 0.05 an hour at 0.6 |
-| `hey_phyla_v0.1.onnx` | "Hey Phyla", hey FY-la | 0.6 | 93.4% recall, 0.10 false accepts an hour; 94.5% with 0.30 at 0.5 |
+| `cophyla_v0.1.onnx` | "Cophyla", ko-FILL-uh | 0.7 | 91.6% recall, no false accepts; 93.6% with 0.05 an hour at 0.6 |
+| `hey_phyla_v0.1.onnx` | "Hey Phyla", hey FILL-uh | 0.6 | 93.4% recall, 0.10 false accepts an hour; 94.5% with 0.30 at 0.5 |
+
+These v0.1 heads were trained on the name's earlier sound, ko-FY-la and hey FY-la, as below, and
+they do not wake on ko-FILL-uh: Windows' David scores 0.98 saying "Co-phyla" and 0.02 saying
+"Co-filla". They are to be trained again on the new sound.
 
 ## How they were made
 
