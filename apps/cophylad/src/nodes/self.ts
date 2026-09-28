@@ -1,7 +1,10 @@
 // This node: its id, made once and kept in the store, and the Node entity it presents. The
 // role is the runtime one (a backup that promoted is a primary; a primary that stepped
 // down is a secondary), so `capabilities.brain` and `role` say what the node is doing now.
+// Its name is `[node] name`, else the machine's: on a Mac the Computer Name the user sees in
+// Sharing settings ("Ada's MacBook Pro"), not the Bonjour host name `Adas-MacBook-Pro.local`.
 
+import { spawnSync } from "node:child_process";
 import { hostname } from "node:os";
 import { newId, PROTOCOL_VERSION } from "@cophyla/protocol";
 import type { HarnessKind, Node, NodeId, NodeRole, Platform, Via } from "@cophyla/protocol";
@@ -19,7 +22,20 @@ export function loadNodeIdentity(store: Store, config: Config): NodeIdentity {
     id = newId("node");
     store.meta.set("node_id", id);
   }
-  return { id, name: config.node.name ?? hostname() };
+  return { id, name: config.node.name ?? machineName() };
+}
+
+/** The machine's name as its user knows it: macOS's Computer Name, else the host name without `.local`. */
+export function machineName(
+  platform: NodeJS.Platform = process.platform,
+  computerName: () => string | undefined = () => {
+    const r = spawnSync("/usr/sbin/scutil", ["--get", "ComputerName"], { encoding: "utf8", timeout: 3000 });
+    return r.status === 0 ? r.stdout.trim() : undefined;
+  },
+  host: () => string = hostname,
+): string {
+  if (platform !== "darwin") return host();
+  return computerName() || host().replace(/\.local$/i, "");
 }
 
 export function platformName(p: NodeJS.Platform = process.platform): Platform {

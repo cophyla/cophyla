@@ -49,7 +49,7 @@ describe("config", () => {
       vad_min_silence_ms: 700,
       stt_threads: 2,
       tts_threads: 2,
-      chatterbox_device: "cuda",
+      chatterbox_device: "auto",
       cpu_affinity: "auto",
       thinking_timeout_ms: 60000,
     });

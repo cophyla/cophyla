@@ -109,11 +109,15 @@ export const TetherConfig = z.object({
   dir: z.string().min(1).optional(),
   /** A host cophylad starts exits after this long with no session and no client. */
   idle_exit_s: z.number().int().nonnegative().default(600),
-  /** Where a window on a session opens when no editor has its folder: Windows Terminal, a console, the classic console, or nowhere. */
-  window: z.enum(["auto", "wt", "console", "conhost", "none"]).default("auto"),
+  /**
+   * Where a window on a session opens when no editor has its folder: Windows Terminal, a
+   * console, the classic console (Windows); Terminal or iTerm2 (macOS, where auto takes iTerm2
+   * when it is installed); or nowhere.
+   */
+  window: z.enum(["auto", "wt", "console", "conhost", "terminal", "iterm2", "none"]).default("auto"),
   /** A session cophylad starts gets a window at once, as well as its place in the apps; off, one opens when the user raises it. */
   window_on_start: z.boolean().default(false),
-  /** Write the Windows Terminal profile that starts the user's own Claude in tether, and tell the editor extension where tether is. */
+  /** Write the Windows Terminal (or, on a Mac, iTerm2) profile that starts the user's own Claude in tether, and tell the editor extension where tether is. */
   profiles: z.boolean().default(true),
   /** An installed platform keeps a `tether` command on the user's PATH. */
   on_path: z.boolean().default(true),
@@ -340,7 +344,8 @@ export const VoiceConfig = z.object({
   tts_threads: z.number().int().positive().default(2),
   /** Which of the model's voices speaks; the model's own default when absent. */
   tts_voice: z.number().int().nonnegative().optional(),
-  chatterbox_device: z.enum(["cuda", "cpu", "auto"]).default("cuda"),
+  /** Where Chatterbox runs: `auto` takes CUDA, else Apple's GPU (`mps`), else the CPU. */
+  chatterbox_device: z.enum(["cuda", "mps", "cpu", "auto"]).default("auto"),
   /** The reference clip Chatterbox clones, longer than five seconds; the stage is unavailable without one. */
   chatterbox_voice: z.string().min(1).optional(),
   /** `auto` pins the inference threads to the performance cores on a hybrid CPU; or a CPU list, or `off`. */
@@ -392,7 +397,7 @@ export type MetricsConfig = z.infer<typeof MetricsConfig>;
 export const RemoteConfig = z.object({
   /** Share this node's desktop: run (and, with `install`, acquire) the host. Off, the node can still view others and take screenshots. */
   enabled: z.boolean().default(false),
-  /** Which host to run: `auto` takes whichever is installed, Apollo first. */
+  /** Which host to run: `auto` takes whichever is installed, Apollo first (Apollo is Windows-only). */
   host: z.enum(["auto", "apollo", "sunshine"]).default("auto"),
   /** Install a missing host or viewer through the package manager (winget, brew, flatpak). */
   install: z.boolean().default(true),
@@ -405,6 +410,12 @@ export const RemoteConfig = z.object({
   host_password: z.string().min(1).optional(),
   /** Serve phones a stream from this node through the moonlight-web sidecar. */
   web: z.boolean().default(true),
+  /**
+   * The moonlight-web `web-server` binary, over the release fetched for this platform, run in
+   * its own folder (beside `streamer` and `static/`): upstream publishes no macOS build, so a
+   * Mac serves phones from one built from source.
+   */
+  web_server: z.string().min(1).optional(),
   /** How the browser gets the video: over the controller listener's socket, or WebRTC on UDP 40000–40010. */
   web_transport: z.enum(["websocket", "webrtc"]).default("websocket"),
   /**
@@ -630,9 +641,9 @@ brain_sends = "pipe"       # the brain's messages to a session in tether: "pipe"
 # command = "/path/to/tether"   # found in the platform's folder, or tether/target in a checkout, when absent
 # dir = "/path/to/state"        # TETHER_DIR; the user's own by default, shared with every tether client
 idle_exit_s = 600          # a host cophylad starts leaves after this long with nothing to hold
-window = "auto"            # where a window opens when no editor has the folder: auto, wt, console, conhost or none
+window = "auto"            # where a window opens when no editor has the folder: auto, wt, console, conhost (Windows), terminal, iterm2 (macOS) or none
 window_on_start = false    # a session cophylad starts shows in the apps; true also opens a window on it at once
-profiles = true            # write the Windows Terminal profile that starts Claude in tether, and the editor's tether.json
+profiles = true            # write the Windows Terminal (or iTerm2) profile that starts Claude in tether, and the editor's tether.json
 on_path = true             # an installed platform keeps a tether command on the user's PATH
 
 # A harness installation beyond the discovered one; its sessions are found in config_dir.
@@ -776,7 +787,7 @@ stt_threads = 2
 # stt_language = "en"          # pinned; detected when absent
 tts_threads = 2
 # tts_voice = 0                # which of the model's voices speaks; the model's own when absent
-chatterbox_device = "cuda"     # cuda | cpu | auto
+chatterbox_device = "auto"     # auto (CUDA, else Apple's GPU, else the CPU) | cuda | mps | cpu
 # chatterbox_voice = "C:\\clips\\me.wav"   # the reference clip it clones; the stage needs one, longer than 5 s
 cpu_affinity = "auto"          # auto pins to the performance cores on a hybrid CPU; or "0-15", or "off"
 # models_dir = "C:\\models\\voice"          # local model folders instead of the feed, for development
@@ -820,7 +831,8 @@ registry_heartbeat_ms = 15000  # a primary renews its lease on the server's regi
 
 # Remote desktop: see a node's screen and drive it. enabled shares this desktop through a
 # streaming host (Apollo, or Sunshine) that runs as a service on Windows and is installed
-# through winget when missing; viewing another node needs no flag, the viewer (moonlight-qt
+# through winget when missing (Sunshine through Homebrew on a Mac, Flatpak on Linux); viewing
+# another node needs no flag, the viewer (moonlight-qt
 # for the desktop app, the moonlight-web sidecar for a phone) is acquired on first use. The
 # brain's screenshot needs no host at all.
 [remote]
@@ -832,6 +844,7 @@ install = true                 # acquire a missing host or viewer through the pa
 # host_user = "cophyla"         # the host's web credentials, when you set your own
 # host_password = "..."
 web = true                     # serve phones a stream from this node
+# web_server = "/opt/moonlight-web/web-server"   # a Mac's own build: upstream publishes none
 web_transport = "websocket"    # websocket (through the controller listener) | webrtc (UDP 40000-40010)
 lan_route = true               # off: other nodes' desktops stream through the links, as with no route (a one-machine check)
 screenshot_width = 1280        # what a screenshot is scaled to

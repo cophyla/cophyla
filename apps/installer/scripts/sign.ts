@@ -10,7 +10,10 @@
 //
 // macOS: `APPLE_SIGNING_IDENTITY` (the Developer ID Application identity, as the Tauri
 // bundler reads it); unset, the signature is ad-hoc (`-`), which runs on the building Mac
-// and is what the pipeline does until a Developer ID exists. `--tree` signs every Mach-O
+// and is what the pipeline does until a Developer ID exists. A Developer ID signature needs
+// Apple's secure timestamp to be notarized, so a timestamp failure fails the signing, where
+// Windows retries without one: `COPHYLA_SIGN_UNSTAMPED=1` signs without it, for a build that is
+// never to be notarized. `--tree` signs every Mach-O
 // outside a `.app` (a bundle is signed whole, by the bundler). `--entitlements <plist>`
 // replaces Bun's entitlements, for a binary that needs none of them (cophyla-net).
 //
@@ -82,13 +85,16 @@ async function codesign(path: string): Promise<void> {
     log(`signed ${path} (ad-hoc)`);
     return;
   }
-  // A secure timestamp needs Apple's server; an offline build still signs, unnotarizable.
+  // A secure timestamp needs Apple's server, and notarization refuses a signature without one.
   const stamped = await run([...base, "--timestamp", path], { allowFailure: true });
   if (stamped.code === 0) {
     log(`signed ${path} (${identity}, timestamped)`);
-  } else {
-    console.warn(`timestamping failed (exit ${stamped.code}); signing without a timestamp`);
-    await run([...base, path]);
-    log(`signed ${path} (${identity}, no timestamp)`);
+    return;
   }
+  if (process.env["COPHYLA_SIGN_UNSTAMPED"] !== "1") {
+    fail(`codesign could not reach Apple's timestamp server (exit ${stamped.code}), and a signature without a secure timestamp cannot be notarized; retry online, or set COPHYLA_SIGN_UNSTAMPED=1 for a build that is never to be notarized`);
+  }
+  console.warn(`timestamping failed (exit ${stamped.code}); signing without a timestamp, as COPHYLA_SIGN_UNSTAMPED asks: this build cannot be notarized`);
+  await run([...base, path]);
+  log(`signed ${path} (${identity}, no timestamp)`);
 }

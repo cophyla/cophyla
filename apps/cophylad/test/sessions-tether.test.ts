@@ -49,6 +49,8 @@ const injected: { text: string }[] = [];
 const runs: string[][] = [];
 const raised: number[] = [];
 const windowPids = new Set<number>();
+/** Windows whose raise waits on macOS's Automation prompt. */
+const waitingPids = new Set<number>();
 /** Each process's chain, itself first, as the process tree reads it; what was asked for. */
 const chains = new Map<number, { pid: number; name: string }[]>();
 const asked: number[] = [];
@@ -78,6 +80,7 @@ const run: Run = async (_exe, all) => {
 const raiser: WindowRaiser = {
   async raise(pid) {
     raised.push(pid);
+    if (waitingPids.has(pid)) return "waiting";
     return windowPids.has(pid) ? "raised" : "not_found";
   },
   async ancestors(pid) {
@@ -260,6 +263,17 @@ describe("a session cophylad starts in tether", () => {
     fs.clients = [];
     await mini.sessions.focus(s.id);
     expect(runs.some((a) => a[0] === "open" && a[1] === fs.id)).toBe(true);
+  });
+
+  test("focus while macOS asks for the Automation permission says so, and opens no second window", async () => {
+    runs.length = 0;
+    fs.attachWindow(4343);
+    waitingPids.add(4343);
+    await waitFor(() => tether.windows(s.native.terminal!).some((w) => w.pid === 4343));
+    await expect(mini.sessions.focus(s.id)).rejects.toMatchObject({ code: "unavailable", message: expect.stringContaining("answer its prompt") });
+    expect(runs.some((a) => a[0] === "open")).toBe(false);
+    waitingPids.delete(4343);
+    fs.clients = [];
   });
 
   test("stop ends its terminal", async () => {

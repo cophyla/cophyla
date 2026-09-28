@@ -14,8 +14,20 @@ import type { VoiceLink, VoiceView } from "@cophyla/voicehost";
 export const LISTEN_KEY = "cophyla.voice.listen";
 export const SPEAK_KEY = "cophyla.voice.speak";
 export const TALK_KEY = "cophyla.voice.talkKey";
-/** The talk key unless the user chose another; the shell's `DEFAULT_PTT`. */
+/** The talk key unless the user chose another. */
 export const DEFAULT_TALK_KEY = "Ctrl+Alt+Space";
+/** A Mac's: Control+Option+Space is macOS's own "Select next source in Input menu". */
+export const MAC_TALK_KEY = "Ctrl+Shift+Space";
+
+/** Whether the page runs on a Mac: WebKit there says `MacIntel`, Apple Silicon too. */
+function onMac(): boolean {
+  return /^Mac/.test(globalThis.navigator?.platform ?? "");
+}
+
+/** The talk key a fresh install starts with, on this platform. */
+export function defaultTalkKey(mac: boolean = onMac()): string {
+  return mac ? MAC_TALK_KEY : DEFAULT_TALK_KEY;
+}
 /** How long the audio may take to start on its own before the page waits for a click. */
 export const START_MS = 4000;
 /** How often the page looks for a click that lets a held-back audio context start. */
@@ -35,6 +47,8 @@ export interface DesktopVoiceDeps {
   listen<T>(event: string, handler: (payload: T) => void): Promise<() => void>;
   store?: Store;
   log?: (message: string) => void;
+  /** On a Mac, where the talk key's default differs; read from the web view when not given. */
+  mac?: boolean;
 }
 
 /** The hello's `audio`: a microphone and a speaker, the codecs this web view speaks, and `voice.played` acks. */
@@ -90,7 +104,7 @@ export class DesktopVoice implements VoiceSettings {
    */
   async start(): Promise<void> {
     await this.deps.listen<{ down: boolean }>("voice:ptt", (e) => this.host.ptt(e.down === true));
-    void this.setTalkKey(this.read(TALK_KEY) ?? DEFAULT_TALK_KEY).catch((e: unknown) => this.log(`talk key: ${message(e)}`));
+    void this.setTalkKey(this.read(TALK_KEY) ?? defaultTalkKey(this.deps.mac)).catch((e: unknown) => this.log(`talk key: ${message(e)}`));
     await this.startAudio();
   }
 

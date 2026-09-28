@@ -277,7 +277,8 @@ export class TtsPy {
       command: this.pythonPath,
       args,
       cwd: this.deps.shipped,
-      env: { ...this.env, HF_HUB_OFFLINE: "1" },
+      // An operator Apple's GPU (mps) lacks runs on the CPU rather than failing the request.
+      env: { ...this.env, HF_HUB_OFFLINE: "1", PYTORCH_ENABLE_MPS_FALLBACK: "1" },
       // Loading Turbo and warming the kernels took 12.6 s in spike 10; a cold cache is slower.
       health: { path: "/health", intervalMs: 5000, timeoutMs: 2000, startTimeoutMs: 180000 },
       ...(this.deps.affinity !== undefined ? { affinity: this.deps.affinity } : {}),

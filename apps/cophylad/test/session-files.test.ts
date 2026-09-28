@@ -13,10 +13,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
-import { decodeText, fileSummary, folderParts, imageMime, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
+import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { stopDaemon, TestClient, testDaemon } from "./helpers.ts";
 
+const WIN = process.platform === "win32";
 const scratch: string[] = [];
 afterEach(() => {
   for (const dir of scratch.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -36,6 +37,25 @@ function linkDir(target: string, at: string): void {
 function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner } = {}): SessionFiles {
   return new SessionFiles({ session: (id) => (id === "s1" ? { cwd } : undefined), ...opts });
 }
+
+describe("the git a repository is read with", () => {
+  const lookup = (platform: NodeJS.Platform, found: string | null, dev?: string, has: string[] = []) => ({
+    platform,
+    which: () => found,
+    developerDir: () => dev,
+    exists: (p: string) => has.includes(p),
+  });
+
+  test("the PATH's, except macOS's stub when the developer tools it stands for are not there", () => {
+    expect(findGit(lookup("linux", "/usr/bin/git"))).toBe("/usr/bin/git");
+    expect(findGit(lookup("darwin", "/opt/homebrew/bin/git"))).toBe("/opt/homebrew/bin/git");
+    expect(findGit(lookup("darwin", "/usr/bin/git", "/Library/Developer/CommandLineTools", ["/Library/Developer/CommandLineTools/usr/bin/git"]))).toBe("/usr/bin/git");
+    // no developer folder, or one without git: the stub would open the install dialog
+    expect(findGit(lookup("darwin", "/usr/bin/git"))).toBeUndefined();
+    expect(findGit(lookup("darwin", "/usr/bin/git", "/Library/Developer/CommandLineTools"))).toBeUndefined();
+    expect(findGit(lookup("win32", null))).toBeUndefined();
+  });
+});
 
 describe("a session's folders", () => {
   test("folders first, then files, by name as read; .git left out; a folder a level at a time", async () => {
@@ -83,7 +103,9 @@ describe("a session's folders", () => {
     ]);
     const r = await files.list("s1", ["..", "src/../..", "/", "C:/Windows", "src//x", "out", "same", "missing", "src/a.ts"]);
     const byDir = new Map(r.dirs.map((d) => [d.dir, d]));
-    for (const bad of ["..", "src/../..", "/", "C:/Windows", "src//x"]) expect(byDir.get(bad)).toEqual({ dir: bad, error: "not a folder under the session's" });
+    for (const bad of ["..", "src/../..", "/", "src//x"]) expect(byDir.get(bad)).toEqual({ dir: bad, error: "not a folder under the session's" });
+    // A drive is refused on Windows; elsewhere `C:` is a folder name like any other.
+    expect(byDir.get("C:/Windows")).toEqual({ dir: "C:/Windows", error: WIN ? "not a folder under the session's" : "no such folder" });
     expect(byDir.get("out")).toEqual({ dir: "out", error: "outside the session's folder" });
     expect(byDir.get("same")).toEqual({ dir: "same", entries: [{ name: "a.ts", kind: "file" }] });
     expect(byDir.get("missing")).toEqual({ dir: "missing", error: "no such folder" });
@@ -185,9 +207,10 @@ describe("a session's file", () => {
     writeFileSync(join(root, "src", "a.ts"), "x");
     linkDir(outside, join(root, "out"));
     const files = filesFor(root);
-    for (const bad of ["..", "src/../../secret.txt", "/etc/passwd", "C:/Windows/win.ini", "src//a.ts", "./src/a.ts"]) {
+    for (const bad of ["..", "src/../../secret.txt", "/etc/passwd", "src//a.ts", "./src/a.ts"]) {
       expect((await refusal(files.read("s1", bad)))[0]).toBe("invalid");
     }
+    expect((await refusal(files.read("s1", "C:/Windows/win.ini")))[0]).toBe(WIN ? "invalid" : "not_found");
     expect(await refusal(files.read("s1", "out/secret.txt"))).toEqual(["denied", "out/secret.txt: outside the folder"]);
     expect(await refusal(files.read("s1", "src"))).toEqual(["invalid", "src: a folder"]);
     expect(await refusal(files.read("s1", "src/b.ts"))).toEqual(["not_found", "src/b.ts: no such file"]);

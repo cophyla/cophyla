@@ -47,7 +47,8 @@ import { askShown, capText, normaliseHook, oneLine, rawIfSmall, stableStringify,
 import type { AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
 import { terminalCommand as museCommand } from "./muse/locate.ts";
 import { promptInput as musePromptInput, waitingOn as museWaitingOn } from "./muse/screen.ts";
-import { pathKey } from "./paths.ts";
+import { isWithin, pathKey } from "./paths.ts";
+import { NotSettled } from "./protected.ts";
 import { CLEAR, freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, permissionAsk, permissionDecision, planOf } from "./permissions.ts";
 import type { GoOnMode, PlanOffer } from "./permissions.ts";
 import type { ProfileChange, Profiles } from "./profiles.ts";
@@ -245,6 +246,13 @@ function titleWord(text: string): string {
   return text.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
 }
 
+/** The error for a raise the OS's permission stopped: refused, or still being asked (macOS's Automation). */
+function raiseRefused(r: "denied" | "waiting"): RpcError {
+  return r === "waiting"
+    ? new RpcError("unavailable", "macOS is asking whether Cophyla may control the terminal: answer its prompt, then try again")
+    : new RpcError("unavailable", "macOS has not allowed Cophyla to control the terminal: System Settings › Privacy & Security › Automation");
+}
+
 export class Sessions implements SessionHost {
   readonly nodeId: NodeId;
   readonly config: SessionsConfig;
@@ -364,12 +372,30 @@ export class Sessions implements SessionHost {
       }
     }
     this.unsubscribe.push(this.deps.profiles.onChange((change) => this.syncProfiles(change)));
+    this.unsubscribe.push(this.deps.workspaces.onSettled((root) => this.workspacesSettled(root)));
     this.clis?.start();
     await this.tick();
     // A session met again from the store, whose terminal tether adopted before the record was loaded.
     for (const rec of this.byId.values()) this.terminalAbove(rec);
     this.interval = setInterval(() => void this.tick(), this.config.poll_ms);
     unref(this.interval);
+  }
+
+  /**
+   * A macOS protected folder may be read now (the user answered its prompt, or had before): the
+   * sessions met in it meanwhile get their workspace, without counting as activity.
+   */
+  private workspacesSettled(root: string): void {
+    if (this.stopped) return;
+    for (const rec of this.byId.values()) {
+      if (rec.session.workspace || rec.session.status === "ended" || !isWithin(rec.session.cwd, root)) continue;
+      try {
+        this.patch(rec, { workspace: this.deps.workspaces.fromSession(rec.session.cwd).id }, rec.session.lastActivity);
+      } catch (e) {
+        this.log.warn("workspace lookup failed", { cwd: rec.session.cwd, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    this.scheduleTick();
   }
 
   /** Releases every held hook, stops the adapters and clears timers, before the store closes. */
@@ -942,7 +968,9 @@ export class Sessions implements SessionHost {
           try {
             session.workspace = this.deps.workspaces.fromSession(seed.cwd).id;
           } catch (e) {
-            this.log.warn("workspace lookup failed", { cwd: seed.cwd, error: e instanceof Error ? e.message : String(e) });
+            // macOS has yet to ask the user about the folder: the workspace follows once it has (`workspacesSettled`).
+            if (e instanceof NotSettled) this.log.info("the session's folder waits on macOS's permission prompt", { cwd: seed.cwd, folder: e.root });
+            else this.log.warn("workspace lookup failed", { cwd: seed.cwd, error: e instanceof Error ? e.message : String(e) });
           }
         }
         this.deps.store.sessions.insert(session);
@@ -1896,7 +1924,11 @@ export class Sessions implements SessionHost {
     if (term && tether?.available) {
       await tether.info(term).catch(() => undefined);
       for (const w of tether.windows(term)) {
-        if (w.pid !== undefined && (await this.deps.raiser.raise(w.pid)) === "raised") return {};
+        if (w.pid === undefined) continue;
+        const r = await this.deps.raiser.raise(w.pid);
+        if (r === "raised") return {};
+        // a second window opened while the permission's prompt is still up would be one too many
+        if (r === "waiting") throw raiseRefused(r);
       }
       if (opts.open === false) return { attach: tether.attachCommand(term) };
       const opened = await this.openWindow(term, rec.session.title ?? (sessionName(rec.session.intent ?? "") || this.where(rec)), rec.session.cwd);
@@ -1911,6 +1943,7 @@ export class Sessions implements SessionHost {
     if (pid === undefined) throw new RpcError("unsupported", "the session's process is not known");
     const r = await this.deps.raiser.raise(pid);
     if (r === "unsupported") throw new RpcError("unsupported", "raising windows is not supported on this platform");
+    if (r === "denied" || r === "waiting") throw raiseRefused(r);
     if (r === "not_found") throw new RpcError("not_found", "no window owns the session's process");
     return {};
   }
@@ -2243,6 +2276,7 @@ export class Sessions implements SessionHost {
     try {
       const profile = this.deps.profiles.get(rec.session.profile);
       if (!this.acp || !profile) throw new Error("this node cannot start a session under the profile");
+      if (!rec.session.workspace) await this.deps.workspaces.settle(rec.session.cwd);
       const workspace = rec.session.workspace ?? this.deps.workspaces.fromSession(rec.session.cwd).id;
       const fresh = await this.acp.spawn({
         harness: "claude",

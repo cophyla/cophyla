@@ -247,7 +247,7 @@ export class Remote {
 
   private wantedKind(): HostKind {
     if (this.config.host !== "auto") return this.config.host;
-    return this.os === "linux" ? "sunshine" : "apollo";
+    return this.os === "windows" ? "apollo" : "sunshine";
   }
 
   private async bringUp(): Promise<void> {

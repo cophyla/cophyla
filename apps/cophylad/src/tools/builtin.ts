@@ -8,10 +8,17 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { basename, isAbsolute, join, sep } from "node:path";
 import { z } from "zod";
 import { RpcError } from "@cophyla/protocol";
+import { protectedFolders } from "../sessions/protected.ts";
 import { normalisePath } from "../workspaces/index.ts";
 import type { Tool, ToolContext } from "./index.ts";
 
 // --- paths ---------------------------------------------------------------------------------------
+
+/** The path resolved; refused while macOS is still asking the user about its folder, which would hold the daemon (protected.ts). */
+function settledPath(path: string): string {
+  if (!protectedFolders.settled(path)) throw new RpcError("unavailable", `macOS is asking whether Cophyla may read ${protectedFolders.rootOf(path)}; try again once it is answered`);
+  return normalisePath(path);
+}
 
 /** An absolute path, or one under the named workspace; on a confined node, inside the folders it shares. */
 export function resolvePath(path: string, workspace: string | undefined, ctx: ToolContext): string {
@@ -19,10 +26,10 @@ export function resolvePath(path: string, workspace: string | undefined, ctx: To
   if (workspace !== undefined) {
     const ws = ctx.workspaces.get(workspace);
     if (!ws) throw new RpcError("not_found", `no workspace ${workspace}`);
-    out = normalisePath(isAbsolute(path) ? path : join(ws.path, path));
+    out = settledPath(isAbsolute(path) ? path : join(ws.path, path));
   } else {
     if (!isAbsolute(path)) throw new RpcError("invalid", `path must be absolute or name a workspace: ${path}`);
-    out = normalisePath(path);
+    out = settledPath(path);
   }
   ctx.confine?.require(out, path);
   return out;

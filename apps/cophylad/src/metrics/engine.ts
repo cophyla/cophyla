@@ -1,6 +1,6 @@
 // The engine interface behind the sampler: one raw reading of the machine, every process
 // with its cumulative CPU time, parent, name and resident memory, and the GPUs where a
-// driver reports them. The OS engines live beside this file; `hostEngine` picks the one for
+// driver reports them (NVML for NVIDIA's, IOKit's IOAccelerator on a Mac). The OS engines live beside this file; `hostEngine` picks the one for
 // this platform and falls back to an engine that reads nothing, logged once, so a machine
 // the engines cannot read still runs the daemon.
 
@@ -46,7 +46,7 @@ export interface MetricsEngine {
 
 export interface HostEngineOptions {
   platform?: NodeJS.Platform;
-  /** Read the GPU through NVML. */
+  /** Read the GPU: through NVML, or IOKit on a Mac. */
   gpu: boolean;
   log: Logger;
 }
@@ -83,17 +83,23 @@ export function hostEngine(opts: HostEngineOptions): MetricsEngine {
     return unavailableEngine(e instanceof Error ? e.message : String(e), opts.log);
   }
   if (!opts.gpu) return base;
-  const { Nvml } = require("./nvml.ts") as typeof import("./nvml.ts");
-  const nvml = new Nvml(opts.log.child("nvml"));
+  let reader: { sample(): RawGpu[] | undefined; dispose(): void };
+  if (platform === "darwin") {
+    const { AppleGpu } = require("./apple-gpu.ts") as typeof import("./apple-gpu.ts");
+    reader = new AppleGpu(opts.log.child("gpu"));
+  } else {
+    const { Nvml } = require("./nvml.ts") as typeof import("./nvml.ts");
+    reader = new Nvml(opts.log.child("nvml"));
+  }
   return {
     name: base.name,
     sample: () => {
       const raw = base.sample() as RawSample;
-      const gpu = nvml.sample();
+      const gpu = reader.sample();
       return gpu ? { ...raw, gpu } : raw;
     },
     dispose: () => {
-      nvml.dispose();
+      reader.dispose();
       base.dispose?.();
     },
   };

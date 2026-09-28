@@ -13,10 +13,18 @@
 // so a window opened on a subdirectory is preferred to one opened on everything above it. No
 // window has it open and no window is asked — a terminal in an unrelated project is worse
 // than a terminal of the platform's own, which is what answers next.
+//
+// Raising a session that runs in an editor's terminal goes through the same door: the process
+// tree ends at the editor's app, and raising the app brings its front window, not the one the
+// session is in, nor its tab. So every window is asked whether one of its terminals runs a
+// process of the session's chain (`/focus`); the one that does shows that terminal and brings
+// itself forward, and the platform's raiser then brings the app. A window whose extension
+// predates `/focus` answers 404, which reads as "not mine".
 
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "../log.ts";
+import type { WindowRaiser } from "./focus.ts";
 import { isWithin } from "./paths.ts";
 import type { TerminalOpener, TerminalRequest } from "./terminals.ts";
 
@@ -134,4 +142,64 @@ export class EditorTerminalOpener implements TerminalOpener {
     if (!res.ok) throw new Error(`editor window ${editor.name ?? editor.pid} refused: ${res.status} ${(await res.text().catch(() => "")).slice(0, 200)}`);
     this.opts.log.info("terminal opened in an editor window", { window: editor.name ?? String(editor.pid), cwd: req.cwd });
   }
+}
+
+export interface EditorFocusOptions {
+  /** `<home>/editors`, where windows announce themselves. */
+  dir: string;
+  log: Logger;
+  isAlive?: IsAlive;
+  fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+}
+
+/** Asks every window whether one of its terminals runs one of `pids`; true once the one that does has shown it. */
+export async function focusInEditors(pids: number[], opts: EditorFocusOptions): Promise<boolean> {
+  const editors = readEditors(opts.dir, opts.isAlive);
+  if (editors.length === 0 || pids.length === 0) return false;
+  const doFetch = opts.fetch ?? globalThis.fetch;
+  const asked = await Promise.all(
+    editors.map(async (editor) => {
+      try {
+        const res = await doFetch(`http://127.0.0.1:${editor.port}/focus`, {
+          method: "POST",
+          headers: { "content-type": "application/json", authorization: `Bearer ${editor.token}` },
+          body: JSON.stringify({ pids }),
+          signal: AbortSignal.timeout(opts.timeoutMs ?? 3000),
+        });
+        if (!res.ok) return false;
+        const body = (await res.json().catch(() => undefined)) as { focused?: unknown } | undefined;
+        if (body?.focused !== true) return false;
+        opts.log.info("session shown in an editor window", { window: editor.name ?? String(editor.pid) });
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return asked.some(Boolean);
+}
+
+/**
+ * A raiser that tries the editor windows first: the session's chain goes to every window, the
+ * one whose terminal runs it shows it, and the platform's raiser then brings the app forward
+ * (its answer no longer matters: the window has been asked to come forward itself).
+ */
+export function withEditorWindows(raiser: WindowRaiser, opts: EditorFocusOptions): WindowRaiser {
+  return {
+    ancestors: (pid) => raiser.ancestors(pid),
+    ...(raiser.ancestorsOf ? { ancestorsOf: (pids: number[]) => raiser.ancestorsOf!(pids) } : {}),
+    commandLine: (pid) => raiser.commandLine(pid),
+    async raise(pid) {
+      if (readEditors(opts.dir, opts.isAlive).length > 0) {
+        const chain = await raiser.ancestors(pid).catch(() => []);
+        const pids = chain.length > 0 ? chain.map((p) => p.pid) : [pid];
+        if (await focusInEditors(pids, opts)) {
+          await raiser.raise(pid).catch(() => "not_found");
+          return "raised";
+        }
+      }
+      return raiser.raise(pid);
+    },
+  };
 }

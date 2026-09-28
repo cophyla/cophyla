@@ -78,6 +78,30 @@ describe("plan limits: Claude", () => {
     expect(limits.latest()![CLAUDE]!.weekly!.percent).toBe(55);
   });
 
+  test("macOS: with no .credentials.json the login comes from the profile's Keychain item; the file wins when there is one", async () => {
+    const home = join(dir, ".claude");
+    mkdirSync(home, { recursive: true });
+    const asked: string[] = [];
+    const item = JSON.stringify({ claudeAiOauth: { accessToken: "tok-kc", expiresAt: T0 + 3_600_000 } });
+    const keychain = async (configDir: string) => (asked.push(configDir), item);
+    const { fetch, calls } = fakeFetch([json(USAGE), json(USAGE)]);
+    const limits = new PlanLimits({ profiles: () => [profile(CLAUDE, "claude", home)], log: silentLogger, fetch, keychain, now: () => T0 });
+    await limits.refresh();
+    expect(asked).toEqual([home]);
+    expect(calls[0]!.headers["Authorization"]).toBe("Bearer tok-kc");
+    expect(limits.latest()![CLAUDE]!.weekly!.percent).toBe(55);
+    // a file there is read first, and the Keychain is not asked
+    login(home, T0 + 3_600_000);
+    const again = new PlanLimits({ profiles: () => [profile(CLAUDE, "claude", home)], log: silentLogger, fetch, keychain, now: () => T0 });
+    await again.refresh();
+    expect(asked).toHaveLength(1);
+    expect(calls[1]!.headers["Authorization"]).toBe("Bearer tok-1");
+    // no item, or one that is not a login: nothing to read
+    const none = new PlanLimits({ profiles: () => [profile(CLAUDE, "claude", join(dir, "other"))], log: silentLogger, fetch, keychain: async () => "not json", now: () => T0 });
+    await none.refresh();
+    expect(none.latest()).toBeUndefined();
+  });
+
   test("an expired token keeps the last reading and asks nothing; a refusal drops it; a 429 keeps it and waits a quarter hour", async () => {
     const home = join(dir, ".claude");
     login(home, T0 + 3_600_000);

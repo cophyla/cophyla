@@ -11,7 +11,7 @@ import { withCophyladHooks } from "../../src/sessions/claude/hooks.ts";
 import type { Daemon } from "../../src/daemon.ts";
 import { samePath } from "../../src/sessions/paths.ts";
 import { isMethod, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "../helpers.ts";
-import { CLAUDE, HARNESS, scrubbedEnv, sleep, spawnTui } from "./pty.ts";
+import { CLAUDE, HARNESS, passTrust, scrubbedEnv, spawnTui } from "./pty.ts";
 import type { Tui } from "./pty.ts";
 
 const run = HARNESS && existsSync(CLAUDE);
@@ -29,15 +29,7 @@ describe.skipIf(!run)("harness: claude", () => {
   const startClaude = async (extra: string[] = []) => {
     const t = await spawnTui(CLAUDE, ["--name", NAME, "--model", "haiku", "--permission-mode", "manual", "--settings", settingsPath, ...extra], { cwd, env: scrubbedEnv(), rawLog: join(d.home, "claude.raw") });
     // A fresh directory asks for trust first; the prompt box means the session is up.
-    for (let i = 0; i < 3; i++) {
-      const m = await t.waitFor(/trust|Yes, proceed|Enter to confirm|›|❯|>\s*$/i, 90_000, t.mark() - 4000);
-      if (/trust|proceed|confirm/i.test(m[0]) && !/›|❯/.test(t.text(300))) {
-        t.write("\r");
-        await sleep(1500);
-        continue;
-      }
-      break;
-    }
+    await passTrust(t);
     return t;
   };
 
@@ -91,9 +83,11 @@ describe.skipIf(!run)("harness: claude", () => {
       await waitFor(() => d.sessions.get(session.id)?.status === "needs_permission", 5_000, 100);
       // The terminal shows its own dialog beside the held hook.
       await tui.waitFor(/Do you want|Yes/i, 30_000, mark);
+      // From the answer on: the delivered message itself ("…then reply DONE") is on the screen.
+      const answered = tui.mark();
       await c.request("ask.answer", { id: ask.id, option: "allow" });
-      await tui.waitFor(/DONE/, 120_000, mark);
-      await waitFor(() => existsSync(join(cwd, "x.txt")), 10_000, 250);
+      await tui.waitFor(/DONE/, 120_000, answered);
+      await waitFor(() => existsSync(join(cwd, "x.txt")), 30_000, 250);
       expect(readFileSync(join(cwd, "x.txt"), "utf8")).toContain("hello");
       await waitFor(() => d.sessions.get(session.id)?.status === "idle", 60_000, 250);
       const phases = history().filter((e) => e.kind === "ask" && (e.payload as { ask: string }).ask === ask.id).map((e) => (e.payload as { phase: string }).phase);

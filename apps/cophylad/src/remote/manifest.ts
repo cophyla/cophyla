@@ -1,8 +1,10 @@
 // The moonlight-web release the web sidecar runs, pinned by version, size and hash per
 // target. It is a GPL program fetched from its own releases on first use, never bundled.
 // Every archive unpacks to `package/` with
-// `web-server`, `streamer` and `static/`. There is no macOS build: a Mac serves no phones
-// until one appears here.
+// `web-server`, `streamer` and `static/`. Upstream publishes no macOS build:
+// `apps/installer/scripts/build-moonlight-web.ts` makes the Apple Silicon one in the same
+// layout, and until an archive of it is published and pinned here, a Mac serves phones from
+// the unpacked build named by `[remote] web_server`.
 
 export interface WebAsset {
   url: string;

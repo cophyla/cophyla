@@ -22,6 +22,7 @@ import type { HarnessAdapter, SessionHost } from "../src/sessions/model.ts";
 import { Profiles } from "../src/sessions/profiles.ts";
 import { Store } from "../src/store/index.ts";
 import { Workspaces } from "../src/workspaces/index.ts";
+import type { ProtectedFolders } from "../src/sessions/protected.ts";
 
 /** A path as a TOML basic string value. */
 export const tomlString = (s: string): string => JSON.stringify(s);
@@ -45,7 +46,7 @@ export interface Mini {
 export async function miniSessions(
   configToml: string,
   adapters: (host: SessionHost, log: Logger, asks: Asks) => HarnessAdapter[],
-  opts: { raiser?: WindowRaiser; port?: number; log?: Logger; acp?: (config: Config) => { config: Config["acp"]; env: Record<string, string | undefined> }; deps?: Partial<SessionsDeps>; storePath?: string } = {},
+  opts: { raiser?: WindowRaiser; port?: number; log?: Logger; acp?: (config: Config) => { config: Config["acp"]; env: Record<string, string | undefined> }; deps?: Partial<SessionsDeps>; storePath?: string; guard?: ProtectedFolders } = {},
 ): Promise<Mini> {
   const home = tempHome(configToml);
   const p = paths(home);
@@ -59,8 +60,9 @@ export async function miniSessions(
   const nodeId = newId("node");
   const bus = new Bus();
   const asks = new Asks(store, nodeId, bus);
-  const profiles = new Profiles({ store, nodeId, config, log });
-  const workspaces = new Workspaces({ store, nodeId, bus });
+  // never the machine's own Keychain: a Mac signed in to Claude would count every profile
+  const profiles = new Profiles({ store, nodeId, config, log, keychainHas: () => false });
+  const workspaces = new Workspaces({ store, nodeId, bus, ...(opts.guard ? { guard: opts.guard } : {}) });
   const sessions = new Sessions({
     store,
     bus,

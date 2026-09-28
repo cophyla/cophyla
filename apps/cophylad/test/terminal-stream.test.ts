@@ -18,7 +18,7 @@ import { ClientRegistry } from "../src/api/clients.ts";
 import { Bus } from "../src/bus.ts";
 import { silentLogger } from "../src/log.ts";
 import { Tether } from "../src/sessions/tether/index.ts";
-import { BATCH_CAP, BEHIND_AT, TerminalRows, TerminalStreams } from "../src/sessions/tether/streams.ts";
+import { BATCH_CAP, BEHIND_AT, shellOf, TerminalRows, TerminalStreams } from "../src/sessions/tether/streams.ts";
 import type { Workspaces } from "../src/workspaces/index.ts";
 import { FakeTether } from "./fakes/tether.ts";
 import type { FakeSession } from "./fakes/tether.ts";
@@ -297,5 +297,13 @@ describe("terminals through the daemon", () => {
     const row = d.store.audit.list({ limit: 50 }).find((e) => e.action === "terminal.file" && e.outcome === "ok")!;
     expect(row.target).toBe(t.id);
     expect(JSON.stringify(row)).not.toContain("ship the viewer");
+  });
+});
+
+describe("the shell a terminal starts", () => {
+  test("$SHELL, a login shell on macOS as Terminal starts it; /bin/sh without one", () => {
+    expect(shellOf({ SHELL: "/bin/zsh" }, "darwin")).toEqual(["/bin/zsh", "-l"]);
+    expect(shellOf({ SHELL: "/bin/bash" }, "linux")).toEqual(["/bin/bash"]);
+    expect(shellOf({}, "linux")).toEqual(["/bin/sh"]);
   });
 });

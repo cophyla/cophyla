@@ -599,8 +599,11 @@ version = "0.12.0"
 dependencies = [
  "auto-launch",
  "base64 0.22.1",
+ "block2",
  "dirs 6.0.0",
  "env_logger",
+ "futures-channel",
+ "futures-lite",
  "futures-util",
  "glib",
  "gtk",

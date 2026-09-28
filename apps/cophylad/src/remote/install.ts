@@ -1,9 +1,11 @@
 // Finding and acquiring the host and the desktop viewer. Both are third-party GPL programs
 // cophylad drives at arm's length: they are
 // looked for at their installers' paths and, with `[remote] install`, fetched through the
-// platform's package manager — winget on Windows, Homebrew casks on macOS, Flatpak on
-// Linux — and never bundled. Apollo installs as `sunshine.exe` under `Apollo\`, so the kind
-// is read off the path, not the file name.
+// platform's package manager — winget on Windows, Homebrew on macOS, Flatpak on Linux — and
+// never bundled. Apollo installs as `sunshine.exe` under `Apollo\`, so the kind is read off
+// the path, not the file name. Apollo is Windows-only; on macOS Sunshine is a formula in
+// LizardByte's tap, not a cask, and Homebrew's `brew` is often off a GUI start's PATH, so it
+// is also looked for where its installer puts it.
 
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -35,10 +37,10 @@ export function hostCandidates(os: HostOs, env: Env = process.env): Located[] {
     }
     case "macos":
       return [
-        { kind: "apollo", path: "/Applications/Apollo.app/Contents/MacOS/sunshine" },
-        { kind: "sunshine", path: "/Applications/Sunshine.app/Contents/MacOS/sunshine" },
         { kind: "sunshine", path: "/opt/homebrew/bin/sunshine" },
         { kind: "sunshine", path: "/usr/local/bin/sunshine" },
+        { kind: "sunshine", path: "/opt/local/bin/sunshine" },
+        { kind: "sunshine", path: "/Applications/Sunshine.app/Contents/MacOS/sunshine" },
       ];
     default:
       return [
@@ -93,21 +95,30 @@ export function locateMoonlight(config: RemoteConfig, os: HostOs, env: Env = pro
 /** The package manager command that installs a host of `kind`, or the viewer, on `os`. */
 export function installCommand(what: HostKind | "moonlight", os: HostOs): string[] | undefined {
   const winget = (id: string) => ["winget", "install", "-e", "--id", id, "--accept-package-agreements", "--accept-source-agreements"];
-  const brew = (cask: string) => ["brew", "install", "--cask", cask];
+  const brew = (...what: string[]) => ["brew", "install", ...what];
   const flatpak = (app: string) => ["flatpak", "install", "-y", "flathub", app];
   switch (what) {
     case "apollo":
-      return os === "windows" ? winget("ClassicOldSong.Apollo") : os === "macos" ? brew("apollo") : undefined;
+      return os === "windows" ? winget("ClassicOldSong.Apollo") : undefined;
     case "sunshine":
-      return os === "windows" ? winget("LizardByte.Sunshine") : os === "macos" ? brew("sunshine") : flatpak("dev.lizardbyte.app.Sunshine");
+      return os === "windows" ? winget("LizardByte.Sunshine") : os === "macos" ? brew("lizardbyte/homebrew/sunshine") : flatpak("dev.lizardbyte.app.Sunshine");
     case "moonlight":
-      return os === "windows" ? winget("MoonlightGameStreamingProject.Moonlight") : os === "macos" ? brew("moonlight") : flatpak("com.moonlight_stream.Moonlight");
+      return os === "windows" ? winget("MoonlightGameStreamingProject.Moonlight") : os === "macos" ? brew("--cask", "moonlight") : flatpak("com.moonlight_stream.Moonlight");
   }
+}
+
+/** Homebrew's `brew`: on the PATH, else where its installer puts it (Apple Silicon, then Intel). */
+export function brewPath(env: Env = process.env, exists: (p: string) => boolean = existsSync): string | undefined {
+  const found = Bun.which("brew", { PATH: env["PATH"] ?? "" });
+  if (found) return found;
+  return ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].find((p) => exists(p));
 }
 
 export interface InstallDeps {
   exec: Exec;
   os: HostOs;
+  /** Where `brew` is: `brewPath()` when not given. */
+  brew?: string;
   /** Each line the installer prints, for `remote.state.host.step`. */
   onLine?: (line: string) => void;
 }
@@ -116,6 +127,11 @@ export interface InstallDeps {
 export async function install(what: HostKind | "moonlight", deps: InstallDeps): Promise<void> {
   const command = installCommand(what, deps.os);
   if (!command) throw new Error(`no package manager install for ${what} on ${deps.os}`);
+  if (command[0] === "brew") {
+    const brew = deps.brew ?? brewPath();
+    if (!brew) throw new Error(`installing ${what} needs Homebrew (https://brew.sh), and it is not installed`);
+    command[0] = brew;
+  }
   const lines: string[] = [];
   const result = await deps.exec(command, {
     onLine: (line) => {

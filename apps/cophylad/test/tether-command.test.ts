@@ -1,14 +1,16 @@
 // The `tether` command an installed platform keeps on the user's PATH: one copy in a folder
 // that never moves, replaced beside a host still running the old one; that folder on the
-// user's PATH on Windows, written as the value's own kind; a link in ~/.local/bin elsewhere,
-// never over another tether.
+// user's PATH on Windows, written as the value's own kind; a link elsewhere, in the bin folder
+// the user's shells look in, never over another tether; the attach command a user is given
+// names `tether` only when their shells' PATH finds it.
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, readlinkSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { silentLogger } from "../src/log.ts";
 import { runCommand, type Exec } from "../src/sessions/focus.ts";
-import { ADD_TO_USER_PATH, addToUserPath, commandDir, linkCommand, pathHas, placeCommand, putCommandOnPath } from "../src/sessions/tether/command.ts";
+import { ADD_TO_USER_PATH, addToUserPath, commandDir, linkCommand, linkDirFor, pathHas, placeCommand, putCommandOnPath } from "../src/sessions/tether/command.ts";
+import { Tether } from "../src/sessions/tether/index.ts";
 import { TETHER_NAME } from "../src/sessions/tether/locate.ts";
 import { tempHome } from "./helpers.ts";
 
@@ -59,6 +61,54 @@ describe("the command's file", () => {
 });
 
 describe("the PATH", () => {
+  test.skipIf(WIN)("the attach command names tether when the user's shells find it, else the node's own copy", () => {
+    const home = tempHome();
+    const bin = join(home, "bin");
+    mkdirSync(bin, { recursive: true });
+    writeFileSync(join(bin, "tether"), "#!/bin/sh\n");
+    chmodSync(join(bin, "tether"), 0o755);
+    const config = { idle_exit_s: 600, window: "auto" as const, window_on_start: false, profiles: false, on_path: true, dir: join(home, "state") };
+    const make = (userPath: string) => new Tether({ config, env: {}, dataDir: join(home, "data"), nodeId: "node_test", log: silentLogger, exe: "/opt/cophyla/tether", userPath });
+    expect(make(bin).attachCommand({ host: "h", id: "t1" })).toBe(`tether --dir ${join(home, "state")} attach t1`);
+    expect(make("/usr/bin").attachCommand({ host: "h", id: "t1" })).toStartWith("/opt/cophyla/tether --dir");
+  });
+
+  test("a terminal profile is written where the terminal takes one: Windows Terminal, iTerm2 on a Mac that has it", async () => {
+    const home = tempHome();
+    const ran: string[][] = [];
+    const config = { idle_exit_s: 600, window: "auto" as const, window_on_start: false, profiles: true, on_path: false, dir: join(home, "state") };
+    const tether = new Tether({
+      config,
+      env: {},
+      dataDir: join(home, "data"),
+      nodeId: "node_test",
+      log: silentLogger,
+      exe: "/opt/cophyla/tether",
+      run: async (_exe, args) => {
+        ran.push(args);
+        return { code: 0, out: "wrote /Users/me/Library/Application Support/iTerm2/DynamicProfiles/Cophyla-claude-cophyla.json\n", err: "" };
+      },
+    });
+    const req = { app: "Cophyla", name: "Claude (Cophyla)", argv: ["claude"] };
+    expect(await tether.installProfile({ ...req, platform: "darwin", iterm: () => true })).toBe("/Users/me/Library/Application Support/iTerm2/DynamicProfiles/Cophyla-claude-cophyla.json");
+    expect(ran[0]!.slice(2, 5)).toEqual(["profiles", "install", "--iterm2"]);
+    expect(await tether.installProfile({ ...req, platform: "darwin", iterm: () => false })).toBeUndefined();
+    await tether.installProfile({ ...req, platform: "win32" });
+    expect(ran.map((a) => a[4])).toEqual(["--iterm2", "--wt"]);
+    expect(await tether.installProfile({ ...req, platform: "linux" })).toBeUndefined();
+    expect(ran).toHaveLength(2);
+  });
+
+  test("the link goes where the user's shells look: their own bin folder on it, else a /usr/local/bin they may write, else ~/.local/bin", () => {
+    const home = "/Users/me";
+    const never = () => false;
+    expect(linkDirFor("/opt/homebrew/bin:/Users/me/.local/bin:/usr/bin", home, never)).toBe("/Users/me/.local/bin");
+    expect(linkDirFor("/Users/me/bin:/usr/bin", home, never)).toBe("/Users/me/bin");
+    expect(linkDirFor("/usr/local/bin:/usr/bin:/bin", home, (d) => d === "/usr/local/bin")).toBe("/usr/local/bin");
+    // macOS's stock PATH on Apple Silicon: nothing of the user's, /usr/local/bin root's
+    expect(linkDirFor("/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", home, never)).toBe("/Users/me/.local/bin");
+  });
+
   test("an entry matches whatever its case or trailing separator on Windows, exactly elsewhere", () => {
     expect(pathHas("C:\\a;c:\\users\\me\\appdata\\local\\cophyla\\bin\\;D:\\b", "C:\\Users\\Me\\AppData\\Local\\Cophyla\\bin", "win32")).toBe(true);
     expect(pathHas("C:\\a;;C:\\Cophyla\\binx", "C:\\Cophyla\\bin", "win32")).toBe(false);

@@ -31,7 +31,7 @@ uv pip install --python .venv/Scripts/python.exe -r requirements-windows-x64.loc
 |---|---|
 | `--port` | the port the daemon chose; there is no default worth relying on |
 | `--host` | loopback, and it refuses anything else without `--allow-lan` |
-| `--device` | `auto` (CUDA when there is one), `cuda`, `cpu` |
+| `--device` | `auto` (CUDA when there is one, else Apple's GPU, else the CPU), `cuda`, `mps`, `cpu` |
 | `--voice` | the reference clip the voice is cloned from; required, and Chatterbox asserts it is longer than five seconds |
 | `--affinity` | `0-15` or `0-7,16`: the logical CPUs to run on |
 | `--warm` | the line spoken once at startup to compile the kernels |
@@ -62,8 +62,10 @@ uv pip compile pyproject.toml --generate-hashes --python-version 3.11 \
 ```
 
 Windows and Linux take `torch==2.6.0+cu124` from the CUDA index; macOS takes the default
-wheels, where the engine runs on the CPU and is slower than real time — Kokoro is the better
-answer there. `setuptools` is held under 81 because the dependency chain still imports
+wheels, which run the engine on Apple's GPU (`mps`, with `PYTORCH_ENABLE_MPS_FALLBACK=1` from
+the daemon so an operator MPS lacks runs on the CPU); not measured on a Mac yet, and Kokoro
+remains the better answer where it is slower than real time. `--affinity` is ignored on macOS,
+which has no CPU affinity. `setuptools` is held under 81 because the dependency chain still imports
 `pkg_resources`.
 
 ## Measured

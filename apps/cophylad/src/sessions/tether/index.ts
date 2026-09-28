@@ -15,6 +15,7 @@ import { connectOrStart, liveHosts, stateDir, TetherClient } from "@tether-pty/c
 import type { HostFile, Screen, SessionInfo, StartOptions, StreamHandlers, SubscribeParams, Subscription, TetherEvent } from "@tether-pty/client";
 import type { TetherConfig } from "../../config/schema.ts";
 import type { Logger } from "../../log.ts";
+import { itermInstalled } from "../terminals.ts";
 import { locateTether, stageTether } from "./locate.ts";
 
 export interface RunResult {
@@ -51,6 +52,8 @@ export interface TetherOptions {
   hosts?: (dir: string) => HostFile[];
   /** How often the tether folder is looked at for a host started since; `SCAN_MS` by default. */
   scanMs?: number;
+  /** The PATH the user's own shells have, where `tether` is looked for by name; the daemon's by default. */
+  userPath?: string;
 }
 
 /** How often the tether folder is read for a host the daemon does not hold: one directory listing. */
@@ -465,12 +468,15 @@ export class Tether {
   }
 
   /**
-   * Writes terminal profiles that start `argv` in tether: a Windows Terminal fragment where
-   * Windows Terminal is. Idempotent; the path when one was written.
+   * Writes terminal profiles that start `argv` in tether: a Windows Terminal fragment on
+   * Windows, an iTerm2 dynamic profile on a Mac with iTerm2 (Terminal has nothing of the kind).
+   * Idempotent; the path when one was written.
    */
-  async installProfile(opts: { app: string; name: string; argv: string[] }): Promise<string | undefined> {
-    if (!this.exePath || process.platform !== "win32") return undefined;
-    const r = await this.run(this.exePath, [...this.dirArgs(), "profiles", "install", "--wt", "--app", opts.app, "--name", opts.name, "--", ...opts.argv], this.opts.env);
+  async installProfile(opts: { app: string; name: string; argv: string[]; platform?: NodeJS.Platform; iterm?: () => boolean }): Promise<string | undefined> {
+    const platform = opts.platform ?? process.platform;
+    const kind = platform === "win32" ? "--wt" : platform === "darwin" && (opts.iterm ?? itermInstalled)() ? "--iterm2" : undefined;
+    if (!this.exePath || !kind) return undefined;
+    const r = await this.run(this.exePath, [...this.dirArgs(), "profiles", "install", kind, "--app", opts.app, "--name", opts.name, "--", ...opts.argv], this.opts.env);
     if (r.code !== 0) throw new Error(r.err.trim() || `tether profiles exited ${r.code}`);
     return r.out.trim().split(/\s+/).slice(1).join(" ") || undefined;
   }
@@ -483,11 +489,12 @@ export class Tether {
 
   /**
    * What the user types in a terminal of their own to show a terminal there: `tether` by name
-   * where the PATH finds it (the platform puts it there), else this node's own copy.
+   * where their shells' PATH finds it (the platform puts it there), else this node's own copy.
    */
   attachCommand(ref: TerminalRef): string {
     if (!this.exePath) throw new Error("tether is not on this node");
-    const bin = Bun.which("tether") ? "tether" : this.exePath;
+    const userPath = this.opts.userPath ?? process.env["PATH"] ?? "";
+    const bin = Bun.which("tether", { PATH: userPath }) ? "tether" : this.exePath;
     return [bin, ...this.dirArgs(), "attach", ref.id].map((w) => (/[\s"'&|<>^()]/.test(w) ? `"${w}"` : w)).join(" ");
   }
 }

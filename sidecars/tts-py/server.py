@@ -31,7 +31,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--port", type=int, default=8321)
 parser.add_argument("--host", default="127.0.0.1", help="loopback unless --allow-lan says otherwise")
 parser.add_argument("--allow-lan", action="store_true", help="bind off loopback; the daemon never asks for this")
-parser.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
+parser.add_argument("--device", default="auto", choices=["auto", "cuda", "mps", "cpu"])
 parser.add_argument("--voice", required=True, help="the reference clip the voice is cloned from; longer than 5 s, or Chatterbox refuses it")
 parser.add_argument("--affinity", default="", help="logical CPUs to run on, e.g. 0-15 or 0-7,16: on a hybrid CPU the token loop is launch-bound and three times slower on the efficiency cores")
 parser.add_argument("--warm", default="Ready.", help="the line spoken once at startup to compile the kernels")
@@ -61,13 +61,14 @@ if args.affinity:
     import psutil
 
     wanted = cpus(args.affinity)
-    if wanted:
+    # macOS has no CPU affinity at all: psutil has no cpu_affinity there
+    if wanted and hasattr(psutil.Process, "cpu_affinity"):
         psutil.Process().cpu_affinity(wanted)
         print(f"pinned to {len(wanted)} logical CPUs ({args.affinity})", flush=True)
 
 device = args.device
 if device == "auto":
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
 
 t0 = time.perf_counter()
 from chatterbox.tts_turbo import ChatterboxTurboTTS  # noqa: E402

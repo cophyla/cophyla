@@ -8,6 +8,8 @@ import { basename, dirname, join, resolve } from "node:path";
 import { newId, RpcError } from "@cophyla/protocol";
 import type { NodeId, NodeScope, Workspace, WorkspaceOrigin } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
+import { NotSettled, protectedFolders } from "../sessions/protected.ts";
+import type { ProtectedFolders } from "../sessions/protected.ts";
 import type { Store } from "../store/index.ts";
 
 export interface WorkspacesDeps {
@@ -15,6 +17,8 @@ export interface WorkspacesDeps {
   nodeId: NodeId;
   bus: Bus;
   now?: () => number;
+  /** macOS's protected folders: a directory in one is read only once its first read has settled (protected.ts). */
+  guard?: ProtectedFolders;
 }
 
 const TOUCH_COALESCE_MS = 1000;
@@ -104,6 +108,20 @@ export class Workspaces {
     this.deps = deps;
   }
 
+  private get guard(): ProtectedFolders {
+    return this.deps.guard ?? protectedFolders;
+  }
+
+  /** Called with a macOS protected folder once it may be read: what `fromSession` refused there resolves now. */
+  onSettled(fn: (root: string) => void): () => void {
+    return this.guard.onSettled(fn);
+  }
+
+  /** Resolves once a directory can be read without waiting on the user (at once off macOS). */
+  settle(dir: string): Promise<void> {
+    return this.guard.settle(dir);
+  }
+
   private now(): number {
     return (this.deps.now ?? Date.now)();
   }
@@ -120,6 +138,7 @@ export class Workspaces {
 
   /** Adds or renames a workspace by hand. */
   put(input: { id?: string; node: NodeId; path: string; name: string }): Workspace {
+    if (!this.guard.settled(input.path)) throw new RpcError("unavailable", `macOS is asking whether Cophyla may read ${this.guard.rootOf(input.path)}; try again once it is answered`);
     const path = normalisePath(input.path);
     if (!isDirectory(path)) throw new RpcError("not_found", `no directory at ${path}`);
     const existing = (input.id ? this.deps.store.workspaces.get(input.id) : undefined) ?? this.deps.store.workspaces.getByPath(input.node, path);
@@ -135,7 +154,12 @@ export class Workspaces {
   /** One workspace per path in a `workspaces` scope; nothing for a `machine` scope. */
   fromScope(scope: NodeScope): Workspace[] {
     if (scope.kind !== "workspaces") return [];
-    return scope.paths.map((p) => this.upsertDiscovered(p, "scope"));
+    const out: Workspace[] = [];
+    for (const p of scope.paths) {
+      if (this.guard.settled(p)) out.push(this.upsertDiscovered(p, "scope"));
+      else void this.guard.settle(p).then(() => this.upsertDiscovered(p, "scope"));
+    }
+    return out;
   }
 
   /**
@@ -154,6 +178,8 @@ export class Workspaces {
   clampRoot?: (root: string, cwd: string) => string;
 
   fromSession(cwd: string): Workspace {
+    // A folder macOS has not been asked about yet: reading it now would wait on the user.
+    if (!this.guard.settled(cwd)) throw new NotSettled(this.guard.rootOf(cwd)!);
     const repo = findRepo(cwd);
     const root = repo ? repo.root : cwd;
     const at = this.clampRoot ? this.clampRoot(root, cwd) : root;

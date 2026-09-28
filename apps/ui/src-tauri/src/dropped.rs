@@ -21,7 +21,9 @@
 // one of the paths' own. WebKitGTK (Linux) shows a page no dropped file at all
 // (webkit.org/b/271957): the drop comes as a `text/uri-list` with nothing in it, so there the
 // view asks with no names and is handed the drop's paths as they are. `filePaths` in
-// `host.ready` tells the view it can ask, on every platform.
+// `host.ready` tells the view it can ask, on every platform. A Mac's file system takes a name
+// in either Unicode form (the Finder's paths may spell "é" decomposed, a page's `File.name`
+// composed), so there a name matches its path's in NFC.
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -107,12 +109,29 @@ fn claim(dropped: Option<Dropped>, names: Option<&[String]>, now: Instant) -> Re
         .map(|name| {
             let path = unused
                 .iter_mut()
-                .find(|p| p.as_ref().is_some_and(|p| p.file_name() == Some(OsStr::new(name))))
+                .find(|p| p.as_ref().and_then(|p| p.file_name()).is_some_and(|f| same_name(f, name)))
                 .and_then(Option::take)
                 .ok_or_else(|| format!("invalid: no file named {name} was dropped"))?;
             text(path)
         })
         .collect()
+}
+
+/// Whether a dropped file's name is the one the view saw: the same text, or on macOS the same
+/// once both are composed (NFC), as its file system compares them.
+fn same_name(file: &OsStr, name: &str) -> bool {
+    if file == OsStr::new(name) {
+        return true;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_foundation::NSString;
+        let composed = |s: &str| NSString::from_str(s).precomposedStringWithCanonicalMapping().to_string();
+        if let Some(file) = file.to_str() {
+            return composed(file) == composed(name);
+        }
+    }
+    false
 }
 
 /// A dropped path as the view takes it, text.
@@ -167,6 +186,17 @@ mod tests {
 
     fn names(names: &[&str]) -> Vec<String> {
         names.iter().map(|n| n.to_string()).collect()
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_mac_matches_a_name_whichever_unicode_form_either_side_spells_it_in() {
+        let at = Instant::now();
+        // the Finder's path decomposed, the page's name composed, and the other way round
+        let got = claim(drop_of(&["/Users/u/Cafe\u{301}.txt"], at), Some(&names(&["Caf\u{e9}.txt"])), at).unwrap();
+        assert_eq!(got, vec!["/Users/u/Cafe\u{301}.txt".to_string()]);
+        assert!(claim(drop_of(&["/Users/u/Caf\u{e9}.txt"], at), Some(&names(&["Cafe\u{301}.txt"])), at).is_ok());
+        assert!(claim(drop_of(&["/Users/u/Cafe.txt"], at), Some(&names(&["Caf\u{e9}.txt"])), at).is_err());
     }
 
     #[test]

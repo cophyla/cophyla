@@ -1,6 +1,7 @@
 # The test suite on the three platforms the product ships on: typecheck, `bun test` and the
-# two crates' `cargo test`. No release is built here; the release scripts run on a machine
-# with the keys. tether is a submodule with CI of its own; its SDK is a workspace here.
+# three crates' `cargo test` (the desktop shell, the launcher, cophyla-net). No release is
+# built here; the release scripts run on a machine with the keys. tether is a submodule with
+# CI of its own; its SDK is a workspace here.
 name: test
 
 on:
@@ -36,6 +37,7 @@ jobs:
           workspaces: |
             apps/ui/src-tauri
             apps/installer/src-tauri
+            apps/net
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -73,3 +75,5 @@ jobs:
         working-directory: apps/ui/src-tauri
       - run: cargo test
         working-directory: apps/installer/src-tauri
+      - run: cargo test
+        working-directory: apps/net

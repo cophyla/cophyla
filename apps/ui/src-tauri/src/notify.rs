@@ -15,17 +15,22 @@
 // Linux: `org.freedesktop.Notifications` over D-Bus (notify-rust), actions as buttons where
 // the desktop shows them (GNOME, KDE, dunst); the app name and desktop entry attribute it.
 //
-// macOS: `UNUserNotificationCenter` (notify-rust's `preview-macos-un` backend), which needs
-// the process to run inside a code-signed bundle with an identifier: a dev run from a
-// checkout gets `unsupported`. The user is asked once for permission at start. Buttons come
-// from a notification category the backend registers per set of actions.
+// macOS: `UNUserNotificationCenter` (mac-usernotifications, notify-rust's `preview-macos-un`
+// backend, used directly), which needs the process to run inside a code-signed bundle with an
+// identifier: a dev run from a checkout gets `unsupported`. The user is asked once for
+// permission at start. Buttons come from a notification category the backend registers per
+// set of actions; the body is the default action, so there is no "Open" button. macOS tells
+// nothing when an app takes its own notification down, so each wait races a stop that
+// `dismiss` and `clear` fire, and ends with the notification rather than living on.
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Runtime};
 
 use crate::install::Install;
 
+#[cfg_attr(not(windows), allow(dead_code))]
 pub const AUMID: &str = "com.fareaststudios.cophyla.desktop";
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const DISPLAY_NAME: &str = "Cophyla";
 pub const EVENT_ACTIVATED: &str = "ask:activated";
 
@@ -232,6 +237,7 @@ mod platform {
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod platform {
     use super::*;
+    #[cfg(target_os = "linux")]
     use notify_rust::Notification;
     use std::sync::{Mutex, MutexGuard, OnceLock};
 
@@ -239,11 +245,15 @@ mod platform {
     static ICON: OnceLock<std::path::PathBuf> = OnceLock::new();
 
     /// A notification up, for `clear` and `dismiss`: on Linux its handle, which closes it and
-    /// keeps its connection (some desktops need it for the buttons); on macOS its identifier.
+    /// keeps its connection (some desktops need it for the buttons); on macOS its identifier,
+    /// and the stop that ends its wait (dropped, it ends it too).
     #[cfg(target_os = "linux")]
     type Up = notify_rust::NotificationHandle;
     #[cfg(target_os = "macos")]
-    type Up = String;
+    struct Up {
+        id: String,
+        stop: futures_channel::oneshot::Sender<()>,
+    }
 
     /// The notifications up, each with the ask it is for.
     static SHOWN: Mutex<Vec<(String, Up)>> = Mutex::new(Vec::new());
@@ -255,33 +265,37 @@ mod platform {
     pub fn set_process_aumid() {}
 
     /// Linux: nothing to register beyond the icon. macOS: outside a bundle notifications
-    /// stay unsupported; inside one the user is asked once, at start, for permission.
+    /// stay unsupported; inside one the user is asked once, at start, for permission. The
+    /// first time, the answer waits on the user's click on the system's prompt, so the ask
+    /// runs on a thread of its own: `register` is called from `setup`, before the window, the
+    /// tray and the daemon exist, and none of them may wait on it.
     pub fn register<R: Runtime>(_app: &AppHandle<R>, install: Option<&Install>) {
         let _ = ICON.set(icon_path(install));
         #[cfg(target_os = "macos")]
         match notify_rust::check_bundle() {
-            Ok(()) => match notify_rust::request_auth_blocking() {
-                Ok(status) => log::info!("notifications: authorization {status:?}"),
-                Err(e) => log::warn!("notifications: authorization request failed: {e}"),
-            },
+            Ok(()) => {
+                let ask = std::thread::Builder::new().name("notification-auth".into()).spawn(|| match notify_rust::request_auth_blocking() {
+                    Ok(status) => log::info!("notifications: authorization {status:?}"),
+                    Err(e) => log::warn!("notifications: authorization request failed: {e}"),
+                });
+                if let Err(e) = ask {
+                    log::warn!("notifications: cannot ask for authorization: {e}");
+                }
+            }
             Err(e) => log::info!("notifications unsupported outside an app bundle: {e}"),
         }
     }
 
+    #[cfg(target_os = "linux")]
     pub fn show<R: Runtime>(app: &AppHandle<R>, ask: NotifyAsk) -> Result<(), String> {
-        #[cfg(target_os = "macos")]
-        notify_rust::check_bundle().map_err(|e| format!("unsupported: not running from an app bundle ({e})"))?;
         let mut n = Notification::new();
         n.summary(&ask.title).appname(DISPLAY_NAME);
         if let Some(detail) = ask.detail.as_deref().filter(|d| !d.trim().is_empty()) {
             n.body(&truncate(detail, DETAIL_CHARS));
         }
-        #[cfg(target_os = "linux")]
-        {
-            n.hint(notify_rust::Hint::DesktopEntry(DISPLAY_NAME.into()));
-            if let Some(icon) = ICON.get().filter(|p| p.exists()) {
-                n.icon(&icon.to_string_lossy());
-            }
+        n.hint(notify_rust::Hint::DesktopEntry(DISPLAY_NAME.into()));
+        if let Some(icon) = ICON.get().filter(|p| p.exists()) {
+            n.icon(&icon.to_string_lossy());
         }
         for (id, label) in buttons(&ask) {
             n.action(&id, &label);
@@ -296,28 +310,50 @@ mod platform {
         };
         // The wait blocks until the user acts or the notification goes away: its own thread.
         // Linux listens by id, so the handle can stay in `SHOWN` for `clear` to close.
-        #[cfg(target_os = "linux")]
-        let wait = {
-            let id = handle.id();
-            shown().push((ask.id.clone(), handle));
-            move || {
-                let _ = notify_rust::handle_action(id, |response| match response {
-                    notify_rust::ActionResponse::Custom(action) => on_action(*action),
-                    notify_rust::ActionResponse::Closed(_) => {}
-                });
-                shown().retain(|(_, h)| h.id() != id);
-            }
+        let id = handle.id();
+        shown().push((ask.id.clone(), handle));
+        let wait = move || {
+            let _ = notify_rust::handle_action(id, |response| match response {
+                notify_rust::ActionResponse::Custom(action) => on_action(*action),
+                notify_rust::ActionResponse::Closed(_) => {}
+            });
+            shown().retain(|(_, h)| h.id() != id);
         };
-        #[cfg(target_os = "macos")]
-        let wait = {
-            let id = match handle.id() {
-                notify_rust::NotificationId::Mac(id) => id,
-                other => format!("{other:?}"),
-            };
-            shown().push((ask.id.clone(), id.clone()));
-            move || {
-                handle.wait_for_action(on_action);
-                shown().retain(|(_, s)| *s != id);
+        std::thread::Builder::new().name("notification".into()).spawn(wait).map_err(|e| format!("cannot wait for the notification: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    pub fn show<R: Runtime>(app: &AppHandle<R>, ask: NotifyAsk) -> Result<(), String> {
+        use futures_lite::future;
+        use mac_usernotifications::{Action, NotificationResponse};
+
+        notify_rust::check_bundle().map_err(|e| format!("unsupported: not running from an app bundle ({e})"))?;
+        let mut n = mac_usernotifications::Notification::new().title(&ask.title);
+        if let Some(detail) = ask.detail.as_deref().filter(|d| !d.trim().is_empty()) {
+            n = n.message(truncate(detail, DETAIL_CHARS));
+        }
+        for (id, label) in buttons(&ask) {
+            n = n.action(Action::button(id, label));
+        }
+        let handle = n.send_blocking().map_err(|e| format!("notification failed: {e}"))?;
+        let id = handle.notification_id().to_owned();
+        let (stop, stopped) = futures_channel::oneshot::channel::<()>();
+        shown().push((ask.id.clone(), Up { id: id.clone(), stop }));
+        let app = app.clone();
+        // The response comes through the backend's delegate on the main thread; this thread
+        // waits for it or for the stop, whichever is first.
+        let wait = move || {
+            let answered: Option<NotificationResponse> = future::block_on(future::or(async { handle.response().await.ok() }, async {
+                let _ = stopped.await;
+                None
+            }));
+            shown().retain(|(_, up)| up.id != id);
+            match answered {
+                Some(r) if r.is_dismiss_action() || r.is_timed_out() => {}
+                Some(r) if r.is_default_action() => activated(&app, None),
+                Some(r) => activated(&app, Some(&r.action_identifier)),
+                None => {}
             }
         };
         std::thread::Builder::new().name("notification".into()).spawn(wait).map_err(|e| format!("cannot wait for the notification: {e}"))?;
@@ -334,7 +370,10 @@ mod platform {
                 #[cfg(target_os = "linux")]
                 n.close();
                 #[cfg(target_os = "macos")]
-                mac_usernotifications::blocking::close_delivered(&n);
+                {
+                    mac_usernotifications::blocking::close_delivered(&n.id);
+                    let _ = n.stop.send(());
+                }
             }
         });
     }

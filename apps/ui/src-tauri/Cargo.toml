@@ -52,11 +52,16 @@ gtk = "0.18"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 notify-rust = { version = "4.18", features = ["preview-macos-un"] }
-# The backend itself, for taking a delivered notification down by its identifier.
+# The backend itself: a notification sent and waited for with a stop of its own, and taken
+# down by its identifier (notify.rs); the future helpers are the versions it is built on.
 mac-usernotifications = "0.3.1"
+futures-lite = "2"
+futures-channel = "0.3"
 # Where files dropped on the view are, read as the drop passes into it (dropped/macos.rs): the
 # versions wry is built on.
 objc2 = "0.6"
+# The decision WebKit's media request is answered with (voice.rs), a block: the version wry is built on.
+block2 = "0.6"
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString"] }
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "NSDragging", "NSPasteboard"] }
 

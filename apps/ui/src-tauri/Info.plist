@@ -13,6 +13,20 @@
 	<string>Cophyla connects your phone and your other computers to this one directly when they are on the same network.</string>
 	<!-- Voice: the app listens for its wake words and to the talk key, and sends what follows
 	     to cophylad to be transcribed; WebKit asks macOS for the microphone with this text. -->
+	<!-- Sessions work in the user's folders: cophylad reads a session's folder for its workspace,
+	     its repository and the files the app shows, and macOS asks before the first read in
+	     Desktop, Documents, Downloads or a volume (sessions/protected.ts keeps that wait off the
+	     daemon's thread). -->
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Cophyla shows the files and the repository of the coding sessions you run in your Desktop folder.</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Cophyla shows the files and the repository of the coding sessions you run in your Documents folder.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Cophyla shows the files and the repository of the coding sessions you run in your Downloads folder.</string>
+	<key>NSRemovableVolumesUsageDescription</key>
+	<string>Cophyla shows the files and the repository of the coding sessions you run on this drive.</string>
+	<key>NSNetworkVolumesUsageDescription</key>
+	<string>Cophyla shows the files and the repository of the coding sessions you run on this network volume.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Cophyla listens for "Cophyla" and "Hey Phyla", and to you while you hold the talk key, so you can speak to it.</string>
 </dict>

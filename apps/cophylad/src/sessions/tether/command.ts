@@ -1,13 +1,16 @@
 // The `tether` command in the user's own shells, on an installed platform. The daemon runs
 // tether from a copy of its own (see locate.ts); the command is one more copy, in a folder
 // that never moves, `<root>/bin/`, so the PATH names it once and every later version lands
-// under the same name. On Windows that folder goes on the user's PATH; elsewhere a link in
-// `~/.local/bin` names the file, and one already there that is not the platform's is left be.
+// under the same name. On Windows that folder goes on the user's PATH; elsewhere a link names
+// the file, in the first of the user's own bin folders their shells' PATH has (`~/.local/bin`,
+// where Claude Code's installer puts `claude`, then `~/bin`), else in `/usr/local/bin` when
+// their PATH has it and they may write there, else in `~/.local/bin` all the same (macOS's
+// stock PATH has none of them). One already there that is not the platform's is left be.
 //
 // A host started from the command runs from that file, which `placeBinary` replaces by
 // moving it aside.
 
-import { existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
+import { accessSync, constants, existsSync, lstatSync, mkdirSync, readlinkSync, rmSync, symlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../../log.ts";
@@ -91,6 +94,24 @@ export function linkCommand(target: string, linkDir: string): OnPathResult {
   return "linked";
 }
 
+function writable(dir: string): boolean {
+  try {
+    accessSync(dir, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** macOS and Linux: the folder the link goes in, for a user whose shells have `userPath`. */
+export function linkDirFor(userPath: string, home: string, canWrite: (dir: string) => boolean = writable): string {
+  const own = [join(home, ".local", "bin"), join(home, "bin")];
+  const named = own.find((d) => pathHas(userPath, d, "linux"));
+  if (named) return named;
+  if (pathHas(userPath, "/usr/local/bin", "linux") && canWrite("/usr/local/bin")) return "/usr/local/bin";
+  return own[0]!;
+}
+
 export interface CommandOptions {
   /** The staged binary the daemon runs. */
   exe: string;
@@ -99,8 +120,10 @@ export interface CommandOptions {
   env: Record<string, string | undefined>;
   log: Logger;
   exec?: Exec;
-  /** Where the link goes on macOS and Linux. */
+  /** Where the link goes on macOS and Linux; picked by `linkDirFor` when not given. */
   linkDir?: string;
+  /** The PATH the user's own shells have; `env`'s by default. */
+  userPath?: string;
 }
 
 /** Keeps the command current and on the PATH; never throws. */
@@ -118,9 +141,10 @@ export async function putCommandOnPath(opts: CommandOptions): Promise<void> {
       if (r === "added") opts.log.info("tether command's folder added to the user's PATH; terminals opened from now on have it", { dir });
       else if (r === "failed") opts.log.warn("tether command's folder not added to the user's PATH", { dir });
     } else {
-      const linkDir = opts.linkDir ?? join(homedir(), ".local", "bin");
+      const userPath = opts.userPath ?? opts.env["PATH"] ?? "";
+      const linkDir = opts.linkDir ?? linkDirFor(userPath, homedir());
       const r = linkCommand(join(dir, TETHER_NAME), linkDir);
-      if (r === "linked") opts.log.info("tether command linked", { link: join(linkDir, "tether"), onPath: pathHas(opts.env["PATH"] ?? "", linkDir) });
+      if (r === "linked") opts.log.info("tether command linked", { link: join(linkDir, "tether"), onPath: pathHas(userPath, linkDir) });
       else if (r === "taken") opts.log.info("tether command not linked: another tether is there", { link: join(linkDir, "tether") });
     }
   } catch (e) {

@@ -3,7 +3,7 @@
 // job (the PM/PL runbooks in the README).
 
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Release } from "@cophyla/protocol";
@@ -37,6 +37,34 @@ describe("names", () => {
     expect(parseSignArgs(["--staged", "--entitlements", "net.plist", "bin/cophyla-net"])).toEqual({ staged: true, tree: false, entitlements: "net.plist", file: "bin/cophyla-net" });
     expect(parseSignArgs(["--tree", "dir", "--entitlements", "x.plist"])).toEqual({ staged: false, tree: true, entitlements: "x.plist", file: "dir" });
     expect(parseSignArgs([])).toEqual({ staged: false, tree: false });
+  });
+
+  test.skipIf(OS !== "macos")("a Developer ID signature Apple cannot timestamp fails, unless the build is said never to be notarized", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cophyla-sign-"));
+    try {
+      // a codesign that refuses --timestamp, as it does offline, and records what it signs
+      const signed = join(dir, "signed");
+      writeFileSync(join(dir, "codesign"), `#!/bin/sh\nfor a in "$@"; do [ "$a" = --timestamp ] && exit 1; done\necho "$@" >> '${signed}'\n`);
+      chmodSync(join(dir, "codesign"), 0o755);
+      const file = join(dir, "tool");
+      // a 64-bit Mach-O's magic, which is all sign.ts looks at
+      writeFileSync(file, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]));
+      const sign = (extra: Record<string, string>) =>
+        Bun.spawnSync([process.execPath, join(import.meta.dir, "..", "scripts", "sign.ts"), file], {
+          env: { ...process.env, PATH: `${dir}:${process.env["PATH"]}`, APPLE_SIGNING_IDENTITY: "Developer ID Application: Test (TEAM)", ...extra },
+          stdout: "pipe",
+          stderr: "pipe",
+        });
+      const refused = sign({});
+      expect(refused.exitCode).not.toBe(0);
+      expect(refused.stderr.toString()).toContain("COPHYLA_SIGN_UNSTAMPED=1");
+      expect(() => readFileSync(signed, "utf8")).toThrow();
+      const unstamped = sign({ COPHYLA_SIGN_UNSTAMPED: "1" });
+      expect(unstamped.exitCode).toBe(0);
+      expect(readFileSync(signed, "utf8")).toContain(file);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("installer names follow the bundler's per target", () => {

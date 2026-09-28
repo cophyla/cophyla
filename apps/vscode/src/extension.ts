@@ -12,13 +12,22 @@
 // the file away when it closes. The daemon reads that directory, picks the window whose
 // folders hold the session's directory, and posts the command. A request without the token is
 // refused, and so is one from off this machine.
+//
+// The same door raises a session already in one of this window's terminals: the daemon posts the
+// session's process chain to `/focus`, and the window whose terminal runs one of those processes
+// shows that terminal and brings itself forward. No extension API raises a window, but the
+// product's own command line does: opening the folder a window already has open focuses that
+// window (`code <folder>`), so the window runs it on its own folder, and on its own instance:
+// the command line reaches the instance of the user data folder it is given (the default one
+// otherwise), which is where this instance's socket (`VSCODE_IPC_HOOK`) lives.
 
+import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import * as vscode from "vscode";
 
 /** What the daemon asks for. */
@@ -81,12 +90,88 @@ function openTerminal(req: TerminalRequest): void {
   terminal.show(true);
 }
 
+/** The product's command line (`code`, `cursor`, …), named in its product.json. */
+function productCli(): string | undefined {
+  const root = vscode.env.appRoot;
+  let name = "code";
+  try {
+    const product = JSON.parse(readFileSync(join(root, "product.json"), "utf8")) as { applicationName?: unknown };
+    if (typeof product.applicationName === "string" && product.applicationName) name = product.applicationName;
+  } catch {
+    // an editor without one is VS Code's layout
+  }
+  const cli = process.platform === "win32" ? join(root, "..", "..", "bin", `${name}.cmd`) : join(root, "bin", name);
+  return existsSync(cli) ? cli : undefined;
+}
+
+/** What this window has open, as its command line names it: the workspace file, else its first folder. */
+function openTarget(): string | undefined {
+  const file = vscode.workspace.workspaceFile;
+  if (file && file.scheme === "file") return file.fsPath;
+  return folders()[0];
+}
+
+/**
+ * `--user-data-dir` of this window's instance, so the command line reaches it and not the
+ * default one: its socket's folder, when that is a user data folder (the socket goes elsewhere
+ * when the path would be too long for one, and is a named pipe on Windows).
+ */
+function instanceArgs(): string[] {
+  const hook = process.env["VSCODE_IPC_HOOK"];
+  if (!hook || process.platform === "win32" || !hook.endsWith("-main.sock")) return [];
+  const dir = dirname(hook);
+  return existsSync(join(dir, "User")) ? ["--user-data-dir", dir] : [];
+}
+
+/** Brings this window forward by opening what it has open, which focuses it. */
+function raiseWindow(): void {
+  const cli = productCli();
+  const target = openTarget();
+  if (!cli || !target) return;
+  const windows = process.platform === "win32";
+  const quote = (s: string) => (windows ? `"${s}"` : s);
+  try {
+    const child = spawn(quote(cli), [...instanceArgs().map(quote), quote(target)], { stdio: "ignore", detached: !windows, shell: windows, windowsHide: true });
+    child.on("error", (e) => log(`could not raise this window: ${e.message}`));
+    child.unref();
+  } catch (e) {
+    log(`could not raise this window: ${e instanceof Error ? e.message : String(e)}`);
+  }
+}
+
+/** How long a terminal's process id is waited for: one whose process never started has none to give. */
+const PROCESS_ID_MS = 1000;
+
+/** Shows the terminal running one of `pids`, and brings this window forward; false when none of its terminals does. */
+async function focusTerminal(pids: number[]): Promise<boolean> {
+  const wanted = new Set(pids);
+  if (wanted.size === 0) return false;
+  for (const terminal of vscode.window.terminals) {
+    const pid = await Promise.race([terminal.processId, new Promise<undefined>((r) => setTimeout(() => r(undefined), PROCESS_ID_MS))]);
+    if (pid === undefined || !wanted.has(pid)) continue;
+    terminal.show(false);
+    raiseWindow();
+    return true;
+  }
+  return false;
+}
+
+function parsePids(body: string): number[] | undefined {
+  try {
+    const d = JSON.parse(body) as { pids?: unknown };
+    if (!Array.isArray(d.pids)) return undefined;
+    return d.pids.filter((p): p is number => typeof p === "number" && Number.isInteger(p) && p > 0);
+  } catch {
+    return undefined;
+  }
+}
+
 function handle(token: string, req: IncomingMessage, res: ServerResponse): void {
-  const done = (code: number, body: string): void => {
-    res.writeHead(code, { "content-type": "text/plain" });
+  const done = (code: number, body: string, type = "text/plain"): void => {
+    res.writeHead(code, { "content-type": type });
     res.end(body);
   };
-  if (req.method !== "POST" || req.url !== "/terminal") return done(404, "not found");
+  if (req.method !== "POST" || (req.url !== "/terminal" && req.url !== "/focus")) return done(404, "not found");
   if (req.headers.authorization !== `Bearer ${token}`) return done(401, "bad token");
   let body = "";
   let tooBig = false;
@@ -101,6 +186,18 @@ function handle(token: string, req: IncomingMessage, res: ServerResponse): void 
   });
   req.on("end", () => {
     if (tooBig) return;
+    if (req.url === "/focus") {
+      const pids = parsePids(body);
+      if (!pids) return done(400, "not a focus request");
+      focusTerminal(pids).then(
+        (focused) => {
+          if (focused) log("showed a session's terminal");
+          done(200, JSON.stringify({ focused }), "application/json");
+        },
+        (e: unknown) => done(500, e instanceof Error ? e.message : String(e)),
+      );
+      return;
+    }
     const parsed = parse(body);
     if (!parsed) return done(400, "not a terminal request");
     try {

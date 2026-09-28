@@ -1,9 +1,11 @@
 // Each harness login's plan limits: how much of its session (five-hour) window and its
 // weekly one it has used, carried on every sample for the spend rows. Claude's come from the
 // usage endpoint Claude Code's own `/usage` reads, asked with the profile's login from its
-// `.credentials.json`: read and never refreshed or written, so an expired token means no new
-// reading until Claude Code refreshes it, and the macOS Keychain is never asked. A profile on
-// an API key has no plan and no limits. Codex writes its limits into every `token_count` of a
+// `.credentials.json`, or on macOS, where a login leaves none, from the profile's Keychain item
+// (the daemon's `keychain`, through `/usr/bin/security` as Claude Code reads it, which the
+// item's access list trusts, so no prompt): read and never refreshed or written, so an expired
+// token means no new reading until Claude Code refreshes it. A profile on an API key has no
+// plan and no limits. Codex writes its limits into every `token_count` of a
 // rollout, so the newest of the recent rollouts' last ones is read: by the row's time, since a
 // rollout Codex keeps writing on Windows can keep the time it was made as its last-modified
 // one, and only a rollout that grew since it was last read is read again. Muse's host keeps the
@@ -38,6 +40,8 @@ export interface PlanLimitsDeps {
   log: Logger;
   /** A Muse profile's limits as its host last observed them. */
   muse?: (profileId: string) => Promise<ProfileLimits | undefined>;
+  /** macOS: the text of a Claude login's Keychain item (what `.credentials.json` holds elsewhere); never asked when absent. */
+  keychain?: (configDir: string) => Promise<string | undefined>;
   fetch?: typeof fetch;
   now?: () => number;
 }
@@ -154,7 +158,11 @@ export class PlanLimits {
 
   private async readClaude(p: HarnessProfile): Promise<Read> {
     if (p.env["ANTHROPIC_API_KEY"]) return { none: true };
-    const token = claudeToken(p.configDir, this.now());
+    let token = claudeToken(p.configDir, this.now());
+    if (token === undefined && this.deps.keychain) {
+      const item = await this.deps.keychain(p.configDir);
+      if (item !== undefined) token = claudeTokenOf(item, this.now());
+    }
     if (token === undefined) return { none: true };
     // Expired: Claude Code has not run under this login lately; what was read last still stands.
     if (token === "expired") return { keep: true };
@@ -211,7 +219,17 @@ function current(w: LimitWindow | undefined, now: number): LimitWindow | undefin
 export function claudeToken(configDir: string, now: number): string | "expired" | undefined {
   const path = join(configDir, ".credentials.json");
   if (!existsSync(path)) return undefined;
-  const oauth = (JSON.parse(readFileSync(path, "utf8")) as { claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown } }).claudeAiOauth;
+  return claudeTokenOf(readFileSync(path, "utf8"), now);
+}
+
+/** The access token in a login's text (`.credentials.json`, or the Keychain item's), as `claudeToken` reads it. */
+export function claudeTokenOf(text: string, now: number): string | "expired" | undefined {
+  let oauth: { accessToken?: unknown; expiresAt?: unknown } | undefined;
+  try {
+    oauth = (JSON.parse(text) as { claudeAiOauth?: { accessToken?: unknown; expiresAt?: unknown } }).claudeAiOauth;
+  } catch {
+    return undefined;
+  }
   if (!oauth || typeof oauth.accessToken !== "string" || oauth.accessToken === "") return undefined;
   if (typeof oauth.expiresAt === "number" && oauth.expiresAt <= now) return "expired";
   return oauth.accessToken;

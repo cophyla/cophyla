@@ -7,7 +7,8 @@ import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createLogger } from "../src/log.ts";
-import { EditorTerminalOpener, readEditors, windowFor } from "../src/sessions/editors.ts";
+import { EditorTerminalOpener, focusInEditors, readEditors, windowFor, withEditorWindows } from "../src/sessions/editors.ts";
+import type { RaiseResult, WindowRaiser } from "../src/sessions/focus.ts";
 import type { EditorEntry } from "../src/sessions/editors.ts";
 
 const log = createLogger("error");
@@ -108,5 +109,63 @@ describe("asking a window", () => {
     const dir = dirWith({});
     const opener = new EditorTerminalOpener({ dir, log, isAlive: () => true });
     expect(await opener.available()).toBe(false);
+  });
+});
+
+describe("raising a session in an editor's terminal", () => {
+  // claude 900 under a shell 800 the window's terminal runs, under the editor's app 100
+  const chain = [
+    { pid: 900, name: "claude" },
+    { pid: 800, name: "zsh" },
+    { pid: 700, name: "Code Helper" },
+    { pid: 100, name: "Electron" },
+  ];
+  const raiser = (result: RaiseResult) => {
+    const raised: number[] = [];
+    const r: WindowRaiser = {
+      ancestors: async () => chain,
+      commandLine: async () => undefined,
+      raise: async (pid) => {
+        raised.push(pid);
+        return result;
+      },
+    };
+    return { r, raised };
+  };
+  // The window on port 1 runs shell 800 in a terminal; the one on port 2 runs nothing of it; an old one answers 404.
+  const answers = (async (url: string, init: RequestInit) => {
+    const pids = (JSON.parse(String(init.body)) as { pids: number[] }).pids;
+    if (url.includes(":3/")) return new Response("not found", { status: 404 });
+    return Response.json({ focused: url.includes(":1/") && pids.includes(800) });
+  }) as unknown as typeof fetch;
+  const dir = () => dirWith({ "11.json": entry({ pid: 11, port: 1 }), "12.json": entry({ pid: 12, port: 2 }), "13.json": entry({ pid: 13, port: 3 }) });
+
+  test("the window whose terminal runs the chain shows it, and the app is brought forward after", async () => {
+    const posted: string[] = [];
+    const fetch = (async (url: string, init: RequestInit) => {
+      posted.push(`${url} ${String(init.body)}`);
+      return answers(url, init);
+    }) as unknown as typeof globalThis.fetch;
+    const { r, raised } = raiser("unsupported");
+    const wrapped = withEditorWindows(r, { dir: dir(), log, isAlive: () => true, fetch });
+    // the app's raise is refused (no Automation), but the window already came forward itself
+    expect(await wrapped.raise(900)).toBe("raised");
+    expect(raised).toEqual([900]);
+    expect(posted.sort()).toEqual(["http://127.0.0.1:1/focus", "http://127.0.0.1:2/focus", "http://127.0.0.1:3/focus"].map((u) => `${u} ${JSON.stringify({ pids: [900, 800, 700, 100] })}`));
+  });
+
+  test("no window's terminal runs it: the platform's raiser answers alone", async () => {
+    const { r, raised } = raiser("not_found");
+    const wrapped = withEditorWindows(r, { dir: dir(), log, isAlive: () => true, fetch: (async () => Response.json({ focused: false })) as unknown as typeof fetch });
+    expect(await wrapped.raise(900)).toBe("not_found");
+    expect(raised).toEqual([900]);
+    expect(await focusInEditors([900], { dir: dirWith({}), log, isAlive: () => true, fetch: answers })).toBe(false);
+  });
+
+  test("a window that cannot be reached is not the one", async () => {
+    const fetch = (async () => {
+      throw new Error("connection refused");
+    }) as unknown as typeof globalThis.fetch;
+    expect(await focusInEditors([800], { dir: dir(), log, isAlive: () => true, fetch })).toBe(false);
   });
 });

@@ -9,10 +9,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RemoteConfig } from "../src/config/schema.ts";
 import { silentLogger } from "../src/log.ts";
-import { hostCandidates, install, installCommand, kindOf, locateHost, locateMoonlight } from "../src/remote/install.ts";
+import { brewPath, hostCandidates, install, installCommand, kindOf, locateHost, locateMoonlight } from "../src/remote/install.ts";
 import { hostOfEndpoint, randomPin } from "../src/remote/moonlight.ts";
-import { jpegSize, screenshotter } from "../src/remote/screenshot.ts";
+import { jpegSize, SCREEN_RECORDING_REFUSED, screenshotter } from "../src/remote/screenshot.ts";
 import { windowsServiceState, windowsServiceStart } from "../src/remote/service.ts";
+import { MoonlightWeb } from "../src/remote/web.ts";
+import type { SidecarSpec, Sidecars } from "../src/sidecars/index.ts";
 import { remoteSeams, TINY_JPEG } from "./fakes/remote.ts";
 
 const config = (over: Record<string, unknown> = {}) => RemoteConfig.parse(over);
@@ -35,10 +37,19 @@ describe("remote parts", () => {
     expect(locateMoonlight(config(), "macos", env, has(["/Applications/Moonlight.app/Contents/MacOS/Moonlight"]))).toBe("/Applications/Moonlight.app/Contents/MacOS/Moonlight");
   });
 
+  test("a Mac runs Sunshine: Apollo is Windows-only, and Homebrew's formula lands in its prefix", () => {
+    expect(hostCandidates("macos").every((c) => c.kind === "sunshine")).toBe(true);
+    const has = (paths: string[]) => (p: string) => paths.includes(p);
+    expect(locateHost(config(), "macos", {}, has(["/opt/homebrew/bin/sunshine"]))).toEqual({ kind: "sunshine", path: "/opt/homebrew/bin/sunshine" });
+    expect(locateHost(config({ host: "apollo" }), "macos", {}, has(["/opt/homebrew/bin/sunshine"]))).toBeUndefined();
+  });
+
   test("a missing host or viewer is installed through the platform's package manager; a failure names its last words", async () => {
     expect(installCommand("apollo", "windows")).toEqual(["winget", "install", "-e", "--id", "ClassicOldSong.Apollo", "--accept-package-agreements", "--accept-source-agreements"]);
     expect(installCommand("moonlight", "windows")!.slice(0, 5)).toEqual(["winget", "install", "-e", "--id", "MoonlightGameStreamingProject.Moonlight"]);
-    expect(installCommand("sunshine", "macos")).toEqual(["brew", "install", "--cask", "sunshine"]);
+    expect(installCommand("sunshine", "macos")).toEqual(["brew", "install", "lizardbyte/homebrew/sunshine"]);
+    expect(installCommand("moonlight", "macos")).toEqual(["brew", "install", "--cask", "moonlight"]);
+    expect(installCommand("apollo", "macos")).toBeUndefined();
     expect(installCommand("moonlight", "linux")).toEqual(["flatpak", "install", "-y", "flathub", "com.moonlight_stream.Moonlight"]);
     expect(installCommand("apollo", "linux")).toBeUndefined();
     const ok = remoteSeams();
@@ -48,6 +59,20 @@ describe("remote parts", () => {
     const bad = remoteSeams({ installOk: false });
     await expect(install("apollo", { exec: bad.exec, os: "windows" })).rejects.toThrow(/winget exited 1/);
     await expect(install("apollo", { exec: ok.exec, os: "linux" })).rejects.toThrow(/no package manager install/);
+  });
+
+  test("brew is found off the PATH where Homebrew installs it, and its absence is said plainly", async () => {
+    expect(brewPath({ PATH: "" }, (p) => p === "/usr/local/bin/brew")).toBe("/usr/local/bin/brew");
+    expect(brewPath({ PATH: "" }, (p) => p === "/opt/homebrew/bin/brew" || p === "/usr/local/bin/brew")).toBe("/opt/homebrew/bin/brew");
+    expect(brewPath({ PATH: "" }, () => false)).toBeUndefined();
+    const commands: string[][] = [];
+    const exec = async (command: string[]) => {
+      commands.push(command);
+      return { code: 0, stdout: "", stderr: "" };
+    };
+    await install("sunshine", { exec, os: "macos", brew: "/opt/homebrew/bin/brew" });
+    expect(commands[0]).toEqual(["/opt/homebrew/bin/brew", "install", "lizardbyte/homebrew/sunshine"]);
+    await expect(install("moonlight", { exec, os: "macos", brew: "" })).rejects.toThrow(/needs Homebrew/);
   });
 
   test("the Windows service's state comes from sc query; starting it is reported, not retried", async () => {
@@ -97,6 +122,59 @@ describe("remote parts", () => {
       await expect(capture(5, 640)).rejects.toMatchObject({ code: "not_found" });
       const linux = screenshotter({ dir, os: "linux", log: silentLogger, env: {}, exec: async () => ({ code: 0, out: "", err: "" }) });
       await expect(linux(undefined, 640)).rejects.toMatchObject({ code: "unsupported" });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a platform with no moonlight-web release runs the web-server [remote] web_server names, in its own folder", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cophyla-web-"));
+    try {
+      const specs: SidecarSpec[] = [];
+      const sidecars = {
+        spawn: (spec: SidecarSpec) => {
+          specs.push(spec);
+          return { start: async () => {}, state: () => ({ status: "ready" }), url: "http://127.0.0.1:1", port: 1 };
+        },
+        forget: () => {},
+      } as unknown as Sidecars;
+      const web = (over: Record<string, unknown>) =>
+        new MoonlightWeb({ root: join(dir, "root"), sidecars, config: config(over), log: silentLogger, target: "macos-arm64", lanIps: () => [], pairOn: async () => {}, viewerName: "mac web" });
+      await expect(web({}).ensure()).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("[remote] web_server") });
+      await expect(web({ web_server: join(dir, "nowhere", "web-server") }).ensure()).rejects.toMatchObject({ code: "unavailable" });
+      const own = join(dir, "build", "web-server");
+      await Bun.write(own, "");
+      await web({ web_server: own }).ensure();
+      expect(specs.map((s) => [s.command, s.cwd])).toEqual([[own, join(dir, "build")]]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("a Mac without Screen Recording is asked once and refused, not shown its wallpaper", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cophyla-shot-"));
+    try {
+      let allowed = false;
+      let asked = 0;
+      const calls: string[] = [];
+      const capture = screenshotter({
+        dir,
+        os: "macos",
+        log: silentLogger,
+        screenAccess: { allowed: () => allowed, ask: () => void asked++ },
+        exec: async (file, args) => {
+          calls.push(file);
+          if (file === "screencapture") await Bun.write(args.at(-1)!, TINY_JPEG);
+          return { code: 0, out: "", err: "" };
+        },
+      });
+      await expect(capture(undefined, 640)).rejects.toMatchObject({ code: "unavailable", message: SCREEN_RECORDING_REFUSED });
+      await expect(capture(undefined, 640)).rejects.toMatchObject({ code: "unavailable" });
+      expect(asked).toBe(1);
+      expect(calls).toEqual([]);
+      allowed = true;
+      expect((await capture(undefined, 640)).width).toBe(1);
+      expect(calls).toEqual(["screencapture", "sips"]);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

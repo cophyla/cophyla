@@ -56,6 +56,7 @@ import { Llm } from "./llm/index.ts";
 import type { Provider } from "./llm/index.ts";
 import { createLogger } from "./log.ts";
 import type { Logger } from "./log.ts";
+import type { LoginEnvNote } from "./login-env.ts";
 import { hostEngine } from "./metrics/engine.ts";
 import type { MetricsEngine } from "./metrics/engine.ts";
 import { Metrics } from "./metrics/index.ts";
@@ -74,7 +75,7 @@ import { ClaudeAdapter } from "./sessions/claude/adapter.ts";
 import { isAlive } from "./sessions/claude/registry.ts";
 import { CodexAdapter } from "./sessions/codex/adapter.ts";
 import { MuseAdapter } from "./sessions/muse/adapter.ts";
-import { EditorTerminalOpener } from "./sessions/editors.ts";
+import { EditorTerminalOpener, withEditorWindows } from "./sessions/editors.ts";
 import { scrub } from "./sessions/env.ts";
 import { Direct } from "./direct/index.ts";
 import type { DirectDeps } from "./direct/index.ts";
@@ -84,12 +85,12 @@ import { DirectClients } from "./direct/clients.ts";
 import { directMethods, directSignals } from "./direct/methods.ts";
 import { PipeHub } from "./remote/pipes.ts";
 import type { LinkDirectTiming } from "./nodes/direct.ts";
-import { defaultRaiser, withProcessTable } from "./sessions/focus.ts";
+import { defaultRaiser, withProcessTable, withTmux } from "./sessions/focus.ts";
 import type { WindowRaiser } from "./sessions/focus.ts";
 import { SessionFiles } from "./sessions/files.ts";
 import { Sessions } from "./sessions/index.ts";
 import type { HarnessAdapter, SessionHost } from "./sessions/model.ts";
-import { Profiles } from "./sessions/profiles.ts";
+import { claudeKeychainSecret, Profiles } from "./sessions/profiles.ts";
 import { OsTerminalOpener } from "./sessions/terminals.ts";
 import type { TerminalOpener } from "./sessions/terminals.ts";
 import { Tether } from "./sessions/tether/index.ts";
@@ -150,6 +151,8 @@ export interface DaemonOptions {
   providers?: Provider[];
   /** The environment the daemon reads keys and the brain's location from. */
   env?: Record<string, string | undefined>;
+  /** What main.ts took from the user's login shell before the start (macOS outside a terminal), for the log. */
+  loginEnv?: LoginEnvNote;
   /** Overrides `[brain].enabled`, for tests that want no brain. */
   brain?: boolean;
   /** Replaces the embedding model behind recall: a fake for tests, `null` for full-text only. */
@@ -276,6 +279,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const store = new Store(p.db);
   const version = store.migrate();
   log.info("store open", { path: p.db, schema: version });
+  if (opts.loginEnv) {
+    const { shellPath: _shellPath, ...note } = opts.loginEnv;
+    log.info("the login environment taken", note);
+  }
 
   const identity = loadNodeIdentity(store, config);
   const token = loadOrCreateToken(p.clientToken);
@@ -371,17 +378,23 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     processEngine ??= hostEngine({ gpu: false, log: sessionsLog.child("processes") });
     return (await processEngine.sample()).processes;
   };
-  const raiser = opts.raiser ?? withProcessTable(defaultRaiser(process.platform, { env, log: sessionsLog.child("focus") }), processes);
+  // A session in tmux is raised through the client attached to it, which may be in an editor's
+  // terminal: tmux outermost, then the editor windows, then the platform's own raise.
+  const platformRaiser = withEditorWindows(withProcessTable(defaultRaiser(process.platform, { env, log: sessionsLog.child("focus") }), processes), { dir: join(p.home, "editors"), log: sessionsLog.child("focus") });
+  const raiser = opts.raiser ?? (process.platform === "win32" ? platformRaiser : withTmux(platformRaiser));
   // Where this daemon is installed, if it is: the update module's, and where tether ships.
   const install = opts.update?.installDir
     ? detectInstall({ COPHYLA_INSTALL_DIR: opts.update.installDir, COPHYLA_PLATFORM_DIR: join(opts.update.installDir, "versions", PLATFORM_VERSION) })
     : detectInstall(env);
   // tether, which the sessions cophylad starts run in, so what the user sends them is typed as theirs.
+  // The PATH the user's own shells have, where a command they type is found: the login shell's
+  // on a Mac started outside a terminal, else the daemon's own, which is the terminal's.
+  const userPath = opts.loginEnv?.shellPath;
   const tether =
     opts.tether ??
     (env["NODE_ENV"] === "test"
       ? undefined
-      : new Tether({ config: config.tether, env: scrub(env), dataDir: p.data, nodeId: identity.id, log: sessionsLog.child("tether"), ...(install ? { versionDir: install.versionDir } : { repoRoot: repoRootFromHere() }) }));
+      : new Tether({ config: config.tether, env: scrub(env), dataDir: p.data, nodeId: identity.id, log: sessionsLog.child("tether"), ...(userPath !== undefined ? { userPath } : {}), ...(install ? { versionDir: install.versionDir } : { repoRoot: repoRootFromHere() }) }));
   // Muse's adapter also reads each login's plan usage off its host, for the limits below.
   let muse: MuseAdapter | undefined;
   const adapters = (host: SessionHost): HarnessAdapter[] => {
@@ -417,7 +430,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     // a suite nobody can run.
     terminals: opts.terminals ?? (env["NODE_ENV"] === "test" ? [] : [
       new EditorTerminalOpener({ dir: join(p.home, "editors"), log: sessionsLog.child("terminal") }),
-      new OsTerminalOpener({ platform: process.platform, dataDir: p.data, log: sessionsLog.child("terminal"), env: scrub(env) }),
+      new OsTerminalOpener({ platform: process.platform, dataDir: p.data, log: sessionsLog.child("terminal"), env: scrub(env), terminal: config.tether.window }),
     ]),
     ...(tether ? { tether, env: scrub(env), processes } : {}),
     pricer: (model, tokens) => pricer.cost(model, tokens),
@@ -532,6 +545,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           profiles: () => profiles.list(identity.id),
           log: metricsLog.child("limits"),
           muse: (id) => muse?.limits(id) ?? Promise.resolve(undefined),
+          // a Mac keeps a Claude login in the Keychain, not in `.credentials.json`
+          ...(process.platform === "darwin" && !opts.metrics?.limitsFetch ? { keychain: (dir: string) => claudeKeychainSecret(dir) } : {}),
           ...(opts.metrics?.limitsFetch ? { fetch: opts.metrics.limitsFetch } : {}),
           ...(opts.metrics?.now ? { now: opts.metrics.now } : {}),
         })
@@ -1142,7 +1157,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   });
   // The `tether` command in the user's own shells: an installed platform's, never a checkout's or a test's (whose tether is given).
   if (tether?.exe && !opts.tether && install && config.tether.on_path) {
-    void putCommandOnPath({ exe: tether.exe, root: install.dir, env, log: sessionsLog.child("tether") });
+    void putCommandOnPath({ exe: tether.exe, root: install.dir, env, log: sessionsLog.child("tether"), ...(userPath !== undefined ? { userPath } : {}) });
   }
   tasks.prime(sessions.list());
   events.start(sessions.list());
