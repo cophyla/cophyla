@@ -313,6 +313,12 @@ export class TerminalStreams {
     await this.deps.tether.kill(entry.ref);
   }
 
+  /** The clients a terminal is open in now. */
+  clientsOf(ref: TerminalRef): string[] {
+    const feed = this.feeds.get(keyOf(ref));
+    return feed ? [...feed.viewers.keys()] : [];
+  }
+
   /** A client went away: every view it had goes. */
   dropClient(client: string): void {
     for (const feed of [...this.feeds.values()]) {
