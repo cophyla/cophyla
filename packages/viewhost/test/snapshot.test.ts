@@ -139,6 +139,19 @@ describe("snapshot cache", () => {
     expect(c.account).toBeUndefined();
   });
 
+  test("keeps the latest voice.next, replayed after the setup, so a late view shows the speaker as it is", () => {
+    const c = new SnapshotCache();
+    c.upsert(n("voice.next", { speak: true, target: "cli_1", name: "Pixel" }));
+    c.upsert(n("voice.next", { speak: false, hushed: true }));
+    c.upsert(n("voice.next", { speak: "yes" }));
+    c.upsert(n("voice.setup", { stage: "stt", engine: "nemotron", step: "download", progress: 0.4 }));
+    c.upsert(n("account.state", { plan: "free", limits: {} }));
+    expect(c.replay().map((x) => x.method)).toEqual(["voice.setup", "voice.next", "account.state"]);
+    expect(c.replay()[1]!.params).toEqual({ speak: false, hushed: true });
+    c.clear();
+    expect(c.voiceNext).toBeUndefined();
+  });
+
   test("keeps each node's direct.state, replayed after the account, so a late view shows the switch as it is", () => {
     const c = new SnapshotCache();
     c.upsert(n("direct.state", { node: "node_1", state: "starting", peers: [] }));

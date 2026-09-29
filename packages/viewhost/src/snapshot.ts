@@ -2,8 +2,8 @@
 // `workspace.state` per workspace, `node.state`, `remote.state` and `direct.state` per node,
 // `task.state` per open task, every open `ask.state`, the latest `voice.state`, the words heard
 // so far of this client's utterance (`voice.partial`, whole), the voice engine still being set
-// up (`voice.setup`), the account (`account.state`) and the brain's turn while it runs
-// (`chat.progress`). cophylad sends
+// up (`voice.setup`), whether the next reply is read out (`voice.next`), the account
+// (`account.state`) and the brain's turn while it runs (`chat.progress`). cophylad sends
 // them right after `hello` and never again, and there is no `ask.list`, so a view mounted or
 // reloaded later is given this replay instead. Upserts are idempotent; a replay after a live
 // notification changes nothing.
@@ -14,6 +14,7 @@ type VoiceStateParams = ClientNotificationParams<"voice.state">;
 type RemoteStateParams = ClientNotificationParams<"remote.state">;
 type VoiceSetupParams = ClientNotificationParams<"voice.setup">;
 type VoicePartialParams = ClientNotificationParams<"voice.partial">;
+type VoiceNextParams = ClientNotificationParams<"voice.next">;
 type AccountStateParams = ClientNotificationParams<"account.state">;
 type ProgressParams = ClientNotificationParams<"chat.progress">;
 
@@ -37,6 +38,8 @@ export class SnapshotCache {
   heard?: VoicePartialParams;
   /** A voice engine still being set up; a step that ended leaves nothing to show. */
   voiceSetup?: VoiceSetupParams;
+  /** Whether the next reply is read out: a view that mounts late shows the speaker as it is. */
+  voiceNext?: VoiceNextParams;
   /** The account as the node sees it: a view that mounts late would otherwise say signed out. */
   account?: AccountStateParams;
   /** The brain's turn while it runs; a turn that ended leaves nothing to show. */
@@ -63,6 +66,11 @@ export class SnapshotCache {
       if (!v || typeof v !== "object" || typeof v.step !== "string") return;
       if (v.step === "ready" || v.step === "failed") this.voiceSetup = undefined;
       else this.voiceSetup = v;
+      return;
+    }
+    if (n.method === "voice.next") {
+      const v = n.params as VoiceNextParams | undefined;
+      if (v && typeof v === "object" && typeof v.speak === "boolean") this.voiceNext = v;
       return;
     }
     if (n.method === "chat.progress") {
@@ -117,7 +125,7 @@ export class SnapshotCache {
     }
   }
 
-  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard and the setup, the account and the nodes' direct connections, then the brain's turn. */
+  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard, the setup and the speaker, the account and the nodes' direct connections, then the brain's turn. */
   replay(): RpcNotification[] {
     const out: RpcNotification[] = [];
     for (const ask of this.asks.values()) out.push({ jsonrpc: "2.0", method: "ask.state", params: ask });
@@ -129,6 +137,7 @@ export class SnapshotCache {
     if (this.voice) out.push({ jsonrpc: "2.0", method: "voice.state", params: this.voice });
     if (this.heard) out.push({ jsonrpc: "2.0", method: "voice.partial", params: this.heard });
     if (this.voiceSetup) out.push({ jsonrpc: "2.0", method: "voice.setup", params: this.voiceSetup });
+    if (this.voiceNext) out.push({ jsonrpc: "2.0", method: "voice.next", params: this.voiceNext });
     if (this.account) out.push({ jsonrpc: "2.0", method: "account.state", params: this.account });
     for (const state of this.direct.values()) out.push({ jsonrpc: "2.0", method: "direct.state", params: state });
     if (this.progress) out.push({ jsonrpc: "2.0", method: "chat.progress", params: this.progress });
@@ -146,6 +155,7 @@ export class SnapshotCache {
     this.voice = undefined;
     this.heard = undefined;
     this.voiceSetup = undefined;
+    this.voiceNext = undefined;
     this.account = undefined;
     this.progress = undefined;
   }

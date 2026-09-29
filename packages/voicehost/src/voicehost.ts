@@ -8,7 +8,9 @@
 // `voice.played` once it has played, and dropped the moment the node says the conversation
 // is no longer speaking. Audio goes as Opus both ways when WebCodecs has it and the node
 // takes it, as PCM otherwise; a frame up is numbered, and shed rather than queued when the
-// link already holds more than it can send.
+// link already holds more than it can send. The node reads replies out only where a speaker
+// plays them, so the host tells it whether its speaker is muted (`voice.presence {speaker}`),
+// on every connect and whenever the user changes it.
 //
 // What it does not own is the host's: the link (a `Connection` from `@cophyla/viewhost`, over
 // the phone's link core or the desktop's shell), the page, and the controls. The host passes
@@ -378,7 +380,13 @@ export class VoiceHost {
     }
     this.detector?.reset();
     this.negotiate();
+    this.tellSpeaker();
     this.refresh();
+  }
+
+  /** Whether this speaker plays, for where the node reads replies out. */
+  private tellSpeaker(): void {
+    if (this.opts.link.connected) void this.opts.link.send({ jsonrpc: "2.0", method: "voice.presence", params: { speaker: !this.muted } }).catch(() => {});
   }
 
   /** Which transport carries the link, for the jitter target. */
@@ -436,6 +444,7 @@ export class VoiceHost {
     this.muted = on;
     if (this.audio.queue) this.audio.queue.muted = on;
     if (on) this.audio.flush();
+    this.tellSpeaker();
     this.changed();
   }
 

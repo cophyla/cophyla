@@ -8,7 +8,9 @@
 // view had dropped on it from the desktop are (`host.filePaths`) the shell says, from the drop
 // it saw pass into the page (dropped.rs); on Windows the view asks WebView2 for them instead.
 // Voice is voice.ts: the microphone, the wake words, the talk key and the speaker, and its
-// section in Settings.
+// section in Settings. For where the node reads replies out, the page says whether the window
+// is in front and shown (`voice.presence`), on every connect and as that changes; focus moving
+// into the view's frame is still the window's.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -134,9 +136,22 @@ conn.onFrame((frame) => {
   viewhost.handleFrame(frame);
 });
 
+/** Whether the window is in front and shown, as far as this page can tell. */
+function tellWindow(p: { focused?: boolean; visible?: boolean } = { focused: document.hasFocus(), visible: document.visibilityState === "visible" }): void {
+  if (conn.state.state !== "connected") return;
+  void conn.send({ jsonrpc: "2.0", method: "voice.presence", params: p }).catch(() => {});
+}
+window.addEventListener("focus", () => tellWindow({ focused: true }));
+// A blur that only moved the focus into the view's frame leaves the window in front.
+window.addEventListener("blur", () => setTimeout(() => tellWindow({ focused: document.hasFocus() }), 0));
+document.addEventListener("visibilitychange", () => tellWindow({ visible: document.visibilityState === "visible" }));
+
 conn.onState((s) => {
   if (s.state !== "connected") cache.clear();
-  else notifier.onConnected();
+  else {
+    notifier.onConnected();
+    tellWindow();
+  }
   voice.linkChanged(s);
   if (s.state === "disconnected" || s.state === "unauthorized") streams.linkLost();
   renderStatus(s);

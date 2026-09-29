@@ -13,7 +13,7 @@ import { listMics, micMisplaced, micWords, resolveMic } from "../src/mics.ts";
 import { detectCodecs, SpeechDecoder } from "../src/opus.ts";
 import { SHED_BYTES, Uplink } from "../src/uplink.ts";
 import { BUNDLED_FILES, BUNDLED_HEADS } from "../src/wake/bundled.ts";
-import { route } from "../src/voicehost.ts";
+import { route, VoiceHost } from "../src/voicehost.ts";
 import type { RouteInput } from "../src/voicehost.ts";
 import { WakeDetector } from "../src/wake/detector.ts";
 import type { FileCache } from "../src/wake/detector.ts";
@@ -650,5 +650,28 @@ describe("the microphone", () => {
     expect(micWords(named("OverconstrainedError"))).toBe("the microphone picked is not connected");
     expect(micWords(named("NotReadableError"))).toContain("could not be read");
     expect(micWords(new Error("something else"))).toBe("something else");
+  });
+});
+
+describe("the speaker, told to the node", () => {
+  test("whether it plays is said on every connect and whenever the user mutes it or not; offline, nothing is sent", () => {
+    const sent: { method: string; params: unknown }[] = [];
+    const link = {
+      connected: true,
+      state: { hello: { client: { id: "cli_me" } } },
+      request: <T>(): Promise<T> => Promise.resolve({} as T),
+      send: async (frame: object) => void sent.push(frame as { method: string; params: unknown }),
+    };
+    const host = new VoiceHost({ link, listening: false, log: () => {} });
+    host.linkChanged(true);
+    host.mute(true);
+    host.mute(false);
+    link.connected = false;
+    host.mute(true);
+    expect(sent.filter((f) => f.method === "voice.presence").map((f) => f.params)).toEqual([{ speaker: true }, { speaker: false }, { speaker: true }]);
+    // Back on the line, still muted: it says so.
+    link.connected = true;
+    host.linkChanged(true);
+    expect(sent.filter((f) => f.method === "voice.presence").at(-1)?.params).toEqual({ speaker: false });
   });
 });
