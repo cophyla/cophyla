@@ -18,7 +18,8 @@
 // bar has it.
 // This view's own utterance shows at the chat's end as it is heard (`voice.partial`), a ghost
 // of the message it becomes, until that message lands; near its limit the voice row counts
-// down, and one the node stopped before the user did says so until the next.
+// down, and one the node stopped before the user did says so until the next. The speaker
+// beside the chat's tab says whether the next reply is read out (`voice.next`), and where.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
 import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
@@ -54,6 +55,8 @@ export interface HeardWords {
 export type VoicePartial = ClientNotificationParams<"voice.partial">;
 
 export type VoiceSetup = ClientNotificationParams<"voice.setup">;
+/** `voice.next`: whether the next reply or result is read out, where, and whether it was hushed. */
+export type VoiceNext = ClientNotificationParams<"voice.next">;
 
 /** The account as the node sees it: `account.state`. */
 export type AccountState = ClientNotificationParams<"account.state">;
@@ -217,6 +220,8 @@ export interface ViewState {
   heard?: HeardWords;
   /** An engine being set up on the node, while it runs. */
   setup?: VoiceSetup;
+  /** Whether the next reply is read out, as the node last said; absent until it says, which an older node never does. */
+  next?: VoiceNext;
   /** The pairing window, while it is open. */
   pairing?: PairingOffer;
   controllers: Map<string, Controller>;
@@ -297,6 +302,7 @@ export type Action =
   | { type: "voice.note.expired"; at: number }
   | { type: "host.mic"; params: { error?: string } }
   | { type: "voice.setup"; params: VoiceSetup }
+  | { type: "voice.next"; params: VoiceNext }
   | { type: "pairing"; offer?: PairingOffer }
   | { type: "controllers"; controllers: Controller[] }
   | { type: "controller.removed"; id: string }
@@ -522,6 +528,7 @@ export function apply(state: ViewState, action: Action): ViewState {
         delete state.voice;
         delete state.heard;
         delete state.setup;
+        delete state.next;
         delete state.pairing;
         for (const [id, controller] of state.controllers) state.controllers.set(id, { ...controller, connected: false });
         state.metrics.clear();
@@ -751,6 +758,9 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "host.mic":
       if (action.params.error !== undefined) state.hostMic = action.params.error;
       else delete state.hostMic;
+      return state;
+    case "voice.next":
+      state.next = action.params;
       return state;
     case "voice.setup":
       // A step that ended says so once and then there is nothing to show.
@@ -1800,6 +1810,34 @@ export function linesBetween(lines: readonly string[], from: readonly [number, n
 /** A conversation is running, or an engine is being set up: the chat tab pulses. */
 export function voiceBusy(state: ViewState): boolean {
   return state.voice !== undefined || state.setup !== undefined;
+}
+
+/** The speaker beside the chat's tab, as it looks: nothing to read out, the next reply read out, one being read now, or what was pending hushed. */
+export type SpeakerLook = "dim" | "lit" | "playing" | "hushed";
+
+export interface SpeakerButton {
+  look: SpeakerLook;
+  /** Its tooltip, which names where the reply is read out. */
+  title: string;
+  /** What a press sends: `voice.hush {on}`. */
+  on: boolean;
+  disabled: boolean;
+}
+
+/**
+ * The speaker button, from the node's `voice.next`: hidden until the node says, since an older
+ * node never will. A press stops what is being read out, silences what is pending, or, once
+ * silenced, reads it out after all.
+ */
+export function speakerButton(state: ViewState): SpeakerButton | undefined {
+  const next = state.next;
+  if (!next || !state.scopes.includes("voice")) return undefined;
+  const disabled = !state.connected;
+  const where = next.target !== undefined && next.target === state.client?.id ? "here" : next.name !== undefined ? `on ${next.name}` : "";
+  if (state.voice?.state === "speaking") return { look: "playing", title: "Reading a reply out: press to stop", on: true, disabled };
+  if (next.hushed) return { look: "hushed", title: "Replies are shown, not read out: press to read them out again", on: false, disabled };
+  if (next.speak) return { look: "lit", title: `The next reply will be read out${where ? ` ${where}` : ""}: press to show it only`, on: true, disabled };
+  return { look: "dim", title: "Nothing is waiting to be read out", on: true, disabled };
 }
 
 /**

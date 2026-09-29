@@ -29,7 +29,10 @@
 // utterance (`host.recording`), however it began, its wave shows just over the input
 // (`host.levels`, waves.ts), and over a terminal's foot where there is no input. What the node
 // has heard of this view's utterance shows at the chat's end as it grows (`voice.partial`), and
-// the voice row counts down the last seconds before the utterance's limit. Runs in a
+// the voice row counts down the last seconds before the utterance's limit. The speaker beside
+// the chat's tab says whether the next reply is read out (`voice.next`) and silences it
+// (`voice.hush`); for where replies are read out, the view tells the node whether it is in front
+// and shown, and that the user acts in it (`voice.presence`). Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
@@ -44,8 +47,8 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoicePartial, VoiceSetup } from "./model.ts";
+import { answerParams, apply, connectWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -223,6 +226,7 @@ rpc.onNotification((n) => {
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
+        whereNow();
       } else {
         typing(false);
         waves.show(false);
@@ -234,6 +238,7 @@ rpc.onNotification((n) => {
         watched.clear();
         ui.opening.clear();
         ui.newTerminal = undefined;
+        activeAt = 0;
       }
       return;
     }
@@ -294,6 +299,9 @@ rpc.onNotification((n) => {
       return;
     case "voice.setup":
       dispatch({ type: "voice.setup", params: n.params as VoiceSetup });
+      return;
+    case "voice.next":
+      dispatch({ type: "voice.next", params: n.params as VoiceNext });
       return;
     case "thread.state":
       dispatch({ type: "thread.state", params: n.params as Thread });
@@ -1028,6 +1036,42 @@ function typing(active: boolean): void {
   if (!typingActive) return;
   typingActive = false;
   rpc.signal("chat.typing", { active: false });
+}
+
+// Where the user is, for where the node reads replies out: whether this window is in front and
+// shown, said as it changes and on every connect, and that the user acts in it, at most every ACTIVE_MS.
+const ACTIVE_MS = 30_000;
+let activeAt = 0;
+
+function presence(p: { visible?: boolean; focused?: boolean; active?: boolean }): void {
+  if (!state.connected || !state.scopes.includes("voice")) return;
+  rpc.signal("voice.presence", p);
+}
+
+function whereNow(): void {
+  presence({ visible: document.visibilityState === "visible", focused: document.hasFocus() });
+}
+
+function acted(): void {
+  const now = Date.now();
+  if (now - activeAt < ACTIVE_MS) return;
+  activeAt = now;
+  presence({ active: true });
+}
+
+window.addEventListener("focus", () => presence({ focused: true }));
+window.addEventListener("blur", () => presence({ focused: false }));
+document.addEventListener("visibilitychange", () => presence({ visible: document.visibilityState === "visible" }));
+document.addEventListener("pointerdown", acted, true);
+document.addEventListener("keydown", acted, true);
+
+/** The speaker: stops what is read out, silences what is pending, or reads it out again. */
+async function hushNext(on: boolean): Promise<void> {
+  try {
+    dispatch({ type: "voice.next", params: await rpc.request<VoiceNext>("voice.hush", { on }) });
+  } catch (e) {
+    fail("speaker", e);
+  }
 }
 
 /** The last `session.watch` sent, settled once the node has it. */
@@ -1830,6 +1874,11 @@ document.addEventListener("click", (ev) => {
       if (target.dataset["session"]) ui.kill = { session: target.dataset["session"], phase: "asking" };
       draw();
       return;
+    case "hush": {
+      const b = speakerButton(state);
+      if (b && !b.disabled) void hushNext(b.on);
+      return;
+    }
     case "session-kill-confirm":
       if (target.dataset["session"] && ui.kill?.phase === "asking") void killSession(target.dataset["session"]);
       return;

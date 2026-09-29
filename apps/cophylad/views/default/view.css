@@ -2085,6 +2085,74 @@ button:disabled {
   display: none;
 }
 
+/* the speaker beside the chat's tab: dim while nothing is to be read out, lit while the next
+   reply will be, pulsing while one is read, struck through once hushed */
+.speak-next {
+  display: flex;
+  flex: 0 0 34px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.speak-next svg {
+  width: 18px;
+  height: 18px;
+}
+
+.speak-next .strike {
+  display: none;
+}
+
+.speak-next[data-look="dim"] {
+  opacity: 0.45;
+}
+
+.speak-next:hover:enabled {
+  background: var(--raised);
+  color: var(--ink);
+  opacity: 1;
+}
+
+.speak-next[data-look="lit"],
+.speak-next[data-look="playing"] {
+  border-color: color-mix(in srgb, var(--cophyla) 55%, transparent);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.speak-next[data-look="hushed"] .strike {
+  display: inline;
+}
+
+.speak-next[data-look="hushed"] .waves {
+  display: none;
+}
+
+.speak-next:disabled {
+  opacity: 0.3;
+}
+
+.speak-next[hidden] {
+  display: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .speak-next[data-look="playing"] svg {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+}
+
+@media (max-width: 640px) {
+  .speak-next {
+    flex-basis: 44px;
+  }
+}
+
 .composer-note {
   padding-top: 6px;
   padding-bottom: 12px;

@@ -1,7 +1,8 @@
 // The default view's renderer: keyed DOM reconciliation over the model's selectors. Every
 // element is created once and updated in place, keyed on `data-key`, so inputs keep focus
 // and the frame does not flicker. The rail on the left holds, on the desktop, a dot for the
-// line to cophylad at the very top, one tab for the chat, fixed,
+// line to cophylad at the very top, one tab for the chat, fixed, the speaker beside it that says
+// whether the next reply is read out and silences it,
 // and under it one tab per open session, the agent's mark and its name, grouped under the
 // folder they work in, a workspace inside another's indented under it, a folded heading
 // saying how many tabs it holds, the bare terminals under Terminals, each named by the folder it works
@@ -44,7 +45,7 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -1360,6 +1361,18 @@ function renderPairing(root: HTMLElement, state: ViewState): void {
   setText(panel.querySelector(".pair-left")!, words.expired ? "that code has run out" : `good for ${words.left}`);
 }
 
+/** The speaker beside the chat's tab: hidden until the node says, then dim, lit, playing or struck through. */
+function renderSpeaker(button: HTMLButtonElement, state: ViewState): void {
+  const b = speakerButton(state);
+  setHidden(button, b === undefined);
+  if (!b) return;
+  setData(button, "look", b.look);
+  button.title = b.title;
+  button.setAttribute("aria-label", b.title);
+  button.setAttribute("aria-pressed", b.look === "hushed" ? "true" : "false");
+  button.disabled = b.disabled;
+}
+
 function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   let chat = root.querySelector<HTMLButtonElement>(".tab.chat");
   if (!chat) {
@@ -1372,6 +1385,9 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     const dot = el("span", "dot link-dot");
     dot.setAttribute("role", "img");
     chat.append(el("span", "tab-title", "Cophyla Chat"), el("span", "pulse"), dot);
+    // Between the two, once the node says whether the next reply is read out: the speaker, which silences it.
+    const speaker = actionButton("speak-next", "", "hush");
+    speaker.append(speakerIcon());
     const more = actionButton("rail-more", "", "rail-more");
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-label", "More");
@@ -1387,7 +1403,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     settings.setAttribute("role", "menuitem");
     settings.title = "Which account agents start under, and with what";
     moreMenu.append(change, settings, el("p", "rail-menu-note"));
-    top.append(chat, more, moreMenu);
+    top.append(chat, speaker, more, moreMenu);
     const list = el("div", "tab-sessions");
     const newTerminal = el("button", "tab-new-terminal", "New terminal");
     newTerminal.type = "button";
@@ -1462,6 +1478,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     dot.setAttribute("aria-label", link.title);
   }
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
+  renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
@@ -2288,6 +2305,31 @@ function ensureEarlier(stream: HTMLElement, state: ViewState): void {
   setData(earlier, "action", button.action);
   earlier.disabled = button.disabled;
   setText(earlier, button.label);
+}
+
+/** A loudspeaker with its waves, and the line that strikes it through when what was to be read out is hushed; in the button's own colour. */
+function speakerIcon(): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const parts: [string, string][] = [
+    ["body", "M4 9.5h3.5L12 6v12l-4.5-3.5H4z"],
+    ["waves", "M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"],
+    ["strike", "M4.5 4.5l15 15"],
+  ];
+  for (const [name, d] of parts) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("class", name);
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+  }
+  return svg;
 }
 
 /** A microphone, drawn in the button's own colour. */
