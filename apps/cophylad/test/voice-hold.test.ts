@@ -128,3 +128,135 @@ describe("the speaking hold with a phone that acks", () => {
     c.dispose();
   });
 });
+
+/** A voice that takes `delayMs` to make each line, then gives it as one chunk, keeping the lines asked for and those cut. */
+function linedVoice(delayMs: number) {
+  const said: string[] = [];
+  const cut: string[] = [];
+  const tts: TtsEngine = {
+    name: "lined",
+    sampleRate: RATE,
+    async *synth(text, opts = {}) {
+      said.push(text);
+      await Bun.sleep(delayMs);
+      if (opts.signal?.aborted) {
+        cut.push(text);
+        return;
+      }
+      yield new Int16Array(RATE / 10);
+    },
+    close() {},
+  };
+  return { tts, said, cut };
+}
+
+/** A conversation with a phone that acks, a recogniser and that voice, for the queue. */
+function queued(delayMs = 60, transcript = "") {
+  const voice = linedVoice(delayMs);
+  const states: VoiceState[] = [];
+  const frames: { reply: number; end?: true }[] = [];
+  const stream = { accept() {}, final: async () => transcript, reset() {}, dispose() {} };
+  const c = new Conversation({
+    client: "cli_queue",
+    tts: () => voice.tts,
+    stt: () => ({ stream: () => stream, close() {} }),
+    acksPlayed: true,
+    playedFallbackMs: 60_000,
+    thinkingTimeoutMs: 10_000,
+    on: {
+      state: (state) => states.push(state),
+      partial: () => {},
+      final: () => {},
+      speaking: () => {},
+      audio: (_pcm, _rate, frame) => frames.push(frame),
+    },
+  });
+  return { c, states, frames, ...voice };
+}
+
+describe("the lines waiting to be spoken", () => {
+  test("two lines play one after the other, each its own reply with its own end", async () => {
+    const { c, frames, said } = queued();
+    const first = c.speak("One.");
+    const second = c.speak("Two.");
+    await Promise.all([first, second]);
+    expect(said).toEqual(["One.", "Two."]);
+    // Never interleaved: the second reply's frames all come after the first one's end.
+    expect(frames).toEqual([{ reply: 1 }, { reply: 1, end: true }, { reply: 2 }, { reply: 2, end: true }]);
+    c.dispose();
+  });
+
+  test("speaking lasts until the last line's ack, not the first one's", async () => {
+    const { c, states } = queued();
+    await Promise.all([c.speak("One."), c.speak("Two.")]);
+    c.played(1);
+    expect(states).toEqual(["speaking"]);
+    c.played(2);
+    expect(states).toEqual(["speaking", "idle"]);
+    c.dispose();
+  });
+
+  test("a line that comes while an utterance is heard waits for it to end", async () => {
+    const { c, states, frames, said } = queued();
+    c.ptt(true);
+    expect(states).toEqual(["listening"]);
+    const line = c.speak("Done, the tests pass.");
+    await Bun.sleep(150);
+    expect(said).toEqual([]);
+    expect(states).toEqual(["listening"]);
+    // The press came to nothing: the utterance is over, and the line is spoken.
+    c.ptt(false);
+    await line;
+    expect(said).toEqual(["Done, the tests pass."]);
+    expect(states).toEqual(["listening", "transcribing", "idle", "speaking"]);
+    expect(frames.at(-1)).toEqual({ reply: 1, end: true });
+    c.dispose();
+  });
+
+  test("an utterance begun over the speech drops the lines still waiting", async () => {
+    const { c, said, cut } = queued(120);
+    const lines = [c.speak("One."), c.speak("Two."), c.speak("Three.")];
+    await Bun.sleep(40);
+    c.ptt(true);
+    await Promise.all(lines);
+    expect(said).toEqual(["One."]);
+    await Bun.sleep(150);
+    expect(cut).toEqual(["One."]);
+    c.dispose();
+  });
+
+  test("a line that interrupts drops those waiting and is spoken at once", async () => {
+    const { c, said, frames } = queued(120);
+    const lines = [c.speak("One."), c.speak("Two.")];
+    await Bun.sleep(40);
+    const now = c.speak("Forget that.", { interrupt: true });
+    await Promise.all([...lines, now]);
+    expect(said).toEqual(["One.", "Forget that."]);
+    expect(frames.filter((f) => f.end).map((f) => f.reply)).toEqual([2]);
+    c.dispose();
+  });
+
+  test("hush stops the speech and drops what waits; a turn still thinking is left alone", async () => {
+    const { c, states, said } = queued(120);
+    const lines = [c.speak("One."), c.speak("Two.")];
+    await Bun.sleep(40);
+    expect(c.hush()).toBe(true);
+    await Promise.all(lines);
+    expect(said).toEqual(["One."]);
+    expect(states).toEqual(["speaking", "idle"]);
+    // Nothing to stop: nothing changes.
+    expect(c.hush()).toBe(false);
+    c.dispose();
+  });
+
+  test("hush leaves a turn that is thinking to think", async () => {
+    const { c, states } = queued(60, "run the tests");
+    c.ptt(true);
+    c.ptt(false);
+    await Bun.sleep(20);
+    expect(states).toEqual(["listening", "transcribing", "thinking"]);
+    expect(c.hush()).toBe(false);
+    expect(states.at(-1)).toBe("thinking");
+    c.dispose();
+  });
+});

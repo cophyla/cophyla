@@ -922,6 +922,17 @@ export class Voice {
     void conversation.speak(text, { ...(opts.interrupt !== undefined ? { interrupt: opts.interrupt } : {}) });
   }
 
+  /**
+   * The user silenced what was to be read out: whatever a conversation is speaking stops, and
+   * the lines it still had go unspoken. A conversation thinking or hearing an utterance goes
+   * on. True when any had something to stop.
+   */
+  hush(): boolean {
+    let any = false;
+    for (const c of this.conversations.values()) if (c.hush()) any = true;
+    return any;
+  }
+
   /** A model became current while the daemon ran: the stage that uses it loads it again. */
   onModel(name: string, dir: string): void {
     if (!this.config.enabled || this.stopped) return;

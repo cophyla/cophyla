@@ -32,11 +32,15 @@
 // utterance, which the one still being transcribed leaves alone. While the reply is spoken the wake word
 // keeps running, so a word over the top of it stops the speech and starts the next utterance.
 //
-// Each spoken line is a numbered reply whose last frame says `end`. A phone that said it
-// reports playback answers that end with `voice.played` once the last of it has left its
-// speaker, and `speaking` lasts until then; for one that does not, the node estimates when
-// the audio it sent will have played, as it always did. Each turn's stages are timed and
-// the times logged as one `voice turn` line, to tell the network's delay from the pipeline's.
+// Lines are spoken one at a time, in the order they came: each is a numbered reply whose last
+// frame says `end`, and the next is made only once the one before has been. A line that
+// interrupts drops those waiting and cuts the one being made; none is spoken over the user,
+// so one that comes while an utterance is heard or transcribed waits for it to end, and a new
+// utterance drops every line still waiting, as `hush` does. A phone that said it reports
+// playback answers each end with `voice.played` once the last of it has left its speaker, and
+// `speaking` lasts until the last line's; for one that does not, the node estimates when the
+// audio it sent will have played, as it always did. Each turn's stages are timed and the
+// times logged as one `voice turn` line, to tell the network's delay from the pipeline's.
 
 import type { VoiceState, VoiceStopped, VoiceUnheard } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
@@ -105,6 +109,12 @@ export interface PlayedStats {
 /** The moments of one turn, for its `voice turn` line. */
 type Stamp = "speechEnd" | "sttFinal" | "reply" | "speak" | "firstChunk" | "synthDone" | "played";
 
+/** A line waiting to be spoken, and what settles its `speak`. */
+interface Line {
+  text: string;
+  done: () => void;
+}
+
 export interface ConversationDeps {
   client: string;
   /** The node's wake word over this controller's frames; none when the phone detects it (see `useWake`). */
@@ -163,6 +173,9 @@ export class Conversation {
   private disposed = false;
   /** The synthesis in flight, so a barge-in can cut it. */
   private speech?: AbortController;
+  /** The lines still to speak, oldest first, and whether one is being spoken from them. */
+  private lines: Line[] = [];
+  private draining = false;
   private speaking = false;
   /** When the audio already sent will have finished playing. */
   private playsUntil = 0;
@@ -201,6 +214,13 @@ export class Conversation {
     if (this.state === next) return;
     this.state = next;
     this.deps.on.state(next, detail);
+    // An utterance is over: the lines that waited for it are spoken, once the state has settled.
+    if (this.lines.length > 0 && !this.draining && !this.heard()) queueMicrotask(() => void this.drain());
+  }
+
+  /** An utterance is being heard or transcribed: no line is spoken over it. */
+  private heard(): boolean {
+    return this.state === "listening" || this.state === "transcribing";
   }
 
   /**
@@ -339,7 +359,9 @@ export class Conversation {
   }
 
   private begin(why: "wake" | "button"): void {
-    // Speaking over the reply is how a person interrupts: the speech stops where it is.
+    // Speaking over the reply is how a person interrupts: the speech stops where it is, and
+    // the lines after it are not spoken either.
+    this.dropLines();
     if (this.state === "speaking" || this.speech) {
       this.stopSpeech();
       this.logTurn("cut");
@@ -433,6 +455,7 @@ export class Conversation {
     if (this.state !== "listening" && this.state !== "transcribing") return false;
     const was = this.state;
     this.cancels++;
+    this.dropLines();
     this.clearStall();
     this.stream?.dispose();
     this.stream = undefined;
@@ -557,16 +580,53 @@ export class Conversation {
 
   // --- speech out ---------------------------------------------------------------------------
 
-  /** Speaks a line. `interrupt` cuts whatever is playing; otherwise this waits its turn. */
-  async speak(text: string, opts: { interrupt?: boolean } = {}): Promise<void> {
-    if (this.disposed || !text.trim()) return;
+  /**
+   * Speaks a line once the lines before it have been; settles when it has been sent, or
+   * dropped. `interrupt` drops the lines waiting and cuts the one being made instead.
+   */
+  speak(text: string, opts: { interrupt?: boolean } = {}): Promise<void> {
+    if (this.disposed || !text.trim()) return Promise.resolve();
+    if (!this.deps.tts?.()) {
+      // Nothing can speak: the turn is over as far as the phone is concerned.
+      if (this.state === "thinking") this.setState("idle");
+      return Promise.resolve();
+    }
+    if (opts.interrupt) {
+      this.dropLines();
+      this.stopSpeech();
+    }
+    return new Promise((done) => {
+      this.lines.push({ text, done });
+      void this.drain();
+    });
+  }
+
+  /** Speaks the lines one after another, until none is left or an utterance begins. */
+  private async drain(): Promise<void> {
+    if (this.draining) return;
+    this.draining = true;
+    try {
+      while (!this.disposed && !this.heard()) {
+        const line = this.lines.shift();
+        if (!line) break;
+        try {
+          await this.speakLine(line.text);
+        } finally {
+          line.done();
+        }
+      }
+    } finally {
+      this.draining = false;
+    }
+  }
+
+  /** One line, as its own numbered reply; returns once its end is sent, or at once when it is cut. */
+  private async speakLine(text: string): Promise<void> {
     const engine = this.deps.tts?.();
     if (!engine) {
-      // Nothing can speak: the turn is over as far as the phone is concerned.
       if (this.state === "thinking") this.setState("idle");
       return;
     }
-    if (opts.interrupt) this.stopSpeech();
     this.clearThinking();
     const controller = new AbortController();
     this.speech = controller;
@@ -575,21 +635,26 @@ export class Conversation {
     this.setState("speaking");
     const rate = engine.sampleRate || OUT_RATE;
     let sent = 0;
-    try {
-      for await (const chunk of engine.synth(sayNames(text), { signal: controller.signal })) {
-        if (controller.signal.aborted || this.disposed) break;
-        this.stamp("firstChunk");
-        for (let off = 0; off < chunk.length; off += OUT_FRAME) {
-          const slice = chunk.subarray(off, Math.min(off + OUT_FRAME, chunk.length));
-          this.deps.on.audio(slice, rate, { reply });
-          sent += slice.length;
+    const synth = (async () => {
+      try {
+        for await (const chunk of engine.synth(sayNames(text), { signal: controller.signal })) {
+          if (controller.signal.aborted || this.disposed) break;
+          this.stamp("firstChunk");
+          for (let off = 0; off < chunk.length; off += OUT_FRAME) {
+            const slice = chunk.subarray(off, Math.min(off + OUT_FRAME, chunk.length));
+            this.deps.on.audio(slice, rate, { reply });
+            sent += slice.length;
+          }
+          // a chunk cannot start playing before it leaves: a slow first sentence moves the end out with it
+          this.playsUntil = Math.max(this.playsUntil, this.now()) + (chunk.length / rate) * 1000;
         }
-        // a chunk cannot start playing before it leaves: a slow first sentence moves the end out with it
-        this.playsUntil = Math.max(this.playsUntil, this.now()) + (chunk.length / rate) * 1000;
+      } catch (e) {
+        if (!controller.signal.aborted) this.deps.log?.warn("speech failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
       }
-    } catch (e) {
-      if (!controller.signal.aborted) this.deps.log?.warn("speech failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
-    }
+    })();
+    // A line cut short gives way at once, not when its engine next yields.
+    const cut = new Promise<void>((resolve) => controller.signal.addEventListener("abort", () => resolve(), { once: true }));
+    await Promise.race([synth, cut]);
     if (this.speech !== controller) return;
     this.speech = undefined;
     if (this.disposed || controller.signal.aborted) return;
@@ -614,7 +679,7 @@ export class Conversation {
     const left = awaiting !== undefined ? estimate + (this.deps.playedFallbackMs ?? PLAYED_FALLBACK_MS) : estimate;
     this.idleTimer = setTimeout(() => {
       this.idleTimer = undefined;
-      if (this.state === "speaking" && !this.speech) {
+      if (this.state === "speaking" && !this.speech && this.lines.length === 0) {
         if (awaiting !== undefined) this.deps.log?.info("no voice.played came; going idle", { client: this.client, reply: awaiting });
         this.awaiting = undefined;
         this.logTurn(awaiting !== undefined ? "no ack" : "estimated");
@@ -634,10 +699,33 @@ export class Conversation {
     this.awaiting = undefined;
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = undefined;
-    if (this.state === "speaking" && !this.speech) {
+    if (this.state === "speaking" && !this.speech && this.lines.length === 0) {
       this.logTurn("played");
       this.setState("idle");
     }
+  }
+
+  /**
+   * The user silenced what was to be read out: the lines waiting are dropped and the one being
+   * spoken stops where it is. Only speech is stopped; a turn still thinking goes on, and so
+   * does an utterance. True when there was anything to stop.
+   */
+  hush(): boolean {
+    if (this.disposed) return false;
+    const waiting = this.lines.length > 0;
+    this.dropLines();
+    if (this.state !== "speaking") return waiting;
+    this.stopSpeech();
+    this.logTurn("hushed");
+    this.setState("idle");
+    return true;
+  }
+
+  /** The lines still waiting are not spoken: their `speak`s settle now. */
+  private dropLines(): void {
+    const dropped = this.lines;
+    this.lines = [];
+    for (const line of dropped) line.done();
   }
 
   // --- timings --------------------------------------------------------------------------------
@@ -698,6 +786,7 @@ export class Conversation {
 
   /** Stops speaking and goes idle: a disconnect, a revoked controller, a stage going down. */
   interrupt(): void {
+    this.dropLines();
     this.stopSpeech();
     this.clearThinking();
     this.clearStall();
@@ -706,6 +795,7 @@ export class Conversation {
 
   dispose(): void {
     this.disposed = true;
+    this.dropLines();
     this.stopSpeech();
     this.clearThinking();
     this.clearStall();
