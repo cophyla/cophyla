@@ -1,8 +1,9 @@
 // Recording an utterance, as the user hears and sees it, over fakes: the tones' notes and when
 // they play, how loud each 20 ms of a frame is, and when the host says recording started and
 // stopped: from the button held, a word the host heard, and the node listening (a word it
-// heard, a view's own button), never from frames streamed only for the node's wake word, and
-// a quick tap whose `listening` comes after it was let go not starting it again.
+// heard, a view's own button), never from frames streamed only for the node's wake word, a
+// quick tap whose `listening` comes after it was let go not starting it again, and a press the
+// node ended while the button still holds it stopping as if let go.
 
 import { describe, expect, test } from "bun:test";
 import type { VoiceState } from "@cophyla/protocol";
@@ -180,6 +181,43 @@ describe("the host says recording started and stopped", () => {
     host.ptt(false);
     await Bun.sleep(0);
     expect(said).toEqual([true, false]);
+  });
+
+  test("the node ending a press the button still holds (its limit, the allowance) stops it, and nothing more goes up", async () => {
+    const { host, said, cues, state, answers } = fixture();
+    // The phone hears its own word, so nothing streams for the node's.
+    (host as unknown as { dispatch: (e: object) => void }).dispatch({ type: "answer", mode: "phone" });
+    host.ptt(true);
+    state("listening");
+    answers[0]!.answer();
+    await Bun.sleep(0);
+    expect(host.routed.streaming).toBe(true);
+    state("transcribing");
+    expect(said).toEqual([true, false]);
+    expect(cues).toEqual(["start", "stop"]);
+    expect(host.view.talking).toBe(true);
+    expect(host.view.recording).toBe(false);
+    expect(host.routed.streaming).toBe(false);
+    // Let go, nothing starts again; pressed again, it records.
+    host.ptt(false);
+    expect(said).toEqual([true, false]);
+    state("thinking");
+    host.ptt(true);
+    expect(said).toEqual([true, false, true]);
+    expect(host.routed.streaming).toBe(true);
+  });
+
+  test("a press let go before the node moved on ends as it always did", async () => {
+    const { host, said, state, answers } = fixture();
+    host.ptt(true);
+    state("listening");
+    answers[0]!.answer();
+    host.ptt(false);
+    state("transcribing");
+    host.ptt(true);
+    // The next press is its own: the node's move past the last one does not end it.
+    expect(said).toEqual([true, false, true]);
+    expect(host.view.recording).toBe(true);
   });
 
   test("the line going down stops it", () => {

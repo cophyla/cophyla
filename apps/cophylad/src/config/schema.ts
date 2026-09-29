@@ -176,7 +176,7 @@ export const ProvidersConfig = z.object({
     .union([Route, z.array(Route).min(1)])
     .default(["server", "byok:gemini"])
     .transform((r) => (typeof r === "string" ? [r] : r)),
-  /** The routes `[voice] stt = "gemini"` tries, the same way: `server`, then `byok:gemini`. */
+  /** The routes `[voice] stt = "gemini-live"` or `"gemini"` tries, the same way: `server`, then `byok:gemini`. */
   stt: z
     .union([Route, z.array(Route).min(1)])
     .default(["server", "byok:gemini"])
@@ -188,16 +188,18 @@ export const ProvidersConfig = z.object({
     .transform((r) => (typeof r === "string" ? [r] : r)),
   gemini: z
     .object({
-      /** `GEMINI_API_KEY` in the environment when absent. */
+      /** A key typed in the app's Settings comes first; `GEMINI_API_KEY` in the environment when neither is set. */
       api_key: z.string().optional(),
       base_url: z.string().url().default("https://generativelanguage.googleapis.com"),
-      /** The model that transcribes on the `byok:gemini` transcription route. */
+      /** The model that transcribes each utterance whole on the `byok:gemini` route (`[voice] stt = "gemini"`). */
       stt_model: z.string().min(1).default("gemini-3.5-flash-lite"),
+      /** The model that transcribes as the user speaks on the `byok:gemini` route (`[voice] stt = "gemini-live"`), over the Live API. */
+      stt_live_model: z.string().min(1).default("gemini-3.5-transcribe-live"),
     })
     .prefault({}),
   deepinfra: z
     .object({
-      /** `DEEPINFRA_API_KEY` in the environment when absent. */
+      /** A key typed in the app's Settings comes first; `DEEPINFRA_API_KEY` in the environment when neither is set. */
       api_key: z.string().optional(),
       base_url: z.string().url().default("https://api.deepinfra.com"),
       /** The model that speaks on the `byok:deepinfra` speech route. */
@@ -309,8 +311,9 @@ export const VoiceConfig = z.object({
   /**
    * Moonshine (Tiny, Base), Whisper Base and Nemotron transcribe on this machine once installed
    * (the app's Settings shows their licences and installs them), in the speech process, which
-   * runs only while a turn does; `gemini` sends each utterance over `[providers] stt` and needs
-   * no install. The wake word and the VAD are local either way.
+   * runs only while a turn does; `gemini-live` streams the words as they are said over
+   * `[providers] stt`, and `gemini` sends each utterance once it ends, for less; neither needs an
+   * install. The wake word and the VAD are local either way.
    */
   stt: SttEngineId.default("nemotron"),
   /**
@@ -685,17 +688,18 @@ hello_timeout_ms = 10000
 # not there yet. A route that cannot serve passes the call on; one string is a list of one.
 [providers]
 llm = ["server", "byok:gemini"]
-stt = ["server", "byok:gemini"]      # the routes [voice] stt = "gemini" tries, the same way
+stt = ["server", "byok:gemini"]      # the routes [voice] stt = "gemini-live" or "gemini" tries, the same way
 tts = ["server", "byok:deepinfra"]   # the routes [voice] tts = "kokoro-online" tries
 timeout_ms = 120000
 
 [providers.gemini]
-# api_key = "..."            # GEMINI_API_KEY in the environment when absent
+# api_key = "..."            # a key typed in Settings comes first; GEMINI_API_KEY in the environment when neither is set
 base_url = "https://generativelanguage.googleapis.com"
-stt_model = "gemini-3.5-flash-lite"   # 2.5 Flash-Lite is closed to new keys; the same audio price
+stt_model = "gemini-3.5-flash-lite"   # [voice] stt = "gemini": each utterance whole; 2.5 Flash-Lite is closed to new keys
+stt_live_model = "gemini-3.5-transcribe-live"   # [voice] stt = "gemini-live": the words as they are said
 
 [providers.deepinfra]
-# api_key = "..."            # DEEPINFRA_API_KEY in the environment when absent
+# api_key = "..."            # a key typed in Settings comes first; DEEPINFRA_API_KEY in the environment when neither is set
 base_url = "https://api.deepinfra.com"
 tts_model = "hexgrad/Kokoro-82M"
 
@@ -777,7 +781,7 @@ account_pairing = true         # a phone signed in to this node's account pairs 
 [voice]
 enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
-stt = "nemotron"               # moonshine-tiny | moonshine-base (English) | whisper-base (99 languages) | nemotron (live words, 40 languages), on this machine once installed | gemini ([providers] stt) | off
+stt = "nemotron"               # moonshine-tiny | moonshine-base (English) | whisper-base (99 languages) | nemotron (live words, 40 languages), on this machine once installed | gemini-live (live words) or gemini (each utterance once it ends), over [providers] stt | off
 tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), on the CPU once installed | chatterbox (GPU sidecar, bootstrapped on demand) | kokoro-online ([providers] tts) | off; the app's Settings picks and installs
 wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
 # wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent

@@ -29,7 +29,7 @@ import { FakeEngines, WAKE_MARKER, b64, silenceChunk, speechChunk, wakeChunk } f
 import { parseConfig } from "../src/config/load.ts";
 import { Conversation, OUT_FRAME, PLAYBACK_SLACK_MS } from "../src/voice/conversation.ts";
 import { OpusDecoder, OpusEncoder } from "../src/voice/opus.ts";
-import type { SttEngine, VadEngine } from "../src/voice/engines.ts";
+import type { SttEngine, SttStream, VadEngine } from "../src/voice/engines.ts";
 import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 
 const FAKE_BRAIN = join(import.meta.dir, "fakes", "brain.ts");
@@ -156,10 +156,21 @@ describe("voice", () => {
     const withClient = ui.notifications.find(isMethod("voice.state", (p) => (p as { state: string }).state === "listening"))!;
     expect((withClient.params as { client: string }).client).toMatch(/^cli_/);
 
-    // Partials went out while it grew, and never the same text twice.
-    expect(transcripts.length).toBeGreaterThanOrEqual(2);
+    // The brain heard the words while they grew, at most once a second, never the same text twice.
+    expect(transcripts.length).toBeGreaterThanOrEqual(1);
     expect(new Set(transcripts).size).toBe(transcripts.length);
     expect(TRANSCRIPT.startsWith(transcripts[0]!)).toBe(true);
+    // The phone that spoke saw its words grow, only what changed each time, and the last named the
+    // message they became; the desktop saw none of them.
+    await waitFor(() => phone.notifications.some(isMethod("voice.partial", (p) => (p as { message?: string }).message === m.id)));
+    const partials = phone.notifications.filter(isMethod("voice.partial")).map((n) => n.params as { client?: string; text: string; from?: number; message?: string });
+    expect(partials.length).toBeGreaterThanOrEqual(2);
+    expect(partials[0]!.from).toBeUndefined();
+    expect(partials.every((p) => p.client === partials[0]!.client)).toBe(true);
+    let shown = "";
+    for (const p of partials) shown = shown.slice(0, p.from ?? 0) + p.text;
+    expect(TRANSCRIPT.startsWith(shown) && shown.length > 0).toBe(true);
+    expect(ui.notifications.some(isMethod("voice.partial"))).toBe(false);
     // The user's speaking was announced on its edges.
     expect(activity.filter((a) => a === "speaking:voice")).toHaveLength(1);
     await waitFor(() => activity.includes("idle:voice"));
@@ -460,32 +471,35 @@ const idByName = (d: Daemon, name: string): string => d.clients.list().find((c) 
 const userMessages = (c: TestClient) => c.notifications.filter(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
 
 /** A conversation on its own, over the fake engines, for the timers a daemon test would wait seconds on. */
-async function bare(opts: { stt?: SttEngine; vad?: () => VadEngine; stallMs?: number; now?: () => number } = {}) {
+async function bare(opts: { stt?: SttEngine; vad?: (() => VadEngine) | null; stallMs?: number; now?: () => number } = {}) {
   const engines = new FakeEngines({ transcript: TRANSCRIPT });
-  const makeVad = opts.vad ?? (await engines.vad());
+  const makeVad = opts.vad === null ? undefined : (opts.vad ?? (await engines.vad()));
   const stt = opts.stt ?? (await engines.stt());
   const seen: VoiceState[] = [];
   const unheard: VoiceUnheard[] = [];
+  const details: { state: VoiceState; limit?: number; stopped?: string }[] = [];
   const finals: string[] = [];
+  const partials: string[] = [];
   const c = new Conversation({
     client: "cli_bare",
-    vad: makeVad,
+    ...(makeVad ? { vad: makeVad } : {}),
     stt: () => stt,
     thinkingTimeoutMs: 60_000,
     stallMs: opts.stallMs ?? 150,
     ...(opts.now ? { now: opts.now } : {}),
     on: {
-      state: (s, why) => {
+      state: (s, detail) => {
         seen.push(s);
-        if (why) unheard.push(why);
+        if (detail?.unheard) unheard.push(detail.unheard);
+        details.push({ state: s, ...(detail?.limit !== undefined ? { limit: detail.limit } : {}), ...(detail?.stopped ? { stopped: detail.stopped } : {}) });
       },
-      partial: () => {},
+      partial: (text) => partials.push(text),
       final: (text) => finals.push(text),
       speaking: () => {},
       audio: () => {},
     },
   });
-  return { c, seen, unheard, finals, engines };
+  return { c, seen, unheard, details, finals, partials, engines };
 }
 
 describe("the wake word on the phone", () => {
@@ -1049,7 +1063,7 @@ describe("the speech engine picked in the app", () => {
     const first = await settings(ui);
     expect(first).toMatchObject({ enabled: true, tts: "piper", source: "config", voice: 0, voices: 4, stage: { status: "ready", engine: "piper" } });
     expect(first.engines.filter((e) => e.stage === "tts").map((e) => e.id)).toEqual(["piper", "kokoro", "supertonic", "chatterbox", "kokoro-online", "off"]);
-    expect(first.engines.filter((e) => e.stage === "stt").map((e) => e.id)).toEqual(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini", "off"]);
+    expect(first.engines.filter((e) => e.stage === "stt").map((e) => e.id)).toEqual(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini-live", "gemini", "off"]);
     // A local engine says what it comes under; a hosted one runs nowhere here and needs no install.
     expect(first.engines.find((e) => e.id === "piper")).toMatchObject({ local: true, installed: true });
     expect(first.engines.find((e) => e.id === "piper")!.licences!.map((l) => l.name)).toContain("GPL-3.0");
@@ -1246,9 +1260,9 @@ describe("local engines are installed only when asked", () => {
     await ui.request("voice.configure", { stt: "server" });
     // Up with nothing installed: what it needs besides a route is the VAD, which ships.
     await waitFor(() => d.voice.stageStates().stt.status === "ready");
-    expect(d.voice.stageStates().stt).toMatchObject({ engine: "gemini" });
+    expect(d.voice.stageStates().stt).toMatchObject({ engine: "gemini-live" });
     expect(engines.installs).toEqual([]);
-    expect(await settings(ui)).toMatchObject({ stt: "gemini", sttSource: "app" });
+    expect(await settings(ui)).toMatchObject({ stt: "gemini-live", sttSource: "app" });
     await ui.request("voice.configure", { stt: null });
     await waitFor(() => d.voice.stageStates().stt.status === "uninstalled");
   }, 20_000);
@@ -1291,5 +1305,156 @@ describe("local engines are installed only when asked", () => {
     expect(await ui.call("voice.install", { engine: "rm -rf" })).toMatchObject({ error: { data: { code: "invalid" } } });
     // The install is audited as a network action.
     expect(d.store.audit.list({ limit: 50 }).some((e) => e.action === "voice.install" && e.target === "kokoro")).toBe(true);
+  }, 20_000);
+});
+
+// --- an utterance's limit, and a recogniser that stops hearing --------------------------------
+
+/** A recogniser that keeps count of what it heard and when it was told of speech. */
+function counting(opts: { maxSeconds?: number; final?: (i: number) => Promise<string> } = {}) {
+  const seen = { samples: 0, heard: 0, streams: [] as SttStream[] };
+  const engine: SttEngine = {
+    ...(opts.maxSeconds !== undefined ? { maxSeconds: opts.maxSeconds } : {}),
+    stream: () => {
+      const i = seen.streams.length;
+      const s: SttStream = {
+        accept: (pcm) => {
+          seen.samples += pcm.length;
+        },
+        heard: () => {
+          seen.heard++;
+        },
+        final: () => (opts.final ? opts.final(i) : Promise.resolve("words")),
+        reset: () => {},
+        dispose: () => {},
+      };
+      seen.streams.push(s);
+      return s;
+    },
+    close: () => {},
+  };
+  return { engine, seen };
+}
+
+const PRIME = 3200;
+
+describe("an utterance's limit, and a recogniser that stops hearing", () => {
+  test("held past the recogniser's limit, the utterance ends on the frame that reaches it and says why; the frames after are not heard", async () => {
+    const { engine, seen } = counting({ maxSeconds: 0.4 });
+    const { c, details, finals } = await bare({ stt: engine });
+    c.ptt(true);
+    for (let i = 0; i < 15; i++) c.push(speechChunk());
+    await waitFor(() => details.at(-1)?.state === "thinking");
+    expect(details).toEqual([{ state: "listening", limit: 0.4 }, { state: "transcribing", stopped: "limit" }, { state: "thinking" }]);
+    expect(seen.samples).toBe(PRIME + 10 * 640);
+    expect(finals).toEqual(["words"]);
+    // The button is still held and the phone still sends: nothing more is heard, and the release ends nothing.
+    for (let i = 0; i < 5; i++) c.push(speechChunk());
+    await sleep(20);
+    c.ptt(false);
+    await sleep(20);
+    expect(seen.samples).toBe(PRIME + 10 * 640);
+    expect(details.map((d) => d.state)).toEqual(["listening", "transcribing", "thinking"]);
+    c.dispose();
+  });
+
+  test("a press while the last utterance is still transcribed begins the next, which that transcript leaves alone", async () => {
+    let release!: (text: string) => void;
+    const first = new Promise<string>((r) => (release = r));
+    const { engine } = counting({ final: (i) => (i === 0 ? first : Promise.resolve("second")) });
+    const { c, seen, finals } = await bare({ stt: engine });
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "transcribing");
+    c.ptt(true);
+    expect(seen.at(-1)).toBe("listening");
+    release("first");
+    await waitFor(() => finals.length === 1);
+    // The first transcript still reached the chat, and the new utterance is still being heard.
+    expect(finals).toEqual(["first"]);
+    expect(seen.at(-1)).toBe("listening");
+    c.push(speechChunk());
+    await sleep(10);
+    c.ptt(false);
+    await waitFor(() => seen.at(-1) === "thinking");
+    expect(finals).toEqual(["first", "second"]);
+    expect(seen).toEqual(["listening", "transcribing", "listening", "transcribing", "thinking"]);
+    c.dispose();
+  });
+
+  test("the recogniser is told of speech once, when the VAD hears it; with no VAD, when the utterance begins", async () => {
+    const withVad = counting();
+    const a = await bare({ stt: withVad.engine });
+    a.c.ptt(true);
+    a.c.push(silenceChunk());
+    a.c.push(silenceChunk());
+    await sleep(10);
+    expect(withVad.seen.heard).toBe(0);
+    for (let i = 0; i < 5; i++) a.c.push(speechChunk());
+    await sleep(10);
+    expect(withVad.seen.heard).toBe(1);
+    a.c.dispose();
+
+    const noVad = counting();
+    const b = await bare({ stt: noVad.engine, vad: null });
+    b.c.ptt(true);
+    expect(noVad.seen.heard).toBe(1);
+    b.c.push(speechChunk());
+    await sleep(10);
+    expect(noVad.seen.heard).toBe(1);
+    b.c.dispose();
+  });
+
+  test("a recogniser that stops hearing (the allowance ran out) ends the utterance with what it heard, and says why", async () => {
+    const { engine, seen } = counting({ final: async () => "what was heard" });
+    const { c, details, finals } = await bare({ stt: engine });
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    seen.streams[0]!.onStop!("quota");
+    await waitFor(() => finals.length === 1);
+    expect(finals).toEqual(["what was heard"]);
+    expect(details.map((d) => d.state)).toEqual(["listening", "transcribing", "thinking"]);
+    expect(details[1]).toEqual({ state: "transcribing", stopped: "quota" });
+    // A stop from a stream that is no longer the utterance's changes nothing.
+    seen.streams[0]!.onStop!("limit");
+    await sleep(10);
+    expect(details).toHaveLength(3);
+    c.dispose();
+  });
+
+  test("the words keep coming while the utterance is transcribed, and a later utterance's are its own", async () => {
+    let release!: (text: string) => void;
+    const held = new Promise<string>((r) => (release = r));
+    const { engine, seen } = counting({ final: (i) => (i === 0 ? held : Promise.resolve("")) });
+    const { c, partials } = await bare({ stt: engine });
+    c.ptt(true);
+    c.push(speechChunk());
+    await sleep(10);
+    seen.streams[0]!.onPartial!("hello");
+    c.ptt(false);
+    await sleep(10);
+    seen.streams[0]!.onPartial!("hello there");
+    expect(partials).toEqual(["hello", "hello there"]);
+    // A new press: the first stream's late words are not the new utterance's.
+    c.ptt(true);
+    seen.streams[0]!.onPartial!("hello there you");
+    expect(partials).toEqual(["hello", "hello there"]);
+    release("hello there you");
+    c.dispose();
+  });
+
+  test("the clients hear the utterance's limit with `listening`, and why it stopped with `transcribing`", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT, maxSeconds: 0.4 });
+    const { ui, phone } = await start({ engines });
+    await phone.request("voice.ptt", { active: true });
+    speak(phone, 15);
+    await waitFor(() => states(ui).includes("thinking"));
+    const voiceStates = ui.notifications.filter(isMethod("voice.state")).map((n) => n.params as { state: string; limit?: number; stopped?: string });
+    expect(voiceStates.find((v) => v.state === "listening")).toMatchObject({ limit: 0.4 });
+    expect(voiceStates.find((v) => v.state === "transcribing")).toMatchObject({ stopped: "limit" });
+    await phone.request("voice.ptt", { active: false });
   }, 20_000);
 });

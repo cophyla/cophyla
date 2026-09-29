@@ -27,7 +27,9 @@
 // and that lower half moves, the same under every tab, and where the user left it is kept on
 // the device (`host.savePrefs`, back in `host.ready`). While the host's microphone records an
 // utterance (`host.recording`), however it began, its wave shows just over the input
-// (`host.levels`, waves.ts), and over a terminal's foot where there is no input. Runs in a
+// (`host.levels`, waves.ts), and over a terminal's foot where there is no input. What the node
+// has heard of this view's utterance shows at the chat's end as it grows (`voice.partial`), and
+// the voice row counts down the last seconds before the utterance's limit. Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
@@ -41,9 +43,9 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams } from "./model.ts";
-import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceSetup } from "./model.ts";
+import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, connectWords, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -224,6 +226,7 @@ rpc.onNotification((n) => {
       } else {
         typing(false);
         waves.show(false);
+        tickVoice();
         stopPairingClock();
         stopLoginClock();
         stopInviteClock();
@@ -276,15 +279,19 @@ rpc.onNotification((n) => {
       dispatch({ type: "task.state", params: n.params as Task });
       return;
     case "voice.state": {
-      const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard };
+      const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard; limit?: number; stopped?: VoiceStopped };
       dispatch({ type: "voice.state", params: p });
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
       if (p.unheard !== undefined) {
         const at = Date.now();
         setTimeout(() => dispatch({ type: "voice.note.expired", at }), VOICE_NOTE_MS);
       }
+      tickVoice();
       return;
     }
+    case "voice.partial":
+      dispatch({ type: "voice.partial", params: n.params as VoicePartial });
+      return;
     case "voice.setup":
       dispatch({ type: "voice.setup", params: n.params as VoiceSetup });
       return;
@@ -475,6 +482,27 @@ async function pair(): Promise<void> {
 }
 
 let pairingClock: ReturnType<typeof setInterval> | undefined;
+
+let voiceClock: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * The voice row's countdown: once an utterance being heard is within `countdownFrom` of its
+ * limit, the row is drawn again on each second it has left, and not before or after.
+ */
+function tickVoice(): void {
+  if (voiceClock !== undefined) clearTimeout(voiceClock);
+  voiceClock = undefined;
+  const row = state.voice;
+  if (row?.state !== "listening" || row.limit === undefined) return;
+  const now = Date.now();
+  const startsIn = row.at + (row.limit - countdownFrom(row.limit)) * 1000 - now;
+  const wait = startsIn > 0 ? startsIn : 1000 - ((now - row.at) % 1000);
+  voiceClock = setTimeout(() => {
+    voiceClock = undefined;
+    draw();
+    tickVoice();
+  }, wait);
+}
 
 function startPairingClock(): void {
   stopPairingClock();

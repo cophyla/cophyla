@@ -35,6 +35,7 @@ import { Cloud } from "./cloud/index.ts";
 import { ENTITLEMENT_KEYS } from "./cloud/keys.ts";
 import type { EntitlementKey } from "./cloud/keys.ts";
 import type { Opener } from "./cloud/opener.ts";
+import { openProviderKeys } from "./cloud/provider-keys.ts";
 import { Hooks } from "./editable/hooks.ts";
 import { Editable } from "./editable/index.ts";
 import { MemoryFiles } from "./editable/memory.ts";
@@ -121,8 +122,9 @@ import type { EngineFactory } from "./voice/engines.ts";
 import { AUDIO_CODECS, Voice } from "./voice/index.ts";
 import { localEngines } from "./voice/local.ts";
 import { modelResolver } from "./voice/models.ts";
-import { onlineStt, onlineTts } from "./voice/online.ts";
+import { MAX_SECONDS as ONLINE_MAX_SECONDS, onlineLiveStt, onlineStt, onlineTts, routesFor } from "./voice/online.ts";
 import type { OnlineDeps } from "./voice/online.ts";
+import type { LiveConnect } from "./voice/gemini-live.ts";
 import { storePrefs } from "./voice/prefs.ts";
 import { Workspaces } from "./workspaces/index.ts";
 
@@ -164,6 +166,8 @@ export interface DaemonOptions {
   /** The voice module's seams: the engines and the CPU mask, both faked in the tests. */
   voice?: {
     engines?: EngineFactory;
+    /** The socket own-key live transcription opens: a fake Gemini Live in the tests. */
+    liveConnect?: LiveConnect;
     /** Overrides `[voice] cpu_affinity`; `null` pins nothing. */
     affinity?: bigint | null;
   };
@@ -388,7 +392,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       return { psk: pskFromHex(row.invite.secretHash), accept: (sock) => api!.acceptTunnel(sock, { invite }) };
     },
   });
-  const llm = new Llm({ config: config.providers, log: log.child("llm"), env, providers: [...(opts.providers ?? [new GeminiProvider({ apiKey: () => config.providers.gemini.api_key ?? env["GEMINI_API_KEY"], baseUrl: config.providers.gemini.base_url, timeoutMs: config.providers.timeout_ms, log: log.child("gemini") })]), cloud.llmProvider()] });
+  // The vendors' keys: typed in the app, config.toml's, or the environment's, asked at every call.
+  const keys = openProviderKeys({ dataDir: p.data, config: config.providers, env, log: log.child("keys") });
+  const llm = new Llm({ config: config.providers, log: log.child("llm"), env, geminiKey: () => keys.gemini(), providers: [...(opts.providers ?? [new GeminiProvider({ apiKey: () => keys.gemini(), baseUrl: config.providers.gemini.base_url, timeoutMs: config.providers.timeout_ms, log: log.child("gemini") })]), cloud.llmProvider()] });
 
   const sessionsLog = log.child("sessions");
   // The process table the agent CLI in a terminal is found in, and a hook's ancestors: an engine
@@ -643,13 +649,21 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     thread: (id) => chat.get(id)?.topic,
     ask: (id) => asks.get(id)?.title,
   };
-  /** Transcription and speech over the network, routed as the model is. */
+  /** The app's voice picks, the routes among them. */
+  const voicePrefs = storePrefs(store);
+  /** Transcription and speech over the network, routed as the model is, first where the app said. */
   const online: OnlineDeps = {
-    sttRoutes: config.providers.stt,
-    ttsRoutes: config.providers.tts,
-    server: cloud.speechRoute(),
-    gemini: { apiKey: () => config.providers.gemini.api_key ?? env["GEMINI_API_KEY"], baseUrl: config.providers.gemini.base_url, model: config.providers.gemini.stt_model },
-    deepinfra: { apiKey: () => config.providers.deepinfra.api_key ?? env["DEEPINFRA_API_KEY"], baseUrl: config.providers.deepinfra.base_url, model: config.providers.deepinfra.tts_model },
+    sttRoutes: () => routesFor(config.providers.stt, voicePrefs.read().sttRoute),
+    ttsRoutes: () => routesFor(config.providers.tts, voicePrefs.read().ttsRoute),
+    server: cloud.speechRoute({ maxSeconds: ONLINE_MAX_SECONDS }),
+    gemini: {
+      apiKey: () => keys.gemini(),
+      baseUrl: config.providers.gemini.base_url,
+      model: config.providers.gemini.stt_model,
+      liveModel: config.providers.gemini.stt_live_model,
+      ...(opts.voice?.liveConnect ? { connect: opts.voice.liveConnect } : {}),
+    },
+    deepinfra: { apiKey: () => keys.deepinfra(), baseUrl: config.providers.deepinfra.base_url, model: config.providers.deepinfra.tts_model },
     ...(config.voice.stt_language ? { language: config.voice.stt_language } : {}),
     log: voiceLog.child("online"),
   };
@@ -666,10 +680,12 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     engines:
       opts.voice?.engines ??
       localEngines({ dataDir: p.data, log: voiceLog, ...(affinity !== undefined ? { affinity } : {}), ttsPy, ...(config.voice.models_dir ? { modelsDir: config.voice.models_dir } : {}) }),
-    hosted: { stt: () => onlineStt(online), tts: () => onlineTts(online) },
+    hosted: { stt: (engine) => (engine === "gemini" ? onlineStt(online) : onlineLiveStt(online)), tts: () => onlineTts(online) },
     names,
     onStageChange: () => bus.emit("node.state", node()),
-    prefs: storePrefs(store),
+    prefs: voicePrefs,
+    keys: () => keys.status(),
+    routes: { stt: config.providers.stt, tts: config.providers.tts },
   });
 
   let controller: ApiServer | undefined;
@@ -1063,7 +1079,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...voiceMethods({ voice }),
     ...metricsMethods({ metrics }),
     ...remoteMethods({ remote, pipes }),
-    ...accountMethods({ cloud }),
+    ...accountMethods({ cloud, keys }),
     ...backupMethods({ sync: backup }),
     ...grantMethods({
       grants,

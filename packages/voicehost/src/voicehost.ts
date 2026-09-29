@@ -24,7 +24,10 @@
 //
 // Whenever the microphone records an utterance, however it began (`recordingOf`), the user
 // hears it: a rising tone as it starts and a falling one as it stops (cues.ts), and the host
-// is handed how loud each 20 ms is meanwhile (`onLevels`), for a view to draw.
+// is handed how loud each 20 ms is meanwhile (`onLevels`), for a view to draw. The node may
+// end a press the button still holds (its limit reached, the allowance used up, the utterance
+// taken back): once this client's `listening` is over, recording stops and nothing more goes
+// up until the button is let go and pressed again.
 
 import type { AudioCodec, VoiceState, WakeHeadMode, WakewordMode } from "@cophyla/protocol";
 import { Audio } from "./audio.ts";
@@ -68,6 +71,8 @@ export interface RouteInput {
   watching?: boolean;
   /** The button is held. */
   talking: boolean;
+  /** The node refused the press still held, or ended it: the button no longer records. */
+  talkRefused?: boolean;
   /** The node's voice state for this client. */
   voice?: VoiceState;
   /** The host heard a word and the node has not yet said `listening`. */
@@ -93,7 +98,7 @@ export function route(input: RouteInput): Route {
     // A held button beats the toggle: it is how you speak with the wake word off. Whenever the
     // node is listening to this client, audio goes up, whatever else is true, so the node never
     // waits on a client that stopped sending; and until it says so, the host's own word is enough.
-    streaming: live && (input.talking || input.voice === "listening" || input.pending || (input.listening && input.wake === "node")),
+    streaming: live && ((input.talking && input.talkRefused !== true) || input.voice === "listening" || input.pending || (input.listening && input.wake === "node")),
     // The host's wake word runs whenever the node's would have: through a reply too, so a word
     // over it interrupts, but not over the utterance itself or while the button is held.
     detecting: live && input.listening && input.wake === "phone" && !input.talking && !input.pending && !inUtterance,
@@ -103,7 +108,7 @@ export function route(input: RouteInput): Route {
 export interface RecordingInput extends RouteInput {
   /** The button was let go and the node has not yet answered: a `listening` meanwhile is the press's, already over. */
   released: boolean;
-  /** The node refused the press still held: nothing it hears is kept. */
+  /** The node refused the press still held, or ended it: nothing it hears is kept. */
   talkRefused: boolean;
 }
 
@@ -345,6 +350,9 @@ export class VoiceHost {
       const params = frame.params as { state: VoiceState; client?: string };
       const mine = params.client === undefined || params.client === this.opts.link.state.hello?.client.id;
       if (mine) {
+        // The node ended the utterance the button still holds (its limit, the allowance, a
+        // cancel): the press is over as if let go, until the button is pressed again.
+        if (this.voice === "listening" && params.state !== "listening" && this.talking && !this.released) this.talkRefused = true;
         this.voice = params.state;
         // Past `listening`, the press let go has been answered.
         if (params.state !== "listening") this.released = false;
@@ -575,6 +583,7 @@ export class VoiceHost {
       audioReady: this.audioReady && !this.away,
       watching: this.watching,
       talking: this.talking,
+      talkRefused: this.talkRefused,
       ...(this.voice ? { voice: this.voice } : {}),
       pending: this.book.pending,
       listening: this.listening,

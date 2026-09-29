@@ -1,8 +1,9 @@
 // The daemon's picture as the host last saw it: the latest `session.state` per live session,
 // `workspace.state` per workspace, `node.state`, `remote.state` and `direct.state` per node,
-// `task.state` per open task, every open `ask.state`, the latest `voice.state`, the voice
-// engine still being set up (`voice.setup`), the account (`account.state`) and the brain's
-// turn while it runs (`chat.progress`). cophylad sends
+// `task.state` per open task, every open `ask.state`, the latest `voice.state`, the words heard
+// so far of this client's utterance (`voice.partial`, whole), the voice engine still being set
+// up (`voice.setup`), the account (`account.state`) and the brain's turn while it runs
+// (`chat.progress`). cophylad sends
 // them right after `hello` and never again, and there is no `ask.list`, so a view mounted or
 // reloaded later is given this replay instead. Upserts are idempotent; a replay after a live
 // notification changes nothing.
@@ -12,6 +13,7 @@ import type { Ask, ClientNotificationParams, DirectState, Node, RpcNotification,
 type VoiceStateParams = ClientNotificationParams<"voice.state">;
 type RemoteStateParams = ClientNotificationParams<"remote.state">;
 type VoiceSetupParams = ClientNotificationParams<"voice.setup">;
+type VoicePartialParams = ClientNotificationParams<"voice.partial">;
 type AccountStateParams = ClientNotificationParams<"account.state">;
 type ProgressParams = ClientNotificationParams<"chat.progress">;
 
@@ -27,6 +29,12 @@ export class SnapshotCache {
   readonly tasks = new Map<string, Task>();
   /** The latest voice state, replayed after the rest so a view shows the conversation in flight. */
   voice?: VoiceStateParams;
+  /**
+   * This client's utterance as heard so far, whole: each `voice.partial` sends only what follows
+   * the part it keeps, so a view mounted mid-utterance starts from this. Gone once the utterance
+   * ends or its message is named.
+   */
+  heard?: VoicePartialParams;
   /** A voice engine still being set up; a step that ended leaves nothing to show. */
   voiceSetup?: VoiceSetupParams;
   /** The account as the node sees it: a view that mounts late would otherwise say signed out. */
@@ -37,7 +45,17 @@ export class SnapshotCache {
   upsert(n: RpcNotification): void {
     if (n.method === "voice.state") {
       const v = n.params as VoiceStateParams | undefined;
-      if (v && typeof v === "object" && typeof v.state === "string") this.voice = v;
+      if (!v || typeof v !== "object" || typeof v.state !== "string") return;
+      this.voice = v;
+      // The utterance the words were of is over, or a new one begins.
+      if ((v.state === "listening" || v.state === "idle") && v.client === this.heard?.client) this.heard = undefined;
+      return;
+    }
+    if (n.method === "voice.partial") {
+      const p = n.params as VoicePartialParams | undefined;
+      if (!p || typeof p !== "object" || typeof p.text !== "string") return;
+      if (p.message !== undefined) this.heard = undefined;
+      else this.heard = { ...(p.client !== undefined ? { client: p.client } : {}), text: (this.heard?.text ?? "").slice(0, p.from ?? 0) + p.text };
       return;
     }
     if (n.method === "voice.setup") {
@@ -99,7 +117,7 @@ export class SnapshotCache {
     }
   }
 
-  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state and setup, the account and the nodes' direct connections, then the brain's turn. */
+  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard and the setup, the account and the nodes' direct connections, then the brain's turn. */
   replay(): RpcNotification[] {
     const out: RpcNotification[] = [];
     for (const ask of this.asks.values()) out.push({ jsonrpc: "2.0", method: "ask.state", params: ask });
@@ -109,6 +127,7 @@ export class SnapshotCache {
     for (const state of this.remote.values()) out.push({ jsonrpc: "2.0", method: "remote.state", params: state });
     for (const task of this.tasks.values()) out.push({ jsonrpc: "2.0", method: "task.state", params: task });
     if (this.voice) out.push({ jsonrpc: "2.0", method: "voice.state", params: this.voice });
+    if (this.heard) out.push({ jsonrpc: "2.0", method: "voice.partial", params: this.heard });
     if (this.voiceSetup) out.push({ jsonrpc: "2.0", method: "voice.setup", params: this.voiceSetup });
     if (this.account) out.push({ jsonrpc: "2.0", method: "account.state", params: this.account });
     for (const state of this.direct.values()) out.push({ jsonrpc: "2.0", method: "direct.state", params: state });
@@ -125,6 +144,7 @@ export class SnapshotCache {
     this.asks.clear();
     this.tasks.clear();
     this.voice = undefined;
+    this.heard = undefined;
     this.voiceSetup = undefined;
     this.account = undefined;
     this.progress = undefined;

@@ -8,7 +8,8 @@
 // The decision is the one sherpa-onnx made over the same model: a window is speech above the
 // threshold; speech starts once it has lasted `MIN_SPEECH_MS`, a blip shorter than that is
 // forgotten; once started it ends after `minSilenceMs` below the threshold less a margin (so
-// a soft syllable does not end it), or after `MAX_SPEECH_MS` however it goes.
+// a soft syllable does not end it), or after the most speech an utterance may carry however it
+// goes: the recogniser's own limit, `MAX_SPEECH_MS` for one that names none.
 
 import type { VadEngine } from "./engines.ts";
 import { IN_RATE, toFloat } from "./engines.ts";
@@ -23,7 +24,7 @@ export const THRESHOLD = 0.5;
 const END_MARGIN = 0.15;
 /** Speech shorter than this is not an utterance. */
 export const MIN_SPEECH_MS = 250;
-/** An utterance longer than this is closed anyway. */
+/** An utterance longer than this is closed anyway, unless the recogniser allows more. */
 export const MAX_SPEECH_MS = 30_000;
 /** The model's recurrent state: two layers of 64. */
 const STATE = [2, 1, 64];
@@ -35,6 +36,7 @@ class Silero implements VadEngine {
   private ort: Ort;
   private session: Session;
   private minSilence: number;
+  private maxSpeech: number;
   private carry = new Float32Array(0);
   private h!: Tensor;
   private c!: Tensor;
@@ -45,10 +47,11 @@ class Silero implements VadEngine {
   private speaking = false;
   heard = false;
 
-  constructor(ort: Ort, session: Session, minSilenceMs: number) {
+  constructor(ort: Ort, session: Session, minSilenceMs: number, maxSpeechMs: number) {
     this.ort = ort;
     this.session = session;
     this.minSilence = (minSilenceMs / 1000) * IN_RATE;
+    this.maxSpeech = (maxSpeechMs / 1000) * IN_RATE;
     this.reset();
   }
 
@@ -89,7 +92,7 @@ class Silero implements VadEngine {
       if (this.silentSince < 0) this.silentSince = this.at - WINDOW;
       if (this.at - this.silentSince >= this.minSilence) return this.end();
     }
-    if (this.speaking && this.at - this.start >= (MAX_SPEECH_MS / 1000) * IN_RATE) return this.end();
+    if (this.speaking && this.at - this.start >= this.maxSpeech) return this.end();
     return false;
   }
 
@@ -119,6 +122,8 @@ class Silero implements VadEngine {
 export interface SileroOptions {
   /** Silence that ends an utterance, in milliseconds. */
   minSilenceMs?: number;
+  /** Speech that ends an utterance however it goes on, in milliseconds: `MAX_SPEECH_MS` unless given. */
+  maxSpeechMs?: number;
 }
 
 /** A maker, so every conversation gets a detector of its own over the one loaded model. */
@@ -129,5 +134,5 @@ export async function loadSilero(dir: string, opts: SileroOptions = {}): Promise
   if (!model) throw new Error(`${dir} names no VAD model`);
   const ort = await loadOrt();
   const session = await ort.InferenceSession.create(model, { intraOpNumThreads: 1, interOpNumThreads: 1, executionProviders: ["cpu"] });
-  return () => new Silero(ort, session, opts.minSilenceMs ?? 700);
+  return () => new Silero(ort, session, opts.minSilenceMs ?? 700, opts.maxSpeechMs ?? MAX_SPEECH_MS);
 }

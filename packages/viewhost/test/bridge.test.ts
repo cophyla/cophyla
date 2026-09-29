@@ -315,6 +315,8 @@ describe("bridge", () => {
     bridge.fromCophylad({ jsonrpc: "2.0", method: "ask.state", params: { id: "ask_1" } });
     bridge.fromCophylad({ jsonrpc: "2.0", method: "audit.entry", params: { id: "aud_1" } });
     bridge.fromCophylad({ jsonrpc: "2.0", method: "session.event", params: { session: "sess_1", seq: 1 } });
+    // The words heard of an utterance are the voice scope's, as its state is.
+    bridge.fromCophylad({ jsonrpc: "2.0", method: "voice.partial", params: { text: "what is" } });
     bridge.fromCophylad({ jsonrpc: "2.0", method: "made.up", params: {} });
     bridge.fromCophylad({ jsonrpc: "2.0", id: "h3", result: {} });
     bridge.fromCophylad({ jsonrpc: "2.0", id: "v2-1", result: {} });

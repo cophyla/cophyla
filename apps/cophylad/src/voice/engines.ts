@@ -3,6 +3,7 @@
 // model in-process, a sidecar over HTTP, or a fake in a test. Audio is int16 mono
 // throughout, 16 kHz up from the controller and 24 kHz down to it.
 
+import type { RpcError, VoiceStopped } from "@cophyla/protocol";
 import type { Scale, WakeScore } from "@cophyla/wake";
 import type { Sidecars } from "../sidecars/index.ts";
 import type { VoiceConfig } from "../config/schema.ts";
@@ -51,6 +52,16 @@ export interface SttStream {
   accept(pcm: Int16Array): void;
   /** Called as the text grows, never with the same text twice. */
   onPartial?: (text: string) => void;
+  /** The recogniser stopped hearing while the utterance went on: its route's limit, or the account's allowance. */
+  onStop?: (why: VoiceStopped) => void;
+  /**
+   * The VAD heard speech in the utterance, or there is no VAD to hear it: a recogniser that
+   * costs money while it is open opens now rather than at the utterance's first frame. Called
+   * at most once.
+   */
+  heard?(): void;
+  /** How the utterance was transcribed, for the turn's log line, once `final` settled. */
+  readonly how?: { route?: string; live?: boolean };
   /** Drains what is left and returns the whole utterance, empty when there was no speech. */
   final(): Promise<string>;
   reset(): void;
@@ -58,9 +69,42 @@ export interface SttStream {
 }
 
 export interface SttEngine {
+  /** The most seconds one utterance may last; no limit when absent. */
+  readonly maxSeconds?: number;
   stream(opts?: { language?: string }): SttStream;
   close(): void | Promise<void>;
 }
+
+/** What a live transcription says it heard in the end, or why it stopped hearing early. */
+export interface LiveResult {
+  text: string;
+  stopped?: VoiceStopped;
+}
+
+/**
+ * One utterance transcribed as it is spoken, on one route: the account's server, or the
+ * vendor with the user's own key. It is opened when the utterance has speech in it; `ready`
+ * settles once the route hears, with the most seconds it will, and rejects with the route's
+ * refusal. Audio then goes as it comes; the words come back through `onText`, a `final` one
+ * being a finished stretch that is kept and the others the stretch in progress.
+ */
+export interface LiveSession {
+  readonly ready: Promise<{ maxSeconds: number }>;
+  /** False when the audio could not be sent: the session is failing. */
+  send(pcm: Int16Array): boolean;
+  /** The utterance is over: the whole transcript once the last words are in. */
+  end(): Promise<LiveResult>;
+  onText?: (text: string, final: boolean) => void;
+  /** The route ended the session before `end`: a stop at its limit with the text so far, or a failure. */
+  onEnded?: (outcome: LiveResult | { error: RpcError }) => void;
+  /** Bytes queued toward the route and not yet gone. */
+  buffered?(): number;
+  /** Dropped: nothing more is sent, and nothing is waited for. */
+  abort(): void;
+}
+
+/** Opens a live session on one route. */
+export type LiveOpener = (opts: { language?: string; vocabulary?: string[] }) => LiveSession;
 
 export interface TtsEngine {
   readonly name: string;
@@ -122,7 +166,8 @@ export interface EngineFactory {
   /** The model names this configuration needs, so they are fetched before a stage loads. */
   models(config: VoiceConfig): string[];
   wake(dir: string, config: VoiceConfig): Promise<WakeModel>;
-  vad(dir: string, config: VoiceConfig): Promise<() => VadEngine>;
+  /** `maxSpeechMs` closes an utterance the wake word began that goes on that long: the recogniser's own limit. */
+  vad(dir: string, config: VoiceConfig, opts?: { maxSpeechMs?: number }): Promise<() => VadEngine>;
   stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine>;
   tts(dir: string | undefined, config: VoiceConfig, sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine>;
   /**

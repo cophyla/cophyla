@@ -12,7 +12,11 @@
 // the node's engines: the one that transcribes and the one that reads replies out
 // (`voice.settings`, set with `voice.configure`), the voice, the speed replies are read at,
 // where each choice came from with a way back to config.toml's, and Hear it
-// (`voice.preview`). A local engine the node has not
+// (`voice.preview`). An online engine says where it goes first, the account's server (Cophyla
+// cloud, on a Pro plan) or the user's own key alone, and the node's Gemini and DeepInfra keys
+// show where each comes from and its last four characters, with a field to give one and a
+// Clear for one given here (`account.apiKey`); what is typed there is gone from the page once
+// it is saved. A local engine the node has not
 // installed shows the licences it comes under, each a link, and an Install button with what
 // it would download (`voice.install`); nothing is installed unless that is pressed. While an
 // engine loads or installs the panel asks again each second, so the status follows it. Then
@@ -28,7 +32,7 @@
 // `SettingsModel` are DOM-free; the panel draws them. Its look is `settings.css`, which each
 // host page links.
 
-import type { HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, SpeechLicence, SttEngineId, TtsEngineId, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import type { HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -354,6 +358,92 @@ export interface SpeechRow {
   note?: string;
   /** The engine runs on this computer and is not installed: what it comes under, what it would download, and how an install goes. */
   install?: InstallRow;
+  /** The engine goes over the network: where it goes first. */
+  route?: RouteRow;
+}
+
+/** Where an online engine goes first, for the choice under it. */
+export interface RouteRow {
+  value: VoiceRoute;
+  options: Choice[];
+  /** What the choice means; trouble when it cannot work, the user's own key alone with none given. */
+  detail: string;
+  trouble: boolean;
+}
+
+/** One vendor's key as the Voice section shows it: never the key, only where it comes from and how it ends. */
+export interface KeyRow {
+  provider: ProviderKeyName;
+  label: string;
+  /** Where the key in use comes from, in words, with its last four characters. */
+  status: string;
+  /** What the key is for. */
+  detail: string;
+  /** Given here: Clear forgets it, and config.toml's or the environment's is used again. */
+  clearable: boolean;
+  busy: boolean;
+  note?: string;
+}
+
+/** The two routes an online engine can take, as the choice names them. */
+export const ROUTE_CHOICES: readonly Choice[] = [
+  { value: "cloud", label: "Cophyla cloud (Pro)" },
+  { value: "own", label: "My own key" },
+];
+
+const VENDORS: Record<ProviderKeyName, { name: string; env: string; detail: string }> = {
+  gemini: { name: "Gemini", env: "GEMINI_API_KEY", detail: "Transcription with your own key, and the assistant's model when it goes to Gemini." },
+  deepinfra: { name: "DeepInfra", env: "DEEPINFRA_API_KEY", detail: "Kokoro online with your own key." },
+};
+
+/** The vendor an online engine goes to with the user's own key; none for an engine on this computer. */
+function vendorOf(stage: "stt" | "tts", engine: string): ProviderKeyName | undefined {
+  if (stage === "stt") return engine === "gemini-live" || engine === "gemini" || engine === "server" ? "gemini" : undefined;
+  return engine === "kokoro-online" || engine === "server" ? "deepinfra" : undefined;
+}
+
+/** "From config.toml, ending ••••x9Qa" */
+function keyWords(provider: ProviderKeyName, k: ProviderKeyState): string {
+  const ending = k.last4 ? `, ending ••••${k.last4}` : "";
+  if (k.source === "app") return `Set here${ending}.`;
+  if (k.source === "config") return `From config.toml${ending}.`;
+  if (k.source === "env") return `From ${VENDORS[provider].env} in the environment${ending}.`;
+  return "No key.";
+}
+
+/** The route of a stage whose engine goes online, on a node that says where its engines go. */
+function routeRow(s: SpeechSettings, stage: "stt" | "tts", engine: string): RouteRow | undefined {
+  const provider = vendorOf(stage, engine);
+  const keys = (s as { keys?: ProviderKeys }).keys;
+  if (!provider || !keys) return undefined;
+  const value = (stage === "stt" ? s.sttRoute : s.ttsRoute) ?? "cloud";
+  const vendor = VENDORS[provider].name;
+  const has = keys[provider].source !== "none";
+  if (value === "cloud") {
+    const detail = `Through your account's server on a Pro plan; ${has ? `your own ${vendor} key when the server cannot.` : `without one, your own ${vendor} key is needed.`}`;
+    return { value, options: [...ROUTE_CHOICES], detail, trouble: false };
+  }
+  if (has) return { value, options: [...ROUTE_CHOICES], detail: `Straight to ${vendor} with your own key, never through Cophyla's server.`, trouble: false };
+  return { value, options: [...ROUTE_CHOICES], detail: `Your own ${vendor} key is needed: give one below.`, trouble: true };
+}
+
+/** The node's keys, a row each, from `voice.settings`; none from a node that cannot say. */
+export function keyRows(s: SpeechSettings, busy: ReadonlySet<string> = new Set(), notes: ReadonlyMap<string, string> = new Map()): KeyRow[] {
+  const keys = (s as { keys?: ProviderKeys }).keys;
+  if (!keys) return [];
+  return (["gemini", "deepinfra"] as const).map((provider) => {
+    const k = keys[provider];
+    const note = notes.get(provider);
+    return {
+      provider,
+      label: `${VENDORS[provider].name} key`,
+      status: keyWords(provider, k),
+      detail: VENDORS[provider].detail,
+      clearable: k.source === "app",
+      busy: busy.has(provider),
+      ...(note ? { note } : {}),
+    };
+  });
 }
 
 export interface InstallRow {
@@ -412,6 +502,7 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
   const speed = (s as { speed?: number }).speed;
   const paced = stage === "tts" && s.enabled && engine !== "off" && speed !== undefined;
   const source = stage === "tts" ? s.source : s.sttSource;
+  const route = s.enabled && engine !== "off" ? routeRow(s, stage, engine) : undefined;
   let install: InstallRow | undefined;
   if (info?.local && info.installed === false) {
     const running = s.installing?.engine === engine ? s.installing : undefined;
@@ -437,6 +528,7 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
     busy: busy || s.installing !== undefined,
     ...(note ? { note } : {}),
     ...(install ? { install } : {}),
+    ...(route ? { route } : {}),
   };
 }
 
@@ -473,6 +565,9 @@ export class SettingsModel {
   speechBusy = false;
   speechNote = "";
   sttNote = "";
+  /** A key being saved or cleared, and why the last one could not be, by vendor. */
+  readonly keyBusy = new Set<ProviderKeyName>();
+  readonly keyNotes = new Map<ProviderKeyName, string>();
   /** The brain's listeners, once read; absent while reading and on a node from before there were any. */
   listeners?: Listener[];
   /** Why a listener could not be removed, by id. */
@@ -562,6 +657,42 @@ export class SettingsModel {
     return this.speech?.sttStage ? sttRow(this.speech, this.speechBusy, this.sttNote || undefined) : undefined;
   }
 
+  /** The node's keys, a row each; none from a node that cannot say. */
+  keyRows(): KeyRow[] {
+    return this.speech ? keyRows(this.speech, this.keyBusy, this.keyNotes) : [];
+  }
+
+  /** Where an online engine goes first. */
+  setRoute(stage: "stt" | "tts", route: VoiceRoute): Promise<void> {
+    const now = (stage === "stt" ? this.speech?.sttRoute : this.speech?.ttsRoute) ?? "cloud";
+    if (route === now) return Promise.resolve();
+    return this.configure(stage === "stt" ? { sttRoute: route } : { ttsRoute: route }, stage);
+  }
+
+  /**
+   * A vendor's key given here, or forgotten with `null`. The answer names the keys by their last
+   * four characters, and the row shows it; the key itself is never read back. False when it was
+   * not taken, with the note saying why.
+   */
+  async setKey(provider: ProviderKeyName, apiKey: string | null): Promise<boolean> {
+    const key = apiKey === null ? null : apiKey.trim();
+    if (key === "" || this.keyBusy.has(provider)) return false;
+    this.keyBusy.add(provider);
+    this.keyNotes.delete(provider);
+    this.changed();
+    try {
+      const keys = await this.request<ProviderKeys>("account.apiKey", { provider, apiKey: key });
+      if (this.speech) this.speech = { ...this.speech, keys };
+      return true;
+    } catch (e) {
+      this.keyNotes.set(provider, `${key === null ? "Not cleared" : "Not saved"}: ${message(e)}`);
+      return false;
+    } finally {
+      this.keyBusy.delete(provider);
+      if (!this.disposed) this.changed();
+    }
+  }
+
   /** Another transcription engine, or back to config.toml's with `null`. */
   setStt(stt: SttEngineId | null): Promise<void> {
     if (stt !== null && stt === this.speech?.stt && this.speech.sttSource === "app") return Promise.resolve();
@@ -628,7 +759,7 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null }, stage: "stt" | "tts" = "tts"): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute }, stage: "stt" | "tts" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
     this.setNote(stage, "");
@@ -790,6 +921,8 @@ export class SettingsPanel {
   /** The talk key as typed and not yet set, and why the last one could not be. */
   private keyDraft?: string;
   private keyNote = "";
+  /** A vendor's key as typed and not yet saved; dropped the moment it is sent. */
+  private apiKeyDrafts = new Map<ProviderKeyName, string>();
   private unsubscribe?: () => void;
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape") this.close();
@@ -862,6 +995,7 @@ export class SettingsPanel {
     this.unsubscribe = undefined;
     this.keyDraft = undefined;
     this.keyNote = "";
+    this.apiKeyDrafts.clear();
     document.removeEventListener("keydown", this.onKey);
     this.deps.refocus?.();
   }
@@ -983,6 +1117,8 @@ export class SettingsPanel {
     const stt = model.sttRow();
     if (stt) box.append(this.speech(stt, model));
     if (speech) box.append(this.speech(speech, model));
+    const keys = model.keyRows();
+    if (keys.length > 0) box.append(this.keys(keys, model));
     return box;
   }
 
@@ -1009,6 +1145,84 @@ export class SettingsPanel {
     const stt = model.sttRow();
     if (stt) box.append(this.speech(stt, model));
     box.append(this.speech(speech, model));
+    const keys = model.keyRows();
+    if (keys.length > 0) box.append(this.keys(keys, model));
+    return box;
+  }
+
+  /**
+   * The node's own keys: a field each to give one, saved with Save or Enter and gone from the
+   * field as it is sent, and Clear for one given here. Only where each comes from and how it
+   * ends is shown.
+   */
+  private keys(rows: KeyRow[], model: SettingsModel): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "host-settings-speech host-settings-keys";
+    box.dataset["stage"] = "keys";
+    for (const row of rows) {
+      const line = document.createElement("div");
+      line.className = "host-settings-controls host-settings-key";
+      line.dataset["provider"] = row.provider;
+      const input = document.createElement("input");
+      input.type = "password";
+      input.autocomplete = "off";
+      input.spellcheck = false;
+      input.placeholder = row.clearable ? "Replace the key" : "Paste a key";
+      input.setAttribute("aria-label", row.label);
+      input.dataset["focus"] = `key:${row.provider}`;
+      input.value = this.apiKeyDrafts.get(row.provider) ?? "";
+      input.disabled = row.busy;
+      const save = document.createElement("button");
+      save.type = "button";
+      save.className = "host-settings-save";
+      save.textContent = row.busy ? "Saving…" : "Save";
+      save.disabled = row.busy || input.value.trim() === "";
+      const send = (): void => {
+        const typed = input.value;
+        this.apiKeyDrafts.delete(row.provider);
+        input.value = "";
+        save.disabled = true;
+        void model.setKey(row.provider, typed);
+      };
+      input.addEventListener("input", () => {
+        if (input.value === "") this.apiKeyDrafts.delete(row.provider);
+        else this.apiKeyDrafts.set(row.provider, input.value);
+        save.disabled = input.value.trim() === "";
+      });
+      input.addEventListener("keydown", (ev) => {
+        if (ev.key === "Enter" && !save.disabled) send();
+      });
+      save.addEventListener("click", send);
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.className = "host-settings-reset";
+      clear.dataset["focus"] = `key:${row.provider}:clear`;
+      clear.textContent = "Clear";
+      clear.title = "Forget the key given here: config.toml's or the environment's is used again";
+      clear.hidden = !row.clearable;
+      clear.disabled = row.busy;
+      clear.addEventListener("click", () => void model.setKey(row.provider, null));
+      line.append(span("host-settings-label", row.label), input, save, clear);
+      box.append(line, paragraph("host-settings-voice-status", row.status), paragraph("host-settings-source", row.detail));
+      if (row.note) box.append(paragraph("host-settings-error", row.note));
+    }
+    return box;
+  }
+
+  /** Where an online engine goes first: the account's server, or the user's own key alone. */
+  private route(row: SpeechRow, route: RouteRow, model: SettingsModel): HTMLElement {
+    const box = document.createElement("div");
+    const line = document.createElement("div");
+    line.className = "host-settings-controls host-settings-route";
+    const select = document.createElement("select");
+    select.dataset["focus"] = `${row.stage}:route`;
+    select.setAttribute("aria-label", row.stage === "tts" ? "Where speech goes" : "Where transcription goes");
+    for (const o of route.options) select.append(option(o.value, o.label));
+    select.value = route.value;
+    select.disabled = row.busy;
+    select.addEventListener("change", () => void model.setRoute(row.stage, select.value as VoiceRoute));
+    line.append(span("host-settings-label", "Goes through"), select);
+    box.append(line, paragraph(route.trouble ? "host-settings-error" : "host-settings-source", route.detail));
     return box;
   }
 
@@ -1113,6 +1327,7 @@ export class SettingsPanel {
     box.append(line, paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status));
     if (row.detail) box.append(paragraph("host-settings-source", `${row.detail} ${row.source}`));
     else box.append(paragraph("host-settings-source", row.source));
+    if (row.route) box.append(this.route(row, row.route, model));
     if (row.install) box.append(this.install(row, row.install, model));
     if (row.note) box.append(paragraph("host-settings-error", row.note));
     return box;

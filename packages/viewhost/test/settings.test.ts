@@ -3,11 +3,13 @@
 // launch came from), what a save and a reset send, and the note a failure leaves beside
 // what failed. Then the node's speech: the engine, its voice counted from 1, its status in
 // words, what a pick and a reset send, and the second-by-second read while an engine loads.
+// Where an online engine goes first and the node's own keys: the choice under an online engine
+// only, the key rows in words with only the last four, and what a route, a key and a clear send.
 // Last, what Cophyla listens for: each listener's line, a Remove, and a node with none.
 
 import { describe, expect, test } from "bun:test";
 import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, launchKey, listenerLine, megabytes, micOptions, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
+import { joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -413,6 +415,92 @@ describe("the node's speech", () => {
     expect(m.speechRow()).toMatchObject({ engine: "piper", busy: false, note: "Not saved: denied: voice.configure needs scope voice" });
     await m.preview();
     expect(m.speechRow()?.note).toBe("Could not play it: unavailable: speech is loading");
+    m.dispose();
+  });
+});
+
+const ONLINE: VoiceSettings["engines"] = [
+  ...ENGINES,
+  { id: "kokoro-online", stage: "tts", label: "Kokoro online", detail: "Online.", local: false },
+  { id: "gemini-live", stage: "stt", label: "Gemini Live", detail: "Words as you speak.", local: false },
+  { id: "gemini", stage: "stt", label: "Gemini Flash-Lite", detail: "Once you stop.", local: false },
+];
+const KEYS: NonNullable<VoiceSettings["keys"]> = { gemini: { source: "app", last4: "x9Qa" }, deepinfra: { source: "none" } };
+const online = (over: Partial<VoiceSettings> = {}): VoiceSettings => speech({ engines: ONLINE, stt: "gemini-live", sttStage: { status: "ready", engine: "gemini-live" }, tts: "kokoro-online", stage: { status: "ready", engine: "kokoro-online" }, keys: KEYS, ...over });
+
+describe("routes and keys", () => {
+  test("an online engine offers where it goes, Cophyla cloud unless set; one on this computer, and a node that cannot say, offer none", () => {
+    const stt = sttRow(online());
+    expect(stt.route).toMatchObject({ value: "cloud", options: [...ROUTE_CHOICES], trouble: false });
+    expect(stt.route!.detail).toBe("Through your account's server on a Pro plan; your own Gemini key when the server cannot.");
+    expect(sttRow(online({ stt: "gemini" })).route?.value).toBe("cloud");
+    expect(sttRow(online({ sttRoute: "own" })).route).toMatchObject({ value: "own", trouble: false, detail: "Straight to Gemini with your own key, never through Cophyla's server." });
+    // Speech goes to DeepInfra, which has no key here: the own route cannot work and says so.
+    expect(speechRow(online({ ttsRoute: "own" })).route).toMatchObject({ value: "own", trouble: true, detail: "Your own DeepInfra key is needed: give one below." });
+    expect(speechRow(online()).route!.detail).toBe("Through your account's server on a Pro plan; without one, your own DeepInfra key is needed.");
+    expect(sttRow(online({ stt: "nemotron", sttStage: { status: "ready", engine: "nemotron" } })).route).toBeUndefined();
+    expect(speechRow(online({ tts: "piper", stage: { status: "ready", engine: "piper" } })).route).toBeUndefined();
+    expect(sttRow(online({ stt: "off", sttStage: { status: "off" } })).route).toBeUndefined();
+    const { keys: _, ...old } = online();
+    expect(sttRow(old as VoiceSettings).route).toBeUndefined();
+  });
+
+  test("a key row says where the key comes from and how it ends, never more; only one given here can be cleared", () => {
+    const rows = keyRows(online({ keys: { gemini: { source: "app", last4: "x9Qa" }, deepinfra: { source: "env", last4: "3f9a" } } }));
+    expect(rows.map((r) => [r.provider, r.label, r.status, r.clearable])).toEqual([
+      ["gemini", "Gemini key", "Set here, ending ••••x9Qa.", true],
+      ["deepinfra", "DeepInfra key", "From DEEPINFRA_API_KEY in the environment, ending ••••3f9a.", false],
+    ]);
+    expect(keyRows(online({ keys: { gemini: { source: "config" }, deepinfra: { source: "none" } } })).map((r) => r.status)).toEqual(["From config.toml.", "No key."]);
+    expect(keyRows(speech())).toEqual([]);
+  });
+
+  test("a route goes out as voice.configure, and the one in place sends nothing", async () => {
+    let now = online();
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => (now = { ...now, ...(p["sttRoute"] ? { sttRoute: p["sttRoute"] as "own" } : {}), ...(p["ttsRoute"] ? { ttsRoute: p["ttsRoute"] as "own" } : {}) }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setRoute("stt", "cloud");
+    expect(asked.length).toBe(1);
+    await m.setRoute("stt", "own");
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { sttRoute: "own" } });
+    expect(m.sttRow()!.route!.value).toBe("own");
+    await m.setRoute("tts", "own");
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { ttsRoute: "own" } });
+    m.dispose();
+  });
+
+  test("a key goes out trimmed as account.apiKey and the row shows the answer's last four; a clear sends null; empty sends nothing; a refusal says so", async () => {
+    const typed = "  AIzaSyD-a-long-example-key-Zq7w  ";
+    let fail = false;
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => online(),
+      "account.apiKey": (p) => {
+        if (fail) throw new Error("invalid: account.apiKey: apiKey: too short");
+        const key = p["apiKey"] as string | null;
+        return { ...KEYS, deepinfra: key === null ? { source: "none" } : { source: "app", last4: key.slice(-4) } };
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    expect(await m.setKey("deepinfra", typed)).toBe(true);
+    expect(asked.at(-1)).toEqual({ method: "account.apiKey", params: { provider: "deepinfra", apiKey: typed.trim() } });
+    expect(m.keyRows()[1]).toMatchObject({ status: "Set here, ending ••••Zq7w.", clearable: true, busy: false });
+    // What the panel draws holds the last four and nothing more of the key.
+    expect(JSON.stringify(m.keyRows())).not.toContain("a-long-example");
+    expect(JSON.stringify(m.speechRow())).not.toContain("a-long-example");
+    const before = asked.length;
+    expect(await m.setKey("gemini", "   ")).toBe(false);
+    expect(asked.length).toBe(before);
+    expect(await m.setKey("deepinfra", null)).toBe(true);
+    expect(asked.at(-1)).toEqual({ method: "account.apiKey", params: { provider: "deepinfra", apiKey: null } });
+    expect(m.keyRows()[1]).toMatchObject({ status: "No key.", clearable: false });
+    fail = true;
+    expect(await m.setKey("gemini", "short")).toBe(false);
+    expect(m.keyRows()[0]!.note).toBe("Not saved: invalid: account.apiKey: apiKey: too short");
     m.dispose();
   });
 });

@@ -98,6 +98,31 @@ describe("snapshot cache", () => {
     expect(c.voice).toBeUndefined();
   });
 
+  test("keeps this client's words heard so far whole, replayed after the voice state, until the utterance ends or its message is named", () => {
+    const c = new SnapshotCache();
+    c.upsert(n("voice.state", { state: "listening", client: "cli_1", limit: 570 }));
+    c.upsert(n("voice.partial", { client: "cli_1", text: "What is the" }));
+    c.upsert(n("voice.partial", { client: "cli_1", text: " status?", from: 11 }));
+    expect(c.replay().map((x) => x.method)).toEqual(["voice.state", "voice.partial"]);
+    // The whole text, with nothing to keep from before: a late view has seen none of it.
+    expect(c.replay()[1]!.params).toEqual({ client: "cli_1", text: "What is the status?" });
+    // Another client's state leaves it; the partial naming the message ends it.
+    c.upsert(n("voice.state", { state: "idle", client: "cli_2" }));
+    expect(c.heard).toBeDefined();
+    c.upsert(n("voice.partial", { client: "cli_1", text: "", from: 19, message: "msg_1" }));
+    expect(c.heard).toBeUndefined();
+    // So do the utterance's end and a new one's start, and a clear.
+    c.upsert(n("voice.partial", { client: "cli_1", text: "never mind" }));
+    c.upsert(n("voice.state", { state: "idle", client: "cli_1" }));
+    expect(c.heard).toBeUndefined();
+    c.upsert(n("voice.partial", { client: "cli_1", text: "again" }));
+    c.upsert(n("voice.state", { state: "listening", client: "cli_1" }));
+    expect(c.heard).toBeUndefined();
+    c.upsert(n("voice.partial", { client: "cli_1", text: "again" }));
+    c.clear();
+    expect(c.heard).toBeUndefined();
+  });
+
   test("keeps the account and a voice setup in progress, replayed after the voice state, so a late view is not signed out", () => {
     const c = new SnapshotCache();
     c.upsert(n("account.state", { plan: "free", limits: {} }));

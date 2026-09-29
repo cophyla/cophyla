@@ -13,6 +13,8 @@ import { listMics, micMisplaced, micWords, resolveMic } from "../src/mics.ts";
 import { detectCodecs, SpeechDecoder } from "../src/opus.ts";
 import { SHED_BYTES, Uplink } from "../src/uplink.ts";
 import { BUNDLED_FILES, BUNDLED_HEADS } from "../src/wake/bundled.ts";
+import { route } from "../src/voicehost.ts";
+import type { RouteInput } from "../src/voicehost.ts";
 import { WakeDetector } from "../src/wake/detector.ts";
 import type { FileCache } from "../src/wake/detector.ts";
 import { FrameRing } from "../src/wake/ring.ts";
@@ -411,6 +413,21 @@ describe("the wake word's bookkeeping", () => {
 
   test("a word heard while the node detects is not the phone's", () => {
     expect(reduceWake(initialWake(), { type: "heard", at: 1000 })).toEqual({ mode: "node", pending: false });
+  });
+});
+
+describe("where the microphone's frames go", () => {
+  const base: RouteInput = { connected: true, audioReady: true, talking: false, pending: false, listening: false, wake: "phone" };
+
+  test("the button held sends them up, until the node refused or ended the press it holds", () => {
+    expect(route({ ...base, talking: true }).streaming).toBe(true);
+    expect(route({ ...base, talking: true, talkRefused: true }).streaming).toBe(false);
+    // The node listening to this client still hears it, whatever the button says.
+    expect(route({ ...base, talking: true, talkRefused: true, voice: "listening" }).streaming).toBe(true);
+    // A node that detects the word still gets the stream it listens to.
+    expect(route({ ...base, talking: true, talkRefused: true, listening: true, wake: "node" }).streaming).toBe(true);
+    // Held, the host's own word stays off.
+    expect(route({ ...base, talking: true, talkRefused: true, listening: true }).detecting).toBe(false);
   });
 });
 

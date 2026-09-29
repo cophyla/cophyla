@@ -33,6 +33,8 @@ interface StartOptions {
   gemini?: boolean;
   brain?: boolean;
   voice?: boolean;
+  /** `[voice] stt` with voice on: `server`, the live engine's old name, unless given. */
+  stt?: string;
   keys?: EntitlementKey[];
   refreshMs?: number;
   update?: string;
@@ -74,7 +76,7 @@ async function start(opts: StartOptions = {}): Promise<Started> {
   writeFileSync(scriptPath, JSON.stringify({ on: [] }));
   const gemini = opts.gemini ? startGeminiFake({ scripts: { default: [geminiText("From your own key."), finish("STOP")] } }) : undefined;
   const brain = opts.brain ? `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n\n[gate.rules]\n"brain:voice.speak" = "allow"\n"brain:ui.say" = "allow"\n\n` : "";
-  const voice = opts.voice ? `[voice]\nenabled = true\nstt = "server"\ntts = "server"\n\n` : "";
+  const voice = opts.voice ? `[voice]\nenabled = true\nstt = "${opts.stt ?? "server"}"\ntts = "server"\n\n` : "";
   const providers = `[providers]\n${opts.llm ? `llm = [${opts.llm.map((r) => JSON.stringify(r)).join(", ")}]\n` : ""}${gemini ? `[providers.gemini]\napi_key = "k"\nbase_url = "${gemini.url}"\n` : ""}\n`;
   const toml = `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\n\n${opts.update ?? "[update]\nenabled = false\n"}\n${brain}${voice}${providers}[cloud]\nenabled = true\nurl = "${fake.url}"\nallow_insecure = true\nrefresh_interval_ms = ${opts.refreshMs ?? 60000}\nreconnect_ms = 20\nreconnect_max_ms = 100\n`;
   writeFileSync(join(scratch, "config.toml"), toml);
@@ -263,7 +265,7 @@ describe("cloud", () => {
     expect(verifyEntitlement(stale, [fake.publicKey], Date.now())).toMatchObject({ status: "expired", claims: FREE_ENTITLEMENT });
   });
 
-  test("hosted speech: the utterance goes to the server whole, the reply comes back as its chunks, no local model is wanted", async () => {
+  test("hosted speech: the utterance streams to the server as it is said, its words come back on the way, the reply comes back as its chunks, no local model is wanted", async () => {
     const { d, fake, c, engines } = await start({
       signedIn: true,
       brain: true,
@@ -271,7 +273,7 @@ describe("cloud", () => {
     });
     writeFileSync(current!.scriptPath, JSON.stringify({ on: [{ event: "user.message", requests: [{ method: "voice.speak", params: { blocks: [{ type: "text", text: "Nothing is open." }], interrupt: true } }] }] }));
     await d.voice.ready();
-    expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "ready", engine: "gemini" }, tts: { status: "ready", engine: "kokoro-online" } });
+    expect(d.voice.stageStates()).toMatchObject({ wake: { status: "ready" }, stt: { status: "ready", engine: "gemini-live" }, tts: { status: "ready", engine: "kokoro-online" } });
     expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:stt-nemotron-3.5-streaming-int8");
     expect(d.update.snapshot().map((u) => (u.component === "model" ? `model:${u.name}` : u.component))).not.toContain("model:tts-piper-en");
     expect(engines.models()).toEqual([]);
@@ -284,12 +286,17 @@ describe("cloud", () => {
     const frames = 8;
     for (let i = 0; i < frames; i++) phone.signal("voice.audio", { chunk: b64(speechChunk()) });
     for (let i = 0; i < 20; i++) phone.signal("voice.audio", { chunk: b64(silenceChunk()) });
-    await waitFor(() => fake.stt.length === 1, 5000);
-    // the wake frame is not part of the utterance; the speech frames and the closing silence are what the VAD handed over
-    expect(fake.stt[0]!.samples).toBeGreaterThanOrEqual(frames * 640);
-    expect(fake.stt[0]!.samples % 640).toBe(0);
+    await waitFor(() => fake.sttStreams[0]?.ended === "end", 5000);
+    // the speech frames and the closing silence are what the VAD handed over, none sent twice
+    expect(fake.sttStreams[0]!.samples).toBeGreaterThanOrEqual(frames * 640);
+    expect(fake.sttStreams[0]!.samples % 640).toBe(0);
+    expect(fake.stt).toEqual([]);
     const msg = await c.next((n) => n.method === "chat.message" && (n.params as { message: { role: string } }).message.role === "user", 5000);
-    expect((msg.params as { message: { content: { text: string }[] } }).message.content[0]!.text).toBe(fake.transcript);
+    const message = (msg.params as { message: { id: string; content: { text: string }[] } }).message;
+    expect(message.content[0]!.text).toBe(fake.transcript);
+    // the phone saw the words grow, and the last it was told named the message they became
+    await waitFor(() => phone.notifications.some((n) => n.method === "voice.partial" && (n.params as { message?: string }).message === message.id));
+    expect(phone.notifications.filter((n) => n.method === "voice.partial").length).toBeGreaterThanOrEqual(2);
     await waitFor(() => fake.tts.length === 1, 10_000);
     expect(fake.tts[0]).toBe("Nothing is open.");
     await waitFor(() => phone.notifications.filter((n) => n.method === "voice.audio").length >= 1, 5000);
@@ -302,6 +309,45 @@ describe("cloud", () => {
     expect(states.slice(0, 4)).toEqual(["listening", "transcribing", "thinking", "speaking"]);
     expect(d.cloud.state().usage?.metrics["stt_seconds"]?.used).toBeGreaterThanOrEqual(1);
     expect(d.cloud.state().usage?.metrics["tts_chars"]?.used).toBe("Nothing is open.".length);
+    phone.close();
+  });
+
+  test("the cheaper engine sends each utterance whole once it ends", async () => {
+    const { d, fake } = await start({ signedIn: true, voice: true, stt: "gemini" });
+    await d.voice.ready();
+    expect(d.voice.stageStates().stt).toMatchObject({ status: "ready", engine: "gemini" });
+    await waitFor(() => d.cloud.hostedAllowed("voice") === undefined);
+    const phone = await TestClient.connect(d.api.url);
+    await phone.hello(d.token, { kind: "controller", name: "Pixel", audio: { in: true, out: true } });
+    phone.signal("voice.audio", { chunk: b64(wakeChunk()) });
+    await sleep(30);
+    for (let i = 0; i < 8; i++) phone.signal("voice.audio", { chunk: b64(speechChunk()) });
+    for (let i = 0; i < 20; i++) phone.signal("voice.audio", { chunk: b64(silenceChunk()) });
+    await waitFor(() => fake.stt.length === 1, 5000);
+    expect(fake.stt[0]!.samples).toBeGreaterThanOrEqual(8 * 640);
+    expect(fake.sttStreams).toEqual([]);
+    phone.close();
+  });
+
+  test("the allowance running out mid-utterance ends it there, with the words heard and the reason told", async () => {
+    const { d, fake, c } = await start({ signedIn: true, voice: true });
+    fake.liveMaxSeconds = 1;
+    await d.voice.ready();
+    await waitFor(() => d.cloud.hostedAllowed("voice") === undefined);
+    const phone = await TestClient.connect(d.api.url);
+    await phone.hello(d.token, { kind: "controller", name: "Pixel", audio: { in: true, out: true } });
+    await phone.request("voice.ptt", { active: true });
+    for (let i = 0; i < 60; i++) {
+      phone.signal("voice.audio", { chunk: b64(speechChunk()) });
+      if (i % 10 === 9) await sleep(20);
+    }
+    const transcribing = await phone.next((n) => n.method === "voice.state" && (n.params as { state: string }).state === "transcribing", 5000);
+    expect(transcribing.params).toMatchObject({ stopped: "quota" });
+    const msg = await c.next((n) => n.method === "chat.message" && (n.params as { message: { role: string } }).message.role === "user", 5000);
+    const text = (msg.params as { message: { content: { text: string }[] } }).message.content[0]!.text;
+    expect(fake.transcript.startsWith(text) && text.length > 0).toBe(true);
+    expect(fake.sttStreams[0]!.ended).toBe("quota");
+    await phone.request("voice.ptt", { active: false });
     phone.close();
   });
 
@@ -334,7 +380,7 @@ describe("cloud", () => {
     d.bus.emit("session.state", { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", node: d.identity.id, harness: "claude", profile: "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", native: { id: "x", transport: "pipe" }, origin: "user", cwd: ".", tags: [], status: "idle", startedAt: 1, lastActivity: 1 } as never);
     await sleep(200);
     // the hosted capabilities, the entitlement, since milestone 12 the registry, the relay and push, since 13 the backup: never a session, a metric or a chat
-    const allowed = new Set(["auth", "entitlement.refresh", "llm.complete", "stt.transcribe", "tts.speak", "cancel", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.open", "relay", "relay.close", "push.register", "push.unregister", "push.send", "backup.status"]);
+    const allowed = new Set(["auth", "entitlement.refresh", "llm.complete", "stt.transcribe", "stt.stream", "stt.audio", "stt.end", "tts.speak", "cancel", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.open", "relay", "relay.close", "push.register", "push.unregister", "push.send", "backup.status"]);
     expect([...new Set(fake.seen)].filter((m) => !allowed.has(m))).toEqual([]);
     // a signed-in primary registered itself and was granted the role
     expect(fake.seen).toContain("registry.register");

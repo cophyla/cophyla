@@ -16,15 +16,19 @@
 // A session's explorer is rows too: the folders under its directory as listed so far, kept per
 // folder a session works in so the sessions there share them, and its repository as a status
 // bar has it.
+// This view's own utterance shows at the chat's end as it is heard (`voice.partial`), a ghost
+// of the message it becomes, until that message lands; near its limit the voice row counts
+// down, and one the node stopped before the user did says so until the next.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
-/** A press of this view's that came to nothing, and why, until the next utterance or `VOICE_NOTE_MS`. */
-export interface VoiceNote {
-  unheard: VoiceUnheard;
-  at: number;
-}
+/**
+ * Why this view's last utterance came to less than was said: a press that came to nothing
+ * (`unheard`), until the next utterance or `VOICE_NOTE_MS`; or one the node stopped hearing
+ * while the user still spoke (`stopped`, at the `limit` it had), until this view's next one.
+ */
+export type VoiceNote = { unheard: VoiceUnheard; at: number } | { stopped: VoiceStopped; limit?: number; at: number };
 
 /** How long the voice row says why a press came to nothing. */
 export const VOICE_NOTE_MS = 8000;
@@ -34,8 +38,20 @@ export interface VoiceRow {
   state: VoiceState;
   /** The controller it belongs to, when the platform named one. */
   client?: string;
+  /** While listening: the seconds the utterance may last, counted from `at`. */
+  limit?: number;
   at: number;
 }
+
+/** The words heard so far of this view's own utterance, as `voice.partial` grows them; the `message` it became, once the node names it. */
+export interface HeardWords {
+  text: string;
+  at: number;
+  message?: string;
+}
+
+/** `voice.partial`: the words after the first `from` characters of the ones before. */
+export type VoicePartial = ClientNotificationParams<"voice.partial">;
 
 export type VoiceSetup = ClientNotificationParams<"voice.setup">;
 
@@ -195,8 +211,10 @@ export interface ViewState {
   tasks: Map<string, Task>;
   /** What voice is doing now; absent when nothing is. */
   voice?: VoiceRow;
-  /** Why this view's last press came to nothing, for a while after (`unheard` on its `idle`). */
+  /** Why this view's last press came to nothing, for a while after (`unheard` on its `idle`), or that the node stopped hearing it (`stopped`). */
   voiceNote?: VoiceNote;
+  /** This view's own utterance as it is heard and transcribed, until the message it became lands. */
+  heard?: HeardWords;
   /** An engine being set up on the node, while it runs. */
   setup?: VoiceSetup;
   /** The pairing window, while it is open. */
@@ -273,7 +291,8 @@ export type Action =
   | { type: "task.state"; params: Task }
   /** A thread's row changed: opened, closed, or given a topic or a workspace. Its messages stay. */
   | { type: "thread.state"; params: Thread }
-  | { type: "voice.state"; params: { state: VoiceState; client?: string; unheard?: VoiceUnheard } }
+  | { type: "voice.state"; params: { state: VoiceState; client?: string; unheard?: VoiceUnheard; limit?: number; stopped?: VoiceStopped } }
+  | { type: "voice.partial"; params: VoicePartial }
   /** The note a press left has had its time. */
   | { type: "voice.note.expired"; at: number }
   | { type: "host.mic"; params: { error?: string } }
@@ -501,6 +520,7 @@ export function apply(state: ViewState, action: Action): ViewState {
         state.chatLoaded = false;
         // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
         delete state.voice;
+        delete state.heard;
         delete state.setup;
         delete state.pairing;
         for (const [id, controller] of state.controllers) state.controllers.set(id, { ...controller, connected: false });
@@ -633,6 +653,8 @@ export function apply(state: ViewState, action: Action): ViewState {
       const m = action.params.message;
       state.messages.set(m.id, m);
       state.streaming.delete(m.id);
+      // The utterance heard is in the chat now: its message takes the ghost's place.
+      if (state.heard?.message === m.id) delete state.heard;
       if (!state.threads.has(m.thread)) state.threads.set(m.thread, { id: m.thread, startedAt: m.at, sessions: [] });
       return state;
     }
@@ -673,6 +695,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       for (const m of action.messages) {
         state.messages.set(m.id, m);
         state.streaming.delete(m.id);
+        if (state.heard?.message === m.id) delete state.heard;
       }
       // The next page starts before the earliest thread a page brought. A thread known only
       // from its state or a live message has no messages loaded, so the pages pass over it
@@ -693,17 +716,37 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.threads.set(action.params.id, action.params);
       return state;
     case "voice.state": {
-      const { state: voice, client, unheard } = action.params;
+      const { state: voice, client, unheard, limit, stopped } = action.params;
+      const before = state.voice;
       if (voice === "idle") delete state.voice;
-      else state.voice = { state: voice, ...(client !== undefined ? { client } : {}), at: Date.now() };
-      // Only this view's own press is its to explain; the next utterance takes the note away.
+      else state.voice = { state: voice, ...(client !== undefined ? { client } : {}), ...(voice === "listening" && limit !== undefined ? { limit } : {}), at: Date.now() };
+      // Only this view's own utterance is its to explain. A press that came to nothing is
+      // explained until whatever comes next; a stop, until the next utterance.
       const mine = client === undefined || client === state.client?.id;
-      if (voice === "idle" && unheard !== undefined && mine) state.voiceNote = { unheard, at: Date.now() };
-      else if (voice !== "idle" && mine) delete state.voiceNote;
+      if (!mine) return state;
+      const note = state.voiceNote;
+      if (voice === "idle" && unheard !== undefined) state.voiceNote = { unheard, at: Date.now() };
+      else if (voice === "transcribing" && stopped !== undefined) state.voiceNote = { stopped, ...(before?.limit !== undefined ? { limit: before.limit } : {}), at: Date.now() };
+      else if (voice === "listening" || (voice !== "idle" && note !== undefined && "unheard" in note)) delete state.voiceNote;
+      // A new utterance is heard afresh; one taken back or come to nothing leaves no words.
+      if (voice === "listening" || voice === "idle") delete state.heard;
+      return state;
+    }
+    case "voice.partial": {
+      const { client, text, from, message } = action.params;
+      // The node sends each client its own utterance's words alone.
+      if (client !== undefined && client !== state.client?.id) return state;
+      // Its message landed first: the ghost has had its time.
+      if (message !== undefined && state.messages.has(message)) {
+        delete state.heard;
+        return state;
+      }
+      const before = state.heard;
+      state.heard = { text: (before?.text ?? "").slice(0, from ?? 0) + text, at: before?.at ?? Date.now(), ...(message !== undefined ? { message } : {}) };
       return state;
     }
     case "voice.note.expired":
-      if (state.voiceNote && state.voiceNote.at <= action.at) delete state.voiceNote;
+      if (state.voiceNote && "unheard" in state.voiceNote && state.voiceNote.at <= action.at) delete state.voiceNote;
       return state;
     case "host.mic":
       if (action.params.error !== undefined) state.hostMic = action.params.error;
@@ -928,6 +971,7 @@ export type StreamItem =
   | { kind: "message"; at: number; message: Message }
   | { kind: "streaming"; at: number; streaming: Streaming }
   | { kind: "progress"; at: number; progress: TurnProgress }
+  | { kind: "heard"; at: number; heard: HeardWords }
   | { kind: "task"; at: number; task: Task };
 
 export function openAsks(state: ViewState): Ask[] {
@@ -944,9 +988,9 @@ export function pinnedAsks(state: ViewState, onScreen?: string): Ask[] {
 
 /**
  * The asks pinned, then thread dividers, messages, open tasks and audit rows in time order,
- * oldest at the top, and last what the orchestrator is doing while its turn runs, until the
- * reply starts streaming: the reply is then what it is doing. `onScreen` is the session whose
- * terminal the pane shows, if any.
+ * oldest at the top, then this view's utterance as it is heard, and last what the orchestrator
+ * is doing while its turn runs, until the reply starts streaming: the reply is then what it is
+ * doing. `onScreen` is the session whose terminal the pane shows, if any.
  */
 export function selectStream(state: ViewState, onScreen?: string): { pinned: Ask[]; items: StreamItem[] } {
   const items: StreamItem[] = [];
@@ -956,6 +1000,7 @@ export function selectStream(state: ViewState, onScreen?: string): { pinned: Ask
   for (const task of state.tasks.values()) items.push({ kind: "task", at: task.createdAt, task });
   for (const entry of state.audit.values()) items.push({ kind: "audit", at: entry.at, entry });
   items.sort((a, b) => a.at - b.at || rank(a) - rank(b) || keyOf(a).localeCompare(keyOf(b)));
+  if (heardText(state) !== "") items.push({ kind: "heard", at: state.heard!.at, heard: state.heard! });
   const p = state.progress;
   if (p && state.streaming.size === 0 && (p.thinking || p.steps.length > 0 || p.about !== undefined)) items.push({ kind: "progress", at: Number.POSITIVE_INFINITY, progress: p });
   return { pinned: pinnedAsks(state, onScreen), items };
@@ -989,9 +1034,16 @@ export function keyOf(item: StreamItem): string {
       return `message:${item.streaming.id}`;
     case "progress":
       return "progress";
+    case "heard":
+      return "heard";
     case "task":
       return `task:${item.task.id}`;
   }
+}
+
+/** What this view's utterance has been heard to say so far; empty when there is nothing to show. */
+export function heardText(state: ViewState): string {
+  return state.heard?.text.trim() ?? "";
 }
 
 /**
@@ -1761,30 +1813,58 @@ export function voiceCancellable(state: ViewState): boolean {
 }
 
 /**
- * What the voice row says: the state, the phone it belongs to, or the setup step; with none of
- * those, why this view's last press came to nothing, then why the host's microphone is off.
+ * What the voice row says: the state, the phone it belongs to, the time left near the
+ * utterance's limit, and that the node stopped hearing it; or the setup step; with none of
+ * those, why this view's last utterance came to less than was said, then why the host's
+ * microphone is off.
  */
-export function voiceWords(state: ViewState): string {
+export function voiceWords(state: ViewState, now = Date.now()): string {
   if (state.setup) {
     const percent = state.setup.progress === undefined ? "" : ` ${Math.round(state.setup.progress * 100)}%`;
     const step = SETUP_WORD[state.setup.step] ?? state.setup.step;
     return `${state.setup.engine}: ${step}${percent}`;
   }
+  const note = state.voiceNote;
   if (state.voice) {
     const who = state.voice.client ? namedController(state) : undefined;
-    return who ? `${state.voice.state} · ${who}` : state.voice.state;
+    const left = timeLeft(state.voice, now);
+    const words = [state.voice.state, who, left !== undefined ? `${left} left` : undefined];
+    if (note && "stopped" in note) words.push(stoppedWords(note.stopped, note.limit));
+    return words.filter((w) => w !== undefined).join(" · ");
   }
-  if (state.voiceNote) return unheardWords(state.voiceNote.unheard, micOff(state));
+  if (note) return "stopped" in note ? stoppedWords(note.stopped, note.limit) : unheardWords(note.unheard, micOff(state));
   const off = micOff(state);
   return off !== undefined ? `The microphone is off: ${off}` : "";
 }
 
-/** The voice row's dot: the voice state, an engine set up, or trouble when a press or the microphone went wrong. */
+/** The voice row's dot: the voice state, an engine set up, or trouble when a press or the microphone went wrong, or a stop cut what was said. */
 export function voiceDot(state: ViewState): string {
   if (state.setup) return "setup";
   if (state.voice) return state.voice.state;
-  if (state.voiceNote) return state.voiceNote.unheard === "no-audio" || state.voiceNote.unheard === "silence" ? "trouble" : "idle";
+  const note = state.voiceNote;
+  if (note) return "stopped" in note || note.unheard === "no-audio" || note.unheard === "silence" ? "trouble" : "idle";
   return micOff(state) !== undefined ? "trouble" : "idle";
+}
+
+/** How long before an utterance's limit the voice row counts down: the last 30 s of a long one, the last 10 s of a short one. */
+export function countdownFrom(limit: number): number {
+  return limit >= 120 ? 30 : 10;
+}
+
+/** The time an utterance being heard has left as `m:ss`, once it is within `countdownFrom` of its limit. */
+export function timeLeft(row: VoiceRow, now: number): string | undefined {
+  if (row.state !== "listening" || row.limit === undefined) return undefined;
+  const left = Math.max(0, Math.ceil(row.limit - (now - row.at) / 1000));
+  if (left > countdownFrom(row.limit)) return undefined;
+  return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
+}
+
+/** That the node stopped hearing an utterance while the user still spoke: at its limit, or with the month's allowance used up. */
+export function stoppedWords(stopped: VoiceStopped, limit?: number): string {
+  if (stopped === "quota") return "Stopped: this month's transcription allowance is used up — what came after wasn't recorded";
+  const minutes = limit === undefined ? 0 : limit % 60 === 30 ? `${Math.floor(limit / 60)}½` : String(Math.round(limit / 60));
+  const at = limit === undefined ? "the limit" : limit >= 60 ? `the ${minutes}-minute limit` : `the ${Math.round(limit)}-second limit`;
+  return `Stopped at ${at} — what came after wasn't recorded`;
 }
 
 /** Why the host's microphone is off, where the host draws no talk button of its own and so says. */

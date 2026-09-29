@@ -41,6 +41,8 @@ export const STT_MODELS = {
 export type LocalSttEngine = keyof typeof STT_MODELS;
 /** Nemotron's, the recogniser there was first. */
 export const STT_MODEL = STT_MODELS.nemotron;
+/** The most one utterance may last on Moonshine or Whisper, which read it whole: Whisper hears 30 s (`sherpa-stt.ts`). */
+export const OFFLINE_MAX_SECONDS = 30;
 /** The model each local speech engine speaks with. */
 export const TTS_MODELS: Record<SherpaTtsEngine, string> = {
   piper: "tts-piper-en",
@@ -167,9 +169,9 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
       return model;
     },
 
-    async vad(dir: string, config: VoiceConfig): Promise<() => VadEngine> {
+    async vad(dir: string, config: VoiceConfig, opts?: { maxSpeechMs?: number }): Promise<() => VadEngine> {
       pin();
-      return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms });
+      return loadSilero(dir, { minSilenceMs: config.vad_min_silence_ms, ...(opts?.maxSpeechMs !== undefined ? { maxSpeechMs: opts.maxSpeechMs } : {}) });
     },
 
     async stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine> {
@@ -178,7 +180,8 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
       if (!engine) throw new Error(`no local transcription engine is called ${config.stt}`);
       proc.set("stt", { engine, dir, threads: config.stt_threads, ...(config.stt_language ? { language: config.stt_language } : {}) });
       await checked("stt", opts);
-      return proc.sttEngine();
+      // Moonshine and Whisper read an utterance whole and hear 30 s of it; Nemotron decodes as it goes.
+      return engine === "nemotron" ? proc.sttEngine() : { ...proc.sttEngine(), maxSeconds: OFFLINE_MAX_SECONDS };
     },
 
     async tts(dir: string | undefined, config: VoiceConfig, _sidecars: Sidecars, opts?: EngineLoadOptions): Promise<TtsEngine> {

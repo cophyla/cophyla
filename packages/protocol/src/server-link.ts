@@ -10,7 +10,7 @@
 
 import { z } from "zod";
 import { LlmComplete, LlmResult, capabilityNotices, capabilityRequests } from "./capability.ts";
-import { DirectReport, IceServer, Node, PushPlatform, Usage } from "./entities.ts";
+import { DirectReport, IceServer, Node, PushPlatform, Usage, VoiceStopped } from "./entities.ts";
 import { ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
@@ -82,9 +82,22 @@ export const serverLinkRequests = {
     params: z.object({ audio: z.string().describe("int16 16 kHz mono, base64"), language: z.string().optional() }),
     result: z.object({ text: z.string() }),
   },
+  /**
+   * Hosted live transcription of one utterance. The server opens the vendor's stream and says
+   * so with `stt.ready`, naming the most seconds it will hear; the node then sends the audio as
+   * `stt.audio` frames carrying this request's id, and `stt.end` once the utterance is over.
+   * The words come back as `stt.partial` frames as they are heard. The result is the whole
+   * transcript and the seconds metered; `stopped` when the server stopped hearing before
+   * `stt.end`, at its limit or the account's allowance. `cancel` drops it, metered as far as
+   * it was heard.
+   */
+  "stt.stream": {
+    params: z.object({ language: z.string().optional(), vocabulary: z.array(z.string().min(1).max(64)).max(100).optional() }),
+    result: z.object({ text: z.string(), seconds: z.number().int().nonnegative(), stopped: VoiceStopped.optional() }),
+  },
   /** Hosted speech: the audio arrives as `tts.delta` frames carrying this request's id; the result closes the stream. */
   "tts.speak": { params: z.object({ text: z.string(), voice: z.string().optional() }), result: Empty },
-  /** Abort an `llm.complete` or `tts.speak` in flight by its request id. */
+  /** Abort an `llm.complete`, `tts.speak` or `stt.stream` in flight by its request id. */
   cancel: { params: z.object({ id: RpcId }), result: Empty },
   /**
    * Every signed-in daemon at each link-up, with itself at its current role and epoch. A
@@ -225,6 +238,17 @@ export const serverLinkFrames = {
   "llm.delta": capabilityNotices["llm.delta"],
   /** A chunk of a hosted `tts.speak` in flight: int16 samples at 24 kHz, mono, base64. */
   "tts.delta": z.object({ id: RpcId, chunk: z.string().describe("int16 24 kHz mono, base64") }),
+  /** Up: audio of an `stt.stream` in flight, at most two seconds of int16 samples at 16 kHz, mono, base64. */
+  "stt.audio": z.object({ id: RpcId, chunk: z.string().describe("int16 16 kHz mono, base64") }),
+  /** Up: the utterance of an `stt.stream` is over; the result follows once the last words are in. */
+  "stt.end": z.object({ id: RpcId }),
+  /** Down: the server is hearing an `stt.stream`, for at most `maxSeconds` of audio. */
+  "stt.ready": z.object({ id: RpcId, maxSeconds: z.number().positive() }),
+  /**
+   * Down: the words of an `stt.stream` heard so far past the last final. A `final` one is a
+   * finished stretch of the transcript, kept; the next starts after it.
+   */
+  "stt.partial": z.object({ id: RpcId, text: z.string(), final: z.literal(true).optional() }),
 } as const;
 
 export type ServerLinkFrameName = keyof typeof serverLinkFrames;

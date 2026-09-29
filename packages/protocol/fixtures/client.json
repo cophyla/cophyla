@@ -163,11 +163,25 @@
           "sttStage": { "status": "off" },
           "engines": [],
           "installError": { "engine": "kokoro", "message": "sha256 mismatch" }
+        },
+        {
+          "enabled": true,
+          "tts": "kokoro-online",
+          "source": "app",
+          "speed": 1,
+          "stage": { "status": "ready", "engine": "kokoro-online" },
+          "stt": "gemini-live",
+          "sttSource": "app",
+          "sttStage": { "status": "ready", "engine": "gemini-live" },
+          "sttRoute": "own",
+          "ttsRoute": "cloud",
+          "keys": { "gemini": { "source": "app", "last4": "x9Qa" }, "deepinfra": { "source": "none" } },
+          "engines": [{ "id": "gemini-live", "stage": "stt", "label": "Gemini Live", "detail": "Words appear as you speak.", "local": false }]
         }
       ]
     },
     "voice.configure": {
-      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, {}],
+      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, { "stt": "gemini-live", "sttRoute": "own" }, { "sttRoute": null, "ttsRoute": "cloud" }, {}],
       "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "speed": 2, "stage": { "status": "loading", "engine": "kokoro" }, "stt": "nemotron", "sttSource": "config", "sttStage": { "status": "ready", "engine": "nemotron" }, "engines": [] }]
     },
     "voice.install": {
@@ -340,6 +354,10 @@
     "remote.revoke": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "phone" }], "results": [{}] },
     "account.login": { "params": [{}], "results": [{ "verificationUrl": "https://example.com/device", "userCode": "ABCD-EFGH", "expiresAt": 1758197400000 }] },
     "account.logout": { "params": [{}], "results": [{}] },
+    "account.apiKey": {
+      "params": [{ "provider": "gemini", "apiKey": "AIzaSyD-example-not-a-key" }, { "provider": "deepinfra", "apiKey": null }],
+      "results": [{ "gemini": { "source": "app", "last4": "-key" }, "deepinfra": { "source": "env", "last4": "3f9a" } }, { "gemini": { "source": "config", "last4": "Q2x0" }, "deepinfra": { "source": "none" } }]
+    },
     "backup.enable": { "params": [{ "passphrase": "correct horse battery staple" }, { "passphrase": "correct horse battery staple", "replace": true }], "results": [{}] },
     "backup.disable": { "params": [{}, { "forget": true }], "results": [{}] },
     "backup.restore": { "params": [{ "passphrase": "correct horse battery staple" }], "results": [{}] },
@@ -465,7 +483,20 @@
         "expiresAt": 1758204000000
       }
     ],
-    "voice.state": [{ "state": "idle" }, { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" }, { "state": "idle", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "unheard": "silence" }],
+    "voice.state": [
+      { "state": "idle" },
+      { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" },
+      { "state": "idle", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "unheard": "silence" },
+      { "state": "listening", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "limit": 570 },
+      { "state": "transcribing", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "stopped": "limit" },
+      { "state": "transcribing", "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "stopped": "quota" }
+    ],
+    "voice.partial": [
+      { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "What is the status" },
+      { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": " of the build?", "from": 18 },
+      { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "", "from": 32, "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FC4" },
+      { "text": "" }
+    ],
     "voice.audio": [
       { "chunk": "AAAA" },
       { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },

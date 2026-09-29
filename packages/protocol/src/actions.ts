@@ -130,6 +130,8 @@ export const actions = {
   "direct.turn": { risk: "network", control: true },
   "account.login": { risk: "network" },
   "account.logout": { risk: "write" },
+  // A vendor's key kept on this node; the audit row keeps it redacted.
+  "account.apiKey": { risk: "write" },
   "backup.enable": { risk: "network" },
   "backup.disable": { risk: "write" },
   "backup.restore": { risk: "exec" },

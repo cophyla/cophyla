@@ -119,6 +119,12 @@ export class FakeServer {
   readonly http: { method: string; path: string; headers: Record<string, string> }[] = [];
   /** Every `stt.transcribe`: the sample count and the language. */
   readonly stt: { samples: number; language?: string }[] = [];
+  /** Every `stt.stream`: the samples it heard, its language, and how it ended. */
+  readonly sttStreams: { id: RpcId; samples: number; language?: string; ended?: "end" | "cancel" | "limit" | "quota" }[] = [];
+  /** The most seconds an `stt.stream` hears; under 580 the account's allowance ends it there. */
+  liveMaxSeconds = 580;
+  /** The streams open now, by request id: their audio, their end, their cancel. */
+  private live = new Map<string, { audio(chunk: string): void; end(): void; cancel(): void }>();
   /** Every `tts.speak` text. */
   readonly tts: string[] = [];
   /** Every `cancel` id. */
@@ -555,6 +561,16 @@ export class FakeServer {
       }
       return;
     }
+    if ((m.id === undefined || m.id === null) && (m.method === "stt.audio" || m.method === "stt.end")) {
+      // a live transcription's frames, by its request id; late or unknown ones are dropped
+      const p = (m.params ?? {}) as { id?: unknown; chunk?: unknown };
+      const stream = ws.data.token ? this.live.get(String(p.id)) : undefined;
+      if (!stream) return;
+      this.seen.push(m.method);
+      if (m.method === "stt.end") stream.end();
+      else if (typeof p.chunk === "string") stream.audio(p.chunk);
+      return;
+    }
     if (m.id === undefined || m.id === null) {
       // the relay's notifications, routed by peer and never parsed further
       const p = (m.params ?? {}) as { peer?: unknown; frame?: unknown; reason?: unknown };
@@ -791,6 +807,39 @@ export class FakeServer {
         this.used["stt_seconds"] = (this.used["stt_seconds"] ?? 0) + Math.ceil(samples / 16000);
         return { text: this.transcript };
       }
+      case "stt.stream": {
+        if (this.plan !== "pro") throw fail("denied", "the plan has no hosted voice");
+        const row: (typeof this.sttStreams)[number] = { id, samples: 0, ...(typeof p["language"] === "string" ? { language: p["language"] } : {}) };
+        this.sttStreams.push(row);
+        const words = this.transcript.split(" ");
+        const max = this.liveMaxSeconds;
+        return await new Promise((resolve, reject) => {
+          // A word more of the transcript for every chunk heard, the whole of it at the end.
+          let heard = 0;
+          const settle = (ended: "end" | "cancel" | "limit" | "quota") => {
+            this.live.delete(String(id));
+            row.ended = ended;
+            const seconds = Math.ceil(row.samples / 16000);
+            this.used["stt_seconds"] = (this.used["stt_seconds"] ?? 0) + seconds;
+            if (ended === "cancel") reject(fail("cancelled", "cancelled"));
+            else resolve({ text: ended === "end" ? this.transcript : words.slice(0, heard).join(" "), seconds, ...(ended === "end" ? {} : { stopped: ended }) });
+          };
+          this.live.set(String(id), {
+            audio: (chunk) => {
+              row.samples += Math.floor(Buffer.from(chunk, "base64").length / 2);
+              heard = Math.min(words.length, heard + 1);
+              this.write(ws, { jsonrpc: "2.0", method: "stt.partial", params: { id, text: words.slice(0, heard).join(" ") } });
+              if (row.samples >= max * 16000) settle(max < 580 ? "quota" : "limit");
+            },
+            end: () => {
+              this.write(ws, { jsonrpc: "2.0", method: "stt.partial", params: { id, text: this.transcript, final: true } });
+              settle("end");
+            },
+            cancel: () => settle("cancel"),
+          });
+          this.write(ws, { jsonrpc: "2.0", method: "stt.ready", params: { id, maxSeconds: max } });
+        });
+      }
       case "tts.speak": {
         if (this.plan !== "pro") throw fail("denied", "the plan has no hosted voice");
         const text = typeof p["text"] === "string" ? p["text"] : "";
@@ -806,6 +855,7 @@ export class FakeServer {
       }
       case "cancel":
         this.cancels.push(p["id"] as RpcId);
+        this.live.get(String(p["id"]))?.cancel();
         return {};
       case "backup.status": {
         if (this.plan !== "pro") throw fail("denied", "the plan has no backup");

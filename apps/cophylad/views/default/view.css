@@ -3238,6 +3238,16 @@ button:disabled {
   font-weight: 400;
 }
 
+/* The utterance as it is heard: the message it will be, faint and dashed until it lands. */
+.message.heard {
+  border-style: dashed;
+  color: var(--muted);
+}
+
+.message.heard .message-who::after {
+  content: " · heard so far";
+}
+
 /* --- terminals ------------------------------------------------------------------------------ */
 
 /* The bare terminals under the folders, headed Terminals as a folder is headed by its name,

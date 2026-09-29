@@ -14,6 +14,7 @@ import type { Activity } from "../chat/activity.ts";
 import type { Chat } from "../chat/index.ts";
 import type { BackupSync } from "../cloud/backup.ts";
 import type { Cloud } from "../cloud/index.ts";
+import type { ProviderKeyStore } from "../cloud/provider-keys.ts";
 import type { EventCatalogue } from "../events/catalogue.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { GateContext } from "../gate/index.ts";
@@ -459,6 +460,8 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
           ...(p.voice !== undefined ? { voice: p.voice } : {}),
           ...(p.speed !== undefined ? { speed: p.speed } : {}),
           ...(p.stt !== undefined ? { stt: p.stt } : {}),
+          ...(p.sttRoute !== undefined ? { sttRoute: p.sttRoute } : {}),
+          ...(p.ttsRoute !== undefined ? { ttsRoute: p.ttsRoute } : {}),
         }),
     },
     "voice.install": { target: (p) => p.engine, handler: (p) => deps.voice.install(p.engine) },
@@ -562,12 +565,16 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
 
 export interface AccountMethodDeps {
   cloud: Cloud;
+  /** The vendors' keys typed in the app. */
+  keys: ProviderKeyStore;
 }
 
 /**
  * The account: the device-code login and the logout. The browser is opened for the desktop
  * app (a `ui` client on the loopback listener, which is on this machine); a phone or a
  * remote client gets the URL and the code to type. The audit row keeps the code redacted.
+ * And the vendors' keys the user types in Settings, kept on this node; the audit row says
+ * which vendor and whether a key was given, never the key, and the answer only its last four.
  */
 export function accountMethods(deps: AccountMethodDeps): MethodTable {
   return {
@@ -579,6 +586,11 @@ export function accountMethods(deps: AccountMethodDeps): MethodTable {
         await deps.cloud.logout();
         return {};
       },
+    },
+    "account.apiKey": {
+      target: (p) => p.provider,
+      redact: (p) => ({ provider: p.provider, key: p.apiKey === null ? "cleared" : "given" }),
+      handler: (p) => deps.keys.set(p.provider, p.apiKey),
     },
   };
 }

@@ -20,6 +20,10 @@
     },
     "stt.transcribe": { "params": [{ "audio": "AAAAAAAAAAA=" }, { "audio": "AAAAAAAAAAA=", "language": "en" }], "results": [{ "text": "what is open" }, { "text": "" }] },
     "tts.speak": { "params": [{ "text": "Nothing is open." }, { "text": "Nothing is open.", "voice": "af_heart" }], "results": [{}] },
+    "stt.stream": {
+      "params": [{}, { "language": "en" }, { "language": "en-US", "vocabulary": ["Cophyla", "orchestrator"] }],
+      "results": [{ "text": "What is open?", "seconds": 4 }, { "text": "", "seconds": 0 }, { "text": "The first part of a long one", "seconds": 600, "stopped": "limit" }, { "text": "Then the allowance ran out", "seconds": 212, "stopped": "quota" }]
+    },
     "cancel": { "params": [{ "id": 12 }, { "id": "req_7" }], "results": [{}] },
     "registry.register": {
       "params": [
@@ -147,7 +151,11 @@
       { "id": 12, "delta": { "type": "text", "text": "Nothing " } },
       { "id": 12, "delta": { "type": "tool_use", "id": "tu_1", "name": "Tasks", "inputJson": "{\"action\":\"List\"}" } }
     ],
-    "tts.delta": [{ "id": 13, "chunk": "AAAAAAAAAAA=" }]
+    "tts.delta": [{ "id": 13, "chunk": "AAAAAAAAAAA=" }],
+    "stt.audio": [{ "id": 14, "chunk": "AAAAAAAAAAA=" }, { "id": "req_9", "chunk": "AAAA" }],
+    "stt.end": [{ "id": 14 }],
+    "stt.ready": [{ "id": 14, "maxSeconds": 600 }, { "id": 14, "maxSeconds": 212 }],
+    "stt.partial": [{ "id": 14, "text": "What is the" }, { "id": 14, "text": "What is the status of the build?", "final": true }]
   },
   "auth": {
     "auth.device": {

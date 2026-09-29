@@ -1190,6 +1190,14 @@ export type VoiceState = z.infer<typeof VoiceState>;
 export const VoiceUnheard = z.enum(["no-audio", "silence", "no-speech", "no-words"]);
 export type VoiceUnheard = z.infer<typeof VoiceUnheard>;
 
+/**
+ * Why an utterance stopped being recorded while the user was still speaking: it reached the
+ * most one utterance may last (`limit`), or the account's transcription allowance ran out
+ * (`quota`). What came after was not heard.
+ */
+export const VoiceStopped = z.enum(["limit", "quota"]);
+export type VoiceStopped = z.infer<typeof VoiceStopped>;
+
 /** Every entity schema by the name entities.md uses, for fixtures and the JSON Schema dump. */
 export const entities = {
   Node,

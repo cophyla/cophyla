@@ -13,6 +13,10 @@
 // whose model is here speaks in more than one chunk at 24 kHz in the voice picked, and the
 // whole module turns a stream of frames into a `user.message` and speech back, with the
 // speech process there for the turn and gone after it.
+//
+// Live transcription is checked against Gemini itself when `GEMINI_API_KEY` is set (a few
+// cents a run): a short question, a minute and a half with pauses, an utterance dropped while
+// it streams, and one whose socket dies under it, which the batch route then takes whole.
 
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
@@ -29,6 +33,9 @@ import { Store } from "../src/store/index.ts";
 import { FRAME, IN_RATE, toInt16 } from "../src/voice/engines.ts";
 import { Voice } from "../src/voice/index.ts";
 import { localEngines, STT_MODEL, STT_MODELS, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "../src/voice/local.ts";
+import type { LiveSocket } from "../src/voice/gemini-live.ts";
+import { onlineLiveStt } from "../src/voice/online.ts";
+import type { SttStream } from "../src/voice/engines.ts";
 import { removeHome, sleep, tempHome, waitFor } from "./helpers.ts";
 
 const MODELS = process.env["COPHYLA_VOICE_MODELS"] ?? join(import.meta.dir, "..", "models", "voice");
@@ -298,4 +305,107 @@ describe.skipIf(!present)("the real engines", () => {
 
 describe.skipIf(present)("the real engines", () => {
   test.skip(`skipped: no voice models under ${MODELS} (run apps/cophylad/scripts/fetch-models.ts --voice)`, () => {});
+});
+
+// --- Gemini Live, with a real key ------------------------------------------------------------
+
+const GEMINI_KEY = process.env["GEMINI_API_KEY"];
+
+/** Live transcription over the user's own key alone, with the sockets it opens kept for the test. */
+function liveOwnKey() {
+  const sockets: LiveSocket[] = [];
+  const engine = onlineLiveStt({
+    sttRoutes: () => ["byok:gemini"],
+    ttsRoutes: () => [],
+    gemini: {
+      apiKey: () => GEMINI_KEY,
+      baseUrl: "https://generativelanguage.googleapis.com",
+      model: "gemini-3.5-flash-lite",
+      liveModel: "gemini-3.5-transcribe-live",
+      connect: (url, headers) => {
+        const s = new WebSocket(url, { headers } as unknown as string[]) as unknown as LiveSocket;
+        sockets.push(s);
+        return s;
+      },
+    },
+    deepinfra: { apiKey: () => undefined, baseUrl: "https://api.deepinfra.com", model: "hexgrad/Kokoro-82M" },
+    log: silentLogger,
+  });
+  return { engine, sockets };
+}
+
+/** The frames at `speed` times real time. */
+async function stream(s: SttStream, pcm: Int16Array, speed = 4): Promise<void> {
+  for (const f of frames(pcm)) {
+    s.accept(f);
+    await sleep(40 / speed);
+  }
+}
+
+describe.skipIf(!GEMINI_KEY)("Gemini Live with a real key", () => {
+  const question = () => readWav(join(CLIPS, "question.wav")).samples;
+
+  test("a short question comes back word for word, with the words on the way", async () => {
+    const { engine } = liveOwnKey();
+    const s = engine.stream();
+    const shown: string[] = [];
+    s.onPartial = (t) => shown.push(t);
+    s.heard!();
+    await stream(s, question(), 1);
+    const text = await s.final();
+    expect(wer(QUESTION, text)).toBeLessThanOrEqual(0.15);
+    expect(shown.length).toBeGreaterThan(0);
+    expect(s.how).toEqual({ route: "byok:gemini", live: true });
+  }, 60_000);
+
+  test("a minute and a half with pauses in it comes back whole", async () => {
+    const { engine } = liveOwnKey();
+    const q = question();
+    const pause = new Int16Array(IN_RATE * 3);
+    const parts: Int16Array[] = [];
+    let n = 0;
+    while (n < IN_RATE * 90) {
+      parts.push(q, pause);
+      n += q.length + pause.length;
+    }
+    const all = new Int16Array(n);
+    let o = 0;
+    for (const p of parts) {
+      all.set(p, o);
+      o += p.length;
+    }
+    const s = engine.stream();
+    s.heard!();
+    await stream(s, all, 4);
+    const text = await s.final();
+    const count = parts.length / 2;
+    // Every repetition is there: the question's last word, once each.
+    expect(words(text).filter((w) => w === "afternoon").length).toBeGreaterThanOrEqual(count - 1);
+    expect(s.how).toEqual({ route: "byok:gemini", live: true });
+  }, 120_000);
+
+  test("an utterance dropped while it streams answers nothing and closes its socket", async () => {
+    const { engine, sockets } = liveOwnKey();
+    const s = engine.stream();
+    s.heard!();
+    const q = question();
+    await stream(s, q.subarray(0, q.length / 2), 1);
+    const done = s.final();
+    s.dispose();
+    expect(await done).toBe("");
+    await waitFor(() => (sockets[0] as unknown as WebSocket).readyState >= 2);
+  }, 60_000);
+
+  test("a socket that dies under the utterance leaves it to the batch route, which gets it whole", async () => {
+    const { engine, sockets } = liveOwnKey();
+    const s = engine.stream();
+    s.heard!();
+    const q = question();
+    await stream(s, q.subarray(0, Math.floor(q.length / 3)), 1);
+    sockets[0]!.close(4000, "killed by the test");
+    await stream(s, q.subarray(Math.floor(q.length / 3)), 4);
+    const text = await s.final();
+    expect(wer(QUESTION, text)).toBeLessThanOrEqual(0.15);
+    expect(s.how).toEqual({ route: "byok:gemini", live: false });
+  }, 60_000);
 });

@@ -39,6 +39,7 @@ import {
   Usage,
   ViewManifest,
   VoiceState,
+  VoiceStopped,
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
@@ -132,12 +133,39 @@ export const TtsEngineId = z.enum(["piper", "kokoro", "supertonic", "chatterbox"
 export type TtsEngineId = z.infer<typeof TtsEngineId>;
 
 /**
- * The engines a node can transcribe with, as `[voice] stt` names them. `gemini` goes through
- * the node's transcription routes (the account's server, then the user's own key); `server`
- * is the name it had before, and a node reads it as `gemini`.
+ * The engines a node can transcribe with, as `[voice] stt` names them. `gemini-live` and
+ * `gemini` go through the node's transcription routes (the account's server, then the user's
+ * own key): `gemini-live` streams the words as they are said, `gemini` sends each utterance
+ * once it ends, for less. `server` is the name the online one had before, and a node reads it
+ * as `gemini-live`.
  */
-export const SttEngineId = z.enum(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini", "server", "off"]);
+export const SttEngineId = z.enum(["moonshine-tiny", "moonshine-base", "whisper-base", "nemotron", "gemini-live", "gemini", "server", "off"]);
 export type SttEngineId = z.infer<typeof SttEngineId>;
+
+/**
+ * Where the online engines go first: `cloud`, the account's server (a plan with hosted voice),
+ * with the user's own key after it when the server cannot; `own`, the user's own key alone.
+ */
+export const VoiceRoute = z.enum(["cloud", "own"]);
+export type VoiceRoute = z.infer<typeof VoiceRoute>;
+
+/** The vendors whose keys the user can give the node, for the online engines and the model. */
+export const ProviderKeyName = z.enum(["gemini", "deepinfra"]);
+export type ProviderKeyName = z.infer<typeof ProviderKeyName>;
+
+/**
+ * Whether the node has a vendor's key, and from where: typed in the app (`app`), config.toml
+ * (`config`) or the environment (`env`), the first of them winning. Only the key's last four
+ * characters ever leave the node.
+ */
+export const ProviderKeyState = z.object({
+  source: z.enum(["app", "config", "env", "none"]),
+  last4: z.string().max(4).optional(),
+});
+export type ProviderKeyState = z.infer<typeof ProviderKeyState>;
+
+export const ProviderKeys = z.object({ gemini: ProviderKeyState, deepinfra: ProviderKeyState });
+export type ProviderKeys = z.infer<typeof ProviderKeys>;
 
 /** How fast replies are read, the engine's own pace being 1: from half as fast to three times as fast. */
 export const SpeechSpeed = z.number().min(0.5).max(3);
@@ -178,7 +206,8 @@ export type VoiceStageState = z.infer<typeof VoiceStageState>;
  * voice among the engine's `voices` (the model's own default when absent; `voices` is known
  * once the engine is loaded), the `speed` replies are read at, whichever engine reads them,
  * and the speech stage; the same for transcription (`stt`,
- * `sttSource`, `sttStage`); every engine there is for either; and the install under way or
+ * `sttSource`, `sttStage`); where the online engines go first (`sttRoute`, `ttsRoute`) and
+ * the keys they would use; every engine there is for either; and the install under way or
  * the last one that failed.
  */
 export const VoiceSettings = z.object({
@@ -192,6 +221,11 @@ export const VoiceSettings = z.object({
   stt: SttEngineId,
   sttSource: z.enum(["app", "config"]),
   sttStage: VoiceStageState,
+  /** Where online transcription and speech go first; `cloud` unless the app set another. */
+  sttRoute: VoiceRoute.optional(),
+  ttsRoute: VoiceRoute.optional(),
+  /** The vendors' keys the online engines use, as their source and last four characters. */
+  keys: ProviderKeys.optional(),
   engines: z.array(SpeechEngineInfo),
   installing: z.object({ engine: z.string(), step: z.enum(["runtime", "model"]), progress: z.number().min(0).max(1) }).optional(),
   installError: z.object({ engine: z.string(), message: z.string() }).optional(),
@@ -465,8 +499,9 @@ export const clientRequests = {
   /**
    * The engine or the voice, set from the app over config.toml; `null` hands either back to
    * it. A voice belongs to the engine it was set for. The speed is every engine's, from the
-   * next line on; `null` is the engines' own pace. Answered at once: the engine loads behind
-   * the answer, and `voice.settings` says when its stage is up.
+   * next line on; `null` is the engines' own pace. A route says where the online engines go
+   * first, from the next utterance or line on; `null` is `cloud`. Answered at once: the engine
+   * loads behind the answer, and `voice.settings` says when its stage is up.
    */
   "voice.configure": {
     params: z.object({
@@ -474,6 +509,8 @@ export const clientRequests = {
       voice: z.number().int().nonnegative().max(9999).nullable().optional(),
       speed: SpeechSpeed.nullable().optional(),
       stt: SttEngineId.nullable().optional(),
+      sttRoute: VoiceRoute.nullable().optional(),
+      ttsRoute: VoiceRoute.nullable().optional(),
     }),
     result: VoiceSettings,
   },
@@ -666,6 +703,15 @@ export const clientRequests = {
   },
   "account.logout": { params: Empty, result: Empty },
   /**
+   * A vendor's key for the online engines and the model, kept on this node alone (never in a
+   * backup, never on another node) over config.toml's and the environment's; `null` forgets
+   * it. The answer says which keys the node has now, by their last four characters.
+   */
+  "account.apiKey": {
+    params: z.object({ provider: ProviderKeyName, apiKey: z.string().trim().min(8).max(512).nullable() }),
+    result: ProviderKeys,
+  },
+  /**
    * The cloud backup on, keyed by a passphrase this node derives the key from and keeps.
    * When the server already holds a backup under another passphrase the answer is `denied`
    * unless `replace`, which starts over. The primary sends; a fresh install with the same
@@ -825,9 +871,29 @@ export const clientNotifications = {
   "ask.state": Ask,
   /**
    * `client` is the controller whose conversation the state belongs to; absent when idle with none.
-   * `unheard` says why an utterance the button held ended with nothing sent.
+   * `unheard` says why an utterance the button held ended with nothing sent. `limit` comes with
+   * `listening`: the seconds the utterance may last. `stopped` comes with the `transcribing` a
+   * stop forced while the user was still speaking: the limit or the allowance was reached.
    */
-  "voice.state": z.object({ state: VoiceState, client: ClientId.optional(), unheard: VoiceUnheard.optional() }),
+  "voice.state": z.object({
+    state: VoiceState,
+    client: ClientId.optional(),
+    unheard: VoiceUnheard.optional(),
+    limit: z.number().positive().optional(),
+    stopped: VoiceStopped.optional(),
+  }),
+  /**
+   * The words heard so far of this client's utterance, to that client alone, as they grow.
+   * `from` is how much of the text before to keep, `text` what follows it: a long transcript
+   * is not sent again whole. The last one, once the utterance is in the chat, names its
+   * `message`.
+   */
+  "voice.partial": z.object({
+    client: ClientId.optional(),
+    text: z.string(),
+    from: z.number().int().nonnegative().optional(),
+    message: MessageId.optional(),
+  }),
   /**
    * Speech for one controller: base64 of int16 samples (`pcm`, the default) or of
    * length-prefixed Opus packets, at `rate` (24 kHz when absent). `reply` numbers the reply

@@ -8,7 +8,13 @@
 // controller that streams while it listens, on the phone for one that detects the word
 // itself and says so with `wakeHeard`. Once it fires — or the button is pressed — the
 // utterance begins: the VAD and the recogniser both see the audio, partials go out as they
-// grow, and the end of the utterance (silence, or the button released) closes it. A word
+// grow, and the end of the utterance (silence, or the button released) closes it. A
+// recogniser that bills while it is open (a live one online) is told once the VAD hears
+// speech (`heard`), so a tap or a false accept opens nothing. An utterance lasts at most what
+// the recogniser hears (`maxSeconds`, told to the clients with `listening`): at that limit,
+// or when the recogniser stops hearing on its own (the account's allowance ran out), the
+// utterance ends there with the button still held, and the `transcribing` that follows says
+// why (`stopped`), since what came after was not recorded. A word
 // fires a moment after it ends, often inside the first word that follows, so the recogniser
 // also hears the last `LEAD_FRAMES` frames from before it fired — the node keeps them, a
 // phone sends them after `voice.wake` and says how many — while the VAD does not, so a false
@@ -21,7 +27,9 @@
 // `idle` that ends it (`unheard`): no audio came, only digital silence did (a microphone
 // unplugged or muted sends that), no speech was in it, or no words were made of it. The user
 // can take an utterance back until its transcript is sent (`voice.ptt` with `cancel`, Escape
-// in the chat). While the reply is spoken the wake word
+// in the chat). The end of an utterance never holds up the frames behind it: a live
+// recogniser's last words can take seconds, and a press in the meantime begins the next
+// utterance, which the one still being transcribed leaves alone. While the reply is spoken the wake word
 // keeps running, so a word over the top of it stops the speech and starts the next utterance.
 //
 // Each spoken line is a numbered reply whose last frame says `end`. A phone that said it
@@ -30,7 +38,7 @@
 // the audio it sent will have played, as it always did. Each turn's stages are timed and
 // the times logged as one `voice turn` line, to tell the network's delay from the pipeline's.
 
-import type { VoiceState, VoiceUnheard } from "@cophyla/protocol";
+import type { VoiceState, VoiceStopped, VoiceUnheard } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import { sayNames } from "./compose.ts";
 import type { SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
@@ -63,11 +71,23 @@ export const PRIME_MS = 200;
  */
 export const NO_AUDIO_MS = 1000;
 
+/** What a state change says besides the state: why nothing was heard, the utterance's limit, why it was stopped. */
+export interface StateDetail {
+  unheard?: VoiceUnheard;
+  limit?: number;
+  stopped?: VoiceStopped;
+}
+
 export interface ConversationHandlers {
-  /** `unheard` comes with the `idle` that ends an utterance the button held with nothing sent. */
-  state(state: VoiceState, unheard?: VoiceUnheard): void;
+  /**
+   * `unheard` comes with the `idle` that ends an utterance the button held with nothing sent,
+   * `limit` with `listening` when the recogniser has one, `stopped` with a `transcribing` a stop forced.
+   */
+  state(state: VoiceState, detail?: StateDetail): void;
+  /** The words so far, while the utterance is heard and transcribed. */
   partial(text: string): void;
-  final(text: string): void;
+  /** The utterance's transcript; `overtaken` when another utterance began while it was transcribed. */
+  final(text: string, overtaken?: boolean): void;
   /** The edges of the user speaking, for `user.activity`. */
   speaking(active: boolean): void;
   /** A slice of speech for reply `reply`; the reply's last call says `end` and may carry no samples. */
@@ -116,6 +136,14 @@ export class Conversation {
   private stream?: SttStream;
   /** What began the utterance in progress. */
   private began?: "wake" | "button";
+  /** Counts utterances begun, so one whose transcript lands after the next began leaves the state alone. */
+  private utterances = 0;
+  /** The stream of an utterance being transcribed, detached from the one being heard, so a cancel can drop it. */
+  private finishing?: SttStream;
+  /** The samples the recogniser hears at most, and those it heard of the utterance so far; whether it was told of speech. */
+  private maxSamples = Infinity;
+  private fed = 0;
+  private toldHeard = false;
   /** Samples the utterance has seen, for the no-speech abandon. */
   private samples = 0;
   /** The utterance's frames, the loudest of their samples, and when it began: what an empty one says it heard. */
@@ -146,6 +174,8 @@ export class Conversation {
   private lastPlayed = -1;
   /** This turn's moments, the microphone's frames as they arrived, and how the phone played it. */
   private stamps: Partial<Record<Stamp, number>> = {};
+  /** How this turn's utterance was transcribed: the route, and whether live. */
+  private how?: { route?: string; live?: boolean };
   private uplink = { frames: 0, lost: 0, late: 0, maxGapMs: 0, next: -1, lastAt: 0 };
   private phone?: PlayedStats;
 
@@ -167,10 +197,10 @@ export class Conversation {
     return (this.deps.now ?? Date.now)();
   }
 
-  private setState(next: VoiceState, unheard?: VoiceUnheard): void {
+  private setState(next: VoiceState, detail?: StateDetail): void {
     if (this.state === next) return;
     this.state = next;
-    this.deps.on.state(next, unheard);
+    this.deps.on.state(next, detail);
   }
 
   /**
@@ -240,7 +270,7 @@ export class Conversation {
         const lead = this.recent;
         this.recent = [];
         this.begin("wake");
-        for (const f of lead) this.stream?.accept(f);
+        for (const f of lead) this.hear(f);
         return;
       }
     }
@@ -249,18 +279,38 @@ export class Conversation {
     this.peak = Math.max(this.peak, peakOf(pcm));
     if (this.leadLeft > 0) {
       this.leadLeft--;
-      this.stream?.accept(pcm);
+      this.hear(pcm);
       return;
     }
     const closed = (await this.vad?.feed(pcm)) ?? false;
-    this.stream?.accept(pcm);
+    if (this.state !== "listening") return;
+    if (this.vad?.heard && !this.toldHeard) {
+      this.toldHeard = true;
+      this.stream?.heard?.();
+    }
+    if (!this.hear(pcm)) return;
+    // Never awaited: the next utterance's frames must not wait on this one's transcript.
     if (closed && !this.pttHeld) {
-      await this.finish("silence");
+      void this.finish("silence");
       return;
     }
     // A false accept in a quiet room: nothing said after the word, so nothing is transcribed.
     this.samples += pcm.length;
     if (this.abandonable() && !this.vad?.heard && this.samples >= ((this.deps.noSpeechMs ?? NO_SPEECH_MS) / 1000) * IN_RATE) this.abandon("no speech");
+  }
+
+  /**
+   * A frame of the utterance to the recogniser, counted against what it hears at most. The one
+   * that reaches the limit is heard, and the utterance ends on it; false then.
+   */
+  private hear(pcm: Int16Array): boolean {
+    if (this.state !== "listening") return false;
+    this.stream?.accept(pcm);
+    this.fed += pcm.length;
+    if (this.fed < this.maxSamples) return true;
+    this.deps.log?.info("utterance reached its limit", { client: this.client, seconds: Math.round(this.fed / IN_RATE) });
+    void this.finish("limit");
+    return false;
   }
 
   /**
@@ -307,17 +357,32 @@ export class Conversation {
     this.peak = 0;
     this.beganAt = this.now();
     this.leadLeft = 0;
+    const utterance = ++this.utterances;
+    this.fed = 0;
+    this.toldHeard = false;
     const stt = this.deps.stt?.();
+    this.maxSamples = stt?.maxSeconds ? Math.round(stt.maxSeconds * IN_RATE) : Infinity;
     if (stt) {
       const stream = stt.stream();
+      // The words go on to the clients while the last of them come in; a later utterance's stream is theirs.
       stream.onPartial = (text) => {
-        if (this.state === "listening") this.deps.on.partial(text);
+        if (utterance === this.utterances && (this.state === "listening" || this.state === "transcribing")) this.deps.on.partial(text);
+      };
+      stream.onStop = (why) => {
+        if (this.stream !== stream || this.state !== "listening") return;
+        this.deps.log?.info("the recogniser stopped hearing", { client: this.client, why });
+        void this.finish(why);
       };
       stream.accept(new Int16Array((PRIME_MS / 1000) * IN_RATE));
       this.stream = stream;
+      // With no VAD to hear speech, the recogniser opens with the utterance.
+      if (!this.vad) {
+        this.toldHeard = true;
+        stream.heard?.();
+      }
     }
     this.setSpeaking(true);
-    this.setState("listening");
+    this.setState("listening", stt?.maxSeconds ? { limit: stt.maxSeconds } : undefined);
     if (this.abandonable()) this.armStall();
     this.deps.log?.debug("utterance begins", { client: this.client, why });
   }
@@ -371,6 +436,8 @@ export class Conversation {
     this.clearStall();
     this.stream?.dispose();
     this.stream = undefined;
+    this.finishing?.dispose();
+    this.finishing = undefined;
     this.began = undefined;
     this.leadLeft = 0;
     this.resetTurn();
@@ -380,37 +447,57 @@ export class Conversation {
     return true;
   }
 
-  private async finish(why: "silence" | "button"): Promise<void> {
+  /**
+   * The utterance is over: silence closed it, the button let it go, or it reached what the
+   * recogniser hears (`limit`, `quota`). The stream is taken from the utterance at once, so
+   * the next one begins clean while this one's last words come in; the transcript is sent
+   * whenever it lands, but only an utterance still the latest moves the state on.
+   */
+  private async finish(why: "silence" | "button" | VoiceStopped): Promise<void> {
     this.stamp("speechEnd");
     const stream = this.stream;
+    this.stream = undefined;
+    const utterance = this.utterances;
     const began = this.began;
     const heldMs = this.now() - this.beganAt;
     this.clearStall();
     this.began = undefined;
-    this.setState("transcribing");
+    const stopped = why === "limit" || why === "quota" ? why : undefined;
+    this.setState("transcribing", stopped ? { stopped } : undefined);
     // An utterance the VAD heard no speech in is not transcribed at all: a model that reads
     // audio (Whisper, an online one) makes up a sentence for silence, and a hosted one bills it.
     // Dropped rather than drained, so nothing stays open for it: the speech process can go.
     const heard = this.vad?.heard ?? true;
-    if (!heard && stream) {
-      stream.dispose();
-      if (this.stream === stream) this.stream = undefined;
-    }
+    if (!heard) stream?.dispose();
     const cancels = this.cancels;
-    const text = stream && heard ? await stream.final() : "";
+    let text = "";
+    if (stream && heard) {
+      this.finishing = stream;
+      try {
+        text = await stream.final();
+      } finally {
+        if (this.finishing === stream) this.finishing = undefined;
+      }
+    }
     if (this.disposed || this.cancels !== cancels) return;
-    this.stamp("sttFinal");
+    const latest = utterance === this.utterances;
+    if (latest) {
+      this.stamp("sttFinal");
+      this.how = stream?.how;
+    }
     if (!text) {
       // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain. One the
       // button held says why, so a dead microphone is not mistaken for a deaf node.
       const unheard = this.unheard(heard, heldMs);
       this.deps.log?.info("utterance was empty", { client: this.client, why, began, unheard, frames: this.heardFrames, peak: this.peak, heldMs });
+      if (!latest) return;
       this.setSpeaking(false);
-      this.setState("idle", began === "button" ? unheard : undefined);
+      this.setState("idle", began === "button" ? { unheard } : undefined);
       return;
     }
-    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length });
-    this.deps.on.final(text);
+    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length, ...(latest ? {} : { overtaken: true }) });
+    this.deps.on.final(text, !latest);
+    if (!latest) return;
     this.setSpeaking(false);
     this.setState("thinking");
     this.armThinking();
@@ -562,6 +649,7 @@ export class Conversation {
 
   private resetTurn(): void {
     this.stamps = {};
+    this.how = undefined;
     this.phone = undefined;
     this.uplink = { frames: 0, lost: 0, late: 0, maxGapMs: 0, next: this.uplink.next, lastAt: 0 };
   }
@@ -586,6 +674,8 @@ export class Conversation {
     span("synthMs", "speak", "synthDone");
     span("playedAfterMs", "synthDone", "played");
     span("totalMs", "speechEnd", "played");
+    if (this.how?.route !== undefined) fields["route"] = this.how.route;
+    if (this.how?.live !== undefined) fields["live"] = this.how.live;
     const u = this.uplink;
     if (u.frames > 0) fields["uplink"] = { frames: u.frames, lost: u.lost, late: u.late, maxGapMs: Math.round(u.maxGapMs) };
     if (this.phone) fields["phone"] = this.phone;
@@ -622,6 +712,8 @@ export class Conversation {
     this.queue = [];
     this.stream?.dispose();
     this.stream = undefined;
+    this.finishing?.dispose();
+    this.finishing = undefined;
     void this.vad?.close();
   }
 }

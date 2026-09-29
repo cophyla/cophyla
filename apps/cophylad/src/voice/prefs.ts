@@ -1,23 +1,26 @@
 // The voice settings the app sets over config.toml (`voice.configure`): the engine that
-// speaks, a voice for each engine one was picked for, how fast replies are read, and the
-// engine that transcribes. They are this node's own, like its
+// speaks, a voice for each engine one was picked for, how fast replies are read, the engine
+// that transcribes, and where the online engines go first. They are this node's own, like its
 // profiles: kept in the store's kv under `voice`, which replication leaves out, since each
 // machine speaks with its own models.
 
-import type { SttEngineId, TtsEngineId } from "@cophyla/protocol";
-import { SpeechSpeed, SttEngineId as SttEngineIdSchema, TtsEngineId as TtsEngineIdSchema } from "@cophyla/protocol";
+import type { SttEngineId, TtsEngineId, VoiceRoute } from "@cophyla/protocol";
+import { SpeechSpeed, SttEngineId as SttEngineIdSchema, TtsEngineId as TtsEngineIdSchema, VoiceRoute as VoiceRouteSchema } from "@cophyla/protocol";
 import type { Store } from "../store/index.ts";
 
 export const VOICE_KV_NS = "voice";
 const KEY = "prefs";
 
-/** What the app set over config.toml: the engine that speaks, a voice for each engine one was set for, the speed, and the engine that transcribes. */
+/** What the app set over config.toml: the engine that speaks, a voice for each engine one was set for, the speed, the engine that transcribes, and the routes. */
 export interface VoicePrefs {
   tts?: TtsEngineId;
   voices?: Partial<Record<TtsEngineId, number>>;
   /** How fast every engine's replies are read; absent at the engines' own pace. */
   speed?: number;
   stt?: SttEngineId;
+  /** Where online transcription and speech go first; `[providers] stt` and `tts` as they are when absent. */
+  sttRoute?: VoiceRoute;
+  ttsRoute?: VoiceRoute;
 }
 
 /** Where the app's picks are kept. */
@@ -37,6 +40,10 @@ export function storePrefs(store: Pick<Store, "kv">): VoicePrefsStore {
       if (tts.success) out.tts = tts.data;
       const stt = SttEngineIdSchema.safeParse((raw as { stt?: unknown }).stt);
       if (stt.success) out.stt = stt.data;
+      const sttRoute = VoiceRouteSchema.safeParse((raw as { sttRoute?: unknown }).sttRoute);
+      if (sttRoute.success) out.sttRoute = sttRoute.data;
+      const ttsRoute = VoiceRouteSchema.safeParse((raw as { ttsRoute?: unknown }).ttsRoute);
+      if (ttsRoute.success) out.ttsRoute = ttsRoute.data;
       const speed = SpeechSpeed.safeParse(raw.speed);
       if (speed.success && speed.data !== 1) out.speed = speed.data;
       if (raw.voices && typeof raw.voices === "object") {
@@ -50,7 +57,7 @@ export function storePrefs(store: Pick<Store, "kv">): VoicePrefsStore {
       return out;
     },
     write(prefs: VoicePrefs): void {
-      if (prefs.tts === undefined && prefs.voices === undefined && prefs.speed === undefined && prefs.stt === undefined) store.kv.delete(VOICE_KV_NS, KEY);
+      if (Object.values(prefs).every((v) => v === undefined)) store.kv.delete(VOICE_KV_NS, KEY);
       else store.kv.put(VOICE_KV_NS, KEY, prefs);
     },
   };

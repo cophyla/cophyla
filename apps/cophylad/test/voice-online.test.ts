@@ -1,13 +1,14 @@
 // The online engines over fakes of the vendors and the server: Gemini hears the utterance as a
 // WAV and is asked for the words alone; DeepInfra's WAV plays as it streams, at 24 kHz; each
 // engine tries its routes in order, a route that cannot serve passes the call on, and one that
-// fails for another reason, or after it has spoken, is the answer.
+// fails for another reason, or after it has spoken, is the answer. An utterance longer than a
+// request carries goes in pieces cut at its quietest moments.
 
 import { describe, expect, test } from "bun:test";
 import { RpcError } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import type { OnlineDeps } from "../src/voice/online.ts";
-import { deepinfraSpeak, geminiTranscribe, KOKORO_VOICES, onlineStt, onlineTts, wavOf } from "../src/voice/online.ts";
+import { deepinfraSpeak, geminiTranscribe, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
 
 type Call = { url: string; init: RequestInit };
 
@@ -39,9 +40,9 @@ const ramp = (n: number) => Int16Array.from({ length: n }, (_, i) => (i % 200) *
 
 function deps(over: Partial<OnlineDeps> = {}): OnlineDeps {
   return {
-    sttRoutes: ["server", "byok:gemini"],
-    ttsRoutes: ["server", "byok:deepinfra"],
-    gemini: { apiKey: () => "g-key", baseUrl: "https://gemini.test", model: "gemini-2.5-flash-lite", fetch: fakeFetch(() => geminiSays("unused")).fetch },
+    sttRoutes: () => ["server", "byok:gemini"],
+    ttsRoutes: () => ["server", "byok:deepinfra"],
+    gemini: { apiKey: () => "g-key", baseUrl: "https://gemini.test", model: "gemini-2.5-flash-lite", liveModel: "gemini-3.5-transcribe-live", fetch: fakeFetch(() => geminiSays("unused")).fetch },
     deepinfra: { apiKey: () => "d-key", baseUrl: "https://deepinfra.test", model: "hexgrad/Kokoro-82M", fetch: fakeFetch(() => new Response("", { status: 500 })).fetch },
     log: silentLogger,
     ...over,
@@ -118,10 +119,94 @@ describe("transcription over the routes", () => {
     expect(await transcribeWith(onlineStt(broken), 8000)).toBe("");
     expect(g.calls).toHaveLength(0);
 
-    const none = deps({ sttRoutes: ["server", "byok:gemini"], gemini: { ...deps().gemini, apiKey: () => undefined, fetch: g.fetch } });
+    const none = deps({ sttRoutes: () => ["server", "byok:gemini"], gemini: { ...deps().gemini, apiKey: () => undefined, fetch: g.fetch } });
     expect(await transcribeWith(onlineStt(none), 8000)).toBe("");
     expect(await onlineStt(deps({ gemini: { ...deps().gemini, fetch: g.fetch } })).stream().final()).toBe("");
     expect(g.calls).toHaveLength(0);
+  });
+});
+
+describe("long utterances", () => {
+  /** Speech with a silent stretch of `gapMs` at each of `gaps` seconds. */
+  const speechWithGaps = (seconds: number, gaps: number[], gapMs = 300) => {
+    const pcm = ramp(seconds * 16000).map((v) => v + 500);
+    for (const at of gaps) pcm.fill(0, at * 16000, at * 16000 + (gapMs / 1000) * 16000);
+    return pcm;
+  };
+
+  test("an utterance is cut before each minute at its quietest moment, and the pieces make it whole again", () => {
+    const pcm = speechWithGaps(150, [57, 116]);
+    const pieces = splitAtQuiet(pcm);
+    expect(pieces).toHaveLength(3);
+    for (const p of pieces) expect(p.length).toBeLessThanOrEqual(PIECE_SECONDS * 16000);
+    // Each cut falls in the gap before its mark.
+    expect(pieces[0]!.length / 16000).toBeGreaterThan(57);
+    expect(pieces[0]!.length / 16000).toBeLessThan(57.3);
+    expect((pieces[0]!.length + pieces[1]!.length) / 16000).toBeGreaterThan(116);
+    expect((pieces[0]!.length + pieces[1]!.length) / 16000).toBeLessThan(116.3);
+    expect(pieces.reduce((n, p) => n + p.length, 0)).toBe(pcm.length);
+    // A minute or less is one piece.
+    expect(splitAtQuiet(ramp(60 * 16000))).toHaveLength(1);
+  });
+
+  test("the pieces go two at a time, their words joined in order; a piece that fails is left out", async () => {
+    const pcm = speechWithGaps(250, [58, 117, 176, 235]);
+    let inFlight = 0;
+    let most = 0;
+    const seen: number[] = [];
+    const r = await transcribeLong(pcm, async (piece) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      const i = seen.length;
+      seen.push(piece.length);
+      await new Promise((res) => setTimeout(res, 5 * (5 - i)));
+      inFlight--;
+      if (i === 2) throw new RpcError("unavailable", "one piece lost");
+      return { text: `piece ${i}`, route: "byok:gemini" };
+    });
+    expect(most).toBe(2);
+    expect(seen).toHaveLength(5);
+    expect(r).toEqual({ text: "piece 0 piece 1 piece 3 piece 4", route: "byok:gemini" });
+    await expect(transcribeLong(ramp(16000), async () => Promise.reject(new RpcError("unavailable", "down")))).rejects.toThrow("down");
+  });
+
+  test("a four-minute utterance on the batch engine goes to the server in pieces of at most a minute, none of it dropped", async () => {
+    const heard: number[] = [];
+    const engine = onlineStt(
+      deps({
+        server: {
+          transcribe: async (pcm) => {
+            heard.push(pcm.length);
+            return `part ${heard.length}`;
+          },
+          speak: () => ({ async *[Symbol.asyncIterator]() {} }),
+        },
+      }),
+    );
+    expect(engine.maxSeconds).toBe(MAX_SECONDS);
+    const stream = engine.stream();
+    const pcm = speechWithGaps(240, [55, 110, 170, 225]);
+    for (let o = 0; o < pcm.length; o += 640) stream.accept(pcm.subarray(o, o + 640));
+    expect(await stream.final()).toBe("part 1 part 2 part 3 part 4 part 5");
+    expect(heard.reduce((a, b) => a + b, 0)).toBe(pcm.length);
+    for (const n of heard) expect(n).toBeLessThanOrEqual(60 * 16000);
+    expect(stream.how).toEqual({ route: "server", live: false });
+  });
+
+  test("the server refusing a plan the node thought it had passes on; any other route's refusal is the answer", async () => {
+    const g = fakeFetch(() => geminiSays("from gemini"));
+    const stale = deps({ server: { transcribe: async () => Promise.reject(new RpcError("denied", "the plan has no hosted voice")), speak: () => ({ async *[Symbol.asyncIterator]() {} }) }, gemini: { ...deps().gemini, fetch: g.fetch } });
+    expect(await transcribeWith(onlineStt(stale), 8000)).toBe("from gemini");
+    const denied = fakeFetch(() => Response.json({ error: { message: "no" } }, { status: 400 }));
+    const own = deps({ sttRoutes: () => ["byok:gemini", "server"], server: { transcribe: async () => "never", speak: () => ({ async *[Symbol.asyncIterator]() {} }) }, gemini: { ...deps().gemini, fetch: denied.fetch } });
+    expect(await transcribeWith(onlineStt(own), 8000)).toBe("");
+  });
+
+  test("the app's pick says where the routes go first; with none they are config.toml's", () => {
+    expect(routesFor(["server", "byok:gemini"], undefined)).toEqual(["server", "byok:gemini"]);
+    expect(routesFor(["server", "byok:gemini"], "own")).toEqual(["byok:gemini"]);
+    expect(routesFor(["byok:gemini"], "cloud")).toEqual(["server", "byok:gemini"]);
+    expect(routesFor(["byok:gemini", "server"], "cloud")).toEqual(["server", "byok:gemini"]);
   });
 });
 
@@ -194,7 +279,7 @@ describe("Kokoro online", () => {
   });
 
   test("with no route that can speak, the line fails with every route's reason", async () => {
-    const engine = onlineTts(deps({ ttsRoutes: ["byok:deepinfra"], deepinfra: { ...deps().deepinfra, apiKey: () => undefined } }));
+    const engine = onlineTts(deps({ ttsRoutes: () => ["byok:deepinfra"], deepinfra: { ...deps().deepinfra, apiKey: () => undefined } }));
     await expect(
       (async () => {
         for await (const _ of engine.synth("Hi.")) {

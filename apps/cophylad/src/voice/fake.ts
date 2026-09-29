@@ -46,13 +46,15 @@ export interface FakeOptions {
   msPerSentence?: number;
   /** How long a sentence takes to synthesise, as a real engine does; 0 is instant. */
   synthDelayMs?: number;
+  /** The most seconds the recogniser hears of an utterance; no limit when absent. */
+  maxSeconds?: number;
 }
 
 const isWake = (pcm: Int16Array) => pcm.some((v) => v === WAKE_MARKER);
 const isSpeech = (pcm: Int16Array) => pcm.some((v) => v !== 0 && v !== WAKE_MARKER);
 
 export class FakeEngines implements EngineFactory {
-  readonly opts: Required<FakeOptions>;
+  readonly opts: Required<Omit<FakeOptions, "maxSeconds">> & Pick<FakeOptions, "maxSeconds">;
   /** Every line handed to the speech engine, in order. */
   readonly spoken: string[] = [];
   /** How many syntheses were cut short. */
@@ -106,6 +108,7 @@ export class FakeEngines implements EngineFactory {
       minSilenceMs: opts.minSilenceMs ?? 400,
       msPerSentence: opts.msPerSentence ?? 40,
       synthDelayMs: opts.synthDelayMs ?? 0,
+      ...(opts.maxSeconds !== undefined ? { maxSeconds: opts.maxSeconds } : {}),
     };
   }
 
@@ -173,6 +176,7 @@ export class FakeEngines implements EngineFactory {
     const words = this.opts.transcript.split(/\s+/).filter(Boolean);
     const perWord = Math.max(1, this.opts.wordsPerChunk);
     return {
+      ...(this.opts.maxSeconds !== undefined ? { maxSeconds: this.opts.maxSeconds } : {}),
       stream: (): SttStream => {
         let chunks = 0;
         let shown = 0;

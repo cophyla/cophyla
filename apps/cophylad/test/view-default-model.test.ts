@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1008,6 +1008,113 @@ describe("default view: voice and the phones", () => {
     expect(unheardWords("no-speech")).toBe("No speech was heard");
     expect(unheardWords("no-words")).toBe("Nothing could be made out of what was said");
     expect(unheardWords("silence", "none could be had")).toBe("Nothing was heard: the microphone is off (none could be had)");
+  });
+
+  test("this view's utterance shows at the chat's end as it is heard, growing by what follows the part kept, until its message lands", () => {
+    const state = paired();
+    apply(state, { type: "chat.message", params: { message: message("msg_1", "thr_1", 100, "orchestrator", "Hello.") } });
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id, limit: 570 } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "What is the" } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: " status of the build?", from: 11 } });
+    expect(heardText(state)).toBe("What is the status of the build?");
+    // A correction: the node keeps less than it had and sends the rest again.
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "state of the build?", from: 12 } });
+    expect(heardText(state)).toBe("What is the state of the build?");
+    const items = () => selectStream(state).items;
+    expect(items().map((i) => i.kind)).toEqual(["thread", "message", "heard"]);
+    expect(keyOf(items().at(-1)!)).toBe("heard");
+    // Transcribing, the words stay; the last partial names the message, and the message ends it.
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "", from: 31, message: "msg_2" } });
+    expect(heardText(state)).toBe("What is the state of the build?");
+    apply(state, { type: "chat.message", params: { message: message("msg_2", "thr_1", 200, "user", "What is the state of the build?", { source: "voice" }) } });
+    expect(state.heard).toBeUndefined();
+    expect(items().map((i) => i.kind)).toEqual(["thread", "message", "message"]);
+    // The message first, then the partial that names it: nothing comes back.
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "Next one" } });
+    apply(state, { type: "chat.message", params: { message: message("msg_3", "thr_1", 300, "user", "Next one.", { source: "voice" }) } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "", from: 8, message: "msg_3" } });
+    expect(state.heard).toBeUndefined();
+  });
+
+  test("the words heard go with an utterance taken back or come to nothing, with the line, and are never another client's", () => {
+    const state = paired();
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "never mind" } });
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
+    expect(state.heard).toBeUndefined();
+    // A new utterance starts afresh, whatever an earlier one left.
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "left over" } });
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(state.heard).toBeUndefined();
+    apply(state, { type: "voice.partial", params: { client: "cli_phone", text: "the phone's" } });
+    expect(state.heard).toBeUndefined();
+    // Another's states leave this view's words alone.
+    apply(state, { type: "voice.partial", params: { client: CLIENT.id, text: "mine" } });
+    apply(state, { type: "voice.state", params: { state: "idle", client: "cli_phone" } });
+    expect(heardText(state)).toBe("mine");
+    apply(state, { type: "host.state", params: { connected: false } });
+    expect(state.heard).toBeUndefined();
+    // Nothing heard yet shows nothing.
+    const quiet = paired();
+    apply(quiet, { type: "voice.partial", params: { client: CLIENT.id, text: "  " } });
+    expect(selectStream(quiet).items.map((i) => i.kind)).toEqual([]);
+  });
+
+  test("near its limit the voice row counts down the time left: the last 30 s of a long utterance, the last 10 s of a short one", () => {
+    expect(countdownFrom(570)).toBe(30);
+    expect(countdownFrom(120)).toBe(30);
+    expect(countdownFrom(30)).toBe(10);
+    const row = { state: "listening" as const, limit: 570, at: 0 };
+    expect(timeLeft(row, 539_000)).toBeUndefined();
+    expect(timeLeft(row, 540_000)).toBe("0:30");
+    expect(timeLeft(row, 544_500)).toBe("0:26");
+    expect(timeLeft(row, 600_000)).toBe("0:00");
+    expect(timeLeft({ state: "listening", limit: 30, at: 0 }, 19_000)).toBeUndefined();
+    expect(timeLeft({ state: "listening", limit: 30, at: 0 }, 20_000)).toBe("0:10");
+    expect(timeLeft({ state: "transcribing", limit: 30, at: 0 }, 29_000)).toBeUndefined();
+    expect(timeLeft({ state: "listening", at: 0 }, 1e9)).toBeUndefined();
+    const state = paired(controller("ctl_1", "Pixel", { connected: true }));
+    apply(state, { type: "voice.state", params: { state: "listening", client: "cli_1", limit: 570 } });
+    const at = state.voice!.at;
+    expect(voiceWords(state, at + 1000)).toBe("listening · Pixel");
+    expect(voiceWords(state, at + 545_000)).toBe("listening · Pixel · 0:25 left");
+    // The limit is the listening's alone.
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: "cli_1", limit: 570 } });
+    expect(state.voice!.limit).toBeUndefined();
+  });
+
+  test("an utterance the node stopped hearing says so until this view's next one, beside the states between", () => {
+    const state = paired();
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id, limit: 570 } });
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id, stopped: "limit" } });
+    expect(state.voiceNote).toMatchObject({ stopped: "limit", limit: 570 });
+    expect(voiceWords(state)).toBe("transcribing · Stopped at the 9½-minute limit — what came after wasn't recorded");
+    apply(state, { type: "voice.state", params: { state: "thinking", client: CLIENT.id } });
+    apply(state, { type: "voice.state", params: { state: "speaking", client: CLIENT.id } });
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
+    // A press's time running out is not a stop's.
+    apply(state, { type: "voice.note.expired", at: Date.now() + 1e6 });
+    expect(voiceWords(state)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded");
+    expect(voiceDot(state)).toBe("trouble");
+    // Another client's utterance leaves it; this view's next takes it away.
+    apply(state, { type: "voice.state", params: { state: "listening", client: "cli_phone" } });
+    expect(state.voiceNote).toBeDefined();
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(state.voiceNote).toBeUndefined();
+    // The allowance used up.
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id, stopped: "quota" } });
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
+    expect(voiceWords(state)).toBe("Stopped: this month's transcription allowance is used up — what came after wasn't recorded");
+  });
+
+  test("a stop's words give the limit it came at", () => {
+    expect(stoppedWords("limit", 570)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded");
+    expect(stoppedWords("limit", 30)).toBe("Stopped at the 30-second limit — what came after wasn't recorded");
+    expect(stoppedWords("limit", 600)).toBe("Stopped at the 10-minute limit — what came after wasn't recorded");
+    expect(stoppedWords("limit")).toBe("Stopped at the limit — what came after wasn't recorded");
+    expect(stoppedWords("quota", 570)).toBe("Stopped: this month's transcription allowance is used up — what came after wasn't recorded");
   });
 
   test("with two phones connected the state is shown without guessing whose it is", () => {

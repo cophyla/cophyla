@@ -1,7 +1,9 @@
 // The server link: one outbound WebSocket to `<url>/ws/link`, JSON-RPC on the daemon's own
 // peer, `auth` first with the account token, reconnected with backoff for as long as there
 // is a token. Requests on it are the hosted capabilities and the entitlement refresh; the
-// notices about a request in flight (`llm.delta`, `tts.delta`) are routed to it by id, and
+// notices about a request in flight (`llm.delta`, `tts.delta`, `stt.ready`, `stt.partial`)
+// are routed to it by id, the audio of a live transcription goes up as `stt.audio` frames
+// naming its request, and
 // `entitlement.updated`, `registry.primary` and the relay's frames go to the owner. The
 // server asks one thing of the daemon, `relay.open`, served through `onRequest`. A refused
 // `auth` keeps the link retrying at the slowest pace: the token may be revoked, or the
@@ -42,6 +44,8 @@ export interface LinkRequestOptions {
   timeoutMs?: number;
   /** Hears every notice carrying this request's id. */
   onNotice?: (method: string, params: unknown) => void;
+  /** The request left with this id: frames about it (`stt.audio`) can name it from now on. */
+  onSent?: (id: RpcId) => void;
 }
 
 interface Active {
@@ -279,6 +283,7 @@ export class ServerLink {
         onSent: (id) => {
           key = String(id);
           if (opts.onNotice) this.notices.set(key, opts.onNotice);
+          opts.onSent?.(id);
         },
       });
     } finally {
@@ -286,7 +291,14 @@ export class ServerLink {
     }
   }
 
-  /** A notification to the server: the relay's frames. False when the link is down. */
+  /** Bytes queued on the socket and not yet gone, for a stream's backpressure; 0 when it is down. */
+  buffered(): number {
+    const a = this.active;
+    if (!a || this.stateValue !== "up") return 0;
+    return a.ws.bufferedAmount ?? 0;
+  }
+
+  /** A notification to the server: the relay's frames, a live transcription's audio. False when the link is down. */
   notify(method: string, params: unknown): boolean {
     const a = this.active;
     if (!a || this.stateValue !== "up") return false;
@@ -322,6 +334,7 @@ export class ServerLink {
           sentId = id;
           key = String(id);
           if (opts.onNotice) this.notices.set(key, opts.onNotice);
+          opts.onSent?.(id);
         },
       })
       .finally(() => {

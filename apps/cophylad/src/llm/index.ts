@@ -54,6 +54,8 @@ export interface LlmDeps {
   config: ProvidersConfig;
   log: Logger;
   env?: Record<string, string | undefined>;
+  /** The Gemini key at each call, typed in the app over config.toml's and the environment's; those two when absent. */
+  geminiKey?: () => string | undefined;
   /** Replaces the vendor providers, for tests. */
   providers?: Provider[];
 }
@@ -76,7 +78,7 @@ export class Llm {
     const env = deps.env ?? process.env;
     const list = deps.providers ?? [
       new GeminiProvider({
-        apiKey: () => deps.config.gemini.api_key ?? env["GEMINI_API_KEY"],
+        apiKey: deps.geminiKey ?? (() => deps.config.gemini.api_key ?? env["GEMINI_API_KEY"]),
         baseUrl: deps.config.gemini.base_url,
         timeoutMs: deps.config.timeout_ms,
         log: deps.log.child("gemini"),

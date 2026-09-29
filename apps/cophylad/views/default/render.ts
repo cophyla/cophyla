@@ -44,8 +44,8 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -2094,6 +2094,23 @@ function updateStreaming(node: HTMLElement, streaming: Streaming, state: ViewSta
   renderBlocks(node.querySelector<HTMLElement>(".message-body")!, streaming.blocks.filter((b) => b !== undefined), state, true);
 }
 
+/** This view's utterance as it is heard: a user message's element, faint, with a pulse for the time until the message itself lands. */
+function createHeard(): HTMLElement {
+  const root = el("article", "message heard");
+  root.setAttribute("aria-live", "polite");
+  const head = el("header", "message-head");
+  head.append(el("span", "message-who", "you"), el("span", "message-time"), el("span", "pulse"));
+  root.append(head, el("div", "message-body"));
+  return root;
+}
+
+function updateHeard(node: HTMLElement, heard: HeardWords, state: ViewState): void {
+  setData(node, "role", "user");
+  setData(node, "source", "voice");
+  setText(node.querySelector(".message-time")!, clock(heard.at));
+  renderBlocks(node.querySelector<HTMLElement>(".message-body")!, [{ type: "text", text: heard.text }], state, false);
+}
+
 /** What the orchestrator is doing while its turn runs: why it woke when the user did not wake it, each step so far, and Thinking while a model call is out. */
 function createProgress(): HTMLElement {
   const root = el("div", "progress");
@@ -2215,6 +2232,8 @@ function createItem(item: StreamItem): HTMLElement {
       return createStreaming();
     case "progress":
       return createProgress();
+    case "heard":
+      return createHeard();
     case "task":
       return createTask();
   }
@@ -2234,6 +2253,8 @@ function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: U
       return updateStreaming(node, item.streaming, state);
     case "progress":
       return updateProgress(node, item.progress);
+    case "heard":
+      return updateHeard(node, item.heard, state);
     case "task":
       return updateTask(node, item.task, state);
   }
@@ -2241,7 +2262,7 @@ function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: U
 
 function ensureEmpty(stream: HTMLElement, state: ViewState): void {
   let empty = stream.querySelector<HTMLElement>(".empty");
-  const show = state.audit.size === 0 && state.messages.size === 0 && state.streaming.size === 0 && state.tasks.size === 0;
+  const show = state.audit.size === 0 && state.messages.size === 0 && state.streaming.size === 0 && state.tasks.size === 0 && heardText(state) === "";
   if (show && !empty) {
     empty = el("p", "empty");
     stream.prepend(empty);

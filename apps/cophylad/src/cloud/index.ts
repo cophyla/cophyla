@@ -22,14 +22,14 @@ import type { Provider } from "../llm/index.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
 import type { Embedder } from "../store/index/embed.ts";
-import type { SttEngine, TtsEngine } from "../voice/engines.ts";
+import type { LiveOpener, TtsEngine } from "../voice/engines.ts";
 import { AccountFile, revokeToken } from "./account.ts";
 import type { BackupSync } from "./backup.ts";
 import { verifyEntitlement } from "./entitlement.ts";
 import type { EntitlementStatus } from "./entitlement.ts";
 import { probeServerEmbedder } from "./hosted-embed.ts";
 import { ServerProvider } from "./hosted-llm.ts";
-import { ServerSttEngine } from "./hosted-stt.ts";
+import { ServerStt } from "./hosted-stt.ts";
 import { ServerTtsEngine } from "./hosted-tts.ts";
 import type { HostedDeps, HostedKind } from "./hosted.ts";
 import type { EntitlementKey } from "./keys.ts";
@@ -438,19 +438,20 @@ export class Cloud {
     return new ServerProvider(this.hosted);
   }
 
-  sttEngine(language?: string): SttEngine {
-    return new ServerSttEngine(this.hosted, language);
-  }
-
   ttsEngine(voice?: string): TtsEngine {
     return new ServerTtsEngine(this.hosted, voice);
   }
 
-  /** The `server` route of the online engines: one utterance or one line, a refusal thrown so the next route can take it. */
-  speechRoute(): { transcribe(pcm: Int16Array, language: string | undefined): Promise<string>; speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array> } {
+  /**
+   * The `server` route of the online engines: a piece of an utterance, an utterance as it is
+   * said (lasting `maxSeconds` at most), or one line, a refusal thrown so the next route can take it.
+   */
+  speechRoute(opts: { maxSeconds: number }): { transcribe(pcm: Int16Array, language: string | undefined): Promise<string>; speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array>; listen: LiveOpener } {
+    const stt = new ServerStt(this.hosted, { maxSeconds: opts.maxSeconds });
     return {
-      transcribe: (pcm, language) => new ServerSttEngine(this.hosted, language).transcribe(pcm),
+      transcribe: (pcm, language) => stt.transcribe(pcm, language),
       speak: (text, voice, signal) => new ServerTtsEngine(this.hosted, voice).synth(text, signal ? { signal } : {}),
+      listen: stt.listen,
     };
   }
 

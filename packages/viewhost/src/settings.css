@@ -151,6 +151,7 @@
 
 .host-settings select,
 .host-settings input[type="text"],
+.host-settings input[type="password"],
 .host-settings input[type="number"] {
   min-height: 30px;
   padding: 4px 8px;
@@ -349,6 +350,31 @@
   width: 72px;
 }
 
+/* where an online engine goes, under its status */
+.host-settings-route {
+  align-items: center;
+}
+
+/* the node's own keys: a password field each, never the key back, only how it ends */
+.host-settings-key {
+  align-items: center;
+}
+
+.host-settings-key + .host-settings-voice-status {
+  margin-top: 2px;
+}
+
+.host-settings-key input[type="password"] {
+  flex: 0 1 260px;
+  min-width: 0;
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.host-settings-keys .host-settings-source {
+  margin-bottom: 8px;
+}
+
 /* a local engine not installed: what it comes under, each licence a link, and Install */
 .host-settings-install {
   margin: 6px 0 0;
@@ -395,6 +421,7 @@
 
   .host-settings select,
   .host-settings input[type="text"],
+  .host-settings input[type="password"],
   .host-settings-save,
   .host-settings-reset {
     min-height: 40px;

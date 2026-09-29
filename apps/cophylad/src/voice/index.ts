@@ -7,7 +7,10 @@
 // goes to that controller's conversation; speech goes back to that one controller and to no
 // other client, because a phone in another room should not start talking. What every client
 // does hear is `voice.state`, which names the controller the conversation belongs to, so the
-// desktop app can show what the phone is doing.
+// desktop app can show what the phone is doing. The words heard so far go to the speaking
+// controller alone (`voice.partial`), at most four times a second and only what changed; the
+// last names the chat message the utterance became, so its view can put the message where the
+// words were. The brain hears them as `voice.transcript` once a second while the user speaks.
 //
 // The wake word listens for several phrases at once, a keyword head each. It is heard on the
 // phone when the phone can run every head the node listens with: it says which heads it
@@ -25,7 +28,9 @@
 // loads behind the answer while the engine before it goes on working, and takes its place
 // once it is up; a new voice for the same engine needs no load at all. The speed replies are
 // read at is set there too, one for every engine: each line is made at the engine's own pace
-// and sped up or slowed down on its way out (`tempo.ts`), from the next line on.
+// and sped up or slowed down on its way out (`tempo.ts`), from the next line on; so is where
+// the online engines go first, the account's server or the user's own key, from the next
+// utterance or line on.
 //
 // A local speech or transcription engine is installed on this machine only when the user
 // asks (`voice.install`), after the app has shown its licences: until then its stage is
@@ -37,7 +42,7 @@
 // that fails to load in a turn makes its stage `unavailable`, and the next turn tries again.
 
 import { RpcError } from "@cophyla/protocol";
-import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, SpeechEngineInfo, SttEngineId, TtsEngineId, VoiceSettings, VoiceStageState, VoiceState, WakewordMode } from "@cophyla/protocol";
+import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, MessageId, ProviderKeys, SpeechEngineInfo, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings, VoiceStageState, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { Bus } from "../bus.ts";
 import type { Activity } from "../chat/activity.ts";
@@ -66,6 +71,11 @@ const MAX_CHUNK_BYTES = 64 * 1024;
 /** How long `voice.wakeword` waits on a wake stage still loading before it answers `node`. */
 export const WAKE_WAIT_MS = 10_000;
 
+/** The least time between two `voice.partial`s to a client; the latest words go at the end of it. */
+export const PARTIAL_MS = 250;
+/** The least time between two `voice.transcript`s to the brain. */
+export const TRANSCRIPT_MS = 1000;
+
 /** The codecs the node takes and sends, best first; told to every client in its `hello`. */
 export const AUDIO_CODECS: AudioCodec[] = ["opus", "pcm"];
 
@@ -82,7 +92,7 @@ export const VOICE_ENGINES: { id: string; stage: "stt" | "tts"; label: string; d
     id: "kokoro-online",
     stage: "tts",
     label: "Kokoro online",
-    detail: "The cheapest online voice, about $0.0006 a minute of speech: through your account's server, or your own DeepInfra key. Nothing runs on this computer.",
+    detail: "The cheapest online voice, about $0.0006 a minute of speech: through Cophyla cloud on a Pro plan, or your own DeepInfra key. Nothing runs on this computer.",
   },
   { id: "off", stage: "tts", label: "Off", detail: "Replies are shown, not spoken." },
   { id: "moonshine-tiny", stage: "stt", label: "Moonshine Tiny", detail: "English. The smallest and the quickest to start: half a second, and about 200 MB while you speak. On this computer: nothing you say leaves it." },
@@ -90,24 +100,30 @@ export const VOICE_ENGINES: { id: string; stage: "stt" | "tts"; label: string; d
   { id: "whisper-base", stage: "stt", label: "Whisper Base", detail: "99 languages: under a second to start, about 440 MB while you speak. On this computer: nothing you say leaves it." },
   { id: "nemotron", stage: "stt", label: "Nemotron", detail: "Words appear as you speak, in 40 languages. The largest: about 1.5 s to start and 880 MB while you speak. On this computer: nothing you say leaves it." },
   {
+    id: "gemini-live",
+    stage: "stt",
+    label: "Gemini Live",
+    detail: "Online: the words appear as you speak, up to 9½ minutes a message, about $0.009 a minute. Through Cophyla cloud on a Pro plan, or your own Gemini key. Nothing runs on this computer.",
+  },
+  {
     id: "gemini",
     stage: "stt",
     label: "Gemini Flash-Lite",
-    detail: "Online, about $0.0007 a minute: each utterance once you stop speaking, in about a second, through your account's server or your own Gemini key, as the assistant's model goes.",
+    detail: "Online and the cheapest, about $0.0007 a minute: each message once you stop speaking, in about a second, up to 9½ minutes. Through Cophyla cloud on a Pro plan, or your own Gemini key.",
   },
   { id: "off", stage: "stt", label: "Off", detail: "Nothing is transcribed, so the wake word and the talk key do nothing." },
 ];
 
 /** The engines the protocol once called `server`: the account's hosted transcription and voice, now routes like the model's. */
 export function sttAlias(id: SttEngineId): SttEngineId {
-  return id === "server" ? "gemini" : id;
+  return id === "server" ? "gemini-live" : id;
 }
 export function ttsAlias(id: TtsEngineId): TtsEngineId {
   return id === "server" ? "kokoro-online" : id;
 }
 
 /** An engine that goes over the network rather than running here. */
-const online = (id: string) => id === "gemini" || id === "kokoro-online";
+const online = (id: string): id is "gemini" | "gemini-live" | "kokoro-online" => id === "gemini" || id === "gemini-live" || id === "kokoro-online";
 
 /** How often an install's progress is told to the clients, at most. */
 const INSTALL_TELL_MS = 250;
@@ -139,14 +155,18 @@ export interface VoiceDeps {
   models: ModelResolver;
   sidecars: Sidecars;
   engines: EngineFactory;
-  /** The online engines, over `[providers] stt` and `tts`: taken when a stage is `gemini` or `kokoro-online`. */
-  hosted?: { stt: () => SttEngine; tts: () => TtsEngine };
+  /** The online engines, over `[providers] stt` and `tts`: taken when a stage is `gemini-live`, `gemini` or `kokoro-online`. */
+  hosted?: { stt: (engine: "gemini" | "gemini-live") => SttEngine; tts: () => TtsEngine };
   /** What the things a reply points at are called, when it is read out. */
   names?: SpeechNames;
   /** A stage came up or went down: the node's capabilities changed. */
   onStageChange?: () => void;
   /** The app's picks; config.toml alone when absent. */
   prefs?: VoicePrefsStore;
+  /** The vendors' keys as Settings shows them: their source and last four characters, never the keys. */
+  keys?: () => ProviderKeys;
+  /** `[providers] stt` and `tts` as config.toml lists them: where the online engines go first before the app says. */
+  routes?: { stt: string[]; tts: string[] };
   now?: () => number;
 }
 
@@ -345,19 +365,20 @@ export class Voice {
       return;
     }
     this.setStage("stt", { status: "loading", engine });
+    let next: SttEngine | undefined;
     try {
-      // The VAD is local either way: it closes the utterance the online recogniser then reads whole.
-      const vad = await this.deps.engines.vad(await this.dir(VAD_MODEL), config);
-      let next: SttEngine;
       if (online(engine)) {
         if (!this.deps.hosted) throw new Error("no online transcription on this node");
         this.deps.engines.unload?.("stt");
-        next = this.deps.hosted.stt();
+        next = this.deps.hosted.stt(engine);
       } else {
         const local = localSttEngine(engine);
         if (!local) throw new Error(`no transcription engine is called ${engine}`);
         next = await this.deps.engines.stt(await this.dir(STT_MODELS[local]), config, { check });
       }
+      // The VAD is local either way: it closes the utterance, and tells a live recogniser when
+      // there is speech to open for. One the wake word began lasts what the recogniser hears.
+      const vad = await this.deps.engines.vad(await this.dir(VAD_MODEL), config, next.maxSeconds !== undefined ? { maxSpeechMs: next.maxSeconds * 1000 } : {});
       if (!current()) {
         void Promise.resolve(next.close()).catch(() => {});
         return;
@@ -369,6 +390,7 @@ export class Voice {
       this.setStage("stt", { status: "ready", engine });
       this.log.info("voice stage ready", { stage: "stt", engine });
     } catch (e) {
+      if (next && next !== this.sttEngine) void Promise.resolve(next.close()).catch(() => {});
       if (!current()) return;
       const reason = e instanceof Error ? e.message : String(e);
       this.sttEngine = undefined;
@@ -506,6 +528,9 @@ export class Voice {
       stt: config.stt,
       sttSource: prefs.stt !== undefined ? "app" : "config",
       sttStage: stage(this.stages.stt),
+      sttRoute: prefs.sttRoute ?? (this.deps.routes?.stt[0] === "server" || !this.deps.routes ? "cloud" : "own"),
+      ttsRoute: prefs.ttsRoute ?? (this.deps.routes?.tts[0] === "server" || !this.deps.routes ? "cloud" : "own"),
+      ...(this.deps.keys ? { keys: this.deps.keys() } : {}),
       engines,
       ...(this.installing ? { installing: { engine: this.installing.engine, step: this.installing.step, progress: this.installing.progress } } : {}),
       ...(this.installError ? { installError: this.installError } : {}),
@@ -517,7 +542,7 @@ export class Voice {
    * back. A new engine loads behind the answer; a new voice for the one loaded, and a new
    * speed for any, is used from its next line.
    */
-  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null }): VoiceSettings {
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null; sttRoute?: VoiceRoute | null; ttsRoute?: VoiceRoute | null }): VoiceSettings {
     if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
     const before = this.effective();
     const prefs: VoicePrefs = { ...this.prefs() };
@@ -525,6 +550,11 @@ export class Voice {
     else if (patch.tts !== undefined) prefs.tts = patch.tts;
     if (patch.stt === null) delete prefs.stt;
     else if (patch.stt !== undefined) prefs.stt = patch.stt;
+    // The routes are read at each utterance and each line: nothing reloads for them.
+    if (patch.sttRoute === null) delete prefs.sttRoute;
+    else if (patch.sttRoute !== undefined) prefs.sttRoute = patch.sttRoute;
+    if (patch.ttsRoute === null) delete prefs.ttsRoute;
+    else if (patch.ttsRoute !== undefined) prefs.ttsRoute = patch.ttsRoute;
     // The engines' own pace is kept as none.
     if (patch.speed === null || patch.speed === 1) delete prefs.speed;
     else if (patch.speed !== undefined) prefs.speed = patch.speed;
@@ -538,7 +568,7 @@ export class Voice {
     }
     this.deps.prefs.write(prefs);
     const after = this.effective();
-    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt });
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt, sttRoute: prefs.sttRoute, ttsRoute: prefs.ttsRoute });
     if (this.config.enabled && !this.stopped) {
       if (after.stt !== before.stt) void this.loadStt();
       if (after.tts !== before.tts) void this.loadTts();
@@ -627,6 +657,8 @@ export class Voice {
     const existing = this.conversations.get(client.id);
     if (existing) return existing;
     if (this.stopped || !this.config.enabled) return undefined;
+    const words = new PartialFeed((params) => this.deps.clients.send(client.id, "voice.partial", { client: client.id, ...params }), () => this.now());
+    let toldBrain = 0;
     // The engines are looked up late, so a controller that streamed before a stage came up is heard once it does.
     const c = new Conversation({
       client: client.id,
@@ -640,14 +672,31 @@ export class Voice {
       log: this.log.child("conversation"),
       ...(this.deps.now ? { now: this.deps.now } : {}),
       on: {
-        state: (state, unheard) => {
-          this.deps.bus.emit("voice.state", { state, client: client.id, ...(unheard ? { unheard } : {}) });
+        state: (state, detail) => {
+          // A new utterance, or none: the words of the last one are no longer shown.
+          if (state === "listening" || state === "idle") words.reset();
+          this.deps.bus.emit("voice.state", {
+            state,
+            client: client.id,
+            ...(detail?.unheard ? { unheard: detail.unheard } : {}),
+            ...(detail?.limit !== undefined ? { limit: detail.limit } : {}),
+            ...(detail?.stopped ? { stopped: detail.stopped } : {}),
+          });
           this.holdSpeech();
         },
-        partial: (text) => this.deps.bus.emit("voice.transcript", { at: this.now(), text }),
-        final: (text) => {
+        partial: (text) => {
+          words.push(text);
+          const at = this.now();
+          if (c.current === "listening" && at - toldBrain >= TRANSCRIPT_MS) {
+            toldBrain = at;
+            this.deps.bus.emit("voice.transcript", { at, text });
+          }
+        },
+        final: (text, overtaken) => {
           this.active = client.id;
-          this.deps.chat.userMessage({ text, source: "voice", client: client.id });
+          const message = this.deps.chat.userMessage({ text, source: "voice", client: client.id });
+          // The words shown give way to the message; those of an utterance begun since stay.
+          if (!overtaken) words.done(message.id);
         },
         speaking: (active) => this.deps.activity.speaking(client, active),
         // Speech goes to the one controller whose utterance produced it.
@@ -895,6 +944,69 @@ export class Voice {
     if (this.active === clientId) this.active = undefined;
     this.holdSpeech();
     this.log.debug("voice conversation ended", { client: clientId });
+  }
+}
+
+/**
+ * The words of one client's utterance on their way to it: at most one `voice.partial` every
+ * `PARTIAL_MS`, the latest words at the end of the wait, and only what changed: `from` keeps
+ * that much of the text before, `text` is what follows. `done` sends what is waiting and then
+ * the message the words became.
+ */
+export class PartialFeed {
+  private send: (params: { text: string; from?: number; message?: MessageId }) => void;
+  private now: () => number;
+  /** What the client has, what it is to have next, and when it was last told. */
+  private sent = "";
+  private latest = "";
+  private at = -Infinity;
+  private timer?: ReturnType<typeof setTimeout>;
+
+  constructor(send: (params: { text: string; from?: number; message?: MessageId }) => void, now: () => number) {
+    this.send = send;
+    this.now = now;
+  }
+
+  push(text: string): void {
+    this.latest = text;
+    if (this.timer) return;
+    const wait = this.at + PARTIAL_MS - this.now();
+    if (wait <= 0) {
+      this.flush();
+      return;
+    }
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      this.flush();
+    }, wait);
+    this.timer.unref?.();
+  }
+
+  private flush(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    if (this.latest === this.sent) return;
+    let from = 0;
+    const max = Math.min(this.sent.length, this.latest.length);
+    while (from < max && this.sent.charCodeAt(from) === this.latest.charCodeAt(from)) from++;
+    this.send({ text: this.latest.slice(from), ...(this.sent ? { from } : {}) });
+    this.sent = this.latest;
+    this.at = this.now();
+  }
+
+  /** The utterance became `message`: the words waiting go, then the message's name. */
+  done(message: MessageId): void {
+    this.flush();
+    if (this.sent) this.send({ text: "", from: this.sent.length, message });
+    this.reset();
+  }
+
+  reset(): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = undefined;
+    this.sent = "";
+    this.latest = "";
+    this.at = -Infinity;
   }
 }
 
