@@ -380,8 +380,9 @@ became; the brain hears `voice.transcript` once a second while the user speaks. 
 `sherpa-onnx-node` (`voice/runtime.ts`): both load a native ONNX Runtime and the first one in
 wins, and sherpa ships the older. Each engine runs on two threads with spinning off, and on a
 hybrid CPU the threads are pinned to the performance cores. Audio arrives as base64 int16
-inside `voice.audio` and belongs to one controller at a time: speech goes back to that phone
-alone, while `voice.state` — which names the controller — reaches every client. An utterance
+inside `voice.audio` and belongs to one controller at a time, while `voice.state` — which names
+the controller — reaches every client; a reply is read out on one device at most, the one the
+speech rules below choose. An utterance
 the button held that comes to nothing wakes no one, and its `idle` says why (`unheard`): no
 frame came (`no-audio`, once it was held a second), only digital silence did (`silence`, what
 a microphone unplugged or muted sends), no speech was in it (`no-speech`), or the recogniser
@@ -406,6 +407,42 @@ hosted one needs nothing installed. The speed replies are read at is set there t
 made at the engine's pace and changed on its way out at the same pitch (`voice/tempo.ts`,
 Sonic's method: whole periods of the voice dropped, or repeated to slow it), since the
 engines' own speed settings fall short of the speed asked or garble the words.
+
+A conversation reads its lines one at a time, each a numbered reply with its own `end`: a line
+waits for the one before it, and for an utterance being heard or transcribed to end, a line
+that interrupts drops those waiting, and a new utterance drops them too
+(`voice/conversation.ts`). Where a reply is read out is decided on the primary before the brain
+writes it (`voice/delivery.ts`), by `[speech]` in config.toml, read at start, first match wins:
+
+```toml
+[[speech.rules]]
+reply = "answer"          # the reply to what you said or typed
+asked = "voice"           # voice | typed | any (the default)
+
+[[speech.rules]]
+reply = "result"          # what an agent or a wait you asked for brings back
+asked = "voice"
+watching = false          # only while its session is not in front of you
+used_within_min = 5       # only on a device used in the app in the last five minutes
+# speak_on = "asker"      # asker (the default) | recent | off, which ends the list
+```
+
+Those two are the built-in rules; listed ones replace them, `rules = []` reads nothing out, and
+a misspelt field stops the daemon at start. A rule whose device cannot be heard now (gone, no
+speaker, muted, short of full access) gives way to the next. A device is a machine's desktop
+app (`desktop@<node>`), a phone by its grant, or another connection alone (`voice/presence.ts`);
+each user message's is kept in the `voice.origins` kv namespace, which the brain cannot read and
+no backup carries, pruned after 30 days. The answer's verdict rides `user.message {speak}`; a
+listener the brain set for the message (`asked`) gets one per wake or notify fire on
+`listener.fired {speak}`; and `voice.speak {asked, fire}` goes to that device, checked again
+first, while one naming neither goes to the client that spoke last. Every request and signal of
+the user's kind counts as an action on its device (`USER_ACTIONS`), and `voice.presence` says
+a window's focus, visibility and speaker; a session is watched when a client with the user's
+attention shows its tab or terminal, or, on Windows, when its window is in front
+(`voice/foreground.ts`: user32 through bun:ffi, and each session's process chain up to the
+first ancestor that stands for many). `voice.next` tells the clients whether the next reply
+will be read out, and where; `voice.hush {on}` stops what plays and silences what is pending,
+and the same request's later results, until `off`.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
 them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input
