@@ -1,8 +1,8 @@
 // config.toml: node role, zone and scope, the api binding, the gate's policy, the sessions
 // module and tether, the brain, provider routing, the ACP adapters, the tool caps, the
-// editable layer's poll, the release feed, the controller listener, the voice stages, the
-// metrics sampler, the node link and the cloud account. Every field has a default, so an
-// empty file is a valid one.
+// editable layer's poll, the release feed, the controller listener, the voice stages, which
+// replies are read out and where (`[speech]`), the metrics sampler, the node link and the
+// cloud account. Every field has a default, so an empty file is a valid one.
 
 import { z } from "zod";
 import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass, SttEngineId, TtsEngineId } from "@cophyla/protocol";
@@ -360,6 +360,47 @@ export const VoiceConfig = z.object({
 });
 export type VoiceConfig = z.infer<typeof VoiceConfig>;
 
+/**
+ * One rule of when a reply is read out, and where. `reply` is what it is about: the `answer`
+ * to what the user said or typed (or a turn that resumes one), or a `result` a listener woke
+ * the brain with for the user's request. The rest narrow it: how the request was made
+ * (`asked`), whether the session the result is about is in front of the user (`watching`), and
+ * whether the device it would be read on was used in the app lately (`used_within_min`).
+ * `speak_on` is that device: the one the request came from, the one used last, or `off`, which
+ * reads nothing out and ends the list. Strict, so a misspelt field is refused, not ignored.
+ */
+export const SpeechRule = z
+  .object({
+    reply: z.enum(["answer", "result"]),
+    asked: z.enum(["voice", "typed", "any"]).default("any"),
+    watching: z.boolean().optional(),
+    used_within_min: z.number().positive().max(10080).optional(),
+    speak_on: z.enum(["asker", "recent", "off"]).default("asker"),
+  })
+  .strict();
+export type SpeechRule = z.infer<typeof SpeechRule>;
+
+/**
+ * What is read out when `[speech]` lists no rules: the answer to a spoken request, where it was
+ * asked; and a spoken request's result, where it was asked, when the user is not looking at the
+ * session it is about and used that device in the app in the last five minutes.
+ */
+export const BUILTIN_SPEECH_RULES: readonly SpeechRule[] = [
+  { reply: "answer", asked: "voice", speak_on: "asker" },
+  { reply: "result", asked: "voice", watching: false, used_within_min: 5, speak_on: "asker" },
+];
+
+/** The speech rules, first match wins; listed ones replace the built-in list, and none at all reads nothing out. */
+export const SpeechConfig = z
+  .object({
+    rules: z
+      .array(SpeechRule)
+      .max(32)
+      .default(() => BUILTIN_SPEECH_RULES.map((r) => ({ ...r }))),
+  })
+  .strict();
+export type SpeechConfig = z.infer<typeof SpeechConfig>;
+
 /** A model's prices in USD per million tokens. */
 export const PriceConfig = z.object({
   input: z.number().nonnegative(),
@@ -551,6 +592,7 @@ export const Config = z.object({
   update: UpdateConfig.prefault({}),
   controller: ControllerConfig.prefault({}),
   voice: VoiceConfig.prefault({}),
+  speech: SpeechConfig.prefault({}),
   metrics: MetricsConfig.prefault({}),
   nodes: NodesConfig.prefault({}),
   remote: RemoteConfig.prefault({}),
@@ -796,6 +838,28 @@ chatterbox_device = "auto"     # auto (CUDA, else Apple's GPU, else the CPU) | c
 cpu_affinity = "auto"          # auto pins to the performance cores on a hybrid CPU; or "0-15", or "off"
 # models_dir = "C:\\models\\voice"          # local model folders instead of the feed, for development
 thinking_timeout_ms = 60000
+
+# Speech: which replies are read out, and where. The first rule that matches and can be heard
+# decides; a rule can be heard when its device is connected, plays audio and has its speaker
+# on, and one that cannot gives way to the next. Rules listed here replace the built-in ones
+# below, and rules = [] reads nothing out. Only one device ever speaks a reply.
+#   reply            "answer": the reply to what you said or typed
+#                    "result": what an agent or a wait you asked for brings back later
+#   asked            "voice" | "typed" | "any" (the default): how you asked
+#   watching         false: only while that session's terminal is not in front of you
+#   used_within_min  only if that device was used in the app in the last N minutes
+#   speak_on         "asker" (the default): the device you asked on
+#                    "recent": the device you used last | "off": nothing, and the list ends
+[speech]
+# [[speech.rules]]
+# reply = "answer"
+# asked = "voice"
+#
+# [[speech.rules]]
+# reply = "result"
+# asked = "voice"
+# watching = false
+# used_within_min = 5
 
 # Metrics: CPU, memory and GPU per process, owned by session; per-minute rollups in the store.
 [metrics]

@@ -111,6 +111,30 @@ describe("config", () => {
     expect(() => parseConfig("[controller]\nport = 70000\n")).toThrow(/controller.port/);
   });
 
+  test("the speech rules: the built-in list by default, replaced whole by a listed one, none at all reads nothing out", () => {
+    expect(parseConfig("").speech.rules).toEqual([
+      { reply: "answer", asked: "voice", speak_on: "asker" },
+      { reply: "result", asked: "voice", watching: false, used_within_min: 5, speak_on: "asker" },
+    ]);
+    expect(parseConfig("[speech]\n").speech.rules).toEqual(parseConfig("").speech.rules);
+    // A listed rule takes the rest of its fields' defaults, and the built-ins are gone.
+    const listed = parseConfig('[[speech.rules]]\nreply = "result"\nspeak_on = "recent"\nused_within_min = 2.5\n\n[[speech.rules]]\nreply = "answer"\nasked = "typed"\nspeak_on = "off"\n');
+    expect(listed.speech.rules).toEqual([
+      { reply: "result", asked: "any", used_within_min: 2.5, speak_on: "recent" },
+      { reply: "answer", asked: "typed", speak_on: "off" },
+    ]);
+    expect(parseConfig("[speech]\nrules = []\n").speech.rules).toEqual([]);
+    expect(parseConfig('[speech]\nrules = [{ reply = "answer" }]\n').speech.rules).toEqual([{ reply: "answer", asked: "any", speak_on: "asker" }]);
+  });
+
+  test("a misspelt speech field is refused rather than ignored, and so is a value it cannot take", () => {
+    expect(() => parseConfig('[[speech.rules]]\nreply = "result"\nused_whithin_min = 5\n')).toThrow(/speech.rules.0/);
+    expect(() => parseConfig("[speech]\nrule = []\n")).toThrow(/speech/);
+    expect(() => parseConfig('[[speech.rules]]\nasked = "voice"\n')).toThrow(/speech.rules.0.reply/);
+    expect(() => parseConfig('[[speech.rules]]\nreply = "answer"\nspeak_on = "phone"\n')).toThrow(/speech.rules.0.speak_on/);
+    expect(() => parseConfig('[[speech.rules]]\nreply = "answer"\nused_within_min = 0\n')).toThrow(/speech.rules.0.used_within_min/);
+  });
+
   test("the CPU affinity is auto, off, or a list of cores", () => {
     for (const spec of ["auto", "off", "0-15", "0,1,2", "0-7,16,18-19"]) expect(parseConfig(`[voice]\ncpu_affinity = "${spec}"\n`).voice.cpu_affinity).toBe(spec);
     // Anything else is a typo, and a typo that silently pinned nothing would be a slow engine
