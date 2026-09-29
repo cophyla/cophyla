@@ -233,6 +233,19 @@ export const VoiceSettings = z.object({
 export type VoiceSettings = z.infer<typeof VoiceSettings>;
 
 /**
+ * Whether the next reply or result is to be read out, for the speaker button: `speak` when it
+ * is, on the client `target` (called `name`); `hushed` when the user silenced what was pending,
+ * which the button undoes.
+ */
+export const VoiceNext = z.object({
+  speak: z.boolean(),
+  hushed: z.boolean().optional(),
+  target: ClientId.optional(),
+  name: z.string().optional(),
+});
+export type VoiceNext = z.infer<typeof VoiceNext>;
+
+/**
  * An ICE candidate as a browser's `RTCIceCandidateInit` has it, between a phone and its node
  * for a data channel.
  */
@@ -523,6 +536,11 @@ export const clientRequests = {
   "voice.install": { params: z.object({ engine: z.string().min(1).max(64) }), result: VoiceSettings },
   /** A line spoken to this client in the voice set now, for trying one out; a sample line when no text is given. */
   "voice.preview": { params: z.object({ text: z.string().min(1).max(500).optional() }), result: Empty },
+  /**
+   * The speaker button. `on` stops what is being read out now and silences every reply and
+   * result that was to be, until the next request asks again; `off` reads them out again.
+   */
+  "voice.hush": { params: z.object({ on: z.boolean() }), result: VoiceNext },
   "view.list": { params: Empty, result: z.object({ views: z.array(ViewManifest) }) },
   "view.get": { params: z.object({ id: z.string() }), result: ViewContent },
   "view.setDefault": { params: z.object({ id: z.string() }), result: Empty },
@@ -785,6 +803,17 @@ export const clientSignals = {
       })
       .optional(),
   }),
+  /**
+   * Where the user is, for where replies are read out: whether this client's window is
+   * `visible` and `focused`, that the user just acted in it (`active`, at most every half
+   * minute), and whether its speaker is on (`speaker`, false while it is muted). Any subset.
+   */
+  "voice.presence": z.object({
+    visible: z.boolean().optional(),
+    focused: z.boolean().optional(),
+    active: z.boolean().optional(),
+    speaker: z.boolean().optional(),
+  }),
   /** Keys typed into a terminal this client opened with `input` or `drive`, as a terminal sends them. */
   "terminal.input": z.object({ terminal: z.string(), data: z.string().min(1).max(65536) }),
   /** The size a client driving a terminal now has. */
@@ -908,6 +937,8 @@ export const clientNotifications = {
     reply: z.number().int().nonnegative().optional(),
     end: z.literal(true).optional(),
   }),
+  /** Whether the next reply or result is to be read out, and where; whenever that changes. */
+  "voice.next": VoiceNext,
   /** A voice engine being bootstrapped on the node; `progress` is 0..1 within the step. */
   "voice.setup": z.object({
     stage: VoiceSetupStage,

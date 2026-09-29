@@ -247,6 +247,7 @@ export const requestFilters = {
   "voice.configure": { names: "global" },
   "voice.preview": { names: "global" },
   "voice.install": { names: "global" },
+  "voice.hush": { names: "global" },
   "view.list": { names: "open" },
   "view.get": { names: "open" },
   // The default view is the node's, for every client.
@@ -325,6 +326,7 @@ export const notificationFilters = {
   "voice.partial": "global",
   "voice.audio": "global",
   "voice.setup": "global",
+  "voice.next": "global",
   "view.content": "open",
   "view.changed": "open",
   "node.state": "global",

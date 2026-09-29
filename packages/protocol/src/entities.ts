@@ -437,6 +437,12 @@ export const ListenerSpec = z.object({
   until: z.union([TaskId, SessionId]).optional(),
   /** One line from the brain: why it listens, shown in the fire's seed and in the app's settings. */
   why: z.string().min(1).max(200),
+  /**
+   * The user's message this listener serves: the request whose result its fires bring back.
+   * Set by the brain, not the model; the node reads a fire's result out by how and where that
+   * message was asked (config.toml's `[speech]`).
+   */
+  asked: MessageId.optional(),
 });
 export type ListenerSpec = z.infer<typeof ListenerSpec>;
 

@@ -168,6 +168,10 @@ describe("targets", () => {
     expect(refuseRequest(a, "session.watch", { ids: [S1, S2] }, look)).toBeDefined();
     expect(refuseRequest(a, "view.stage", { id: "default" }, look)).toBeUndefined();
     expect(refuseRequest(FULL, "view.setDefault", { id: "default" }, look)).toBeUndefined();
+    // Silencing what is read out is the whole node's: a limited phone may not, and never hears whether anything will be.
+    expect(refuseRequest(a, "voice.hush", { on: true }, look)).toContain("not for limited");
+    expect(allowsNotification(a, "voice.next", { speak: true }, look)).toBe(false);
+    expect(allowsNotification(FULL, "voice.next", { speak: true }, look)).toBe(true);
   });
 
   test("a list comes back without what is out of reach; a row is sent only where it reaches", () => {

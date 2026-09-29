@@ -78,12 +78,18 @@ export const capabilityEvents = {
   "session.updated": event({ session: Session, event: SessionEvent.optional() }),
   "session.ask": event({ session: SessionId, ask: Ask }),
   "session.ended": event({ session: Session }),
+  /**
+   * `speak`: the node's word on whether the answer is read out, by config.toml's `[speech]`,
+   * decided before the brain writes it. Absent from an older node, when a spoken message's
+   * answer is read out and a typed one's is not.
+   */
   "user.message": event({
     text: z.string(),
     source: UserMessageSource,
     mode: z.literal("quick").optional(),
     message: MessageId.optional(),
     thread: ThreadId.optional(),
+    speak: z.boolean().optional(),
   }),
   "user.activity": event({ state: ActivityState, source: UserMessageSource }),
   "voice.transcript": event({ text: z.string() }),
@@ -105,9 +111,10 @@ export const capabilityEvents = {
   /**
    * A listener of the brain's heard what it listens for: the event that fired it (a capability
    * event's name and params, or `metric` with the node's reading) and the listener after the
-   * fire. `last`: this fire spent it and it is gone.
+   * fire. `last`: this fire spent it and it is gone. `speak`, on a wake or notify fire of a
+   * listener that serves a request (`asked`): whether the result is read out, by `[speech]`.
    */
-  "listener.fired": event({ listener: Listener, event: z.object({ name: z.string(), params: z.record(z.string(), z.unknown()) }), last: z.boolean() }),
+  "listener.fired": event({ listener: Listener, event: z.object({ name: z.string(), params: z.record(z.string(), z.unknown()) }), last: z.boolean(), speak: z.boolean().optional() }),
   /** A listener is gone: spent, its `until` settled or ended, or removed by the user or the brain. */
   "listener.removed": event({ id: ListenerId, why: z.enum(["spent", "until", "user", "brain"]) }),
 } as const;
@@ -376,7 +383,20 @@ export const capabilityRequests = {
     }),
     result: z.object({ hits: z.array(Hit) }),
   },
-  "voice.speak": { params: z.object({ blocks: z.array(OutBlock), interrupt: z.boolean() }), result: Empty },
+  /**
+   * `asked` is the user's message the words answer, and `fire` the listener's fire (its count
+   * after it) whose result they are: the node reads them out where that request's rule says,
+   * and not at all once the user hushed it. Without either, to the last controller that spoke.
+   */
+  "voice.speak": {
+    params: z.object({
+      blocks: z.array(OutBlock),
+      interrupt: z.boolean(),
+      asked: MessageId.optional(),
+      fire: z.object({ listener: ListenerId, n: z.number().int().positive() }).optional(),
+    }),
+    result: Empty,
+  },
   /** `steps`: what the turn did to get here, kept with the reply. */
   "ui.say": { params: z.object({ blocks: z.array(OutBlock), steps: z.array(TurnStep).max(64).optional() }), result: z.object({ message: MessageId }) },
   "ui.ask": {

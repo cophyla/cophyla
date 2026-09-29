@@ -189,6 +189,7 @@
       "results": [{ "enabled": true, "tts": "piper", "source": "app", "speed": 1, "stage": { "status": "uninstalled", "engine": "piper" }, "stt": "server", "sttSource": "app", "sttStage": { "status": "ready", "engine": "server" }, "engines": [], "installing": { "engine": "piper", "step": "runtime", "progress": 0 } }]
     },
     "voice.preview": { "params": [{}, { "text": "This is how I sound." }], "results": [{}] },
+    "voice.hush": { "params": [{ "on": true }, { "on": false }], "results": [{ "speak": false, "hushed": true }, { "speak": true, "target": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "desktop" }] },
     "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
     "view.get": { "params": [{ "id": "default" }], "results": [{ "id": "default", "version": "1", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }, { "path": "icon.png", "mime": "image/png", "base64": "iVBORw0KGgo=" }] }] },
     "view.setDefault": { "params": [{ "id": "board" }], "results": [{}] },
@@ -390,6 +391,7 @@
     "chat.typing": [{ "active": true }, { "active": false }],
     "voice.audio": [{ "chunk": "AAAA" }, { "chunk": "AwD4//8=", "codec": "opus", "seq": 17 }, { "chunk": "AAAA", "codec": "pcm", "seq": 0 }],
     "voice.played": [{ "reply": 3 }, { "reply": 4, "stats": { "underruns": 1, "maxLateMs": 120.5, "targetMs": 400, "frames": 31 } }],
+    "voice.presence": [{ "visible": true, "focused": true }, { "active": true }, { "speaker": false }, {}],
     "terminal.input": [{ "terminal": "5f2a9c01d4e7", "data": "y\r" }, { "terminal": "5f2a9c01d4e7", "data": "\u001b[Z" }],
     "terminal.resize": [{ "terminal": "5f2a9c01d4e7", "cols": 96, "rows": 28 }],
     "direct.candidate": [
@@ -502,6 +504,7 @@
       { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },
       { "chunk": "", "codec": "opus", "rate": 24000, "seq": 12, "reply": 3, "end": true }
     ],
+    "voice.next": [{ "speak": false }, { "speak": true, "target": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel" }, { "speak": false, "hushed": true }],
     "voice.setup": [
       { "stage": "tts", "engine": "chatterbox", "step": "deps", "progress": 0.4 },
       { "stage": "tts", "engine": "chatterbox", "step": "failed", "message": "uv pip install exited 1" },
