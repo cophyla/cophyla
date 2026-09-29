@@ -5,7 +5,9 @@
 //
 // Audio belongs to one controller at a time. A frame arrives as a `voice.audio` signal and
 // goes to that controller's conversation; speech goes back to that one controller and to no
-// other client, because a phone in another room should not start talking. What every client
+// other client, because a phone in another room should not start talking. A reply the brain
+// says is an answer or a result goes where `[speech]` chose (`delivery.ts`), to a client that
+// may not have spoken yet: its conversation begins with the speech. What every client
 // does hear is `voice.state`, which names the controller the conversation belongs to, so the
 // desktop app can show what the phone is doing. The words heard so far go to the speaking
 // controller alone (`voice.partial`), at most four times a second and only what changed; the
@@ -901,13 +903,15 @@ export class Voice {
   }
 
   /**
-   * `voice.speak` from the brain: the blocks composed for the ear and sent to the controller
-   * whose utterance started the turn. Resolves when the speech is queued, not when it is heard.
+   * `voice.speak` from the brain: the blocks composed for the ear and sent to `client`, or to
+   * the controller whose utterance started the turn. Resolves when the speech is queued, not
+   * when it is heard.
    */
   speak(blocks: ContentBlock[], opts: { interrupt?: boolean; client?: string } = {}): void {
     if (!this.config.enabled) return;
     const id = opts.client ?? this.active;
-    const conversation = id ? this.conversations.get(id) : undefined;
+    const named = opts.client !== undefined ? this.deps.clients.get(opts.client)?.client : undefined;
+    const conversation = named ? this.conversation(named) : id ? this.conversations.get(id) : undefined;
     if (!conversation) {
       this.log.debug("nothing to speak to: no controller is in a conversation");
       return;
@@ -920,6 +924,11 @@ export class Voice {
     const text = composeSpeech(blocks, this.deps.names ?? {});
     if (!text) return;
     void conversation.speak(text, { ...(opts.interrupt !== undefined ? { interrupt: opts.interrupt } : {}) });
+  }
+
+  /** Whether a client is in a conversation already: speech for its device goes to it first. */
+  conversing(client: string): boolean {
+    return this.conversations.has(client);
   }
 
   /**

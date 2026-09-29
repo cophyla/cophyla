@@ -335,6 +335,37 @@ describe("listeners", () => {
     expect(r.removed.map((x) => x.why)).toEqual(["user", "brain"]);
   });
 
+  test("a wake or notify fire carries the speech verdict, taken at the fire from the listener after it; a note carries none; every add, fire and removal is told", async () => {
+    const r = rig();
+    const asked: { id: string; fired: number; event: string }[] = [];
+    let changes = 0;
+    r.listeners.speech = {
+      fired: (l, event) => {
+        asked.push({ id: l.id, fired: l.fired, event: event.name });
+        return l.deliver === "wake";
+      },
+      changed: () => changes++,
+    };
+    const wake = r.add({ on: ["node.pressure"], deliver: "wake", asked: "msg_01ARZ3NDEKTSV4RRFFQ69G5FC0" });
+    const notify = r.add({ on: ["node.pressure"], deliver: "notify", times: 1 });
+    r.add({ on: ["node.pressure"], deliver: "note" });
+    expect(changes).toBe(3);
+    expect(wake.asked).toBe("msg_01ARZ3NDEKTSV4RRFFQ69G5FC0");
+    r.bus.emit("node.pressure", { at: T0, node: NODE, resource: "cpu", level: "warn" });
+    await flush();
+    expect(asked).toEqual([
+      { id: wake.id, fired: 1, event: "node.pressure" },
+      { id: notify.id, fired: 1, event: "node.pressure" },
+    ]);
+    expect(r.fired.map((f) => [f.listener.deliver, f.speak])).toEqual([
+      ["wake", true],
+      ["notify", false],
+      ["note", undefined],
+    ]);
+    // The wake and the note fired and stayed; the notify was spent and went.
+    expect(changes).toBe(3 + 3);
+  });
+
   test("the listeners and their counts are kept across a restart, and one spent before it is gone after it", async () => {
     const r = rig();
     const kept = r.add({ on: ["node.pressure"], times: 3, cooldownS: 5 });

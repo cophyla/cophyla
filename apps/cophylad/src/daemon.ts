@@ -119,7 +119,11 @@ import { BUILTIN_VIEWS_DIR, Views } from "./views/index.ts";
 import { resolveAffinity } from "./voice/affinity.ts";
 import type { SpeechNames } from "./voice/compose.ts";
 import type { EngineFactory } from "./voice/engines.ts";
+import { Delivery } from "./voice/delivery.ts";
+import { windowsForeground, WindowChains } from "./voice/foreground.ts";
+import type { Foreground } from "./voice/foreground.ts";
 import { AUDIO_CODECS, Voice } from "./voice/index.ts";
+import { Presence } from "./voice/presence.ts";
 import { localEngines } from "./voice/local.ts";
 import { modelResolver } from "./voice/models.ts";
 import { MAX_SECONDS as ONLINE_MAX_SECONDS, onlineLiveStt, onlineStt, onlineTts, routesFor } from "./voice/online.ts";
@@ -170,6 +174,8 @@ export interface DaemonOptions {
     liveConnect?: LiveConnect;
     /** Overrides `[voice] cpu_affinity`; `null` pins nothing. */
     affinity?: bigint | null;
+    /** What says which window is in front on this machine: the system's on Windows outside the tests; `null` asks nothing. */
+    foreground?: Foreground | null;
   };
   /** The metrics module's seams: a scripted engine, a clock and no timer, for tests; and the plan limits' fetch, which a test must give for them to be read. */
   metrics?: {
@@ -614,15 +620,19 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     },
     log: log.child("listeners"),
   });
+  /** Where replies are read out, decided on the primary; built once the terminals are. */
+  let delivery: Delivery | undefined;
   /** What runs on the primary alone beside the brain, started and stopped with the role. */
   const automation = {
     start: () => {
       scheduler.start();
       listeners.start();
+      delivery?.start();
     },
     stop: () => {
       scheduler.stop();
       listeners.stop();
+      delivery?.stop();
     },
   };
 
@@ -797,7 +807,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   // The nodes module: the role, the links, the mirrors. The brain is started and stopped
   // through it, since a promotion or a step-down moves the brain with the role.
-  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, metrics, remote, listeners, ...(limits ? { limits } : {}) };
+  const speech = { target: (p: Parameters<Delivery["target"]>[0]) => (delivery ? delivery.target(p) : ("legacy" as const)) };
+  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, ...(limits ? { limits } : {}) };
   // The link is built before anything can raise an event, so a hook's first emit or a
   // trigger missed while the daemon was down waits in its outbox for the handshake; the
   // brain itself is spawned once everything it can ask for is there.
@@ -1016,6 +1027,38 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The node's terminals as clients see them: a row each, and the screens a client opens.
   const terminalRows = tether ? new TerminalRows({ tether, bus, nodeId: identity.id, workspaces, env: scrub(env), sessionOf: (ref) => sessions.sessionOfTerminal(ref), agentsOf: (ref) => sessions.agentsOf(ref), onAgents: (fn) => sessions.onAgents(fn), cliOf: (ref) => sessions.cliOf(ref), owners, log: sessionsLog.child("terminals") }) : undefined;
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: clients, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
+
+  // Where the user is and where replies are read out. The window in front is the system's to
+  // say on Windows; a test says nothing of it unless it brings its own.
+  const foreground = opts.voice?.foreground !== undefined ? (opts.voice.foreground ?? undefined) : env["NODE_ENV"] === "test" ? undefined : windowsForeground(voiceLog);
+  const chains = foreground ? new WindowChains({ tree: raiser, selfPid: process.pid, log: voiceLog.child("front") }) : undefined;
+  const sessionAnywhere = (id: string) => sessions.get(id) ?? nodes?.forwardHost.mirrorSessions().find((s) => s.id === id);
+  const presence = new Presence({
+    clients,
+    nodeId: identity.id,
+    session: sessionAnywhere,
+    viewers: (ref) => terminalStreams?.clientsOf(ref) ?? [],
+    windowPids: (ref) => tether?.windows(ref).flatMap((c) => (c.pid !== undefined ? [c.pid] : [])) ?? [],
+    conversing: (id) => voice?.conversing(id) ?? false,
+    nodeName: (id) => (id === identity.id ? identity.name : nodes?.forwardHost.registryList().find((n) => n.id === id)?.name),
+    ...(foreground && chains ? { foreground, chains } : {}),
+  });
+  delivery = new Delivery({
+    rules: config.speech.rules,
+    store,
+    bus,
+    clients,
+    presence,
+    hushVoice: () => voice?.hush(),
+    listeners: () => listeners.list(),
+    session: sessionAnywhere,
+    task: (id) => tasks.get(id),
+    ...(chains ? { front: (ids: string[]) => chains.refresh(presence.roots(ids)) } : {}),
+    log: voiceLog.child("delivery"),
+  });
+  const deliver = delivery;
+  chat.speech = (message, input) => deliver.onUserMessage(message, input);
+  listeners.speech = { fired: (l, event) => deliver.onFire(l, event), changed: () => deliver.listenersChanged() };
   /** A phone's grant ended: its sockets close, the server forgets its relay peer (and a pending invite's), its push device goes. */
   const revokeController = (id: string): void => {
     const row = grants.revoke(id);
@@ -1055,7 +1098,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   });
   const methods = withForwarding({
     ...foundationMethods({ asks, node, promote: (id) => nodes!.promote(id), restart: (force, by) => restart.request({ force, by }) }),
-    ...attachMethods({ sessions, workspaces, profiles, clients, nodeId: identity.id, ...(limits ? { limits } : {}) }),
+    ...attachMethods({ sessions, workspaces, profiles, clients, nodeId: identity.id, onWatch: () => deliver.shown(), ...(limits ? { limits } : {}) }),
     ...fileMethods({ files }),
     ...viewMethods({ views }),
     ...viewStageMethods({ views, tickets }),
@@ -1076,7 +1119,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       },
       push: { register: (id, device) => push.register(id, device), unregister: (id) => push.unregister(id) },
     }),
-    ...voiceMethods({ voice }),
+    ...voiceMethods({ voice, speech: deliver }),
     ...metricsMethods({ metrics }),
     ...remoteMethods({ remote, pipes }),
     ...accountMethods({ cloud, keys }),
@@ -1096,7 +1139,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...directMethods({ direct, clients: directClients }),
     ...(terminalRows && terminalStreams ? terminalMethods({ rows: terminalRows, streams: terminalStreams, files }) : {}),
   }, forwardHost);
-  const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice }), ...(terminalStreams ? terminalSignals({ streams: terminalStreams }) : {}), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
+  const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...(terminalStreams ? terminalSignals({ streams: terminalStreams }) : {}), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;
   const initial = () => {
     const v = voice!.snapshot();
@@ -1107,7 +1150,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       workspaces: [...workspaces.list({ node: identity.id }), ...remote.workspaces],
       tasks: tasks.open(),
       updates: [...update.snapshot(), ...remote.updates],
-      voice: { states: v.states, setup: v.setup },
+      voice: { states: v.states, setup: v.setup, ...(deliver.running ? { next: deliver.current() } : {}) },
       asks: remote.asks,
       nodes: remote.nodes,
       remote: remoteModule.states(),
@@ -1118,6 +1161,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   };
   const onDisconnect = (client: Node extends never ? never : { id: string }) => {
     activity.forget(client.id);
+    deliver.disconnected(client.id);
     voice?.onDisconnect(client.id);
     tickets.forget(client.id);
     metrics.onDisconnect(client.id);
@@ -1147,6 +1191,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       hooks: { token: hookToken, onHook: (harness, event, meta) => sessions.onHook(harness, event, meta) },
       initial,
       onDisconnect,
+      onRequest: (client, method) => deliver.request(client, method),
       nodes: { relay: nodes.seams.relay },
       accountPairing,
       abandonPairing: (id) => {
@@ -1187,6 +1232,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           audio: { codecs: AUDIO_CODECS },
           initial,
           onDisconnect,
+          onRequest: (client, method) => deliver.request(client, method),
           nodes: nodes.seams,
           remote: remote.proxy,
           relayAccess,

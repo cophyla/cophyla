@@ -1,5 +1,6 @@
 // The chat stream: threads and their messages. A user message is stored and raised as
-// `user.message` for the brain; the brain's `ui.say` is stored through `say`; `thread.start`
+// `user.message` for the brain, with whether its answer is read out when a delivery decides
+// that (`speech`); the brain's `ui.say` is stored through `say`; `thread.start`
 // closes the current thread and opens the next. `chat.load` pages threads backwards, one at a
 // time, with all their messages. A `ui.ask` opens a choice Ask whose answer is the request's
 // result.
@@ -38,12 +39,17 @@ export interface AskOptions {
   onPending?: (ask: Ask) => void;
 }
 
+/** Decides, as a user message is stored, whether its answer is read out; undefined where nothing decides. */
+export type SpeechHook = (message: string, input: UserMessageInput) => boolean | undefined;
+
 /** How long a brain question stays open before it expires; 0 keeps it open. */
 export const BRAIN_ASK_TIMEOUT_MS = 0;
 
 export class Chat {
   private deps: ChatDeps;
   private currentId?: string;
+  /** Set once the delivery of speech is up. */
+  speech?: SpeechHook;
 
   constructor(deps: ChatDeps) {
     this.deps = deps;
@@ -175,6 +181,8 @@ export class Chat {
     this.deps.bus.emit("chat.message", m);
     const event: UserMessageEvent = { at: now, text: input.text, source: input.source, message: m.id, thread: thread.id };
     if (input.mode) event.mode = input.mode;
+    const speak = this.speech?.(m.id, input);
+    if (speak !== undefined) event.speak = speak;
     this.deps.bus.emit("user.message", event);
     return m;
   }

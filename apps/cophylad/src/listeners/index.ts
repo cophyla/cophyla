@@ -10,8 +10,11 @@
 // `times`, keeps `cooldownS` between fires, stamps `fired` and `lastFiredAt`, and is raised
 // as `listener.fired` on the bus a microtask later, so the brain has the event itself, and
 // its state from it, first; the fire that spends a listener says `last` and removes it. A
-// listener `until` a task goes when the task is done or cancelled, one `until` a session
-// when the session ends. Every removal, whatever its cause, is raised as `listener.removed`.
+// wake or notify fire of a listener that serves a request of the user's (`asked`) says whether
+// its result is read out (`speak`), as the delivery of speech decides at the fire; and every
+// listener added, fired or gone is told to it, for the speaker button. A listener `until` a
+// task goes when the task is done or cancelled, one `until` a session when the session ends.
+// Every removal, whatever its cause, is raised as `listener.removed`.
 //
 // A metric listener watches its node's samples (`metric.ts`): this node's through an
 // in-process watcher of the metrics module, which samples faster only while one exists,
@@ -36,6 +39,14 @@ export const MAX_LISTENERS = 50;
 export const CLIENT_PREFIX = "listener:";
 
 export type RemovedWhy = "spent" | "until" | "user" | "brain";
+
+/** The delivery of speech, as the listeners tell it of their fires and changes. */
+export interface ListenerSpeech {
+  /** A wake or notify fire, the listener as it is after it: whether its result is read out; undefined when that is not asked. */
+  fired(l: Listener, event: { name: string; params: Record<string, unknown> }): boolean | undefined;
+  /** A listener was added, fired or removed. */
+  changed(): void;
+}
 
 export interface ListenersDeps {
   store: Store;
@@ -72,6 +83,8 @@ export class Listeners {
   private started = false;
   /** Events for the bus, raised together one microtask after the event that caused them. */
   private queued: (() => void)[] = [];
+  /** Set once the delivery of speech is up. */
+  speech?: ListenerSpeech;
 
   constructor(deps: ListenersDeps) {
     this.deps = deps;
@@ -142,7 +155,8 @@ export class Listeners {
       this.listeners.set(l.id, l);
       this.arm(l);
     }
-    this.deps.log.info("listener added", { id: l.id, on: l.on, deliver: l.deliver, ...(l.times !== undefined ? { times: l.times } : {}), ...(l.until ? { until: l.until } : {}) });
+    this.deps.log.info("listener added", { id: l.id, on: l.on, deliver: l.deliver, ...(l.times !== undefined ? { times: l.times } : {}), ...(l.until ? { until: l.until } : {}), ...(l.asked ? { asked: l.asked } : {}) });
+    this.speech?.changed();
     return l;
   }
 
@@ -201,11 +215,13 @@ export class Listeners {
     if (l.cooldownS !== undefined && l.lastFiredAt !== undefined && at - l.lastFiredAt < l.cooldownS * 1000) return false;
     const next: Listener = { ...l, fired: l.fired + 1, lastFiredAt: at, ...(l.times !== undefined ? { times: Math.max(0, l.times - 1) } : {}) };
     const last = next.times === 0;
-    this.queued.push(() => this.deps.bus.emit("listener.fired", { at, listener: next, event, last }));
+    const speak = next.deliver === "note" ? undefined : this.speech?.fired(next, event);
+    this.queued.push(() => this.deps.bus.emit("listener.fired", { at, listener: next, event, last, ...(speak !== undefined ? { speak } : {}) }));
     if (last) this.drop(l.id, "spent");
     else {
       this.listeners.set(l.id, next);
       this.put(next);
+      this.speech?.changed();
     }
     return true;
   }
@@ -223,6 +239,7 @@ export class Listeners {
     const at = this.now();
     this.queued.push(() => this.deps.bus.emit("listener.removed", { at, id, why }));
     this.deps.log.info("listener removed", { id, why });
+    this.speech?.changed();
   }
 
   private put(l: Listener): void {

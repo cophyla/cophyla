@@ -4,7 +4,8 @@
 // milestone 7 `event.list`; milestone 8 pairing, `view.stage` and the voice methods;
 // milestone 9 the metrics methods; milestone 10 the remote desktop methods; milestone 11
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
-// `session.files` and `session.git`; the brain's listeners as the settings show them.
+// `session.files` and `session.git`; the brain's listeners as the settings show them; the
+// speaker button's `voice.hush` and the `voice.presence` a client says where the user is with.
 
 import { RpcError } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
@@ -33,6 +34,7 @@ import type { PipeHub } from "../remote/pipes.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { Update } from "../update/index.ts";
 import type { Views } from "../views/index.ts";
+import type { Delivery } from "../voice/delivery.ts";
 import type { Voice } from "../voice/index.ts";
 import type { Workspaces } from "../workspaces/index.ts";
 import type { ClientRegistry, ListenerKind } from "./clients.ts";
@@ -119,6 +121,8 @@ export interface AttachDeps {
   nodeId: string;
   /** Who hears which session's events: `session.watch` sets a client's sessions there. */
   clients: Pick<ClientRegistry, "watch">;
+  /** A client's tabs changed: what is in front of the user may have. */
+  onWatch?: (client: string) => void;
 }
 
 /** `profile.update`'s patch as the profiles take it: only what was sent. */
@@ -158,6 +162,7 @@ export function attachMethods(deps: AttachDeps): MethodTable {
     "session.watch": {
       handler: (p, ctx) => {
         deps.clients.watch(ctx.client.id, p.ids);
+        deps.onWatch?.(ctx.client.id);
         return {};
       },
     },
@@ -431,6 +436,8 @@ export function viewStageMethods(deps: ViewStageDeps): MethodTable {
 
 export interface VoiceDeps {
   voice: Voice;
+  /** Where replies are read out; absent, or stopped off the primary, the button has nothing to hush. */
+  speech?: Pick<Delivery, "hush" | "presence">;
 }
 
 /** Push-to-talk: the button on the controller, held and released, or let go taking back what was said; and the wake word, when the phone hears it itself. */
@@ -469,6 +476,12 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
       handler: (p, ctx) => {
         deps.voice.preview(ctx.client, p.text);
         return {};
+      },
+    },
+    "voice.hush": {
+      handler: (p) => {
+        if (!deps.speech) throw new RpcError("unavailable", "this node reads nothing out");
+        return deps.speech.hush(p.on);
       },
     },
   };
@@ -698,10 +711,11 @@ export function pipeSignals(deps: { pipes: PipeHub }): SignalTable {
   };
 }
 
-/** Microphone audio from a controller: a stream, so no response and no audit row per frame. */
+/** Microphone audio from a controller, and where the user is: streams, so no response and no audit row per frame. */
 export function voiceSignals(deps: VoiceDeps): SignalTable {
   return {
     "voice.audio": (client, p) => deps.voice.onAudio(client, p),
     "voice.played": (client, p) => deps.voice.onPlayed(client, p),
+    "voice.presence": (client, p) => deps.speech?.presence(client, p),
   };
 }

@@ -94,7 +94,7 @@ export class EventStream {
       bus.on("task.ready", (e) => this.emit({ name: "task.ready", params: { at: e.at, id: e.id, cause: e.cause, ...(e.event ? { event: e.event } : {}) } })),
       bus.on("thread.state", (thread) => this.emit({ name: "thread.updated", params: { at: thread.endedAt ?? this.now(), id: thread.id } })),
       bus.on("workspace.state", (w) => this.emit({ name: "workspace.updated", params: { at: w.lastActivity, id: w.id } })),
-      bus.on("user.message", (m) => this.emit({ name: "user.message", params: { at: m.at, text: m.text, source: m.source, ...(m.mode ? { mode: m.mode } : {}), message: m.message, thread: m.thread } })),
+      bus.on("user.message", (m) => this.emit({ name: "user.message", params: { at: m.at, text: m.text, source: m.source, ...(m.mode ? { mode: m.mode } : {}), message: m.message, thread: m.thread, ...(m.speak !== undefined ? { speak: m.speak } : {}) } })),
       bus.on("user.activity", (a) => this.emit({ name: "user.activity", params: { at: a.at, state: a.state, source: a.source } })),
       bus.on("voice.transcript", (t) => this.emit({ name: "voice.transcript", params: { at: t.at, text: t.text } })),
       bus.on("tools.changed", (c) => this.emit({ name: "tools.changed", params: { at: c.at, ...(c.problems ? { problems: c.problems } : {}) } })),

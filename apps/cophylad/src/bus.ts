@@ -6,7 +6,7 @@
 // raises `task.state` and `task.ready`; `update` raises `update.state`; `editable` raises
 // `tools.changed`, `prompts.changed`, `memory.changed`, `events.changed` and
 // `view.changed`; `voice` raises `voice.state`, `voice.transcript` and
-// `voice.setup`, and a stage of it coming up raises `node.state`; `metrics` raises
+// `voice.setup`, and a stage of it coming up raises `node.state`; its delivery `voice.next`; `metrics` raises
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
 // raise `terminal.state`; `listeners` raises `listener.fired` and `listener.removed`. The
@@ -24,6 +24,8 @@ export interface UserMessageEvent {
   mode?: "quick";
   message: string;
   thread: string;
+  /** Whether the answer is read out, by `[speech]`; absent where no delivery decides. */
+  speak?: boolean;
 }
 
 export interface UserActivityEvent {
@@ -87,6 +89,8 @@ export interface BusEvents {
   "voice.state": ClientNotificationParams<"voice.state">;
   "voice.setup": ClientNotificationParams<"voice.setup">;
   "voice.transcript": VoiceTranscriptEvent;
+  /** Whether the next reply or result is read out, and where: the speaker button's state. */
+  "voice.next": ClientNotificationParams<"voice.next">;
   /** A node's desktop host, viewers or stream changed: this node's own, or a secondary's carried up. */
   "remote.state": ClientNotificationParams<"remote.state">;
   /** A node's direct connections changed: this node's own, or a secondary's carried up. */

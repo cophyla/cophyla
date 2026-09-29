@@ -68,6 +68,10 @@ interface StartOptions {
   wait?: boolean;
   /** A home a daemon already ran on, for a restart: its store is kept. */
   home?: string;
+  /** More `[gate.rules]` lines for the brain. */
+  gateRules?: string;
+  /** A `[speech]` section, or rules, appended to the file. */
+  speech?: string;
 }
 
 /** A daemon with voice on fake engines, a desktop client and a controller client. */
@@ -76,9 +80,9 @@ async function start(opts: StartOptions = {}): Promise<Started> {
   const log = join(scratch, "brain.log");
   const engines = opts.engines ?? new FakeEngines({ transcript: TRANSCRIPT });
   const brain = opts.script
-    ? `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n\n[gate.rules]\n"brain:voice.speak" = "allow"\n"brain:ui.say" = "allow"\n"brain:memory.read" = "allow"\n\n`
+    ? `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n\n[gate.rules]\n"brain:voice.speak" = "allow"\n"brain:ui.say" = "allow"\n"brain:memory.read" = "allow"\n${opts.gateRules ?? ""}\n`
     : "";
-  const toml = `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\n\n[update]\nenabled = false\n\n${brain}[voice]\nenabled = true\n${opts.voice ?? ""}`;
+  const toml = `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\n\n[update]\nenabled = false\n\n${brain}[voice]\nenabled = true\n${opts.voice ?? ""}\n${opts.speech ?? ""}`;
   writeFileSync(join(scratch, "config.toml"), toml);
   if (opts.script) writeFileSync(join(scratch, "brain-script.json"), JSON.stringify(opts.script));
   if (opts.memory !== undefined) {
@@ -1457,4 +1461,191 @@ describe("an utterance's limit, and a recogniser that stops hearing", () => {
     expect(voiceStates.find((v) => v.state === "transcribing")).toMatchObject({ stopped: "limit" });
     await phone.request("voice.ptt", { active: false });
   }, 20_000);
+});
+
+// --- where answers and results are read out ------------------------------------------------------
+
+const S_AGENT = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC9";
+
+/**
+ * A brain that answers every message aloud and leaves a listener serving it, on node pressure,
+ * `until` the agent's session; and reads out each fire's result, naming the request and the
+ * fire, whatever the node told it: the node decides, and drops what it said not to speak.
+ */
+const RESULT_BRAIN = {
+  on: [
+    {
+      event: "user.message",
+      requests: [
+        { method: "listener.add", params: { on: ["node.pressure"], until: S_AGENT, deliver: "wake", why: "the tests the user asked for", asked: "$event.message" } },
+        { method: "ui.say", params: { blocks: [{ type: "text", text: "Started." }] } },
+        { method: "voice.speak", params: { blocks: [{ type: "text", text: "Started." }], interrupt: true, asked: "$event.message" } },
+      ],
+    },
+    {
+      event: "listener.fired",
+      requests: [
+        { method: "ui.say", params: { blocks: [{ type: "text", text: "The tests pass." }] } },
+        { method: "voice.speak", params: { blocks: [{ type: "text", text: "The tests pass." }], interrupt: false, asked: "$event.listener.asked", fire: { listener: "$event.listener.id", n: "$event.listener.fired" } } },
+      ],
+    },
+  ],
+};
+const RESULT_RULES = `"brain:listener.add" = "allow"\n`;
+
+const nexts = (c: TestClient) => c.notifications.filter(isMethod("voice.next")).map((n) => n.params as { speak: boolean; hushed?: boolean; target?: string; name?: string });
+const fires = () => brainFrames(current!.log).filter((f) => f.dir === "in" && f.frame["method"] === "listener.fired").map((f) => f.frame["params"] as { speak?: boolean; listener: { fired: number } });
+/** Node pressure, which the listener serves the request on. */
+const pressure = (d: Daemon) => d.bus.emit("node.pressure", { at: Date.now(), node: d.node().id, resource: "cpu", level: "warn" });
+
+/** A spoken request answered aloud, with its listener in place: the result is pending. */
+async function asked(opts: { speech?: string; engines?: FakeEngines } = {}) {
+  const started = await start({ script: RESULT_BRAIN, gateRules: RESULT_RULES, ...(opts.speech !== undefined ? { speech: opts.speech } : {}), ...(opts.engines ? { engines: opts.engines } : {}) });
+  const { d, phone, engines } = started;
+  await waitFor(() => d.brain?.state === "up");
+  await utterance(phone);
+  await waitFor(() => engines.spoken.includes("Started."), 10_000);
+  await waitFor(() => d.listeners.list().length === 1, 5000);
+  await waitFor(() => states(phone).at(-1) === "idle", 10_000);
+  return started;
+}
+
+describe("answers and results read out where the rules say", () => {
+  test("a spoken request's answer is read on the phone that asked, and its result is too, told to the brain before it writes", async () => {
+    const { d, ui, phone, engines } = await asked();
+    const phoneId = idByName(d, "Pixel");
+    // The answer lit the button on the phone while the brain thought, and the result keeps it lit.
+    await waitFor(() => nexts(ui).some((n) => n.speak && n.target === phoneId));
+    expect(d.listeners.list()[0]!.asked).toMatch(/^msg_/);
+    const before = audioFrames(phone).length;
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("The tests pass."), 10_000);
+    expect(fires().map((f) => f.speak)).toEqual([true]);
+    await waitFor(() => audioFrames(phone).length > before, 10_000);
+    expect(audioFrames(ui)).toEqual([]);
+    // The user message told the brain the answer was to be read out.
+    const message = brainFrames(current!.log).find((f) => f.dir === "in" && f.frame["method"] === "user.message");
+    expect((message?.frame["params"] as { speak?: boolean }).speak).toBe(true);
+  }, 30_000);
+
+  test("nothing is read out while the session is in front of the user", async () => {
+    const { d, phone, engines } = await asked();
+    await phone.request("session.watch", { ids: [S_AGENT] });
+    pressure(d);
+    await waitFor(() => fires().length === 1, 10_000);
+    expect(fires()[0]!.speak).toBe(false);
+    await sleep(300);
+    expect(engines.spoken).toEqual(["Started."]);
+    // Out of sight again, the next result is read out.
+    await phone.request("session.watch", { ids: [] });
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("The tests pass."), 10_000);
+    expect(fires().map((f) => f.speak)).toEqual([false, true]);
+  }, 30_000);
+
+  test("nothing is read out once the device was not used within the rule's minutes", async () => {
+    const speech = `[[speech.rules]]\nreply = "answer"\nasked = "voice"\n\n[[speech.rules]]\nreply = "result"\nasked = "voice"\nused_within_min = 0.005\n`;
+    const { d, engines } = await asked({ speech });
+    await sleep(400);
+    pressure(d);
+    await waitFor(() => fires().length === 1, 10_000);
+    expect(fires()[0]!.speak).toBe(false);
+    await sleep(300);
+    expect(engines.spoken).toEqual(["Started."]);
+  }, 30_000);
+
+  test("nothing is read out to a phone that muted its speaker or went away", async () => {
+    const { d, phone, engines } = await asked();
+    phone.signal("voice.presence", { speaker: false });
+    await sleep(100);
+    pressure(d);
+    await waitFor(() => fires().length === 1, 10_000);
+    expect(fires()[0]!.speak).toBe(false);
+    phone.signal("voice.presence", { speaker: true });
+    await sleep(100);
+    phone.close();
+    await waitFor(() => !d.clients.list().some((c) => c.name === "Pixel"));
+    pressure(d);
+    await waitFor(() => fires().length === 2, 10_000);
+    expect(fires()[1]!.speak).toBe(false);
+    expect(engines.spoken).toEqual(["Started."]);
+  }, 30_000);
+
+  /** A request typed on a desktop app that plays audio and never spoke. */
+  async function typed(speech?: string) {
+    const started = await start({ script: RESULT_BRAIN, gateRules: RESULT_RULES, ...(speech !== undefined ? { speech } : {}) });
+    const { d } = started;
+    await waitFor(() => d.brain?.state === "up");
+    const desk = await TestClient.connect(d.api.url);
+    extra.push(desk);
+    await desk.hello(d.token, { name: "desktop", audio: { in: false, out: true } });
+    await desk.request("chat.send", { text: "run the tests and tell me" });
+    await waitFor(() => d.listeners.list().length === 1, 10_000);
+    return { ...started, desk };
+  }
+
+  test("a typed request's answer and result are not read out by the built-in rules", async () => {
+    const { d, engines } = await typed();
+    pressure(d);
+    await waitFor(() => fires().length === 1, 10_000);
+    expect(fires()[0]!.speak).toBe(false);
+    await sleep(300);
+    expect(engines.spoken).toEqual([]);
+  }, 30_000);
+
+  test("a rule for typed requests reads the result on the machine it was typed on, which never spoke", async () => {
+    const { d, engines, desk } = await typed(`[[speech.rules]]\nreply = "result"\n`);
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("The tests pass."), 10_000);
+    await waitFor(() => audioFrames(desk).length > 0, 10_000);
+    expect(fires()[0]!.speak).toBe(true);
+  }, 30_000);
+
+  test("a hush stops the speech now, silences the pending result until it is undone, and the button says so", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT, msPerSentence: 400, synthDelayMs: 120 });
+    const { d, ui, phone } = await asked({ engines });
+    await waitFor(() => nexts(ui).at(-1)?.speak === true);
+    // Hushed before the fire: the brain is told not to speak, and nothing is.
+    expect(await ui.request<{ speak: boolean; hushed?: boolean }>("voice.hush", { on: true })).toEqual({ speak: false, hushed: true });
+    await waitFor(() => nexts(ui).at(-1)?.hushed === true);
+    pressure(d);
+    await waitFor(() => fires().length === 1, 10_000);
+    expect(fires()[0]!.speak).toBe(false);
+    await sleep(300);
+    expect(engines.spoken).toEqual(["Started."]);
+    // Undone: the next fire is read out, and a hush while it plays stops it where it is.
+    expect(await ui.request<{ speak: boolean }>("voice.hush", { on: false })).toMatchObject({ speak: true });
+    await waitFor(() => nexts(ui).at(-1)?.speak === true);
+    pressure(d);
+    await waitFor(() => states(phone).at(-1) === "speaking", 10_000);
+    await ui.request("voice.hush", { on: true });
+    await waitFor(() => states(phone).at(-1) === "idle", 5000);
+    await waitFor(() => engines.aborted >= 1, 5000);
+  }, 30_000);
+
+  test("the button's state reaches every client with voice as it changes, and a client that says hello hears it", async () => {
+    const { d, ui } = await asked();
+    const phoneId = idByName(d, "Pixel");
+    await waitFor(() => nexts(ui).at(-1)?.speak === true);
+    expect(nexts(ui).at(-1)).toMatchObject({ speak: true, target: phoneId, name: "Pixel" });
+    const late = await TestClient.connect(d.api.url);
+    extra.push(late);
+    await late.hello(d.token, { name: "late" });
+    const told = await late.next(isMethod("voice.next"));
+    expect(told.params).toMatchObject({ speak: true, target: phoneId });
+    // The listener gone, nothing is pending: the button dims.
+    d.listeners.remove(d.listeners.list()[0]!.id, "user");
+    await waitFor(() => nexts(ui).at(-1)?.speak === false);
+  }, 30_000);
+
+  test("a voice.speak that names neither the request nor the fire is spoken where the last utterance came from", async () => {
+    const { d, phone, engines } = await start({ script: { on: [{ event: "listener.fired", requests: [{ method: "voice.speak", params: { blocks: [{ type: "text", text: "Old brain." }], interrupt: false } }] }] }, gateRules: RESULT_RULES });
+    await waitFor(() => d.brain?.state === "up");
+    await utterance(phone);
+    await waitFor(() => states(phone).at(-1) === "thinking", 10_000);
+    d.listeners.add({ on: ["node.pressure"], deliver: "wake", why: "an older brain's" });
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("Old brain."), 10_000);
+    await waitFor(() => audioFrames(phone).length > 0, 10_000);
+  }, 30_000);
 });

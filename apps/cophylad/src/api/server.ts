@@ -87,6 +87,7 @@ import { lanAddress } from "./tls.ts";
 type UpdateState = ClientNotificationParams<"update.state">;
 type VoiceStateParams = ClientNotificationParams<"voice.state">;
 type VoiceSetupParams = ClientNotificationParams<"voice.setup">;
+type VoiceNextParams = ClientNotificationParams<"voice.next">;
 type HelloResult = ClientResult<"hello">;
 type RemoteStateParams = ClientNotificationParams<"remote.state">;
 type DirectStateParams = ClientNotificationParams<"direct.state">;
@@ -101,8 +102,8 @@ export interface InitialState {
   terminals?: Terminal[];
   tasks?: Task[];
   updates?: UpdateState[];
-  /** The voice conversations in flight and the engine bootstrap, if one is running. */
-  voice?: { states?: VoiceStateParams[]; setup?: VoiceSetupParams[] };
+  /** The voice conversations in flight, the engine bootstrap if one is running, and whether the next reply is read out. */
+  voice?: { states?: VoiceStateParams[]; setup?: VoiceSetupParams[]; next?: VoiceNextParams };
   /** The brain's turn in progress, if one is running: a client that connects mid-turn sees what it is doing. */
   progress?: TurnProgress;
   /** Open asks held on other nodes, sent after this node's own. */
@@ -193,6 +194,8 @@ export interface ApiDeps {
   initial?: () => InitialState;
   /** A client went away. */
   onDisconnect?: (client: Client) => void;
+  /** Every request and signal a client sends, by name, once its params parse: where the user acted. */
+  onRequest?: (client: Client, method: string) => void;
   nodes?: NodesSeams;
   /** The remote-desktop proxy under `/remote`, on the controller listener: the phone's stream page and its socket. */
   remote?: RemoteProxy;
@@ -354,6 +357,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("view.changed", (changed) => broadcast("view.changed", changed)),
           deps.bus.on("voice.state", (state) => broadcast("voice.state", state)),
           deps.bus.on("voice.setup", (setup) => broadcast("voice.setup", setup)),
+          deps.bus.on("voice.next", (next) => broadcast("voice.next", next)),
           deps.bus.on("node.state", (node) => broadcast("node.state", node)),
           deps.bus.on("remote.state", (state) => broadcast("remote.state", state)),
           deps.bus.on("account.state", (state) => broadcast("account.state", state)),
@@ -398,6 +402,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     if (client.scopes.includes("voice")) {
       for (const state of initial.voice?.states ?? []) tell("voice.state", state);
       for (const setup of initial.voice?.setup ?? []) tell("voice.setup", setup);
+      if (initial.voice?.next) tell("voice.next", initial.voice.next);
     }
     if (client.scopes.includes("account") && initial.account) tell("account.state", initial.account);
     if (client.scopes.includes("account")) for (const state of initial.direct ?? []) tell("direct.state", state);
@@ -678,6 +683,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       return;
     }
     const params = parsed.data;
+    deps.onRequest?.(client, name);
     const principal = { kind: "user", client: client.id } as const;
     const target = (method as { target?: (p: unknown) => string | undefined }).target?.(params);
     const ask = (method as { ask?: (p: unknown) => { title: string; detail?: string } }).ask?.(params);
@@ -728,6 +734,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       log.debug("bad signal ignored", { method: msg.method });
       return;
     }
+    deps.onRequest?.(client, name);
     try {
       (handler as (c: Client, p: unknown) => void)(client, parsed.data);
     } catch (e) {

@@ -24,6 +24,7 @@ import type { Profiles } from "../sessions/profiles.ts";
 import type { Store } from "../store/index.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { Tools } from "../tools/index.ts";
+import type { Delivery } from "../voice/delivery.ts";
 import type { Voice } from "../voice/index.ts";
 import type { Workspaces } from "../workspaces/index.ts";
 import { expandBlocks } from "./quotes.ts";
@@ -72,6 +73,8 @@ export interface BrainMethodDeps {
   stream: ReplyStream;
   /** Absent on a node with no voice module: `voice.speak` is then `unsupported`. */
   voice?: Voice;
+  /** Where a `voice.speak` that names its message or fire is read out; absent, every one goes where the last utterance came from. */
+  speech?: Pick<Delivery, "target">;
   /** Absent on a node with no metrics module: `metrics.query` is then `unsupported`. */
   metrics?: Metrics;
   /** Absent on a node with no remote module: `remote.pair` and `remote.screenshot` are then `unsupported`. */
@@ -236,11 +239,14 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     // A read: allowed by the brain's class default. The whole result is audited under the cap, so its hits can be cited.
     recall: { handler: (p) => deps.store.index.recall(p).then((hits) => ({ hits })) },
-    // Queued, not awaited: the reply is out as soon as the speech is on its way.
+    // Queued, not awaited: the reply is out as soon as the speech is on its way. One that names
+    // the message it answers or the fire it reports goes where `[speech]` chose, or nowhere.
     "voice.speak": {
       handler: (p) => {
         if (!deps.voice) throw new RpcError("unsupported", "this node has no voice");
-        deps.voice.speak(expandBlocks(p.blocks, deps.quotes, nodeId()), { interrupt: p.interrupt });
+        const to = deps.speech ? deps.speech.target({ ...(p.asked !== undefined ? { asked: p.asked } : {}), ...(p.fire ? { fire: p.fire } : {}) }) : "legacy";
+        if (to === undefined) return {};
+        deps.voice.speak(expandBlocks(p.blocks, deps.quotes, nodeId()), { interrupt: p.interrupt, ...(to !== "legacy" ? { client: to.client } : {}) });
         return {};
       },
     },
