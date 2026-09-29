@@ -18,7 +18,8 @@
 // listener added, fired or gone, a message or its reply, a hush; at the moment a device's last
 // action falls out of a rule's window; and, while a result could be read out, every two seconds,
 // for the window in front, which nothing announces. An answer is pending from its message until
-// its speech or a moment after the reply, so the button is lit while the brain thinks.
+// its speech, or a moment after the reply or the end of the brain's turn with none, so the
+// button is lit while the brain thinks.
 //
 // `hush` stops what is being read out and marks every pending candidate's origin hushed: kept in
 // the store, it silences that request's later results too, until `hush` off clears it. A
@@ -94,11 +95,12 @@ interface Fired {
   at: number;
 }
 
-/** An answer being thought about, to be read on `device`. */
+/** An answer being thought about, to be read on `device`: dropped at `ANSWER_MAX_MS` whatever happens, or a moment after the turn ends (`closing`). */
 interface Answer {
   device: string;
   opened: number;
   timer?: ReturnType<typeof setTimeout>;
+  closing?: ReturnType<typeof setTimeout>;
 }
 
 export interface DeliveryDeps {
@@ -166,6 +168,11 @@ export class Delivery {
       this.deps.bus.on("chat.message", (m) => {
         if (m.role === "orchestrator") this.replied();
       }),
+      // A turn that ended with no reply leaves nothing to read; one that runs is still thinking.
+      this.deps.bus.on("chat.progress", (p) => {
+        if (p.turn === undefined) this.replied();
+        else this.thinking();
+      }),
     );
     this.recompute();
   }
@@ -175,7 +182,7 @@ export class Delivery {
     this.started = false;
     for (const off of this.unsubscribe) off();
     this.unsubscribe = [];
-    for (const a of this.answers.values()) if (a.timer) clearTimeout(a.timer);
+    for (const a of this.answers.values()) for (const t of [a.timer, a.closing]) if (t) clearTimeout(t);
     this.answers.clear();
     this.fires.clear();
     for (const t of [this.settle, this.expiry]) if (t) clearTimeout(t);
@@ -277,17 +284,25 @@ export class Delivery {
   private closeAnswer(message: string): void {
     const a = this.answers.get(message);
     if (!a) return;
-    if (a.timer) clearTimeout(a.timer);
+    for (const t of [a.timer, a.closing]) if (t) clearTimeout(t);
     this.answers.delete(message);
     this.changed();
   }
 
-  /** A reply reached the chat: an answer still pending gives way a moment later unless its speech comes first. */
+  /** A reply reached the chat, or the turn ended: an answer still pending gives way a moment later unless its speech comes first. */
   private replied(): void {
     for (const [message, a] of this.answers) {
-      if (a.timer) clearTimeout(a.timer);
-      a.timer = setTimeout(() => this.closeAnswer(message), this.deps.replyGraceMs ?? REPLY_GRACE_MS);
-      a.timer.unref?.();
+      if (a.closing) clearTimeout(a.closing);
+      a.closing = setTimeout(() => this.closeAnswer(message), this.deps.replyGraceMs ?? REPLY_GRACE_MS);
+      a.closing.unref?.();
+    }
+  }
+
+  /** A turn runs: the answers pending are being thought about, whatever turn ended before it. */
+  private thinking(): void {
+    for (const a of this.answers.values()) {
+      if (a.closing) clearTimeout(a.closing);
+      a.closing = undefined;
     }
   }
 

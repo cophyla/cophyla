@@ -1638,6 +1638,19 @@ describe("answers and results read out where the rules say", () => {
     await waitFor(() => nexts(ui).at(-1)?.speak === false);
   }, 30_000);
 
+  test("the answer lights the speaker while the brain thinks; a turn that ends with no reply dims it a moment later", async () => {
+    const { d, ui, phone } = await start();
+    await utterance(phone);
+    await waitFor(() => nexts(ui).at(-1)?.speak === true, 10_000);
+    // A turn is running: the answer is being thought about, however long.
+    d.bus.emit("chat.progress", { turn: { thinking: true, steps: [] } });
+    await sleep(1800);
+    expect(nexts(ui).at(-1)?.speak).toBe(true);
+    // It ended with nothing said.
+    d.bus.emit("chat.progress", {});
+    await waitFor(() => nexts(ui).at(-1)?.speak === false, 5000);
+  }, 20_000);
+
   test("a voice.speak that names neither the request nor the fire is spoken where the last utterance came from", async () => {
     const { d, phone, engines } = await start({ script: { on: [{ event: "listener.fired", requests: [{ method: "voice.speak", params: { blocks: [{ type: "text", text: "Old brain." }], interrupt: false } }] }] }, gateRules: RESULT_RULES });
     await waitFor(() => d.brain?.state === "up");
