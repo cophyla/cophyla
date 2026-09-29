@@ -1827,7 +1827,8 @@ export interface SpeakerButton {
 /**
  * The speaker button, from the node's `voice.next`: hidden until the node says, since an older
  * node never will. A press stops what is being read out, silences what is pending, or, once
- * silenced, reads it out after all.
+ * silenced, reads it out after all; with nothing to read out, it turns speech on here, for
+ * what is pending and the next reply.
  */
 export function speakerButton(state: ViewState): SpeakerButton | undefined {
   const next = state.next;
@@ -1837,7 +1838,7 @@ export function speakerButton(state: ViewState): SpeakerButton | undefined {
   if (state.voice?.state === "speaking") return { look: "playing", title: "Reading a reply out: press to stop", on: true, disabled };
   if (next.hushed) return { look: "hushed", title: "Replies are shown, not read out: press to read them out again", on: false, disabled };
   if (next.speak) return { look: "lit", title: `The next reply will be read out${where ? ` ${where}` : ""}: press to show it only`, on: true, disabled };
-  return { look: "dim", title: "Nothing is waiting to be read out", on: true, disabled };
+  return { look: "dim", title: "Nothing is waiting to be read out: press to hear the next reply here", on: false, disabled };
 }
 
 /**

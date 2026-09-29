@@ -442,7 +442,10 @@ attention shows its tab or terminal, or, on Windows, when its window is in front
 (`voice/foreground.ts`: user32 through bun:ffi, and each session's process chain up to the
 first ancestor that stands for many). `voice.next` tells the clients whether the next reply
 will be read out, and where; `voice.hush {on}` stops what plays and silences what is pending,
-and the same request's later results, until `off`.
+and the same request's later results, until `off`. With nothing to read out, `off` turns speech
+on for the device that pressed: the pending results are read out there whatever the rules say
+(the origin's `forced`), and so is the next reply, a request asked next being that device's to
+hear; a reply the brain was not told to speak is then read out by the node itself.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
 them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input

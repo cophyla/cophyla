@@ -479,9 +479,9 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
       },
     },
     "voice.hush": {
-      handler: (p) => {
+      handler: (p, ctx) => {
         if (!deps.speech) throw new RpcError("unavailable", "this node reads nothing out");
-        return deps.speech.hush(p.on);
+        return deps.speech.hush(p.on, ctx.client);
       },
     },
   };

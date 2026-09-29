@@ -24,8 +24,15 @@
 // `hush` stops what is being read out and marks every pending candidate's origin hushed: kept in
 // the store, it silences that request's later results too, until `hush` off clears it. A
 // hushed listener still fires, told not to speak, so the brain writes its result for the eye.
+// `hush` off with nothing hushed, or nothing to read out once it is undone, turns speech on for
+// the device that pressed, the button's other half. Every pending result is then read out there
+// (its origin `forced`, whatever the rules say, though never while its session is in front), and
+// so is the next reply (`armed`): a request asked next is that device's to hear, its answer and
+// its later results alike; a reply the brain was not told to speak, from a turn already under
+// way, is read out by the node itself, a moment after it lands unless the brain's own speech
+// came first.
 
-import type { Client, Listener, Session, Task, VoiceNext } from "@cophyla/protocol";
+import type { Client, ContentBlock, Listener, Session, Task, VoiceNext } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { ClientRegistry } from "../api/clients.ts";
 import type { SpeechRule } from "../config/schema.ts";
@@ -77,11 +84,15 @@ export const USER_ACTIONS: ReadonlySet<string> = new Set([
 /** Requests that change what is shown where, though they are no action of the user's. */
 const SHOWN = new Set(["session.watch", "terminal.close"]);
 
-/** Where a request was made, and whether the user hushed what it brings back. */
+/**
+ * Where a request was made, and whether the user hushed what it brings back, or turned speech on
+ * for it: `forced` is the device every reply to it is read out on, whatever the rules say.
+ */
 export interface Origin {
   device: string;
   at: number;
   hushed?: true;
+  forced?: string;
 }
 
 /** What a pending result stands for. */
@@ -93,6 +104,11 @@ interface Fired {
   device: string;
   sessions: string[];
   at: number;
+}
+
+/** Speech turned on: the next reply is read out on `device`. */
+interface Armed {
+  device: string;
 }
 
 /** An answer being thought about, to be read on `device`: dropped at `ANSWER_MAX_MS` whatever happens, or a moment after the turn ends (`closing`). */
@@ -111,6 +127,8 @@ export interface DeliveryDeps {
   presence: Presence;
   /** Stops whatever is being read out. */
   hushVoice?: () => void;
+  /** Reads a reply out to a client: one the brain did not speak, once speech was turned on. */
+  speak?: (blocks: ContentBlock[], client: string) => void;
   /** The brain's listeners. */
   listeners: () => Listener[];
   session: (id: string) => Session | undefined;
@@ -133,6 +151,11 @@ export class Delivery {
   private started = false;
   private answers = new Map<string, Answer>();
   private fires = new Map<string, Fired>();
+  private armed?: Armed;
+  /** The node reading a reply out itself, a moment after it landed. */
+  private reading?: ReturnType<typeof setTimeout>;
+  /** When the brain's speech was last sent somewhere. */
+  private spokeAt = -Infinity;
   private next: VoiceNext = { speak: false };
   private told = JSON.stringify(this.next);
   private settle?: ReturnType<typeof setTimeout>;
@@ -166,7 +189,9 @@ export class Delivery {
     this.unsubscribe.push(
       // The reply came: its answer is pending a moment longer, for the speech that follows it.
       this.deps.bus.on("chat.message", (m) => {
-        if (m.role === "orchestrator") this.replied();
+        if (m.role !== "orchestrator") return;
+        this.replied();
+        this.readArmed(m.content);
       }),
       // A turn that ended with no reply leaves nothing to read; one that runs is still thinking.
       this.deps.bus.on("chat.progress", (p) => {
@@ -185,7 +210,10 @@ export class Delivery {
     for (const a of this.answers.values()) for (const t of [a.timer, a.closing]) if (t) clearTimeout(t);
     this.answers.clear();
     this.fires.clear();
-    for (const t of [this.settle, this.expiry]) if (t) clearTimeout(t);
+    this.armed = undefined;
+    for (const t of [this.settle, this.expiry, this.reading]) if (t) clearTimeout(t);
+    this.reading = undefined;
+    this.spokeAt = -Infinity;
     for (const t of [this.poll, this.prune]) if (t) clearInterval(t);
     this.settle = this.expiry = this.poll = this.prune = undefined;
     this.next = { speak: false };
@@ -244,9 +272,18 @@ export class Delivery {
     return task !== undefined ? [...(this.deps.task(task)?.sessions ?? [])] : [];
   }
 
-  /** A listener's result's verdict now, hushed or not. */
+  /** An answer's verdict: on the device speech was turned on for, else by the rules. */
+  private answerVerdict(origin: Origin, asked: "voice" | "typed"): SpeechVerdict {
+    if (origin.forced !== undefined && this.deps.presence.speakable(origin.forced)) return { speak: true, device: origin.forced };
+    return this.decide({ reply: "answer", asked, asker: origin.device, watching: () => false });
+  }
+
+  /** A listener's result's verdict now, hushed or not: on the device speech was turned on for unless its session is in front, else by the rules. */
   private resultVerdict(l: Listener & { asked: string }, origin: Origin, sessions: string[]): SpeechVerdict {
-    return this.decide({ reply: "result", asked: this.asked(l.asked), asker: origin.device, watching: () => this.deps.presence.watched(sessions) });
+    let watched: boolean | undefined;
+    const watching = () => (watched ??= this.deps.presence.watched(sessions));
+    if (origin.forced !== undefined && this.deps.presence.speakable(origin.forced) && !watching()) return { speak: true, device: origin.forced };
+    return this.decide({ reply: "result", asked: this.asked(l.asked), asker: origin.device, watching });
   }
 
   /** The listeners that would bring a result back for a request: waking or notifying, with an origin. */
@@ -267,8 +304,13 @@ export class Delivery {
     const device = deviceOf(client);
     // Saying something is acting in the app, however it was said.
     this.deps.presence.acted(client);
-    this.putOrigin(message, { device, at: this.now() });
-    const verdict = this.decide({ reply: "answer", asked: input.source === "voice" ? "voice" : "typed", asker: device, watching: () => false });
+    // Speech turned on is this request's: its answer and its results are read out there.
+    const armed = this.armed;
+    this.armed = undefined;
+    const origin: Origin = { device, at: this.now(), ...(armed ? { forced: armed.device } : {}) };
+    this.putOrigin(message, origin);
+    const verdict = this.answerVerdict(origin, input.source === "voice" ? "voice" : "typed");
+    if (armed) this.deps.log.info("speech on for a request", { device: armed.device, speak: verdict.speak });
     if (verdict.speak) this.openAnswer(message, verdict.device);
     this.changed();
     return verdict.speak;
@@ -307,6 +349,29 @@ export class Delivery {
   }
 
   /**
+   * A reply reached the chat while speech is turned on: read out by the node a moment later,
+   * written for the eye as it is, unless the brain's own speech came first or speech was spent
+   * or hushed meanwhile.
+   */
+  private readArmed(blocks: ContentBlock[]): void {
+    const armed = this.armed;
+    const speak = this.deps.speak;
+    if (!armed || !speak || this.reading) return;
+    const at = this.now();
+    this.reading = setTimeout(() => {
+      this.reading = undefined;
+      if (this.armed !== armed || this.spokeAt >= at) return;
+      const entry = this.deps.presence.speakable(armed.device);
+      if (!entry) return;
+      this.armed = undefined;
+      this.deps.log.info("reply read out, speech on", { device: armed.device });
+      speak(blocks, entry.client.id);
+      this.changed();
+    }, this.deps.replyGraceMs ?? REPLY_GRACE_MS);
+    this.reading.unref?.();
+  }
+
+  /**
    * A listener fired, waking or notifying the brain: whether its result is read out, for one
    * that serves a request; undefined for one that serves none, or a note.
    */
@@ -319,7 +384,7 @@ export class Delivery {
     const at = this.now();
     for (const [key, f] of this.fires) if (at - f.at > FIRE_KEEP_MS) this.fires.delete(key);
     if (verdict.speak) this.fires.set(`${l.id}:${l.fired}`, { asked: l.asked, device: verdict.device, sessions, at });
-    this.deps.log.info("result", { listener: l.id, fire: l.fired, speak: verdict.speak, ...(verdict.speak ? { device: verdict.device } : {}), ...(verdict.rule !== undefined ? { rule: verdict.rule } : {}), ...(origin.hushed ? { hushed: true } : {}) });
+    this.deps.log.info("result", { listener: l.id, fire: l.fired, speak: verdict.speak, ...(verdict.speak ? { device: verdict.device } : {}), ...(verdict.rule !== undefined ? { rule: verdict.rule } : {}), ...(origin.hushed ? { hushed: true } : {}), ...(origin.forced !== undefined ? { forced: true } : {}) });
     this.changed();
     return verdict.speak;
   }
@@ -332,13 +397,25 @@ export class Delivery {
   target(p: { asked?: string; fire?: { listener: string; n: number } }): { client: string } | "legacy" | undefined {
     if (p.asked === undefined && p.fire === undefined) return "legacy";
     if (!this.started) return undefined;
+    const to = this.where(p);
+    if (!to) return undefined;
+    this.spokeAt = this.now();
+    // The brain's speech on the device speech was turned on for is the reply it waited for.
+    if (this.armed?.device === to.device) {
+      this.armed = undefined;
+      this.changed();
+    }
+    return { client: to.client };
+  }
+
+  private where(p: { asked?: string; fire?: { listener: string; n: number } }): { client: string; device: string } | undefined {
     if (p.fire) {
       const fired = this.fires.get(`${p.fire.listener}:${p.fire.n}`);
       const origin = this.origin(p.asked ?? fired?.asked ?? "");
       if (!fired || !origin || origin.hushed) return undefined;
       const entry = this.deps.presence.speakable(fired.device);
       if (!entry || this.deps.presence.watched(fired.sessions)) return undefined;
-      return { client: entry.client.id };
+      return { client: entry.client.id, device: fired.device };
     }
     const asked = p.asked!;
     const origin = this.origin(asked);
@@ -348,20 +425,25 @@ export class Delivery {
     // An answer long after its message (a turn resumed) is decided again now.
     let device = open?.device;
     if (device === undefined) {
-      const verdict = this.decide({ reply: "answer", asked: this.asked(asked), asker: origin.device, watching: () => false });
+      const verdict = this.answerVerdict(origin, this.asked(asked));
       if (verdict.speak) device = verdict.device;
     }
     const entry = device !== undefined ? this.deps.presence.speakable(device) : undefined;
-    return entry ? { client: entry.client.id } : undefined;
+    return entry && device !== undefined ? { client: entry.client.id, device } : undefined;
   }
 
   /**
    * The speaker button: `on` stops what is being read out and silences every pending answer and
-   * result, and every later result of the same requests; `off` reads them out again.
+   * result, and every later result of the same requests; `off` reads them out again, and with
+   * nothing to read out once it has, turns speech on for the device that pressed: what is
+   * pending and the next reply are read out there.
    */
-  hush(on: boolean): VoiceNext {
+  hush(on: boolean, client?: Client): VoiceNext {
     const messages = new Set<string>([...this.answers.keys(), ...this.candidates().map((l) => l.asked), ...[...this.fires.values()].map((f) => f.asked)]);
-    if (on) this.deps.hushVoice?.();
+    if (on) {
+      this.deps.hushVoice?.();
+      this.armed = undefined;
+    }
     for (const message of messages) {
       const o = this.origin(message);
       if (!o) continue;
@@ -373,7 +455,24 @@ export class Delivery {
     }
     this.deps.log.info(on ? "hushed" : "hush undone", { requests: messages.size });
     this.recompute();
+    if (!on && !this.next.speak && client) this.speechOn(deviceOf(client));
     return this.current();
+  }
+
+  /** Speech turned on for a device: the pending results are its to hear, and so is the next reply. */
+  private speechOn(device: string): void {
+    if (!this.deps.presence.speakable(device)) {
+      this.deps.log.info("speech not turned on: the device is not heard", { device });
+      return;
+    }
+    const messages = new Set(this.candidates().map((l) => l.asked));
+    for (const message of messages) {
+      const o = this.origin(message);
+      if (o && o.forced !== device) this.putOrigin(message, { ...o, forced: device });
+    }
+    this.armed = { device };
+    this.deps.log.info("speech on", { device, requests: messages.size });
+    this.recompute();
   }
 
   /** `voice.presence`: what a client says of its window. */
@@ -445,7 +544,11 @@ export class Delivery {
       const name = this.deps.presence.nameOf(device, entry.client);
       return { speak: true, target: entry.client.id, ...(name !== undefined ? { name } : {}) };
     };
-    // The answer the user waits for first, then a result.
+    // Speech the user turned on, then the answer the user waits for, then a result.
+    if (this.armed) {
+      const next = on(this.armed.device);
+      if (next) return next;
+    }
     for (const [message, a] of [...this.answers].reverse()) {
       const next = on(a.device);
       if (!next) continue;

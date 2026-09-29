@@ -1623,6 +1623,63 @@ describe("answers and results read out where the rules say", () => {
     await waitFor(() => engines.aborted >= 1, 5000);
   }, 30_000);
 
+  test("with nothing to read out, a press turns speech on for the device that pressed: the pending result is read out there", async () => {
+    const { d, engines, desk } = await typed();
+    const deskId = d.clients.list().find((c) => c.name === "desktop" && c.audio.out)!.id;
+    await waitFor(() => nexts(desk).at(-1)?.speak === false);
+    expect(await desk.request<{ speak: boolean; target?: string }>("voice.hush", { on: false })).toMatchObject({ speak: true, target: deskId });
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("The tests pass."), 10_000);
+    await waitFor(() => audioFrames(desk).length > 0, 10_000);
+    expect(fires()[0]!.speak).toBe(true);
+  }, 30_000);
+
+  test("speech turned on with nothing pending: the next typed request's answer and its result are read out on the device that pressed", async () => {
+    const { d, engines } = await start({ script: RESULT_BRAIN, gateRules: RESULT_RULES });
+    await waitFor(() => d.brain?.state === "up");
+    const desk = await TestClient.connect(d.api.url);
+    extra.push(desk);
+    await desk.hello(d.token, { name: "desktop", audio: { in: false, out: true } });
+    const deskId = d.clients.list().find((c) => c.name === "desktop" && c.audio.out)!.id;
+    await waitFor(() => nexts(desk).at(-1)?.speak === false);
+    expect(await desk.request<{ speak: boolean; target?: string }>("voice.hush", { on: false })).toMatchObject({ speak: true, target: deskId });
+    await desk.request("chat.send", { text: "run the tests and tell me" });
+    await waitFor(() => engines.spoken.includes("Started."), 10_000);
+    await waitFor(() => audioFrames(desk).length > 0, 10_000);
+    const message = brainFrames(current!.log).find((f) => f.dir === "in" && f.frame["method"] === "user.message");
+    expect((message?.frame["params"] as { speak?: boolean }).speak).toBe(true);
+    await waitFor(() => d.listeners.list().length === 1, 5000);
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("The tests pass."), 10_000);
+    expect(fires()[0]!.speak).toBe(true);
+  }, 30_000);
+
+  test("speech turned on reads the next reply the brain was not told to speak, once, and a hush turns it off again", async () => {
+    const script = { on: [{ event: "listener.fired", requests: [{ method: "ui.say", params: { blocks: [{ type: "text", text: "Nobody asked." }] } }] }] };
+    const { d, engines } = await start({ script, gateRules: RESULT_RULES });
+    await waitFor(() => d.brain?.state === "up");
+    const desk = await TestClient.connect(d.api.url);
+    extra.push(desk);
+    await desk.hello(d.token, { name: "desktop", audio: { in: false, out: true } });
+    d.listeners.add({ on: ["node.pressure"], deliver: "wake", why: "nobody's" });
+    // On, then off again: the reply is shown only.
+    await desk.request("voice.hush", { on: false });
+    expect(await desk.request<{ speak: boolean }>("voice.hush", { on: true })).toEqual({ speak: false });
+    pressure(d);
+    await waitFor(() => d.store.messages.dump().some((m) => m.role === "orchestrator"), 10_000);
+    await sleep(2000);
+    expect(engines.spoken).toEqual([]);
+    // On: the next reply is read out by the node, and the one after is not.
+    await desk.request("voice.hush", { on: false });
+    pressure(d);
+    await waitFor(() => engines.spoken.includes("Nobody asked."), 10_000);
+    await waitFor(() => audioFrames(desk).length > 0, 10_000);
+    await waitFor(() => nexts(desk).at(-1)?.speak === false);
+    pressure(d);
+    await sleep(2500);
+    expect(engines.spoken).toEqual(["Nobody asked."]);
+  }, 30_000);
+
   test("the button's state reaches every client with voice as it changes, and a client that says hello hears it", async () => {
     const { d, ui } = await asked();
     const phoneId = idByName(d, "Pixel");

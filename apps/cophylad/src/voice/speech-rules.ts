@@ -28,8 +28,8 @@ export interface SpeechWorld {
   now(): number;
 }
 
-/** The rules' word: read out on `device`, or not at all; `rule` is the index of the rule that decided, none when none did. */
-export type SpeechVerdict = { speak: true; device: string; rule: number } | { speak: false; rule?: number };
+/** The rules' word: read out on `device`, or not at all; `rule` is the index of the rule that decided, none when none did or the user turned speech on. */
+export type SpeechVerdict = { speak: true; device: string; rule?: number } | { speak: false; rule?: number };
 
 export function decide(rules: readonly SpeechRule[], facts: SpeechFacts, world: SpeechWorld): SpeechVerdict {
   let watching: boolean | undefined;

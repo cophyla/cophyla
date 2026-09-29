@@ -924,8 +924,9 @@ describe("default view: voice and the phones", () => {
   test("the speaker: hidden until the node says, then dim, lit naming where, pulsing while it reads, struck once hushed; gone with the line", () => {
     const state = paired();
     expect(speakerButton(state)).toBeUndefined();
+    // Dim, a press turns speech on here.
     apply(state, { type: "voice.next", params: { speak: false } });
-    expect(speakerButton(state)).toEqual({ look: "dim", title: "Nothing is waiting to be read out", on: true, disabled: false });
+    expect(speakerButton(state)).toEqual({ look: "dim", title: "Nothing is waiting to be read out: press to hear the next reply here", on: false, disabled: false });
     apply(state, { type: "voice.next", params: { speak: true, target: "cli_phone", name: "Pixel" } });
     expect(speakerButton(state)).toMatchObject({ look: "lit", on: true, title: "The next reply will be read out on Pixel: press to show it only" });
     apply(state, { type: "voice.next", params: { speak: true, target: CLIENT.id, name: "desk" } });

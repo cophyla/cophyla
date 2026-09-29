@@ -1050,6 +1050,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     clients,
     presence,
     hushVoice: () => voice?.hush(),
+    speak: (blocks, client) => voice?.speak(blocks, { client, interrupt: false }),
     listeners: () => listeners.list(),
     session: sessionAnywhere,
     task: (id) => tasks.get(id),

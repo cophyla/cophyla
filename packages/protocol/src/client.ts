@@ -538,7 +538,9 @@ export const clientRequests = {
   "voice.preview": { params: z.object({ text: z.string().min(1).max(500).optional() }), result: Empty },
   /**
    * The speaker button. `on` stops what is being read out now and silences every reply and
-   * result that was to be, until the next request asks again; `off` reads them out again.
+   * result that was to be, until the next request asks again; `off` reads them out again, and
+   * with nothing to read out, turns speech on for the client's device: the results pending and
+   * the next reply are read out there.
    */
   "voice.hush": { params: z.object({ on: z.boolean() }), result: VoiceNext },
   "view.list": { params: Empty, result: z.object({ views: z.array(ViewManifest) }) },
