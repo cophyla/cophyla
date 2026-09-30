@@ -82,6 +82,7 @@ export const actions = {
   "listener.add": { risk: "write" },
   "listener.remove": { risk: "write" },
   "listener.list": { risk: "read" },
+  "brain.context": { risk: "read" },
   "metrics.subscribe": { risk: "read" },
   "metrics.unsubscribe": { risk: "read" },
   "metrics.history": { risk: "read" },

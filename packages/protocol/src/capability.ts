@@ -264,6 +264,8 @@ export const LlmComplete = z.object({
   tools: z.array(LlmTool).optional(),
   maxTokens: z.number().int().positive().optional(),
   temperature: z.number().min(0).max(2).optional(),
+  /** This call's thinking level, over the tier's. */
+  thinking: z.enum(["minimal", "low", "medium", "high"]).optional(),
   /** The text may be the reply the user reads: cophylad streams it as a provisional message; absent, nothing streams. */
   reply: z.boolean().optional(),
 });

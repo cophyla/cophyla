@@ -87,6 +87,7 @@ describe("a limited phone", () => {
     expect(await code(c, "view.setDefault", { id: "default" })).toBe("denied");
     expect(await code(c, "chat.send", { text: "hi" })).toBe("denied");
     expect(await code(c, "controller.list", {})).toBe("denied");
+    expect(await code(c, "brain.context", { check: true })).toBe("denied");
     expect(await code(c, "view.list", {})).toBe("ok");
     // The refusal is in the audit, under this phone's client.
     const refused = d.store.audit.list({ limit: 100 }).find((e) => e.action === "session.send" && e.via === client.id);

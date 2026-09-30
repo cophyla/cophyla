@@ -286,6 +286,29 @@
     "node.restart": { "params": [{}, { "force": true }], "results": [{}] },
     "listener.list": { "params": [{}], "results": [{ "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },
     "listener.remove": { "params": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3" }], "results": [{}] },
+    "brain.context": {
+      "params": [{}, { "check": true }],
+      "results": [
+        {},
+        {
+          "context": {
+            "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+            "at": 1758196800000,
+            "tokens": { "situation": 420, "working": 310, "loaded": 0, "log": 60, "total": 790 },
+            "rules": "You are Cophyla.",
+            "situation": "Now: Tuesday 2025-09-18T12:00+03:00 (Europe/Istanbul)",
+            "log": "Instructions:\nL1 11:02 User asked for the series, one section at a time",
+            "messages": [
+              { "role": "user", "content": [{ "type": "text", "text": "what is open?" }] },
+              { "role": "assistant", "content": [{ "type": "tool_use", "id": "tu_1", "name": "tasks", "input": { "action": "List" } }] },
+              { "role": "user", "content": [{ "type": "tool_result", "toolUseId": "tu_1", "content": "[r4 collapsed: tasks List. Say context expand r4 to see it again.]" }] },
+              { "role": "assistant", "content": [{ "type": "text", "text": "Nothing is open." }] }
+            ],
+            "tools": ["agents", "tasks", "files"]
+          }
+        }
+      ]
+    },
     "profile.list": {
       "params": [{}],
       "results": [

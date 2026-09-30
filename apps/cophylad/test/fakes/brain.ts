@@ -19,6 +19,8 @@
 // again at every event, so a test can rewrite it once the daemon is up. Run from a release
 // directory (a `release.json` beside it), it reports that entry's version as its own, so an
 // installed or staged fake reads back as the release it stands for; `fake-0.1` otherwise.
+// `preview` in the script is its answer to the daemon's `context.preview`; without one it
+// answers `unsupported`, as a brain from before the request does.
 
 import { appendFileSync, existsSync, readFileSync, writeSync } from "node:fs";
 import { createInterface } from "node:readline";
@@ -38,6 +40,8 @@ interface Script {
   crashAfterHello?: boolean;
   crashAfter?: number;
   cancelOnUserMessage?: boolean;
+  /** The answer to `context.preview`. */
+  preview?: unknown;
 }
 
 const range = (process.env["FAKE_BRAIN_RANGE"] ?? "1-1").split("-").map(Number);
@@ -211,6 +215,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
       send({ jsonrpc: "2.0", id, result: { protocolVersion: 1, protocolRange: { min: range[0], max: range[1] }, brainVersion: brainVersion(), platformVersion: p.platformVersion, nodeId: p.nodeId, role: "brain" } });
       if (script.crashAfterHello) setTimeout(() => process.exit(3), 20);
       else onEvent("hello", p);
+      return;
+    }
+    reload();
+    if (method === "context.preview" && script.preview !== undefined) {
+      send({ jsonrpc: "2.0", id, result: script.preview });
       return;
     }
     send({ jsonrpc: "2.0", id, error: { code: -32601, message: `unsupported: ${method}`, data: { code: "unsupported", message: `unsupported: ${method}`, retryable: false } } });

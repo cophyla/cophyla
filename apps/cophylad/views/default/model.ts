@@ -20,9 +20,10 @@
 // of the message it becomes, until that message lands; near its limit the voice row counts
 // down, and one the node stopped before the user did says so until the next. The speaker
 // beside the chat's tab says whether the next reply is read out (`voice.next`), and where.
+// What the brain sees on its next turn (`brain.context`) is shown a block at a time, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -1955,6 +1956,46 @@ export function linesBetween(lines: readonly string[], from: readonly [number, n
   if (l2 < l1 || (l1 === l2 && c2 <= c1)) return "";
   if (l1 === l2) return (lines[l1] ?? "").slice(c1, c2);
   return [(lines[l1] ?? "").slice(c1), ...lines.slice(l1 + 1, l2), (lines[l2] ?? "").slice(0, c2)].join("\n");
+}
+
+// --- the brain's context -----------------------------------------------------------------------
+
+/** The Context overlay's head: each tier's estimated tokens, then the total. */
+export function contextTokenWords(t: BrainContext["tokens"]): string {
+  const n = (v: number) => Math.round(v).toLocaleString("en-US");
+  return `situation ${n(t.situation)} · log ${n(t.log)} · working ${n(t.working)} · loaded ${n(t.loaded)} · ${n(t.total)} tokens`;
+}
+
+/** One block of what the brain sends, as the Context overlay shows it: whose, what kind, and its text. */
+export interface ContextBlock {
+  role: "user" | "assistant";
+  label: string;
+  text: string;
+}
+
+/** The brain's messages a block at a time: text as it is, a tool call by name with its input, a result as the model reads it (a collapsed one its stub), a picture by kind. */
+export function contextBlocks(messages: BrainContext["messages"]): ContextBlock[] {
+  const out: ContextBlock[] = [];
+  for (const m of messages) {
+    for (const b of m.content) {
+      switch (b.type) {
+        case "text":
+          // The empty text a model sends beside its tool calls says nothing.
+          if (b.text.trim()) out.push({ role: m.role, label: m.role, text: b.text });
+          break;
+        case "tool_use":
+          out.push({ role: m.role, label: `${m.role} · calls ${b.name}`, text: JSON.stringify(b.input ?? {}, null, 2) });
+          break;
+        case "tool_result":
+          out.push({ role: m.role, label: `${m.role} · result${b.isError ? ", an error" : ""}`, text: b.content });
+          break;
+        case "image":
+          out.push({ role: m.role, label: `${m.role} · picture`, text: `[${b.mime}]` });
+          break;
+      }
+    }
+  }
+  return out;
 }
 
 // --- voice and controllers ---------------------------------------------------------------------

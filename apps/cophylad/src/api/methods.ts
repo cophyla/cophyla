@@ -6,13 +6,14 @@
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
 // `session.files` and `session.git`; the brain's listeners as the settings show them; the
 // speaker button's `voice.hush` and the `voice.presence` a client says where the user is with;
-// `session.mode`.
+// `session.mode`; `brain.context`, what the brain sees on its next turn, behind `[brain] show_context`.
 
-import { RpcError, sessionModeRisk } from "@cophyla/protocol";
+import { BrainContext, RpcError, sessionModeRisk } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
 import { DOC_FRAME_PATH } from "@cophyla/protocol";
+import type { BrainLink } from "../brain-link/link.ts";
 import type { Activity } from "../chat/activity.ts";
 import type { Chat } from "../chat/index.ts";
 import type { BackupSync } from "../cloud/backup.ts";
@@ -323,6 +324,35 @@ export function listenerMethods(deps: ListenerDeps): MethodTable {
       handler: (p) => {
         if (!need().remove(p.id, "user")) throw new RpcError("not_found", `no listener ${p.id}`);
         return {};
+      },
+    },
+  };
+}
+
+/** How long the brain has to build its context for the Context button. */
+const PREVIEW_TIMEOUT_MS = 10_000;
+
+export interface BrainContextDeps {
+  /** `[brain] show_context`: off, no client sees the brain's context. */
+  show: boolean;
+  /** The link to the brain, when this node runs one. */
+  brain: () => Pick<BrainLink, "request"> | undefined;
+}
+
+/** What the brain sees on its next turn, for the chat's Context button: its `context.preview`, asked for now. */
+export function brainContextMethods(deps: BrainContextDeps): MethodTable {
+  return {
+    "brain.context": {
+      // The answer is the brain's whole prompt: the audit row keeps its thread and sizes, not another copy.
+      redactResult: (r) => (r.context ? { context: { thread: r.context.thread, at: r.context.at, tokens: r.context.tokens } } : r),
+      handler: async (p) => {
+        if (!deps.show) throw new RpcError("unsupported", "the brain's context is not shown on this node: turn on [brain] show_context in config.toml and restart it");
+        if (p.check) return {};
+        const brain = deps.brain();
+        if (!brain) throw new RpcError("unavailable", "no brain runs on this node");
+        const parsed = BrainContext.safeParse(await brain.request("context.preview", {}, PREVIEW_TIMEOUT_MS));
+        if (!parsed.success) throw new RpcError("unavailable", `the brain answered context.preview with something else: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 300)}`);
+        return { context: parsed.data };
       },
     },
   };

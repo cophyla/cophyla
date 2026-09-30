@@ -10,7 +10,8 @@
 // in an outbox and are flushed after the next handshake. The brain is located again before
 // every spawn, after the update module has promoted a staged release, and an installed or
 // bundled brain is verified against its signed release entry first: one that fails is
-// refused and the previous one put back.
+// refused and the previous one put back. The daemon's own requests to the brain
+// (`context.preview`) go through `request`, and only while it is up.
 
 import { CapabilityHello, capabilityRequests, capabilitySignals, PROTOCOL_VERSION, RpcError, ulid } from "@cophyla/protocol";
 import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId, TurnProgress } from "@cophyla/protocol";
@@ -367,6 +368,16 @@ export class BrainLink {
   }
 
   // --- requests -------------------------------------------------------------------------
+
+  /**
+   * A request of the daemon's own to the brain: `unavailable` while the brain is not up, and
+   * the brain's own failure as it answered it (an older brain's `unsupported`).
+   */
+  async request(method: string, params: unknown, timeoutMs: number): Promise<unknown> {
+    const rpc = this.rpc;
+    if (this.stateValue !== "up" || !rpc?.alive) throw new RpcError("unavailable", "the brain is not running");
+    return rpc.request(method, params, { timeoutMs });
+  }
 
   /** The audit entry a quote cites: this node's own alone, whatever else the table holds. */
   private auditEntry(request: string): AuditEntry | undefined {

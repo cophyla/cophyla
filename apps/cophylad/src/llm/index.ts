@@ -1,7 +1,8 @@
 // `llm.complete` routing. The brain asks for a tier or a `vendor/model`; config maps a tier
-// to a vendor and model with its thinking level, and `[providers].llm` lists the routes in
-// order: `server` (the account's hosted model, the request sent as is for the server to
-// resolve), `byok:<vendor>` with the user's own key, `local:<engine>` in a later milestone.
+// to a vendor and model with its thinking level, which a request's own `thinking` overrides,
+// and `[providers].llm` lists the routes in order: `server` (the account's hosted model, the
+// request sent as is for the server to resolve), `byok:<vendor>` with the user's own key,
+// `local:<engine>` in a later milestone.
 // A route that cannot serve — `unavailable` (no key, not signed in, the link down, the vendor
 // throttled) or `quota_exceeded` — passes the call to the next; any other failure is the
 // answer. When every route refused, a `quota_exceeded` among the refusals is raised over a
@@ -125,7 +126,9 @@ export class Llm {
     const provider = this.providers.get(vendor);
     if (!provider) throw new RpcError("unavailable", `no provider for ${vendor}`, { provider: route });
     req.model = resolved.model;
-    if (resolved.thinking) req.thinking = resolved.thinking;
+    // The request's own level over the tier's.
+    const thinking = params.thinking ?? resolved.thinking;
+    if (thinking) req.thinking = thinking;
     return provider.complete(req);
   }
 

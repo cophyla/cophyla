@@ -44,7 +44,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
-import { SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
+import { LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -66,6 +66,23 @@ export const ViewContent = z.object({
 export type ViewContent = z.infer<typeof ViewContent>;
 
 export const UpdateComponent = z.enum(["platform", "brain", "model"]);
+
+/**
+ * What the brain would send the model on its next turn, built without a model call: the fixed
+ * rules before the situation, the situation, the log as the window shows it, the window's
+ * messages after the log, the tools it declares by name, and the estimated tokens of each tier.
+ */
+export const BrainContext = z.object({
+  thread: ThreadId.optional(),
+  at: Timestamp,
+  tokens: z.object({ situation: z.number(), working: z.number(), loaded: z.number(), log: z.number(), total: z.number() }),
+  rules: z.string(),
+  situation: z.string(),
+  log: z.string().optional(),
+  messages: z.array(LlmMessage),
+  tools: z.array(z.string()),
+});
+export type BrainContext = z.infer<typeof BrainContext>;
 
 /**
  * What a controller needs to reach its node through the server relay from any network:
@@ -675,6 +692,12 @@ export const clientRequests = {
   /** What the brain listens for beyond the user's messages, as its tools set it; the user sees them in the settings and may remove one. */
   "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
   "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
+  /**
+   * What the brain sees on its next turn, for the Context button: on only with `[brain]
+   * show_context`, `unsupported` otherwise. `check` answers `{}` without asking the brain, so
+   * a view can tell whether to show the button; the answer is kept in no audit row.
+   */
+  "brain.context": { params: z.object({ check: z.boolean().optional() }), result: z.object({ context: BrainContext.optional() }) },
   "profile.list": { params: z.object({ node: NodeId.optional() }), result: z.object({ profiles: z.array(HarnessProfile) }) },
   /** Each profile's plan limits, read now when the last reading is old; a node's alone when one is named. */
   "profile.limits": { params: z.object({ node: NodeId.optional() }), result: z.object({ limits: z.record(ProfileId, ProfileLimits) }) },

@@ -107,6 +107,10 @@ export interface UiState {
   newTerminal?: TerminalMenu;
   /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
   railMenu?: { note?: string };
+  /** The node shows the brain's context (`[brain] show_context`): the Context button is there. */
+  contextOn?: boolean;
+  /** The Context overlay lies over the pane. */
+  contextOpen?: boolean;
   /**
    * The Files panel's menu is open for a row (`rel`, `""` the folder itself), at the point it
    * was asked for; with what went wrong when the file manager could not show it, and while the
@@ -1396,6 +1400,11 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     // Between the two, once the node says whether the next reply is read out: the speaker, which silences it.
     const speaker = actionButton("speak-next", "", "hush");
     speaker.append(speakerIcon());
+    // Then, when the node shows the brain's context: the button that lays it over the pane.
+    const context = actionButton("context-open", "", "context-open");
+    context.title = "Context: what the brain sees on its next turn";
+    context.setAttribute("aria-label", context.title);
+    context.hidden = true;
     const more = actionButton("rail-more", "", "rail-more");
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-label", "More");
@@ -1411,7 +1420,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     settings.setAttribute("role", "menuitem");
     settings.title = "Which account agents start under, and with what";
     moreMenu.append(change, settings, el("p", "rail-menu-note"));
-    top.append(chat, speaker, more, moreMenu);
+    top.append(chat, speaker, context, more, moreMenu);
     const list = el("div", "tab-sessions");
     const newTerminal = el("button", "tab-new-terminal", "New terminal");
     newTerminal.type = "button";
@@ -1487,6 +1496,9 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   }
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
   renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
+  const context = root.querySelector<HTMLButtonElement>(".context-open")!;
+  setHidden(context, ui.contextOn !== true);
+  context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);

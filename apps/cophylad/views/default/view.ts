@@ -34,7 +34,9 @@
 // the voice row counts down the last seconds before the utterance's limit. The speaker beside
 // the chat's tab says whether the next reply is read out (`voice.next`) and silences it
 // (`voice.hush`); for where replies are read out, the view tells the node whether it is in front
-// and shown, and that the user acts in it (`voice.presence`). Runs in a
+// and shown, and that the user acts in it (`voice.presence`). Beside the speaker, while the node
+// shows it (`[brain] show_context`, asked with `brain.context {check}` on every connect), Context
+// lays what the brain sees on its next turn over the pane (contextview.ts). Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
@@ -54,6 +56,7 @@ import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
+import { ContextView } from "./contextview.ts";
 import { FileViewer } from "./fileview.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
@@ -103,6 +106,8 @@ const viewer = new FileViewer(
     if (tab !== undefined) openFile(tab, t.from, rel, { focus: true });
   },
 );
+/** What the brain sees on its next turn, over the pane, while the user has it open. */
+const contextView = new ContextView(rpc);
 /** The microphone's wave, just over the input, while the host records. */
 const waves = new Waves();
 roots.composer.before(waves.el);
@@ -233,6 +238,7 @@ rpc.onNotification((n) => {
         void loadGrants();
         void loadNodes();
         void loadTerminals();
+        void loadContextOn();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -376,6 +382,41 @@ async function loadTerminals(): Promise<void> {
   } catch {
     dispatch({ type: "terminals", terminals: [] });
   }
+}
+
+/** Whether the node shows the brain's context: the Context button is there only then, and any refusal hides it. */
+async function loadContextOn(): Promise<void> {
+  let on: boolean;
+  try {
+    await rpc.request("brain.context", { check: true });
+    on = true;
+  } catch {
+    on = false;
+  }
+  if (ui.contextOn === on) return;
+  ui.contextOn = on;
+  if (!on && ui.contextOpen) {
+    ui.contextOpen = false;
+    contextView.hide();
+  }
+  draw();
+}
+
+/** Lays what the brain sees on its next turn over the pane, asked for afresh, or takes it away on a second press; on a phone the rail goes, so it shows. */
+function toggleContext(): void {
+  if (ui.contextOpen) return closeContext();
+  ui.contextOpen = true;
+  putRailAway();
+  contextView.show(document.getElementById("panes")!);
+  draw();
+  contextView.focus();
+}
+
+function closeContext(): void {
+  if (!ui.contextOpen) return;
+  ui.contextOpen = false;
+  contextView.hide();
+  draw();
 }
 
 /**
@@ -2096,6 +2137,16 @@ document.addEventListener("click", (ev) => {
     case "change-view":
       void changeView();
       return;
+    case "context-open":
+      toggleContext();
+      return;
+    case "context-refresh":
+      void contextView.refresh();
+      return;
+    case "context-close":
+      closeContext();
+      roots.tabs.querySelector<HTMLButtonElement>(".context-open")?.focus();
+      return;
     case "file-reveal":
       void revealInFileManager();
       return;
@@ -2422,8 +2473,8 @@ document.addEventListener("mousedown", (ev) => {
 // Escape takes back the utterance being heard or transcribed, before anything else; otherwise
 // it shrinks an invite's QR code shown large, closes the Files panel's menu, New terminal's menu
 // or the ⋮ menu, and the focus goes back to its row or its button; with none open, it puts away
-// the rail lying over a phone's pane, and then closes the file open in the viewer. A terminal
-// keeps its own Escape: xterm stops the key before it gets here.
+// the rail lying over a phone's pane, then closes the brain's context, and then the file open in
+// the viewer. A terminal keeps its own Escape: xterm stops the key before it gets here.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   if (voiceCancellable(state)) {
@@ -2445,6 +2496,10 @@ document.addEventListener("keydown", (ev) => {
   } else if (phone.matches && ui.rail === "open") {
     putRailAway();
     draw();
+  } else if (ui.contextOpen) {
+    ev.preventDefault();
+    closeContext();
+    roots.tabs.querySelector<HTMLButtonElement>(".context-open")?.focus();
   } else if (viewer.shown) {
     ev.preventDefault();
     closeViewer();

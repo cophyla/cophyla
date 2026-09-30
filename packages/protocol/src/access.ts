@@ -280,6 +280,7 @@ export const requestFilters = {
   // The node's brain, not any one session's.
   "listener.list": { names: "global" },
   "listener.remove": { names: "global" },
+  "brain.context": { names: "global" },
   "profile.list": { names: "global" },
   "profile.limits": { names: "global" },
   "profile.update": { names: "global" },

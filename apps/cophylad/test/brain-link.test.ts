@@ -9,7 +9,9 @@
 // answered `unsupported`; the brain's listeners added unasked, their fires heard after the
 // event that caused them, and one removed by the user; the brain's `ui.progress` signal
 // relayed as `chat.progress`, told to a client that connects mid-turn and cleared when the
-// brain exits.
+// brain exits. `brain.context` is off without `[brain] show_context`; on, `check` asks the
+// brain nothing, and a request is the brain's `context.preview`, checked, with the prompt kept
+// out of the audit row; a brain from before it answers `unsupported`.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -63,7 +65,7 @@ afterEach(async () => {
  * The script may be a function of the workspace and node ids, applied once they exist: the
  * fake brain rereads its script at every event.
  */
-async function start(script: object | ((ctx: { ws: string; node: string }) => object), opts: { range?: string; rules?: Record<string, string>; builtin?: string[]; gemini?: boolean | Record<string, Script> } = {}): Promise<Started & { ws: string }> {
+async function start(script: object | ((ctx: { ws: string; node: string }) => object), opts: { range?: string; rules?: Record<string, string>; builtin?: string[]; gemini?: boolean | Record<string, Script>; brain?: string } = {}): Promise<Started & { ws: string }> {
   const scratch = tempHome();
   const cwd = join(scratch, "work");
   const configDir = join(scratch, "claude-home");
@@ -77,7 +79,7 @@ async function start(script: object | ((ctx: { ws: string; node: string }) => ob
   const providers = gemini ? `[providers.gemini]\napi_key = "k"\nbase_url = "${gemini.url}"\n` : "";
   const toml =
     `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n` +
-    `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
+    `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n${opts.brain ?? ""}\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
     `[gate.rules]\n${Object.entries({ ...DEFAULT_RULES, ...opts.rules })
       .filter(([k]) => !opts.builtin?.includes(k))
       .map(([k, v]) => `"${k}" = "${v}"`)
@@ -665,6 +667,47 @@ describe("brain-link", () => {
     await c.request("chat.send", { text: "recall empty" });
     await waitFor(() => brainAudit(d).filter((e) => e.action === "recall").length >= 2 && brainAudit(d).filter((e) => e.action === "recall").every((e) => e.outcome !== undefined));
     expect(brainAudit(d).filter((e) => e.action === "recall").at(-1)!.outcome).toBe("error");
+  });
+
+  test("brain.context: off without show_context; on, check asks the brain nothing and a request is its context.preview, kept out of the audit row", async () => {
+    const off = await start({ on: [] });
+    await waitFor(() => off.d.brain?.state === "up");
+    const refused = await off.c.call("brain.context", { check: true });
+    expect("error" in refused && refused.error.data?.code).toBe("unsupported");
+    expect("error" in refused && refused.error.message).toContain("show_context");
+    off.c.close();
+    await stopDaemon(off.d);
+    removeHome(off.scratch);
+    current = undefined;
+
+    const preview = {
+      thread: "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      at: 1758196800000,
+      tokens: { situation: 12, working: 8, loaded: 0, log: 5, total: 25 },
+      rules: "You are Cophyla.",
+      situation: "Now: Tuesday",
+      log: "Instructions:\nL1 11:02 the series, one section at a time",
+      messages: [{ role: "user", content: [{ type: "text", text: "what is open?" }] }],
+      tools: ["agents", "tasks"],
+    };
+    const { d, c, log, scratch } = await start({ on: [], preview }, { brain: "show_context = true\n" });
+    await waitFor(() => d.brain?.state === "up");
+    expect(await c.request<object>("brain.context", { check: true })).toEqual({});
+    expect(brainFrames(log).some((f) => f.frame["method"] === "context.preview")).toBe(false);
+    expect(await c.request<object>("brain.context", {})).toEqual({ context: preview });
+    const asked = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "context.preview")!;
+    expect(asked.frame["params"]).toEqual({});
+    const rows = d.store.audit.list({ limit: 50 }).filter((e) => e.action === "brain.context" && e.outcome === "ok");
+    expect(rows.map((e) => e.result?.body)).toContainEqual({ context: { thread: preview.thread, at: preview.at, tokens: preview.tokens } });
+    expect(JSON.stringify(rows)).not.toContain("You are Cophyla.");
+
+    // A brain from before the request, and one whose answer is not a context.
+    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [] }));
+    const old = await c.call("brain.context", {});
+    expect("error" in old && old.error.data?.code).toBe("unsupported");
+    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { thread: 7 } }));
+    const bad = await c.call("brain.context", {});
+    expect("error" in bad && bad.error.data?.code).toBe("unavailable");
   });
 
   test("a session annotated by the daemon reaches the brain as one session.updated without an event", async () => {

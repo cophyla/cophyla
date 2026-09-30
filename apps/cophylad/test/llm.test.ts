@@ -75,6 +75,15 @@ describe("llm", () => {
     expect(req.body["tools"]).toBeUndefined();
   });
 
+  test("a request's own thinking level beats its tier's, and a tier with none thinks by default", async () => {
+    await llm.complete(ask("hi", { thinking: "medium" }));
+    expect(fake.requests[fake.requests.length - 1]!.body["generationConfig"]).toEqual({ thinkingConfig: { thinkingLevel: "MEDIUM" } });
+    await llm.complete(ask("hi", { model: { tier: "smart" }, thinking: "high" }));
+    expect(fake.requests[fake.requests.length - 1]!.body["generationConfig"]).toEqual({ thinkingConfig: { thinkingLevel: "HIGH" } });
+    await llm.complete(ask("hi", { model: { tier: "smart" } }));
+    expect(fake.requests[fake.requests.length - 1]!.body["generationConfig"]).toBeUndefined();
+  });
+
   test("tool calls come back as tool_use with signatures, thoughts are dropped, and the round trip recovers the function name", async () => {
     const tools = [{ name: "files", description: "Files", schema: { $schema: "x", type: "object", additionalProperties: false, properties: { action: { type: "string" } } } }];
     const deltas: LlmDelta[] = [];

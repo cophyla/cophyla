@@ -150,6 +150,8 @@ export const BrainConfig = z.object({
   restart_backoff_max_ms: z.number().int().positive().default(30000),
   /** How long the brain may take to answer `hello`. */
   hello_timeout_ms: z.number().int().positive().default(10000),
+  /** A Context button in the chat shows what the brain sends the model on its next turn (`brain.context`). Off, no client sees it. */
+  show_context: z.boolean().default(false),
 });
 export type BrainConfig = z.infer<typeof BrainConfig>;
 
@@ -724,6 +726,7 @@ on_path = true             # an installed platform keeps a tether command on the
 restart_backoff_ms = 1000
 restart_backoff_max_ms = 30000
 hello_timeout_ms = 10000
+show_context = false          # a Context button beside the chat's ⋮ shows what the brain sees on its next turn
 
 # Provider routing: the routes llm.complete tries in order. server is the account's hosted
 # model (signed in, on a plan that has one); byok:<vendor> your own key; local:<engine> is

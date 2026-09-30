@@ -81,6 +81,7 @@ export const requestScopes = {
   "node.restart": "nodes",
   "listener.list": "nodes",
   "listener.remove": "nodes",
+  "brain.context": "audit:read",
   "profile.list": "nodes",
   "profile.limits": "nodes",
   "profile.update": "nodes",

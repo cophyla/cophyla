@@ -310,6 +310,14 @@ request is a gate action under the `brain`
 principal, so `[gate.rules] "brain:session.spawn" = "ask"` puts an agent start in front of
 the user.
 
+`[brain] show_context = true` puts a Context button beside the chat's ⋮: `brain.context` asks
+the brain for `context.preview` (`BrainLink.request`, the one request the daemon makes of the
+brain besides `hello`) and hands back what its next turn would send the model, built without a
+model call. Off, the default, the request is `unsupported` and the button is not drawn; `check`
+answers `{}` without asking the brain. It is a global request, so a limited or phone grant never
+reaches it, and its audit row keeps the thread and the token counts, not the prompt. A
+request's own `thinking` in `llm.complete` beats its tier's.
+
 ## Updates
 
 `[update]` names the feed (`feed`, a URL whose only request is `<feed>/<channel>/<os>-<arch>.json`:
@@ -545,7 +553,8 @@ over the pane or beside it: code coloured, markdown, SVG and HTML drawn, images,
 `pdfview.ts` draws a PDF with pdf.js, `htmldoc.ts` makes an HTML file whole for the host's
 document frame, where its scripts run),
 `waves.ts` the host's microphone drawn over the input while it records (`host.recording`,
-`host.levels`) and `waveclock.ts` how tall each of its bars stands (`test/view-waves.test.ts`), and
+`host.levels`) and `waveclock.ts` how tall each of its bars stands (`test/view-waves.test.ts`),
+`contextview.ts` what the brain sees on its next turn, over the pane (`brain.context`), and
 `view.ts` the loop. `vendor/`
 holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
 uqr, speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file

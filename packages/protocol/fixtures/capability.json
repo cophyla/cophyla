@@ -350,7 +350,8 @@
           "temperature": 0.2,
           "reply": true
         },
-        {"model": {"model": "gemini/gemini-3.8-flash"}, "messages": [{"role": "user", "content": [{"type": "text", "text": "read the plan"}]}, {"role": "assistant", "content": [{"type": "text", "text": "Reading.", "signature": "c2ln"}, {"type": "tool_use", "id": "tu_2", "name": "files", "input": {"action": "Read", "path": ".docs/plan.md"}, "signature": "c2lnMg=="}]}, {"role": "user", "content": [{"type": "tool_result", "toolUseId": "tu_2", "content": "1\t# Plan", "isError": false}]}]}
+        {"model": {"model": "gemini/gemini-3.8-flash"}, "messages": [{"role": "user", "content": [{"type": "text", "text": "read the plan"}]}, {"role": "assistant", "content": [{"type": "text", "text": "Reading.", "signature": "c2ln"}, {"type": "tool_use", "id": "tu_2", "name": "files", "input": {"action": "Read", "path": ".docs/plan.md"}, "signature": "c2lnMg=="}]}, {"role": "user", "content": [{"type": "tool_result", "toolUseId": "tu_2", "content": "1\t# Plan", "isError": false}]}]},
+        {"model": {"tier": "fast"}, "system": "You keep the log.", "messages": [{"role": "user", "content": [{"type": "text", "text": "The log as it stands:\n(empty)"}]}], "tools": [{"name": "log_add", "description": "Add a line to the log.", "schema": {"type": "object"}}], "maxTokens": 8192, "thinking": "medium"}
       ],
       "results": [{ "content": [{ "type": "text", "text": "Nothing is open." }], "stopReason": "end", "usage": { "in": 900, "out": 12 }, "model": "gemini/flash" },
         {"content": [{"type": "text", "text": "Here.", "signature": "c2ln"}, {"type": "tool_use", "id": "tu_3", "name": "files", "input": {"action": "Locate", "query": "plan"}, "signature": "c2lnMw=="}], "stopReason": "tool_use", "usage": {"in": 120, "out": 30, "cacheRead": 0}, "model": "gemini-3.8-flash"}

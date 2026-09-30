@@ -12,7 +12,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { Node, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
-import { accountMethods, attachMethods, backupMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
+import { accountMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
@@ -1112,6 +1112,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...taskMethods({ tasks }),
     ...eventMethods({ catalogue }),
     ...listenerMethods({ listeners }),
+    ...brainContextMethods({ show: config.brain.show_context, brain: () => brain }),
     ...updateMethods({ update }),
     ...pairingMethods({
       pairing,
