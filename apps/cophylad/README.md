@@ -533,7 +533,7 @@ over the pane or beside it: code coloured, markdown, SVG and HTML drawn, images,
 `pdfview.ts` draws a PDF with pdf.js, `htmldoc.ts` makes an HTML file whole for the host's
 document frame, where its scripts run),
 `waves.ts` the host's microphone drawn over the input while it records (`host.recording`,
-`host.levels`) and `waveclock.ts` where each level of it falls (`test/view-waves.test.ts`), and
+`host.levels`) and `waveclock.ts` how tall each of its bars stands (`test/view-waves.test.ts`), and
 `view.ts` the loop. `vendor/`
 holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
 uqr, speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file

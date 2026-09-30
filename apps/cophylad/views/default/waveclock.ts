@@ -1,64 +1,98 @@
-// Where the microphone's wave (waves.ts) puts each level it is handed. Levels come in bursts,
-// a frame's worth at a time, so each is set on its own 20 ms step, and the strip moves on the
-// clock a little behind the newest, gliding rather than jumping. DOM-free.
+// How tall each bar of the microphone's meter (waves.ts) stands. Levels come in bursts, a
+// frame's worth at a time, so each is played on its own 20 ms step, a little behind the newest,
+// and every bar follows it where it stands: rising quickly and falling slowly, the middle ones
+// reaching highest, each with a lean of its own that changes every few steps, so the bars move
+// up and down with the voice and nothing travels across. DOM-free.
 
 /** The time one level stands for. */
 export const STEP_MS = 20;
-/** The strip runs this far behind the newest level, so a frame that comes a little late still glides in. */
+/** The meter plays each level this long after the clock's newest, so a frame that comes a little late still plays its levels in turn. */
 export const LAG_MS = 80;
-/** Levels that come later than their steps by more than this are after a gap, and start again at the right edge. */
+/** Levels that come later than their steps by more than this are after a gap, and play from now. */
 const LATE_MS = 120;
-/** Levels that come further ahead of the clock than this (a stalled page catching up) start again from now. */
+/** Levels that come further ahead of the clock than this (a stalled page catching up) play from now, and the ones still waiting are dropped. */
 const AHEAD_MS = 250;
-/** A bar and the gap after it, in CSS pixels. */
-export const PITCH_PX = 5;
-/** How much of a level carries into the next, so the bars rise and fall rather than flicker. */
-const CARRY = 0.3;
+/** Past this many waiting levels (a page that stopped drawing), the oldest go. */
+const MAX_WAITING = 64;
+/** The bars, side by side. */
+export const BARS = 9;
+/** How quickly a bar rises to a louder level and falls to a quieter one: the time it takes to go most of the way. */
+export const RISE_MS = 40;
+export const FALL_MS = 140;
+/** How many steps a bar keeps its lean before it takes another. */
+const LEAN_STEPS = 5;
 
-/** Where each level falls on the clock, for as long as it is on the strip. */
-export class WaveTimeline {
-  private items: { at: number; level: number }[] = [];
+/** How high each bar reaches at the loudest: the middle all the way, the ends half. */
+const REACH = Array.from({ length: BARS }, (_, i) => {
+  const off = Math.abs(i - (BARS - 1) / 2) / ((BARS - 1) / 2);
+  return 1 - 0.5 * off * off;
+});
+
+/** A bar's lean for a stretch of steps, 0.55–1: the same for the same stretch and bar. */
+function lean(stretch: number, bar: number): number {
+  let x = Math.imul(stretch + 1, 0x9e3779b1) ^ Math.imul(bar + 1, 0x85ebca6b);
+  x = Math.imul(x ^ (x >>> 15), 0x2c1b3c6d);
+  x ^= x >>> 13;
+  return 0.55 + 0.45 * ((x >>> 0) / 2 ** 32);
+}
+
+/** The bars' heights, played from the levels as they come. */
+export class WaveMeter {
+  private waiting: { at: number; level: number }[] = [];
   private next = -Infinity;
-  private last = 0;
+  private step = 0;
+  private aims: number[] = new Array<number>(BARS).fill(0);
+  private tall: number[] = new Array<number>(BARS).fill(0);
+  private then: number | undefined;
 
   /** A frame's levels, as they came at `now`, each clamped to 0–1. */
   push(levels: readonly number[], now: number): void {
-    // After a gap the next level starts at the right edge; after a burst far ahead, from now.
-    if (this.next < now - LAG_MS - LATE_MS || this.next > now + AHEAD_MS) this.next = now - LAG_MS;
+    if (this.next < now - LAG_MS - LATE_MS || this.next > now + AHEAD_MS) {
+      this.next = now - LAG_MS;
+      this.waiting = [];
+    }
     for (const raw of levels) {
       const level = Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0;
-      this.last = level * (1 - CARRY) + this.last * CARRY;
-      this.items.push({ at: this.next, level: this.last });
+      this.waiting.push({ at: this.next, level });
       this.next += STEP_MS;
     }
+    if (this.waiting.length > MAX_WAITING) this.waiting.splice(0, this.waiting.length - MAX_WAITING);
   }
 
-  /**
-   * The bars at `now` on a strip `width` pixels wide: each one's distance from the right edge
-   * and its level, newest first. Ones gone past the left edge are dropped for good.
-   */
-  bars(now: number, width: number): { x: number; level: number }[] {
+  /** Each bar's height at `now`, 0–1, left to right. */
+  heights(now: number): number[] {
     const shown = now - LAG_MS;
-    const perMs = PITCH_PX / STEP_MS;
-    const out: { x: number; level: number }[] = [];
-    let keepFrom = 0;
-    for (let i = this.items.length - 1; i >= 0; i--) {
-      const item = this.items[i]!;
-      if (item.at > shown) continue;
-      const x = (shown - item.at) * perMs;
-      if (x > width + PITCH_PX) {
-        keepFrom = i + 1;
-        break;
-      }
-      out.push({ x, level: item.level });
+    let due = 0;
+    while (due < this.waiting.length && this.waiting[due]!.at <= shown) this.aim(this.waiting[due++]!.level);
+    if (due > 0) this.waiting.splice(0, due);
+    const dt = this.then === undefined ? 0 : Math.max(0, now - this.then);
+    this.then = now;
+    for (let i = 0; i < BARS; i++) {
+      const aim = this.aims[i]!;
+      const h = this.tall[i]!;
+      this.tall[i] = h + (aim - h) * (1 - Math.exp(-dt / (aim > h ? RISE_MS : FALL_MS)));
     }
-    if (keepFrom > 0) this.items.splice(0, keepFrom);
-    return out;
+    return [...this.tall];
+  }
+
+  /** Recording stopped: every bar falls back, whatever was still to play. */
+  rest(): void {
+    this.waiting = [];
+    this.aims.fill(0);
   }
 
   clear(): void {
-    this.items = [];
+    this.waiting = [];
     this.next = -Infinity;
-    this.last = 0;
+    this.step = 0;
+    this.aims.fill(0);
+    this.tall.fill(0);
+    this.then = undefined;
+  }
+
+  private aim(level: number): void {
+    this.step++;
+    // Each bar takes a new lean on steps of its own, so they do not all turn at once.
+    for (let i = 0; i < BARS; i++) this.aims[i] = level * REACH[i]! * lean(Math.floor((this.step + i * 3) / LEAN_STEPS), i);
   }
 }

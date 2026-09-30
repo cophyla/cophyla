@@ -1,62 +1,82 @@
-// The default view's microphone wave, its clock alone: each level on its own 20 ms step, the
-// strip a little behind the newest so a frame's two levels glide in rather than jump, a gap
-// starting again at the right edge, a burst far ahead starting again from now, and a level
-// past the left edge dropped. No DOM: the drawing is the browser's.
+// The default view's microphone wave, its meter alone: bars that stay where they are and rise
+// and fall with the levels, all together and the middle highest, each level played on its own
+// 20 ms step a little behind the newest, rising quickly and falling slowly, a gap playing from
+// now, a burst far ahead dropped, and a stop letting every bar fall back. No DOM: the drawing is
+// the browser's.
 
 import { describe, expect, test } from "bun:test";
-import { LAG_MS, PITCH_PX, STEP_MS, WaveTimeline } from "../views/default/waveclock.ts";
+import { BARS, RISE_MS, STEP_MS, WaveMeter } from "../views/default/waveclock.ts";
 
-/** CSS pixels a level moves each millisecond: the bar and its gap per step. */
-const PER_MS = PITCH_PX / STEP_MS;
+const MID = (BARS - 1) / 2;
 
-describe("the wave's clock", () => {
-  test("a frame's levels come in at the right edge one step apart, and slide left on the clock", () => {
-    const t = new WaveTimeline();
-    t.push([1, 1], 1000);
-    // The first stands at the edge at once; the second is a step behind it, still to come.
-    expect(t.bars(1000, 400).map((b) => b.x)).toEqual([0]);
-    expect(t.bars(1000 + STEP_MS, 400).map((b) => b.x)).toEqual([0, STEP_MS * PER_MS]);
-    expect(t.bars(1100, 400).map((b) => b.x)).toEqual([(1100 - LAG_MS - (1000 - LAG_MS + STEP_MS)) * PER_MS, (1100 - 1000) * PER_MS]);
+describe("the wave's meter", () => {
+  test("a level lifts every bar at once where it stands, the middle highest", () => {
+    const m = new WaveMeter();
+    expect(m.heights(1000)).toEqual(new Array(BARS).fill(0));
+    m.push([1, 1, 1, 1], 1000);
+    const hs = m.heights(1000 + 5 * RISE_MS);
+    expect(hs).toHaveLength(BARS);
+    for (const h of hs) expect(h).toBeGreaterThan(0);
+    expect(hs[MID]!).toBeGreaterThan(hs[0]!);
+    expect(hs[MID]!).toBeGreaterThan(hs[BARS - 1]!);
   });
 
-  test("the next frame's levels follow on the same steps, however late it came", () => {
-    const t = new WaveTimeline();
-    t.push([0.5, 0.5], 1000);
-    t.push([0.5, 0.5], 1055);
-    const xs = t.bars(1200, 400).map((b) => b.x);
-    expect(xs).toHaveLength(4);
-    for (let i = 1; i < xs.length; i++) expect(xs[i]! - xs[i - 1]!).toBeCloseTo(STEP_MS * PER_MS);
+  test("a frame's levels play one step apart, the first at once and the next a step on", () => {
+    const m = new WaveMeter();
+    m.push([0, 1], 1000);
+    m.heights(1000);
+    expect(m.heights(1000 + STEP_MS - 1)[MID]).toBe(0);
+    expect(m.heights(1000 + STEP_MS + 10)[MID]).toBeGreaterThan(0);
   });
 
-  test("levels rise and fall rather than flicker, and stay within 0 to 1", () => {
-    const t = new WaveTimeline();
-    t.push([1, 0, 7, Number.NaN], 1000);
-    const levels = t
-      .bars(1200, 400)
-      .map((b) => b.level)
-      .reverse();
-    expect(levels[0]).toBeGreaterThan(0.5);
-    expect(levels[0]).toBeLessThan(1);
-    // Silence after a loud level keeps some of it.
-    expect(levels[1]).toBeGreaterThan(0);
-    expect(levels[1]).toBeLessThan(levels[0]!);
-    for (const l of levels) expect(l).toBeLessThanOrEqual(1);
+  test("the bars rise quickly and fall back slowly", () => {
+    const m = new WaveMeter();
+    m.push([1], 1000);
+    m.heights(1000);
+    const up = m.heights(1000 + RISE_MS)[MID]!;
+    const full = m.heights(1999)[MID]!;
+    expect(up).toBeGreaterThan(full / 2);
+    m.push([0], 2000);
+    m.heights(2000);
+    // As long falling as it took to rise, most of the height is still there.
+    expect(m.heights(2000 + RISE_MS)[MID]).toBeGreaterThan(full / 2);
+    expect(m.heights(3000)[MID]).toBeLessThan(0.01);
   });
 
-  test("after a gap the next level starts again at the right edge; one past the left edge is gone", () => {
-    const t = new WaveTimeline();
-    t.push([1, 1], 1000);
-    t.push([1, 1], 9000);
-    const bars = t.bars(9000, 400);
-    expect(bars.map((b) => b.x)).toEqual([0]);
-    // The old ones went off the strip and were dropped, so a wider strip does not bring them back.
-    expect(t.bars(9000, 1e6)).toHaveLength(1);
+  test("whatever comes, every bar stays within 0 to 1", () => {
+    const m = new WaveMeter();
+    m.push([7, Number.NaN, -3, Number.POSITIVE_INFINITY, 1, 1], 1000);
+    for (let t = 1000; t <= 1400; t += 16) {
+      for (const h of m.heights(t)) {
+        expect(h).toBeGreaterThanOrEqual(0);
+        expect(h).toBeLessThanOrEqual(1);
+      }
+    }
   });
 
-  test("a burst far ahead of the clock starts again from now", () => {
-    const t = new WaveTimeline();
-    t.push(new Array(40).fill(0.5), 1000);
-    t.push([1, 1], 1000);
-    expect(t.bars(1000, 400).map((b) => b.x)).toEqual([0, 0]);
+  test("after a gap a frame plays from now, on its steps", () => {
+    const m = new WaveMeter();
+    m.push([0], 1000);
+    m.heights(1000);
+    // Played on from the old clock, both would be long due and the silent one would show.
+    m.push([1, 0], 9000);
+    expect(m.heights(9000)[MID]).toBeGreaterThan(0.5);
+  });
+
+  test("a burst far ahead of the clock is dropped, and what comes next plays from now", () => {
+    const m = new WaveMeter();
+    m.push(new Array(40).fill(0), 1000);
+    m.push([1, 1], 1000);
+    m.heights(1000);
+    expect(m.heights(1000 + STEP_MS)[MID]).toBeGreaterThan(0);
+  });
+
+  test("when recording stops every bar falls back, whatever was still to play", () => {
+    const m = new WaveMeter();
+    m.push(new Array(20).fill(1), 1000);
+    m.heights(1000);
+    expect(m.heights(1200)[MID]).toBeGreaterThan(0.5);
+    m.rest();
+    expect(m.heights(2000).every((h) => h < 0.01)).toBe(true);
   });
 });

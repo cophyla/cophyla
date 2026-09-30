@@ -3264,9 +3264,10 @@ button:disabled {
 
 /* --- the microphone's wave, over the input while it records -------------------------------- */
 
-/* A line of no height between the pane and the input, as wide as the input's form; the strip
-   floats up from it over the pane's foot, so nothing moves when it comes and goes. Under a
-   terminal, where there is no input, it floats over the terminal's foot. */
+/* A line of no height between the pane and the input, as wide as the input's form; the strip,
+   a small pill in its middle, floats up from it over the pane's foot, so nothing moves when it
+   comes and goes. Under a terminal, where there is no input, it floats over the terminal's
+   foot. */
 .waves {
   position: relative;
   z-index: 12;
@@ -3284,29 +3285,29 @@ button:disabled {
 
 .waves-strip {
   position: absolute;
-  right: 20px;
   bottom: 6px;
-  left: 20px;
+  left: 50%;
   display: flex;
   height: 44px;
-  padding: 0 16px;
+  padding: 0 18px;
   border: 1px solid color-mix(in srgb, var(--cophyla) 45%, var(--line-strong));
   border-radius: 999px;
   background: color-mix(in srgb, var(--card) 90%, transparent);
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   backdrop-filter: blur(6px);
   opacity: 0;
-  transform: translateY(6px);
+  transform: translate(-50%, 6px);
 }
 
 .waves[data-state="on"] .waves-strip {
   opacity: 1;
-  transform: none;
+  transform: translateX(-50%);
 }
 
+/* As wide as waves.ts's row: nine 4px bars with 4px between them. */
 .waves canvas {
-  flex: 1 1 auto;
-  min-width: 0;
+  flex: none;
+  width: 68px;
   height: 100%;
 }
 
