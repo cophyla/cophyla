@@ -78,7 +78,10 @@ describe("a limited phone", () => {
     expect(await code(c, "session.files", { id: two.session.id })).toBe("denied");
     expect(await code(c, "session.git", { id: two.session.id })).toBe("denied");
     expect(await code(c, "session.file", { id: two.session.id, path: "README.md" })).toBe("denied");
+    expect(await code(c, "session.reveal", { id: two.session.id, path: "" })).toBe("denied");
     expect(await code(c, "session.files", { id: one.session.id })).toBe("ok");
+    // Within it, a phone still opens no file manager on the computer.
+    expect(await code(c, "session.reveal", { id: one.session.id, path: "" })).toBe("unsupported");
     expect(await code(c, "workspace.put", { node: d.identity.id, path: join(primary.scratch, "elsewhere"), name: "x" })).toBe("denied");
     // Node-wide, whatever the scopes say.
     expect(await code(c, "view.setDefault", { id: "default" })).toBe("denied");

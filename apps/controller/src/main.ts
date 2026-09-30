@@ -38,7 +38,8 @@ const app = boot({
   },
   // an invite pasted here is redeemed on the page's own socket: the relay is the native app's
   inviteWays: () => ({ lans: [lanTransport(wsUrl)] }),
-  stage: (conn, manifest) => conn.request<{ base: string; version: string }>("view.stage", { id: manifest.id }),
+  // A node that serves the document frame names it (`docFrame`); an older one does not.
+  stage: (conn, manifest) => conn.request<{ base: string; version: string; docFrame?: string }>("view.stage", { id: manifest.id }),
   hostOpen: (params) => hostOpen(params, location.origin, window),
   openLink: async (url) => void window.open(url, "_blank", "noopener"),
   notify: async (ask: NotifyAsk) => {

@@ -529,17 +529,33 @@ so nothing here is built. `model.ts` is the pure reducer over what the host send
 elements of what a model wrote, built from marked's tokens, `rpc.ts` the postMessage line to
 the host, `terminal.ts` a terminal's screen, `fileview.ts` the file viewer (a file of an
 agent's folder, `session.file`, or of the folder a bare terminal started in, `terminal.file`,
-over the pane or beside it: code coloured, markdown and SVG drawn, images, search),
+over the pane or beside it: code coloured, markdown, SVG and HTML drawn, images, PDFs, search;
+`pdfview.ts` draws a PDF with pdf.js, `htmldoc.ts` makes an HTML file whole for the host's
+document frame, where its scripts run),
 `waves.ts` the host's microphone drawn over the input while it records (`host.recording`,
 `host.levels`) and `waveclock.ts` where each level of it falls (`test/view-waves.test.ts`), and
 `view.ts` the loop. `vendor/`
 holds the libraries it loads, xterm.js (with its fit, unicode11 and web-links addons), marked,
-uqr, and speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file
-needs them, copied and pinned by `scripts/vendor-view.ts`. A view's `id` is its directory name.
+uqr, speed-highlight's tokenizer with the grammars under `vendor/shj/`, loaded as a file
+needs them, and pdf.js under `vendor/pdfjs/`, loaded with the first PDF, its worker run on the
+page's own thread, copied and pinned by `scripts/vendor-view.ts`. A view's `id` is its directory name.
 Every view offers Change view, a control that asks the host `host.chooseView` for its view
 picker (`test/views.test.ts` holds the built-in ones to it); the default's is in the ⋮ beside
 the chat's tab.
 `views/tsconfig.json` typechecks them with the DOM library.
+
+The files a view shows come from `sessions/files.ts`: `session.files` lists a session's folder
+a level at a time, `session.git` reads its repository, and `session.file` (and `terminal.file`,
+for the folder a bare terminal started in) reads a file under it, its text, or with `whole` its
+bytes 1.5 MiB at a time up to 64 MiB, for what the viewer draws: an image, a PDF, what a page
+loads. `resolveUnder` holds every one of them under the folder, past `..` and links. A TIFF or a
+HEIC comes as the PNG the computer's own codecs make of it (`sessions/convert.ts`: WIC through
+PowerShell, `sips`, ImageMagick or `heif-convert`), kept a while for its next pieces.
+`session.reveal` shows a file or a folder in the computer's file manager
+(`sessions/reveal.ts`: `explorer.exe /select,`, `open -R`, FileManager1 over D-Bus or
+`xdg-open`), for the desktop app on this node alone, and is never forwarded. The node's
+controller listener serves the document frame at `/doc/frame.html`, beside the views it serves
+under tickets, and `view.stage` names it.
 
 ## The gate
 

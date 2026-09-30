@@ -65,15 +65,20 @@
       "results": [{ "git": { "branch": "master", "commit": "1e0d3291", "upstream": "origin/master", "ahead": 2, "behind": 1, "changes": 3 } }, { "git": { "commit": "a8d9def0", "changes": 0 } }, { "git": { "changes": 0 } }, {}]
     },
     "session.file": {
-      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "apps/cophylad/src/main.ts" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "README.md" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "Assets/icon.png", "image": true }],
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "apps/cophylad/src/main.ts" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "README.md" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "Assets/icon.png", "image": true }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "docs/guide.pdf", "whole": true, "image": true }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "docs/guide.pdf", "whole": true, "at": 1572864 }],
       "results": [
         { "path": "README.md", "size": 26, "modified": 1758196000000, "text": "# Site\n\nIt builds itself.\n" },
         { "path": "logs/big.log", "size": 5242880, "modified": 1758196000000, "text": "started\n", "truncated": true },
         { "path": "Assets/icon.png", "size": 1843, "modified": 1758196000000, "binary": true },
         { "path": "Assets/dot.png", "size": 8, "modified": 1758196000000, "binary": true, "mime": "image/png", "base64": "iVBORw0KGgo=" },
-        { "path": "empty.txt", "size": 0, "modified": 1758196000000, "text": "" }
+        { "path": "empty.txt", "size": 0, "modified": 1758196000000, "text": "" },
+        { "path": "docs/guide.pdf", "size": 12, "modified": 1758196000000, "mime": "application/pdf", "base64": "JVBERi0xLjcKJeLj", "at": 0, "total": 12 },
+        { "path": "shots/scan.tif", "size": 31457280, "modified": 1758196000000, "mime": "image/png", "base64": "iVBORw0KGgo=", "at": 0, "total": 8 },
+        { "path": "shots/photo.heic", "size": 2097152, "modified": 1758196000000, "binary": true, "note": "This computer has no decoder for HEIC images: install the HEIF Image Extensions and the HEVC Video Extensions from the Microsoft Store." },
+        { "path": "video/big.pdf", "size": 104857600, "modified": 1758196000000, "binary": true }
       ]
     },
+    "session.reveal": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "apps/cophylad/src/main.ts" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "" }], "results": [{}] },
     "terminal.file": {
       "params": [{ "terminal": "0c9e41b27a53", "path": "notes/todo.md" }, { "terminal": "0c9e41b27a53", "path": "shot.png", "image": true }],
       "results": [{ "path": "notes/todo.md", "size": 12, "modified": 1758196000000, "text": "- ship it\n" }]
@@ -193,7 +198,7 @@
     "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
     "view.get": { "params": [{ "id": "default" }], "results": [{ "id": "default", "version": "1", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }, { "path": "icon.png", "mime": "image/png", "base64": "iVBORw0KGgo=" }] }] },
     "view.setDefault": { "params": [{ "id": "board" }], "results": [{}] },
-    "view.stage": { "params": [{ "id": "default" }], "results": [{ "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2" }] },
+    "view.stage": { "params": [{ "id": "default" }], "results": [{ "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2" }, { "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2", "docFrame": "https://192.168.1.44:4818/doc/frame.html" }] },
     "pair.start": { "params": [{}], "results": [{ "code": "482913", "url": "https://192.168.1.44:4818/?code=482913", "expiresAt": 1758197100000 }] },
     "pair.claim": {
       "params": [{ "code": "482913", "name": "Pixel 8" }],

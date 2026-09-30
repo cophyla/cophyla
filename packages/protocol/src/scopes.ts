@@ -30,6 +30,7 @@ export const requestScopes = {
   "session.files": "sessions:read",
   "session.git": "sessions:read",
   "session.file": "sessions:read",
+  "session.reveal": "sessions:read",
   "terminal.list": "sessions:read",
   "terminal.spawn": "terminal",
   "terminal.open": "terminal",

@@ -4,7 +4,9 @@
 // short and said so. Its repository read from a real git: the branch, what it tracks, the
 // commits to push and to pull as of the last fetch, and the files changed; nothing outside a
 // repository or without git, and one read at a time. Through a daemon: gated and audited as a
-// read, the audit row keeping how much was listed and not the names.
+// read, the audit row keeping how much was listed and not the names. A path under the directory
+// shown in the computer's file manager by the same rule, with each platform's own program, and
+// only for the desktop app on this node.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -13,8 +15,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
-import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitStatus, SessionFiles } from "../src/sessions/files.ts";
+import { ConvertError, convertKind, systemConverter } from "../src/sessions/convert.ts";
+import type { ImageConverter } from "../src/sessions/convert.ts";
+import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitStatus, SessionFiles, WHOLE_CHUNK, wholeMime } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
+import { systemRevealer } from "../src/sessions/reveal.ts";
+import type { Revealer } from "../src/sessions/reveal.ts";
 import { stopDaemon, TestClient, testDaemon } from "./helpers.ts";
 
 const WIN = process.platform === "win32";
@@ -34,7 +40,7 @@ function linkDir(target: string, at: string): void {
   symlinkSync(target, at, process.platform === "win32" ? "junction" : "dir");
 }
 
-function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner } = {}): SessionFiles {
+function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner; revealer?: Revealer; converter?: ImageConverter; wholeChunk?: number; wholeMax?: number } = {}): SessionFiles {
   return new SessionFiles({ session: (id) => (id === "s1" ? { cwd } : undefined), ...opts });
 }
 
@@ -219,6 +225,177 @@ describe("a session's file", () => {
   });
 });
 
+describe("a file read whole", () => {
+  test("its bytes a piece at a time, whatever it is, the pieces' base64 joining as it is; past the most, nothing", async () => {
+    const root = temp();
+    const bytes = Buffer.from(Array.from({ length: 20 }, (_, i) => i * 7));
+    writeFileSync(join(root, "guide.pdf"), bytes);
+    writeFileSync(join(root, "notes.txt"), "plain words");
+    const files = filesFor(root, { wholeChunk: 9, wholeMax: 20 });
+    const first = await files.read("s1", "guide.pdf", { whole: true });
+    expect(first).toEqual({ path: "guide.pdf", size: 20, modified: expect.any(Number), mime: "application/pdf", base64: bytes.subarray(0, 9).toString("base64"), at: 0, total: 20 });
+    const pieces = [first.base64!];
+    for (let at = 9; at < 20; at += 9) {
+      const next = await files.read("s1", "guide.pdf", { whole: true, at });
+      expect(next).toMatchObject({ at, total: 20, modified: first.modified, size: 20 });
+      pieces.push(next.base64!);
+    }
+    expect(Buffer.from(pieces.join(""), "base64").equals(bytes)).toBe(true);
+    // Text comes as bytes too, when asked for whole; the end itself is an empty piece; past it is refused.
+    expect(await files.read("s1", "notes.txt", { whole: true })).toMatchObject({ mime: "application/octet-stream", base64: Buffer.from("plain wor").toString("base64"), total: 11 });
+    expect(await files.read("s1", "guide.pdf", { whole: true, at: 20 })).toMatchObject({ base64: "", at: 20, total: 20 });
+    expect((await refusal(files.read("s1", "guide.pdf", { whole: true, at: 21 })))[0]).toBe("invalid");
+    // Past the most sent whole: that it is there, and how big.
+    writeFileSync(join(root, "big.pdf"), Buffer.alloc(21));
+    const big = await files.read("s1", "big.pdf", { whole: true });
+    expect(big).toEqual({ path: "big.pdf", size: 21, modified: expect.any(Number), binary: true });
+    // A folder is still refused.
+    mkdirSync(join(root, "src"));
+    expect(await refusal(files.read("s1", "src", { whole: true }))).toEqual(["invalid", "src: a folder"]);
+    expect(WHOLE_CHUNK % 3).toBe(0);
+    expect(fileSummary({ path: "guide.pdf", size: 20, modified: 1, mime: "application/pdf", base64: "AAAA", at: 9, total: 20 })).toEqual({ path: "guide.pdf", size: 20, mime: "application/pdf", base64: 4, at: 9, total: 20 });
+    expect([wholeMime("a/b.PDF"), wholeMime("x.html"), wholeMime("s.css"), wholeMime("i.svg"), wholeMime("p.tiff"), wholeMime("README")]).toEqual(["application/pdf", "text/html", "text/css", "image/svg+xml", "application/octet-stream", "application/octet-stream"]);
+  });
+
+  test("a TIFF or a HEIC comes as the PNG its codecs make, made once for all its pieces; one no codec reads says why", async () => {
+    const root = temp();
+    writeFileSync(join(root, "scan.TIF"), "tiff bytes");
+    writeFileSync(join(root, "photo.heic"), "heic bytes");
+    const png = Buffer.from(Array.from({ length: 10 }, (_, i) => 200 + i));
+    const asked: [string, string][] = [];
+    const converter: ImageConverter = async (path, kind) => {
+      asked.push([path, kind]);
+      if (kind === "HEIC") throw new ConvertError("This computer has no decoder for HEIC images.");
+      return new Uint8Array(png);
+    };
+    const files = filesFor(root, { converter, wholeChunk: 6 });
+    const a = await files.read("s1", "scan.TIF", { whole: true });
+    const b = await files.read("s1", "scan.TIF", { whole: true, at: 6 });
+    expect(a).toMatchObject({ size: 10, mime: "image/png", at: 0, total: 10 });
+    expect(Buffer.from(a.base64! + b.base64!, "base64").equals(png)).toBe(true);
+    expect(asked).toEqual([[join(root, "scan.TIF"), "TIFF"]]);
+    expect(await files.read("s1", "photo.heic", { whole: true })).toEqual({ path: "photo.heic", size: 10, modified: expect.any(Number), binary: true, note: "This computer has no decoder for HEIC images." });
+    // Changed, it is made again.
+    writeFileSync(join(root, "scan.TIF"), "other tiff bytes");
+    await files.read("s1", "scan.TIF", { whole: true });
+    expect(asked.filter(([, k]) => k === "TIFF").length).toBe(2);
+    // Read as text, it is not converted.
+    expect((await files.read("s1", "scan.TIF")).text).toBe("other tiff bytes");
+    expect([convertKind("a/b.tiff"), convertKind("c.HEIF"), convertKind("d.png"), convertKind("tif")]).toEqual(["TIFF", "HEIF", undefined, undefined]);
+  });
+
+  test("each platform's codecs: WIC through PowerShell, sips, ImageMagick or heif-convert; none, and it says what to install", async () => {
+    const ran: [string, string[], Record<string, string> | undefined][] = [];
+    const deps = (platform: NodeJS.Platform, which: string[] = [], result = { code: 0 as number | null, err: "" }) => ({
+      platform,
+      which: (c: string) => (which.includes(c) ? `/usr/bin/${c}` : null),
+      run: async (c: string, args: string[], env?: Record<string, string>) => {
+        ran.push([c, args, env]);
+        return result;
+      },
+    });
+    // The program writes no PNG here, so each run ends unreadable: what it was asked is what counts.
+    const tried = async (conv: ReturnType<typeof systemConverter>, kind = "TIFF") => (await conv("/in/scan.tif", kind).then(() => "made", (e: unknown) => (e as Error).message));
+    expect(await tried(systemConverter(deps("win32")))).toBe("This TIFF image could not be read here.");
+    const [win] = ran.splice(0);
+    expect(win![0]).toBe("powershell.exe");
+    expect(win![1].slice(0, 5)).toEqual(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand"]);
+    expect(Buffer.from(win![1][5]!, "base64").toString("utf16le")).toContain("PngBitmapEncoder");
+    expect(win![2]).toMatchObject({ COPHYLA_CONVERT_IN: "/in/scan.tif", COPHYLA_CONVERT_MAX: "4096" });
+    expect(await tried(systemConverter(deps("win32", [], { code: 1, err: 'Exception calling "Create": "No imaging component suitable to complete this operation was found."' })), "HEIC")).toBe("This computer has no decoder for HEIC images: install the HEIF Image Extensions and the HEVC Video Extensions from the Microsoft Store.");
+    ran.splice(0);
+    await tried(systemConverter(deps("darwin")));
+    expect(ran.splice(0).map(([c, a]) => [c, a.slice(0, 4)])).toEqual([["sips", ["-s", "format", "png", "-Z"]]]);
+    await tried(systemConverter(deps("linux", ["convert", "heif-convert"])));
+    expect(ran.splice(0).map(([c, a]) => [c, a.slice(0, 4)])).toEqual([["/usr/bin/convert", ["/in/scan.tif[0]", "-auto-orient", "-resize", "4096x4096>"]]]);
+    await tried(systemConverter(deps("linux", ["heif-convert"])), "HEIC");
+    expect(ran.splice(0).map(([c]) => c)).toEqual(["/usr/bin/heif-convert"]);
+    expect(await tried(systemConverter(deps("linux", ["heif-convert"])))).toBe("This computer has no decoder for TIFF images: install ImageMagick.");
+    expect(await tried(systemConverter(deps("linux", ["xdg-open"], { code: 1, err: "convert: no decode delegate\nmore" })))).toBe("This computer has no decoder for TIFF images: install ImageMagick.");
+    expect(await tried(systemConverter(deps("linux", ["magick"], { code: 1, err: "magick: no decode delegate for this image format\nmore" })))).toBe("This TIFF image could not be read here: magick: no decode delegate for this image format");
+  });
+});
+
+describe("a path shown in the file manager", () => {
+  test("where a path leads: a file or a folder, the folder itself too; nothing above it, through a link or a climb", async () => {
+    const root = temp();
+    const outside = temp();
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "a.ts"), "x");
+    linkDir(outside, join(root, "out"));
+    const files = filesFor(root);
+    expect(await files.resolveUnder(root, "src/a.ts")).toMatchObject({ path: join(root, "src", "a.ts"), real: join(root, "src", "a.ts"), kind: "file" });
+    expect(await files.resolveUnder(root, "src")).toMatchObject({ kind: "dir" });
+    expect(await files.resolveUnder(root, "")).toMatchObject({ path: root, kind: "dir" });
+    expect(await refusal(files.resolveUnder(root, "out"))).toEqual(["denied", "out: outside the folder"]);
+    expect((await refusal(files.resolveUnder(root, "src/../..")))[0]).toBe("invalid");
+    expect((await refusal(files.resolveUnder(root, "src/gone.ts")))[0]).toBe("not_found");
+  });
+
+  test("the revealer is handed the path as the folder spells it, a file or a folder; refused as a read is; none, and it is unsupported", async () => {
+    const root = temp();
+    const outside = temp();
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src", "a.ts"), "x");
+    linkDir(outside, join(root, "out"));
+    const shown: [string, string][] = [];
+    const files = filesFor(root, { revealer: async (path, kind) => void shown.push([path, kind]) });
+    await files.reveal("s1", "src/a.ts");
+    await files.reveal("s1", "src");
+    await files.reveal("s1", "");
+    expect(shown).toEqual([
+      [join(root, "src", "a.ts"), "file"],
+      [join(root, "src"), "dir"],
+      [root, "dir"],
+    ]);
+    expect((await refusal(files.reveal("s1", "out")))[0]).toBe("denied");
+    expect((await refusal(files.reveal("s1", "..")))[0]).toBe("invalid");
+    expect((await refusal(files.reveal("s1", "src/b.ts")))[0]).toBe("not_found");
+    expect((await refusal(files.reveal("s2", "src")))[0]).toBe("not_found");
+    expect(shown.length).toBe(3);
+    expect((await refusal(filesFor(root).reveal("s1", "src")))[0]).toBe("unsupported");
+  });
+
+  test("each platform's file manager: Explorer selecting a file, the Finder, a desktop's over D-Bus or else its folder opened; none without a display", async () => {
+    const started: [string, string[], boolean][] = [];
+    const ran: [string, string[]][] = [];
+    const deps = (platform: NodeJS.Platform, over: { env?: Record<string, string>; which?: string[]; dbus?: boolean } = {}) => ({
+      platform,
+      env: over.env ?? {},
+      which: (c: string) => ((over.which ?? []).includes(c) ? `/usr/bin/${c}` : null),
+      detach: (c: string, args: string[], o: { verbatim?: boolean }) => void started.push([c, args, o.verbatim === true]),
+      run: async (c: string, args: string[]) => {
+        ran.push([c, args]);
+        return over.dbus ?? false;
+      },
+    });
+    await systemRevealer(deps("win32"))("C:\\D\\site\\a b.ts", "file");
+    await systemRevealer(deps("win32"))("C:\\D\\site", "dir");
+    await systemRevealer(deps("darwin"))("/Users/me/site/a.ts", "file");
+    await systemRevealer(deps("darwin"))("/Users/me/site", "dir");
+    expect(started.splice(0)).toEqual([
+      ["explorer.exe", ['/select,"C:\\D\\site\\a b.ts"'], true],
+      ["explorer.exe", ['"C:\\D\\site"'], true],
+      ["open", ["-R", "/Users/me/site/a.ts"], false],
+      ["open", ["/Users/me/site"], false],
+    ]);
+    const linux = { env: { DISPLAY: ":0" }, which: ["gdbus", "xdg-open"] };
+    await systemRevealer(deps("linux", { ...linux, dbus: true }))("/home/me/it's.md", "file");
+    expect(ran.splice(0)).toEqual([["/usr/bin/gdbus", ["call", "--session", "--dest", "org.freedesktop.FileManager1", "--object-path", "/org/freedesktop/FileManager1", "--method", "org.freedesktop.FileManager1.ShowItems", "['file:///home/me/it%27s.md']", ""]]]);
+    expect(started.splice(0)).toEqual([]);
+    // No file manager answers on D-Bus: the file's folder opens instead; a folder opens itself.
+    await systemRevealer(deps("linux", linux))("/home/me/site/a.ts", "file");
+    await systemRevealer(deps("linux", linux))("/home/me/site", "dir");
+    expect(started.splice(0)).toEqual([
+      ["/usr/bin/xdg-open", ["/home/me/site"], false],
+      ["/usr/bin/xdg-open", ["/home/me/site"], false],
+    ]);
+    expect(ran.splice(0).length).toBe(1);
+    expect((await refusal(systemRevealer(deps("linux", { which: ["xdg-open"] }))("/home/me/a.ts", "file")))).toEqual(["unsupported", "this computer has no desktop to show files on"]);
+    expect((await refusal(systemRevealer(deps("linux", { env: { WAYLAND_DISPLAY: "wayland-0" } }))("/home/me", "dir")))[0]).toBe("unsupported");
+  });
+});
+
 describe("a session's repository", () => {
   test("git's porcelain read: branch, commit, upstream, ahead and behind, changed files", () => {
     const out = ["# branch.oid 1e0d3291aa5b6c7d8e9f", "# branch.head master", "# branch.upstream origin/master", "# branch.ab +2 -1", "1 .M N... 100644 100644 100644 a b apps/x.ts", "2 R. N... 100644 100644 100644 a b R100 new.ts\told.ts", "u UU N... 1 2 3 4 a b c conflict.ts", "? notes.txt", ""].join("\n");
@@ -321,6 +498,42 @@ describe("through a daemon", () => {
       expect("error" in missing && (missing.error.data as { code: string }).code).toBe("not_found");
     } finally {
       c.close();
+      await stopDaemon(d);
+    }
+  }, 20_000);
+
+  test("session.reveal: the desktop app on this node shows a path in the file manager, audited with the path; any other client is refused", async () => {
+    const shown: [string, string][] = [];
+    const d = await testDaemon("", { revealer: async (path, kind) => void shown.push([path, kind]) });
+    const here = await TestClient.connect(d.api.url);
+    const named = await TestClient.connect(d.api.url);
+    try {
+      await here.hello(d.token);
+      // A ui that says it sits on another node is not this computer's.
+      await named.hello(d.token, { node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" });
+      const dir = temp();
+      mkdirSync(join(dir, "src"));
+      writeFileSync(join(dir, "src", "a.ts"), "x");
+      const s = d.sessions.ensure({ harness: "claude", nativeId: "reveal-1", profile: d.profiles.byHarness("claude")[0]?.id ?? "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", cwd: dir, transport: "pipe" }).session;
+      expect(await here.request<Record<string, unknown>>("session.reveal", { id: s.id, path: "src/a.ts" })).toEqual({});
+      expect(await here.request<Record<string, unknown>>("session.reveal", { id: s.id, path: "" })).toEqual({});
+      expect(shown).toEqual([
+        [join(dir, "src", "a.ts"), "file"],
+        [dir, "dir"],
+      ]);
+      const row = d.store.audit.list({ limit: 50 }).find((e) => e.action === "session.reveal")!;
+      expect(row.outcome).toBe("ok");
+      expect(row.target).toBe(s.id);
+      expect(row.args).toMatchObject({ id: s.id, path: "" });
+      const refused = await named.call("session.reveal", { id: s.id, path: "src/a.ts" });
+      expect("error" in refused && refused.error.data).toMatchObject({ code: "unsupported" });
+      expect("error" in refused && refused.error.message).toMatch(/only Cophyla on the computer that holds the file/);
+      const outside = await here.call("session.reveal", { id: s.id, path: "../x" });
+      expect("error" in outside && (outside.error.data as { code: string }).code).toBe("invalid");
+      expect(shown.length).toBe(2);
+    } finally {
+      here.close();
+      named.close();
       await stopDaemon(d);
     }
   }, 20_000);

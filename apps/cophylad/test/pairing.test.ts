@@ -17,6 +17,7 @@ import { hashSecret } from "../src/grants/store.ts";
 import { silentLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
 import { viewCsp } from "../src/api/tickets.ts";
+import { DOC_FRAME_CSP, DOC_FRAME_HTML, DOC_FRAME_PATH } from "@cophyla/protocol";
 import { stopDaemon, tempHome, testDaemon, TestClient, waitFor } from "./helpers.ts";
 
 const CONFIG = `[controller]\nenabled = true\nport = 0\n`;
@@ -199,9 +200,19 @@ describe("the controller listener", () => {
 
     const views = await p.request<{ views: ViewManifest[] }>("view.list", {});
     const id = views.views.find((v) => v.default)!.id;
-    const staged = await p.request<{ base: string; version: string }>("view.stage", { id });
+    const staged = await p.request<{ base: string; version: string; docFrame?: string }>("view.stage", { id });
     expect(staged.base).toBe(`${origin}/view/${staged.base.split("/view/")[1]!.replace(/\/$/, "")}/`);
     expect(d.tickets.size).toBe(1);
+
+    // The document frame, beside the views: its own policy, which sandboxes it and lets it reach nothing; the view may frame it.
+    expect(staged.docFrame).toBe(`${origin}${DOC_FRAME_PATH}`);
+    const doc = await fetch(staged.docFrame!, { tls: { rejectUnauthorized: false } } as never);
+    expect(doc.status).toBe(200);
+    expect(doc.headers.get("content-security-policy")).toBe(DOC_FRAME_CSP);
+    expect(DOC_FRAME_CSP).toStartWith("sandbox allow-scripts;");
+    expect(DOC_FRAME_CSP).toContain("connect-src 'none'");
+    expect(await doc.text()).toBe(DOC_FRAME_HTML);
+    expect(viewCsp(origin)).toContain(`frame-src ${origin};`);
 
     const res = await fetch(staged.base + "index.html", { tls: { rejectUnauthorized: false } } as never);
     expect(res.status).toBe(200);

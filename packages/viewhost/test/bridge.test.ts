@@ -246,6 +246,16 @@ describe("bridge", () => {
     expect(bareOut.at(-1)).toMatchObject({ id: "r12", error: { data: { code: "unsupported" } } });
   });
 
+  test("host.ready names where the host serves the document frame, when it serves one", () => {
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, docFrame: "http://doc.localhost/doc/frame.html" }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ docFrame: "http://doc.localhost/doc/frame.html" });
+    const { bridge: bare, toView: bareOut } = make();
+    bare.ready(HELLO);
+    expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("docFrame");
+  });
+
   test("hello, the other scope-less requests and unknown methods are unsupported; malformed frames get invalid or nothing", () => {
     const { bridge, toCophylad, toView } = make();
     bridge.fromView(req("r1", "hello", { token: "x" }));

@@ -1,14 +1,17 @@
 // Copies the default view's libraries into it, under `views/default/vendor/`, from the npm
 // packages this workspace pins, each checked against its sha256 here: xterm.js, which draws
-// terminals; marked, whose lexer reads markdown; uqr, which encodes an invite's QR code; and
-// speed-highlight's tokenizer, with the grammars it colours a file's text by in the viewer.
+// terminals; marked, whose lexer reads markdown; uqr, which encodes an invite's QR code;
+// speed-highlight's tokenizer, with the grammars it colours a file's text by in the viewer; and
+// pdf.js, which draws a PDF in the viewer, its worker run on the page's own thread.
 // The view has no build step, so the copies are committed; a test checks them against the
 // same pins, so a copy is never edited by hand and an upgrade is this script run with new pins.
 //
 //   bun run apps/cophylad/scripts/vendor-view.ts           copy, checking every pin
 //   … --pin                                             copy without checking, print the hashes
 //
-// All are MIT but speed-highlight, which is CC0; each one's licence travels with its copies.
+// All are MIT but speed-highlight, which is CC0, and pdf.js, which is Apache-2.0; each one's
+// licence travels with its copies. pdf.js's typings are a tree of files, so the view declares
+// the little of it that it uses beside the copies (`vendor/pdfjs/*.d.mts`), written by hand.
 
 import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync } from "node:fs";
@@ -60,7 +63,7 @@ const SHJ_LANGUAGES: Record<string, string> = {
   yaml: "7a13094c73e5899bb2a3d5400ab1083228f85f2a55cf4655378e28c566c29dfc",
 };
 
-/** @xterm/xterm 6.0.0, @xterm/addon-fit 0.11.0, @xterm/addon-unicode11 0.9.0, @xterm/addon-web-links 0.12.0, marked 18.0.14, uqr 0.1.3, @speed-highlight/core 2.1.0. */
+/** @xterm/xterm 6.0.0, @xterm/addon-fit 0.11.0, @xterm/addon-unicode11 0.9.0, @xterm/addon-web-links 0.12.0, marked 18.0.14, uqr 0.1.3, @speed-highlight/core 2.1.0, pdfjs-dist 5.7.284. */
 export const VENDORED: VendoredFile[] = [
   { pkg: "@xterm/xterm", from: "lib/xterm.mjs", to: "xterm.mjs", sha256: "b336ec65a086c056d4804b3d4c2347da5663d3f23c3f25be866467bd8857ad59" },
   { pkg: "@xterm/xterm", from: "css/xterm.css", to: "xterm.css", sha256: "854a7c0fb70e8b1a083c16797ab827299fb18744f5ad34f227b48337e33293c6" },
@@ -79,6 +82,9 @@ export const VENDORED: VendoredFile[] = [
   { pkg: "@speed-highlight/core", from: "dist/tokenize.d.ts", to: "shj-tokenize.d.mts", sha256: "8e9e32b4be83d1eb104ed710aab408771edcc754a73ee9bcaab5b6bcd7685e42" },
   { pkg: "@speed-highlight/core", from: "LICENSE", to: "speed-highlight-LICENSE.txt", sha256: "a2010f343487d3f7618affe54f789f5487602331c0a8d03f49e9a7c547cf0499" },
   ...Object.entries(SHJ_LANGUAGES).map(([name, sha256]) => ({ pkg: "@speed-highlight/core", from: `dist/languages/${name}.js`, to: `shj/${name}.js`, sha256 })),
+  { pkg: "pdfjs-dist", from: "build/pdf.min.mjs", to: "pdfjs/pdf.min.mjs", sha256: "b0fc97331dc1fc03c4a381ebdd88f751a4d12de4ec97fa1faf18bb37721a4b5b" },
+  { pkg: "pdfjs-dist", from: "build/pdf.worker.min.mjs", to: "pdfjs/pdf.worker.min.mjs", sha256: "52fadd5b81b6abd1eb665bab0c3749a8ad6a293fcb6ee9d9e0309f29d4f82619" },
+  { pkg: "pdfjs-dist", from: "LICENSE", to: "pdfjs/LICENSE.txt", sha256: "0d542e0c8804e39aa7f37eb00da5a762149dc682d7829451287e11b938e94594" },
 ];
 
 export function sha256(bytes: Uint8Array): string {

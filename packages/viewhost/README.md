@@ -13,7 +13,7 @@ injected, so the tests run under `bun test` with no browser.
 | File | Holds |
 |---|---|
 | `src/connection.ts` | the link to cophylad: frames and link state in, a request/response API out, ids in the `h<n>` namespace. The transport is injected (`TauriIo`), so the shell can put the socket on its native side and the controller can hold it in the page |
-| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one; `filePaths`, it says where files dropped from the desktop are, through `host.filePaths`); a host that says `talk` says `host.mic` when its microphone goes off or comes back, with why, and again after `host.ready` while it is off; a host with a microphone says `host.recording` when it starts or stops recording an utterance and `host.levels` meanwhile, to a view with the voice scope alone, and `host.recording` again after `host.ready` while it records |
+| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one; `filePaths`, it says where files dropped from the desktop are, through `host.filePaths`; `docFrame`, where it serves the document frame a view runs an HTML file's scripts in); a host that says `talk` says `host.mic` when its microphone goes off or comes back, with why, and again after `host.ready` while it is off; a host with a microphone says `host.recording` when it starts or stops recording an utterance and `host.levels` meanwhile, to a view with the voice scope alone, and `host.recording` again after `host.ready` while it records |
 | `src/snapshot.ts` | the daemon's picture as the host last saw it — live sessions, workspaces, nodes and their desktops, open tasks and asks, the latest `voice.state`, the words of this client's utterance so far (`voice.partial`, kept whole and replayed whole), a voice setup in progress, the account, the brain's turn while it runs (`chat.progress`) — replayed to a view that mounts later, since cophylad sends them once after `hello` |
 | `src/viewhost.ts` | loads the default view into a sandboxed frame, runs a `Bridge` over it, and reloads it when a reconnect or `view.changed` finds a new version; `recording` and `levels` pass the host's microphone on to the view mounted, and to one mounted while it records |
 | `src/chooser.ts`, `src/chooser.css` | the view picker a view opens with `host.chooseView`: a layer over the frame listing `view.list`, where picking one sets the node's default and loads it. Each host page links the stylesheet (`@cophyla/viewhost/chooser.css`), since the controller's policy refuses inline styles |
@@ -32,7 +32,9 @@ that path, so the only thing that can say them is the page's own code.
 loads from. The shell writes the files and serves them from its `view` custom protocol; the
 controller calls `view.stage` and the node serves them under a ticket with the same
 content-security policy. Everything between — the opaque origin, the `postMessage` line, the
-scope check — is the same code in both.
+scope check — is the same code in both. Staging also says where the host serves the document
+frame (`docFrame`: the shell's `doc` scheme, the node's `/doc/frame.html`, the phone's copy
+beside the staged view), which the bridge hands the view in `host.ready`.
 
 ## What holds
 
@@ -73,5 +75,12 @@ scope check — is the same code in both.
   it on: it posts `{ cophyla: "cophyla.filePaths", id }` with the `File`s through
   `chrome.webview.postMessageWithAdditionalObjects`, and the shell answers its frame with
   `{ cophyla: "cophyla.filePaths", id, paths }` (apps/ui/src-tauri/src/dropped.rs).
+- The document frame (`@cophyla/protocol`'s `docframe.ts`) is the one page a view may frame:
+  a page each host serves on an origin the view's policy names, under a policy of its own
+  (`sandbox allow-scripts`, scripts inline and from `data:`, no `connect-src`, frames, forms
+  or base), which writes the HTML its framer posts it over itself, once. A page's scripts run
+  there and reach nothing; its messages reach neither the view's bridge, which hears only the
+  view's parent, nor `ViewHost`, which hears only the view's frame. A host that serves none
+  names none, and the view draws an HTML file with its scripts off.
 - `hello` is the host's, always. A view asking for it gets `denied` before the frame reaches
   the daemon.

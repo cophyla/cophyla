@@ -80,6 +80,7 @@ export const USER_ACTIONS: ReadonlySet<string> = new Set([
   "task.create",
   "task.update",
   "remote.open",
+  "session.reveal",
 ]);
 /** Requests that change what is shown where, though they are no action of the user's. */
 const SHOWN = new Set(["session.watch", "terminal.close"]);

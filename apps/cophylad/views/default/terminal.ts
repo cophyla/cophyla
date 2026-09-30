@@ -21,13 +21,14 @@
 // back. A link, a URL in the text or an OSC 8 one, opens in the browser at Ctrl+click (⌘ on
 // a Mac), or a tap where there is no mouse: the host opens it (`host.openLink`), since the
 // frame has no way out. A file's path an agent's terminal writes (`src/app.py`, `x.ts:12`)
-// opens the same way in the view's file viewer, at its line, when the view can place it in an
-// agent's folder (`FileLinks`). A file or a folder dragged from the explorer onto the screen is
-// typed in as its path, as a paste.
+// opens the same way in the view's file viewer, at its line, and a folder's (`apps/web/`,
+// `C:\repo\apps`) in the Files panel, when the view can place it in an agent's folder
+// (`FileLinks`). A file or a folder dragged from the explorer onto the screen is typed in as
+// its path, as a paste.
 
 import type { Terminal as TerminalRow } from "@cophyla/protocol";
 import { clipboardWrite, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, pathsIn, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
-import type { TerminalOutput } from "./model.ts";
+import type { PathInText, TerminalOutput } from "./model.ts";
 import type { FitAddon } from "./vendor/addon-fit.mjs";
 import type { Unicode11Addon } from "./vendor/addon-unicode11.mjs";
 import type { WebLinksAddon } from "./vendor/addon-web-links.mjs";
@@ -57,13 +58,14 @@ const SCROLLBAR = 14;
 const MAC = /Mac|iPhone|iPad/.test(navigator.userAgent);
 /** What a link says while the mouse is on it. */
 const FOLLOW = `Follow link (${MAC ? "⌘" : "Ctrl"}+click)`;
-/** What a file's path says while the mouse is on it. */
+/** What a file's path says while the mouse is on it, and a folder's. */
 const OPEN_FILE = `Open the file (${MAC ? "⌘" : "Ctrl"}+click)`;
+const SHOW_FOLDER = `Show the folder in Files (${MAC ? "⌘" : "Ctrl"}+click)`;
 
-/** The files a terminal's paths name: whether the view can open one, and opening it, at a line. */
+/** The files and folders a terminal's paths name: whether the view can open one, and opening it, a file at its line. */
 export interface FileLinks {
-  canOpen(path: string): boolean;
-  open(path: string, line?: number): void;
+  canOpen(path: PathInText): boolean;
+  open(path: PathInText): void;
 }
 
 export interface ShowOptions {
@@ -399,8 +401,9 @@ export class TerminalView {
 
   /**
    * The paths a row names that the view can open, as links: each at the cells its characters
-   * are drawn in (a wide character takes two), opened in the viewer at Ctrl or ⌘+click, or a
-   * tap where there is no mouse. A path a wrapped row splits in two is not found.
+   * are drawn in (a wide character takes two), opened at Ctrl or ⌘+click, or a tap where there
+   * is no mouse, a file in the viewer and a folder in Files. A path a wrapped row splits in two
+   * is not found.
    */
   private fileLinks(term: XTerm, y: number): ILink[] | undefined {
     const files = this.files;
@@ -417,14 +420,14 @@ export class TerminalView {
     }
     const links: ILink[] = [];
     for (const p of pathsIn(text)) {
-      if (!files.canOpen(p.path)) continue;
+      if (!files.canOpen(p)) continue;
       links.push({
         range: { start: { x: cols[p.start]! + 1, y }, end: { x: cols[p.end - 1]! + 1, y } },
         text: text.slice(p.start, p.end),
         activate: (ev) => {
-          if (ev.ctrlKey || ev.metaKey || touch()) files.open(p.path, p.line);
+          if (ev.ctrlKey || ev.metaKey || touch()) files.open(p);
         },
-        hover: () => this.hoverLink(true, OPEN_FILE),
+        hover: () => this.hoverLink(true, p.folder ? SHOW_FOLDER : OPEN_FILE),
         leave: () => this.hoverLink(false),
       });
     }

@@ -227,6 +227,7 @@ export const requestFilters = {
   "session.files": { names: (p) => [{ session: p.id }] },
   "session.git": { names: (p) => [{ session: p.id }] },
   "session.file": { names: (p) => [{ session: p.id }] },
+  "session.reveal": { names: (p) => [{ session: p.id }] },
   "terminal.list": { names: "open", result: (r, keep) => ({ ...r, terminals: r.terminals.filter((t) => keep(terminalTarget(t))) }) },
   "terminal.spawn": { names: "global" },
   "terminal.open": { names: "global" },

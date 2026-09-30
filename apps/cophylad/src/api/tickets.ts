@@ -2,7 +2,9 @@
 // on the shell's native side and loads it from a custom-protocol origin; a browser has no
 // such origin, so the node serves the same files over the controller listener under an
 // unguessable ticket and the same frame policy: scripts, styles, images and fonts from this
-// origin only, no `connect-src`, and only the controller page may embed it. A ticket belongs
+// origin only, no `connect-src`, and only the controller page may embed it. The view may frame
+// this origin, for the document frame the listener serves beside the views (DOC_FRAME_PATH),
+// in which it runs an HTML file's scripts under that page's own policy. A ticket belongs
 // to one client and is forgotten when it disconnects, so a view's files are reachable only
 // while the client that asked for them is on the socket.
 
@@ -28,6 +30,7 @@ export function viewCsp(origin: string): string {
     `img-src ${origin} data:`,
     `font-src ${origin}`,
     "connect-src 'none'",
+    `frame-src ${origin}`,
     `frame-ancestors ${origin}`,
     "base-uri 'none'",
     "form-action 'none'",

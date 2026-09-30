@@ -315,7 +315,12 @@ export type GitState = z.infer<typeof GitState>;
  * asked for, its size in bytes and when it last changed (ms since the epoch), and its text,
  * the first MiB of it where `truncated` says; a file that is not text (`binary`) comes
  * without any. An image asked for as one (`image` in the request) comes whole, as `base64`
- * with its `mime` type, when it is small enough to show.
+ * with its `mime` type, when it is small enough to show. A file asked for `whole` comes as
+ * its bytes, whatever it is, a piece at a time: `base64` holds the piece starting `at` bytes
+ * in, of `total` bytes in all, the size and the time the same for every piece while the file
+ * stays as it was. A TIFF or a HEIC image comes as the PNG this computer's own codecs make of
+ * it, which `total` counts; one past what is sent whole, or one no codec here reads, comes as
+ * `binary` without bytes, with a `note` saying why when it is not the size.
  */
 export const FileText = z.object({
   path: z.string(),
@@ -326,11 +331,18 @@ export const FileText = z.object({
   binary: z.literal(true).optional(),
   mime: z.string().max(100).optional(),
   base64: z.string().optional(),
+  at: z.number().int().nonnegative().optional(),
+  total: z.number().int().nonnegative().optional(),
+  note: z.string().max(500).optional(),
 });
 export type FileText = z.infer<typeof FileText>;
 
-/** What a viewer asks of a file: its path under the folder, `/` between the names, and whether an image is to come whole. */
-const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).optional() };
+/**
+ * What a viewer asks of a file: its path under the folder, `/` between the names, whether an
+ * image is to come whole (as an older node reads it), and whether the file is to come as its
+ * bytes (`whole`), the piece starting `at` bytes in.
+ */
+const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).optional(), whole: z.literal(true).optional(), at: z.number().int().nonnegative().optional() };
 
 /**
  * A session, a workspace and a thread as a client gets them: without the summary and tags
@@ -432,10 +444,21 @@ export const clientRequests = {
    * A file under a session's working directory, by its path there (`/` between the names), for
    * a viewer: its text, decoded from UTF-8 or from UTF-16 by its byte order mark, or that it is
    * not text; with `image`, a PNG, JPEG, GIF, WebP, BMP, ICO or AVIF whole, as base64, up to
-   * 5 MiB. One that is not under the directory (through `..` or a link that leads out), a
-   * folder or anything but a plain file is refused. Answered by the session's node.
+   * 5 MiB; with `whole`, its bytes up to 64 MiB, a piece of 1.5 MiB from `at` per answer, a TIFF
+   * or a HEIC image as the PNG this computer's codecs make of it. One that is not under the
+   * directory (through `..` or a link that leads out), a folder or anything but a plain file is
+   * refused. Answered by the session's node.
    */
   "session.file": { params: z.object({ id: SessionId, ...FileAsk }), result: FileText },
+  /**
+   * Shows a file or a folder under a session's working directory in the file manager of the
+   * computer it is on (File Explorer, the Finder, the desktop's own): a file selected in its
+   * folder, a folder opened; `""` the directory itself. The window opens on that computer, so
+   * only the desktop app there may ask: from anywhere else, and on a computer with no desktop,
+   * it is `unsupported`. A path not under the directory is refused as `session.file` refuses
+   * it. Answered by this node alone, never forwarded.
+   */
+  "session.reveal": { params: z.object({ id: SessionId, path: z.string().max(4096) }), result: Empty },
   /** The terminals this node's tether hosts hold: harness sessions' own, and any program started in one. */
   "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
   /**
@@ -547,7 +570,7 @@ export const clientRequests = {
   "view.get": { params: z.object({ id: z.string() }), result: ViewContent },
   "view.setDefault": { params: z.object({ id: z.string() }), result: Empty },
   /** Stages a view's files on the node for this client's frame: `base` is the URL its entry loads under. */
-  "view.stage": { params: z.object({ id: z.string() }), result: z.object({ base: z.string(), version: z.string() }) },
+  "view.stage": { params: z.object({ id: z.string() }), result: z.object({ base: z.string(), version: z.string(), docFrame: z.string().optional() }) },
   /** Opens a pairing window: the code and the URL a phone opens, good until `expiresAt`, one use. */
   "pair.start": { params: Empty, result: z.object({ code: PairingCode, url: z.string(), expiresAt: Timestamp }) },
   /** A phone's first frame, before `hello`: the code for a token of its own, and the relay access when the node could mint it. */

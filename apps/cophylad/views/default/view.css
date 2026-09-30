@@ -462,6 +462,17 @@ button:disabled {
   font-size: 12px;
 }
 
+/* The Files panel's menu: the ⋮ menu's look, fixed where the row was right-clicked (render.ts
+   keeps it inside the frame), over the phone's sliding rail too. */
+.file-menu {
+  position: fixed;
+  top: 0;
+  right: auto;
+  left: 0;
+  z-index: 40;
+  max-width: min(320px, calc(100vw - 8px));
+}
+
 /* Its title takes the room, so the pulse and the line to cophylad sit at the right, the dot last
    (green while open: `.dot`'s connected and gone). */
 .tab.chat .tab-title {
@@ -3981,6 +3992,117 @@ button:disabled {
   max-height: none;
 }
 
+/* An HTML file drawn as a page: its frame fills the viewer, on white as a browser's page is,
+   and scrolls itself. */
+.viewer-html {
+  height: 100%;
+}
+
+.viewer-html iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #fff;
+}
+
+/* A PDF: its pages down the middle on white paper, each as wide as the viewer or at its own size
+   (pdfview.ts sizes them, with 16px round them), a click switching; drawn as they come near. */
+.viewer-pdf {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 16px;
+  cursor: zoom-in;
+}
+
+.viewer-pdf[data-fit="0"] {
+  width: max-content;
+  min-width: 100%;
+  cursor: zoom-out;
+}
+
+.pdf-page {
+  position: relative;
+  flex: none;
+  background: #fff;
+  box-shadow: 0 0 0 1px var(--line), 0 4px 14px rgba(0, 0, 0, 0.35);
+}
+
+.pdf-page canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
+}
+
+/* A page's text, laid over its drawing where each run is drawn and invisible, to select and
+   copy: pdf.js's own text-layer rules (web/pdf_viewer.css, Apache-2.0), cut to what it needs.
+   `--total-scale-factor` is set on each page. */
+.pdf-page .textLayer {
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: clip;
+  line-height: 1;
+  text-align: initial;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+}
+
+.pdf-page .textLayer :is(span, br) {
+  position: absolute;
+  color: transparent;
+  white-space: pre;
+  cursor: text;
+  transform-origin: 0% 0%;
+}
+
+.pdf-page .textLayer > :not(.markedContent),
+.pdf-page .textLayer .markedContent span:not(.markedContent) {
+  --font-height: 0;
+  --scale-x: 1;
+  --rotate: 0deg;
+  z-index: 1;
+  font-size: calc(var(--text-scale-factor) * var(--font-height));
+  transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+}
+
+.pdf-page .textLayer .markedContent {
+  display: contents;
+}
+
+.pdf-page .textLayer span[role="img"] {
+  cursor: default;
+  user-select: none;
+}
+
+.pdf-page .textLayer ::selection {
+  background: rgba(140, 82, 217, 0.35);
+}
+
+.pdf-page .textLayer br::selection {
+  background: transparent;
+}
+
+.pdf-page .textLayer .endOfContent {
+  position: absolute;
+  inset: 100% 0 0;
+  z-index: 0;
+  display: block;
+  cursor: default;
+  user-select: none;
+}
+
+.pdf-page .textLayer.selecting .endOfContent {
+  top: 0;
+}
+
 .viewer-close {
   --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round'%3E%3Cpath d='M4 4l8 8M12 4l-8 8'/%3E%3C/svg%3E");
 }
@@ -4126,6 +4248,21 @@ button:disabled {
   line-height: 1.55;
 }
 
+/* An image in the file's folder, drawn where the markdown puts it, no wider than the measure;
+   a faint box holds its place while it is read. */
+.viewer-md .md-img {
+  max-width: 100%;
+  height: auto;
+  vertical-align: middle;
+}
+
+.viewer-md .md-img[data-loading] {
+  min-width: 48px;
+  min-height: 32px;
+  border-radius: 3px;
+  background: var(--raised);
+}
+
 /* A token's colour, by the tokenizer's type: the view's violet for keywords, its moss for
    strings, its amber for numbers, comments faint. */
 .tk-kwd,
@@ -4175,7 +4312,13 @@ button:disabled {
   color: var(--rust);
 }
 
-/* The file the viewer shows, marked in the explorer. */
+/* The file the viewer shows stands out in the explorer: a wash, a bar down its left edge, its
+   name and mark in the accent. The row picked has the wash alone, so the two stay apart. */
+.file-row[data-viewing="1"] {
+  background: var(--cophyla-wash);
+  box-shadow: inset 2px 0 0 var(--cophyla);
+}
+
 .file-row[data-viewing="1"] .file-name {
   color: var(--cophyla-ink);
 }

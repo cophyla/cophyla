@@ -171,6 +171,8 @@ export interface HostReady {
   prefs?: Record<string, unknown>;
   /** The host names files dropped here from the desktop (`host.filePaths`): the desktop app. */
   filePaths?: boolean;
+  /** Where the host serves the document frame, in which an HTML file's scripts run apart from the view (@cophyla/protocol's docframe.ts). */
+  docFrame?: string;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -194,6 +196,8 @@ export interface ViewState {
   hostMic?: string;
   /** The host names files dropped from the desktop, so a drop of them lands as their paths. */
   hostFilePaths: boolean;
+  /** Where the host serves the document frame; none on a host too old to serve it, which draws an HTML file with no scripts. */
+  hostDocFrame?: string;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -514,6 +518,8 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.hostMenu = p.menu === true;
       state.hostTalk = p.talk === true;
       state.hostFilePaths = p.filePaths === true;
+      if (typeof p.docFrame === "string" && p.docFrame !== "") state.hostDocFrame = p.docFrame;
+      else delete state.hostDocFrame;
       return state;
     }
     case "host.state":
@@ -1522,6 +1528,63 @@ export function viewerTab(selected: string | undefined, terminal: string | undef
   return terminal !== undefined ? `terminal:${terminal}` : selected;
 }
 
+/** The folder a viewer's file is read under, while the view may read it: an agent's with `sessions:read`, a bare terminal's with `terminal`. */
+export function sourceRoot(state: ViewState, from: ViewerSource): string | undefined {
+  if ("session" in from) return state.scopes.includes("sessions:read") ? state.sessions.get(from.session)?.session.cwd : undefined;
+  return state.scopes.includes("terminal") ? state.terminals.get(from.terminal)?.cwd : undefined;
+}
+
+/** Where a file read through `from` is: its node, and its full path as that node spells it; none while the view may not read it. */
+export function viewedPath(state: ViewState, from: ViewerSource, rel: string): { node: NodeId; path: string } | undefined {
+  const root = sourceRoot(state, from);
+  const node = "session" in from ? state.sessions.get(from.session)?.session.node : state.terminals.get(from.terminal)?.node;
+  return root !== undefined && node !== undefined ? { node, path: joinPath(root, rel) } : undefined;
+}
+
+/**
+ * The file a tab's viewer shows, as the explorer of `session` compares its rows' paths
+ * (`placeKey`), when it is on that session's node: however it was read, through this agent,
+ * another agent whose folder holds it, or a bare terminal. Undefined with none.
+ */
+export function viewingKey(state: ViewState, session: Session, open: ViewerFile | undefined): string | undefined {
+  const at = open ? viewedPath(state, open.from, open.rel) : undefined;
+  return at && at.node === session.node ? placeKey(at.path, state.nodes.get(session.node)?.platform) : undefined;
+}
+
+/** The Files panel's menu item for a row: the file shown selected in the file manager of the computer it is on, or the folder opened there, as that computer names its file manager. */
+export function revealLabel(platform: Platform | undefined, kind: "file" | "dir"): string {
+  if (platform === "windows") return kind === "file" ? "Reveal in File Explorer" : "Open in File Explorer";
+  if (platform === "macos") return kind === "file" ? "Reveal in Finder" : "Open in Finder";
+  return "Open in file manager";
+}
+
+/**
+ * Why this view cannot show a session's files in the file manager, when it cannot: the window
+ * opens on the session's computer, so only the desktop app there may (`session.reveal`).
+ */
+export function revealBlocked(state: ViewState, session: Session): string | undefined {
+  if (state.client?.kind === "ui" && state.client.node === session.node) return undefined;
+  return `Only from Cophyla on ${state.nodes.get(session.node)?.name ?? "that computer"}`;
+}
+
+/** What an explorer's listing says a path under its folder is: a folder or a file, once the folder holding it was listed; undefined before, or for no such name. */
+export function listedKind(ex: Explorer | undefined, rel: string): "dir" | "file" | undefined {
+  if (rel === "") return ex?.root !== undefined ? "dir" : undefined;
+  const slash = rel.lastIndexOf("/");
+  const name = rel.slice(slash + 1);
+  return ex?.dirs.get(slash === -1 ? "" : rel.slice(0, slash))?.entries?.find((e) => e.name === name)?.kind;
+}
+
+/**
+ * Whether a relative path's first name is a folder the explorer listed at its root: `src/lib`
+ * is a path there, `and/or` and `1/2` are words. None for a path that is not relative.
+ */
+export function underListedFolder(ex: Explorer | undefined, path: string): boolean {
+  const rel = relativeFile(path.replace(/[\\/]+$/, ""));
+  const first = rel?.split("/")[0];
+  return first !== undefined && (ex?.dirs.get("")?.entries?.some((e) => e.kind === "dir" && e.name === first) ?? false);
+}
+
 /** Where the viewer sits on a wide window: over the pane, or beside it. A narrow one always lays it over. */
 export type ViewerDock = "over" | "beside";
 
@@ -1542,8 +1605,27 @@ export function relUnder(root: string, path: string, platform?: Platform): strin
   return path.replace(/\\/g, "/").replace(/\/+$/, "").slice(r.length).replace(/^\/+/, "");
 }
 
-/** The images the viewer draws, by extension, and what each kind is called; SVG comes as text and is drawn from it. */
-const IMAGE_KINDS: Readonly<Record<string, string>> = { png: "PNG", jpg: "JPEG", jpeg: "JPEG", gif: "GIF", webp: "WebP", bmp: "BMP", ico: "ICO", avif: "AVIF", svg: "SVG" };
+/**
+ * The images the viewer draws, by extension, and what each kind is called; SVG comes as text
+ * and is drawn from it, and a TIFF or a HEIC comes as the PNG its node's codecs make of it.
+ */
+const IMAGE_KINDS: Readonly<Record<string, string>> = {
+  png: "PNG",
+  apng: "APNG",
+  jpg: "JPEG",
+  jpeg: "JPEG",
+  jfif: "JPEG",
+  gif: "GIF",
+  webp: "WebP",
+  bmp: "BMP",
+  ico: "ICO",
+  avif: "AVIF",
+  svg: "SVG",
+  tif: "TIFF",
+  tiff: "TIFF",
+  heic: "HEIC",
+  heif: "HEIF",
+};
 
 /** What kind of image a path names, or undefined for one that names none. */
 export function imageKind(path: string): string | undefined {
@@ -1551,6 +1633,30 @@ export function imageKind(path: string): string | undefined {
   const dot = name.lastIndexOf(".");
   const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
   return Object.hasOwn(IMAGE_KINDS, ext) ? IMAGE_KINDS[ext] : undefined;
+}
+
+/**
+ * Where a link or an image in a file points, under the folder the viewer reads the file from:
+ * `href` resolved against the file's own folder (a leading `/` from the folder's top), without
+ * its query or its fragment and with `%20` and its kin decoded. Undefined for one with a
+ * scheme (the web, `data:`, a drive), for one that climbs out of the folder, and for none.
+ */
+export function resolveRel(fileRel: string, href: string): string | undefined {
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href) || href.startsWith("//")) return undefined;
+  let path = href.replace(/[?#].*$/s, "");
+  if (path === "") return undefined;
+  try {
+    path = decodeURIComponent(path);
+  } catch {
+    // Left as written.
+  }
+  const parts = path.startsWith("/") || path.startsWith("\\") ? [] : fileRel.split("/").slice(0, -1);
+  for (const part of path.split(/[\\/]/)) {
+    if (part === "" || part === ".") continue;
+    if (part !== "..") parts.push(part);
+    else if (parts.pop() === undefined) return undefined;
+  }
+  return parts.length > 0 ? parts.join("/") : undefined;
 }
 
 /** Past this many matches a search stops counting: marking more costs and helps nobody. */
@@ -1662,6 +1768,7 @@ const LANGUAGE_ALIASES: Readonly<Record<string, string>> = {
   kotlin: "java",
   scala: "java",
   htm: "html",
+  xhtml: "html",
   svelte: "html",
   vue: "html",
   svg: "xml",
@@ -1726,24 +1833,59 @@ function fileSizeWords(n: number): string {
   return `${n} B`;
 }
 
-/** The most of an image its node sends whole (the daemon's IMAGE_MAX): past it, there is nothing to draw. */
-const IMAGE_SENT_MAX = 5 * 1024 * 1024;
+/** The most of a file its node sends whole (the daemon's WHOLE_MAX): past it, there is nothing to draw. */
+export const WHOLE_SENT_MAX = 64 * 1024 * 1024;
 
-/** What the viewer's head says of a file: its language or its kind of image, an image's size in pixels once drawn, how many lines, how big. */
-export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }): string {
+/** A PDF, by its extension: the viewer draws it (pdfview.ts). */
+export function isPdf(path: string): boolean {
+  return /\.pdf$/i.test(path);
+}
+
+/** An HTML page, by its extension: the viewer draws it, its scripts running in the document frame (htmldoc.ts). */
+export function isHtml(path: string): boolean {
+  return /\.(html?|xhtml)$/i.test(path);
+}
+
+/** Base64 as its bytes, a slice at a time, so a big file's never makes one string of it all. */
+export function bytesOf(base64: string): Uint8Array {
+  const out = new Uint8Array(Math.floor((base64.replace(/=+$/, "").length * 3) / 4));
+  const SLICE = 4 * 1024 * 1024;
+  let at = 0;
+  for (let i = 0; i < base64.length; i += SLICE) {
+    const part = atob(base64.slice(i, i + SLICE));
+    for (let j = 0; j < part.length; j++) out[at++] = part.charCodeAt(j);
+  }
+  return out;
+}
+
+/** Whether the viewer reads a file whole to draw it, a piece at a time: an image but SVG (which comes as text), or a PDF. */
+export function readsWhole(path: string): boolean {
+  const image = imageKind(path);
+  return (image !== undefined && image !== "SVG") || isPdf(path);
+}
+
+/**
+ * What the viewer's head says of a file: its language or its kind of image, an image's size in
+ * pixels once drawn (as its node's codecs drew it, for a TIFF or a HEIC), how many lines, or a
+ * PDF's pages once it is open, and how big.
+ */
+export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }, pages?: number): string {
   const language = fileLanguage(file.path);
   const image = imageKind(file.path);
-  const kind = image ?? (file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
-  const drawn = pixels ? `${pixels.width} × ${pixels.height}` : undefined;
-  const counted = lines !== undefined && !file.binary ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : undefined;
+  const kind = image ?? (isPdf(file.path) ? "PDF" : file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
+  const converted = image !== undefined && image !== "PNG" && file.mime === "image/png";
+  const drawn = pixels ? `${converted ? "shown at " : ""}${pixels.width} × ${pixels.height}` : undefined;
+  const counted = lines !== undefined && !file.binary && file.text !== undefined ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : pages !== undefined ? `${pages.toLocaleString()} page${pages === 1 ? "" : "s"}` : undefined;
   return [kind, drawn, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
 }
 
 /** What the viewer says over a file it shows only part of, or none of; nothing for one shown whole. */
 export function viewerNote(file: FileText): string {
-  if (file.binary && file.base64 !== undefined) return "";
-  if (file.binary && imageKind(file.path) !== undefined) {
-    return file.size > IMAGE_SENT_MAX ? `This image is too big to show here: ${fileSizeWords(file.size)}, past ${fileSizeWords(IMAGE_SENT_MAX)}.` : "That computer's Cophyla is too old to send images: update it there.";
+  if (file.base64 !== undefined) return "";
+  if (file.note !== undefined) return file.note;
+  if (readsWhole(file.path) && (file.binary || file.text !== undefined)) {
+    const what = isPdf(file.path) ? "PDF" : "image";
+    return file.size > WHOLE_SENT_MAX ? `This ${what} is too big to show here: ${fileSizeWords(file.size)}, past ${fileSizeWords(WHOLE_SENT_MAX)}.` : `That computer's Cophyla is too old to show this ${what}: update it there.`;
   }
   if (file.binary) return "This file is not text, so there is nothing to show.";
   if (file.truncated) return `Only the first ${fileSizeWords(new TextEncoder().encode(file.text ?? "").length)} of ${fileSizeWords(file.size)} shows.`;
@@ -1766,24 +1908,34 @@ export interface PathInText {
   end: number;
   path: string;
   line?: number;
+  /** It ends in a separator: a folder. */
+  folder?: true;
+  /** Its last name has no extension and no separator follows it: a folder, a file such as `Makefile`, or no path at all (`and/or`, `1/2`). */
+  plain?: true;
 }
 
-const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})(?::(?<line>\d+)(?::\d+)?)?/g;
+const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*(?:(?<file>[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})|[\w@+-](?:[\w.@+-]*[\w@+-])?)?)(?::(?<line>\d+)(?::\d+)?)?/g;
 
 /**
- * The paths a terminal's row names that the viewer could open, as Claude Code and a compiler
- * write them (`src/app.py`, `C:\repo\x.ts:12`): a name with an extension, in folders or not,
- * with the line after it when there is one. A bare name counts only when its extension is a
- * language's, so `e.g.` and `v1.2` are none; one inside a URL or a longer word is left alone.
+ * The paths a terminal's row names that the view could open, as Claude Code and a compiler
+ * write them (`src/app.py`, `C:\repo\x.ts:12`, `apps/web/`): a name with an extension, in
+ * folders or not, with the line after it when there is one; or names with a separator among
+ * them and no extension, a folder's as often as not, marked `folder` when a separator ends
+ * them and `plain` otherwise. A bare name counts only when its extension is a language's, so
+ * `e.g.` and `v1.2` are none; one inside a URL or a longer word is left alone.
  */
 export function pathsIn(text: string): PathInText[] {
   const out: PathInText[] = [];
   for (const m of text.matchAll(PATH_IN_TEXT)) {
     const path = m.groups!["path"]!;
     if (m.index > 0 && /[\w.@+\\/:-]/.test(text[m.index - 1]!)) continue;
-    if (!/[\\/]/.test(path) && fileLanguage(path) === undefined) continue;
+    // A root alone (`/`, `C:\`, `./`) names nothing.
+    if (path.replace(/^(?:[A-Za-z]:|\.{1,2})?[\\/]/, "") === "") continue;
+    const named = m.groups!["file"] !== undefined;
+    if (!/[\\/]/.test(path) && (!named || fileLanguage(path) === undefined)) continue;
+    const folder = /[\\/]$/.test(path);
     const line = m.groups!["line"] !== undefined ? Number(m.groups!["line"]) : undefined;
-    out.push({ start: m.index, end: m.index + m[0].length, path, ...(line !== undefined && line > 0 ? { line } : {}) });
+    out.push({ start: m.index, end: m.index + m[0].length, path, ...(line !== undefined && line > 0 ? { line } : {}), ...(folder ? { folder: true as const } : !named ? { plain: true as const } : {}) });
   }
   return out;
 }

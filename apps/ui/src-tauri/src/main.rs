@@ -12,6 +12,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod docframe;
 mod dropped;
 mod install;
 mod links;
@@ -142,6 +143,7 @@ fn main() {
         .manage(voice::TalkKey::default())
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
+        .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
         .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, dropped::dropped_paths, stream::stream_open, stream::stream_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
@@ -167,12 +169,14 @@ fn main() {
                 // WebView2 never shows this callback a frame's navigation, WebKit (macOS,
                 // Linux) does, so the view origin is allowed here too (`view://localhost`
                 // there, whose origin the URL standard leaves opaque, so it is matched by its
-                // parts): the frame is sandboxed without `allow-top-navigation`, so nothing can
-                // take the host itself there.
+                // parts), and so is the document frame's, which a view frames (governed by the
+                // view's own frame-src): each frame is sandboxed without
+                // `allow-top-navigation`, so nothing can take the host itself there.
                 .on_navigation(move |url| {
                     let local = url.scheme() == "tauri"
                         || url.host_str() == Some("tauri.localhost")
                         || views::is_view(url)
+                        || docframe::is_doc(url)
                         || dev_origin.as_deref().is_some_and(|o| url.origin().ascii_serialization() == o);
                     if !local {
                         log::warn!("refused navigation to {url}");

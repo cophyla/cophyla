@@ -3,7 +3,7 @@
 // a source chip, their words as they were at the source, refs as chips (an unresolved quote is
 // marked). A chip goes to what it names, in the view: a session's opens its tab, a file's opens
 // it in the viewer of the agent whose folder holds it, at its line, and shows it in that agent's
-// Files panel, and a thread's, a task's, a prompt's
+// Files panel (a folder's shows there alone), and a thread's, a task's, a prompt's
 // or an audit row's brings that into view in the chat; one whose target the view does not have
 // (an ended session, a thread not loaded, a memory) only names it. A run of text and refs is
 // one flow, the refs' chips standing in the sentence where the model put them, not on lines
@@ -13,7 +13,7 @@
 
 import type { ContentBlock, Source } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { chipTitle, fileHome, parts, sessionWho } from "./model.ts";
+import { chipTitle, explorerKey, fileHome, listedKind, parts, sessionWho } from "./model.ts";
 import type { Part, ViewState } from "./model.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -36,7 +36,7 @@ function shortId(id: string): string {
 }
 
 function baseName(path: string): string {
-  const parts = path.split(/[\\/]/);
+  const parts = path.split(/[\\/]/).filter((p) => p !== "");
   return parts[parts.length - 1] || path;
 }
 
@@ -66,10 +66,17 @@ function sessionChip(session: string, state: ViewState, suffix = ""): Chip {
   return { text: `${sessionWho(card.session)}${suffix}`, title: "Open its tab", action: "select", session };
 }
 
-/** A file's chip: it opens the file, at `line`, in the viewer of the agent whose folder holds it, when one does. */
+/**
+ * A file's chip: it opens the file, at `line`, in the viewer of the agent whose folder holds it,
+ * when one does. A folder's, known as one by the separator after it or by that agent's Files,
+ * shows it in Files.
+ */
 function fileChip(node: string, path: string, suffix: string, state: ViewState, line?: number): Chip {
   const text = `${baseName(path)}${suffix}`;
-  return fileHome(state, node, path) ? { text, title: `Open it: ${path}`, action: "reveal-file", node, path, ...(line !== undefined ? { line } : {}) } : { text, title: path };
+  const home = fileHome(state, node, path);
+  if (!home) return { text, title: path };
+  const folder = home.rel === "" || /[\\/]$/.test(path) || listedKind(state.explorers.get(explorerKey(state, home.session)), home.rel) === "dir";
+  return { text, title: folder ? `Show it in Files: ${path}` : `Open it: ${path}`, action: "reveal-file", node, path, ...(line !== undefined ? { line } : {}) };
 }
 
 /** A chip for something the chat shows: it brings it into view while the chat has it. */

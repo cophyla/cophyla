@@ -7,24 +7,37 @@
 //
 // Code is coloured by speed-highlight's tokenizer (vendored, CC0): each language's grammar is
 // loaded the first time a file needs it, and the tokens become elements with `textContent`, as
-// everything else in the view does: nothing in a file is ever parsed as HTML. A file past
+// everything else in the view does: nothing in a file is ever parsed as HTML in the view's own
+// document. An HTML file is the one drawn as a page, and never here: in the document frame the
+// host serves (`docFrame` in `host.ready`), apart from the view, its scripts running under that
+// frame's policy, which lets them reach nothing, once what it loads from its folder is put in it
+// as data (htmldoc.ts); a link clicked there opens in the viewer, a file of the folder, or in the
+// user's browser, a web page. On a host that serves no document frame it is drawn with its
+// scripts off, in a frame sandboxed to nothing, and says so. A file past
 // COLOUR_MAX shows uncoloured, since an element per token is what costs. Lines are numbered in
 // a gutter that stays put as they scroll sideways, and they scroll or wrap as the user picks;
 // they are laid out a chunk at a time, only near the screen (`content-visibility`), so a long
 // file opens about as fast as a short one. A copy takes the file's own text between the ends of
 // what is selected, not what the page draws of it. Markdown shows drawn, as a README is on
-// GitHub (markdown.ts, its fenced code coloured too), or as written, and an SVG drawn or as
-// written the same way. An image comes whole (`image` in the ask) and is drawn fitted to the
-// viewer, a click showing it at its own size. A file that is not text, or longer than its node
-// sends, says so over what shows. Ctrl+F searches what shows: every match marked (the CSS
+// GitHub (markdown.ts, its fenced code coloured too), its images in the file's folder read and
+// drawn with it, or as written, and an SVG drawn or as written the same way. An image comes
+// whole, a piece at a time (`whole` in the ask, `image` too for an older node, which sends a
+// small one at once), a TIFF or a HEIC as the PNG its node's codecs make of it, and is drawn
+// fitted to the viewer, a click showing it at its own size. A PDF comes whole the same way and
+// is drawn by pdf.js (pdfview.ts), its pages fitted to the viewer or at their own size, a click
+// switching, its text there to select. A file that is not text, or longer than its node sends,
+// says so over what shows. Ctrl+F searches what shows: every match marked (the CSS
 // Custom Highlight API, so nothing in the page changes), Enter and Shift+Enter going from one to
 // the next, any case unless Aa is on. The view reads the file again as the agent works and when
 // the window comes back, and the viewer keeps its place and its search.
 
 import type { FileText } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, imageKind, joinPath, linesBetween, viewerMeta, viewerNote } from "./model.ts";
+import { bytesOf, fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
 import type { ViewerDock, ViewerSource } from "./model.ts";
+import { inlineDocument } from "./htmldoc.ts";
+import type { Asset } from "./htmldoc.ts";
+import { PdfError, PdfView } from "./pdfview.ts";
 import { ViewRpcError } from "./rpc.ts";
 import type { HostRpc } from "./rpc.ts";
 import type { ShjLanguageData, ShjToken, tokenizer as Tokenizer } from "./vendor/shj-tokenize.mjs";
@@ -41,6 +54,12 @@ const CHUNK_LINES = 200;
 const LAZY_LINE_MAX = 400;
 /** How long the line a chip or a link opened at stays marked. */
 const FLASH_MS = 1600;
+/** Images a drawn markdown file reads, at most: past them, the rest are their alt text. */
+const MD_IMAGES_MAX = 100;
+/** Times a whole read starts again because the file changed under it, before it gives up. */
+const WHOLE_RETRIES = 2;
+/** How long a click on a PDF waits for a second one before it switches the fit. */
+const PDF_CLICK_MS = 250;
 
 /** The file to show: what it is read through, its path under that one's folder, and the folder, for its full path. */
 export interface ViewerTarget {
@@ -58,11 +77,23 @@ export interface ViewerOptions {
   width: number;
   /** Long lines wrap rather than scroll sideways. */
   wrap: boolean;
-  /** Markdown and SVG show as written rather than drawn. */
+  /** Markdown, SVG and HTML show as written rather than drawn. */
   source: boolean;
   /** The window is wide enough for the viewer to sit beside the pane: its dock may be switched. */
   dockable: boolean;
   connected: boolean;
+  /** Where the host serves the document frame an HTML file's scripts run in; none on an older host. */
+  docFrame?: string;
+}
+
+/** A page made whole to be drawn (htmldoc.ts), or why it could not be read. */
+type DrawnPage = { html: string; missing: string[]; capped: boolean; failed?: string };
+
+/** An HTML file drawn in the document frame: the frame, the page made whole for it, and whether the frame said it is ready and has had it. */
+interface DocFrame {
+  frame: HTMLIFrameElement;
+  page: Promise<DrawnPage>;
+  sent: boolean;
 }
 
 /** The CSS Custom Highlight API, where the engine has it: search marks without touching the page. */
@@ -193,13 +224,19 @@ export class FileViewer {
   private note: HTMLElement;
   private body: HTMLElement;
   private rpc: HostRpc;
-  private folder: (target: ViewerTarget) => void;
+  private folder: (target: ViewerTarget) => boolean;
+  private open: (target: ViewerTarget, rel: string) => void;
+  /** An HTML file drawn, and what the viewer says of how it is drawn. */
+  private doc?: DocFrame;
+  private drawNote?: string;
   private target?: ViewerTarget;
   private opts?: ViewerOptions;
   private file?: FileText;
   private lines: string[] = [];
   private error?: string;
   private loading = false;
+  /** How much of a file read a piece at a time has come, while it comes. */
+  private progress?: number;
   private generation = 0;
   /** What the body shows, and what it is being drawn as: the file, its version, and whether as drawn markdown. */
   private drawn?: Drawn;
@@ -211,6 +248,10 @@ export class FileViewer {
   private pendingLine?: number;
   /** An image's size in pixels, once drawn. */
   private pixels?: { width: number; height: number };
+  /** A PDF drawn, and how many pages it has; a click on it waiting to see whether a second follows. */
+  private pdf?: PdfView;
+  private pages?: number;
+  private fitTimer?: ReturnType<typeof setTimeout>;
   /** The search bar, its field and its count; the matches of what shows, and the one gone to. */
   private findBar: HTMLElement;
   private findInput: HTMLInputElement;
@@ -220,10 +261,23 @@ export class FileViewer {
   private current = -1;
   private findTimer?: ReturnType<typeof setTimeout>;
 
-  /** `folder` is told when a path it was asked to show turns out to be a folder. */
-  constructor(rpc: HostRpc, folder: (target: ViewerTarget) => void) {
+  /**
+   * `folder` is told when a path it was asked to show turns out to be a folder, and says whether
+   * it showed it elsewhere; if not, the viewer says it is one. `open` opens a file of the folder
+   * a drawn page links to.
+   */
+  constructor(rpc: HostRpc, folder: (target: ViewerTarget) => boolean, open: (target: ViewerTarget, rel: string) => void) {
     this.rpc = rpc;
     this.folder = folder;
+    this.open = open;
+    // The document frame's words, from that frame alone: that it is ready for the page, and a link clicked in it.
+    window.addEventListener("message", (ev) => {
+      const doc = this.doc;
+      if (!doc?.frame.contentWindow || ev.source !== doc.frame.contentWindow) return;
+      const data = ev.data as { cophylaDocReady?: unknown; cophylaLink?: unknown } | null;
+      if (data?.cophylaDocReady === true) void this.sendDoc(doc);
+      else if (typeof data?.cophylaLink === "string") this.follow(data.cophylaLink);
+    });
     this.el = el("aside", "viewer");
     this.el.hidden = true;
     // The divider on the viewer's left edge, while it sits beside the pane: view.ts drags it.
@@ -340,10 +394,19 @@ export class FileViewer {
         this.step(ev.shiftKey ? -1 : 1);
       }
     });
-    // An image fits the viewer; a click shows it at its own size, and back.
+    // An image or a PDF fits the viewer; a click shows it at its own size, and back. On a PDF a
+    // click on its words, or one that ends a selection, is for selecting; a click elsewhere on it
+    // switches once no second click follows, since two select a word.
     this.body.addEventListener("click", (ev) => {
-      const box = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-image");
-      if (box) box.dataset["fit"] = box.dataset["fit"] === "1" ? "0" : "1";
+      const target = ev.target as Element | null;
+      const box = target?.closest<HTMLElement>(".viewer-image");
+      if (box) {
+        box.dataset["fit"] = box.dataset["fit"] === "1" ? "0" : "1";
+        return;
+      }
+      clearTimeout(this.fitTimer);
+      if (!target?.closest(".viewer-pdf") || target.closest(".textLayer span") || ev.detail > 1 || !(getSelection()?.isCollapsed ?? true)) return;
+      this.fitTimer = setTimeout(() => this.pdf?.toggleFit(), PDF_CLICK_MS);
     });
   }
 
@@ -382,8 +445,9 @@ export class FileViewer {
       this.error = undefined;
       this.drawn = undefined;
       this.pixels = undefined;
+      this.pages = undefined;
       this.clearMatches();
-      this.body.replaceChildren();
+      this.setBody();
       this.body.scrollTop = 0;
       this.sourceFor = target.line !== undefined ? key : undefined;
       this.pendingLine = target.line;
@@ -418,8 +482,10 @@ export class FileViewer {
     this.lines = [];
     this.drawn = undefined;
     this.pixels = undefined;
+    this.pages = undefined;
+    clearTimeout(this.fitTimer);
     this.closeFind(false);
-    this.body.replaceChildren();
+    this.setBody();
     this.el.hidden = true;
     this.el.remove();
   }
@@ -450,10 +516,14 @@ export class FileViewer {
     this.loading = true;
     if (!again) this.update();
     try {
-      // An image comes whole, to be drawn; an SVG comes as the text it is either way.
-      const ask = { path: target.rel, ...(imageKind(target.rel) !== undefined ? { image: true } : {}) };
-      const from = target.from;
-      const file = "session" in from ? await this.rpc.request<FileText>("session.file", { id: from.session, ...ask }) : await this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
+      // An image comes whole, a piece at a time, to be drawn; an SVG comes as the text it is either way.
+      const file = readsWhole(target.rel)
+        ? await this.readWhole(target.from, target.rel, (p) => {
+            if (generation !== this.generation) return;
+            this.progress = p;
+            this.update();
+          })
+        : await this.request(target.from, { path: target.rel, ...(imageKind(target.rel) !== undefined ? { image: true } : {}) });
       if (generation !== this.generation) return;
       this.error = undefined;
       this.file = file;
@@ -462,9 +532,8 @@ export class FileViewer {
       if (generation !== this.generation) return;
       const code = e instanceof ViewRpcError ? e.code : undefined;
       const message = e instanceof Error ? e.message : String(e);
-      if (code === "invalid" && / a folder$/.test(message)) {
+      if (code === "invalid" && / a folder$/.test(message) && this.folder(target)) {
         this.loading = false;
-        this.folder(target);
         return;
       }
       // Read again, a file that went away says so; one read before stays as it was otherwise.
@@ -473,13 +542,48 @@ export class FileViewer {
         this.lines = [];
         this.drawn = undefined;
         this.clearMatches();
-        this.body.replaceChildren();
+        this.setBody();
       }
       this.error = fileErrorWords(code, message);
     }
     this.loading = false;
+    this.progress = undefined;
     this.update();
     await this.paint();
+  }
+
+  /** One ask of a file, through what the viewer reads it through: an agent's session, or a bare terminal. */
+  private request(from: ViewerSource, ask: Record<string, unknown>): Promise<FileText> {
+    return "session" in from ? this.rpc.request<FileText>("session.file", { id: from.session, ...ask }) : this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
+  }
+
+  /**
+   * A file's bytes, read a piece at a time (`whole`), as one answer holding all of its base64;
+   * `progress` hears how much has come. An older node, which knows no pieces, answers the first
+   * ask as it would have (`image` sends a small image whole), and that answer is the file. Read
+   * again from the start should the file change between pieces.
+   */
+  async readWhole(from: ViewerSource, rel: string, progress?: (share: number) => void): Promise<FileText> {
+    for (let attempt = 0; ; attempt++) {
+      const first = await this.request(from, { path: rel, whole: true, image: true });
+      if (first.base64 === undefined || first.total === undefined) return first;
+      const pieces = [first.base64];
+      let at = (first.at ?? 0) + pieceBytes(first.base64);
+      let changed = false;
+      while (at < first.total) {
+        progress?.(at / first.total);
+        const next = await this.request(from, { path: rel, whole: true, image: true, at });
+        const got = next.base64 !== undefined ? pieceBytes(next.base64) : 0;
+        if (got === 0 || next.modified !== first.modified || next.size !== first.size || next.total !== first.total) {
+          changed = true;
+          break;
+        }
+        pieces.push(next.base64!);
+        at += got;
+      }
+      if (!changed) return { ...first, base64: pieces.join(""), at: 0 };
+      if (attempt >= WHOLE_RETRIES) throw new Error(`${rel} kept changing while it was read`);
+    }
   }
 
   /** The head and the note, from what is known: cheap, so every draw calls it. */
@@ -494,8 +598,10 @@ export class FileViewer {
     setText(this.el.querySelector(".viewer-name")!, name);
     setText(this.el.querySelector(".viewer-dir")!, slash > 0 ? target.rel.slice(0, slash) : "");
     this.el.querySelector<HTMLElement>(".viewer-title")!.title = joinPath(target.root, target.rel);
-    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, this.file.text !== undefined ? this.lines.length : undefined, this.pixels) : "");
-    const drawable = previewable(target.rel) && this.file?.text !== undefined;
+    // A file drawn whole has no text to show, whatever an older node sent of it.
+    const text = this.file?.text !== undefined && !readsWhole(target.rel);
+    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, text ? this.lines.length : undefined, this.pixels, this.pages) : "");
+    const drawable = previewable(target.rel) && text;
     const source = this.source();
     const modes = this.el.querySelector<HTMLElement>(".viewer-modes")!;
     modes.hidden = !drawable;
@@ -503,8 +609,8 @@ export class FileViewer {
     const wrap = this.el.querySelector<HTMLButtonElement>(".viewer-wrap")!;
     wrap.setAttribute("aria-pressed", opts.wrap ? "true" : "false");
     // Wrapping and searching are the text's: a drawing has none, an image has none.
-    wrap.hidden = this.file?.text === undefined || (drawable && !source);
-    const searchable = this.file?.text !== undefined && !(drawable && !source && fileLanguage(target.rel) !== "md");
+    wrap.hidden = !text || (drawable && !source);
+    const searchable = text && !(drawable && !source && fileLanguage(target.rel) !== "md");
     this.el.querySelector<HTMLButtonElement>(".viewer-find-open")!.hidden = !searchable;
     if (this.file !== undefined && !searchable && !this.findBar.hidden) this.closeFind(false);
     this.el.querySelector<HTMLButtonElement>(".viewer-refresh")!.disabled = !opts.connected || this.loading;
@@ -518,7 +624,7 @@ export class FileViewer {
     }
     const code = this.body.querySelector<HTMLElement>(".viewer-code");
     if (code && code.dataset["wrap"] !== (opts.wrap ? "1" : "0")) code.dataset["wrap"] = opts.wrap ? "1" : "0";
-    const words = this.error ?? (this.file ? viewerNote(this.file) : this.loading ? "Loading…" : "");
+    const words = this.error ?? (this.file ? viewerNote(this.file) || (this.drawNote ?? "") : this.loading ? (this.progress !== undefined ? `Loading… ${Math.round(this.progress * 100)}%` : "Loading…") : "");
     setText(this.note, words);
     this.note.hidden = words === "";
     this.note.dataset["error"] = this.error !== undefined ? "1" : "0";
@@ -541,21 +647,25 @@ export class FileViewer {
     if (same(this.painting, want)) return;
     this.painting = want;
     const paint = ++this.paints;
-    if (file.text === undefined) {
+    if (file.text === undefined || readsWhole(target.rel)) {
+      if (isPdf(target.rel) && file.base64 !== undefined) return this.paintPdf(want, paint, file.base64);
       this.painting = undefined;
       this.drawn = want;
       this.clearMatches();
-      this.body.replaceChildren(...(file.base64 !== undefined && file.mime !== undefined ? [this.image(`data:${file.mime};base64,${file.base64}`, target.rel)] : []));
+      this.setBody(...(file.base64 !== undefined && file.mime !== undefined ? [this.image(`data:${file.mime};base64,${file.base64}`, target.rel)] : []));
       return;
     }
     const text = file.text.replace(/\r\n?/g, "\n");
     let content: HTMLElement;
-    if (want.preview && language !== "md") {
+    if (want.preview && isHtml(target.rel)) {
+      content = this.page(target, file.truncated ? undefined : text);
+    } else if (want.preview && language !== "md") {
       // An SVG drawn as an image: in an `img`, where nothing in it runs and it reaches nothing.
       content = this.image(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(file.text)}`, target.rel);
     } else if (want.preview) {
       content = el("div", "viewer-md");
-      renderText(content, text, true, { file: true });
+      let images = 0;
+      renderText(content, text, true, { file: true, image: (href, alt, title) => (++images <= MD_IMAGES_MAX ? this.mdImage(target, href, alt, title) : undefined) });
       for (const code of Array.from(content.querySelectorAll<HTMLElement>("pre[data-lang] > code"))) {
         const lang = grammarName(code.parentElement!.dataset["lang"] ?? "");
         const src = code.textContent ?? "";
@@ -579,13 +689,161 @@ export class FileViewer {
     // Drawn again in place: the user's place is kept, a changed file's lines shifting under it as they would in an editor.
     const top = this.body.scrollTop;
     const left = this.body.scrollLeft;
-    this.body.replaceChildren(content);
+    this.setBody(content);
     this.body.scrollTop = top;
     this.body.scrollLeft = left;
     this.goToLine();
     // A search open over what was drawn before looks again, at about the same match.
     if (this.findBar.hidden) this.clearMatches();
     else this.runFind(false);
+  }
+
+  /**
+   * An image a drawn markdown file shows: one in the file's folder is read whole through what
+   * the viewer reads the file through and drawn as data once it comes, its alt text standing in
+   * should it not; one given as data is drawn as it is. One on the web is left its alt text
+   * (undefined), since the frame has no network.
+   */
+  private mdImage(target: ViewerTarget, href: string, alt: string, title: string | null): HTMLElement | undefined {
+    const img = el("img", "md-img");
+    img.alt = alt;
+    img.decoding = "async";
+    if (title) img.title = title;
+    if (/^data:image\//i.test(href)) {
+      img.src = href;
+      return img;
+    }
+    const rel = resolveRel(target.rel, href);
+    if (rel === undefined) return undefined;
+    const key = keyOf(target);
+    const instead = (why: string) => {
+      const words = el("span", "md-image", alt || href);
+      words.title = `${href}: ${why}`;
+      img.replaceWith(words);
+    };
+    img.dataset["loading"] = "1";
+    img.addEventListener("load", () => delete img.dataset["loading"], { once: true });
+    img.addEventListener("error", () => instead("it cannot be drawn"), { once: true });
+    this.readWhole(target.from, rel).then(
+      (file) => {
+        if (!this.target || keyOf(this.target) !== key) return;
+        if (file.base64 !== undefined) img.src = `data:${file.mime ?? "application/octet-stream"};base64,${file.base64}`;
+        else if (file.text !== undefined && imageKind(rel) === "SVG") img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(file.text)}`;
+        else instead(viewerNote(file) || "not an image this viewer draws");
+      },
+      (e: unknown) => instead(e instanceof ViewRpcError ? fileErrorWords(e.code, e.message) : e instanceof Error ? e.message : String(e)),
+    );
+    return img;
+  }
+
+  /** What the body shows, in place of what it showed: a PDF drawn before lets its pages and its document go, and a page its frame. */
+  private setBody(...nodes: Node[]): void {
+    if (this.pdf && !nodes.includes(this.pdf.el)) {
+      this.pdf.destroy();
+      this.pdf = undefined;
+    }
+    const doc = this.doc;
+    if (doc && !nodes.some((n) => n.contains(doc.frame))) {
+      this.doc = undefined;
+      this.drawNote = undefined;
+    }
+    this.body.replaceChildren(...nodes);
+  }
+
+  /**
+   * An HTML file drawn as a page: in the document frame the host serves, its scripts running,
+   * once the frame says it is ready and the page is made whole (`source` is its text, or
+   * undefined when only part of it came, and it is read whole); on a host that serves none, in
+   * a frame sandboxed to nothing, its scripts off, saying so.
+   */
+  private page(target: ViewerTarget, source: string | undefined): HTMLElement {
+    const box = el("div", "viewer-html");
+    const frame = el("iframe");
+    frame.title = target.rel.slice(target.rel.lastIndexOf("/") + 1);
+    box.append(frame);
+    const read = (rel: string) => this.asset(target.from, rel);
+    const page = (source !== undefined ? Promise.resolve(source) : read(target.rel).then((a) => (a === undefined ? "" : "text" in a ? a.text : new TextDecoder().decode(bytesOf(a.base64)))))
+      .then((html) => inlineDocument(html, target.rel, read))
+      .catch((e: unknown): DrawnPage => ({ html: "", missing: [], capped: false, failed: e instanceof ViewRpcError ? fileErrorWords(e.code, e.message) : e instanceof Error ? e.message : String(e) }));
+    const docFrame = this.opts?.docFrame;
+    if (docFrame) {
+      frame.setAttribute("sandbox", "allow-scripts");
+      this.doc = { frame, page, sent: false };
+      frame.src = docFrame;
+    } else {
+      frame.setAttribute("sandbox", "");
+      void page.then((p) => {
+        // Another file, or the page as written, shows by now: this one is dropped.
+        if (!frame.isConnected) return;
+        frame.srcdoc = p.html;
+        this.noteDrawn(p, "This app runs no page's scripts: update it to run them. The page shows without them.");
+      });
+    }
+    return box;
+  }
+
+  /** The page made whole, into the document frame that said it is ready, once. */
+  private async sendDoc(doc: DocFrame): Promise<void> {
+    if (doc.sent) return;
+    doc.sent = true;
+    const p = await doc.page;
+    if (this.doc !== doc) return;
+    doc.frame.contentWindow?.postMessage({ cophylaDoc: p.html }, "*");
+    this.noteDrawn(p);
+  }
+
+  /** What the viewer says of a page drawn: what it could not put in, and why its scripts are off. */
+  private noteDrawn(p: DrawnPage, why?: string): void {
+    const words = [p.failed !== undefined ? `This page could not be read whole: ${p.failed}` : undefined, why, p.missing.length > 0 ? `Not found beside it: ${p.missing.slice(0, 3).join(", ")}${p.missing.length > 3 ? ` and ${p.missing.length - 3} more` : ""}.` : undefined, p.capped ? "It loads more than the viewer puts in a page; the rest is left out." : undefined].filter(Boolean).join(" ");
+    this.drawNote = words === "" ? undefined : words;
+    this.update();
+  }
+
+  /** A file a page loads, read whole through what the viewer reads it through: its bytes, or an older node's text; nothing when it cannot be read. */
+  private async asset(from: ViewerSource, rel: string): Promise<Asset | undefined> {
+    const f = await this.readWhole(from, rel);
+    if (f.base64 !== undefined) return { base64: f.base64, mime: f.mime ?? "application/octet-stream" };
+    if (f.text !== undefined && !f.truncated) return { text: f.text };
+    return undefined;
+  }
+
+  /** A link clicked in a drawn page: a web page to the user's browser, a file of the folder to the viewer. */
+  private follow(href: string): void {
+    const target = this.target;
+    if (!target) return;
+    if (/^https?:\/\//i.test(href)) {
+      this.rpc.request("host.openLink", { url: href }).catch((e: unknown) => console.warn(`the link did not open: ${e instanceof Error ? e.message : String(e)}`));
+      return;
+    }
+    const rel = resolveRel(target.rel, href);
+    if (rel !== undefined) this.open(target, rel);
+  }
+
+  /** A PDF opened by pdf.js and its pages laid out in the body, the place kept when it is drawn again; why not, when it cannot be. */
+  private async paintPdf(want: Drawn, paint: number, base64: string): Promise<void> {
+    let view: PdfView | undefined;
+    let why: string | undefined;
+    try {
+      view = await PdfView.open(bytesOf(base64));
+    } catch (e) {
+      why = e instanceof PdfError ? e.message : `This PDF cannot be drawn: ${e instanceof Error ? e.message : String(e)}`;
+    }
+    // A newer paint, another file or none since: this one is dropped.
+    if (paint !== this.paints || !this.target || keyOf(this.target) !== want.key) {
+      view?.destroy();
+      return;
+    }
+    this.painting = undefined;
+    this.drawn = want;
+    this.clearMatches();
+    const top = this.body.scrollTop;
+    this.setBody(...(view ? [view.el] : []));
+    this.pdf = view;
+    this.pages = view?.pages;
+    if (why !== undefined) this.error = why;
+    view?.attach(this.body);
+    this.body.scrollTop = top;
+    this.update();
   }
 
   /** An image, fitted to the viewer until clicked, on a checkerboard its transparent parts show; its size in pixels goes in the head once it is drawn. */
@@ -787,13 +1045,18 @@ function same(a: Drawn | undefined, b: Drawn): boolean {
   return a !== undefined && a.key === b.key && a.version === b.version && a.preview === b.preview;
 }
 
+/** How many bytes a piece's base64 holds. */
+function pieceBytes(base64: string): number {
+  return (base64.length / 4) * 3 - (base64.endsWith("==") ? 2 : base64.endsWith("=") ? 1 : 0);
+}
+
 function keyOf(t: ViewerTarget): string {
   return `${"session" in t.from ? t.from.session : `terminal:${t.from.terminal}`}\n${t.rel}`;
 }
 
-/** Markdown and SVG can be drawn, or shown as written. */
+/** Markdown, SVG and HTML can be drawn, or shown as written. */
 function previewable(rel: string): boolean {
-  return fileLanguage(rel) === "md" || imageKind(rel) === "SVG";
+  return fileLanguage(rel) === "md" || imageKind(rel) === "SVG" || isHtml(rel);
 }
 
 /** A range over characters `start` to `end` of an element's text, however its text is split into nodes. */

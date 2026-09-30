@@ -8,19 +8,28 @@
 // A file under the directory is read for a viewer by the same rule: its first MiB as text,
 // decoded from UTF-8 or from UTF-16 by its byte order mark, or only that it is not text when
 // a NUL shows in its first 8000 bytes, as git decides; an image asked for as one comes whole,
-// as base64, up to 5 MiB. A folder, a pipe or a device is refused before anything opens it, so
-// a read never waits on a writer. The folder a bare terminal started in is read the same way.
+// as base64, up to 5 MiB. A file asked for whole comes as its bytes, whatever it is, a piece of
+// WHOLE_CHUNK at a time up to WHOLE_MAX, for a viewer that draws it (an image, a PDF, what a
+// page loads): a TIFF or a HEIC image as the PNG the computer's own codecs make of it
+// (convert.ts), kept a while so every piece is of the same PNG. A folder, a pipe or a device is
+// refused before anything opens it, so a read never waits on a writer. The folder a bare terminal started in is read the same way.
+// A file or a folder under the directory is shown in the computer's own file manager by the
+// same rule (`reveal`, reveal.ts).
 // On a Mac without the developer tools `/usr/bin/git` is Apple's stub, which opens the tools'
 // install dialog every time it runs: that git is used only when the active developer folder
 // (`xcode-select -p`) has a git in it, and a Mac with neither reads no repository.
 
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import type { Stats } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { ClientResult, FileEntry, FileText, FolderListing, GitState, Session } from "@cophyla/protocol";
+import { ConvertError, convertKind, systemConverter } from "./convert.ts";
+import type { ImageConverter } from "./convert.ts";
 import { isWithin } from "./paths.ts";
+import type { Revealer } from "./reveal.ts";
 
 /** Entries listed per folder; the rest are left out, and the listing says so. */
 export const FILES_MAX = 2000;
@@ -33,6 +42,16 @@ export const FILE_TEXT_MAX = 1024 * 1024;
 const SNIFF_BYTES = 8000;
 /** Bytes of an image a viewer is sent whole; a bigger one comes as binary, with nothing to show. */
 export const IMAGE_MAX = 5 * 1024 * 1024;
+/**
+ * Bytes of a file read whole per answer: a multiple of three, so the pieces' base64 joins as
+ * it is, and small enough that an answer sealed for the relay (base64 twice over) stays under
+ * the relay server's 4 MiB message.
+ */
+export const WHOLE_CHUNK = 1.5 * 1024 * 1024;
+/** Bytes of a file sent whole at most; a bigger one comes as binary, with nothing to show. */
+export const WHOLE_MAX = 64 * 1024 * 1024;
+/** Converted images kept, so a PNG sent a piece at a time is made once. */
+const CONVERTED_KEEP = 3;
 
 /** The images a viewer draws, by extension: what a browser shows in an `img`, SVG aside (it is text, and comes as text). */
 const IMAGE_TYPES: Readonly<Record<string, string>> = {
@@ -46,16 +65,54 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
   avif: "image/avif",
 };
 
+/** What else a viewer reads whole, by extension: a PDF it draws, the page it runs, and what a page loads beside it. */
+const WHOLE_TYPES: Readonly<Record<string, string>> = {
+  ...IMAGE_TYPES,
+  apng: "image/apng",
+  jfif: "image/jpeg",
+  svg: "image/svg+xml",
+  pdf: "application/pdf",
+  html: "text/html",
+  htm: "text/html",
+  xhtml: "application/xhtml+xml",
+  css: "text/css",
+  js: "text/javascript",
+  mjs: "text/javascript",
+  json: "application/json",
+  woff: "font/woff",
+  woff2: "font/woff2",
+  ttf: "font/ttf",
+  otf: "font/otf",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  mp4: "video/mp4",
+  webm: "video/webm",
+};
+
+function extension(path: string): string {
+  const dot = path.lastIndexOf(".");
+  return dot > path.lastIndexOf("/") ? path.slice(dot + 1).toLowerCase() : "";
+}
+
 /** An image's type by its path's extension, or undefined for a path that names none. */
 export function imageMime(path: string): string | undefined {
-  const dot = path.lastIndexOf(".");
-  const ext = dot > path.lastIndexOf("/") ? path.slice(dot + 1).toLowerCase() : "";
+  const ext = extension(path);
   return Object.hasOwn(IMAGE_TYPES, ext) ? IMAGE_TYPES[ext] : undefined;
+}
+
+/** A file's type as a whole read sends it, by its path's extension; bytes of no known kind otherwise. */
+export function wholeMime(path: string): string {
+  const ext = extension(path);
+  return Object.hasOwn(WHOLE_TYPES, ext) ? WHOLE_TYPES[ext]! : "application/octet-stream";
 }
 
 export interface ReadOptions {
   /** An image is to come whole, as base64, when it is small enough. */
   image?: boolean;
+  /** The file is to come as its bytes, the piece starting `at` bytes in. */
+  whole?: boolean;
+  at?: number;
 }
 
 /** Runs git with `args` in `cwd`: its exit code and output, or undefined when there is no git to run. */
@@ -72,6 +129,21 @@ export interface SessionFilesDeps {
   /** Bytes of an image sent whole; IMAGE_MAX unless a test says. */
   imageMax?: number;
   platform?: string;
+  /** Shows a path in this computer's file manager; none where the daemon may open no window (a test). */
+  revealer?: Revealer;
+  /** Makes a TIFF or a HEIC a PNG; the computer's own codecs unless a test says. */
+  converter?: ImageConverter;
+  /** Bytes per piece of a whole read, and the most sent whole; WHOLE_CHUNK and WHOLE_MAX unless a test says. */
+  wholeChunk?: number;
+  wholeMax?: number;
+}
+
+/** Where a path under a folder leads: the path as the folder spells it, the real one past any link, what is there, and its stat. */
+export interface Resolved {
+  path: string;
+  real: string;
+  kind: "file" | "dir";
+  info: Stats;
 }
 
 export type FilesResult = ClientResult<"session.files">;
@@ -142,6 +214,8 @@ export function fileSummary(r: FileText): unknown {
     ...(r.truncated ? { truncated: true } : {}),
     ...(r.binary ? { binary: true } : {}),
     ...(r.base64 !== undefined ? { mime: r.mime, base64: r.base64.length } : {}),
+    ...(r.at !== undefined ? { at: r.at } : {}),
+    ...(r.total !== undefined ? { total: r.total } : {}),
   };
 }
 
@@ -218,6 +292,8 @@ function readError(path: string, e: unknown): RpcError {
 export class SessionFiles {
   private deps: SessionFilesDeps;
   private reading = new Map<string, Promise<GitState | undefined>>();
+  /** Converted images by their real path, time and size, the newest last. */
+  private converted = new Map<string, Promise<Uint8Array | ConvertError>>();
 
   constructor(deps: SessionFilesDeps) {
     this.deps = deps;
@@ -278,32 +354,53 @@ export class SessionFiles {
   }
 
   /**
-   * A file under a folder (a session's directory, or the folder a terminal started in), by its
-   * path there: its text, the first `textMax` bytes of a longer one, or that it is not text; an
-   * image asked for as one comes whole, as base64, up to `imageMax`. One outside the folder,
-   * through `..` or a link that leads out, is refused, and so is anything but a plain file.
+   * Where a path under a folder (a session's directory, or the folder a terminal started in)
+   * leads, by its path there, `""` the folder itself: a plain file or a folder, once its stat
+   * says which. One outside the folder, through `..` or a link that leads out, is refused, and
+   * so is anything else there (a pipe, a device), before anything opens it.
    */
-  async readUnder(root: string, path: string, opts: ReadOptions = {}): Promise<FileText> {
+  async resolveUnder(root: string, path: string): Promise<Resolved> {
     const platform = this.deps.platform ?? process.platform;
     const parts = folderParts(path, platform);
-    if (!parts || parts.length === 0) throw new RpcError("invalid", `${path}: not a file under the folder`);
+    if (!parts) throw new RpcError("invalid", `${path}: not a path under the folder`);
     let real: string;
     try {
       real = await realpath(root);
     } catch (e) {
       throw new RpcError("not_found", `${root}: ${why(e)}`);
     }
+    const joined = join(root, ...parts);
     let target: string;
     try {
-      target = await realpath(join(root, ...parts));
+      target = await realpath(joined);
     } catch (e) {
       throw readError(path, e);
     }
     // A link inside may lead anywhere: what it leads to must still be under the directory.
     if (!isWithin(target, real, platform)) throw new RpcError("denied", `${path}: outside the folder`);
+    let info: Stats;
     try {
-      const info = await stat(target);
-      if (!info.isFile()) throw new RpcError("invalid", `${path}: ${info.isDirectory() ? "a folder" : "not a file"}`);
+      info = await stat(target);
+    } catch (e) {
+      throw readError(path, e);
+    }
+    if (!info.isFile() && !info.isDirectory()) throw new RpcError("invalid", `${path}: not a file`);
+    return { path: joined, real: target, kind: info.isDirectory() ? "dir" : "file", info };
+  }
+
+  /**
+   * A file under a folder (a session's directory, or the folder a terminal started in), by its
+   * path there: its text, the first `textMax` bytes of a longer one, or that it is not text; an
+   * image asked for as one comes whole, as base64, up to `imageMax`. One outside the folder,
+   * through `..` or a link that leads out, is refused, and so is anything but a plain file.
+   */
+  async readUnder(root: string, path: string, opts: ReadOptions = {}): Promise<FileText> {
+    const parts = folderParts(path, this.deps.platform ?? process.platform);
+    if (!parts || parts.length === 0) throw new RpcError("invalid", `${path}: not a file under the folder`);
+    const { real: target, kind, info } = await this.resolveUnder(root, path);
+    if (kind === "dir") throw new RpcError("invalid", `${path}: a folder`);
+    if (opts.whole) return this.readWhole(path, target, info, opts.at ?? 0);
+    try {
       const mime = opts.image ? imageMime(path) : undefined;
       const whole = mime !== undefined && info.size <= (this.deps.imageMax ?? IMAGE_MAX);
       const file = await open(target, "r");
@@ -329,6 +426,73 @@ export class SessionFiles {
     } catch (e) {
       throw e instanceof RpcError ? e : readError(path, e);
     }
+  }
+
+  /**
+   * A file's bytes from `at`, a piece of `wholeChunk`, for a viewer that draws the file: `total`
+   * says how many there are in all. A TIFF or a HEIC comes as the PNG its codecs make of it, or
+   * as `binary` with a note when none can; a file past `wholeMax` comes as `binary` alone.
+   */
+  private async readWhole(path: string, target: string, info: Stats, at: number): Promise<FileText> {
+    const base = { path, size: info.size, modified: Math.max(0, Math.round(info.mtimeMs)) };
+    const chunk = this.deps.wholeChunk ?? WHOLE_CHUNK;
+    const kind = convertKind(path);
+    if (kind !== undefined) {
+      const png = await this.convert(target, info, kind);
+      if (png instanceof ConvertError) return { ...base, binary: true, note: png.message };
+      if (at > png.length) throw new RpcError("invalid", `${path}: ${at} is past its end`);
+      const piece = png.subarray(at, at + chunk);
+      return { ...base, mime: "image/png", base64: Buffer.from(piece.buffer, piece.byteOffset, piece.length).toString("base64"), at, total: png.length };
+    }
+    if (info.size > (this.deps.wholeMax ?? WHOLE_MAX)) return { ...base, binary: true };
+    if (at > info.size) throw new RpcError("invalid", `${path}: ${at} is past its end`);
+    try {
+      const file = await open(target, "r");
+      try {
+        const bytes = new Uint8Array(Math.min(chunk, info.size - at));
+        let got = 0;
+        while (got < bytes.length) {
+          const { bytesRead } = await file.read(bytes, got, bytes.length - got, at + got);
+          if (bytesRead === 0) break;
+          got += bytesRead;
+        }
+        return { ...base, mime: wholeMime(path), base64: Buffer.from(bytes.buffer, bytes.byteOffset, got).toString("base64"), at, total: info.size };
+      } finally {
+        await file.close();
+      }
+    } catch (e) {
+      throw e instanceof RpcError ? e : readError(path, e);
+    }
+  }
+
+  /** A TIFF or a HEIC as a PNG, made once per version of the file and kept for its next pieces; why not, when it cannot be. */
+  private convert(real: string, info: Stats, kind: string): Promise<Uint8Array | ConvertError> {
+    const key = `${real}\n${info.mtimeMs}\n${info.size}`;
+    let made = this.converted.get(key);
+    if (made) {
+      this.converted.delete(key);
+    } else {
+      const converter = (this.deps.converter ??= systemConverter());
+      made = converter(real, kind).catch((e: unknown) => (e instanceof ConvertError ? e : new ConvertError(`This ${kind} image could not be read here: ${e instanceof Error ? e.message : String(e)}`)));
+    }
+    this.converted.set(key, made);
+    for (const old of this.converted.keys()) {
+      if (this.converted.size <= CONVERTED_KEEP) break;
+      this.converted.delete(old);
+    }
+    return made;
+  }
+
+  /**
+   * Shows a path under the session's directory, `""` the directory itself, in this computer's
+   * file manager: a file selected in its folder, a folder opened. Refused as a read is refused;
+   * `unsupported` where the daemon has no file manager to open.
+   */
+  async reveal(id: string, path: string): Promise<void> {
+    const at = await this.resolveUnder(this.cwd(id), path);
+    if (!this.deps.revealer) throw new RpcError("unsupported", "this computer has no file manager to show files in");
+    // The path as the explorer lists it: a link shows as itself, in its own folder.
+    await this.deps.revealer(at.path, at.kind);
   }
 
   /** The repository the session's directory is in; undefined outside one, or without git. */

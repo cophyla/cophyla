@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Document</title></head>
+<body>
+<script>
+addEventListener("message", function (ev) {
+  if (ev.source !== parent || !ev.data || typeof ev.data.cophylaDoc !== "string") return;
+  document.open();
+  document.write(ev.data.cophylaDoc);
+  document.close();
+});
+parent.postMessage({ cophylaDocReady: true }, "*");
+</script>
+</body>
+</html>

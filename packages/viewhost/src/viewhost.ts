@@ -16,6 +16,8 @@
 // is kept in this page's storage, under the view's id, and comes back in its `host.ready`.
 // Where the files come from is the host's: the desktop app fetches them with `view.get` and
 // stages them on its native side, the controller asks the node for a `view.stage` ticket.
+// Staging also says where the host serves the document frame, when it does, and the view is
+// told in its `host.ready`.
 
 import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
@@ -26,10 +28,15 @@ import type { VoiceSettings } from "./settings.ts";
 import type { Connection, LinkSnapshot } from "./connection.ts";
 import type { SnapshotCache } from "./snapshot.ts";
 
-/** Where a view's files are served for the frame: `base` + the manifest's entry is the URL; `version` is what was staged when the host knows it. */
+/**
+ * Where a view's files are served for the frame: `base` + the manifest's entry is the URL;
+ * `version` is what was staged when the host knows it; `docFrame` where the host serves the
+ * document frame, when it does.
+ */
 export interface Staged {
   base: string;
   version?: string;
+  docFrame?: string;
 }
 
 export interface ViewHostDeps {
@@ -197,6 +204,7 @@ export class ViewHost {
         openSettings: () => this.openSettings(),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),
         ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
+        ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },
       {

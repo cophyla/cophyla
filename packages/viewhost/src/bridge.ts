@@ -34,7 +34,9 @@
 // which `filePaths` in `host.ready` says; the shell hands a drop over once, and only while it
 // is fresh. On Windows the view asks WebView2 itself instead, past this bridge: WebView2
 // grants a dropped file to the frame's process alone, so only the frame can hand it on
-// (apps/ui/src-tauri/src/dropped.rs). DOM-free.
+// (apps/ui/src-tauri/src/dropped.rs). `docFrame` in `host.ready` is where the host serves the
+// document frame (@cophyla/protocol's docframe.ts), in which a view may run an HTML file's
+// scripts apart from its own; a host that serves none leaves it out. DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -70,6 +72,8 @@ export interface HostReady {
   prefs?: ViewPrefs;
   /** The host says where files dropped on the view from the desktop are (`host.filePaths`): the desktop app. */
   filePaths?: boolean;
+  /** Where the host serves the document frame, which the view may frame to run an HTML file's scripts. */
+  docFrame?: string;
 }
 
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
@@ -110,6 +114,8 @@ export interface BridgeConfig {
   prefs?: PrefsStore;
   /** Where the files just dropped on the view are, by their names, in their order, or with no names all of them where the shell allows it (`host.filePaths`); absent, it answers `unsupported`. */
   filePaths?: (names?: string[]) => Promise<string[]>;
+  /** Where the host serves the document frame; absent, `host.ready` names none. */
+  docFrame?: string;
 }
 
 /** The requests a view may make of the host itself, by method. */
@@ -180,6 +186,7 @@ export class Bridge {
   private savePrefs?: HostRequests;
   /** `host.filePaths`: the paths, once the names, if any, are file names. */
   private filePaths?: HostRequests;
+  private docFrame?: string;
   private n = 0;
   /** The host's microphone as last said, so a view that loads while it is off hears it. */
   private micState: HostMic = {};
@@ -227,6 +234,7 @@ export class Bridge {
     }
     const dropped = cfg.filePaths;
     if (dropped) this.filePaths = async (_method, params) => ({ paths: await dropped(droppedNames(params)) });
+    if (cfg.docFrame) this.docFrame = cfg.docFrame;
     this.io = io;
   }
 
@@ -325,6 +333,7 @@ export class Bridge {
     const prefs = this.prefs?.load();
     if (prefs) params.prefs = prefs;
     if (this.filePaths) params.filePaths = true;
+    if (this.docFrame) params.docFrame = this.docFrame;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
     if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));

@@ -5,7 +5,10 @@
 // strikethrough, bare links), and a single newline is a line break, as a chat means it; in a
 // file the viewer shows, as in a README on GitHub, it is not. A
 // link is drawn as one with its address for a title, and goes nowhere: only a terminal's
-// links open (`host.openLink`). An image is its alt text: the frame has no network. The top-level blocks are
+// links open (`host.openLink`). An image is its alt text, its title and address in its tooltip:
+// the frame has no network. A file's markdown may be given a hook that draws an image itself
+// (the viewer's, which reads one in the file's folder whole and draws it as data); what the
+// hook declines, an image on the web, stays its alt text. The top-level blocks are
 // reconciled against the source each was read from, so a reply that streams rebuilds only
 // its last block, and a text that did not change is not read again. A slot marker in the
 // text (model.ts's `slot(i)`) becomes an empty `span.slot` where it stands, in a sentence or wherever
@@ -25,6 +28,12 @@ const HEADINGS = ["h1", "h2", "h3", "h4", "h5", "h6"] as const;
 const sources = new WeakMap<Node, string>();
 /** The text a container shows as typed, when it has slots in it. */
 const typed = new WeakMap<Node, string>();
+
+/** Draws an image a file's markdown shows, from its address, its alt text and its title; undefined leaves it its alt text. */
+export type ImageHook = (href: string, alt: string, title: string | null) => HTMLElement | undefined;
+
+/** The hook of the file being rendered, while it renders: the rendering is synchronous, so none leaks to another. */
+let imageHook: ImageHook | undefined;
 
 
 /** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill. */
@@ -88,8 +97,13 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
         break;
       }
       case "image": {
+        const drawn = imageHook?.(t.href, t.text, t.title ?? null);
+        if (drawn) {
+          parent.append(drawn);
+          break;
+        }
         const image = el("span", "md-image", t.text || t.href);
-        image.title = t.href;
+        image.title = t.title ? `${t.title}\n${t.href}` : t.href;
         parent.append(image);
         break;
       }
@@ -204,17 +218,21 @@ function renderMarkdown(container: HTMLElement, text: string, options: typeof OP
 /**
  * Sets a container's text: as markdown (class `md`) when a model wrote it, else as it was
  * typed, for `white-space: pre-wrap` to show. Text that marked cannot read is shown as typed.
- * A `file`'s markdown keeps a single newline inside its paragraph.
+ * A `file`'s markdown keeps a single newline inside its paragraph, and its images are drawn by
+ * `image` when it is given one.
  */
-export function renderText(container: HTMLElement, text: string, markdown: boolean, opts: { file?: boolean } = {}): void {
+export function renderText(container: HTMLElement, text: string, markdown: boolean, opts: { file?: boolean; image?: ImageHook } = {}): void {
   if (markdown && sources.get(container) === text) return;
   if (markdown) {
+    imageHook = opts.file ? opts.image : undefined;
     try {
       renderMarkdown(container, text, opts.file ? FILE_OPTIONS : OPTIONS);
       container.classList.add("md");
       return;
     } catch {
       // Falls through to the text as typed.
+    } finally {
+      imageHook = undefined;
     }
   }
   container.classList.remove("md");

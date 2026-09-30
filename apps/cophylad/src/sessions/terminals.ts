@@ -176,7 +176,8 @@ export interface OsTerminalOptions {
   exists?: (path: string) => boolean;
 }
 
-function detach(command: string, args: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; verbatim?: boolean }): void {
+/** Starts a program that outlives the daemon, not waited on: a terminal's window, or a file manager's (reveal.ts). */
+export function detach(command: string, args: string[], opts: { cwd?: string; env?: Record<string, string | undefined>; verbatim?: boolean }): void {
   const child = spawn(command, args, {
     ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
     ...(opts.env !== undefined ? { env: opts.env as NodeJS.ProcessEnv } : {}),

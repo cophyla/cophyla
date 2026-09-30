@@ -13,8 +13,10 @@
 // Files, the default, an explorer of the folder the agent works in, its folders folding open
 // a level at a time, a file opening in the viewer at a click (fileview.ts, the file it shows
 // marked in the tree), and each row dragged onto the chat or the terminal to drop its path
-// there, and at its foot the repository's branch and the commits to pull and to push. Which
-// of the two shows is the same for every agent;
+// there, and at its foot the repository's branch and the commits to pull and to push. A
+// right-click on a row, or on the folder's name over them, opens a menu where it was clicked
+// that shows the file or the folder in the file manager of the computer it is on, which only
+// the desktop app there can do. Which of the two shows is the same for every agent;
 // the chat stream and every session pane stay in the DOM and only the selected one shows,
 // so the chat keeps its place when the user comes back, and a session's pane holds rows
 // only while its tab is open. Above a timeline, and at the top of the chat, a button loads
@@ -45,7 +47,7 @@ import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, Cli
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -84,8 +86,8 @@ export interface UiState {
   openDirs: Map<string, Set<string>>;
   /** The explorer's row the user last picked, per folder it shows. */
   picked: Map<string, string>;
-  /** A file a chip asked the Files panel to show: its row is scrolled to and focused once it is listed. */
-  reveal?: { place: string; rel: string };
+  /** A file or a folder the Files panel is to show: its row is scrolled to once it is listed, and focused when `focus` says (a chip's, a folder's). */
+  reveal?: { place: string; rel: string; focus: boolean };
   /** The file open in each tab, over its pane or beside it (fileview.ts): an agent's by session, a bare terminal's by `terminal:<id>` (`viewerTab`). */
   viewers: Map<string, ViewerFile>;
   /** Where the viewer sits on a wide window and its share of the width beside the pane, whether long lines wrap, and whether markdown and SVG show as written: the same for every file, kept on the device. */
@@ -105,6 +107,12 @@ export interface UiState {
   newTerminal?: TerminalMenu;
   /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
   railMenu?: { note?: string };
+  /**
+   * The Files panel's menu is open for a row (`rel`, `""` the folder itself), at the point it
+   * was asked for; with what went wrong when the file manager could not show it, and while the
+   * request is on its way.
+   */
+  fileMenu?: { place: string; rel: string; kind: "file" | "dir"; x: number; y: number; note?: string; busy?: boolean };
   /** A bare terminal being ended from its bar: the user is asked to confirm, then it is on its way until it exits. */
   end?: { terminal: string; phase: "asking" | "ending" };
   /** This node's restart: asked, refused while busy with the reasons, or under way until the line is back. */
@@ -1583,11 +1591,12 @@ function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, sessi
   tree.setAttribute("aria-label", `Files in ${name}`);
   const rows = ex ? selectFileRows(ex, ui.openDirs.get(place) ?? NO_FOLDERS) : [];
   const picked = ui.picked.get(place);
-  const shown = ui.viewers.get(session.id);
-  const viewing = shown && "session" in shown.from && shown.from.session === session.id ? shown.rel : undefined;
+  // The file the tab's viewer shows, by its full path: read through this agent, another whose folder holds it, or a terminal.
+  const viewing = viewingKey(state, session, ui.viewers.get(session.id));
+  const platform = state.nodes.get(session.node)?.platform;
   // One row takes the Tab key, the one picked or else the first; the arrows move from it.
   const current = rows.find((r) => r.key === picked && (r.kind === "dir" || r.kind === "file"))?.key ?? rows.find((r) => r.kind === "dir" || r.kind === "file")?.key;
-  reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current, viewing));
+  reconcile(tree, rows, (r) => r.key, createFileRow, (row, r) => updateFileRow(row, r, picked, current, r.kind === "file" && viewing !== undefined && placeKey(r.path, platform) === viewing));
   const note = block.querySelector<HTMLElement>(".explorer-note")!;
   const words = explorerNote(ex);
   setText(note, words);
@@ -1612,10 +1621,10 @@ function createFileRow(): HTMLElement {
   return row;
 }
 
-function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined, current: string | undefined, viewing: string | undefined): void {
+function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined, current: string | undefined, viewing: boolean): void {
   const item = r.kind === "dir" || r.kind === "file";
   setData(row, "kind", r.kind);
-  setData(row, "viewing", r.kind === "file" && r.key === viewing ? "1" : "0");
+  setData(row, "viewing", viewing ? "1" : "0");
   setData(row, "rel", r.key);
   setData(row, "path", r.path);
   setData(row, "loading", r.loading ? "1" : "0");
@@ -1640,6 +1649,47 @@ function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined,
     row.title = r.kind === "more" ? "This folder has more entries than the explorer lists" : r.path;
   }
   setText(row.querySelector(".file-name")!, r.name);
+}
+
+/**
+ * The Files panel's menu, fixed where it was asked for and kept inside the frame: its one item
+ * shows the row in the file manager of the computer it is on, named as that computer names it,
+ * and is disabled with the reason where this view cannot (only the desktop app there can).
+ */
+function renderFileMenu(app: HTMLElement, state: ViewState, ui: UiState): void {
+  let menu = app.querySelector<HTMLElement>(":scope > .file-menu");
+  const m = ui.fileMenu;
+  const session = m ? explorerSession(state, ui) : undefined;
+  if (!m || !session || explorerKey(state, session) !== m.place) {
+    if (menu) setHidden(menu, true);
+    return;
+  }
+  if (!menu) {
+    menu = el("div", "rail-menu file-menu");
+    menu.setAttribute("role", "menu");
+    const item = actionButton("rail-menu-item file-menu-reveal", "", "file-reveal");
+    item.setAttribute("role", "menuitem");
+    menu.append(item, el("p", "rail-menu-note"));
+    app.append(menu);
+  }
+  const item = menu.querySelector<HTMLButtonElement>(".file-menu-reveal")!;
+  const label = revealLabel(state.nodes.get(session.node)?.platform, m.kind);
+  setText(item, label);
+  const ex = state.explorers.get(m.place);
+  item.title = joinPath(ex?.root ?? session.cwd, m.rel);
+  menu.setAttribute("aria-label", m.rel === "" ? "The folder" : (m.rel.split("/").pop() ?? m.rel));
+  const blocked = revealBlocked(state, session);
+  item.disabled = blocked !== undefined || !state.connected || m.busy === true;
+  const note = menu.querySelector<HTMLElement>(".rail-menu-note")!;
+  const words = m.note ?? blocked ?? "";
+  setText(note, words);
+  setHidden(note, words === "");
+  setHidden(menu, false);
+  // Where it was asked for, moved in from an edge it would run past.
+  const x = Math.max(4, Math.min(m.x, window.innerWidth - menu.offsetWidth - 4));
+  const y = Math.max(4, Math.min(m.y, window.innerHeight - menu.offsetHeight - 4));
+  menu.style.left = `${x}px`;
+  menu.style.top = `${y}px`;
 }
 
 /** The ⋮ menu beside the chat's tab: Change view and Settings, and why one did not open when it could not. */
@@ -2490,6 +2540,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   setData(roots.app, "menu", state.hostMenu ? "host" : "view");
   renderRailbar(roots.railbar, state, ui, opts.railShown ?? false);
   renderTabs(roots.tabs, state, ui);
+  renderFileMenu(roots.app, state, ui);
   setHidden(roots.stream, ui.selected !== undefined || ui.terminal !== undefined);
   setHidden(roots.terminal, ui.terminal === undefined);
   ensureEmpty(roots.stream, state);

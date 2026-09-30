@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -492,6 +492,15 @@ describe("default view model", () => {
     expect(s.hostFilePaths).toBe(true);
     apply(s, { type: "host.ready", params: READY });
     expect(s.hostFilePaths).toBe(false);
+  });
+
+  test("an HTML file's scripts run only in a document frame the host says it serves", () => {
+    const s = ready();
+    expect(s.hostDocFrame).toBeUndefined();
+    apply(s, { type: "host.ready", params: { ...READY, docFrame: "http://doc.localhost/doc/frame.html" } });
+    expect(s.hostDocFrame).toBe("http://doc.localhost/doc/frame.html");
+    apply(s, { type: "host.ready", params: READY });
+    expect(s.hostDocFrame).toBeUndefined();
   });
 
   test("loaded threads and messages take their place among audit rows, oldest first; a session is a tab, not an item", () => {
@@ -2007,6 +2016,50 @@ describe("default view: the explorer", () => {
     // A POSIX node's folder, case kept.
     apply(s, { type: "session.state", params: session("sess_nix", 5, { cwd: "/home/me/Code", node: OTHER }) });
     expect(fileHome(s, OTHER, "/home/me/Code/a/b.rs")?.rel).toBe("a/b.rs");
+  });
+
+  test("the file a tab's viewer shows, by its full path, however it was read: through the agent, another's folder, or a terminal", () => {
+    const s = ready();
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    apply(s, { type: "session.state", params: session("sess_repo", 1, { cwd: "C:\\D\\site" }) });
+    apply(s, { type: "session.state", params: session("sess_app", 2, { cwd: "C:\\D\\site\\apps\\web" }) });
+    apply(s, { type: "session.state", params: session("sess_far", 3, { cwd: "C:\\D\\site", node: OTHER }) });
+    s.scopes = [...s.scopes, "terminal"];
+    apply(s, { type: "terminals", terminals: [{ id: "t1", node: NODE, host: "a1b2c3d4e5f60718", argv0: "pwsh.exe", cwd: "c:/d/site/docs", cols: 120, rows: 32, status: "running", windows: 0, startedAt: 4 }] });
+    const repo = s.sessions.get("sess_repo")!.session;
+    const key = (rel: string) => placeKey(joinPath("C:\\D\\site", rel), "windows");
+    expect(viewingKey(s, repo, { from: { session: "sess_repo" }, rel: "src/main.ts", opened: 1 })).toBe(key("src/main.ts"));
+    expect(viewingKey(s, repo, { from: { session: "sess_app" }, rel: "index.html", opened: 2 })).toBe(key("apps/web/index.html"));
+    expect(viewingKey(s, repo, { from: { terminal: "t1" }, rel: "guide.md", opened: 3 })).toBe(key("docs/guide.md"));
+    // Another node's file is never this explorer's, nor one the view may not read, nor none.
+    expect(viewingKey(s, repo, { from: { session: "sess_far" }, rel: "src/main.ts", opened: 4 })).toBeUndefined();
+    expect(viewingKey(s, repo, { from: { session: "sess_gone" }, rel: "x", opened: 5 })).toBeUndefined();
+    expect(viewingKey(s, repo, undefined)).toBeUndefined();
+    expect(sourceRoot(s, { session: "sess_app" })).toBe("C:\\D\\site\\apps\\web");
+    expect(viewedPath(s, { terminal: "t1" }, "a/b.md")).toEqual({ node: NODE, path: "c:/d/site/docs\\a\\b.md" });
+    const blind = ready();
+    blind.scopes = ["chat"];
+    apply(blind, { type: "session.state", params: session("sess_repo", 1, { cwd: "C:\\D\\site" }) });
+    expect(sourceRoot(blind, { session: "sess_repo" })).toBeUndefined();
+  });
+
+  test("the Files menu names the computer's file manager, and only the desktop app on the session's computer may use it", () => {
+    expect(revealLabel("windows", "file")).toBe("Reveal in File Explorer");
+    expect(revealLabel("windows", "dir")).toBe("Open in File Explorer");
+    expect(revealLabel("macos", "file")).toBe("Reveal in Finder");
+    expect(revealLabel("macos", "dir")).toBe("Open in Finder");
+    expect(revealLabel("linux", "file")).toBe("Open in file manager");
+    expect(revealLabel(undefined, "dir")).toBe("Open in file manager");
+    const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
+    const here = ready({ node: NODE });
+    addLaptop(here, OTHER);
+    const mine = session("sess_a", 1);
+    const theirs = session("sess_b", 2, { node: OTHER });
+    expect(revealBlocked(here, mine)).toBeUndefined();
+    expect(revealBlocked(here, theirs)).toBe("Only from Cophyla on laptop");
+    // A phone, or a desktop app that sits on no node, is never the computer.
+    expect(revealBlocked(ready({ kind: "controller", node: NODE }), mine)).toBe("Only from Cophyla on that computer");
+    expect(revealBlocked(ready(), mine)).toBe("Only from Cophyla on that computer");
   });
 
   test("a chip names a session by its harness, and its title or intent when it has one", () => {

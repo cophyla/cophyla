@@ -63,8 +63,9 @@ const viewhost = new ViewHost({
   voice,
   stage: async (manifest) => {
     const content = await conn.request<ViewContent>("view.get", { id: manifest.id });
-    const { base } = await io.invoke<{ base: string }>("view_stage", { view: content });
-    return { base, version: content.version };
+    // An older shell serves no document frame, and names none.
+    const { base, docFrame } = await io.invoke<{ base: string; docFrame?: string }>("view_stage", { view: content });
+    return { base, version: content.version, ...(docFrame ? { docFrame } : {}) };
   },
   onError: (m) => note(m),
 });

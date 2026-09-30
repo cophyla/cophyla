@@ -7,8 +7,12 @@
 // versions are pruned once a new one is written. A version is a hash of the view's files,
 // so one already written whole is loaded from storage without asking for it again: the
 // mark written after its last file says it is whole, and names the platform that served it,
-// since a new platform may turn the same sources into other files.
+// since a new platform may turn the same sources into other files. Beside each version the
+// document frame is written too (@cophyla/protocol's docframe.ts), its policy in its head since
+// these files come with no headers, for the view to run an HTML file's scripts in: the view's
+// own policy lets it frame its siblings.
 
+import { DOC_FRAME_FILE, docFramePage } from "@cophyla/protocol";
 import type { ViewContent, ViewManifest } from "@cophyla/protocol";
 import type { Staged } from "@cophyla/viewhost";
 
@@ -76,10 +80,12 @@ export async function stageLocally(deps: StageDeps, manifest: ViewManifest): Pro
   return located(deps, dir, content.version);
 }
 
-/** Where the frame loads a written version from. */
+/** Where the frame loads a written version from, the document frame written beside it (a version written by an older app has none). */
 async function located(deps: StageDeps, dir: string, version: string): Promise<Staged> {
+  await deps.fs.writeFile({ path: `${dir}/${DOC_FRAME_FILE}`, data: docFramePage(), directory: VIEWS_DIRECTORY, encoding: "utf8", recursive: true });
   const { uri } = await deps.fs.getUri({ path: dir, directory: VIEWS_DIRECTORY });
-  return { base: `${deps.fileUrl(uri)}/`, version };
+  const base = `${deps.fileUrl(uri)}/`;
+  return { base, version, docFrame: `${base}${DOC_FRAME_FILE}` };
 }
 
 /** The platform a version's mark names; undefined when the version is not written whole. */

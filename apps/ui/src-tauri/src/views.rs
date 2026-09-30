@@ -7,7 +7,8 @@
 // network either, nor anywhere for a form to submit to. Only the `host` webview is answered.
 // The web view says where the scheme is: WebView2 serves it as `http://view.localhost` and
 // the host page as `http://tauri.localhost` (Windows); WebKit (macOS, Linux) as
-// `view://localhost`, the host page as `tauri://localhost`.
+// `view://localhost`, the host page as `tauri://localhost`. A view may frame one origin, the
+// document frame's (docframe.rs), which staging names for the host to tell the view.
 
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -33,10 +34,12 @@ pub const HOST_ORIGIN: &str = "tauri://localhost";
 
 /// What the frame may do. Scripts, styles, images and fonts come only from the view origin;
 /// there is no connect-src, so `fetch` and sockets are refused before any request leaves
-/// the web view; only the app's own page may embed it (`frame-ancestors` is the host's
-/// origin: `HOST_ORIGIN`, or `tauri dev`'s server when configured).
+/// the web view; it may frame the document frame's origin alone; only the app's own page may
+/// embed it (`frame-ancestors` is the host's origin: `HOST_ORIGIN`, or `tauri dev`'s server
+/// when configured).
 fn csp(host: &str) -> String {
-    format!("default-src 'none'; script-src {ORIGIN}; style-src {ORIGIN} 'unsafe-inline'; img-src {ORIGIN} data:; font-src {ORIGIN}; connect-src 'none'; frame-ancestors {host}; base-uri 'none'; form-action 'none'")
+    let doc = crate::docframe::ORIGIN;
+    format!("default-src 'none'; script-src {ORIGIN}; style-src {ORIGIN} 'unsafe-inline'; img-src {ORIGIN} data:; font-src {ORIGIN}; connect-src 'none'; frame-src {doc}; frame-ancestors {host}; base-uri 'none'; form-action 'none'")
 }
 
 /// Whether a URL is on the view origin. Compared part by part: the URL standard gives a scheme
@@ -71,6 +74,9 @@ pub struct StageView {
 pub struct StagedBase {
     /// `<ORIGIN>/<id>/<version>/`; the entry is appended by the host.
     pub base: String,
+    /// Where the document frame is served, for the view's `host.ready`.
+    #[serde(rename = "docFrame")]
+    pub doc_frame: String,
 }
 
 struct StagedFile {
@@ -119,7 +125,7 @@ impl Staged {
             .lock()
             .map_err(|_| "staged views poisoned".to_string())?
             .insert(view.id, (view.version, files));
-        Ok(StagedBase { base })
+        Ok(StagedBase { base, doc_frame: crate::docframe::url() })
     }
 
     fn lookup(&self, id: &str, version: &str, path: &str) -> Option<(String, Vec<u8>)> {
@@ -179,8 +185,10 @@ mod tests {
     fn a_staged_view_is_served_from_the_view_origin() {
         let staged = Staged::default();
         let view = StageView { id: "default".into(), version: "1.2.0".into(), files: vec![StageFile { path: "index.html".into(), mime: "text/html".into(), text: Some("<!doctype html>".into()), base64: None }] };
-        let base = staged.stage(view).expect("staged").base;
+        let at = staged.stage(view).expect("staged");
+        let base = at.base;
         assert_eq!(base, format!("{ORIGIN}/default/1.2.0/"));
+        assert_eq!(at.doc_frame, format!("{}/doc/frame.html", crate::docframe::ORIGIN));
         assert!(is_view(&Url::parse(&format!("{base}index.html")).unwrap()));
         assert_eq!(staged.lookup("default", "1.2.0", "index.html").map(|(mime, _)| mime).as_deref(), Some("text/html"));
     }
@@ -217,6 +225,7 @@ mod tests {
             assert!(policy.contains(&format!("{directive} {ORIGIN}")), "{directive}: {policy}");
         }
         assert!(policy.contains(&format!("frame-ancestors {HOST_ORIGIN};")), "{policy}");
+        assert!(policy.contains(&format!("frame-src {};", crate::docframe::ORIGIN)), "{policy}");
         assert!(policy.contains("connect-src 'none'"));
         assert!(policy.starts_with("default-src 'none';"));
     }

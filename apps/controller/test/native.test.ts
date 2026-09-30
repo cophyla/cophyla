@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { ViewContent, ViewManifest } from "@cophyla/protocol";
+import { DOC_FRAME_FILE, DOC_FRAME_META_CSP, docFramePage } from "@cophyla/protocol";
 import { nativeTransport, PIN_MISMATCH, PIN_MISMATCH_MESSAGE } from "../src/native/native-io.ts";
 import type { FrameEvent, CophylaSocketPlugin, StateEvent } from "../src/native/native-io.ts";
 import { ANSWER_TTL_MS, parseAskLink, PushBridge } from "../src/native/push.ts";
@@ -224,7 +225,12 @@ describe("local staging", () => {
     let current = "v1";
     const deps = { fs, fileUrl: (p: string) => `https://localhost/_capacitor_file_${p.replace("file://", "")}`, get: async () => versions[current]! };
     const first = await stageLocally(deps, MANIFEST);
-    expect(first).toEqual({ base: "https://localhost/_capacitor_file_/data/app/data/views/default/v1/", version: "v1" });
+    expect(first).toEqual({ base: "https://localhost/_capacitor_file_/data/app/data/views/default/v1/", version: "v1", docFrame: "https://localhost/_capacitor_file_/data/app/data/views/default/v1/docframe.html" });
+    // The document frame beside it, its policy in its head, sandboxing left to the frame's attribute.
+    expect(fs.files.get(`DATA/views/default/v1/${DOC_FRAME_FILE}`)).toBe(`text:${docFramePage()}`);
+    expect(docFramePage()).toContain(`<meta http-equiv="Content-Security-Policy" content="${DOC_FRAME_META_CSP}">`);
+    expect(DOC_FRAME_META_CSP).not.toContain("sandbox");
+    expect(DOC_FRAME_META_CSP).toContain("connect-src 'none'");
     expect(fs.files.get("DATA/views/default/v1/index.html")).toBe(`text:<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${VIEW_CSP}"><title>x</title></head><body></body></html>`);
     expect(fs.files.get("DATA/views/default/v1/app.js")).toBe("text:console.log(1)");
     current = "v2";
@@ -245,8 +251,8 @@ describe("local staging", () => {
     const listed: ViewManifest = { ...MANIFEST, version: "v1" };
     const first = await stageLocally(deps, listed);
     expect(gets).toBe(1);
-    // the mark goes in after the last file, naming the platform
-    expect([...fs.files.keys()].at(-1)).toBe(`DATA/views/default/v1/${STAGED_MARK}`);
+    // the mark goes in after the view's last file, naming the platform; the document frame is the app's own, written every time
+    expect([...fs.files.keys()].filter((k) => !k.endsWith(DOC_FRAME_FILE)).at(-1)).toBe(`DATA/views/default/v1/${STAGED_MARK}`);
     expect(fs.files.get(`DATA/views/default/v1/${STAGED_MARK}`)).toBe("text:0.8.0");
     // the next launch: the same version from view.list, nothing asked of the node
     expect(await stageLocally(deps, listed)).toEqual(first);

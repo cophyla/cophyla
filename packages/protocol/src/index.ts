@@ -17,6 +17,7 @@ export * from "./invite.ts";
 export * from "./quotes.ts";
 export * from "./release.ts";
 export * from "./audio.ts";
+export * from "./docframe.ts";
 
 import { entities } from "./entities.ts";
 import { CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";

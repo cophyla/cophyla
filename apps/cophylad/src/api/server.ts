@@ -47,6 +47,9 @@ import {
   clientRequests,
   clientSignals,
   ControllerId,
+  DOC_FRAME_HTML,
+  DOC_FRAME_PATH,
+  docFrameHeaders,
   failure,
   FULL,
   newId,
@@ -861,6 +864,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       const hook = listener === "loopback" && deps.hooks ? /^\/hooks\/(claude|codex|muse)$/.exec(url.pathname) : null;
       if (hook) return handleHook(req, srv, hook[1] as HookHarness, deps.hooks!, log.child("hooks"));
       if (deps.tickets) {
+        // The document frame a view runs an HTML file's scripts in, under a policy of its own.
+        if (url.pathname === DOC_FRAME_PATH) return new Response(DOC_FRAME_HTML, { headers: docFrameHeaders() });
         const view = /^\/view\/([0-9a-f]{8,64})\/(.+)$/.exec(url.pathname);
         if (view) {
           const file = deps.tickets.serve(view[1]!, decodeURIComponent(view[2]!));
@@ -1095,8 +1100,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   };
 }
 
-/** The requests a relayed client still gets answered by the node it is on: its own files, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
-const LOCAL_ONLY = new Set(["view.stage", "pair.start", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
+/** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
+const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "pair.start", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
 
 /** The signals a relayed client sends this node itself: a data channel's candidates end here, where its helper is, and a stream's pipes where they were opened. */
 const LOCAL_SIGNALS = new Set(["direct.candidate", "remote.pipe.data", "remote.pipe.ack", "remote.pipe.close"]);

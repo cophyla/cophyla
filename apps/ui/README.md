@@ -109,11 +109,25 @@ scheme's form: WebView2 serves it as `http://view.localhost` and the host page a
 (macOS, Linux); `ORIGIN` and `HOST_ORIGIN` in `views.rs` follow, and the host CSP's
 `frame-src` names both forms. Each file goes out with `Content-Security-Policy: default-src
 'none'; script-src <view origin>; style-src <view origin> 'unsafe-inline'; img-src <view
-origin> data:; font-src <view origin>; connect-src 'none'; frame-ancestors <host origin>;
-base-uri 'none'; form-action 'none'`, `Access-Control-Allow-Origin: *` (a module script from
-an opaque origin is a CORS fetch) and `X-Content-Type-Options: nosniff`. The URL standard
-gives `view://` an opaque origin, which matches none, so the shell tells a URL on the view
-origin by its scheme, host and port (`views::is_view`). The page loads the entry in
+origin> data:; font-src <view origin>; connect-src 'none'; frame-src <doc origin>;
+frame-ancestors <host origin>; base-uri 'none'; form-action 'none'`,
+`Access-Control-Allow-Origin: *` (a module script from an opaque origin is a CORS fetch) and
+`X-Content-Type-Options: nosniff`. The URL standard gives `view://` an opaque origin, which
+matches none, so the shell tells a URL on the view origin by its scheme, host and port
+(`views::is_view`).
+
+The one origin a view may frame is the document frame's, a `doc` scheme of its own
+(`docframe.rs`: `http://doc.localhost` on Windows, `doc://localhost` on macOS and Linux),
+where a view runs an HTML file's scripts apart from its own. The shell serves one page there,
+`/doc/frame.html`, to the `host` webview only: `@cophyla/protocol`'s `DOC_FRAME_HTML`, embedded
+from `src/docframe.html` with `include_str!`, under that page's own policy (`sandbox
+allow-scripts; default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval'
+data: blob:; …; connect-src 'none'; frame-src 'none'; form-action 'none'; base-uri 'none'`),
+so the page's scripts run and reach nothing. `test/docframe.test.ts` holds the shell's copies
+to the protocol's. `view_stage` names the page's URL (`docFrame`) for the host to tell the view
+in `host.ready`; the navigation filter lets the doc origin by, since WebKit shows it a frame's
+navigations; and being apart from the view origin keeps it outside `views::is_view`, so the
+dropped files' handler never answers it. The page loads the entry in
 `<iframe sandbox="allow-scripts allow-forms">`, so the document has an opaque origin: no
 storage, no cookies, no IPC, and by its CSP no network and nowhere for a form to submit to
 (`allow-forms` only lets a form's `submit` event fire; without it Chromium drops the

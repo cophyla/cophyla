@@ -19,7 +19,9 @@
 // selected the rail's lower half shows its folder's files (`session.files`, a level at a time as
 // folders open) or, a tab away, the status cards; a file clicked there, or named by a chip in the
 // chat, opens in that tab's file viewer (`session.file`, fileview.ts), over the pane or docked
-// beside it, and is read again as the agent works; a file or a folder dragged from there onto the
+// beside it, and is read again as the agent works; a right-click there, or Shift+F10, shows a file
+// or a folder in the computer's own file manager (`session.reveal`), from the desktop app on that
+// computer; a file or a folder dragged from there onto the
 // chat or the terminal drops its path, and so does one dragged in from the desktop where the
 // shell can say where it is (`filePaths` in `host.ready`, dropped.ts), and the repository's
 // line under the files (`session.git`) is read again as the agent works and every few
@@ -47,8 +49,8 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPaths, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, VIEWER_WIDTH, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
+import { answerParams, apply, connectWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -91,8 +93,16 @@ const roots: Roots = {
   terminal: document.getElementById("terminal")!,
   composer: document.getElementById("composer")!,
 };
-const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => pathHome(path) !== undefined, open: (path, line) => openPath(path, line) });
-const viewer = new FileViewer(rpc, (t) => folderAsked(t));
+const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
+const viewer = new FileViewer(
+  rpc,
+  (t) => folderAsked(t),
+  (t, rel) => {
+    // A file a drawn page links to, in the same tab's viewer, read the way the page was.
+    const tab = viewerTab(ui.selected, ui.terminal);
+    if (tab !== undefined) openFile(tab, t.from, rel, { focus: true });
+  },
+);
 /** The microphone's wave, just over the input, while the host records. */
 const waves = new Waves();
 roots.composer.before(waves.el);
@@ -1250,36 +1260,85 @@ function goto(kind: string, id: string, message?: string): void {
  * Opens a file a chip names: the tab of the agent whose folder holds it opens with the file in
  * its viewer, at `line` when the chip names one, and the Files panel shows it too, with Files
  * picked and the rail out (on a desk), the folders down to it open, and the file picked and
- * scrolled to once it is listed.
+ * scrolled to once it is listed. A folder the chip names, known as one or found to be one by the
+ * viewer, shows in Files alone.
  */
 function revealFile(node: string, path: string, line?: number): void {
   const home = fileHome(state, node, path);
   if (!home) return;
   const place = explorerKey(state, home.session);
+  if (home.rel === "" || /[\\/]$/.test(path) || listedKind(state.explorers.get(place), home.rel) === "dir") return showFolder(home.session, home.rel);
+  openDown(place, home.rel, false);
+  ui.picked.set(place, home.rel);
+  ui.railTab = "files";
+  const opened = select(home.session.id);
+  ui.reveal = { place, rel: home.rel, focus: true };
+  // On a phone the file shows over the pane, and the rail stays away.
+  openFile(home.session.id, { session: home.session.id }, home.rel, line !== undefined ? { line } : {});
+  // A tab that opened on a desk listed them already.
+  if (!opened || phone.matches) refreshExplorer();
+}
+
+/**
+ * Shows a folder of an agent's in its Files panel, as a chip or a link naming it does: the
+ * agent's tab opens, Files is picked and the rail comes out, the folders down to it open and it
+ * too, and its row is picked, scrolled to and focused once it is listed. The agent's folder
+ * itself (`rel` "") shows the panel as it is.
+ */
+function showFolder(s: Session, rel: string): void {
+  const place = explorerKey(state, s);
+  if (rel !== "") {
+    openDown(place, rel, true);
+    ui.picked.set(place, rel);
+  }
+  ui.railTab = "files";
+  const opened = select(s.id);
+  // On a phone the rail was put away as the tab opened: it slides in with the files.
+  if (!railShown()) ui.rail = "open";
+  if (rel !== "") ui.reveal = { place, rel, focus: true };
+  draw();
+  // A tab that opened on a desk listed them already, the folders just opened among them.
+  if (!opened || phone.matches) refreshExplorer();
+}
+
+/** Opens the folders of an explorer down to `rel`, and `rel` itself when `self`: the ones it opened, which are yet to be listed. */
+function openDown(place: string, rel: string, self: boolean): string[] {
   let dirs = ui.openDirs.get(place);
   if (!dirs) {
     dirs = new Set();
     ui.openDirs.set(place, dirs);
   }
-  const parts = home.rel.split("/");
-  for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join("/"));
-  if (home.rel !== "") ui.picked.set(place, home.rel);
-  ui.railTab = "files";
-  const opened = select(home.session.id);
-  if (home.rel !== "") {
-    ui.reveal = { place, rel: home.rel };
-    // On a phone the file shows over the pane, and the rail stays away.
-    openFile(home.session.id, { session: home.session.id }, home.rel, line !== undefined ? { line } : {});
-  } else {
-    // On a phone the rail was put away as the tab opened: it slides in with the files.
-    if (phone.matches) ui.rail = "open";
-    draw();
+  const parts = rel.split("/");
+  const opened: string[] = [];
+  for (let i = 1; i <= parts.length - (self ? 0 : 1); i++) {
+    const dir = parts.slice(0, i).join("/");
+    if (dirs.has(dir)) continue;
+    dirs.add(dir);
+    opened.push(dir);
   }
-  // A tab that opened on a desk listed them already.
-  if (!opened || phone.matches) refreshExplorer();
+  return opened;
 }
 
-/** The file a chip asked for, once its row is listed: scrolled to and focused. */
+/**
+ * A file opened in an agent's tab, however it was opened, shows in that agent's Files panel
+ * too when its folder holds it: the folders down to it open, once for this opening, so one the
+ * user folds afterwards stays folded, and its row is scrolled to once listed, the focus staying
+ * where it is. A reveal already asked for the same row (a chip's) keeps its focus.
+ */
+function revealOpened(tab: string, from: ViewerSource, rel: string): void {
+  const s = state.sessions.get(tab)?.session;
+  const at = s ? viewedPath(state, from, rel) : undefined;
+  if (!s || !at || at.node !== s.node) return;
+  const under = relUnder(s.cwd, at.path, state.nodes.get(s.node)?.platform);
+  if (under === undefined || under === "") return;
+  const place = explorerKey(state, s);
+  const opened = openDown(place, under, false);
+  if (ui.reveal?.place !== place || ui.reveal.rel !== under) ui.reveal = { place, rel: under, focus: false };
+  const shown = shownExplorer();
+  if (opened.length > 0 && shown?.id === s.id) void loadFiles(shown, opened);
+}
+
+/** The file or folder the Files panel was asked to show, once its row is listed: scrolled to, and focused when asked. */
 function revealListed(): void {
   const r = ui.reveal;
   const s = shownExplorer();
@@ -1288,7 +1347,7 @@ function revealListed(): void {
   if (!row) return;
   ui.reveal = undefined;
   row.scrollIntoView({ block: "nearest" });
-  row.focus({ preventScroll: true });
+  if (r.focus) row.focus({ preventScroll: true });
 }
 
 /** Pause, resume or complete a task from its row: a `task.update` the platform confirms with `task.state`. */
@@ -1382,6 +1441,79 @@ function toggleFolder(rel: string, open?: boolean): void {
   if (opening) void loadFiles(s, [rel]);
 }
 
+/**
+ * Opens the Files panel's menu for a row, or for the folder itself (`rel` ""), at a point in the
+ * frame: the row is picked, and the menu's item takes the focus when it can be pressed.
+ */
+function openFileMenu(rel: string, kind: "file" | "dir", x: number, y: number): void {
+  const s = shownExplorer();
+  if (!s) return;
+  const place = explorerKey(state, s);
+  if (rel !== "") ui.picked.set(place, rel);
+  ui.fileMenu = { place, rel, kind, x, y };
+  draw();
+  roots.app.querySelector<HTMLButtonElement>(".file-menu .rail-menu-item:not(:disabled)")?.focus({ preventScroll: true });
+}
+
+/** Closes the Files panel's menu; the focus goes back to its row when it was in the menu, or when `refocus` says. */
+function closeFileMenu(refocus = false): void {
+  const m = ui.fileMenu;
+  if (!m) return;
+  const inside = roots.app.querySelector(".file-menu")?.contains(document.activeElement) ?? false;
+  ui.fileMenu = undefined;
+  draw();
+  if ((refocus || inside) && m.rel !== "") roots.tabs.querySelector<HTMLElement>(`.explorer-tree .file-row[data-rel="${CSS.escape(m.rel)}"]`)?.focus();
+}
+
+/**
+ * The menu's item: the row shown in the file manager of the computer it is on. The menu stays
+ * while the node answers; it closes once the window is on its way, or says why it is not: an
+ * app too old to ask it, or what the node said.
+ */
+async function revealInFileManager(): Promise<void> {
+  const m = ui.fileMenu;
+  const s = shownExplorer();
+  if (!m || m.busy || !s || explorerKey(state, s) !== m.place) return;
+  ui.fileMenu = { ...m, busy: true };
+  draw();
+  try {
+    await rpc.request("session.reveal", { id: s.id, path: m.rel });
+    if (ui.fileMenu?.place === m.place && ui.fileMenu.rel === m.rel) closeFileMenu(true);
+  } catch (e) {
+    if (ui.fileMenu?.place !== m.place || ui.fileMenu.rel !== m.rel) return;
+    const message = e instanceof Error ? e.message : String(e);
+    const old = e instanceof ViewRpcError && e.code === "unsupported" && /unknown method/.test(message);
+    ui.fileMenu = { ...m, note: old ? "Update the app to use this" : message };
+    draw();
+  }
+}
+
+/** When the keyboard opened the menu last: the `contextmenu` the same key sends after is not a second opening. */
+let keyedMenuAt = 0;
+
+// A right-click on a row, or on the folder's name over the rows, opens the menu where it was clicked.
+document.addEventListener("contextmenu", (ev) => {
+  const target = ev.target as Element | null;
+  const row = target?.closest?.<HTMLElement>(".explorer-tree .file-row[data-action=file]");
+  const head = row ? null : target?.closest?.<HTMLElement>(".explorer-root");
+  if (!row && !head) return;
+  ev.preventDefault();
+  if (Date.now() - keyedMenuAt < 500) return;
+  if (row) openFileMenu(row.dataset["rel"] ?? "", row.dataset["kind"] === "dir" ? "dir" : "file", ev.clientX, ev.clientY);
+  else openFileMenu("", "dir", ev.clientX, ev.clientY);
+});
+
+// The menu goes as soon as what it points at may have moved: a scroll, the window resized or left.
+document.addEventListener(
+  "scroll",
+  (ev) => {
+    if (ui.fileMenu && !(ev.target instanceof Node && roots.app.querySelector(".file-menu")?.contains(ev.target))) closeFileMenu();
+  },
+  true,
+);
+window.addEventListener("resize", () => closeFileMenu());
+window.addEventListener("blur", () => closeFileMenu());
+
 /** Picks an explorer row: a folder opens or closes, a file opens in the viewer, which takes the focus when `focus` says. */
 function pickFile(row: HTMLElement, focus = false): void {
   const s = shownExplorer();
@@ -1397,12 +1529,6 @@ function pickFile(row: HTMLElement, focus = false): void {
 /** How many files were opened: each opening's number, so one opened again is read afresh and goes back to its line. */
 let opens = 0;
 
-/** The folder a viewer's file is read under, while the view may read it: an agent's with `sessions:read`, a bare terminal's with `terminal`. */
-function sourceRoot(from: ViewerSource): string | undefined {
-  if ("session" in from) return state.scopes.includes("sessions:read") ? state.sessions.get(from.session)?.session.cwd : undefined;
-  return state.scopes.includes("terminal") ? state.terminals.get(from.terminal)?.cwd : undefined;
-}
-
 /** The file open in the tab that shows, an agent's or a bare terminal's, over its pane or beside it; none under the chat. */
 function syncViewer(): void {
   // A tab gone, or what its file was read through, takes the file with it.
@@ -1412,7 +1538,7 @@ function syncViewer(): void {
   }
   const tab = viewerTab(ui.selected, ui.terminal);
   const open = tab !== undefined ? ui.viewers.get(tab) : undefined;
-  const root = open ? sourceRoot(open.from) : undefined;
+  const root = open ? sourceRoot(state, open.from) : undefined;
   if (!open || root === undefined) {
     viewer.hide();
     return;
@@ -1421,12 +1547,13 @@ function syncViewer(): void {
   const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !narrow.matches, connected: state.connected });
+  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !narrow.matches, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}) });
 }
 
-/** Opens a file in the viewer of a tab, read through `from`, at a line when one is given; on a phone the rail goes, so it shows. */
+/** Opens a file in the viewer of a tab, read through `from`, at a line when one is given, and shows it in Files; on a phone the rail goes, so it shows. */
 function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: number; focus?: boolean } = {}): void {
   ui.viewers.set(tab, { from, rel, opened: ++opens, ...(opts.line !== undefined ? { line: opts.line } : {}) });
+  revealOpened(tab, from, rel);
   putRailAway();
   draw();
   if (opts.focus) viewer.focus();
@@ -1466,12 +1593,49 @@ function pathHome(path: string): { from: ViewerSource; rel: string } | undefined
   return home && home.rel !== "" ? { from: { session: home.session.id }, rel: home.rel } : undefined;
 }
 
-/** A path Ctrl+clicked in a terminal: the file opens at its line in the viewer of that terminal's tab, over or beside it, with the focus. */
-function openPath(path: string, line?: number): void {
-  const home = pathHome(path);
+/**
+ * Which agent's Files panel can show a path a terminal wrote, and where under its folder: in an
+ * agent's own terminal, a relative path is under that agent's folder, and an absolute one in
+ * whichever live agent's folder holds it, that agent's first; in a bare terminal, a relative one
+ * is under the folder the shell started in, and it or an absolute one goes to whichever live
+ * agent's folder holds it, as a chip's does.
+ */
+function folderHome(path: string): { session: Session; rel: string } | undefined {
+  if (!state.scopes.includes("sessions:read")) return undefined;
+  const rel = relativeFile(path.replace(/[\\/]+$/, ""));
+  const s = terminalAgent();
+  if (s) return rel !== undefined ? { session: s, rel } : fileHome(state, s.node, path, s.id);
+  const t = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
+  return t ? fileHome(state, t.node, rel !== undefined ? joinPath(t.cwd, rel) : path) : undefined;
+}
+
+/**
+ * Whether a path a terminal wrote is a link: a folder's when Files can show it, anything else
+ * when the viewer can read it. A relative path with no extension and no separator after it is a
+ * folder, a file such as `Makefile`, or no path at all (`and/or`, `1/2`): it counts only in an
+ * agent's terminal, when its first name is a folder the agent's Files listed at the top.
+ */
+function canOpenPath(p: PathInText): boolean {
+  if (p.plain && relativeFile(p.path) !== undefined) {
+    const s = terminalAgent();
+    if (!s || !underListedFolder(state.explorers.get(explorerKey(state, s)), p.path)) return false;
+  }
+  return p.folder ? folderHome(p.path) !== undefined : pathHome(p.path) !== undefined;
+}
+
+/**
+ * A path Ctrl+clicked in a terminal. A folder, known as one by the separator after it or by its
+ * listing in Files, shows in Files; anything else opens at its line in the viewer of that
+ * terminal's tab, over or beside it, with the focus, and goes to Files after all when the node
+ * says it is a folder (`folderAsked`).
+ */
+function openPath(p: PathInText): void {
+  const folder = folderHome(p.path);
+  if (folder && (p.folder || listedKind(state.explorers.get(explorerKey(state, folder.session)), folder.rel) === "dir")) return showFolder(folder.session, folder.rel);
+  const home = pathHome(p.path);
   const tab = viewerTab(ui.selected, ui.terminal);
   if (!home || tab === undefined) return;
-  openFile(tab, home.from, home.rel, { focus: true, ...(line !== undefined ? { line } : {}) });
+  openFile(tab, home.from, home.rel, { focus: true, ...(p.line !== undefined ? { line: p.line } : {}) });
 }
 
 /** Closes the file open in the tab that shows; the focus, when it was in the viewer, goes back to the terminal or to the file's row. */
@@ -1484,13 +1648,21 @@ function closeViewer(): void {
   draw();
   if (!focused) return;
   if (terminal.shown !== undefined) terminal.focus();
-  else roots.tabs.querySelector<HTMLElement>(`.explorer-tree .file-row[data-rel="${CSS.escape(open.rel)}"]`)?.focus();
+  else roots.tabs.querySelector<HTMLElement>(`.explorer-tree .file-row[data-rel="${CSS.escape(open.rel)}"], .explorer-tree .file-row[data-viewing="1"]`)?.focus();
 }
 
-/** A path the viewer was asked for is a folder (a chip names folders too): the Files panel shows it, and the viewer closes. */
-function folderAsked(t: ViewerTarget): void {
+/**
+ * A path the viewer was asked for is a folder (a chip or a terminal's link names folders too):
+ * the viewer closes and the Files panel of the agent whose folder holds it shows it, that tab's
+ * agent first. With no agent's folder holding it, the viewer stays, saying it is a folder.
+ */
+function folderAsked(t: ViewerTarget): boolean {
+  const at = viewedPath(state, t.from, t.rel);
+  const home = at ? fileHome(state, at.node, at.path, ui.selected) : undefined;
+  if (!home) return false;
   for (const [tab, v] of ui.viewers) if (v.opened === t.opened) ui.viewers.delete(tab);
-  draw();
+  showFolder(home.session, home.rel);
+  return true;
 }
 
 let viewerTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1617,6 +1789,14 @@ document.addEventListener("keydown", (ev) => {
   const row = (ev.target as Element | null)?.closest?.<HTMLElement>(".explorer-tree .file-row[data-action=file]");
   const rel = row?.dataset["rel"];
   if (!row || rel === undefined || ev.altKey || ev.ctrlKey || ev.metaKey) return;
+  // Its menu, as the keyboard opens one: under the row's name.
+  if (ev.key === "ContextMenu" || (ev.key === "F10" && ev.shiftKey)) {
+    ev.preventDefault();
+    keyedMenuAt = Date.now();
+    const at = row.querySelector(".file-name")?.getBoundingClientRect() ?? row.getBoundingClientRect();
+    openFileMenu(rel, row.dataset["kind"] === "dir" ? "dir" : "file", at.left, at.bottom + 2);
+    return;
+  }
   const rows = fileRows();
   const i = rows.indexOf(row);
   const dir = row.dataset["kind"] === "dir";
@@ -1785,8 +1965,9 @@ function openTab(): void {
   // A Kill or End left unconfirmed on the tab before is dropped; one on its way carries on.
   if (ui.kill?.phase === "asking") ui.kill = undefined;
   if (ui.end?.phase === "asking") ui.end = undefined;
-  // A file a chip asked for belonged to the tab before.
+  // A file a chip asked for, and the Files panel's menu, belonged to the tab before.
   ui.reveal = undefined;
+  ui.fileMenu = undefined;
   dispatch({ type: "tab.open", session: ui.selected });
   watch();
   if (ui.selected !== undefined && state.connected && loadsHistory(state)) void loadEarlier(ui.selected);
@@ -1826,6 +2007,7 @@ document.addEventListener("click", (ev) => {
     ui.railMenu = undefined;
     draw();
   }
+  if (ui.fileMenu && !(ev.target as Element | null)?.closest(".file-menu")) closeFileMenu();
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
   switch (target.dataset["action"]) {
@@ -1913,6 +2095,9 @@ document.addEventListener("click", (ev) => {
       return;
     case "change-view":
       void changeView();
+      return;
+    case "file-reveal":
+      void revealInFileManager();
       return;
     case "settings":
       void openSettings();
@@ -2235,10 +2420,10 @@ document.addEventListener("mousedown", (ev) => {
 });
 
 // Escape takes back the utterance being heard or transcribed, before anything else; otherwise
-// it shrinks an invite's QR code shown large, closes New terminal's menu or the ⋮ menu, and
-// the focus goes back to its button; with none open, it puts away the rail lying over a
-// phone's pane, and then closes the file open in the viewer. A terminal keeps its own Escape:
-// xterm stops the key before it gets here.
+// it shrinks an invite's QR code shown large, closes the Files panel's menu, New terminal's menu
+// or the ⋮ menu, and the focus goes back to its row or its button; with none open, it puts away
+// the rail lying over a phone's pane, and then closes the file open in the viewer. A terminal
+// keeps its own Escape: xterm stops the key before it gets here.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   if (voiceCancellable(state)) {
@@ -2247,6 +2432,9 @@ document.addEventListener("keydown", (ev) => {
   } else if (ui.qrZoom) {
     ui.qrZoom = false;
     draw();
+  } else if (ui.fileMenu) {
+    ev.preventDefault();
+    closeFileMenu(true);
   } else if (ui.newTerminal) {
     closeNewTerminal();
     roots.tabs.querySelector<HTMLButtonElement>(".tab-new-terminal")?.focus();

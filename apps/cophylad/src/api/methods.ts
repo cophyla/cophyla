@@ -11,6 +11,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
+import { DOC_FRAME_PATH } from "@cophyla/protocol";
 import type { Activity } from "../chat/activity.ts";
 import type { Chat } from "../chat/index.ts";
 import type { BackupSync } from "../cloud/backup.ts";
@@ -192,14 +193,18 @@ export function attachMethods(deps: AttachDeps): MethodTable {
 }
 
 export interface FileMethodDeps {
-  files: Pick<SessionFiles, "list" | "git" | "read">;
+  files: Pick<SessionFiles, "list" | "git" | "read" | "reveal">;
+  /** This node: only the desktop app on it may open its file manager. */
+  nodeId: string;
 }
 
 /**
  * A session's folders, its repository and a file in it, for a view's file explorer and its
  * viewer: reads, answered by the session's node (another node's session is forwarded there
  * first). The audit row keeps what was listed and how much, not every name, and which file was
- * read and how much of it, not its text.
+ * read and how much of it, not its text. `session.reveal` opens this computer's file manager,
+ * so only the desktop app on this computer may ask it, for a session of this node's: it is
+ * never forwarded, and anywhere else it is `unsupported`.
  */
 export function fileMethods(deps: FileMethodDeps): MethodTable {
   return {
@@ -218,7 +223,15 @@ export function fileMethods(deps: FileMethodDeps): MethodTable {
     "session.file": {
       target: (p) => p.id,
       redactResult: (r) => fileSummary(r),
-      handler: (p) => deps.files.read(p.id, p.path, { image: p.image === true }),
+      handler: (p) => deps.files.read(p.id, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) }),
+    },
+    "session.reveal": {
+      target: (p) => p.id,
+      handler: async (p, ctx) => {
+        if (ctx.client.kind !== "ui" || ctx.client.node !== deps.nodeId || ctx.listener !== "loopback") throw new RpcError("unsupported", "only Cophyla on the computer that holds the file can show it in its file manager");
+        await deps.files.reveal(p.id, p.path);
+        return {};
+      },
     },
   };
 }
@@ -428,7 +441,7 @@ export function viewStageMethods(deps: ViewStageDeps): MethodTable {
       handler: (p, ctx) => {
         const content = deps.views.get(p.id);
         const { ticket, version } = deps.tickets.stage(ctx.client.id, content);
-        return { base: `${ctx.origin}/view/${ticket}/`, version };
+        return { base: `${ctx.origin}/view/${ticket}/`, version, docFrame: `${ctx.origin}${DOC_FRAME_PATH}` };
       },
     },
   };
@@ -678,7 +691,7 @@ export function terminalMethods(deps: TerminalDeps): MethodTable {
         const row = deps.rows.list().find((t) => t.id === p.terminal);
         if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
         if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
-        return deps.files.readUnder(row.cwd, p.path, { image: p.image === true });
+        return deps.files.readUnder(row.cwd, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
       },
     },
   };

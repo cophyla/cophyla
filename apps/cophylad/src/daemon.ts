@@ -93,6 +93,8 @@ import type { LinkDirectTiming } from "./nodes/direct.ts";
 import { defaultRaiser, withProcessTable, withTmux } from "./sessions/focus.ts";
 import type { WindowRaiser } from "./sessions/focus.ts";
 import { SessionFiles } from "./sessions/files.ts";
+import { systemRevealer } from "./sessions/reveal.ts";
+import type { Revealer } from "./sessions/reveal.ts";
 import { Sessions } from "./sessions/index.ts";
 import type { HarnessAdapter, SessionHost } from "./sessions/model.ts";
 import { claudeKeychainSecret, Profiles } from "./sessions/profiles.ts";
@@ -153,6 +155,8 @@ export interface DaemonOptions {
   raiser?: WindowRaiser;
   /** Replaces where a session cophylad starts is shown; `[]` opens no terminal, which is what a test wants. */
   terminals?: TerminalOpener[];
+  /** Replaces this computer's file manager for `session.reveal`; a test run has none unless it gives one. */
+  revealer?: Revealer;
   /** Replaces tether; a test run has none unless it gives one, because a real one reaches the user's own hosts. */
   tether?: Tether;
   /** Replaces the daemon's own `views/` directory, for tests. */
@@ -468,7 +472,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // a harness's ask about a session is on the session's node
   asks.sessionNode = (id) => sessions.getAny(id)?.node;
   // What an explorer shows of a session: the folders under its directory, and its repository.
-  const files = new SessionFiles({ session: (id) => sessions.get(id) });
+  const revealer = opts.revealer ?? (env["NODE_ENV"] === "test" ? undefined : systemRevealer());
+  const files = new SessionFiles({ session: (id) => sessions.get(id), ...(revealer ? { revealer } : {}) });
 
   // The event stream every listener shares, the catalogue, the hooks and the editable layer
   // over them. The stream knows this node's sessions only: a session on another node is
@@ -1100,7 +1105,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const methods = withForwarding({
     ...foundationMethods({ asks, node, promote: (id) => nodes!.promote(id), restart: (force, by) => restart.request({ force, by }) }),
     ...attachMethods({ sessions, workspaces, profiles, clients, nodeId: identity.id, onWatch: () => deliver.shown(), ...(limits ? { limits } : {}) }),
-    ...fileMethods({ files }),
+    ...fileMethods({ files, nodeId: identity.id }),
     ...viewMethods({ views }),
     ...viewStageMethods({ views, tickets }),
     ...chatMethods({ chat }),
