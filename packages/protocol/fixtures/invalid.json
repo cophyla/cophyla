@@ -29,6 +29,7 @@
   { "schema": "hooks.claude.response", "why": "behavior unknown", "value": { "hookSpecificOutput": { "hookEventName": "PermissionRequest", "decision": { "behavior": "maybe" } } } },
   { "schema": "capability.requests.recall.params", "why": "limit zero", "value": { "query": "x", "limit": 0 } },
   { "schema": "client.requests.session.history.params", "why": "around negative", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "around": -1 } },
+  { "schema": "client.requests.session.mode.params", "why": "a mode Claude Code does not have", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "yolo" } },
   { "schema": "client.requests.session.files.params", "why": "an empty list of folders", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": [] } },
   { "schema": "client.requests.session.files.result", "why": "an entry neither folder nor file", "value": { "root": "/srv", "dirs": [{ "dir": "", "entries": [{ "name": "dev", "kind": "device" }] }] } },
   { "schema": "client.requests.session.git.result", "why": "commits ahead negative", "value": { "git": { "branch": "main", "ahead": -1, "changes": 0 } } },

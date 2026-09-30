@@ -1,9 +1,9 @@
 // A tether host for cophylad's tests, speaking the real protocol (spec/protocol.md) over a real
 // named pipe or Unix socket, so the daemon's side runs through the real SDK. Its sessions run
-// nothing: a test sets what each screen shows, reads what was typed into it, writes its output,
-// and says when it exits. A spawn can be answered by a hook, which is how a test plays the
-// harness registering. A subscription that sizes sets the session's size, as the host's rule
-// has it for the latest one.
+// nothing: a test sets what each screen shows, reads what was typed into it (and may answer a
+// key by changing the screen), writes its output, and says when it exits. A spawn can be
+// answered by a hook, which is how a test plays the harness registering. A subscription that
+// sizes sets the session's size, as the host's rule has it for the latest one.
 
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -44,6 +44,8 @@ export class FakeSession {
   cells: Run[][] = [];
   /** Everything typed, in order: `paste:<text>`, `keys:<names>`, `write:<data>`. */
   typed: string[] = [];
+  /** Called with each `keys` request once it is recorded: how a test plays the program answering a key. */
+  onKeys?: (keys: string[]) => void;
   clients: SessionInfo["clients"] = [];
   seq = 0;
   private host: FakeTether;
@@ -254,6 +256,7 @@ export class FakeTether {
         return ok({ bracketed: true });
       case "keys":
         session.typed.push(`keys:${(m["keys"] as string[]).join(",")}`);
+        session.onKeys?.(m["keys"] as string[]);
         return ok({});
       case "write":
         session.typed.push(`write:${String(m["data"])}`);

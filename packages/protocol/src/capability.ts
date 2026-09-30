@@ -10,6 +10,7 @@ import {
   EventDefinition,
   HarnessProfile,
   Hit,
+  LaunchMode,
   Memory,
   MetricsSample,
   ModelRef,
@@ -332,6 +333,8 @@ export const capabilityRequests = {
     }),
     result: Empty,
   },
+  /** Puts a Claude session in a permission mode, as the client protocol's `session.mode` does. */
+  "session.mode": { params: z.object({ id: SessionId, mode: LaunchMode }), result: z.object({ mode: LaunchMode }) },
   "ask.answer": {
     params: z.object({ id: AskId, option: z.string(), options: z.array(z.string()).optional(), text: z.string().optional() }),
     result: Empty,

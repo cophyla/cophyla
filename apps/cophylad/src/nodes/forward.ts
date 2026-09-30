@@ -66,6 +66,7 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "session.send":
     case "session.focus":
     case "session.stop":
+    case "session.mode":
     case "session.files":
     case "session.git":
     case "session.file":

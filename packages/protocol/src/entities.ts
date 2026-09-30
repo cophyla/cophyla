@@ -137,7 +137,10 @@ export type ProfileOrigin = z.infer<typeof ProfileOrigin>;
 export const ProfileStatus = z.enum(["ok", "unauthenticated", "missing"]);
 export type ProfileStatus = z.infer<typeof ProfileStatus>;
 
-/** The permission mode a Claude session starts in: `--permission-mode`, or `--dangerously-skip-permissions` for `bypassPermissions`. */
+/**
+ * A Claude session's permission mode: the one it starts in (`--permission-mode`, or
+ * `--dangerously-skip-permissions` for `bypassPermissions`), and the one it is in now.
+ */
 export const LaunchMode = z.enum(["default", "acceptEdits", "plan", "auto", "bypassPermissions", "dontAsk"]);
 export type LaunchMode = z.infer<typeof LaunchMode>;
 
@@ -256,6 +259,11 @@ export const Session = z.object({
   status: SessionStatus,
   /** Set only while `status` is `idle`: the session is not done, it waits on its own shells or on the user. */
   waiting: SessionWaiting.optional(),
+  /**
+   * A Claude session's permission mode, as its hooks, its transcript or its terminal last
+   * said. It is not stored: a restart learns it again from the session's next hook.
+   */
+  mode: LaunchMode.optional(),
   ask: AskId.optional(),
   startedAt: Timestamp,
   lastActivity: Timestamp,

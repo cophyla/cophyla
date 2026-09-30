@@ -225,7 +225,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         return;
       }
       const sessionId = `fake-${process.pid}-${++sessions}`;
-      send({ jsonrpc: "2.0", id, result: { sessionId, modes: { currentModeId: "auto", availableModes: [{ id: "default", name: "Manual" }] }, models: { availableModels: [{ modelId: "gpt-fake[low]" }] } } });
+      send({ jsonrpc: "2.0", id, result: { sessionId, modes: { currentModeId: "auto", availableModes: [{ id: "default", name: "Manual" }, { id: "acceptEdits", name: "Accept Edits" }, { id: "plan", name: "Plan Mode" }, { id: "bypassPermissions", name: "Bypass Permissions" }] }, models: { availableModels: [{ modelId: "gpt-fake[low]" }] } } });
       return;
     }
     case "session/set_mode":

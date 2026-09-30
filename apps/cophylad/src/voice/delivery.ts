@@ -74,6 +74,7 @@ export const USER_ACTIONS: ReadonlySet<string> = new Set([
   "session.send",
   "session.focus",
   "session.stop",
+  "session.mode",
   "terminal.open",
   "terminal.spawn",
   "terminal.input",

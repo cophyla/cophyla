@@ -2,7 +2,7 @@
 // risk class. Default policy is per risk class; `tool.run` takes the risk of the tool it
 // runs. See entities.md, "Tool risk is the gate's vocabulary".
 
-import type { RiskClass } from "./entities.ts";
+import type { LaunchMode, RiskClass } from "./entities.ts";
 import { capabilityRequests } from "./capability.ts";
 import { clientRequests } from "./client.ts";
 
@@ -31,6 +31,8 @@ export const actions = {
   "session.send": { risk: "write" },
   "session.spawn": { risk: "exec" },
   "session.stop": { risk: "exec" },
+  // `exec` at most: `sessionModeRisk` says which a given mode is.
+  "session.mode": { risk: "exec" },
   "session.focus": { risk: "write" },
   "session.watch": { risk: "read" },
   "session.files": { risk: "read" },
@@ -158,4 +160,12 @@ void _missingClient;
 
 export function actionDefinition(name: string): ActionDefinition | undefined {
   return (actions as Record<string, ActionDefinition>)[name];
+}
+
+/**
+ * The risk of putting a session in a permission mode: `exec` for one that lets it do more
+ * unasked than asking before each edit, `write` for manual and the stricter ones.
+ */
+export function sessionModeRisk(mode: LaunchMode): RiskClass {
+  return mode === "default" || mode === "plan" || mode === "dontAsk" ? "write" : "exec";
 }

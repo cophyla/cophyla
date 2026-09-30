@@ -222,6 +222,7 @@ export const requestFilters = {
   "session.send": { names: (p) => [{ session: p.id }] },
   "session.focus": { names: (p) => [{ session: p.id }] },
   "session.stop": { names: (p) => [{ session: p.id }] },
+  "session.mode": { names: (p) => [{ session: p.id }] },
   "session.watch": { names: (p) => p.ids.map((id) => ({ session: id })) },
   // the session's own directory, the path its target is checked by, and nothing above it
   "session.files": { names: (p) => [{ session: p.id }] },

@@ -45,6 +45,7 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
   "session.send",
   "session.spawn",
   "session.stop",
+  "session.mode",
   "ask.answer",
   "annotate",
   "workspace.list",
@@ -207,7 +208,8 @@ export class NodeServer {
     switch (name) {
       case "session.history":
       case "session.send":
-      case "session.stop": {
+      case "session.stop":
+      case "session.mode": {
         const s = local?.session(String(p["id"]));
         c.require(s?.cwd, "that session");
         return;

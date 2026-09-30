@@ -5,9 +5,10 @@
 // milestone 9 the metrics methods; milestone 10 the remote desktop methods; milestone 11
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
 // `session.files` and `session.git`; the brain's listeners as the settings show them; the
-// speaker button's `voice.hush` and the `voice.presence` a client says where the user is with.
+// speaker button's `voice.hush` and the `voice.presence` a client says where the user is with;
+// `session.mode`.
 
-import { RpcError } from "@cophyla/protocol";
+import { RpcError, sessionModeRisk } from "@cophyla/protocol";
 import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
@@ -159,6 +160,11 @@ export function attachMethods(deps: AttachDeps): MethodTable {
         await deps.sessions.stopSession(p.id, { as: "user" });
         return {};
       },
+    },
+    "session.mode": {
+      target: (p) => p.id,
+      risk: (p) => sessionModeRisk(p.mode),
+      handler: (p) => deps.sessions.setMode(p.id, p.mode),
     },
     "session.watch": {
       handler: (p, ctx) => {

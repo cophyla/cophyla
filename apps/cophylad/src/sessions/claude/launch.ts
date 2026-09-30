@@ -5,7 +5,8 @@
 // The flags come from the process's command line; `permissions.defaultMode` and
 // `permissions.disableBypassPermissionsMode` from the settings files the CLI reads, lowest
 // first: the profile's, the project's, the project's local one, then `--settings`. Pure but
-// for `readLaunch`, which reads those files and never throws.
+// for `readLaunch`, which reads those files and never throws. The same launch says which
+// modes Shift+Tab goes round, which `session.mode` presses through.
 
 import { isAbsolute, join } from "node:path";
 import { readSettings } from "./hooks.ts";
@@ -128,4 +129,41 @@ export function readLaunch(opts: { argv?: readonly string[]; configDir?: string;
     docs.push(settingsDoc(isAbsolute(s) ? s : join(opts.cwd, s)));
   }
   return launchOf(flags, permissionSettings(docs));
+}
+
+/** A mode in words, as the footer under the prompt says it. */
+export const MODE_WORDS: Record<PermissionMode, string> = {
+  default: "manual",
+  acceptEdits: "accept edits",
+  plan: "plan",
+  auto: "auto",
+  bypassPermissions: "bypass permissions",
+  dontAsk: "don't ask",
+};
+
+/**
+ * Shift+Tab's cycle, as 2.1.285 goes round it: bypassing permissions is in it only for a
+ * session whose launch opens it, and auto only on a model that has it. `dontAsk` is not.
+ */
+export const MODE_CYCLE: readonly PermissionMode[] = ["default", "acceptEdits", "plan", "bypassPermissions", "auto"];
+
+/** How much a mode lets a session do unasked. */
+const LOOSENESS: Record<PermissionMode, number> = { plan: 0, dontAsk: 0, default: 1, acceptEdits: 2, auto: 3, bypassPermissions: 4 };
+
+/**
+ * The first mode Shift+Tab passes on its way from one mode to another that lets the session do
+ * more unasked than either end: a tool call made meanwhile could run unasked. Only the modes
+ * `offered` are passed; `undefined` when none is looser, or either end is off the cycle.
+ */
+export function looserOnTheWay(from: PermissionMode, to: PermissionMode, offered: (m: PermissionMode) => boolean = () => true): PermissionMode | undefined {
+  const n = MODE_CYCLE.length;
+  const a = MODE_CYCLE.indexOf(from);
+  const b = MODE_CYCLE.indexOf(to);
+  if (a < 0 || b < 0) return undefined;
+  const bound = Math.max(LOOSENESS[from], LOOSENESS[to]);
+  for (let i = (a + 1) % n; i !== b; i = (i + 1) % n) {
+    const m = MODE_CYCLE[i]!;
+    if (offered(m) && LOOSENESS[m] > bound) return m;
+  }
+  return undefined;
 }

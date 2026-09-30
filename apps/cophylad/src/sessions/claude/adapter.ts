@@ -430,8 +430,7 @@ export class ClaudeAdapter implements HarnessAdapter {
             if (rec.session.intent === undefined && patch.intent === undefined) patch.intent = oneLine(item.heading);
             break;
           case "permission_mode":
-            rec.permissionMode = item.mode;
-            (rec.modesSeen ??= new Set()).add(item.mode);
+            this.host.noteMode(rec, item.mode, now);
             break;
           case "queue":
             if (record && item.operation === "enqueue" && item.content && !this.host.isOwnText(rec, item.content)) {

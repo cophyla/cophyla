@@ -7,7 +7,8 @@
 // `voice.wakeword` and `voice.wake` are the phone host's own, so no view can move where its
 // phone's wake word is detected or start an utterance on it. A terminal's row is a headline
 // like a session's; its screen and its keys need `terminal`, since raw keys can do what
-// `session.send` cannot (Shift+Tab into bypassing permissions).
+// `session.send` cannot. `session.mode` presses Shift+Tab for `sessions:write`, but only
+// into a mode the session's own launch offers, as a plan's answer can.
 //
 // `null` means the host's alone, for signals and notifications too: a data channel's
 // signalling (`direct.*`), which hands out TURN credentials and moves the host's own link,
@@ -26,6 +27,7 @@ export const requestScopes = {
   "session.send": "sessions:write",
   "session.focus": "sessions:write",
   "session.stop": "sessions:write",
+  "session.mode": "sessions:write",
   "session.watch": "sessions:read",
   "session.files": "sessions:read",
   "session.git": "sessions:read",

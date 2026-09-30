@@ -52,6 +52,7 @@
     "session.send": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" }], "results": [{ "status": "queued", "ref": "cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0" }, { "status": "held" }] },
     "session.focus": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
     "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
+    "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": ["", "apps", "apps/cophylad/src"] }],

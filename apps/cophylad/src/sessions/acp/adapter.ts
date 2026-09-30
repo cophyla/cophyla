@@ -81,6 +81,8 @@ interface AcpChild {
   pending?: Pending;
   stats: NonNullable<Session["stats"]>;
   stopping: boolean;
+  /** The modes the agent said it offers at `session/new`, when it said. */
+  modes?: string[];
 }
 
 interface PermissionOption {
@@ -218,7 +220,7 @@ export class AcpAdapter {
           return rpc.request("session/new", { cwd: input.cwd, mcpServers: [] }, { timeoutMs: timeout });
         }
         throw e;
-      })) as { sessionId: string; models?: { availableModels?: { modelId: string }[]; currentModelId?: string } };
+      })) as { sessionId: string; modes?: { availableModes?: { id: string }[] }; models?: { availableModels?: { modelId: string }[]; currentModelId?: string } };
       const sessionId = created.sessionId;
       const now = this.deps.host.now();
       const rec = this.deps.host.ensure({
@@ -237,15 +239,19 @@ export class AcpAdapter {
       });
       // The model the counters are priced at: the one asked for, or the agent's current one when it names it.
       const model = input.model ?? created.models?.currentModelId;
-      child = { rpc, sessionId, rec, harness: input.harness, spawnedAt: now, queue: [], text: [], tools: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 }, ...(model ? { model } : {}) }, stopping: false };
+      const modes = created.modes?.availableModes?.map((m) => m.id);
+      child = { rpc, sessionId, rec, harness: input.harness, spawnedAt: now, queue: [], text: [], tools: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 }, ...(model ? { model } : {}) }, stopping: false, ...(modes ? { modes } : {}) };
       this.children.set(rec.session.id, child);
       // Prompts must reach the queue: put the agent in its asking mode unless another was asked
       // for (a plan approved to go on unasked), and pick the model where the agent takes one.
       const modeId = input.mode ?? ASK_MODE[input.harness];
-      await rpc.request("session/set_mode", { sessionId, modeId }, { timeoutMs: timeout }).catch((e: unknown) => {
-        if (input.mode) log.warn("set_mode refused", { mode: modeId, error: String(e) });
-        else log.debug("set_mode refused", { error: String(e) });
-      });
+      await rpc.request("session/set_mode", { sessionId, modeId }, { timeoutMs: timeout }).then(
+        () => this.deps.host.noteMode(rec, modeId, now),
+        (e: unknown) => {
+          if (input.mode) log.warn("set_mode refused", { mode: modeId, error: String(e) });
+          else log.debug("set_mode refused", { error: String(e) });
+        },
+      );
       if (input.harness === "codex" && input.model) {
         const models = created.models?.availableModels ?? [];
         const match = models.find((m) => m.modelId === input.model) ?? models.find((m) => m.modelId.startsWith(input.model + "["));
@@ -323,6 +329,23 @@ export class AcpAdapter {
     const text = child.text.join("");
     child.text = [];
     if (text.trim()) this.deps.host.event(child.rec, "assistant_text", { text: capText(text) }, undefined, now);
+  }
+
+  // --- mode ------------------------------------------------------------------------------
+
+  /** Puts a session in one of its agent's modes; one the agent does not offer, or refuses, is `unsupported`. */
+  async setMode(sessionId: string, modeId: string): Promise<void> {
+    const child = this.children.get(sessionId);
+    if (!child) throw new RpcError("not_found", `no ACP session ${sessionId}`);
+    if (!child.rpc.alive || child.stopping) throw new RpcError("conflict", `ACP session ${sessionId} has ended`);
+    if (child.modes && !child.modes.includes(modeId)) throw new RpcError("unsupported", `the agent offers no ${modeId} mode, only ${child.modes.join(", ")}`);
+    try {
+      await child.rpc.request("session/set_mode", { sessionId: child.sessionId, modeId }, { timeoutMs: this.deps.config.spawn_timeout_ms });
+    } catch (e) {
+      throw new RpcError("unsupported", `the agent refused the ${modeId} mode: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    this.deps.host.noteMode(child.rec, modeId);
+    this.log.info("acp session mode set", { session: child.rec.session.id, mode: modeId });
   }
 
   // --- stop ------------------------------------------------------------------------------
@@ -445,6 +468,7 @@ export class AcpAdapter {
       }
       case "current_mode_update":
         this.deps.host.event(child.rec, "notification", { type: "mode", mode: u["currentModeId"] }, raw, now);
+        if (typeof u["currentModeId"] === "string") this.deps.host.noteMode(child.rec, u["currentModeId"], now);
         return;
       case "usage_update": {
         const used = u["used"];

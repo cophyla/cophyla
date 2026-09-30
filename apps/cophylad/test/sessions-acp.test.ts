@@ -167,8 +167,24 @@ describe("acp sessions", () => {
     expect(notes.map((n) => n.type)).toEqual(["message", "plan", "mode"]);
     expect(notes[1]).toEqual({ type: "plan", entries: [{ content: "Read the code", status: "completed", priority: "high" }, { content: "Fix it", status: "in_progress", priority: "medium" }] });
     expect(mini.sessions.get(s.id)?.title).toBe("A plan");
+    // The mode the agent reports is the session's.
+    expect(mini.sessions.get(s.id)?.mode).toBe("acceptEdits");
     // Thoughts are dropped.
     expect(events(s.id).some((e) => e.kind === "assistant_text" && (e.payload as { text: string }).text === "thinking")).toBe(false);
+    await mini.sessions.stopSession(s.id);
+  });
+
+  test("a mode is set through the agent: one it offers, never bypassing permissions unless it started so, never one it lacks", async () => {
+    const s = await spawn("say hi");
+    await waitFor(() => mini.sessions.get(s.id)?.status === "idle");
+    // Started in its asking mode, which the agent took.
+    expect(mini.sessions.get(s.id)?.mode).toBe("default");
+    expect(await mini.sessions.setMode(s.id, "plan")).toEqual({ mode: "plan" });
+    expect(mini.sessions.get(s.id)?.mode).toBe("plan");
+    const refused = (mode: "bypassPermissions" | "auto") => mini.sessions.setMode(s.id, mode).then(() => undefined, (e: unknown) => e);
+    expect(await refused("bypassPermissions")).toMatchObject({ code: "unsupported", message: "bypassing permissions is offered only to a session started in it" });
+    expect(await refused("auto")).toMatchObject({ code: "unsupported", message: "the agent offers no auto mode, only default, acceptEdits, plan, bypassPermissions" });
+    expect(mini.sessions.get(s.id)?.mode).toBe("plan");
     await mini.sessions.stopSession(s.id);
   });
 

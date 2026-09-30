@@ -185,6 +185,18 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
 - **Token counts, `model` and `intent`** come from the transcript (Claude), rollout (Codex)
   or view (Muse); `cost` is priced by `metrics` from the model each delta was counted under, when
   the adapter states none itself.
+- **Permission mode.** A Claude session's `mode` is what its hooks' `permission_mode`, its
+  transcript's `permission-mode` rows or its ACP agent last said; it is not stored.
+  `session.mode` sets it: over ACP with `session/set_mode` (bypassing permissions only for a
+  session started in it), and in a tether terminal by pressing Shift+Tab until the footer
+  under the prompt names the mode (`claude/screen.ts`), the footer read after each press, since
+  the cycle (manual, accept edits, plan, then bypass for a session whose launch opens it, then
+  auto on a model that has it) differs by session: coming round to a mode already passed means
+  the one asked for is not on offer. Nothing is pressed while an ask is open or no prompt shows,
+  nor while the session works when the way there passes a mode looser than both ends
+  (`claude/launch.ts`); a message typed meanwhile waits for the presses. Its risk is `exec`
+  into a looser mode than manual, `write` otherwise. A session in a window of the user's own,
+  or of another harness, is `unsupported`.
 - **Focus.** `session.focus` on a session in tether raises the window used on it most
   recently, walking up from its `tether attach`, and opens one with `tether open` when none
   is attached; a background job gets `claude attach` in a tether terminal first. With

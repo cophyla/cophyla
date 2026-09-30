@@ -423,6 +423,16 @@ export const clientRequests = {
    */
   "session.stop": { params: z.object({ id: SessionId }), result: Empty },
   /**
+   * Puts a Claude session in a permission mode, as Shift+Tab in its terminal does: pressed in
+   * its tether terminal until the footer shows the mode, or set over ACP for a session cophylad
+   * runs that way. The mode it is in afterwards comes back. A mode the session does not offer
+   * (bypassing permissions when it was not started allowing it, auto on a model without it,
+   * `dontAsk`, which Shift+Tab never reaches) and a session in a window cophylad cannot type
+   * into are `unsupported`; an open ask, a screen with no prompt on it, and a busy session whose
+   * way there passes a looser mode are a `conflict`.
+   */
+  "session.mode": { params: z.object({ id: SessionId, mode: LaunchMode }), result: z.object({ mode: LaunchMode }) },
+  /**
    * The sessions whose every event this client hears as it lands, as `session.event`: the
    * tab that is open. The list replaces the one before; an empty one stops them. Without
    * it a client hears a session only as `session.state` and `ask.state`.

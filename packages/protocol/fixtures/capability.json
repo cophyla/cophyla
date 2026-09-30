@@ -216,6 +216,7 @@
       "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }]
     },
     "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "as": "user" }], "results": [{}] },
+    "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "acceptEdits" }], "results": [{ "mode": "acceptEdits" }] },
     "ask.answer": { "params": [{ "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5", "option": "allow" }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "no", "text": "not now" }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB8", "option": "Session cookie", "options": ["Session cookie", "Bearer token"] }, { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FC0", "option": "text", "text": "Valkey" }], "results": [{}] },
     "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
     "workspace.put": {

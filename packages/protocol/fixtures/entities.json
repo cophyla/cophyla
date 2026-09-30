@@ -196,6 +196,7 @@
       "tags": [],
       "status": "idle",
       "waiting": { "on": "shell" },
+      "mode": "acceptEdits",
       "startedAt": 1758196000000,
       "lastActivity": 1758196800000
     },

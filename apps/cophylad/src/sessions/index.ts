@@ -39,10 +39,10 @@ import type { Logger } from "../log.ts";
 import type { SessionListFilter, Store } from "../store/index.ts";
 import type { Workspaces } from "../workspaces/index.ts";
 import { AcpAdapter } from "./acp/adapter.ts";
-import { readLaunch } from "./claude/launch.ts";
+import { looserOnTheWay, MODE_WORDS, permissionModeOf, readLaunch } from "./claude/launch.ts";
 import { isAlive as processAlive } from "./claude/registry.ts";
-import type { ClaudeLaunch } from "./claude/launch.ts";
-import { clearContextRow, dialogRows, promptInput, tail, waitingOn } from "./claude/screen.ts";
+import type { ClaudeLaunch, PermissionMode } from "./claude/launch.ts";
+import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, tail, waitingOn } from "./claude/screen.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
@@ -202,6 +202,8 @@ interface LiveRecord extends SessionRecord {
   launch?: { pid: number | undefined; read: Promise<ClaudeLaunch | undefined> };
   /** Messages waiting to be typed into its terminal, one after another. */
   typing?: Promise<void>;
+  /** Claude: a change of permission mode being pressed in its terminal; the next waits for it, and so does a message typed meanwhile. */
+  moding?: Promise<void>;
   /** Claude: its context was just cleared (`SessionEnd` with reason `clear`); it ends unless its new id turns up first. */
   clearing?: ReturnType<typeof setTimeout>;
   /** Inside `end`'s last tail pass, which must not end it again. */
@@ -245,6 +247,11 @@ const DIALOG_SETTLE_MS = 600;
 /** How long a pressed row has to leave the screen before it is pressed again, and how often. */
 const DIALOG_CONFIRM_MS = 2500;
 const DIALOG_TRIES = 3;
+/** How long a press of Shift+Tab has to show in the footer before it is pressed again, and how often the footer is read meanwhile. */
+const MODE_PRESS_MS = 2000;
+const MODE_POLL_MS = 80;
+/** The most Shift+Tab is pressed for one change of mode: round the longest cycle and back, with a dropped key or two. */
+const MODE_PRESSES = 8;
 
 /** Between discovery passes while waiting for a session started in a terminal to register. */
 const TERMINAL_POLL_MS = 250;
@@ -1188,6 +1195,14 @@ export class Sessions implements SessionHost {
     if (patch.native && patch.native.pid !== before) this.terminalAbove(rec as LiveRecord);
   }
 
+  /** The permission mode a session is in: every one seen is kept, and a Claude session's shows as its `mode`. */
+  noteMode(rec: SessionRecord, mode: string, at = this.now()): void {
+    rec.permissionMode = mode;
+    (rec.modesSeen ??= new Set()).add(mode);
+    const known = rec.session.harness === "claude" ? permissionModeOf(mode) : undefined;
+    if (known && known !== rec.session.mode) this.patch(rec, { mode: known }, at);
+  }
+
   /**
    * A status, and for an idle session what it waits on. `waiting` is the harness's word, read
    * from its registry; a status from a hook leaves it as it is, since a hook does not say.
@@ -1825,6 +1840,92 @@ export class Sessions implements SessionHost {
     return this.acp?.cancel(id) ?? false;
   }
 
+  // --- permission mode ------------------------------------------------------------------
+
+  /**
+   * Puts a Claude session in a permission mode. One cophylad runs over ACP is set there; one in
+   * a tether terminal has Shift+Tab pressed until the footer under its prompt names the mode.
+   * `dontAsk` is off the cycle, and so is any other harness's session.
+   */
+  async setMode(id: string, mode: PermissionMode, part?: string): Promise<{ mode: PermissionMode }> {
+    const rec = this.must(id, part);
+    if (rec.session.harness !== "claude") throw new RpcError("unsupported", "only a Claude Code session's permission mode can be set");
+    if (mode === "dontAsk") throw new RpcError("unsupported", "Shift+Tab never reaches don't-ask mode: a session is started in it or not at all");
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      if (mode === "bypassPermissions" && !rec.modesSeen?.has(mode)) throw new RpcError("unsupported", "bypassing permissions is offered only to a session started in it");
+      await this.acp.setMode(id, mode);
+      return { mode };
+    }
+    if (!this.typesInto(rec)) throw new RpcError("unsupported", "the session runs where cophylad cannot type: Shift+Tab in its own window changes its mode");
+    const run = (rec.moding ?? Promise.resolve()).then(() => this.pressMode(rec, mode));
+    rec.moding = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Presses Shift+Tab in a session's terminal until the footer names the mode, reading the
+   * footer after each press rather than counting presses: the cycle holds bypassing
+   * permissions only for a session whose launch opens it, and auto only on a model that has
+   * it, so coming round to a mode already passed means the one asked for is not on offer. A
+   * press the footer does not show within a moment is pressed again. Nothing is pressed while
+   * an ask is open, whose dialog would take the key, or while no prompt shows; nor while the
+   * session works when the way there passes a mode looser than both ends, where a tool call
+   * made meanwhile could run unasked.
+   */
+  private async pressMode(rec: LiveRecord, mode: PermissionMode): Promise<{ mode: PermissionMode }> {
+    const tether = this.deps.tether!;
+    const term = rec.session.native.terminal;
+    if (rec.session.status === "ended" || !term) throw new RpcError("conflict", "the session ended before its mode could be set");
+    const asking = () => (rec.held !== undefined && !rec.held.settled) || rec.inputAsk !== undefined;
+    if (asking()) throw new RpcError("conflict", "the session is asking something: its mode can be set once that is answered");
+    const screenOf = () => tether.screen(term).catch(() => undefined);
+    const first = await screenOf();
+    const from = first ? footerMode(first) : undefined;
+    if (!first || !from) throw new RpcError("conflict", "no prompt shows in the session's terminal (a dialog or a menu has it): its mode can be set once the prompt is back");
+    this.noteMode(rec, from);
+    if (from === mode) return { mode };
+    const launch = await this.launchOf(rec);
+    const bypass = !launch || launch.bypass || rec.modesSeen?.has("bypassPermissions") === true;
+    let noAuto = autoUnavailable(first);
+    if (mode === "bypassPermissions" && !bypass) throw new RpcError("unsupported", "bypassing permissions is offered only to a session started allowing it (--allow-dangerously-skip-permissions)");
+    if (mode === "auto" && noAuto) throw new RpcError("unsupported", "auto mode is unavailable for the session's model");
+    if (rec.session.status === "busy") {
+      const looser = looserOnTheWay(from, mode, (m) => (m !== "bypassPermissions" || bypass) && (m !== "auto" || !noAuto));
+      if (looser) throw new RpcError("conflict", `the session is working, and Shift+Tab reaches ${MODE_WORDS[mode]} from ${MODE_WORDS[from]} only through ${MODE_WORDS[looser]}, where a tool could run unasked: try again once its turn ends`);
+    }
+    const passed: PermissionMode[] = [from];
+    let current = from;
+    for (let presses = 0; presses < MODE_PRESSES; presses++) {
+      if (asking()) throw new RpcError("conflict", `the session asked something while its mode was being set: it is in ${MODE_WORDS[current]} mode`);
+      await tether.keys(term, ["S-Tab"]);
+      let next: PermissionMode | undefined = current;
+      for (const by = this.now() + MODE_PRESS_MS; next === current && this.now() < by; ) {
+        await sleep(MODE_POLL_MS);
+        const s = await screenOf();
+        next = s ? footerMode(s) : undefined;
+        if (s && autoUnavailable(s)) noAuto = true;
+      }
+      if (next === undefined) throw new RpcError("conflict", `the prompt left the session's terminal while its mode was being set: it was last in ${MODE_WORDS[current]} mode`);
+      if (next === current) continue;
+      current = next;
+      this.noteMode(rec, current);
+      if (current === mode) {
+        this.log.info("session mode set", { session: rec.session.id, from, mode, presses: presses + 1 });
+        return { mode };
+      }
+      if (passed.includes(current)) {
+        const why = mode === "bypassPermissions" ? " (it was not started allowing it)" : mode === "auto" && noAuto ? " (its model has no auto mode)" : "";
+        throw new RpcError("unsupported", `${MODE_WORDS[mode]} mode is not on offer in this session${why}: Shift+Tab goes round ${passed.map((m) => MODE_WORDS[m]).join(", ")}`);
+      }
+      passed.push(current);
+    }
+    throw new RpcError("unavailable", `the session's terminal did not take Shift+Tab: it is in ${MODE_WORDS[current]} mode`);
+  }
+
   // --- send and receipts ----------------------------------------------------------------
 
   /**
@@ -1911,6 +2012,8 @@ export class Sessions implements SessionHost {
     const deadline = this.now() + this.config.hook_timeout_s * 1000;
     let term: TerminalRef | undefined;
     for (;;) {
+      // Not in the middle of Shift+Tab presses, whose passing modes the turn would start in.
+      if (rec.moding) await rec.moding;
       if (rec.session.status === "ended" || this.stopped) throw new Error("the session ended before the message could be typed");
       term = rec.session.native.terminal;
       if (!term) throw new Error("the session's terminal is gone");
@@ -2146,8 +2249,7 @@ export class Sessions implements SessionHost {
     rec.hooks = (rec.hooks ?? 0) + 1;
     const raw = rawIfSmall(hook.raw);
     if (hook.permissionMode) {
-      rec.permissionMode = hook.permissionMode;
-      (rec.modesSeen ??= new Set()).add(hook.permissionMode);
+      this.noteMode(rec, hook.permissionMode, now);
       // A planning session will ask to leave plan mode: read what it was started with now,
       // so the ask need not wait on it.
       if (hook.permissionMode === "plan") void this.launchOf(rec);

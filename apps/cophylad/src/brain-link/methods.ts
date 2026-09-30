@@ -4,8 +4,8 @@
 // as `pending` when the gate or a `ui.ask` waits on a person, and withdrawn by `cancel`.
 // Requests that belong to later milestones answer `unsupported`.
 
-import { RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LlmDelta, Node, ProfileLimits, RiskClass, RpcId } from "@cophyla/protocol";
+import { RpcError, sessionModeRisk } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session } from "@cophyla/protocol";
 import { annotate } from "../annotate.ts";
 import type { Chat } from "../chat/index.ts";
 import type { MemoryFiles } from "../editable/memory.ts";
@@ -17,6 +17,7 @@ import type { Listeners } from "../listeners/index.ts";
 import type { Llm } from "../llm/index.ts";
 import type { Metrics } from "../metrics/index.ts";
 import type { Sessions } from "../sessions/index.ts";
+import { MODE_WORDS } from "../sessions/claude/launch.ts";
 import { pairAsk } from "../api/methods.ts";
 import { RESERVED_KV_NS } from "../grants/namespaces.ts";
 import type { Remote } from "../remote/index.ts";
@@ -103,6 +104,22 @@ export function spawnAsk(p: { harness: string; workspace: string; prompt: string
   return { title: `Start ${A_HARNESS[p.harness] ?? `a ${p.harness}`} session in ${workspace ?? p.workspace}?`, detail: p.prompt };
 }
 
+/** What a session does in each mode, for the ask before the brain puts it there. */
+const IN_MODE: Record<LaunchMode, string> = {
+  default: "It will ask before each edit and command.",
+  acceptEdits: "It will edit files without asking; commands still ask.",
+  plan: "It will only read and plan, changing nothing.",
+  auto: "It will act without asking, a reviewer model screening each action.",
+  bypassPermissions: "It will run every tool without asking.",
+  dontAsk: "It will refuse whatever is not allowed already, asking nothing.",
+};
+
+/** The words of the ask a node's rules open before the brain changes a session's mode. */
+export function modeAsk(p: { id: string; mode: LaunchMode }, session: Session | undefined): { title: string; detail: string } {
+  const name = session?.title ?? session?.cwd.split(/[\\/]/).filter(Boolean).pop() ?? p.id;
+  return { title: `Put ${name} in ${MODE_WORDS[p.mode]} mode?`, detail: IN_MODE[p.mode] };
+}
+
 const unsupported = (name: string) => (): never => {
   throw new RpcError("unsupported", `${name} arrives in a later milestone`);
 };
@@ -153,6 +170,12 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
         await deps.sessions.stopSession(p.id);
         return {};
       },
+    },
+    "session.mode": {
+      target: (p) => p.id,
+      risk: (p) => sessionModeRisk(p.mode),
+      ask: (p) => modeAsk(p, deps.sessions.get(p.id)),
+      handler: (p) => deps.sessions.setMode(p.id, p.mode),
     },
     "ask.answer": {
       target: (p) => p.id,

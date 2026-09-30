@@ -12,9 +12,11 @@
 // The prompt is the row that starts with the pointer directly under a rule of `─`; a past
 // turn echoed in the transcript starts with it too, but never under a rule. An empty prompt
 // shows a suggestion in dim text, which is not the user's. A dialog's rows are numbered, the
-// selected one marked with the pointer.
+// selected one marked with the pointer. Under the prompt's closing rule, the footer names the
+// permission mode, typing or not, busy or not; a dialog or the slash menu takes its place.
 
 import type { Run, Screen } from "@tether-pty/client";
+import type { PermissionMode } from "./launch.ts";
 
 export type ScreenLike = Pick<Screen, "lines" | "cells">;
 
@@ -59,6 +61,40 @@ export function promptInput(s: ScreenLike): string | undefined {
       .join("\n");
   }
   return undefined;
+}
+
+/** The footer's words for each permission mode, as 2.1.285 draws them. */
+const FOOTER_MODES: readonly [RegExp, PermissionMode][] = [
+  [/\bmanual mode on\b/, "default"],
+  [/\baccept edits on\b/, "acceptEdits"],
+  [/\bplan mode on\b/, "plan"],
+  [/\bauto mode on\b/, "auto"],
+  [/\bbypass permissions on\b/, "bypassPermissions"],
+];
+
+/** The rows under the prompt's closing rule; none when no prompt is on the screen. */
+function footerRows(s: ScreenLike): string[] {
+  const rows = rowsOf(s);
+  let i = rows.length - 1;
+  while (i > 0 && !(PROMPT.test(rows[i]!) && isRule(rows[i - 1]))) i--;
+  if (i <= 0) return [];
+  let close = i + 1;
+  while (close < rows.length && !isRule(rows[close])) close++;
+  return rows.slice(close + 1).map((r) => r.replace(/ /g, " "));
+}
+
+/**
+ * The permission mode the footer names, which Shift+Tab moves on; `undefined` when no prompt
+ * is on the screen (a dialog or a menu has it) or the footer names no mode known here.
+ */
+export function footerMode(s: ScreenLike): PermissionMode | undefined {
+  for (const row of footerRows(s)) for (const [words, mode] of FOOTER_MODES) if (words.test(row)) return mode;
+  return undefined;
+}
+
+/** The footer says the session's model has no auto mode. */
+export function autoUnavailable(s: ScreenLike): boolean {
+  return footerRows(s).some((row) => /\bauto mode unavailable\b/.test(row));
 }
 
 export interface DialogRow {

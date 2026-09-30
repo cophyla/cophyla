@@ -299,6 +299,8 @@ export interface SessionHost {
   /** Codex: a record hosted by the daemon is given the one terminal whose CLI stands for it, when exactly one does. */
   linkMarked(rec: SessionRecord): void;
   patch(rec: SessionRecord, patch: Partial<Session>, at?: number): void;
+  /** The permission mode a session is in, as its harness said; a Claude session's shows as its `mode`. */
+  noteMode(rec: SessionRecord, mode: string, at?: number): void;
   /**
    * A status; anything but `idle` clears `waiting`. With `opts`, `waiting` is what the
    * harness says now (undefined: waiting on nothing); without, an idle session keeps its own.
