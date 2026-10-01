@@ -43,12 +43,12 @@
 // member) and its end, and Remove, asked in place; and on the desktop, for this node itself,
 // Join another computer while it is alone and Leave once it joined one.
 
-import type { Ask, AuditEntry, Controller, GrantKind, Message, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -105,6 +105,8 @@ export interface UiState {
   kill?: { session: string; phase: "asking" | "killing" };
   /** New terminal's menu is open. */
   newTerminal?: TerminalMenu;
+  /** The folder New terminal's picker last showed on each machine: it opens there again. */
+  folderAt: Map<NodeId, string>;
   /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
   railMenu?: { note?: string };
   /** The node shows the brain's context (`[brain] show_context`): the Context button is there. */
@@ -156,10 +158,24 @@ export interface UiState {
 
 export type RailTab = "files" | "status";
 
-/** New terminal's menu: the node's recent workspaces once it listed them, and the place a shell is starting in (`HOME_PLACE` for the home folder). */
+/**
+ * New terminal's menu: every node's workspaces once the node listed them, and the place a shell
+ * is starting in (a workspace's id, `homePlace` or `folderPlace` of a machine); with the folder
+ * picker, open on one machine in place of the places.
+ */
 export interface TerminalMenu {
   workspaces?: Workspace[];
   starting?: string;
+  browse?: FolderBrowse;
+}
+
+/** New terminal's folder picker: the machine, the folder it shows once listed, one asked for and not answered yet, and why the last could not be listed. */
+export interface FolderBrowse {
+  node: NodeId;
+  name: string;
+  listing?: FolderPick;
+  loading?: string;
+  error?: string;
 }
 
 export interface RenderOptions {
@@ -580,22 +596,52 @@ function createTermTab(): HTMLElement {
   return tab;
 }
 
-/** Terminals: a heading like a folder's, which folds them away the same way, and the bare terminals' tabs. */
+/**
+ * Terminals: a heading like a folder's, which folds them away the same way, and the bare
+ * terminals' tabs; with more than one machine, under each machine's name, which folds its own.
+ */
 function renderTerminals(node: HTMLElement, terminals: Terminal[], state: ViewState, ui: UiState): void {
   setHidden(node, terminals.length === 0);
-  const name = node.querySelector<HTMLElement>(".tab-group-name")!;
+  const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
   const folded = ui.folded.has(TERMINALS_GROUP);
   setText(name, groupHeading("Terminals", terminals.length, folded));
   name.setAttribute("aria-expanded", folded ? "false" : "true");
-  const list = node.querySelector<HTMLElement>(".tab-terminals")!;
-  setHidden(list, folded);
-  reconcile(list, terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui));
+  const groups = terminalGroups(state, terminals);
+  const list = node.querySelector<HTMLElement>(":scope > .tab-terminals")!;
+  setHidden(list, folded || groups !== undefined);
+  reconcile(list, groups ? [] : terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui, true));
+  const machines = node.querySelector<HTMLElement>(":scope > .terminal-machines")!;
+  setHidden(machines, folded || groups === undefined);
+  reconcile(machines, groups ?? [], (g) => g.node, createMachineGroup, (n, g) => updateMachineGroup(n, g, state, ui));
 }
 
 /** The fold key of the Terminals heading: no folder group's, which all hold a newline. */
 const TERMINALS_GROUP = "terminals";
+/** A machine's under Terminals. */
+const machineGroupKey = (node: string): string => `${TERMINALS_GROUP}:${node}`;
 
-function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiState): void {
+/** One machine's terminals, headed by its name, which folds them as a folder's name does. */
+function createMachineGroup(): HTMLElement {
+  const group = el("div", "tab-group machine-group");
+  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-terminals"));
+  return group;
+}
+
+function updateMachineGroup(node: HTMLElement, g: TerminalGroup, state: ViewState, ui: UiState): void {
+  const key = machineGroupKey(g.node);
+  const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
+  const folded = ui.folded.has(key);
+  setText(name, groupHeading(g.name, g.terminals.length, folded));
+  setData(name, "group", key);
+  name.title = g.node === state.client?.node ? `Terminals on ${g.name}, this computer` : `Terminals on ${g.name}`;
+  name.setAttribute("aria-expanded", folded ? "false" : "true");
+  const list = node.querySelector<HTMLElement>(":scope > .tab-terminals")!;
+  setHidden(list, folded);
+  // Under the machine's name, a tab need not say it again.
+  reconcile(list, g.terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui, false));
+}
+
+function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiState, withMachine: boolean): void {
   setData(tab, "terminal", t.id);
   setData(tab, "status", t.status === "running" ? "idle" : "ended");
   tab.setAttribute("aria-current", ui.terminal === t.id ? "true" : "false");
@@ -606,7 +652,7 @@ function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiSt
   // The same black window a session in a terminal has its mark in, with a prompt for a plain program.
   setData(icon, "tether", "1");
   icon.setAttribute("aria-label", t.status === "running" ? mark.kind : `${mark.kind}, ended`);
-  setText(tab.querySelector(".tab-title")!, terminalTabLabel(state, t));
+  setText(tab.querySelector(".tab-title")!, terminalTabLabel(state, t, withMachine));
   tab.title = `${t.argv0} in ${t.cwd}${t.status === "running" ? "" : ", ended"}${t.windows > 0 ? `, ${t.windows} window${t.windows === 1 ? "" : "s"} open` : ""}`;
 }
 
@@ -1466,17 +1512,17 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     const newTerminal = el("button", "tab-new-terminal", "New terminal");
     newTerminal.type = "button";
     newTerminal.dataset["action"] = "new-terminal";
-    newTerminal.title = "Start a shell on this computer, in a folder you pick, shown here";
+    newTerminal.title = "Start a shell on a computer, in a folder you pick, shown here";
     newTerminal.setAttribute("aria-haspopup", "true");
-    // Under it, once pressed: where to start the shell.
+    // Under it, once pressed: where to start the shell, each machine's places, or a folder picked on one.
     const menu = el("div", "new-terminal-menu");
-    menu.append(el("p", "new-terminal-head", "Open a terminal in"), el("p", "new-terminal-loading", "Loading workspaces…"), el("div", "new-terminal-places"));
-    // The bare terminals under a heading of their own, which folds them like a folder's.
+    menu.append(el("p", "new-terminal-head", "Open a terminal in"), el("p", "new-terminal-loading", "Loading workspaces…"), el("div", "new-terminal-places"), createFolderPicker());
+    // The bare terminals under a heading of their own, which folds them like a folder's, by machine when there are several.
     const terminals = el("div", "tab-group terminals-group");
     const terminalsName = actionButton("tab-group-name", "Terminals", "group-fold");
     terminalsName.dataset["group"] = TERMINALS_GROUP;
     terminalsName.title = "Terminals no agent session runs in";
-    terminals.append(terminalsName, el("div", "tab-terminals"));
+    terminals.append(terminalsName, el("div", "tab-terminals"), el("div", "tab-subgroups terminal-machines"));
     list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, newTerminal, menu);
     // Under the sessions: the machines, what they are doing, and each login's limits and spend.
     const nodes = el("div", "rail-nodes");
@@ -1775,25 +1821,63 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   setText(root.querySelector(".railbar-title")!, card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
 }
 
-/** New terminal's row for the user's home folder, beside the workspaces' ids. */
-export const HOME_PLACE = "home";
-
-/** A row of New terminal's menu: a workspace, or the home folder. */
+/** A row of New terminal's menu: a workspace, a machine's home folder, or Other folder…, which opens the picker on that machine. */
 interface Place {
   key: string;
   name: string;
   path?: string;
+  browse?: true;
 }
 
-/** New terminal's menu, open once pressed: the recent workspaces when the node listed them, then the home folder; Starting… on the one picked. */
+/** One machine's rows of New terminal's menu, under its name when there are several. */
+interface MachinePlaces {
+  machine: TerminalMachine;
+  places: Place[];
+}
+
+/**
+ * New terminal's menu, open once pressed: each machine that starts terminals, this computer's
+ * first, with its recent workspaces once the node listed them, its home folder and Other
+ * folder…; Starting… on the one picked. Other folder… shows the picker in their place.
+ */
 function renderNewTerminal(menu: HTMLElement, button: HTMLButtonElement, state: ViewState, ui: UiState, canTerminal: boolean): void {
   const m = canTerminal && state.connected ? ui.newTerminal : undefined;
   button.setAttribute("aria-expanded", m ? "true" : "false");
   setHidden(menu, !m);
   if (!m) return;
-  setHidden(menu.querySelector<HTMLElement>(".new-terminal-loading")!, m.workspaces !== undefined);
-  const places: Place[] = m.workspaces ? [...m.workspaces.map((w) => ({ key: w.id, name: w.name, path: w.path })), { key: HOME_PLACE, name: "Home folder" }] : [];
-  reconcile(menu.querySelector<HTMLElement>(".new-terminal-places")!, places, (p) => p.key, createPlace, (b, p) => updatePlace(b as HTMLButtonElement, p, m.starting));
+  const browsing = m.browse !== undefined;
+  setHidden(menu.querySelector<HTMLElement>(".new-terminal-head")!, browsing);
+  setHidden(menu.querySelector<HTMLElement>(".new-terminal-loading")!, browsing || m.workspaces !== undefined);
+  const placesNode = menu.querySelector<HTMLElement>(".new-terminal-places")!;
+  setHidden(placesNode, browsing);
+  const machines = terminalMachines(state);
+  const several = machines.length > 1;
+  const listed = m.workspaces;
+  const sections: MachinePlaces[] = listed
+    ? machines.map((machine) => ({
+        machine,
+        places: [
+          ...recentWorkspaces(listed, machine.node, several ? RECENT_PER_MACHINE : RECENT_WORKSPACES).map((w) => ({ key: w.id, name: w.name, path: w.path })),
+          { key: homePlace(machine.node), name: "Home folder" },
+          { key: folderPlace(machine.node), name: "Other folder…", browse: true as const },
+        ],
+      }))
+    : [];
+  reconcile(placesNode, sections, (s) => s.machine.node, createMachinePlaces, (n, s) => updateMachinePlaces(n, s, several, m.starting));
+  renderFolderPicker(menu.querySelector<HTMLElement>(".folder-picker")!, m);
+}
+
+function createMachinePlaces(): HTMLElement {
+  const section = el("div", "new-terminal-machine");
+  section.append(el("p", "new-terminal-machine-name"), el("div", "new-terminal-machine-places"));
+  return section;
+}
+
+function updateMachinePlaces(node: HTMLElement, s: MachinePlaces, several: boolean, starting: string | undefined): void {
+  const name = node.querySelector<HTMLElement>(".new-terminal-machine-name")!;
+  setHidden(name, !several);
+  setText(name, s.machine.here ? `${s.machine.name} · this computer` : s.machine.name);
+  reconcile(node.querySelector<HTMLElement>(".new-terminal-machine-places")!, s.places, (p) => p.key, createPlace, (b, p) => updatePlace(b as HTMLButtonElement, p, s.machine, starting));
 }
 
 function createPlace(): HTMLElement {
@@ -1802,14 +1886,97 @@ function createPlace(): HTMLElement {
   return b;
 }
 
-function updatePlace(b: HTMLButtonElement, p: Place, starting: string | undefined): void {
+function updatePlace(b: HTMLButtonElement, p: Place, machine: TerminalMachine, starting: string | undefined): void {
+  setData(b, "action", p.browse ? "folder-browse" : "new-terminal-in");
   setData(b, "place", p.key);
+  setData(b, "node", machine.node);
+  setData(b, "name", machine.name);
   setText(b.querySelector(".place-name")!, p.name);
   const path = b.querySelector<HTMLElement>(".place-path")!;
   setText(path, starting === p.key ? "Starting…" : (p.path ?? ""));
   setHidden(path, starting !== p.key && p.path === undefined);
-  b.title = p.path ?? "Your home folder";
+  b.title = p.path ?? (p.browse ? `Pick a folder on ${machine.name}` : `Your home folder on ${machine.name}`);
   b.disabled = starting !== undefined;
+}
+
+/** The picker: back to the places, the folder's path to type into, the home and the roots, its folders, and Open terminal here. */
+function createFolderPicker(): HTMLElement {
+  const picker = el("div", "folder-picker");
+  const head = el("div", "folder-head");
+  const back = actionButton("folder-back", "‹", "folder-back");
+  back.title = "Back to the places";
+  back.setAttribute("aria-label", "Back");
+  head.append(back, el("span", "folder-title"));
+  const form = el("form", "folder-go");
+  const input = el("input", "folder-path");
+  input.type = "text";
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", "Folder");
+  const go = el("button", "folder-go-button", "Go");
+  go.type = "submit";
+  form.append(input, go);
+  const list = el("div", "folder-list");
+  list.setAttribute("aria-label", "Folders");
+  const here = actionButton("folder-here", "Open terminal here", "new-terminal-here");
+  picker.append(head, form, el("div", "folder-roots"), el("p", "folder-status"), list, here);
+  return picker;
+}
+
+/** A row of the picker: a folder in the one shown, or `..`, its parent. */
+interface FolderRow {
+  key: string;
+  name: string;
+  path: string;
+  up?: true;
+}
+
+function renderFolderPicker(picker: HTMLElement, m: TerminalMenu): void {
+  const b = m.browse;
+  setHidden(picker, !b);
+  if (!b) return;
+  const listing = b.listing;
+  setText(picker.querySelector(".folder-title")!, `A folder on ${b.name}`);
+  // The field follows the folder shown, not each keystroke: it is set when the folder changes.
+  const input = picker.querySelector<HTMLInputElement>(".folder-path")!;
+  const shown = listing?.path ?? "";
+  if (input.dataset["shown"] !== shown) {
+    input.dataset["shown"] = shown;
+    input.value = shown;
+    // the deepest folder in view, not the drive
+    input.scrollLeft = input.scrollWidth;
+  }
+  const roots = listing ? [{ label: "Home", path: listing.home }, ...listing.roots.map((r) => ({ label: r, path: r }))] : [];
+  reconcile(picker.querySelector<HTMLElement>(".folder-roots")!, roots, (r) => `${r.label} ${r.path}`, (r) => {
+    const chip = actionButton("folder-root", r.label, "folder-open");
+    chip.dataset["path"] = r.path;
+    chip.title = r.path;
+    return chip;
+  }, (chip, r) => setData(chip, "current", String(listing?.path === r.path)));
+  const status = picker.querySelector<HTMLElement>(".folder-status")!;
+  const words = b.loading !== undefined ? "Loading…" : (b.error ?? (listing?.truncated ? `The first ${listing.folders.length} folders: type a path for the rest` : listing && listing.folders.length === 0 ? "No folders in here" : ""));
+  setText(status, words);
+  setHidden(status, words === "");
+  setData(status, "error", String(b.loading === undefined && b.error !== undefined));
+  const rows: FolderRow[] = listing ? [...(listing.parent !== undefined ? [{ key: "..", name: "..", path: listing.parent, up: true as const }] : []), ...listing.folders.map((f) => ({ key: f.path, name: f.name, path: f.path }))] : [];
+  reconcile(picker.querySelector<HTMLElement>(".folder-list")!, rows, (r) => r.key, createFolderRow, (n, r) => updateFolderRow(n as HTMLButtonElement, r));
+  const here = picker.querySelector<HTMLButtonElement>(".folder-here")!;
+  setText(here, m.starting !== undefined ? "Starting…" : "Open terminal here");
+  here.disabled = !listing || b.loading !== undefined || m.starting !== undefined;
+  here.title = listing ? `Start a shell in ${listing.path}` : "";
+}
+
+function createFolderRow(): HTMLElement {
+  const row = actionButton("folder-row", "", "folder-open");
+  row.append(el("span", "folder-mark"), el("span", "folder-name"));
+  return row;
+}
+
+function updateFolderRow(row: HTMLButtonElement, r: FolderRow): void {
+  setData(row, "path", r.path);
+  setData(row, "up", String(r.up === true));
+  setText(row.querySelector(".folder-name")!, r.name);
+  row.title = r.up ? `Up to ${r.path}` : r.path;
 }
 
 /** A workspace's path as a hover title on the chips that name it. */

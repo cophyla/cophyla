@@ -82,6 +82,8 @@ export const NodeCapabilities = z.object({
   voice: z.object({ wake: z.boolean(), stt: z.boolean(), tts: z.boolean() }),
   remote: z.boolean(),
   brain: z.boolean(),
+  /** It starts terminals and serves them to the primary's clients: tether is on it, and it shares the whole machine. */
+  terminals: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 

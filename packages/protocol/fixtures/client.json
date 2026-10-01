@@ -86,7 +86,7 @@
     },
     "terminal.list": { "params": [{}], "results": [{ "terminals": [] }, { "terminals": [{ "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }] }] },
     "terminal.spawn": {
-      "params": [{ "argv": ["pwsh.exe", "-NoLogo"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "name": "build" }, { "argv": ["bash"], "cwd": "/home/me", "size": { "cols": 100, "rows": 30 } }, {}],
+      "params": [{ "argv": ["pwsh.exe", "-NoLogo"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "name": "build" }, { "argv": ["bash"], "cwd": "/home/me", "size": { "cols": 100, "rows": 30 } }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "cwd": "D:\\games" }, {}],
       "results": [{ "terminal": { "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "name": "build", "argv0": "pwsh.exe", "cwd": "C:\\D\\orchestrator", "cols": 100, "rows": 30, "status": "exited", "exitCode": 0, "windows": 0, "startedAt": 1758196000000 } }]
     },
     "terminal.open": {
@@ -94,6 +94,13 @@
       "results": [{ "terminal": { "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }, "seq": 48213, "cols": 120, "rows": 32, "data": "\u001b[H\u001b[2J\u276F " }]
     },
     "terminal.close": { "params": [{ "terminal": "5f2a9c01d4e7" }, { "terminal": "0c9e41b27a53", "end": true }], "results": [{}] },
+    "terminal.folders": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "D:\\" }],
+      "results": [
+        { "path": "C:\\Users\\me", "parent": "C:\\Users", "folders": [{ "name": "Documents", "path": "C:\\Users\\me\\Documents" }, { "name": "src", "path": "C:\\Users\\me\\src" }], "home": "C:\\Users\\me", "roots": ["C:\\", "D:\\"] },
+        { "path": "/", "folders": [{ "name": "home", "path": "/home" }], "truncated": true, "home": "/home/me", "roots": ["/"] }
+      ]
+    },
     "ask.answer": {
       "params": [
         { "id": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5", "option": "allow", "remember": "always" },

@@ -38,6 +38,7 @@ export const requestScopes = {
   "terminal.open": "terminal",
   "terminal.close": "terminal",
   "terminal.file": "terminal",
+  "terminal.folders": "terminal",
   "ask.answer": "asks:answer",
   "task.list": "tasks:read",
   "task.create": "tasks:write",

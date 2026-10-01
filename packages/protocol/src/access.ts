@@ -234,6 +234,7 @@ export const requestFilters = {
   "terminal.open": { names: "global" },
   "terminal.close": { names: "global" },
   "terminal.file": { names: "global" },
+  "terminal.folders": { names: "global" },
   "ask.answer": { names: (p) => [{ ask: p.id }] },
   "task.list": { names: "global" },
   "task.create": { names: "global" },

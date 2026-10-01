@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1834,6 +1834,75 @@ describe("default view: terminals", () => {
     // Another machine's, with its name; its workspace there is not this one's.
     apply(s, { type: "nodes", nodes: [{ id: OTHER, name: "laptop", role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false }, versions: { platform: "0.3.0", protocol: 1 }, lastSeen: 1 }] });
     expect(terminalPlace(s, term("t6", 1, { node: OTHER }))).toBe("app · laptop");
+    // Under that machine's name in the rail, the tab need not say it again.
+    expect(terminalTabLabel(s, term("t6", 1, { node: OTHER }), false)).toBe("app");
+  });
+
+  const machine = (id: string, name: string, extra: { status?: "online" | "offline"; terminals?: boolean } = {}) => ({
+    id,
+    name,
+    role: "secondary" as const,
+    status: extra.status ?? ("online" as const),
+    via: "direct" as const,
+    platform: "windows" as const,
+    scope: { kind: "machine" as const },
+    capabilities: { brain: false, harnesses: ["claude" as const], voice: { wake: false, stt: false, tts: false }, remote: false, ...(extra.terminals !== undefined ? { terminals: extra.terminals } : {}) },
+    versions: { platform: "0.3.0", protocol: 1 },
+    lastSeen: 1,
+  });
+
+  test("with more than one machine, the rail's terminals stand under each machine's name, this computer's first", () => {
+    const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const BOX = "node_01ARZ3NDEKTSV4RRFFQ69G5FC2";
+    const s = scoped(withTerminals());
+    const mine = [term("t1", 3), term("t2", 1)];
+    // one machine: the tabs stand under Terminals as they are
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk")] });
+    expect(terminalGroups(s, mine)).toBeUndefined();
+    // another machine connected: under the machines' names, though only this one has terminals
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop")] });
+    expect(terminalGroups(s, mine)).toEqual([{ node: NODE, name: "desk", terminals: mine }]);
+    // terminals on three: this computer's first, the others by name
+    const all = [term("t3", 5, { node: BOX }), ...mine, term("t4", 4, { node: LAPTOP })];
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop"), machine(BOX, "box")] });
+    expect(terminalGroups(s, all)?.map((g) => [g.name, g.terminals.map((x) => x.id)])).toEqual([["desk", ["t1", "t2"]], ["box", ["t3"]], ["laptop", ["t4"]]]);
+    // a machine that went offline and left a terminal shown still has its group
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop", { status: "offline" })] });
+    expect(terminalGroups(s, mine)).toBeUndefined();
+    expect(terminalGroups(s, [...mine, term("t4", 4, { node: LAPTOP })])?.map((g) => g.name)).toEqual(["desk", "laptop"]);
+    // the app on the laptop, relayed: the laptop is this computer, and comes first
+    const relayed = scoped(ready({ node: LAPTOP, scopes: [...CLIENT.scopes, "terminal"] }));
+    apply(relayed, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop")] });
+    expect(terminalGroups(relayed, [...mine, term("t4", 4, { node: LAPTOP })])?.map((g) => g.name)).toEqual(["laptop", "desk"]);
+  });
+
+  test("New terminal offers each machine that starts terminals, this computer's first, and asks the shell of the right one", () => {
+    const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const OLD = "node_01ARZ3NDEKTSV4RRFFQ69G5FC2";
+    const AWAY = "node_01ARZ3NDEKTSV4RRFFQ69G5FC3";
+    const NONE = "node_01ARZ3NDEKTSV4RRFFQ69G5FC4";
+    // a phone talks to the desk, which is not the phone
+    const phone = scoped(ready({ kind: "controller", scopes: [...CLIENT.scopes, "terminal"] }));
+    expect(terminalMachines(phone)).toEqual([{ node: NODE, name: "This computer", here: false }]);
+    const s = scoped(ready({ node: NODE, scopes: [...CLIENT.scopes, "terminal"] }));
+    // before the registry came, the node the view talks to
+    expect(terminalMachines(s)).toEqual([{ node: NODE, name: "This computer", here: true }]);
+    // the node the view talks to, whatever an earlier row says; another only when it says it starts them and is online
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop", { terminals: true }), machine(OLD, "old"), machine(AWAY, "away", { status: "offline", terminals: true }), machine(NONE, "no tether", { terminals: false })] });
+    expect(terminalMachines(s)).toEqual([
+      { node: NODE, name: "desk", here: true },
+      { node: LAPTOP, name: "laptop", here: false },
+    ]);
+    // the node the view talks to without tether offers nothing of its own
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk", { terminals: false }), machine(LAPTOP, "laptop", { terminals: true })] });
+    expect(terminalMachines(s).map((m) => m.name)).toEqual(["laptop"]);
+    // what is asked: nothing names the node the view talks to; another node by its id; a workspace by its own
+    expect(spawnParams(s, homePlace(NODE))).toEqual({});
+    expect(spawnParams(s, homePlace(LAPTOP))).toEqual({ node: LAPTOP });
+    expect(spawnParams(s, folderPlace(LAPTOP), "D:\\games")).toEqual({ node: LAPTOP, cwd: "D:\\games" });
+    expect(spawnParams(s, folderPlace(NODE), "C:\\src")).toEqual({ cwd: "C:\\src" });
+    expect(spawnParams(s, "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0")).toEqual({ workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0" });
+    expect(RECENT_PER_MACHINE).toBeLessThan(RECENT_WORKSPACES);
   });
 
   test("New terminal offers this node's workspaces, the one worked in last first, at most eight", () => {

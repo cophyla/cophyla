@@ -35,7 +35,7 @@
 import { existsSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError } from "@cophyla/protocol";
-import type { Ask, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, ToolSource, Via, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientNotificationParams, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
 import { readLinkFile, removeLinkFile, writeLinkFile } from "../grants/link-file.ts";
@@ -86,6 +86,7 @@ import { RoleMachine } from "./role.ts";
 import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
+import type { NodeTerminals, TerminalViews } from "./terminals.ts";
 import type { RoleState } from "./role.ts";
 import { openRelayLink } from "./sealed-link.ts";
 import type { NodeIdentity } from "./self.ts";
@@ -122,6 +123,8 @@ export interface NodesDeps {
   profiles?: Pick<Profiles, "update">;
   /** This node's sessions' folders, repositories and files, which the primary's clients' explorer lists and viewer reads over the link. */
   files?: Pick<SessionFiles, "list" | "git" | "read">;
+  /** This node's terminals, once built: their rows go up a link, and the primary's clients open them. */
+  terminals?: () => NodeTerminals | undefined;
   /** The direct connections, once built: switched from the primary's clients, their state carried up on link. */
   direct?: () => Direct | undefined;
   /** The pipes a stream page rides where there is no route to its desktop, once built. */
@@ -325,6 +328,7 @@ export class Nodes {
       ...(deps.remote ? { remote: deps.remote() } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
       ...(deps.files ? { files: deps.files } : {}),
+      ...(deps.terminals ? { terminals: deps.terminals } : {}),
       ...(deps.direct?.() ? { direct: deps.direct()! } : {}),
       directNodes: () => deps.config.direct.nodes,
       ...(deps.directTiming ? { directTiming: deps.directTiming } : {}),
@@ -487,18 +491,30 @@ export class Nodes {
   }
 
   /** What a new client of the primary hears beside this node's own: the mirrors and the registry. */
-  initial(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; nodes: NodeRecord[]; updates: ReturnType<Mirror["updates"]> } {
-    return { sessions: this.mirror.sessions(), workspaces: this.mirror.workspaces(), asks: this.mirror.asks(), nodes: this.registry.list(), updates: this.mirror.updates() };
+  initial(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals: Terminal[]; nodes: NodeRecord[]; updates: ReturnType<Mirror["updates"]> } {
+    return { sessions: this.mirror.sessions(), workspaces: this.mirror.workspaces(), asks: this.mirror.asks(), terminals: this.mirror.terminals(), nodes: this.registry.list(), updates: this.mirror.updates() };
   }
+
+  /** The terminals of linked nodes the primary's clients have open: their keys and sizes go down the links. */
+  get remoteTerminals(): Pick<TerminalViews, "input" | "resize"> {
+    return this.inbound.terminals;
+  }
+
+  /** Where a terminal viewer of the primary's is on this node: its output goes up the link, and how far behind the link is. */
+  readonly linkViewers = {
+    get: (): { socket: { buffered(): number }; listener: "relayed" } | undefined => (this.outbound.linked() ? { socket: { buffered: () => this.outbound.buffered }, listener: "relayed" } : undefined),
+    send: (client: string, params: ClientNotificationParams<"terminal.output">): boolean => this.outbound.terminalOutput(client, params),
+  };
 
   mirrorSession(id: string): Session | undefined {
     return this.mirror.sessions().find((s) => s.id === id);
   }
 
-  /** Whether this node holds a session, an ask or a workspace itself, whatever a mirror says. */
-  isLocal(kind: "session" | "ask" | "workspace", id: string): boolean {
+  /** Whether this node holds a session, an ask, a workspace or a terminal itself, whatever a mirror says. */
+  isLocal(kind: "session" | "ask" | "workspace" | "terminal", id: string): boolean {
     if (kind === "session") return this.deps.sessions.get(id) !== undefined;
     if (kind === "ask") return this.deps.asks.get(id) !== undefined;
+    if (kind === "terminal") return this.deps.terminals?.()?.rows.list().some((t) => t.id === id) ?? false;
     return this.deps.workspaces.get(id)?.node === this.deps.identity.id;
   }
 
@@ -520,9 +536,14 @@ export class Nodes {
       ownerOfSession: (id) => (this.isLocal("session", id) ? undefined : this.mirror.ownerOfSession(id)),
       ownerOfAsk: (id) => (this.isLocal("ask", id) ? undefined : this.mirror.ownerOfAsk(id)),
       ownerOfWorkspace: (id) => (this.isLocal("workspace", id) ? undefined : this.mirror.ownerOfWorkspace(id)),
+      ownerOfTerminal: (id) => (this.isLocal("terminal", id) ? undefined : this.mirror.ownerOfTerminal(id)),
+      noteTerminal: (node, t) => {
+        if (this.inbound.linked(node)) this.mirror.apply(node, "terminal.state", t);
+      },
       mirrorAsk: (id) => this.mirror.ask(id),
       mirrorSessions: () => this.mirror.sessions(),
       mirrorWorkspaces: () => this.mirror.workspaces(),
+      mirrorTerminals: () => this.mirror.terminals(),
       registryList: () => this.registry.list(),
       linked: (node) => this.inbound.linked(node),
       forward: (node, method, params, opts) => this.inbound.forward(node, method, params, opts),
@@ -530,6 +551,10 @@ export class Nodes {
       remoteMetrics: {
         subscribe: (client, node, intervalMs, processes, spend) => this.inbound.watchMetrics(client, node, intervalMs, processes, spend),
         unsubscribe: (client) => this.inbound.unwatchMetrics(client),
+      },
+      remoteTerminals: {
+        open: (client, node, p, opts) => this.inbound.terminals.open(client, node, p, opts),
+        close: (client, node, p, opts) => this.inbound.terminals.close(client, node, p, opts),
       },
       chat: this.deps.chat,
       localWorkspaces: () => this.deps.workspaces.list({ node: this.deps.identity.id }),

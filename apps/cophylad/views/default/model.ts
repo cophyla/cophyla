@@ -1199,11 +1199,22 @@ export function terminalLabel(t: Terminal): string {
   return t.name || (t.agents === "claude" ? "Claude agents" : undefined) || t.title || t.argv0;
 }
 
+/** The node that comes first among the machines: the computer the app runs on (a desktop app's own), else the one it talks to. */
+export function hereNode(state: ViewState): NodeId | undefined {
+  return state.client?.node ?? state.node;
+}
+
+/** A machine's name as the rail says it. */
+export function machineName(state: ViewState, node: NodeId): string {
+  return state.nodes.get(node)?.name ?? (node === state.node ? "This computer" : "Another computer");
+}
+
 /**
  * Where a bare terminal works, as its tab says it: the name of the workspace it started in,
- * or its folder's own; with the machine's when it is another node's.
+ * or its folder's own; with the machine's when it is another node's, unless the tab stands
+ * under that machine's name already (`withMachine` false).
  */
-export function terminalPlace(state: ViewState, t: Terminal): string {
+export function terminalPlace(state: ViewState, t: Terminal, withMachine = true): string {
   const platform = state.nodes.get(t.node)?.platform;
   const key = placeKey(t.cwd, platform);
   let name: string | undefined;
@@ -1214,7 +1225,7 @@ export function terminalPlace(state: ViewState, t: Terminal): string {
     }
   }
   name ??= lastPart(t.cwd);
-  const other = t.node !== state.node ? state.nodes.get(t.node)?.name : undefined;
+  const other = withMachine && t.node !== state.node ? state.nodes.get(t.node)?.name : undefined;
   return other ? `${name} · ${other}` : name;
 }
 
@@ -1222,8 +1233,8 @@ export function terminalPlace(state: ViewState, t: Terminal): string {
  * A bare terminal's tab under Terminals: where it works, then what it is called when that
  * says more than its program does (a shell's title is often the program's own path).
  */
-export function terminalTabLabel(state: ViewState, t: Terminal): string {
-  const place = terminalPlace(state, t);
+export function terminalTabLabel(state: ViewState, t: Terminal, withMachine = true): string {
+  const place = terminalPlace(state, t, withMachine);
   const label = terminalLabel(t);
   const program = (s: string) => lastPart(s).toLowerCase().replace(/\.exe$/, "");
   return program(label) === program(t.argv0) ? place : `${place} · ${label}`;
@@ -1240,16 +1251,87 @@ export function terminalMark(t: Terminal): { harness: string; kind: string } {
   return { harness: "terminal", kind: "terminal" };
 }
 
-/** How many workspaces New terminal offers. */
-export const RECENT_WORKSPACES = 8;
+/** A machine's bare terminals, under its name in the rail. */
+export interface TerminalGroup {
+  node: NodeId;
+  name: string;
+  terminals: Terminal[];
+}
+
+/** How many machines are connected now: the cluster's nodes that are not offline. */
+function machinesConnected(state: ViewState): number {
+  let n = 0;
+  for (const node of state.nodes.values()) if (node.status !== "offline") n++;
+  return n;
+}
 
 /**
- * The workspaces New terminal offers to start a shell in, the one worked in last first. A
- * terminal starts on the node the view is connected to, so another node's are left out.
+ * The bare terminals by the machine they run on, while more than one machine is connected or
+ * they run on more than one: this computer's first, then the others' by name, each newest
+ * first as the rail lists them. Undefined with one machine: the tabs stand under Terminals.
  */
+export function terminalGroups(state: ViewState, terminals: Terminal[]): TerminalGroup[] | undefined {
+  const byNode = new Map<NodeId, Terminal[]>();
+  for (const t of terminals) {
+    let list = byNode.get(t.node);
+    if (!list) byNode.set(t.node, (list = []));
+    list.push(t);
+  }
+  if (byNode.size <= 1 && machinesConnected(state) <= 1) return undefined;
+  const here = hereNode(state);
+  const groups = [...byNode].map(([node, list]) => ({ node, name: machineName(state, node), terminals: list }));
+  return groups.sort((a, b) => Number(b.node === here) - Number(a.node === here) || a.name.localeCompare(b.name) || (a.node < b.node ? -1 : 1));
+}
+
+/** A machine New terminal offers to start a shell on. */
+export interface TerminalMachine {
+  node: NodeId;
+  name: string;
+  /** The computer the app runs on: a desktop app's own, never a phone's. */
+  here: boolean;
+}
+
+/**
+ * The machines New terminal offers, this computer's first, then the others' by name: the node
+ * the view talks to, unless its row says it starts no terminal, and every other connected
+ * node whose row says it does (one on an earlier version serves none of its terminals).
+ */
+export function terminalMachines(state: ViewState): TerminalMachine[] {
+  const here = state.client?.node;
+  const out: TerminalMachine[] = [];
+  for (const n of state.nodes.values()) {
+    const starts = n.id === state.node ? n.capabilities.terminals !== false : n.status === "online" && n.capabilities.terminals === true;
+    if (starts) out.push({ node: n.id, name: n.name, here: n.id === here });
+  }
+  // the node the view talks to, before its row came
+  if (state.node !== undefined && !state.nodes.has(state.node)) out.push({ node: state.node, name: machineName(state, state.node), here: state.node === here });
+  return out.sort((a, b) => Number(b.here) - Number(a.here) || Number(b.node === state.node) - Number(a.node === state.node) || a.name.localeCompare(b.name));
+}
+
+/** How many workspaces New terminal offers on one machine, and on each of several. */
+export const RECENT_WORKSPACES = 8;
+export const RECENT_PER_MACHINE = 5;
+
+/** The workspaces New terminal offers to start a shell in on a machine, the one worked in last first. */
 export function recentWorkspaces(workspaces: Iterable<Workspace>, node: string | undefined, limit = RECENT_WORKSPACES): Workspace[] {
   const mine = [...workspaces].filter((w) => w.node === node);
   return mine.sort((a, b) => b.lastActivity - a.lastActivity || a.name.localeCompare(b.name)).slice(0, limit);
+}
+
+/** New terminal's places beside the workspaces (by their ids): a machine's home folder, and a folder picked on it. */
+export const homePlace = (node: NodeId): string => `home:${node}`;
+export const folderPlace = (node: NodeId): string => `folder:${node}`;
+
+/**
+ * What `terminal.spawn` is asked for one of New terminal's places: a workspace's folder, on
+ * whichever node holds it; a machine's home; a folder picked on it (`cwd`). The node the view
+ * talks to is named by nothing, as an earlier node takes it.
+ */
+export function spawnParams(state: ViewState, place: string, cwd?: string): { workspace?: string; node?: NodeId; cwd?: string } {
+  const on = (node: string): { node?: NodeId } => (node === state.node ? {} : { node });
+  if (place.startsWith("home:")) return on(place.slice(5));
+  if (place.startsWith("folder:")) return { ...on(place.slice(7)), ...(cwd !== undefined ? { cwd } : {}) };
+  return { workspace: place };
 }
 
 /** The terminal a session runs in, when this node holds it and the view may open it. */

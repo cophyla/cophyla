@@ -104,6 +104,10 @@ import { Tether } from "./sessions/tether/index.ts";
 import { putCommandOnPath, putCophylaOnPath } from "./sessions/tether/command.ts";
 import { writeEntryPoints } from "./sessions/tether/entry.ts";
 import { TerminalRows, TerminalStreams } from "./sessions/tether/streams.ts";
+import type { ViewerSink } from "./sessions/tether/streams.ts";
+import { listFolders, systemFolderDeps } from "./sessions/tether/folders.ts";
+import { LINK_VIEWER } from "./nodes/terminals.ts";
+import type { NodeTerminals } from "./nodes/terminals.ts";
 import { Push } from "./push/index.ts";
 import { Sidecars } from "./sidecars/index.ts";
 import { TtsPy } from "./sidecars/tts-py.ts";
@@ -346,7 +350,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
   let backup: BackupSync | undefined;
-  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct");
+  /** This node's terminals as its link serves them, and whether it starts any for the cluster's clients, once built. */
+  let nodeTerminals: NodeTerminals | undefined;
+  let servesTerminals: () => boolean = () => false;
+  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals());
   const workspaces = new Workspaces({ store, nodeId: identity.id, bus, owners });
   workspaces.fromScope(config.node.scope);
   workspaces.home(p.home);
@@ -892,6 +899,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     remote: () => remote,
     profiles,
     files,
+    terminals: () => nodeTerminals,
     direct: () => direct,
     pipes: () => pipes,
     ...(opts.direct?.link ? { directTiming: opts.direct.link } : {}),
@@ -1030,9 +1038,20 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     grants.setRelay(row.id, true);
     return { token, client: { ...row, relay: true }, relay, ...(lanPin ? { lan: lanPin } : {}) };
   };
-  // The node's terminals as clients see them: a row each, and the screens a client opens.
+  // The node's terminals as clients see them: a row each, and the screens a client opens; a
+  // client of the primary's that opened one through the link (`link:<client>`) has its output
+  // carried up.
   const terminalRows = tether ? new TerminalRows({ tether, bus, nodeId: identity.id, workspaces, env: scrub(env), sessionOf: (ref) => sessions.sessionOfTerminal(ref), agentsOf: (ref) => sessions.agentsOf(ref), onAgents: (fn) => sessions.onAgents(fn), cliOf: (ref) => sessions.cliOf(ref), owners, log: sessionsLog.child("terminals") }) : undefined;
-  const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: clients, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
+  const viewers: ViewerSink = {
+    get: (id) => (id.startsWith(LINK_VIEWER) ? nodes?.linkViewers.get() : clients.get(id)),
+    send: (id, method, params) => (id.startsWith(LINK_VIEWER) ? (nodes?.linkViewers.send(id.slice(LINK_VIEWER.length), params) ?? false) : clients.send(id, method, params)),
+  };
+  const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
+  // New terminal's picker: a folder of this computer at a time.
+  const folderDeps = systemFolderDeps(sessionsLog.child("terminals"));
+  const folders = (path: string | undefined) => listFolders(path, folderDeps);
+  nodeTerminals = terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams, files, folders } : undefined;
+  servesTerminals = () => tether?.available === true && !(nodes?.confinement()?.active ?? false);
 
   // Where the user is and where replies are read out. The window in front is the system's to
   // say on Windows; a test says nothing of it unless it brings its own.
@@ -1145,16 +1164,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     }),
     ...guestMethods({ guests }),
     ...directMethods({ direct, clients: directClients }),
-    ...(terminalRows && terminalStreams ? terminalMethods({ rows: terminalRows, streams: terminalStreams, files }) : {}),
+    ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
   }, forwardHost);
-  const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...(terminalStreams ? terminalSignals({ streams: terminalStreams }) : {}), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
+  const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;
   const initial = () => {
     const v = voice!.snapshot();
     const remote = nodes!.initial();
     return {
       sessions: [...sessions.list(), ...remote.sessions],
-      terminals: terminalRows?.list() ?? [],
+      terminals: [...(terminalRows?.list() ?? []), ...remote.terminals],
       workspaces: [...workspaces.list({ node: identity.id }), ...remote.workspaces],
       tasks: tasks.open(),
       updates: [...update.snapshot(), ...remote.updates],
@@ -1260,6 +1279,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // tether's hosts before the first discovery pass, so a session in one is met with its terminal.
   if (tether) {
     await tether.start().catch((e: unknown) => sessionsLog.warn("tether did not start", { error: e instanceof Error ? e.message : String(e) }));
+    // the node's row says it starts terminals now
+    if (tether.available) bus.emit("node.state", node());
   }
   await sessions.start({ port: api.port });
   if (tether?.available && config.tether.profiles) {

@@ -8,19 +8,20 @@
 // so they can hand out and take back access to this desktop and switch its sharing (not on a
 // hands node's, whose desktop is its owner's), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
-// and `session.files`, `session.git` and `session.file`, so their explorer shows this node's
-// sessions' files and their viewer a file's text.
+// `session.files`, `session.git` and `session.file`, so their explorer shows this node's
+// sessions' files and their viewer a file's text, and the terminal requests, so they see,
+// open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`.
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
 // requests are checked: a session, a workspace or a path outside is refused, and so is the
 // state of a repository whose root is above them; the lists and the searches answer what is
-// inside, and the audit row keeps that answer; editable and network tools, the desktop and
-// this node's profiles are refused. An ask this node does not hold, or one about something
+// inside, and the audit row keeps that answer; editable and network tools, the desktop,
+// this node's profiles and its terminals are refused. An ask this node does not hold, or one about something
 // outside, is `not_found`. On a node that answers its asks itself (`--answer-here`), the
 // primary answers none of them.
 
-import { capabilityRequests, clientRequests, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityRequestName, CapabilityResult, FileText, Hit, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
+import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
+import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
 import { brainMethods, sendOptions } from "../brain-link/methods.ts";
@@ -35,6 +36,10 @@ import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { FilesResult, SessionFiles } from "../sessions/files.ts";
 import type { Direct } from "../direct/index.ts";
 import { findRepo } from "../workspaces/index.ts";
+import { terminalSpawnAsk } from "../api/methods.ts";
+import { folderSummary } from "../sessions/tether/folders.ts";
+import { linkViewer, terminalsRefused } from "./terminals.ts";
+import type { NodeTerminals } from "./terminals.ts";
 
 /** The capability requests a node answers for its primary. */
 export const NODE_SERVED: readonly CapabilityRequestName[] = [
@@ -73,6 +78,9 @@ export const NODE_SERVED_DIRECT = ["direct.enable", "direct.disable"] as const;
 
 /** A session's folders, repository and files, for the explorer and the viewer of a view on the primary. */
 export const NODE_SERVED_FILES = ["session.files", "session.git", "session.file"] as const;
+
+/** This node's terminals, for the primary's clients: the rows, a shell started, one opened, closed or read under, a folder listed for the picker. */
+export const NODE_SERVED_TERMINALS = ["terminal.list", "terminal.spawn", "terminal.open", "terminal.close", "terminal.file", "terminal.folders"] as const;
 
 /**
  * The served table: `brainMethods` narrowed to the allowlist, with `ui.say` and its kin never
@@ -140,6 +148,8 @@ export interface ServeDeps {
   direct?: Direct;
   /** This node's sessions' folders, repositories and files, for `session.files`, `session.git` and `session.file`. */
   files?: Pick<SessionFiles, "list" | "git" | "read">;
+  /** This node's terminals, once built; none on a workspace node. */
+  terminals?: () => NodeTerminals | undefined;
   /** The folders this node shares with its primary, when its owner named some. */
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
@@ -309,6 +319,7 @@ export class NodeServer {
     }
     if ((NODE_SERVED_DIRECT as readonly string[]).includes(method)) return this.serveDirect(method as (typeof NODE_SERVED_DIRECT)[number], params);
     if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
+    if ((NODE_SERVED_TERMINALS as readonly string[]).includes(method)) return this.serveTerminals(method as (typeof NODE_SERVED_TERMINALS)[number], params);
     const name = method as CapabilityRequestName;
     const def = capabilityRequests[name];
     const impl = this.deps.table[name];
@@ -446,6 +457,54 @@ export class NodeServer {
       const git = await files.git(p.id, p.log);
       return git ? { git } : {};
     });
+  }
+
+  /**
+   * This node's terminals, for the primary's clients, gated here as their own requests are:
+   * starting one is `exec`, and so is opening one to type into it or ending it. A terminal
+   * is opened and closed for the client the primary names, whose viewer is `link:<client>`.
+   */
+  private async serveTerminals(method: (typeof NODE_SERVED_TERMINALS)[number], params: unknown): Promise<unknown> {
+    const t = this.deps.terminals?.();
+    const refused = terminalsRefused(t, this.confined() !== undefined);
+    if (refused || !t) throw refused;
+    const parsed = clientRequests[method].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
+    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number };
+    let viewer = "";
+    if (method === "terminal.open" || method === "terminal.close") {
+      const client = ClientId.safeParse((params as { client?: unknown } | undefined)?.client);
+      if (!client.success) throw new RpcError("invalid", `${method} names no client of the primary's`);
+      viewer = linkViewer(client.data);
+    }
+    const risk = method === "terminal.spawn" || (method === "terminal.open" && (p.input === true || p.drive !== undefined)) || (method === "terminal.close" && p.end === true) ? "exec" : "read";
+    const target = p.terminal ?? (method === "terminal.spawn" ? p.argv?.[0] : method === "terminal.folders" ? p.path : undefined);
+    const ask = method === "terminal.spawn" ? terminalSpawnAsk(parsed.data as { argv?: string[] }) : undefined;
+    const redactResult = method === "terminal.file" ? (r: unknown) => fileSummary(r as FileText) : method === "terminal.folders" ? (r: unknown) => folderSummary(r as FolderPick) : undefined;
+    return this.deps.gate.run(
+      { principal: this.deps.principal, action: method, args: p, risk, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) },
+      async () => {
+        switch (method) {
+          case "terminal.list":
+            return { terminals: t.rows.list() };
+          case "terminal.spawn":
+            return { terminal: await t.rows.spawn(parsed.data as Parameters<NodeTerminals["rows"]["spawn"]>[0]) };
+          case "terminal.open":
+            return t.streams.open(viewer, p.terminal!, { ...(p.input !== undefined ? { input: p.input } : {}), ...(p.drive ? { drive: p.drive } : {}) });
+          case "terminal.close":
+            await t.streams.close(viewer, p.terminal!, p.end === true);
+            return {};
+          case "terminal.file": {
+            const row = t.rows.list().find((r) => r.id === p.terminal);
+            if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
+            if (!t.files) throw new RpcError("unsupported", "this node reads no files");
+            return t.files.readUnder(row.cwd, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
+          }
+          case "terminal.folders":
+            return t.folders(p.path);
+        }
+      },
+    );
   }
 
   private async serveMetrics(method: (typeof NODE_SERVED_METRICS)[number], params: unknown): Promise<unknown> {

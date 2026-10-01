@@ -45,6 +45,7 @@ export const actions = {
   "terminal.open": { risk: "read" },
   "terminal.close": { risk: "read" },
   "terminal.file": { risk: "read" },
+  "terminal.folders": { risk: "read" },
   "workspace.list": { risk: "read" },
   "workspace.put": { risk: "write" },
   annotate: { risk: "write" },

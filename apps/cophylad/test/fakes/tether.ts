@@ -136,6 +136,8 @@ export class FakeTether {
   readonly requests: { op: string; body: Record<string, unknown> }[] = [];
   /** Called on every spawn, after the session exists. */
   onSpawn?: (s: FakeSession) => void;
+  /** What its sessions' ids start with: two hosts in one test keep theirs apart. */
+  prefix = "t";
   private server?: Server;
   private next = 1;
   private nextPid = 7000;
@@ -169,7 +171,7 @@ export class FakeTether {
 
   /** A session as if spawned by another client (`tether run` from a terminal profile). */
   add(spawn: Partial<FakeSpawn> & { argv: string[] }, pid = this.nextPid++): FakeSession {
-    const s = new FakeSession(this, `t${this.next++}`, pid, { cwd: "/", env: {}, labels: {}, ...spawn });
+    const s = new FakeSession(this, `${this.prefix}${this.next++}`, pid, { cwd: "/", env: {}, labels: {}, ...spawn });
     this.sessions.set(s.id, s);
     this.emit({ ev: "created", session: s.id, info: s.info() });
     return s;
@@ -237,7 +239,7 @@ export class FakeTether {
       case "host":
         return ok({ host: this.host.host, pid: process.pid, version: "0.1.0", protocol: 1, startedAt: 1, draining: false, sessions: this.sessions.size, clients: this.conns.size });
       case "spawn": {
-        const s = new FakeSession(this, `t${this.next++}`, this.nextPid++, { argv: m["argv"] as string[], cwd: (m["cwd"] as string) ?? "/", env: (m["env"] as FakeSpawn["env"]) ?? {}, labels: (m["labels"] as Record<string, string>) ?? {} });
+        const s = new FakeSession(this, `${this.prefix}${this.next++}`, this.nextPid++, { argv: m["argv"] as string[], cwd: (m["cwd"] as string) ?? "/", env: (m["env"] as FakeSpawn["env"]) ?? {}, labels: (m["labels"] as Record<string, string>) ?? {} });
         this.sessions.set(s.id, s);
         ok({ session: s.id, pid: s.pid });
         this.emit({ ev: "created", session: s.id, info: s.info() });

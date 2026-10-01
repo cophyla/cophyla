@@ -9,11 +9,12 @@
 // its upward stream is routed: client notifications to the mirror and the bus, capability
 // events into the event stream, `pending` to the forward it belongs to, relayed frames to
 // the relay host, `metrics.sample` to the clients watching that node, `remote.state` to the
-// bus like the rest. Requests go the other way as `forward` and `fanout`, and one comes up:
+// bus like the rest, `terminal.output` to the one client that opened that terminal there
+// (terminals.ts). Requests go the other way as `forward` and `fanout`, and one comes up:
 // `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN; a backup
 // gets the replication stream. A link that closes
-// marks the node offline, ends its mirrored sessions and cancels its mirrored asks for every
-// client, and raises `node.left`.
+// marks the node offline, ends its mirrored sessions and terminals and cancels its mirrored
+// asks for every client, and raises `node.left`.
 //
 // Every upward row must be the sender's own: a row that names another node, or claims a
 // session, ask or workspace this primary holds itself, is dropped with a line in the log, and
@@ -27,8 +28,8 @@
 // ends closes its node's link with a sealed `node.leave {reason: revoked}` first, so the node
 // forgets the cluster on the primary's word and no one else's.
 
-import { capabilityEvents, failure, newId, nodeLinkRequests, nodeLinkUpward, NODE_LINK_REFUSED, NODE_LINK_REVOKED, PROTOCOL_VERSION, protocolError, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityEventParams, IceServer, MetricsSample, NodeRecord, RpcId, Session, SpendTotals } from "@cophyla/protocol";
+import { capabilityEvents, failure, newId, nodeLinkFrames, nodeLinkRequests, nodeLinkUpward, NODE_LINK_REFUSED, NODE_LINK_REVOKED, PROTOCOL_VERSION, protocolError, RpcError } from "@cophyla/protocol";
+import type { Ask, CapabilityEventParams, IceServer, MetricsSample, NodeRecord, RpcId, Session, SpendTotals, Terminal } from "@cophyla/protocol";
 import { parseSealedHello, sealedRefusal, sealedRespond, SealedSocket } from "@cophyla/relay";
 import type { Psk, SealedKind } from "@cophyla/relay";
 import type { z } from "zod";
@@ -54,6 +55,7 @@ import { LinkDirect } from "./direct.ts";
 import { SwitchableLink } from "./switch.ts";
 import { PIPE_FRAMES, STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
+import { TerminalViews } from "./terminals.ts";
 
 type NodeLinkResult<N extends keyof typeof nodeLinkRequests> = z.infer<(typeof nodeLinkRequests)[N]["result"]>;
 
@@ -131,7 +133,7 @@ export interface UpwardClaim {
   workspace?: string;
 }
 
-type UpwardNotification = "session.state" | "session.event" | "ask.state" | "workspace.state" | "audit.entry" | "node.state" | "update.state" | "metrics.sample" | "remote.state" | "direct.state";
+type UpwardNotification = "session.state" | "session.event" | "ask.state" | "workspace.state" | "terminal.state" | "audit.entry" | "node.state" | "update.state" | "metrics.sample" | "remote.state" | "direct.state";
 type UpwardEvent = "session.discovered" | "session.updated" | "session.ask" | "session.ended" | "workspace.updated" | "event.custom" | "node.pressure";
 
 /** Who owns what an upward row names: the mirror for a row that names only a session or a workspace. */
@@ -149,6 +151,7 @@ export const UPWARD_NOTIFICATIONS: { [N in UpwardNotification]: (v: z.infer<(typ
   "session.event": (v, o) => ({ node: o.mirror.ownerOfSession(v.session), session: v.session }),
   "ask.state": (v) => ({ node: v.node, ask: v.id }),
   "workspace.state": (v) => ({ node: v.node, workspace: v.id }),
+  "terminal.state": (v) => ({ node: v.node }),
   "audit.entry": (v) => ({ node: v.node }),
   "node.state": (v) => ({ node: v.id }),
   "update.state": (v) => ({ node: v.node }),
@@ -226,10 +229,18 @@ export class Inbound {
   /** Watchers waiting for a node's answer to their spend, by `<client> <node>`: the link is subscribed for them too meanwhile. */
   private joining = new Map<string, { node: string; intervalMs: number; processes: ProcessDetail }>();
   private accepting = false;
+  /** The terminals of linked nodes the clients have open. */
+  readonly terminals: TerminalViews;
 
   constructor(deps: InboundDeps) {
     this.deps = deps;
     this.log = deps.log;
+    this.terminals = new TerminalViews({
+      clients: deps.clients,
+      forward: (node, method, params, opts) => this.forward(node, method, params, opts),
+      notify: (node, method, params) => this.peers.get(node)?.notify(method, params) ?? false,
+      log: this.log.child("terminals"),
+    });
   }
 
   private now(): number {
@@ -543,10 +554,12 @@ export class Inbound {
       const sessions = own(p.sessions, (s) => ({ node: s.node, session: s.id }));
       const workspaces = own(p.workspaces, (w) => ({ node: w.node, workspace: w.id }));
       const asks = own(p.asks, (a) => ({ node: a.node, ask: a.id }));
-      const dropped = p.sessions.length + p.workspaces.length + p.asks.length - sessions.length - workspaces.length - asks.length;
+      const terminals: Terminal[] = own(p.terminals ?? [], (t) => ({ node: t.node }));
+      const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length;
       if (dropped > 0) this.log.warn("join rows refused: not the joiner's", { node: p.node.id, count: dropped });
-      this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks });
+      this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals });
       for (const s of sessions) if (s.status !== "ended") this.deps.bus.emit("session.state", s);
+      for (const t of terminals) if (t.status === "running") this.deps.bus.emit("terminal.state", t);
       for (const w of workspaces) this.deps.bus.emit("workspace.state", w);
       for (const a of asks) if (a.status === "open") this.deps.bus.emit("ask.state", a);
       if (backup) {
@@ -581,8 +594,10 @@ export class Inbound {
     this.recentSamples.delete(peer.id);
     for (const [key, j] of [...this.joining]) if (j.node === peer.id) this.joining.delete(key);
     const dropped = this.deps.mirror.drop(peer.id);
+    this.terminals.nodeGone(peer.id);
     const at = this.now();
     for (const s of dropped.sessions) this.deps.bus.emit("session.state", { ...s, status: "ended", endedAt: at, lastActivity: at });
+    for (const t of dropped.terminals) this.deps.bus.emit("terminal.state", { ...t, status: "exited" });
     for (const a of dropped.asks) this.deps.bus.emit("ask.state", { ...a, status: "cancelled" });
     this.deps.registry.markOffline(peer.id);
     this.log.info("node left", { node: peer.id, reason, sessions: dropped.sessions.length, asks: dropped.asks.length });
@@ -716,6 +731,12 @@ export class Inbound {
       const p = params as { id: RpcId; ask: Ask };
       const f = this.forwards.get(`${peer.id}:${String(p.id)}`);
       f?.onPending?.(p.ask);
+      return;
+    }
+    if (method === "terminal.output") {
+      const parsed = nodeLinkFrames["terminal.output"].safeParse(params);
+      if (parsed.success) this.terminals.output(peer.id, parsed.data);
+      else this.log.debug("bad terminal output ignored", { node: peer.id });
       return;
     }
     if (Object.hasOwn(UPWARD_NOTIFICATIONS, method)) {
@@ -913,9 +934,10 @@ export class Inbound {
     return this.deps.samples?.(client, sample) ?? this.deps.clients.send(client, "metrics.sample", sample);
   }
 
-  /** A client went: its watch on another node goes with it. */
+  /** A client went: its watch on another node goes with it, and so do the terminals it had open on one. */
   onDisconnect(client: string): void {
     if (this.metricsWatchers.has(client)) void this.unwatchMetrics(client);
+    this.terminals.drop(client);
   }
 
   // --- leaving -----------------------------------------------------------------------------------

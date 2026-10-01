@@ -50,10 +50,10 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteViewStep, remoteViewWidth, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteViewStep, remoteViewWidth, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
+import { activePane, draftOf, explorerSession, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
@@ -71,6 +71,7 @@ const dropped = new DroppedPaths(webview, (names) => rpc.request("host.filePaths
 const state: ViewState = initialState();
 const ui: UiState = {
   expanded: new Set(),
+  folderAt: new Map(),
   pinnedFocus: false,
   opening: new Set(),
   sharing: new Map(),
@@ -448,9 +449,10 @@ function closeContext(): void {
 }
 
 /**
- * Opens New terminal's menu, or closes it on a second press. The workspaces are asked of the
- * node as it opens: the rows the view holds carry the activity they had when it connected,
- * since a row that moved only that is not sent again, and the menu's order is the activity's.
+ * Opens New terminal's menu, or closes it on a second press. The workspaces, every node's,
+ * are asked of the node as it opens: the rows the view holds carry the activity they had when
+ * it connected, since a row that moved only that is not sent again, and the menu's order is
+ * the activity's.
  */
 async function toggleNewTerminal(): Promise<void> {
   if (!state.scopes.includes("terminal")) return;
@@ -466,7 +468,7 @@ async function toggleNewTerminal(): Promise<void> {
     workspaces = state.workspaces.values();
   }
   if (ui.newTerminal !== menu) return;
-  menu.workspaces = recentWorkspaces(workspaces, state.node);
+  menu.workspaces = [...workspaces];
   draw();
   // The menu grows the rail's list under the button, which may need scrolling to.
   roots.tabs.querySelector<HTMLElement>(".new-terminal-menu")?.scrollIntoView({ block: "nearest" });
@@ -509,21 +511,74 @@ async function openSettings(): Promise<void> {
   }
 }
 
-/** Starts a shell in a workspace's folder, or the user's home, from New terminal's menu, and shows it. */
-async function newTerminal(place: string): Promise<void> {
+/**
+ * Starts a shell from New terminal's menu, on the machine the place is on, and shows it: in a
+ * workspace's folder, the user's home there, or the folder picked there (`cwd`).
+ */
+async function newTerminal(place: string, cwd?: string): Promise<void> {
   const menu = ui.newTerminal;
   if (!state.scopes.includes("terminal") || !menu || menu.starting !== undefined) return;
   menu.starting = place;
   draw();
   try {
-    const { terminal: t } = await rpc.request<{ terminal: Terminal }>("terminal.spawn", place === HOME_PLACE ? {} : { workspace: place });
+    const { terminal: t } = await rpc.request<{ terminal: Terminal }>("terminal.spawn", spawnParams(state, place, cwd));
     if (ui.newTerminal === menu) ui.newTerminal = undefined;
     dispatch({ type: "terminal.state", params: t });
     selectTerminal(t.id);
   } catch (e) {
     if (ui.newTerminal === menu) menu.starting = undefined;
-    fail("terminal", e);
+    if (menu.browse) {
+      // said in the picker, where the folder was picked
+      menu.browse.error = `The terminal did not start: ${e instanceof Error ? e.message : String(e)}`;
+      draw();
+    } else fail("terminal", e);
   }
+}
+
+/** Other folder…: the picker in place of the places, on that machine, at the folder it last showed there or the home. */
+function browseFolders(node: string, name: string): void {
+  const menu = ui.newTerminal;
+  if (!menu || menu.starting !== undefined) return;
+  menu.browse = { node, name };
+  draw();
+  void openFolder(ui.folderAt.get(node));
+  roots.tabs.querySelector<HTMLElement>(".folder-picker")?.scrollIntoView({ block: "nearest" });
+}
+
+/**
+ * Lists a folder of the picker's machine: one picked, typed, or the home without a path. One
+ * that cannot be listed says why and leaves the folder shown as it was.
+ */
+async function openFolder(path: string | undefined): Promise<void> {
+  const menu = ui.newTerminal;
+  const b = menu?.browse;
+  if (!menu || !b) return;
+  b.loading = path ?? "~";
+  b.error = undefined;
+  draw();
+  try {
+    const listing = await rpc.request<FolderPick>("terminal.folders", { ...(b.node !== state.node ? { node: b.node } : {}), ...(path !== undefined ? { path } : {}) });
+    if (menu.browse !== b || b.loading !== (path ?? "~")) return;
+    b.listing = listing;
+    ui.folderAt.set(b.node, listing.path);
+  } catch (e) {
+    if (menu.browse !== b || b.loading !== (path ?? "~")) return;
+    const unsupported = e instanceof ViewRpcError && e.code === "unsupported";
+    b.error = unsupported && !b.listing ? "This app or that computer cannot list folders yet: update it." : e instanceof Error ? e.message : String(e);
+  }
+  b.loading = undefined;
+  draw();
+  roots.tabs.querySelector<HTMLElement>(".folder-list")?.scrollTo({ top: 0 });
+  roots.tabs.querySelector<HTMLElement>(".folder-picker")?.scrollIntoView({ block: "nearest" });
+}
+
+/** Back from the picker to the places. */
+function closeFolders(): void {
+  const menu = ui.newTerminal;
+  if (!menu?.browse) return;
+  menu.browse = undefined;
+  draw();
+  roots.tabs.querySelector<HTMLButtonElement>(".new-terminal-place[data-action='folder-browse']")?.focus();
 }
 
 /**
@@ -2356,6 +2411,20 @@ document.addEventListener("click", (ev) => {
     case "new-terminal-in":
       if (target.dataset["place"]) void newTerminal(target.dataset["place"]);
       return;
+    case "folder-browse":
+      if (target.dataset["node"]) browseFolders(target.dataset["node"], target.dataset["name"] ?? "");
+      return;
+    case "folder-open":
+      if (target.dataset["path"] !== undefined) void openFolder(target.dataset["path"]);
+      return;
+    case "folder-back":
+      closeFolders();
+      return;
+    case "new-terminal-here": {
+      const b = ui.newTerminal?.browse;
+      if (b?.listing) void newTerminal(folderPlace(b.node), b.listing.path);
+      return;
+    }
     case "pane-mode": {
       const session = target.dataset["session"];
       const mode = target.dataset["mode"];
@@ -2624,6 +2693,13 @@ document.addEventListener("submit", (ev) => {
     void pairRemote(form);
     return;
   }
+  if (form.classList.contains("folder-go")) {
+    // A path typed into the picker, gone to with Enter or Go.
+    ev.preventDefault();
+    const typed = form.querySelector<HTMLInputElement>(".folder-path")?.value.trim();
+    if (typed) void openFolder(typed);
+    return;
+  }
   if (form.classList.contains("backup-form")) {
     ev.preventDefault();
     void submitBackup(form);
@@ -2706,6 +2782,8 @@ document.addEventListener("keydown", (ev) => {
   } else if (ui.fileMenu) {
     ev.preventDefault();
     closeFileMenu(true);
+  } else if (ui.newTerminal?.browse) {
+    closeFolders();
   } else if (ui.newTerminal) {
     closeNewTerminal();
     roots.tabs.querySelector<HTMLButtonElement>(".tab-new-terminal")?.focus();

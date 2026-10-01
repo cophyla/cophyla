@@ -6,13 +6,14 @@
 // invite's secret and gets its grant's key inside it (`node.enroll`). A secondary's clients
 // are relayed to the primary frame for frame; the primary streams its writes to a backup.
 // Capability requests, `cancel` and `pending` ride the same socket unchanged, primary to
-// secondary; client notifications and capability events ride it upward. See
+// secondary; client notifications and capability events ride it upward, and a terminal of a
+// node's that a client of the primary opened streams over it both ways. See
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Workspace } from "./entities.ts";
-import { GrantId, GrantRef, NodeId, Timestamp } from "./ids.ts";
-import { clientNotifications, clientRequests, IceCandidate, PipeId, StreamTransport } from "./client.ts";
+import { Access, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
+import { ClientId, GrantId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { clientNotifications, clientRequests, clientSignals, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -112,6 +113,8 @@ export const nodeLinkRequests = {
       workspaces: z.array(Workspace),
       /** The node's open asks, so the primary's clients can answer them. */
       asks: z.array(Ask),
+      /** The node's terminals, so the primary's clients see and open them; none from a node that keeps them its own. */
+      terminals: z.array(Terminal).optional(),
     }),
     result: z.object({
       registry: z.array(NodeRecord),
@@ -227,6 +230,14 @@ export const nodeLinkFrames = {
   "pipe.data": z.object({ pipe: PipeId, data: z.string().max(90_000) }),
   "pipe.ack": z.object({ pipe: PipeId, bytes: z.number().int().positive() }),
   "pipe.close": z.object({ pipe: PipeId, reason: z.string().max(200).optional() }),
+  /** Node → primary: output of a terminal of the node's that `client`, a client of the primary's, opened. */
+  "terminal.output": clientNotifications["terminal.output"].extend({ client: ClientId }),
+  /** Primary → node: keys `client` typed into a terminal of the node's it opened to type into. */
+  "terminal.input": clientSignals["terminal.input"].extend({ client: ClientId }),
+  /** Primary → node: the size `client`, driving a terminal of the node's, now has. */
+  "terminal.resize": clientSignals["terminal.resize"].extend({ client: ClientId }),
+  /** Primary → node: `client` went, and every terminal of the node's it had open goes with it. */
+  "terminal.drop": z.object({ client: ClientId }),
   // Below the JSON-RPC of the link, between the two ends of a link whose transport can move
   // from the relay to a data channel and back; never seen by the link's methods.
   /** The sender's last frame on the relay: its next ones come over the data channel. */

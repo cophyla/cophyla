@@ -79,7 +79,7 @@ export async function sealLan(raw: LinkSocket, opts: { grant: string; kind: Seal
     if (timer) clearTimeout(timer);
   }
   const s = sealed;
-  return { send: (text) => s.send(text), close: (code = 1000, reason = "closed") => s.close(code, reason), ...out.socket, ...(raw.remote !== undefined ? { remote: raw.remote } : {}) };
+  return { send: (text) => s.send(text), close: (code = 1000, reason = "closed") => s.close(code, reason), ...out.socket, ...(raw.remote !== undefined ? { remote: raw.remote } : {}), ...(raw.buffered ? { buffered: raw.buffered } : {}) };
 }
 
 /**

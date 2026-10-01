@@ -334,6 +334,22 @@ export const FolderListing = z.object({
 export type FolderListing = z.infer<typeof FolderListing>;
 
 /**
+ * A folder of a node as `terminal.folders` lists it, for picking where a terminal starts: its
+ * path as the node resolved it, its parent's (none at a root), the folders in it by name and
+ * path (a link to one too, hidden ones left out), cut short where `truncated` says, the user's
+ * home, and the roots to start from: a Windows computer's drives, `/` anywhere else.
+ */
+export const FolderPick = z.object({
+  path: z.string(),
+  parent: z.string().optional(),
+  folders: z.array(z.object({ name: z.string().min(1), path: z.string() })),
+  truncated: z.literal(true).optional(),
+  home: z.string(),
+  roots: z.array(z.string()),
+});
+export type FolderPick = z.infer<typeof FolderPick>;
+
+/**
  * A file under a session's working directory as a viewer shows it: its path there as it was
  * asked for, its size in bytes and when it last changed (ms since the epoch), and its text,
  * the first MiB of it where `truncated` says; a file that is not text (`binary`) comes
@@ -496,22 +512,30 @@ export const clientRequests = {
    * it. Answered by this node alone, never forwarded.
    */
   "session.reveal": { params: z.object({ id: SessionId, path: z.string().max(4096) }), result: Empty },
-  /** The terminals this node's tether hosts hold: harness sessions' own, and any program started in one. */
+  /** The terminals the cluster's tether hosts hold, each node's: harness sessions' own, and any program started in one. */
   "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
   /**
-   * Starts a program in a terminal on this node, the user's shell without `argv`, in `cwd` or
-   * a workspace's folder (the user's home without either).
+   * Starts a program in a terminal on `node` (this node without it), the user's shell without
+   * `argv`, in `cwd` or a workspace's folder (the user's home without either); one started in a
+   * workspace starts on the workspace's node.
    */
   "terminal.spawn": {
     params: z.object({
       argv: z.array(z.string().min(1)).min(1).max(64).optional(),
       cwd: z.string().optional(),
       workspace: WorkspaceId.optional(),
+      node: NodeId.optional(),
       name: z.string().max(64).optional(),
       size: TerminalSize.optional(),
     }),
     result: z.object({ terminal: Terminal }),
   },
+  /**
+   * The folders in one folder of `node` (this node without it), for picking where a terminal
+   * starts: `path` (the user's home without it) as that computer resolves it. The terminal's
+   * scope, since a shell started there reaches as far.
+   */
+  "terminal.folders": { params: z.object({ node: NodeId.optional(), path: z.string().min(1).max(4096).optional() }), result: FolderPick },
   /**
    * Opens a terminal's screen for this client: the repaint (`data`, with the scrollback) and
    * the output position it stands at. Its output follows as `terminal.output`, to this client

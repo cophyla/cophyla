@@ -56,7 +56,10 @@ describe("terminal streams", () => {
   const buffered: Record<string, number> = {};
   const sessionIn = new Map<string, Session>();
   const told: Terminal[] = [];
-  const WS: Workspace = { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB2", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", path: "C:/src/app", name: "app", origin: "discovered", tags: [], lastActivity: 1 };
+  // the folders a shell starts in are real: one that is not there is refused
+  const places = tempHome();
+  const WS: Workspace = { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB2", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", path: join(places, "app"), name: "app", origin: "discovered", tags: [], lastActivity: 1 };
+  const ELSEWHERE = join(places, "elsewhere");
   const WS_AWAY: Workspace = { ...WS, id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB3", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FC0" };
   const touched: string[] = [];
 
@@ -82,6 +85,7 @@ describe("terminal streams", () => {
     registry = new ClientRegistry();
     bus = new Bus();
     bus.on("terminal.state", (row) => told.push(row));
+    for (const dir of [WS.path, ELSEWHERE]) mkdirSync(dir, { recursive: true });
     const workspaces = { get: (id: string) => [WS, WS_AWAY].find((w) => w.id === id), touch: (id: string) => touched.push(id) } as unknown as Workspaces;
     rows = new TerminalRows({ tether, bus, nodeId: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", workspaces, env: { PATH: "x" }, sessionOf: (ref) => sessionIn.get(ref.id), log: silentLogger, rowMs: 20 });
     streams = new TerminalStreams({ tether, registry, rows, log: silentLogger });
@@ -216,10 +220,15 @@ describe("terminal streams", () => {
     expect(r).toMatchObject({ id: expect.any(String), status: "running" });
     expect(touched).toEqual([WS.id]);
     // Given a folder, it runs there, whatever workspace it is in: no workspace is touched.
-    await rows.spawn({ cwd: "C:/elsewhere", workspace: WS.id });
-    expect(fake.requests.findLast((q) => q.op === "spawn")!.body["cwd"]).toBe("C:/elsewhere");
+    await rows.spawn({ cwd: ELSEWHERE, workspace: WS.id });
+    expect(fake.requests.findLast((q) => q.op === "spawn")!.body["cwd"]).toBe(ELSEWHERE);
     expect(touched).toEqual([WS.id]);
     await expect(rows.spawn({ workspace: WS_AWAY.id })).rejects.toMatchObject({ code: "unsupported" });
+    // a folder that is not there, and another node's terminal, are refused before the host hears of them
+    const spawns = fake.requests.filter((q) => q.op === "spawn").length;
+    await expect(rows.spawn({ cwd: join(places, "gone") })).rejects.toMatchObject({ code: "not_found" });
+    await expect(rows.spawn({ node: "node_01ARZ3NDEKTSV4RRFFQ69G5FC0" })).rejects.toMatchObject({ code: "unsupported" });
+    expect(fake.requests.filter((q) => q.op === "spawn").length).toBe(spawns);
     await expect(rows.spawn({ workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB9" })).rejects.toMatchObject({ code: "not_found" });
     expect(touched).toEqual([WS.id]);
   });

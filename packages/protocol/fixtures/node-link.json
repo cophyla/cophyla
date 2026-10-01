@@ -40,7 +40,8 @@
           "rank": 1,
           "sessions": [],
           "workspaces": [],
-          "asks": []
+          "asks": [],
+          "terminals": [{ "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": "a1b2c3d4e5f60718", "argv0": "bash", "cwd": "/home/me", "cols": 100, "rows": 30, "status": "running", "windows": 0, "startedAt": 1758196000000 }]
         }
       ],
       "results": [
@@ -167,6 +168,10 @@
     "pipe.data": [{ "pipe": "n3", "data": "R0VUIC8gSFRUUC8xLjENCg==" }],
     "pipe.ack": [{ "pipe": "n3", "bytes": 49152 }],
     "pipe.close": [{ "pipe": "n3" }, { "pipe": "n3", "reason": "reset" }],
+    "terminal.output": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "terminal": "0c9e41b27a53", "seq": 1200, "data": "$ " }, { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "terminal": "0c9e41b27a53", "seq": 1300, "data": "\u001b[H\u001b[2J$ ", "reset": true, "cols": 100, "rows": 30 }],
+    "terminal.input": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "terminal": "0c9e41b27a53", "data": "ls\r" }],
+    "terminal.resize": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "terminal": "0c9e41b27a53", "cols": 96, "rows": 28 }],
+    "terminal.drop": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" }],
     "link.switch": [{}],
     "link.fallback": [{ "received": 0 }, { "received": 1842 }],
     "link.replay": [{ "n": 1843, "f": "{\"jsonrpc\":\"2.0\",\"method\":\"node.state\",\"params\":{}}" }],

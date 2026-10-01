@@ -1,14 +1,16 @@
 // Forwarding on the primary: one wrapper over both method tables (the clients' and the
-// brain's). A request that names a session, an ask or a workspace another node owns goes
-// to that node over the link, gated there as principal `node`; one that names a `node`
-// goes to it, and a tool run in a workspace goes where the workspace is; the list requests
-// merge this node's rows with the mirrors or a fan-out; the rest run here. The caller's own gate still runs first, on the primary, so a forwarded
+// brain's). A request that names a session, an ask, a workspace or a terminal another node
+// owns goes to that node over the link, gated there as principal `node`; one that names a
+// `node` goes to it, and a tool run or a terminal started in a workspace goes where the
+// workspace is; a terminal opened or closed on another node goes with the client it is for
+// (terminals.ts); the list requests merge this node's rows with the mirrors or a fan-out;
+// the rest run here. The caller's own gate still runs first, on the primary, so a forwarded
 // write is asked about twice by default: once as the caller's class here, once as the
 // node's class there. `[gate.rules] "node:session.send" = "allow"` on a node that trusts
 // its primary removes the second.
 
 import { RpcError } from "@cophyla/protocol";
-import type { Ask, ClientKind, NodeRecord, Session, SpendTotals, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientKind, ClientParams, ClientResult, NodeRecord, Session, SpendTotals, Terminal, Workspace } from "@cophyla/protocol";
 import type { Chat } from "../chat/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { ProcessDetail } from "../metrics/delivery.ts";
@@ -18,9 +20,13 @@ export interface ForwardHost {
   ownerOfSession(id: string): string | undefined;
   ownerOfAsk(id: string): string | undefined;
   ownerOfWorkspace(id: string): string | undefined;
+  ownerOfTerminal(id: string): string | undefined;
+  /** A terminal a node answered it started: mirrored at once, so the client that opens it next is routed to it before the node's own row comes up. */
+  noteTerminal(node: string, t: Terminal): void;
   mirrorAsk(id: string): Ask | undefined;
   mirrorSessions(): Session[];
   mirrorWorkspaces(): Workspace[];
+  mirrorTerminals(): Terminal[];
   registryList(): NodeRecord[];
   /** Whether the node is linked now, so a forward can fail fast. */
   linked(node: string): boolean;
@@ -30,6 +36,11 @@ export interface ForwardHost {
   remoteMetrics: {
     subscribe(client: string, node: string, intervalMs: number, processes: ProcessDetail, spend?: { from?: number; to?: number }): Promise<{ spend?: SpendTotals }>;
     unsubscribe(client: string): Promise<void>;
+  };
+  /** A terminal of another node opened and closed for a client, whose output then comes to it alone. */
+  remoteTerminals: {
+    open(client: string, node: string, p: ClientParams<"terminal.open">, opts: { signal?: AbortSignal; onPending?: (ask: Ask) => void }): Promise<ClientResult<"terminal.open">>;
+    close(client: string, node: string, p: ClientParams<"terminal.close">, opts: { signal?: AbortSignal; onPending?: (ask: Ask) => void }): Promise<ClientResult<"terminal.close">>;
   };
   chat: Pick<Chat, "peek" | "touchSession">;
   /** The local workspace rows, so `workspace.list` shows this node's and the mirrors' without the stale rows of a node that is away. */
@@ -73,6 +84,16 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
       return node(host.ownerOfSession(p["id"] as string));
     case "ask.answer":
       return node(host.ownerOfAsk(p["id"] as string));
+    case "terminal.open":
+    case "terminal.close":
+    case "terminal.file":
+      return node(host.ownerOfTerminal(p["terminal"] as string));
+    case "terminal.spawn": {
+      // A shell in a workspace starts where the workspace is; else on the node named.
+      const workspace = p["workspace"] as string | undefined;
+      if (workspace !== undefined) return node(host.ownerOfWorkspace(workspace) ?? host.localWorkspaces().find((w) => w.id === workspace)?.node);
+      return node(p["node"] as string | undefined);
+    }
     case "annotate": {
       const on = p["on"] as string;
       return node(host.ownerOfSession(on) ?? host.ownerOfWorkspace(on));
@@ -99,6 +120,8 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     // Direct connections are each node's own to switch.
     case "direct.enable":
     case "direct.disable":
+    // The picker lists a folder of the computer a terminal is to start on.
+    case "terminal.folders":
       return node(p["node"] as string | undefined);
     case "profile.list":
     case "profile.limits":
@@ -107,6 +130,7 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
       return node(p["node"] as string);
     case "session.list":
     case "workspace.list":
+    case "terminal.list":
     case "node.list":
     case "tool.list":
     case "event.list":
@@ -134,6 +158,7 @@ export const merges: Record<string, Merge> = {
     return { sessions: dedupe([...mine, ...remote]).sort(byActivity) };
   },
   "workspace.list": async (_local, _params, host) => ({ workspaces: dedupe([...host.localWorkspaces(), ...host.mirrorWorkspaces()]).sort(byActivity) }),
+  "terminal.list": async (local, _params, host) => ({ terminals: dedupe([...(local as { terminals: Terminal[] }).terminals, ...host.mirrorTerminals()]) }),
   "node.list": async (_local, _params, host) => ({ nodes: host.registryList() }),
   "tool.list": async (local, params, host) => {
     const mine = (local as { tools: { name: string; node: string }[] }).tools;
@@ -166,12 +191,16 @@ function dedupe<T extends { id: string }>(rows: T[]): T[] {
   return rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
 }
 
-/** What runs on the primary after a forwarded call answered. */
-const after: Record<string, (result: unknown, params: unknown, host: ForwardHost) => void> = {
+/** What runs on the primary after a forwarded call answered, by the node that answered it. */
+const after: Record<string, (result: unknown, params: unknown, host: ForwardHost, node: string) => void> = {
   "session.spawn": (result, _params, host) => {
     const thread = host.chat.peek();
     const id = (result as { id?: string }).id;
     if (thread && id) host.chat.touchSession(thread.id, id);
+  },
+  "terminal.spawn": (result, _params, host, node) => {
+    const t = (result as { terminal?: Terminal }).terminal;
+    if (t?.node === node) host.noteTerminal(node, t);
   },
 };
 
@@ -219,11 +248,15 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
             const known = host.registryList().some((n) => n.id === route.node);
             throw known ? new RpcError("unavailable", `node ${route.node} is not linked`) : new RpcError("not_found", `no node ${route.node}`);
           }
+          const opts = { ...(c.signal ? { signal: c.signal } : {}), ...(c.onPending ? { onPending: c.onPending } : {}) };
+          // A terminal is opened for a client, whose output then comes to it alone.
+          if (name === "terminal.open" && c.client) return host.remoteTerminals.open(c.client.id, route.node, p as ClientParams<"terminal.open">, opts);
+          if (name === "terminal.close" && c.client) return host.remoteTerminals.close(c.client.id, route.node, p as ClientParams<"terminal.close">, opts);
           // The owner types a user's message and pipes the brain's, and ends a session of the
           // user's only for the user: it learns who asked from here.
           const params = name === "session.send" || name === "session.stop" ? { ...P(p), as: c.principal?.kind === "brain" ? "brain" : "user" } : p;
-          const result = await host.forward(route.node, name, params, { ...(c.signal ? { signal: c.signal } : {}), ...(c.onPending ? { onPending: c.onPending } : {}) });
-          after[name]?.(result, p, host);
+          const result = await host.forward(route.node, name, params, opts);
+          after[name]?.(result, p, host, route.node);
           return result;
         }
         const local = await entry.handler(p, ctx);

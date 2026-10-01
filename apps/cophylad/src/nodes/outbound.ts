@@ -19,9 +19,14 @@
 // whose owner shared some folders alone (`confine.ts`) sends up what is inside them: its
 // sessions, workspaces and asks there, the samples with the rest folded, no custom event, no
 // desktop, and of its audit rows the primary's own.
+//
+// A node that runs terminals sends their rows up too, with its join and on the bus, and serves
+// the primary's clients its terminals (terminals.ts): what they ask of one comes down as a
+// forwarded request, the keys they type and the size they drive as frames, and the output
+// goes up to the client that opened it. A confined node, and a workspace node, sends none.
 
-import { nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
-import type { Ask, AuditEntry, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Via, Workspace } from "@cophyla/protocol";
+import { nodeLinkFrames, nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
+import type { Ask, AuditEntry, ClientNotificationParams, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Terminal, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { ClientSocket } from "../api/clients.ts";
 import type { RelayUplink } from "../api/server.ts";
@@ -46,6 +51,8 @@ import type { ServeDeps } from "./served.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import { STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
+import { LINK_VIEWER, linkViewer } from "./terminals.ts";
+import type { NodeTerminals } from "./terminals.ts";
 
 export interface HelloAnswer {
   nodeId: string;
@@ -71,6 +78,8 @@ export interface LinkSocket {
   onMessage(fn: (text: string) => void): void;
   onClose(fn: (code: number, reason: string) => void): void;
   remote?: string;
+  /** Bytes sent and not yet written to the network, where the socket can tell. */
+  buffered?(): number;
 }
 
 /** Where a link may go: a LAN endpoint, or a tunnel the owner opens through the server relay. */
@@ -104,6 +113,8 @@ export interface OutboundDeps {
   tools?: ServeDeps["tools"];
   /** This node's sessions' folders and repositories, served for the primary's explorer. */
   files?: ServeDeps["files"];
+  /** This node's terminals, once built: their rows go up and the primary's clients open them; none on a workspace node. */
+  terminals?: () => NodeTerminals | undefined;
   /** The primary handed this node's grant a new key: kept for every link after this one. */
   onRekey: (key: string) => void;
   platformVersion: string;
@@ -153,7 +164,7 @@ export interface OutboundDeps {
 }
 
 /** What goes up as it is: this node's client notifications, and the capability events its stream raises. */
-const UPWARD_NOTIFICATIONS = ["session.state", "session.event", "ask.state", "workspace.state", "audit.entry", "node.state", "update.state", "remote.state", "direct.state"] as const;
+const UPWARD_NOTIFICATIONS = ["session.state", "session.event", "ask.state", "workspace.state", "terminal.state", "audit.entry", "node.state", "update.state", "remote.state", "direct.state"] as const;
 const UPWARD_EVENTS = new Set<string>(["session.discovered", "session.updated", "session.ask", "session.ended", "workspace.updated", "event.custom", "node.pressure"]);
 
 interface Socket {
@@ -200,6 +211,7 @@ export function openDirect(endpoint: string, timeoutMs: number): Promise<LinkSoc
         onMessage: (fn) => ws.addEventListener("message", (ev) => fn(typeof ev.data === "string" ? ev.data : Buffer.from(ev.data as ArrayBuffer).toString("utf8"))),
         onClose: (fn) => ws.addEventListener("close", (ev) => fn(ev.code, ev.reason)),
         remote: endpoint,
+        buffered: () => ws.bufferedAmount,
       });
     });
     ws.addEventListener("error", () => {
@@ -219,6 +231,8 @@ export class Outbound {
   private relayed = new Map<string, ClientSocket>();
   /** The data channel of a relayed link, while there is one. */
   private linkDirect?: LinkDirect;
+  /** How much the link's socket holds unsent, where it can tell. */
+  private linkBuffered?: () => number;
   /** Requests from the primary being served, so the tests can wait on them. */
   served = 0;
 
@@ -363,6 +377,7 @@ export class Outbound {
         { log: this.log, closeSocket: (code, reason) => sock.sock.close(code, reason), now: this.now() },
       );
       this.peer = peer;
+      this.linkBuffered = sock.sock.buffered;
       this.linkedInfo = { primary: j.primary, epoch: j.epoch, tz: j.tz, linkId: j.linkId, endpoint, via: target.kind };
       peer.onClose((reason) => this.onClosed(peer, reason));
       this.deps.registry.take(j.registry);
@@ -384,6 +399,7 @@ export class Outbound {
         ...(this.deps.local ? { local: this.deps.local } : {}),
         ...(this.deps.tools ? { tools: this.deps.tools } : {}),
         ...(this.deps.files ? { files: this.deps.files } : {}),
+        ...(this.deps.terminals ? { terminals: this.deps.terminals } : {}),
       });
       this.subscribeUpward(peer);
       // What only changes on events goes up once now, so the primary's clients see it before the next change.
@@ -439,6 +455,9 @@ export class Outbound {
     this.linkDirect = undefined;
     if (info) this.deps.streams?.gone(info.primary);
     if (info && this.deps.metrics) this.deps.metrics.unsubscribe(this.subscriberFor(info.linkId));
+    this.linkBuffered = undefined;
+    // the primary's clients looked at this node's terminals through the link
+    this.deps.terminals?.()?.streams.dropViewers(LINK_VIEWER);
     for (const [peerId, port] of [...this.relayed]) {
       this.relayed.delete(peerId);
       port.close(4409, "link to the primary lost");
@@ -468,13 +487,14 @@ export class Outbound {
 
   private sessionOf = (id: string): Session | undefined => this.deps.local?.session(id);
 
-  /** What the join carries: this node's lists, as far as the folders it shares reach. */
-  private lists(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[] } {
+  /** What the join carries: this node's lists, as far as the folders it shares reach, and its terminals unless it shares some alone. */
+  private lists(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[] } {
     const sessions = this.deps.sessions();
     const workspaces = this.deps.workspaces();
     const asks = this.deps.asks();
     const c = this.confined();
-    const shown = c ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)) } : { sessions, workspaces, asks };
+    const terminals = c ? undefined : this.deps.terminals?.()?.rows.list();
+    const shown = c ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)) } : { sessions, workspaces, asks, ...(terminals ? { terminals } : {}) };
     if (!this.deps.outgoing) return shown;
     return { sessions: shown.sessions.map((s) => this.out("session.state", s) as Session), workspaces: shown.workspaces.map((w) => this.out("workspace.state", w) as Workspace), asks: shown.asks.map((a) => this.out("ask.state", a) as Ask) };
   }
@@ -486,6 +506,8 @@ export class Outbound {
     const c = this.confined();
     // A guest's own doings stay its own, and so do a confined node's: only what the primary did here goes up.
     if (name === "audit.entry") return (!this.deps.hands() && !c) || (params as AuditEntry).principal.kind === "node";
+    // A terminal reaches past any folder: a confined node's stay its own, and a workspace node runs none.
+    if (name === "terminal.state") return !c && this.deps.terminals?.() !== undefined;
     if (!c) return true;
     switch (name) {
       case "session.state":
@@ -543,6 +565,16 @@ export class Outbound {
         if (UPWARD_EVENTS.has(e.name) && this.eventGoesUp(e.name, e.params)) peer.notify(e.name, this.out(e.name, e.params));
       }),
     );
+  }
+
+  /** Output of one of this node's terminals for a client of the primary's that opened it. */
+  terminalOutput(client: string, params: ClientNotificationParams<"terminal.output">): boolean {
+    return this.peer?.notify("terminal.output", { client, ...params }) ?? false;
+  }
+
+  /** How much the link holds unsent, where its socket can tell: how far behind the primary's terminal viewers are. */
+  get buffered(): number {
+    return this.linkBuffered?.() ?? 0;
   }
 
   /** A sample of this node for the primary's watchers; on a confined node, with the processes of sessions outside folded. */
@@ -622,6 +654,21 @@ export class Outbound {
       case "pipe.close":
         if (this.linkedInfo) this.deps.streams?.frame(this.linkedInfo.primary, method, params);
         return;
+      case "terminal.input": {
+        const parsed = nodeLinkFrames["terminal.input"].safeParse(params);
+        if (parsed.success) this.deps.terminals?.()?.streams.input(linkViewer(parsed.data.client), parsed.data.terminal, parsed.data.data);
+        return;
+      }
+      case "terminal.resize": {
+        const parsed = nodeLinkFrames["terminal.resize"].safeParse(params);
+        if (parsed.success) this.deps.terminals?.()?.streams.resize(linkViewer(parsed.data.client), parsed.data.terminal, { cols: parsed.data.cols, rows: parsed.data.rows });
+        return;
+      }
+      case "terminal.drop": {
+        const parsed = nodeLinkFrames["terminal.drop"].safeParse(params);
+        if (parsed.success) this.deps.terminals?.()?.streams.dropClient(linkViewer(parsed.data.client));
+        return;
+      }
       default:
         this.log.debug("frame from the primary ignored", { method });
     }

@@ -78,6 +78,7 @@
   { "schema": "client.requests.backup.enable.params", "why": "an empty passphrase", "value": { "passphrase": "" } },
   { "schema": "entities.BackupState", "why": "a state the sender never reports", "value": { "enabled": true, "state": "off" } },
   { "schema": "client.requests.terminal.spawn.params", "why": "no program to run", "value": { "argv": [] } },
+  { "schema": "client.requests.terminal.folders.params", "why": "an empty path", "value": { "path": "" } },
   { "schema": "client.requests.terminal.open.params", "why": "a drive size of one column", "value": { "terminal": "5f2a9c01d4e7", "drive": { "cols": 1, "rows": 28 } } },
   { "schema": "client.signals.terminal.input", "why": "nothing typed", "value": { "terminal": "5f2a9c01d4e7", "data": "" } },
   { "schema": "entities.Terminal", "why": "status unknown", "value": { "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": ".", "cols": 120, "rows": 32, "status": "paused", "windows": 0, "startedAt": 1 } },

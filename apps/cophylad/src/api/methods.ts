@@ -9,7 +9,7 @@
 // `session.mode`; `brain.context`, what the brain sees on its next turn, behind `[brain] show_context`.
 
 import { BrainContext, RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
+import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
 import { DOC_FRAME_PATH } from "@cophyla/protocol";
@@ -32,6 +32,8 @@ import type { ProfilePatch, Profiles } from "../sessions/profiles.ts";
 import { profileLimits } from "../brain-link/methods.ts";
 import type { LimitsReader } from "../brain-link/methods.ts";
 import type { TerminalRows, TerminalStreams } from "../sessions/tether/streams.ts";
+import { folderSummary } from "../sessions/tether/folders.ts";
+import type { TerminalViews } from "../nodes/terminals.ts";
 import type { Remote } from "../remote/index.ts";
 import type { PipeHub } from "../remote/pipes.ts";
 import type { Tasks } from "../tasks/index.ts";
@@ -723,36 +725,50 @@ export function backupMethods(deps: BackupMethodDeps): MethodTable {
 }
 
 export interface TerminalDeps {
-  rows: TerminalRows;
-  streams: TerminalStreams;
+  /** The rows and screens of this node's tether; none without tether, where only another node's terminals open. */
+  rows?: TerminalRows;
+  streams?: TerminalStreams;
   /** Reads a file under the folder a terminal started in, for `terminal.file`. */
   files?: Pick<SessionFiles, "readUnder">;
+  /** Lists a folder of this computer for New terminal's picker. */
+  folders: (path: string | undefined) => Promise<FolderPick>;
+}
+
+/** What starting a program in a terminal asks the user, here and on a node the request was forwarded to. */
+export function terminalSpawnAsk(p: { argv?: string[] }): { title: string; detail?: string } {
+  return p.argv ? { title: `Start ${p.argv[0]} in a terminal?`, detail: p.argv.join(" ") } : { title: "Start a shell in a terminal?" };
 }
 
 /**
- * The node's terminals. Watching one is a read; typing into it or ending it is `exec`, and
- * so is starting a program in one: raw keys reach what `session.send` cannot.
+ * The node's terminals; another node's are forwarded to it (nodes/forward.ts). Watching one
+ * is a read; typing into it or ending it is `exec`, and so is starting a program in one: raw
+ * keys reach what `session.send` cannot. Listing a folder for the picker is a read, under the
+ * terminal's scope: a shell started there reaches as far.
  */
 export function terminalMethods(deps: TerminalDeps): MethodTable {
+  const tether = () => {
+    if (!deps.rows || !deps.streams) throw new RpcError("unsupported", "tether is not on this node");
+    return { rows: deps.rows, streams: deps.streams };
+  };
   return {
     "terminal.list": {
-      handler: () => ({ terminals: deps.rows.list() }),
+      handler: () => ({ terminals: deps.rows?.list() ?? [] }),
     },
     "terminal.spawn": {
       target: (p) => p.argv?.[0],
-      ask: (p) => (p.argv ? { title: `Start ${p.argv[0]} in a terminal?`, detail: p.argv.join(" ") } : { title: "Start a shell in a terminal?" }),
-      handler: async (p) => ({ terminal: await deps.rows.spawn(p) }),
+      ask: (p) => terminalSpawnAsk(p),
+      handler: async (p) => ({ terminal: await tether().rows.spawn(p) }),
     },
     "terminal.open": {
       target: (p) => p.terminal,
       risk: (p) => (p.input || p.drive ? "exec" : "read"),
-      handler: (p, ctx) => deps.streams.open(ctx.client.id, p.terminal, { ...(p.input !== undefined ? { input: p.input } : {}), ...(p.drive ? { drive: p.drive } : {}) }),
+      handler: (p, ctx) => tether().streams.open(ctx.client.id, p.terminal, { ...(p.input !== undefined ? { input: p.input } : {}), ...(p.drive ? { drive: p.drive } : {}) }),
     },
     "terminal.close": {
       target: (p) => p.terminal,
       risk: (p) => (p.end ? "exec" : "read"),
       handler: async (p, ctx) => {
-        await deps.streams.close(ctx.client.id, p.terminal, p.end === true);
+        await tether().streams.close(ctx.client.id, p.terminal, p.end === true);
         return {};
       },
     },
@@ -761,11 +777,17 @@ export function terminalMethods(deps: TerminalDeps): MethodTable {
       target: (p) => p.terminal,
       redactResult: (r) => fileSummary(r),
       handler: (p) => {
-        const row = deps.rows.list().find((t) => t.id === p.terminal);
+        const row = deps.rows?.list().find((t) => t.id === p.terminal);
         if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
         if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
         return deps.files.readUnder(row.cwd, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
       },
+    },
+    // The folder and how many folders it holds are audited, not their names.
+    "terminal.folders": {
+      target: (p) => p.path,
+      redactResult: (r) => folderSummary(r),
+      handler: (p) => deps.folders(p.path),
     },
   };
 }
@@ -780,11 +802,19 @@ export function chatSignals(deps: { activity: Activity }): SignalTable {
   };
 }
 
-/** Keys and sizes for the terminals a client opened to type into: streams, like audio, so no audit row per key; the open was audited. */
-export function terminalSignals(deps: { streams: TerminalStreams }): SignalTable {
+/**
+ * Keys and sizes for the terminals a client opened to type into: streams, like audio, so no
+ * audit row per key; the open was audited. A terminal of another node's goes down its link.
+ */
+export function terminalSignals(deps: { streams?: TerminalStreams; remote?: Pick<TerminalViews, "input" | "resize"> }): SignalTable {
   return {
-    "terminal.input": (client, p) => deps.streams.input(client.id, p.terminal, p.data),
-    "terminal.resize": (client, p) => deps.streams.resize(client.id, p.terminal, { cols: p.cols, rows: p.rows }),
+    "terminal.input": (client, p) => {
+      if (!deps.remote?.input(client.id, p.terminal, p.data)) deps.streams?.input(client.id, p.terminal, p.data);
+    },
+    "terminal.resize": (client, p) => {
+      const size = { cols: p.cols, rows: p.rows };
+      if (!deps.remote?.resize(client.id, p.terminal, size)) deps.streams?.resize(client.id, p.terminal, size);
+    },
   };
 }
 

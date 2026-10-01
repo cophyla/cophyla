@@ -21,12 +21,17 @@
 // A terminal started in a folder lent to a workspace node is that node's, decided when it is
 // first seen: the machine's clients neither list it nor open it, start one there, nor hear
 // its row.
+//
+// A viewer is a client of this node's, or, on a node linked to a primary, one of the
+// primary's clients (`link:<client>`, nodes/terminals.ts), whose output the sink carries up
+// the link.
 
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { RpcError } from "@cophyla/protocol";
-import type { ClientParams, ClientResult, HarnessKind, NodeId, Session, Terminal, TerminalRef, TerminalSize } from "@cophyla/protocol";
+import type { ClientNotificationParams, ClientParams, ClientResult, HarnessKind, NodeId, Session, Terminal, TerminalRef, TerminalSize } from "@cophyla/protocol";
 import type { Subscription, TetherClient } from "@tether-pty/client";
-import type { ClientRegistry, ListenerKind } from "../../api/clients.ts";
+import type { ListenerKind } from "../../api/clients.ts";
 import type { Bus } from "../../bus.ts";
 import type { Logger } from "../../log.ts";
 import type { Workspaces } from "../../workspaces/index.ts";
@@ -42,6 +47,14 @@ export const CAUGHT_UP_AT = 128 * 1024;
 const DRAIN_POLL_MS = 100;
 /** A terminal's row waits this long for the changes that follow it (a window being dragged). */
 const ROW_MS = 50;
+
+function isFolder(path: string): boolean {
+  try {
+    return statSync(path).isDirectory();
+  } catch {
+    return false;
+  }
+}
 
 function keyOf(ref: TerminalRef): string {
   return `${ref.host}/${ref.id}`;
@@ -137,7 +150,7 @@ export class TerminalRows {
     const same = s !== undefined && (owner === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) : s.node === owner);
     const session = same ? s.id : undefined;
     const agents = this.deps.agentsOf?.(entry.ref);
-    return this.deps.tether.toTerminal(entry, session, agents, session || agents ? undefined : this.deps.cliOf?.(entry.ref), owner);
+    return this.deps.tether.toTerminal(entry, session, agents, session || agents ? undefined : this.deps.cliOf?.(entry.ref), owner ?? this.deps.nodeId);
   }
 
   /**
@@ -145,6 +158,7 @@ export class TerminalRows {
    * started in a workspace is work there, and moves it up the views' recent workspaces.
    */
   async spawn(p: ClientParams<"terminal.spawn">): Promise<Terminal> {
+    if (p.node !== undefined && p.node !== this.deps.nodeId) throw new RpcError("unsupported", "the terminal is to start on another node");
     if (!this.deps.tether.available) throw new RpcError("unsupported", "tether is not on this node");
     let cwd = p.cwd;
     let workspace: string | undefined;
@@ -157,6 +171,8 @@ export class TerminalRows {
     }
     // A lent folder is the other cluster's: a terminal started there would be theirs.
     if (this.deps.owners?.ownerOf(cwd ?? homedir()) !== undefined) throw new RpcError("conflict", `${cwd ?? homedir()} is lent to a workspace node`);
+    // A folder picked or typed may be gone, or not a folder: said here rather than as the host's failure.
+    if (cwd !== undefined && !isFolder(cwd)) throw new RpcError("not_found", `no folder ${cwd}`);
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(this.deps.env)) if (v !== undefined) env[k] = v;
     const argv = p.argv ?? shellOf(env);
@@ -181,7 +197,7 @@ export class TerminalRows {
     clearTimeout(this.timers.get(key));
     this.timers.delete(key);
     this.told.delete(key);
-    const row = this.deps.tether.toTerminal(c.entry, undefined, undefined, undefined, this.ownerOf(c.entry));
+    const row = this.deps.tether.toTerminal(c.entry, undefined, undefined, undefined, this.ownerOf(c.entry) ?? this.deps.nodeId);
     this.owners.delete(key);
     this.deps.bus.emit("terminal.state", { ...row, status: "exited" });
   }
@@ -254,9 +270,15 @@ interface Feed {
   viewers: Map<string, Viewer>;
 }
 
+/** Where a viewer's output goes, and how far behind it is: a client of this node's, or a link viewer carried up to the primary. */
+export interface ViewerSink {
+  get(id: string): { socket: { buffered?(): number }; listener: ListenerKind } | undefined;
+  send(id: string, method: "terminal.output", params: ClientNotificationParams<"terminal.output">): boolean;
+}
+
 export interface TerminalStreamsDeps {
   tether: Tether;
-  registry: Pick<ClientRegistry, "get" | "send">;
+  registry: ViewerSink;
   rows: Pick<TerminalRows, "row" | "visible">;
   log: Logger;
 }
@@ -325,6 +347,11 @@ export class TerminalStreams {
       const v = feed.viewers.get(client);
       if (v) this.dropViewer(v);
     }
+  }
+
+  /** Every viewer whose id starts with `prefix` goes: the primary's clients, when the link to it did. */
+  dropViewers(prefix: string): void {
+    for (const feed of [...this.feeds.values()]) for (const v of [...feed.viewers.values()]) if (v.client.startsWith(prefix)) this.dropViewer(v);
   }
 
   /** Keys from a client that opened the terminal to type into it; from any other, nothing. */

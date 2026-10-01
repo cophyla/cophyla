@@ -77,6 +77,7 @@ export const USER_ACTIONS: ReadonlySet<string> = new Set([
   "session.mode",
   "terminal.open",
   "terminal.spawn",
+  "terminal.folders",
   "terminal.input",
   "task.create",
   "task.update",
