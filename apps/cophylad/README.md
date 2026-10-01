@@ -265,8 +265,9 @@ says nothing, and a later hook reads it again. The thread's process is the CLI m
 terminal that fits it (its folder, or a title of its folder's name); of several, the one whose
 CLI started just before the thread (its id says when it was made), and none when two started
 too close together to tell. A CLI that goes on to another thread (`/new`, `/resume`) hands it
-the terminal at its first hook; a thread resumed, a terminal freed by a session that ended, and
-a restart look again. A thread a Codex desktop app started takes none. Until one fits, a thread
+the terminal at its first hook, or, with another CLI's terminal held in the folder too, when
+Codex ends the thread it left, about a minute on; a thread resumed, a terminal freed by a
+session that ended, and a restart look again. A thread a Codex desktop app started takes none. Until one fits, a thread
 is judged by the window too, and it cannot be stopped from the app: its only pid would be the
 daemon's, which runs every CLI's threads. The README of a shipped build says so.
 

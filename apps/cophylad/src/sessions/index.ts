@@ -901,10 +901,11 @@ export class Sessions implements SessionHost {
    * the CLI that started just before the thread (its id says when) is taken, and none when two
    * started too close together to tell. A thread a desktop app started takes none.
    *
-   * A CLI goes on to another thread (`/new`, `/resume`) with no word to the one it leaves: at the
-   * new thread's first hook (`handOver`), with no free terminal that fits and the one that does
-   * held by an older thread through the same CLI, that thread lets the terminal and the CLI go,
-   * living on by its rollout's recency, and the new one takes them.
+   * A CLI goes on to another thread (`/new`, `/resume`) with no word to the one it leaves until
+   * the daemon ends that one about a minute later: at the new thread's first hook (`handOver`),
+   * with no free terminal that fits and the one that does held by an older thread through the
+   * same CLI, that thread lets the terminal and the CLI go, living on by its rollout's recency,
+   * and the new one takes them. With two such terminals held, the new thread waits for the end.
    */
   linkMarked(rec: SessionRecord, opts: { handOver?: boolean } = {}): void {
     const tether = this.deps.tether;
