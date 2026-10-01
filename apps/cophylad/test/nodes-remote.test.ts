@@ -40,6 +40,7 @@ function seamsFor(seams: RemoteSeams, fake?: FakeApollo) {
     exec: seams.exec,
     moonlight: { spawn: seams.spawn, command: seams.moonlight },
     screenshot: seams.screenshot,
+    display: seams.display,
     web: { command: [process.execPath, FAKE_WEB] },
     ...(fake ? { hostApi: (kind: "apollo" | "sunshine") => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }) } : {}),
   };
@@ -161,6 +162,7 @@ describe("remote desktop across nodes", () => {
     fakes.push(hostB);
     const seamsP = remoteSeams();
     const seamsS = remoteSeams();
+    seamsS.screen = { width: 2560, height: 1440 };
     primary = await startPrimary({ toml: `[node]\nname = "study"\n\n${remoteToml(false, seamsP)}`, daemon: { remote: seamsFor(seamsP) } });
     secondary = await startSecondary(primary, { gateRules: { "node:remote.pair": "allow" }, toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS, hostB) } });
     await linked(secondary);
@@ -181,7 +183,9 @@ describe("remote desktop across nodes", () => {
     expect(rows(primary.d, "remote.enable")[0]!.principal.kind).toBe("user");
 
     // Beside: the primary's own web viewer, paired with the secondary's host, on this machine's loopback
-    const { url, stream } = await desk.request<{ url: string; stream: string }>("remote.open", { node: secondary.identity.id, embed: true });
+    const { url, stream, video } = await desk.request<{ url: string; stream: string; video?: { width: number; height: number } }>("remote.open", { node: secondary.identity.id, embed: true });
+    // sized to the secondary's screen, as its remote.state says it
+    expect(video).toEqual({ width: 2560, height: 1440 });
     expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/remote\/\?t=[0-9a-f]{32}$/);
     expect(stream).toMatch(/^stream_[0-9a-f]{16}$/);
     expect(hostB.clients.map((c) => c.name)).toEqual(["study web"]);
@@ -191,6 +195,13 @@ describe("remote desktop across nodes", () => {
     expect(claim.headers.get("set-cookie")).not.toContain("Secure");
     const page = await claim.text();
     expect(page).toContain(`s.dataTransport="websocket";s.canvasRenderer=true;`);
+    expect(page).toContain(`s.videoSize="custom";s.videoSizeCustom={"width":2560,"height":1440};s.fps=60;s.bitrate=55296;`);
+    // the stream page hides the pointer over the picture, which shows the desktop's own cursor
+    const cookie = claim.headers.get("set-cookie")!.split(";")[0]!;
+    const streamPage = await fetch(new URL(/"(\/remote\/stream\.html[^"]*)"/.exec(page)![1]!, url), { headers: { cookie } });
+    expect(streamPage.headers.get("cache-control")).toBe("no-store");
+    expect(streamPage.headers.get("etag")).toBeNull();
+    expect(await streamPage.text()).toContain("<title>Stream: Desktop</title><style>.video-stream{cursor:none}</style></head>");
     await waitFor(() => primary!.d.remote.state().viewers.some((v) => v.kind === "web" && v.name === "desk-a"));
     await desk.request("remote.close", { stream });
     await waitFor(() => !primary!.d.remote.state().viewers.some((v) => v.kind === "web"));

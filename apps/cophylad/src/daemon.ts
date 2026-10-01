@@ -197,8 +197,8 @@ export interface DaemonOptions {
     discovery?: DiscoveryTransport;
     now?: () => number;
   };
-  /** The remote module's seams: the command runner, the host API, the viewer, the web sidecar's command, the capture. */
-  remote?: Pick<RemoteDeps, "exec" | "fetch" | "hostApi" | "moonlight" | "web" | "screenshot" | "os" | "env">;
+  /** The remote module's seams: the command runner, the host API, the viewer, the web sidecar's command, the capture, the display's size. */
+  remote?: Pick<RemoteDeps, "exec" | "fetch" | "hostApi" | "moonlight" | "web" | "screenshot" | "display" | "os" | "env">;
   /** The direct connections' seams: the helper's command and spawner (a test has no helper unless it gives one, since a real one binds the machine's addresses), a clock. */
   direct?: Pick<DirectDeps, "command" | "spawn" | "now"> & { openTimeoutMs?: number; link?: LinkDirectTiming };
   /** The cloud module's seams: the fetch for the login and the revoke, the entitlement keys, the browser opener, a clock. */

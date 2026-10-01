@@ -406,13 +406,14 @@
     "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "laptop" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234" }], "results": [{}] },
     "remote.invite": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "otp": "2357", "link": "art://192.168.1.44:47989?pin=2357&passphrase=cophyla-7f3a&name=study", "passphrase": "cophyla-7f3a", "expiresAt": 1758196980000 }, { "otp": "482913" }] },
     "remote.open": {
-      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "forward": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "embed": true }],
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "forward": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "embed": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "embed": true, "display": { "width": 1920, "height": 1200 } }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "settings": true }],
       "results": [
         {},
         { "url": "https://192.168.1.44:4818/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60" },
         { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "transport": "websocket" },
         { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "transport": "webrtc", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "str_9c1e" },
-        { "url": "http://127.0.0.1:53211/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }
+        { "url": "http://127.0.0.1:53211/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" },
+        { "url": "http://127.0.0.1:53211/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e", "video": { "width": 1920, "height": 1200 } }
       ]
     },
     "remote.close": { "params": [{ "stream": "str_9c1e" }], "results": [{}] },
@@ -598,7 +599,7 @@
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "at": 1758196800000, "cpu": 3.2, "memory": { "used": 1000, "total": 2000 }, "processes": [], "llm": {} }
     ],
     "remote.state": [
-      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [{ "id": "D78A8CA2-A54F-4E28-D18E-10C7E59FF860", "name": "laptop", "kind": "native", "since": 1758196800000, "connected": true }, { "id": "web_7f3a", "name": "Pixel", "kind": "web", "since": 1758196900000 }], "streaming": true },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready", "display": { "width": 1920, "height": 1200 } }, "viewers": [{ "id": "D78A8CA2-A54F-4E28-D18E-10C7E59FF860", "name": "laptop", "kind": "native", "since": 1758196800000, "connected": true }, { "id": "web_7f3a", "name": "Pixel", "kind": "web", "since": 1758196900000 }], "streaming": true },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "apollo", "status": "installing", "step": "winget install ClassicOldSong.Apollo", "progress": 0.4 }, "viewers": [], "streaming": false },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "unavailable", "reason": "no host binary found and [remote] install = false" }, "viewers": [], "streaming": false },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "off" }, "viewers": [], "streaming": false }

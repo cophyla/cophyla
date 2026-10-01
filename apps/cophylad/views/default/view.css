@@ -2774,6 +2774,7 @@ button:disabled {
   font-size: 11.5px;
 }
 
+.remote-viewing,
 .remote-actions,
 .remote-invite-buttons {
   display: flex;
@@ -2795,6 +2796,7 @@ button:disabled {
 
 .remote-connect,
 .remote-beside,
+.remote-moonlight,
 .remote-share-on,
 .remote-retry,
 .remote-share-off,
@@ -2825,6 +2827,7 @@ button:disabled {
 
 .remote-connect:hover:not(:disabled),
 .remote-beside:hover:not(:disabled),
+.remote-moonlight:hover:not(:disabled),
 .remote-share-on:hover:not(:disabled),
 .remote-retry:hover:not(:disabled),
 .remote-share-off:hover:not(:disabled),
@@ -4445,13 +4448,13 @@ button:disabled {
   border-color: var(--line-strong);
 }
 
+/* The stream takes the slot's width at its top in the picture's shape; the panel shows below it. */
 .remote-view-slot {
   display: flex;
   flex: 1 1 auto;
   align-items: center;
   justify-content: center;
   min-height: 0;
-  background: #000;
 }
 
 .remote-view-note {

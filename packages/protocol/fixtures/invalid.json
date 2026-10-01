@@ -4,6 +4,7 @@
   { "schema": "entities.DirectReport", "why": "a day that is not a date", "value": { "day": "yesterday", "counts": [] } },
   { "schema": "entities.DirectReport", "why": "a count of nothing", "value": { "day": "2026-09-24", "counts": [{ "kind": "client", "path": "host", "count": 0 }] } },
   { "schema": "client.signals.remote.pipe.ack", "why": "an ack of no bytes", "value": { "pipe": "p7", "bytes": 0 } },
+  { "schema": "client.requests.remote.open.params", "why": "a display of no width", "value": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "embed": true, "display": { "width": 0, "height": 1200 } } },
   { "schema": "entities.DirectState", "why": "an unknown state", "value": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "state": "on", "peers": [] } },
   { "schema": "entities.Ask", "why": "wrong id prefix", "value": { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB5", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "type": "permission", "source": { "kind": "brain" }, "title": "x", "options": [], "answerableBy": ["user"], "status": "open", "createdAt": 1 } },
   { "schema": "entities.HarnessProfile", "why": "wrong id prefix", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "harness": "claude", "name": "x", "configDir": "C:\\x", "env": {}, "origin": "user", "status": "ok" } },

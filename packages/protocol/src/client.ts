@@ -300,6 +300,10 @@ export type IceCandidate = z.infer<typeof IceCandidate>;
 export const StreamTransport = z.enum(["websocket", "webrtc"]);
 export type StreamTransport = z.infer<typeof StreamTransport>;
 
+/** A screen's size in physical pixels: a desktop host's display, or a stream's picture. */
+export const DisplaySize = z.object({ width: z.number().int().positive().max(16384), height: z.number().int().positive().max(16384) });
+export type DisplaySize = z.infer<typeof DisplaySize>;
+
 /** A pipe's id: one TCP connection of a stream page, carried over the links. */
 export const PipeId = z.string().min(1).max(64);
 
@@ -800,15 +804,23 @@ export const clientRequests = {
    * origin; one that `forward`s gets the page's `path` instead, which it fetches through its
    * own forwarder: on the LAN over its pinned socket (`transport: websocket`), off it through
    * pipes to `node`, the host, whose video then goes over WebRTC (`transport: webrtc`).
+   * `display` is the host's screen as the client last heard it (`remote.state`), which the
+   * stream is sized to where the answering node has not heard it itself; `video` is the size
+   * of the picture a desktop client's page shows, for its aspect. A desktop client that asks
+   * for `settings` gets moonlight-qt's own window on its machine instead (`{}`), where its
+   * settings are: once they are saved there, its window streams with them rather than
+   * Cophyla's picks. (An option, not a request of its own: the apps' bridges pass a new option
+   * of a request they know, and refuse a request they do not.)
    */
   "remote.open": {
-    params: z.object({ node: NodeId, forward: z.boolean().optional(), embed: z.boolean().optional() }),
+    params: z.object({ node: NodeId, forward: z.boolean().optional(), embed: z.boolean().optional(), display: DisplaySize.optional(), settings: z.boolean().optional() }),
     result: z.object({
       url: z.string().optional(),
       path: z.string().optional(),
       transport: StreamTransport.optional(),
       node: NodeId.optional(),
       stream: z.string().optional(),
+      video: DisplaySize.optional(),
     }),
   },
   /** Ends a stream this client opened (`remote.open`'s `stream`): its window closed. */
@@ -966,6 +978,8 @@ export const RemoteHost = z.object({
   progress: z.number().min(0).max(1).optional(),
   /** Why the host is `unavailable`. */
   reason: z.string().optional(),
+  /** The primary display's size, which the host streams, where the node can read it. */
+  display: DisplaySize.optional(),
 });
 export type RemoteHost = z.infer<typeof RemoteHost>;
 

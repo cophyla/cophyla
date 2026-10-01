@@ -1,9 +1,11 @@
 // The remote module's seams for the tests: a command runner that records every call and
-// answers as winget, `sc`, and moonlight-qt's `list` and `quit` would; a spawner that
-// records moonlight's `pair` and `stream` children and lets a test end them; a capture
-// that returns a tiny JPEG; and the fake web sidecar's command.
+// answers as winget, `sc`, moonlight-qt's `list` and `quit`, and the reads of its saved
+// settings (`reg query`, `defaults read`) would; a spawner that records moonlight's `pair`,
+// `stream` and settings children and lets a test end them; a capture that returns a tiny
+// JPEG; the screen's size; and the fake web sidecar's command.
 
 import { join } from "node:path";
+import type { DisplaySize } from "@cophyla/protocol";
 import type { Spawned, Spawner } from "../../src/remote/moonlight.ts";
 import type { Capture } from "../../src/remote/screenshot.ts";
 import type { Exec } from "../../src/sidecars/tts-py.ts";
@@ -27,6 +29,12 @@ export interface RemoteSeams {
   exec: Exec;
   spawn: Spawner;
   screenshot: Capture;
+  /** The display seam: answers `screen`. */
+  display: () => DisplaySize | undefined;
+  /** This machine's primary display, as the display seam reads it; unknown until a test sets it. */
+  screen?: DisplaySize;
+  /** Whether the user saved moonlight-qt's settings: its `width` is in the registry or the defaults. */
+  moonlightSaved: boolean;
   /** Every command the runner saw, as `name arg arg…`. */
   commands: string[];
   children: FakeChild[];
@@ -50,10 +58,15 @@ export function remoteSeams(opts: { paired?: string[]; service?: RemoteSeams["se
     service: opts.service ?? "RUNNING",
     installOk: opts.installOk ?? true,
     moonlight: "C:\\fake\\Moonlight.exe",
+    moonlightSaved: false,
+    display: () => seams.screen,
     exec: async (command, execOpts) => {
       const [file, ...args] = command;
       seams.commands.push([file, ...args].join(" "));
       const say = (line: string) => execOpts.onLine?.(line);
+      if ((file === "reg" && args[0] === "query") || (file === "defaults" && args[0] === "read")) {
+        return seams.moonlightSaved ? { code: 0, stdout: "    width    REG_DWORD    0x780\n", stderr: "" } : { code: 1, stdout: "", stderr: "ERROR: The system was unable to find the specified registry key or value." };
+      }
       if (file === "winget" || file === "brew" || file === "flatpak") {
         say(`Found ${args[3] ?? args[2] ?? "package"}`);
         say("Successfully installed");

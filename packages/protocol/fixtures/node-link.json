@@ -131,9 +131,10 @@
     "remote.ticket": {
       "params": [
         { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel 8", "transport": "webrtc" },
-        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true }
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true, "sized": true, "hideCursor": true }
       ],
-      "results": [{ "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }]
+      "results": [{ "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }, { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e", "video": { "width": 1920, "height": 1200 } }]
     },
     "remote.pipe.open": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "n3" }], "results": [{ "window": 262144 }] },
     "remote.close": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "stream_0123456789abcdef", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV:client_01ARZ3NDEKTSV4RRFFQ69G5FAZ" }], "results": [{}] },

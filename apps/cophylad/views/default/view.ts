@@ -51,7 +51,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteViewStep, remoteViewWidth, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
@@ -1014,7 +1014,7 @@ async function openRemote(node: string): Promise<void> {
   ui.opening.add(node);
   draw();
   try {
-    const result = await rpc.request<{ url?: string; path?: string; node?: string }>("remote.open", { node });
+    const result = await rpc.request<{ url?: string; path?: string; node?: string }>("remote.open", remoteOpenParams(node));
     if (result.url || result.path) await rpc.request("host.open", { node, ...result });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -1022,6 +1022,23 @@ async function openRemote(node: string): Promise<void> {
   } finally {
     ui.opening.delete(node);
     draw();
+  }
+}
+
+/** What `remote.open` is told: the node, and its screen as its `remote.state` said, which the stream is sized to. */
+function remoteOpenParams(node: string, more: { embed?: true } = {}): { node: string; embed?: true; display?: { width: number; height: number } } {
+  const display = state.remote.get(node)?.host.display;
+  return { node, ...more, ...(display ? { display } : {}) };
+}
+
+/** Opens Moonlight's own window on this machine, where its settings are: once saved there, Connect follows them. */
+async function moonlightSettings(node: string): Promise<void> {
+  if (!state.scopes.includes("remote")) return;
+  try {
+    await rpc.request("remote.open", { node, settings: true });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    dispatch({ type: "error", message: `Moonlight settings: ${message}` });
   }
 }
 
@@ -1701,7 +1718,7 @@ function syncViewer(): void {
     return;
   }
   // While a desktop sits beside the pane, a file lies over the pane: two columns beside it would leave it none.
-  const crowded = narrow.matches || (ui.remoteView !== undefined && remoteDock() === "beside");
+  const crowded = narrow.matches || (remoteShown() && remoteDock() === "beside");
   const dock = crowded ? "over" : ui.viewerDock;
   const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
@@ -1867,10 +1884,22 @@ function remoteDock(): ViewerDock {
   return narrow.matches ? "over" : ui.remoteDock;
 }
 
+/** The selected tab, by `viewerTab`'s key, and `chat` for the chat. */
+function selectedTab(): string {
+  return viewerTab(ui.selected, ui.terminal) ?? "chat";
+}
+
+/** Whether the desktop shows on the selected tab: one of its machine's, or the one it was opened or last shown on. */
+function remoteShown(): boolean {
+  const v = ui.remoteView;
+  return v !== undefined && remoteHere(v, selectedTab(), tabNode(state, ui.selected, ui.terminal));
+}
+
 /**
- * The desktop shown beside the view, or over the pane; under a file or the context lying over
- * the same pane it waits, its stream hidden. Beside it, the pinned prompts centre over the pane
- * rather than the frame, clear of the stream.
+ * The desktop shown beside the view, or over the pane, on its machine's tabs and the one it
+ * was opened on; on another tab, or under a file or the context lying over the same pane, it
+ * waits, its stream hidden and kept, and the pane takes the width. Beside it, the pinned
+ * prompts centre over the pane rather than the frame, clear of the stream.
  */
 function syncRemote(): void {
   const v = ui.remoteView;
@@ -1880,9 +1909,10 @@ function syncRemote(): void {
     return;
   }
   const dock = remoteDock();
+  const here = remoteShown();
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: dock === "over" && (viewer.shown !== undefined || contextView.shown) });
-  syncPinned(dock === "beside");
+  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: !here || (dock === "over" && (viewer.shown !== undefined || contextView.shown)) });
+  syncPinned(here && dock === "beside");
 }
 
 /** The pinned prompts over the pane's column while the desktop takes the right of the window. */
@@ -1922,13 +1952,22 @@ async function openBeside(node: string): Promise<void> {
   if (!state.scopes.includes("remote")) return;
   const name = state.nodes.get(node)?.name ?? node;
   const old = ui.remoteView;
-  if (old?.node === node && old.phase !== "failed") return;
+  const from = selectedTab();
+  if (old?.node === node && old.phase !== "failed") {
+    // open already, hidden on this tab: it shows here too, as it was
+    if (!remoteShown()) {
+      ui.remoteView = remoteViewStep(old, { type: "show", from });
+      putRailAway();
+      draw();
+    }
+    return;
+  }
   if (old?.stream) void rpc.request("host.close", { stream: old.stream }).catch(() => {});
-  ui.remoteView = remoteViewStep(old, { type: "open", node, name });
+  ui.remoteView = remoteViewStep(old, { type: "open", node, name, from });
   putRailAway();
   draw();
   try {
-    const opened = await rpc.request<{ url?: string; stream?: string }>("remote.open", { node, embed: true });
+    const opened = await rpc.request<{ url?: string; stream?: string; video?: { width: number; height: number } }>("remote.open", remoteOpenParams(node, { embed: true }));
     if (!opened.url || !opened.stream) {
       // a node from before the desktop beside the view opens Moonlight's window instead
       ui.remoteView = remoteViewStep(ui.remoteView, { type: "failed", node, error: "Cophyla on this machine is older than the desktop beside the view: it opened Moonlight's window instead. Update it to show desktops here." });
@@ -1942,7 +1981,7 @@ async function openBeside(node: string): Promise<void> {
     }
     await rpc.request("host.open", { node, url: opened.url, stream, embed: true });
     const was = ui.remoteView;
-    ui.remoteView = remoteViewStep(was, { type: "opened", node, stream });
+    ui.remoteView = remoteViewStep(was, { type: "opened", node, stream, ...(opened.video ? { video: opened.video } : {}) });
     // closed while the host opened it
     if (ui.remoteView?.stream !== stream) void rpc.request("host.close", { stream }).catch(() => {});
   } catch (e) {
@@ -2043,7 +2082,7 @@ function setViewerWidth(value: number, save: boolean): void {
 function setRemoteWidth(value: number, save: boolean): void {
   ui.remoteWidth = remoteViewWidth(value);
   remotePanel.setWidth(ui.remoteWidth);
-  syncPinned(ui.remoteView !== undefined && remoteDock() === "beside");
+  syncPinned(remoteShown() && remoteDock() === "beside");
   if (save) saveRemotePrefs();
 }
 
@@ -2675,6 +2714,9 @@ document.addEventListener("click", (ev) => {
       return;
     case "remote-beside":
       if (target.dataset["node"]) void openBeside(target.dataset["node"]);
+      return;
+    case "remote-moonlight":
+      if (target.dataset["node"]) void moonlightSettings(target.dataset["node"]);
       return;
     case "remote-share":
       if (target.dataset["node"]) void shareRemote(target.dataset["node"], true);

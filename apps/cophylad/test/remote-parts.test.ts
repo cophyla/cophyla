@@ -1,7 +1,9 @@
 // The remote module's small parts: where the host and the viewer are looked for and how a
 // missing one is installed on each platform; a JPEG's size read from its header; the host
 // address moonlight is given; the Windows service's state read from `sc query`; the capture
-// script's refusal of a display that is not there.
+// script's refusal of a display that is not there; the stream's size and bitrate picked from a
+// screen; moonlight's window sized only while the user saved no settings of its own, read where
+// each platform keeps them; its own window opened bare.
 
 import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -10,7 +12,8 @@ import { join } from "node:path";
 import { RemoteConfig } from "../src/config/schema.ts";
 import { silentLogger } from "../src/log.ts";
 import { brewPath, hostCandidates, install, installCommand, kindOf, locateHost, locateMoonlight } from "../src/remote/install.ts";
-import { hostOfEndpoint, randomPin } from "../src/remote/moonlight.ts";
+import { hostOfEndpoint, Moonlight, moonlightSaved, randomPin } from "../src/remote/moonlight.ts";
+import { streamVideo } from "../src/remote/quality.ts";
 import { jpegSize, SCREEN_RECORDING_REFUSED, screenshotter } from "../src/remote/screenshot.ts";
 import { windowsServiceState, windowsServiceStart } from "../src/remote/service.ts";
 import { MoonlightWeb } from "../src/remote/web.ts";
@@ -89,6 +92,65 @@ describe("remote parts", () => {
     expect(jpegSize(TINY_JPEG)).toEqual({ width: 1, height: 1 });
     expect(jpegSize(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBeUndefined();
     expect(jpegSize(new Uint8Array([]))).toBeUndefined();
+  });
+
+  test("a stream is asked for at its host's screen size, 60 fps and a quarter bit per pixel per frame, held to 10–150 Mbps; across the internet to 15", () => {
+    expect(streamVideo({ width: 1920, height: 1080 })).toEqual({ width: 1920, height: 1080, fps: 60, bitrate: 31104 });
+    expect(streamVideo({ width: 1920, height: 1200 })).toEqual({ width: 1920, height: 1200, fps: 60, bitrate: 34560 });
+    expect(streamVideo({ width: 2560, height: 1440 }).bitrate).toBe(55296);
+    expect(streamVideo({ width: 3840, height: 2160 }).bitrate).toBe(124416);
+    // no screen to go by: 1080p
+    expect(streamVideo(undefined)).toEqual({ width: 1920, height: 1080, fps: 60, bitrate: 31104 });
+    // held to the bounds
+    expect(streamVideo({ width: 1280, height: 720 }).bitrate).toBe(13824);
+    expect(streamVideo({ width: 800, height: 600 }).bitrate).toBe(10000);
+    expect(streamVideo({ width: 7680, height: 4320 }).bitrate).toBe(150000);
+    // away from the LAN: the size kept, the bitrate held to 15 Mbps, a small one left as it is
+    expect(streamVideo({ width: 1920, height: 1200 }, { away: true })).toEqual({ width: 1920, height: 1200, fps: 60, bitrate: 15000 });
+    expect(streamVideo({ width: 800, height: 600 }, { away: true }).bitrate).toBe(10000);
+  });
+
+  test("moonlight's window is sized only when given a size; its settings window opens bare", async () => {
+    const seams = remoteSeams();
+    const moonlight = new Moonlight({ command: async () => seams.moonlight, exec: seams.exec, spawn: seams.spawn, log: silentLogger });
+    await moonlight.stream("192.168.1.44", "Desktop", { width: 1920, height: 1200, fps: 60, bitrate: 34560 });
+    await moonlight.stream("192.168.1.44");
+    await moonlight.settings();
+    expect(seams.children.map((c) => c.args.join(" "))).toEqual([
+      "stream 192.168.1.44 Desktop --resolution 1920x1200 --fps 60 --bitrate 34560 --display-mode windowed --absolute-mouse --quit-after",
+      "stream 192.168.1.44 Desktop --display-mode windowed --absolute-mouse --quit-after",
+      "",
+    ]);
+    // the settings window is the user's: a new stream ends the last stream, never it
+    expect(seams.children.map((c) => c.killed)).toEqual([true, false, false]);
+  });
+
+  test("the user's saved moonlight settings are read where each platform keeps them: the registry, the defaults, the INI file", async () => {
+    const seams = remoteSeams();
+    expect(await moonlightSaved("windows", seams.exec)).toBe(false);
+    expect(await moonlightSaved("macos", seams.exec)).toBe(false);
+    seams.moonlightSaved = true;
+    expect(await moonlightSaved("windows", seams.exec)).toBe(true);
+    expect(await moonlightSaved("macos", seams.exec)).toBe(true);
+    expect(seams.commands).toContain("reg query HKCU\\Software\\Moonlight Game Streaming Project\\Moonlight /v width");
+    expect(seams.commands).toContain("defaults read com.moonlight-stream.Moonlight width");
+    // a runner that cannot run is no settings
+    expect(await moonlightSaved("windows", async () => Promise.reject(new Error("no reg")))).toBe(false);
+    // Linux: the native file under XDG_CONFIG_HOME, or the flatpak's own
+    const files = new Map<string, string>();
+    const read = (p: string) => {
+      const text = files.get(p);
+      if (text === undefined) throw new Error("ENOENT");
+      return text;
+    };
+    const env = { HOME: "/home/u", XDG_CONFIG_HOME: "/home/u/.config" };
+    const native = join("/home/u/.config", "Moonlight Game Streaming Project", "Moonlight.conf");
+    const flatpak = join("/home/u", ".var", "app", "com.moonlight_stream.Moonlight", "config", "Moonlight Game Streaming Project", "Moonlight.conf");
+    expect(await moonlightSaved("linux", seams.exec, env, read)).toBe(false);
+    files.set(native, "[General]\ncertificate=@ByteArray(x)\n");
+    expect(await moonlightSaved("linux", seams.exec, env, read)).toBe(false);
+    files.set(flatpak, "[General]\nbitrate=20000\nwidth=2560\nheight=1440\n");
+    expect(await moonlightSaved("linux", seams.exec, env, read)).toBe(true);
   });
 
   test("moonlight is given the host without the port; a pin is four digits", () => {

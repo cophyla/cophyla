@@ -3,11 +3,12 @@
 // desktop, Open in Moonlight, the dock toggle, Close) and an empty slot under it, and tells the
 // host the slot's rectangle (`host.place`) whenever it may have moved, once a frame at most, or
 // `null` while the stream must hide: nothing of the view can be drawn over the host's page, so
-// it hides while something of the view lies over the slot (`remotePlace`). While the stream is
-// opening, or failed, the slot says so itself. The panel is the file viewer's kind of `aside`,
-// its dock and divider styled the same.
+// it hides while something of the view lies over the slot (`remotePlace`). The stream takes the
+// slot's width at its top in the picture's own shape (`fitPlace`), so the page draws no bands;
+// the panel shows below it. While the stream is opening, or failed, the slot says so itself.
+// The panel is the file viewer's kind of `aside`, its dock and divider styled the same.
 
-import { remotePlace, samePlace } from "./model.ts";
+import { fitPlace, remotePlace, samePlace } from "./model.ts";
 import type { Box, RemotePlace, RemoteView, ViewerDock } from "./model.ts";
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -166,10 +167,12 @@ export class RemotePanel {
     if (!stream) return;
     const cover = this.deps.cover();
     const r = this.slot.getBoundingClientRect();
-    const rect = remotePlace(
+    const slot = remotePlace(
       this.el.hidden ? undefined : { left: r.left, top: r.top, width: r.width, height: r.height },
       { shown: !this.el.hidden, covered: cover.covered, menus: cover.menus, ...(cover.pinned ? { pinned: cover.pinned } : {}) },
     );
+    const video = this.view?.video;
+    const rect = slot && fitPlace(slot, video ? video.width / video.height : undefined);
     if (this.placedFor === stream && samePlace(this.placed, rect)) return;
     this.placed = rect;
     this.placedFor = stream;

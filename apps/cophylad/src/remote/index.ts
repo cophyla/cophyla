@@ -18,12 +18,16 @@
 // that asked), its own web viewer serves the page to its loopback proxy, the page's
 // connections ride pipes over the links (the phone's own forwarder, or one on the viewing
 // node), and the video goes over WebRTC with the host's TURN servers, never through the relay.
+// A stream the desktop app opens is sized to the host's screen (which each node reads and says
+// in its `remote.state`) with a bitrate to match, unless the user saved Moonlight's own settings
+// (`remote.open` with `settings` opens its window), and its page hides the user's pointer over
+// the picture.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { RpcError } from "@cophyla/protocol";
-import type { CapabilityResult, Client, ClientResult, RemoteHost, RemoteState, RemoteViewer, StreamTransport } from "@cophyla/protocol";
+import type { CapabilityResult, Client, ClientResult, DisplaySize, RemoteHost, RemoteState, RemoteViewer, StreamTransport } from "@cophyla/protocol";
 import type { ListenerKind } from "../api/clients.ts";
 import type { Bus } from "../bus.ts";
 import type { RemoteConfig } from "../config/schema.ts";
@@ -35,11 +39,13 @@ import { hostOs } from "../update/platform.ts";
 import type { HostOs } from "../update/platform.ts";
 import { HostApi, HostApiError } from "./host.ts";
 import type { HostClient, HostCredentials } from "./host.ts";
+import { displaySize } from "./display.ts";
 import { install, locateHost, locateMoonlight } from "./install.ts";
 import type { HostKind, Located } from "./install.ts";
-import { hostOfEndpoint, Moonlight, randomPin } from "./moonlight.ts";
+import { hostOfEndpoint, Moonlight, moonlightSaved, randomPin } from "./moonlight.ts";
 import type { Spawner } from "./moonlight.ts";
 import { RemoteProxy, RemoteTickets } from "./proxy.ts";
+import { streamVideo } from "./quality.ts";
 import { screenshotter } from "./screenshot.ts";
 import type { Capture } from "./screenshot.ts";
 import { HOST_PORT, hostLabel, spawnHost, windowsServiceStart, windowsServiceState } from "./service.ts";
@@ -56,6 +62,8 @@ export interface OpenContext {
   forward?: boolean;
   /** The desktop app shows the page beside its view: a loopback URL rather than moonlight-qt's window. */
   embed?: boolean;
+  /** The host's screen as the client last heard it, for a host whose `remote.state` this node has not. */
+  display?: DisplaySize;
 }
 
 export interface RemoteDeps {
@@ -93,6 +101,8 @@ export interface RemoteDeps {
   moonlight?: { spawn?: Spawner; command?: string };
   web?: { command?: string[]; target?: string };
   screenshot?: Capture;
+  /** This machine's primary display, in physical pixels; `displaySize` without it. */
+  display?: () => DisplaySize | undefined;
   now?: () => number;
   /** The node links, for a stream on a node this one has no route to: its ticket there, and its end. */
   links?: {
@@ -140,6 +150,8 @@ export class Remote {
   private away = new Map<string, Away>();
   private capture: Capture;
   private native: RemoteViewer[] = [];
+  /** This machine's primary display as the last poll read it. */
+  private display?: DisplaySize;
   private firstSeen = new Map<string, number>();
   private hostStreaming = false;
   private timer?: ReturnType<typeof setTimeout>;
@@ -216,7 +228,21 @@ export class Remote {
   /** This node's `remote.state`. */
   state(): RemoteState {
     const viewers = [...this.native, ...this.tickets.viewers()];
-    return { node: this.deps.nodeId, host: { ...this.host }, viewers, streaming: this.hostStreaming };
+    return { node: this.deps.nodeId, host: { ...this.host, ...(this.display ? { display: { ...this.display } } : {}) }, viewers, streaming: this.hostStreaming };
+  }
+
+  /** This machine's primary display now. */
+  private readDisplay(): DisplaySize | undefined {
+    return this.deps.display ? this.deps.display() : displaySize(this.os);
+  }
+
+  /**
+   * The screen `node`'s host streams: this machine's own for this node; another's as its
+   * `remote.state` says, else as the client heard it; else this machine's, the likeliest match.
+   */
+  private hostDisplay(node: string, heard?: DisplaySize): DisplaySize | undefined {
+    if (node === this.deps.nodeId) return this.readDisplay();
+    return this.others.get(node)?.host.display ?? heard ?? this.readDisplay();
   }
 
   /** Every node's last known `remote.state`, this node's first. */
@@ -503,6 +529,8 @@ export class Remote {
       return { id: c.uuid, kind: "native", since, ...(c.name ? { name: c.name } : {}), ...(c.connected !== undefined ? { connected: c.connected } : {}) };
     });
     for (const id of [...this.firstSeen.keys()]) if (!seen.has(id)) this.firstSeen.delete(id);
+    // read with the list, so a change of resolution reaches the viewers at the next poll
+    this.display = this.readDisplay();
     let streaming = clients.some((c) => c.connected === true);
     if (api.kind === "sunshine") {
       const info = await api.serverInfo();
@@ -628,7 +656,7 @@ export class Remote {
     if (ctx.embed && ctx.client.kind === "ui" && node === this.deps.nodeId) throw new RpcError("invalid", "this is the desktop the app runs on: it is not shown beside the view");
     // the desktop app on a node with no route to the host: the page through a forwarder here, in a window of its own or beside the view
     if (ctx.client.kind === "ui" && node !== this.deps.nodeId && ctx.client.node === this.deps.nodeId && !this.routable(node)) return this.openAway(node, ctx.client, "window");
-    if (ctx.embed && ctx.client.kind === "ui") return this.openBeside(node, ctx.client);
+    if (ctx.embed && ctx.client.kind === "ui") return this.openBeside(node, ctx.client, ctx.display);
     const address = this.hostAddress(node);
     if (ctx.client.kind === "controller") {
       if (ctx.listener !== "controller") throw new RpcError("unavailable", "a stream page is served on the controller listener only");
@@ -663,39 +691,50 @@ export class Remote {
       }
       this.log.info("viewer paired", { node, address });
     }
-    await this.moonlight.stream(address);
+    // the user's own settings, once saved in Moonlight's window, over Cophyla's picks
+    const saved = await moonlightSaved(this.os, this.exec, this.deps.env ?? process.env);
+    await this.moonlight.stream(address, "Desktop", saved ? undefined : streamVideo(this.hostDisplay(node, ctx.display)));
+    return {};
+  }
+
+  /** Opens moonlight-qt's own window on this machine, where its settings are: for the desktop app that runs here. */
+  async settings(client: Client): Promise<ClientResult<"remote.open">> {
+    if (client.kind !== "ui" || client.node !== this.deps.nodeId) throw new RpcError("unsupported", "Moonlight's window opens only for the desktop app on this machine");
+    await this.moonlight.settings();
     return {};
   }
 
   /**
    * The desktop app shows `node`'s desktop beside its view, the host on its LAN: a ticket to
    * this node's web viewer, served by the stream proxy on this machine's loopback, the video
-   * on the page's WebSocket and the page seeded to keep it a few frames behind. The first
-   * time, the host is asked once to pair the web viewer.
+   * on the page's WebSocket and the page seeded to keep it a few frames behind, at the host's
+   * screen size, with the user's pointer hidden over it. The first time, the host is asked
+   * once to pair the web viewer.
    */
-  private async openBeside(node: string, client: Client): Promise<ClientResult<"remote.open">> {
+  private async openBeside(node: string, client: Client, heard?: DisplaySize): Promise<ClientResult<"remote.open">> {
     if (client.node !== this.deps.nodeId) throw new RpcError("unsupported", "a desktop is shown beside the view only in the desktop app on this machine");
     if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
     const ids = await this.web.ensureHost(node, this.hostAddress(node), client.id);
-    const { ticket, stream } = this.tickets.mint(client.id, { node, ...ids }, { ...(client.name !== undefined ? { name: client.name } : {}), transport: "websocket", secureCookie: false, lowLatency: true });
-    this.log.info("web viewer ticket minted beside the view", { node, client: client.id });
-    return { url: `http://127.0.0.1:${this.loopback.port()}/remote/?t=${ticket}`, stream };
+    const video = streamVideo(this.hostDisplay(node, heard));
+    const { ticket, stream } = this.tickets.mint(client.id, { node, ...ids }, { ...(client.name !== undefined ? { name: client.name } : {}), transport: "websocket", secureCookie: false, lowLatency: true, video, hideCursor: true });
+    this.log.info("web viewer ticket minted beside the view", { node, client: client.id, video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` });
+    return { url: `http://127.0.0.1:${this.loopback.port()}/remote/?t=${ticket}`, stream, video: { width: video.width, height: video.height } };
   }
 
   /**
    * A stream where there is no route to its host: the host's ticket (this node's own for a
    * phone off its LAN), and for the desktop app on this machine, in a window or beside its
    * view, a forwarder here to read it through, the page seeded to keep the video a few frames
-   * behind.
+   * behind at the host's screen size, with the user's pointer hidden over it.
    */
   private async openAway(node: string, client: Client, how: "phone" | "window"): Promise<ClientResult<"remote.open">> {
     const self = this.deps.nodeId;
-    let opened: { path: string; stream: string };
+    let opened: { path: string; stream: string; video?: DisplaySize };
     if (node === self) opened = await this.ticket(client.id, client.name, "webrtc");
     else {
       if (!this.deps.links) throw new RpcError("unavailable", `no link to ${node}`);
-      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(how === "window" ? { lowLatency: true } : {}) };
-      opened = (await this.deps.links.request(node, "remote.ticket", params, { timeoutMs: 180_000 })) as { path: string; stream: string };
+      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(how === "window" ? { lowLatency: true, sized: true, hideCursor: true } : {}) };
+      opened = (await this.deps.links.request(node, "remote.ticket", params, { timeoutMs: 180_000 })) as { path: string; stream: string; video?: DisplaySize };
     }
     const away: Away = { node, client: client.id };
     this.away.set(opened.stream, away);
@@ -705,16 +744,17 @@ export class Remote {
     const forwarder = new Forwarder({ hub: this.deps.pipes, node, log: this.log.child("forwarder"), onClose: () => void this.endAway(opened.stream, client.id) });
     away.forwarder = forwarder;
     const port = forwarder.start();
-    return { url: `http://127.0.0.1:${port}${opened.path}`, stream: opened.stream };
+    return { url: `http://127.0.0.1:${port}${opened.path}`, stream: opened.stream, ...(opened.video ? { video: opened.video } : {}) };
   }
 
   /**
    * A ticket to this node's own desktop for a viewer with no route here: the stream page's
    * path, its cookie without `Secure` (the page is on the viewer's loopback), its video over
-   * WebRTC with this node's TURN servers, seeded for low latency when the viewer asks. The
-   * caller gates it.
+   * WebRTC with this node's TURN servers, seeded for low latency when the viewer asks, sized
+   * to this screen at the bitrate the internet carries when it asks that, and with its pointer
+   * hidden over the picture. The caller gates it.
    */
-  async ticket(viewer: string, name: string | undefined, transport: StreamTransport, opts: { lowLatency?: boolean } = {}): Promise<{ path: string; stream: string }> {
+  async ticket(viewer: string, name: string | undefined, transport: StreamTransport, opts: { lowLatency?: boolean; sized?: boolean; hideCursor?: boolean } = {}): Promise<{ path: string; stream: string; video?: DisplaySize }> {
     this.requireHost();
     if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
     if (transport === "webrtc") {
@@ -726,9 +766,10 @@ export class Remote {
       void direct.request("map.ports", { ports }).catch(() => undefined);
     }
     const ids = await this.web.ensureHost(this.deps.nodeId, "127.0.0.1", viewer);
-    const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { ...(name !== undefined ? { name } : {}), transport, secureCookie: false, ...(opts.lowLatency ? { lowLatency: true } : {}) });
-    this.log.info("web viewer ticket minted for a viewer elsewhere", { viewer, transport });
-    return { path: `/remote/?t=${ticket}`, stream };
+    const video = opts.sized ? streamVideo(this.readDisplay(), { away: true }) : undefined;
+    const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { ...(name !== undefined ? { name } : {}), transport, secureCookie: false, ...(opts.lowLatency ? { lowLatency: true } : {}), ...(video ? { video } : {}), ...(opts.hideCursor ? { hideCursor: true } : {}) });
+    this.log.info("web viewer ticket minted for a viewer elsewhere", { viewer, transport, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : {}) });
+    return { path: `/remote/?t=${ticket}`, stream, ...(video ? { video: { width: video.width, height: video.height } } : {}) };
   }
 
   /** A viewer elsewhere ended its stream here. */

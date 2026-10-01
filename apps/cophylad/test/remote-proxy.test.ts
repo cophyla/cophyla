@@ -17,7 +17,7 @@ import type { RemoteState } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { silentLogger } from "../src/log.ts";
 import { HostApi } from "../src/remote/host.ts";
-import { loopbackHost, RemoteProxy, RemoteTickets } from "../src/remote/proxy.ts";
+import { hideCursorIn, loopbackHost, RemoteProxy, RemoteTickets, seedScript } from "../src/remote/proxy.ts";
 import { startFakeApollo } from "./fakes/apollo.ts";
 import type { FakeApollo } from "./fakes/apollo.ts";
 import { FAKE_WEB, remoteSeams } from "./fakes/remote.ts";
@@ -67,6 +67,7 @@ async function start(remoteExtra = ""): Promise<Started> {
         hostApi: (kind) => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }),
         moonlight: { spawn: seams.spawn, command: seams.moonlight },
         screenshot: seams.screenshot,
+        display: seams.display,
         web: { command: [process.execPath, FAKE_WEB] },
       },
     }),
@@ -281,6 +282,61 @@ describe("remote web viewer", () => {
     const plain = await claim(tickets.mint("client_a", target).ticket);
     expect(plain).toContain(`s.dataTransport="webrtc";localStorage.setItem`);
     expect(plain).not.toContain("videoCodec");
+  });
+
+  test("a ticket with a video seeds its size, frame rate and bitrate over the viewer's own; one without leaves them", async () => {
+    const video = { width: 1920, height: 1200, fps: 60, bitrate: 34560 };
+    expect(seedScript("websocket", true, video)).toContain(`"h265":"h264";s.videoSize="custom";s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=34560;localStorage.setItem`);
+    expect(seedScript("webrtc", false)).not.toContain("videoSize");
+    const tickets = new RemoteTickets();
+    const proxy = new RemoteProxy({ tickets, upstream: () => undefined, transport: () => "webrtc", log: silentLogger });
+    const minted = tickets.mint("client_a", { node: "node_x", hostId: 1, appId: 2 }, { transport: "websocket", lowLatency: true, video, hideCursor: true });
+    const res = await proxy.handle(new Request(`http://127.0.0.1:50123/remote/?t=${minted.ticket}`), () => false);
+    expect(await res!.text()).toContain(`s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=34560;`);
+    expect(tickets.list()[0]).toMatchObject({ video, hideCursor: true });
+  });
+
+  test("a session that hides the pointer gets the stream page rewritten, fetched whole and kept out of the cache; every other response, and every other session's, as it came", async () => {
+    expect(hideCursorIn("<html><head><title>x</title></head><body></body></html>")).toBe("<html><head><title>x</title><style>.video-stream{cursor:none}</style></head><body></body></html>");
+    expect(hideCursorIn("<video></video>")).toBe("<style>.video-stream{cursor:none}</style><video></video>");
+    const asked: { path: string; headers: Headers }[] = [];
+    const upstream = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+      const url = new URL(String(input));
+      asked.push({ path: url.pathname, headers: new Headers(init?.headers) });
+      if (url.pathname === "/remote/stream.html") return new Response("<!doctype html><html><head><title>Stream</title></head><body></body></html>", { headers: { "content-type": "text/html", etag: '"s1"', "last-modified": "Wed, 01 Oct 2026 08:00:00 GMT" } });
+      return new Response("export const x = 1;", { headers: { "content-type": "text/javascript", etag: '"j1"' } });
+    };
+    const tickets = new RemoteTickets();
+    const proxy = new RemoteProxy({ tickets, upstream: () => "http://127.0.0.1:1", transport: () => "websocket", log: silentLogger, fetch: upstream as typeof fetch });
+    const target = { node: "node_x", hostId: 1, appId: 2 };
+    const session = async (opts: { hideCursor?: boolean }) => {
+      const res = await proxy.handle(new Request(`http://127.0.0.1:50123/remote/?t=${tickets.mint("client_a", target, { secureCookie: false, ...opts }).ticket}`, { headers: { host: "127.0.0.1:50123" } }), () => false);
+      return res!.headers.get("set-cookie")!.split(";")[0]!;
+    };
+    const get = async (cookie: string, path: string) => (await proxy.handle(new Request(`http://127.0.0.1:50123${path}`, { headers: { cookie, "if-none-match": '"s0"', "accept-encoding": "gzip" } }), () => false))!;
+
+    const hiding = await session({ hideCursor: true });
+    const page = await get(hiding, "/remote/stream.html?hostId=1&appId=2");
+    expect(await page.text()).toBe("<!doctype html><html><head><title>Stream</title><style>.video-stream{cursor:none}</style></head><body></body></html>");
+    expect(page.headers.get("cache-control")).toBe("no-store");
+    expect(page.headers.get("etag")).toBeNull();
+    expect(page.headers.get("last-modified")).toBeNull();
+    expect(page.headers.get("content-security-policy")).toBe("frame-ancestors 'self'");
+    // asked for whole: no validator the browser held, no compression to undo
+    expect(asked.at(-1)!.headers.get("if-none-match")).toBeNull();
+    expect(asked.at(-1)!.headers.get("accept-encoding")).toBeNull();
+    // the scripts come as they are, validators and all
+    const script = await get(hiding, "/remote/stream.js");
+    expect(await script.text()).toBe("export const x = 1;");
+    expect(script.headers.get("etag")).toBe('"j1"');
+    expect(asked.at(-1)!.headers.get("if-none-match")).toBe('"s0"');
+
+    // the phone's session: the page as it came
+    const plain = await session({});
+    const untouched = await get(plain, "/remote/stream.html?hostId=1&appId=2");
+    expect(await untouched.text()).not.toContain("cursor:none");
+    expect(untouched.headers.get("etag")).toBe('"s1"');
+    expect(asked.at(-1)!.headers.get("if-none-match")).toBe('"s0"');
   });
 
   test("the sessions showing one desktop are ended together, a client's on others left", () => {

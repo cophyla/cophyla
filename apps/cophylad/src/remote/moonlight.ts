@@ -8,11 +8,19 @@
 // viewer. The streaming process may linger without a window after its stream ends, so the
 // record of it says only what this node started, not what is on screen. moonlight-qt is a
 // GUI-subsystem program on Windows: it writes its log to stderr and nothing useful to stdout
-// but the list.
+// but the list. `stream` loads the user's saved settings first and then takes its flags over
+// them, so the size, frame rate and bitrate are given only while the user has saved none:
+// moonlight-qt saves them (QSettings: `width`, `height`, `fps`, `bitrate`) when its Settings
+// page closes, and run with no arguments it opens its own window, where that page is.
 
 import { spawn as nodeSpawn } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Logger } from "../log.ts";
 import type { Exec } from "../sidecars/tts-py.ts";
+import type { HostOs } from "../update/platform.ts";
+import type { StreamVideo } from "./quality.ts";
 
 export interface Spawned {
   pid?: number;
@@ -87,8 +95,16 @@ export class Moonlight {
     return child;
   }
 
-  /** Opens the stream window for `host`'s desktop; one stream at a time, the last one wins. */
-  async stream(host: string, app = "Desktop"): Promise<Stream> {
+  /** Opens moonlight-qt's own window, where its settings are; it lives on by itself, as the user's. */
+  async settings(): Promise<Spawned> {
+    const cmd = await this.deps.command();
+    const child = (this.deps.spawn ?? detachedSpawn)(cmd, []);
+    this.log.info("moonlight window opened for its settings", { pid: child.pid });
+    return child;
+  }
+
+  /** Opens the stream window for `host`'s desktop, sized as `video` says when given; one stream at a time, the last one wins. */
+  async stream(host: string, app = "Desktop", video?: StreamVideo): Promise<Stream> {
     const previous = this.current;
     if (previous) {
       this.current = undefined;
@@ -96,10 +112,11 @@ export class Moonlight {
       this.log.info("moonlight stream replaced", { host: previous.host, pid: previous.child.pid });
     }
     const cmd = await this.deps.command();
-    const child = (this.deps.spawn ?? detachedSpawn)(cmd, ["stream", host, app, "--display-mode", "windowed", "--absolute-mouse", "--quit-after"]);
+    const sized = video ? ["--resolution", `${video.width}x${video.height}`, "--fps", String(video.fps), "--bitrate", String(video.bitrate)] : [];
+    const child = (this.deps.spawn ?? detachedSpawn)(cmd, ["stream", host, app, ...sized, "--display-mode", "windowed", "--absolute-mouse", "--quit-after"]);
     const stream: Stream = { host, since: Date.now(), child };
     this.current = stream;
-    this.log.info("moonlight streaming", { host, app, pid: child.pid });
+    this.log.info("moonlight streaming", { host, app, pid: child.pid, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : { video: "its own settings" }) });
     void child.exited.then((code) => {
       if (this.current !== stream) return;
       this.current = undefined;
@@ -112,6 +129,34 @@ export class Moonlight {
   stop(): void {
     this.current = undefined;
   }
+}
+
+/** moonlight-qt's QSettings: its organisation and application, as it names them. */
+const MOONLIGHT_KEY = "HKCU\\Software\\Moonlight Game Streaming Project\\Moonlight";
+const MOONLIGHT_DOMAIN = "com.moonlight-stream.Moonlight";
+const MOONLIGHT_CONF = join("Moonlight Game Streaming Project", "Moonlight.conf");
+
+/**
+ * Whether the user saved moonlight-qt's stream settings: its QSettings hold a `width` once its
+ * Settings page has closed. Windows keeps them in the registry, macOS in its defaults, Linux in
+ * an INI file, under the flatpak's own config folder when it is the flatpak.
+ */
+export async function moonlightSaved(os: HostOs, exec: Exec, env: Record<string, string | undefined> = process.env, read: (path: string) => string = (p) => readFileSync(p, "utf8")): Promise<boolean> {
+  try {
+    if (os === "windows") return (await exec(["reg", "query", MOONLIGHT_KEY, "/v", "width"], {})).code === 0;
+    if (os === "macos") return (await exec(["defaults", "read", MOONLIGHT_DOMAIN, "width"], {})).code === 0;
+  } catch {
+    return false;
+  }
+  const home = env["HOME"] ?? homedir();
+  const files = [join(env["XDG_CONFIG_HOME"] ?? join(home, ".config"), MOONLIGHT_CONF), join(home, ".var", "app", "com.moonlight_stream.Moonlight", "config", MOONLIGHT_CONF)];
+  return files.some((f) => {
+    try {
+      return /^width=/m.test(read(f));
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** A four-digit PIN, as moonlight and the hosts expect. */

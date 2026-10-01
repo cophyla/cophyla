@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 
@@ -1569,14 +1569,15 @@ describe("default view: remote desktop", () => {
     expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: false, stop: true, share: false });
     apply(state, { type: "host.ready", params: { ...READY, client: { ...CLIENT, node: NODE }, scopes: [...CLIENT.scopes, "nodes", "metrics:read", "remote"] as Scope[], embed: true } });
     expect(state.hostEmbed).toBe(true);
-    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: true, stop: true });
-    expect(selectRemote(state, state.nodes.get(NODE)!)).toMatchObject({ connect: false, beside: false, stop: true, pair: true });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: true, settings: true, stop: true });
+    expect(selectRemote(state, state.nodes.get(NODE)!)).toMatchObject({ connect: false, beside: false, settings: false, stop: true, pair: true });
     // starting, it can be stopped, not shown
     apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "starting", step: "credentials" } }) });
-    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "credentials", connect: false, beside: false, stop: true, retry: false });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "credentials", connect: false, beside: false, settings: false, stop: true, retry: false });
+    // a phone's Connect opens a page, never Moonlight: no settings of Moonlight's to open
     const phone = viewing({ kind: "controller" });
     apply(phone, { type: "remote.state", params: remote(OTHER) });
-    expect(selectRemote(phone, phone.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: false, stop: true });
+    expect(selectRemote(phone, phone.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: false, settings: false, stop: true });
   });
 
   test("off, a host that runs anyway lists the devices still paired and says they can still connect; installing elsewhere, someone there may have to approve it", () => {
@@ -1610,24 +1611,66 @@ describe("default view: remote desktop", () => {
     expect(shareWords(hands, "laptop")).toBe(hands);
   });
 
-  test("the desktop beside the view: opening, open with its stream, failed; an answer for another desktop, or after it closed, changes nothing; its stream ending or the line going closes it", () => {
-    let v = remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop" });
-    expect(v).toEqual({ node: OTHER, name: "laptop", phase: "opening" });
+  test("the desktop beside the view: opening from a tab, open with its stream and picture size, failed; an answer for another desktop, or after it closed, changes nothing; its stream ending or the line going closes it", () => {
+    let v = remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop", from: "chat" });
+    expect(v).toEqual({ node: OTHER, name: "laptop", from: "chat", phase: "opening" });
     expect(remoteViewStep(v, { type: "opened", node: NODE, stream: "stream_x" })).toBe(v);
-    v = remoteViewStep(v, { type: "opened", node: OTHER, stream: "stream_1" });
-    expect(v).toEqual({ node: OTHER, name: "laptop", stream: "stream_1", phase: "open" });
+    v = remoteViewStep(v, { type: "opened", node: OTHER, stream: "stream_1", video: { width: 1920, height: 1200 } });
+    expect(v).toEqual({ node: OTHER, name: "laptop", from: "chat", stream: "stream_1", video: { width: 1920, height: 1200 }, phase: "open" });
+    // shown again from another tab: that tab is its own now, the stream the same
+    expect(remoteViewStep(v, { type: "show", from: "terminal:t1" })).toEqual({ ...v!, from: "terminal:t1" });
+    expect(remoteViewStep(undefined, { type: "show", from: "chat" })).toBeUndefined();
+    // a node from before the picture's size opens without it
+    expect(remoteViewStep(remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop", from: "sess_a" }), { type: "opened", node: OTHER, stream: "stream_3" })).toEqual({ node: OTHER, name: "laptop", from: "sess_a", stream: "stream_3", phase: "open" });
     // an open one does not fail or open again under a late answer
     expect(remoteViewStep(v, { type: "failed", node: OTHER, error: "late" })).toBe(v);
     expect(remoteViewStep(v, { type: "ended", stream: "stream_other" })).toBe(v);
     expect(remoteViewStep(v, { type: "ended", stream: "stream_1" })).toBeUndefined();
     expect(remoteViewStep(v, { type: "lost" })).toBeUndefined();
     expect(remoteViewStep(v, { type: "close" })).toBeUndefined();
-    const failed = remoteViewStep(remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop" }), { type: "failed", node: OTHER, error: "denied by policy" });
-    expect(failed).toEqual({ node: OTHER, name: "laptop", phase: "failed", error: "denied by policy" });
+    const failed = remoteViewStep(remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop", from: "chat" }), { type: "failed", node: OTHER, error: "denied by policy" });
+    expect(failed).toEqual({ node: OTHER, name: "laptop", from: "chat", phase: "failed", error: "denied by policy" });
     // closed while it opened: the answer finds nothing to open
     expect(remoteViewStep(undefined, { type: "opened", node: OTHER, stream: "stream_2" })).toBeUndefined();
     // another desktop takes its place
-    expect(remoteViewStep(v, { type: "open", node: NODE, name: "desk" })).toEqual({ node: NODE, name: "desk", phase: "opening" });
+    expect(remoteViewStep(v, { type: "open", node: NODE, name: "desk", from: "sess_b" })).toEqual({ node: NODE, name: "desk", from: "sess_b", phase: "opening" });
+  });
+
+  test("the desktop shows on its machine's tabs and the one it was opened or last shown on; a tab's machine is its agent's or its terminal's, the chat's none", () => {
+    const state = viewing();
+    apply(state, { type: "session.state", params: session("sess_l", 10, { node: OTHER }) });
+    apply(state, { type: "session.state", params: session("sess_d", 20) });
+    apply(state, { type: "terminals", terminals: [{ id: "t-l", node: OTHER, host: "a1b2c3d4e5f60718", argv0: "pwsh.exe", cwd: "C:\\src", cols: 120, rows: 32, status: "running", windows: 0, startedAt: 1 }] });
+    expect(tabNode(state, "sess_l", undefined)).toBe(OTHER);
+    expect(tabNode(state, "sess_d", undefined)).toBe(NODE);
+    expect(tabNode(state, "sess_l", "t-l")).toBe(OTHER);
+    expect(tabNode(state, undefined, undefined)).toBeUndefined();
+    expect(tabNode(state, "sess_gone", undefined)).toBeUndefined();
+    // the laptop's desktop, opened from the chat
+    const v = { node: OTHER, name: "laptop", from: "chat", phase: "open" as const, stream: "stream_1" };
+    expect(remoteHere(v, "chat", undefined)).toBe(true);
+    expect(remoteHere(v, "sess_l", OTHER)).toBe(true);
+    expect(remoteHere(v, "terminal:t-l", OTHER)).toBe(true);
+    // the desk's own agent tab: hidden there
+    expect(remoteHere(v, "sess_d", NODE)).toBe(false);
+    // opened from the desk's agent, it shows there and on the laptop's tabs, not on the chat
+    const fromDesk = { ...v, from: "sess_d" };
+    expect(remoteHere(fromDesk, "sess_d", NODE)).toBe(true);
+    expect(remoteHere(fromDesk, "chat", undefined)).toBe(false);
+    expect(remoteHere(fromDesk, "sess_l", OTHER)).toBe(true);
+  });
+
+  test("the stream fitted to its picture: the slot's width at its top, narrower and centred only where the height runs out; unchanged with no aspect", () => {
+    const place = { x: 600, y: 71, width: 600, height: 700 };
+    // 16:10 in a tall slot: the full width, at the top, the rest of the slot below it
+    expect(fitPlace(place, 1920 / 1200)).toEqual({ x: 600, y: 71, width: 600, height: 375 });
+    // a wide, short slot: the height runs out, so it narrows, centred across
+    expect(fitPlace({ x: 0, y: 40, width: 1000, height: 300 }, 16 / 9)).toEqual({ x: 233, y: 40, width: 533, height: 300 });
+    // exactly the shape: the whole place
+    expect(fitPlace({ x: 10, y: 20, width: 1600, height: 900 }, 16 / 9)).toEqual({ x: 10, y: 20, width: 1600, height: 900 });
+    expect(fitPlace(place, undefined)).toBe(place);
+    expect(fitPlace(place, 0)).toBe(place);
+    expect(fitPlace(place, Number.NaN)).toBe(place);
   });
 
   test("where the host is told to put the desktop: the slot in whole pixels; hidden while not shown, covered or crossed by a menu; below the pinned prompts where they cross it", () => {

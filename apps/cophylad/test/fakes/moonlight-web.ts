@@ -53,7 +53,7 @@ Bun.serve<{ user: string }>({
     if (!url.pathname.startsWith(prefix + "/") && url.pathname !== prefix + "/") return new Response("not found", { status: 404 });
     const path = url.pathname.slice(prefix.length);
     if (path === "/" || path === "/index.html") return new Response("<!doctype html><title>Moonlight Web</title><h1>hosts</h1>", { headers: { "content-type": "text/html; charset=utf-8" } });
-    if (path === "/stream.html") return new Response(`<!doctype html><title>Stream: Desktop</title><video></video><script>/* stream ${url.search} */</script>`, { headers: { "content-type": "text/html; charset=utf-8" } });
+    if (path === "/stream.html") return new Response(`<!doctype html><html><head><title>Stream: Desktop</title></head><body><video></video><script>/* stream ${url.search} */</script></body></html>`, { headers: { "content-type": "text/html; charset=utf-8", etag: '"stream-1"' } });
     if (!path.startsWith("/api/")) return new Response("not found", { status: 404 });
     const user = req.headers.get(header);
     if (!user) return new Response("Unauthorized", { status: 401 });

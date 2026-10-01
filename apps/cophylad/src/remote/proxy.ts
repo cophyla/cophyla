@@ -7,14 +7,17 @@
 // forwarder on the viewer's own loopback (`http://127.0.0.1`), claimed from there, since a
 // browser drops a `Secure` cookie on plain HTTP. Each ticket says how the
 // page carries its video (the transport it seeds, and for a low-latency one the renderer and
-// codec that keep the video a few frames behind), and names the stream it opens, which
-// its client ends with `remote.close`. A session is a `web` viewer in this node's
+// codec that keep the video a few frames behind, for the desktop app the size, frame rate and
+// bitrate it is to ask for, and whether the user's own pointer hides over the picture, which
+// shows the desktop's), and names the stream it opens, which its client ends with
+// `remote.close`. A session is a `web` viewer in this node's
 // `remote.state`: revoked by `remote.revoke`, and forgotten with its sockets when the client
 // that opened it disconnects, like a view ticket.
 
 import { randomBytes } from "node:crypto";
 import type { RemoteViewer, StreamTransport } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
+import type { StreamVideo } from "./quality.ts";
 import { WEB_USER, WEB_USER_HEADER } from "./web.ts";
 
 export interface RemoteTarget {
@@ -34,6 +37,10 @@ export interface TicketOptions {
   transport?: StreamTransport;
   secureCookie?: boolean;
   lowLatency?: boolean;
+  /** The stream's size, frame rate and bitrate, seeded over the viewer's defaults. */
+  video?: StreamVideo;
+  /** The page hides the user's pointer over the picture: the desktop draws its own cursor into it. */
+  hideCursor?: boolean;
 }
 
 export interface RemoteSession {
@@ -47,6 +54,8 @@ export interface RemoteSession {
   transport?: StreamTransport;
   secureCookie?: boolean;
   lowLatency?: boolean;
+  video?: StreamVideo;
+  hideCursor?: boolean;
   since: number;
   /** The bridged stream sockets open under this session. */
   bridges: Set<Bridge>;
@@ -191,17 +200,33 @@ function definedOf(opts: TicketOptions): TicketOptions {
   if (opts.transport !== undefined) out.transport = opts.transport;
   if (opts.secureCookie !== undefined) out.secureCookie = opts.secureCookie;
   if (opts.lowLatency !== undefined) out.lowLatency = opts.lowLatency;
+  if (opts.video !== undefined) out.video = opts.video;
+  if (opts.hideCursor !== undefined) out.hideCursor = opts.hideCursor;
   return out;
 }
 
 /**
- * What the claim page sets in the stream page's settings: the ticket's transport, and for a
+ * What the claim page sets in the stream page's settings: the ticket's transport, for a
  * low-latency one the canvas renderer and HEVC where the browser decodes it (H.264 where it
- * does not; AV1 shows no picture in moonlight-web 2.10.0).
+ * does not; AV1 shows no picture in moonlight-web 2.10.0), and the stream's size, frame rate
+ * and bitrate when the ticket has them (the viewer's own are 1920×1080 at 10 Mbps).
  */
-export function seedScript(transport: StreamTransport, lowLatency: boolean): string {
+export function seedScript(transport: StreamTransport, lowLatency: boolean, video?: StreamVideo): string {
   const low = lowLatency ? `s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";` : "";
-  return `try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(transport)};${low}localStorage.setItem(k,JSON.stringify(s))}catch(e){}`;
+  const sized = video ? `s.videoSize="custom";s.videoSizeCustom=${JSON.stringify({ width: video.width, height: video.height })};s.fps=${video.fps};s.bitrate=${video.bitrate};` : "";
+  return `try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(transport)};${low}${sized}localStorage.setItem(k,JSON.stringify(s))}catch(e){}`;
+}
+
+/** The stream page's path, which a session that hides the pointer gets rewritten. */
+export const STREAM_PAGE = "/remote/stream.html";
+
+/** The user's pointer hidden over the picture; the desktop's own cursor is in the video. */
+export const HIDE_CURSOR_STYLE = "<style>.video-stream{cursor:none}</style>";
+
+/** The stream page with the pointer hidden over the picture: the style goes last in its head. */
+export function hideCursorIn(html: string): string {
+  const at = html.search(/<\/head>/i);
+  return at < 0 ? HIDE_CURSOR_STYLE + html : html.slice(0, at) + HIDE_CURSOR_STYLE + html.slice(at);
 }
 
 /** A `Host` on this machine's loopback: the page came through a forwarder here, over plain HTTP. */
@@ -265,9 +290,12 @@ export class RemoteProxy {
       return undefined;
     }
 
+    // The one page rewritten, for a session that hides the pointer: asked for whole, never from the browser's cache.
+    const rewrite = session.hideCursor === true && url.pathname === STREAM_PAGE && req.method === "GET";
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP.has(k)) headers.set(k, v);
     headers.set(WEB_USER_HEADER, WEB_USER);
+    if (rewrite) for (const k of ["if-none-match", "if-modified-since", "range", "accept-encoding"]) headers.delete(k);
     const doFetch = this.deps.fetch ?? fetch;
     let res: Response;
     try {
@@ -283,8 +311,15 @@ export class RemoteProxy {
     }
     const out = new Headers();
     for (const [k, v] of res.headers) if (!HOP.has(k)) out.set(k, v);
-    if ((res.headers.get("content-type") ?? "").includes("text/html")) out.set("content-security-policy", "frame-ancestors 'self'");
+    const html = (res.headers.get("content-type") ?? "").includes("text/html");
+    if (html) out.set("content-security-policy", "frame-ancestors 'self'");
     out.set("x-content-type-options", "nosniff");
+    if (rewrite && html && res.status === 200) {
+      const text = hideCursorIn(await res.text());
+      for (const k of ["content-encoding", "etag", "last-modified"]) out.delete(k);
+      out.set("cache-control", "no-store");
+      return new Response(text, { status: 200, headers: out });
+    }
     return new Response(res.body, { status: res.status, headers: out });
   }
 
@@ -298,7 +333,7 @@ export class RemoteProxy {
     const path = `/remote/stream.html?hostId=${session.target.hostId}&appId=${session.target.appId}`;
     const html =
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body>` +
-      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true)}` +
+      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true, session.video)}` +
       `location.replace(${JSON.stringify(path)})</script></body></html>`;
     return new Response(html, {
       status: 200,

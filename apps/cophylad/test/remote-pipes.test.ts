@@ -63,6 +63,7 @@ async function start(): Promise<Started> {
         hostApi: (kind) => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }),
         moonlight: { spawn: seams.spawn, command: seams.moonlight },
         screenshot: seams.screenshot,
+        display: seams.display,
         web: { command: [process.execPath, FAKE_WEB] },
       },
     }),

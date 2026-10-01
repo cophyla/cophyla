@@ -614,7 +614,8 @@ export const shareAsk = (on: boolean): { title: string; detail: string } =>
  * `remote.disable` act on the node they name (this one without it, for the switch) and are
  * forwarded there; `remote.open` is answered by the node this socket is on, which runs the
  * viewer: a window for a desktop client, or a loopback page it shows beside its view, a
- * stream page for a controller; `remote.close` ends a stream it opened; `remote.pipe.open`
+ * stream page for a controller, or with `settings` moonlight-qt's own window for the desktop
+ * app on this machine; `remote.close` ends a stream it opened; `remote.pipe.open`
  * opens one connection of a stream page toward the node whose desktop it shows, for the
  * phone's own forwarder.
  */
@@ -631,7 +632,8 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
     },
     "remote.open": {
       target: (p) => p.node,
-      handler: (p, ctx) => deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}) }),
+      handler: (p, ctx) =>
+        p.settings ? deps.remote.settings(ctx.client) : deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}), ...(p.display ? { display: p.display } : {}) }),
     },
     "remote.close": {
       target: (p) => p.stream,

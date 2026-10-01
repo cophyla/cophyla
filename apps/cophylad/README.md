@@ -532,7 +532,9 @@ missing and `[remote] install` is on (the Windows installer elevates, so the use
 UAC), starts the Windows service if it is stopped, sets the host's credentials through its
 welcome endpoint into `data/remote/host.json` unless `host_user` and `host_password` are
 set, writes the node's name into its config, and polls `/api/clients/list` every `poll_ms`
-for the viewers and whether one streams. Each step is `remote.state.host`; the node's
+for the viewers and whether one streams, reading its primary display's size with each poll
+(`display.ts`: `EnumDisplaySettingsW` on Windows, CoreGraphics on macOS, none on Linux) into
+`remote.state.host.display`. Each step is `remote.state.host`; the node's
 `capabilities.remote` is true while the host is `ready`. Switched on again while it is
 `unavailable`, it tries again; switched off while it comes up, the bring-up gives way. Off, the
 host's connected clients are disconnected and the web sessions showing this desktop end, and
@@ -543,11 +545,17 @@ A node that starts off reads such a service the same way when it knows the crede
 `remote.open` is answered by the node the client's socket is on. For the desktop app on
 this machine (a loopback `ui` client, named by this node) it runs moonlight-qt: `list` to
 see whether it is paired, else `pair --pin` with a random PIN that `remote.pair` has the
-host's node accept, then `stream <host> Desktop` in a window. Asked to `embed` it, for the
+host's node accept, then `stream <host> Desktop` in a window, given `--resolution`, `--fps`
+and `--bitrate` (`quality.ts`: the host's screen, 60 fps, a quarter bit per pixel per frame
+held to 10–150 Mbps) unless the user saved moonlight-qt's own settings, which it finds by
+their `width` key (the registry, `defaults`, or `Moonlight.conf`); with `settings` it opens
+moonlight-qt's own window instead, where they are saved. Asked to `embed` it, for the
 desktop app to show beside its view, it answers instead a ticket to this node's own
 moonlight-web on the stream proxy's loopback port (`loopback.ts`), WebSocket transport and
-low-latency settings (canvas renderer, HEVC where the page decodes it), or, with no route to
-the host, the host's ticket through a forwarder as for a window. For a controller on the LAN
+low-latency settings (canvas renderer, HEVC where the page decodes it) at the same size and
+bitrate, which it answers as `video`, the stream page given a style that hides the user's
+pointer over the picture; or, with no route to the host, the host's ticket through a
+forwarder as for a window, sized there and held to 15 Mbps. For a controller on the LAN
 listener it fetches moonlight-web v2.10.0 into `data/sidecars/moonlight-web/` the first
 time, starts it on a loopback port under `/remote`, adds and pairs the host through its REST
 API (`hosts.json` beside it keeps the ids), and answers a one-use URL

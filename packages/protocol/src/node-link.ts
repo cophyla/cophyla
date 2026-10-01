@@ -13,7 +13,7 @@
 import { z } from "zod";
 import { Access, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
 import { ClientId, GrantId, GrantRef, NodeId, Timestamp } from "./ids.ts";
-import { clientNotifications, clientRequests, clientSignals, IceCandidate, PipeId, StreamTransport } from "./client.ts";
+import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -200,11 +200,14 @@ export const nodeLinkRequests = {
    * Either way: a ticket to `node`'s stream page for a viewer on another node, which fetches
    * the page through pipes. Gated on the host as the node that asked, with the viewer's
    * `name` in the ask. `stream` names the viewer's session there. `lowLatency` seeds the page
-   * with the settings that keep the video a few frames behind (an older host ignores it).
+   * with the settings that keep the video a few frames behind, `sized` with the host's screen
+   * size and the bitrate a path across the internet carries, which comes back as `video`, and
+   * `hideCursor` hides the viewer's own pointer over the picture, which shows the desktop's
+   * (an older host ignores all three).
    */
   "remote.ticket": {
-    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport, lowLatency: z.boolean().optional() }),
-    result: z.object({ path: z.string(), stream: z.string() }),
+    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport, lowLatency: z.boolean().optional(), sized: z.boolean().optional(), hideCursor: z.boolean().optional() }),
+    result: z.object({ path: z.string(), stream: z.string(), video: DisplaySize.optional() }),
   },
   /**
    * Either way: a pipe to `node`'s stream proxy, named `pipe` by the side that opens it; the

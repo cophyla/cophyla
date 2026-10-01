@@ -69,6 +69,7 @@ async function start() {
   await waitFor(() => primary!.d.direct.ready, 5000);
   const sh = signedInHome(fake);
   const seams = remoteSeams();
+  seams.screen = { width: 1920, height: 1200 };
   const port = apollo.port;
   secondary = await startSecondary(
     primary,
@@ -88,6 +89,7 @@ async function start() {
           hostApi: (kind) => new HostApi({ kind, port, log: silentLogger, timeoutMs: 3000 }),
           moonlight: { spawn: seams.spawn, command: seams.moonlight },
           screenshot: seams.screenshot,
+          display: seams.display,
           web: { command: [process.execPath, FAKE_WEB] },
         },
       },
@@ -123,8 +125,8 @@ function socket(url: string, cookie: string): Promise<{ ws: WebSocket; frames: (
   });
 }
 
-/** The page at `base` + `path`: claimed, then the home page, the API and the stream socket; the claim page. */
-async function watch(base: string, path: string): Promise<string> {
+/** The page at `base` + `path`: claimed, then the home page, the API and the stream socket; the claim page and the stream page. */
+async function watch(base: string, path: string): Promise<{ page: string; stream: string }> {
   const claim = await get(`${base}${path}`);
   expect(claim.status).toBe(200);
   const setCookie = claim.headers.get("set-cookie")!;
@@ -140,7 +142,8 @@ async function watch(base: string, path: string): Promise<string> {
   ws.send("ping");
   await waitFor(() => frames.length >= 2);
   expect(frames[1]).toBe("cophyla:ping");
-  return page;
+  const stream = await (await get(`${base}${/"(\/remote\/stream\.html[^"]*)"/.exec(page)![1]}`, { cookie })).text();
+  return { page, stream };
 }
 
 describe("a desktop with no route to it", () => {
@@ -150,7 +153,7 @@ describe("a desktop with no route to it", () => {
     closers.push(() => ui.close());
     expect(p.d.nodes.lanRoute(s.identity.id)).toBe(false);
 
-    const opening = ui.request<{ url: string; stream: string }>("remote.open", { node: s.identity.id });
+    const opening = ui.request<{ url: string; stream: string; video?: { width: number; height: number } }>("remote.open", { node: s.identity.id });
     const ask = await allowOn(s);
     expect(ask.title).toBe("Let laptop app view and control this desktop?");
     const opened = await opening;
@@ -163,8 +166,13 @@ describe("a desktop with no route to it", () => {
     // the row every client with the audit stream hears keeps no live ticket
     expect((row.result!.body as { path: string }).path).toBe("/remote/?t=[redacted]");
 
-    // the window on this machine is seeded for low latency, as the view beside the pane is
-    expect(await watch(`http://127.0.0.1:${m[1]}`, m[2]!)).toContain("s.canvasRenderer=true;");
+    // the window on this machine is seeded for low latency, as the view beside the pane is, at
+    // the host's screen size and the bitrate across the internet, the pointer hidden over it
+    expect(opened.video).toEqual({ width: 1920, height: 1200 });
+    const watched = await watch(`http://127.0.0.1:${m[1]}`, m[2]!);
+    expect(watched.page).toContain(`s.canvasRenderer=true;`);
+    expect(watched.page).toContain(`s.videoSize="custom";s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=15000;`);
+    expect(watched.stream).toContain("<style>.video-stream{cursor:none}</style></head>");
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "laptop app"));
     // the pipes ran here and there
     expect(p.d.pipes.count).toBeGreaterThan(0);
@@ -177,12 +185,15 @@ describe("a desktop with no route to it", () => {
     await expect(fetch(`http://127.0.0.1:${m[1]}/remote/`)).rejects.toThrow();
 
     // beside the view: the same way, through a forwarder here
-    const beside = ui.request<{ url: string; stream: string }>("remote.open", { node: s.identity.id, embed: true });
+    const beside = ui.request<{ url: string; stream: string; video?: { width: number; height: number } }>("remote.open", { node: s.identity.id, embed: true });
     await allowOn(s);
     const embedded = await beside;
     const e = /^http:\/\/127\.0\.0\.1:(\d+)(\/remote\/\?t=[0-9a-f]{32})$/.exec(embedded.url)!;
     expect(e).not.toBeNull();
-    expect(await watch(`http://127.0.0.1:${e[1]}`, e[2]!)).toContain("s.canvasRenderer=true;");
+    expect(embedded.video).toEqual({ width: 1920, height: 1200 });
+    const besideWatched = await watch(`http://127.0.0.1:${e[1]}`, e[2]!);
+    expect(besideWatched.page).toContain("s.canvasRenderer=true;");
+    expect(besideWatched.stream).toContain("<style>.video-stream{cursor:none}</style></head>");
     await ui.request("remote.close", { stream: embedded.stream });
     await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
   });
@@ -213,7 +224,11 @@ describe("a desktop with no route to it", () => {
     };
     const f = new TestForwarder(link, s.identity.id);
     closers.push(() => f.stop());
-    expect(await watch(`http://127.0.0.1:${f.port}`, opened.path)).not.toContain("canvasRenderer");
+    // the phone's page is as it was: the viewer's own size, its pointer its own
+    const phoneWatched = await watch(`http://127.0.0.1:${f.port}`, opened.path);
+    expect(phoneWatched.page).not.toContain("canvasRenderer");
+    expect(phoneWatched.page).not.toContain("videoSize");
+    expect(phoneWatched.stream).not.toContain("cursor:none");
     expect(f.failures).toEqual([]);
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "Pixel"));
 

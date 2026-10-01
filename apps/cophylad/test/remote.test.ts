@@ -3,15 +3,17 @@
 // applied) and `remote.state` reaches a client on connect and on change; `capabilities.remote`
 // follows the host; `remote.pair`, `remote.invite` and `remote.revoke` are audited with the
 // secrets redacted; a desktop client's `remote.open` pairs moonlight-qt through the host's
-// gate and opens the window, a second open replacing it without ending the host's app, and
-// `remote.state.streaming` follows the host's clients, never the viewer's window; the brain gets
+// gate and opens the window, a second open replacing it without ending the host's app, sized
+// to the host's screen (which `remote.state` carries, read at each poll) until the user saves
+// Moonlight's own settings, whose window `remote.open {settings}` opens for the desktop app
+// here alone; `remote.state.streaming` follows the host's clients, never the viewer's window; the brain gets
 // a frame with the shape the protocol promises; with the host off the host methods answer
 // `unavailable`, and a controller on loopback cannot open a stream page.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { AuditEntry, RemoteState } from "@cophyla/protocol";
+import type { AuditEntry, Client, RemoteState } from "@cophyla/protocol";
 import { Bus } from "../src/bus.ts";
 import { RemoteConfig } from "../src/config/schema.ts";
 import type { Daemon } from "../src/daemon.ts";
@@ -86,6 +88,7 @@ async function start(opts: StartOptions = {}): Promise<Started> {
         hostApi: (kind) => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }),
         moonlight: { spawn: seams.spawn, command: seams.moonlight },
         screenshot: seams.screenshot,
+        display: seams.display,
       },
     }),
     { home: scratch },
@@ -114,6 +117,7 @@ async function restart(s: Started): Promise<Started> {
         hostApi: (kind) => new HostApi({ kind, port: s.fake.port, log: silentLogger, timeoutMs: 3000 }),
         moonlight: { spawn: s.seams.spawn, command: s.seams.moonlight },
         screenshot: s.seams.screenshot,
+        display: s.seams.display,
       },
     }),
     { home: s.scratch },
@@ -192,7 +196,7 @@ describe("remote desktop", () => {
         log: silentLogger,
         brain: false,
         embedder: null,
-        remote: { os: "windows", exec: seamsA.exec, hostApi: (kind) => new HostApi({ kind, port: fakeA.port, log: silentLogger, timeoutMs: 500 }), moonlight: { spawn: seamsA.spawn, command: seamsA.moonlight }, screenshot: seamsA.screenshot },
+        remote: { os: "windows", exec: seamsA.exec, hostApi: (kind) => new HostApi({ kind, port: fakeA.port, log: silentLogger, timeoutMs: 500 }), moonlight: { spawn: seamsA.spawn, command: seamsA.moonlight }, screenshot: seamsA.screenshot, display: seamsA.display },
       }),
       { home: scratchA },
     );
@@ -221,7 +225,7 @@ describe("remote desktop", () => {
         log: silentLogger,
         brain: false,
         embedder: null,
-        remote: { os: "windows", exec: seams.exec, hostApi: (kind) => new HostApi({ kind, port, log: silentLogger, timeoutMs: 500 }), moonlight: { spawn: seams.spawn, command: seams.moonlight }, screenshot: seams.screenshot },
+        remote: { os: "windows", exec: seams.exec, hostApi: (kind) => new HostApi({ kind, port, log: silentLogger, timeoutMs: 500 }), moonlight: { spawn: seams.spawn, command: seams.moonlight }, screenshot: seams.screenshot, display: seams.display },
       }),
       { home: scratch },
     );
@@ -264,6 +268,7 @@ describe("remote desktop", () => {
           hostApi: (kind) => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }),
           moonlight: { spawn: seams.spawn, command: seams.moonlight },
           screenshot: seams.screenshot,
+          display: seams.display,
         },
       }),
       { home: scratch },
@@ -325,7 +330,8 @@ describe("remote desktop", () => {
     expect(moon[1]).toMatch(/^pair 127\.0\.0\.1 --pin \d{4}$/);
     // the app list answering again is the proof the pairing was kept; the pair process is then ended
     expect(moon[2]).toBe("list 127.0.0.1");
-    expect(moon[3]).toBe("stream 127.0.0.1 Desktop --display-mode windowed --absolute-mouse --quit-after");
+    // no screen read here: the stream falls back to 1080p, at the bitrate for it
+    expect(moon[3]).toBe("stream 127.0.0.1 Desktop --resolution 1920x1080 --fps 60 --bitrate 31104 --display-mode windowed --absolute-mouse --quit-after");
     expect(seams.children.find((ch) => ch.args[0] === "pair")!.killed).toBe(true);
     const pin = moon[1]!.split(" ").at(-1)!;
     expect(fake.pins.some((p) => p.pin === pin && p.name === "study" && p.ok)).toBe(true);
@@ -344,6 +350,45 @@ describe("remote desktop", () => {
     expect(later.filter((x) => x.startsWith("quit")).length).toBe(0);
     const streams = seams.children.filter((ch) => ch.args[0] === "stream");
     expect(streams.map((ch) => ch.killed)).toEqual([true, false]);
+  });
+
+  test("the host's screen rides its remote.state, read at each poll; Connect sizes Moonlight to it until the user saves Moonlight's own settings", async () => {
+    const { d, seams } = await start({ seams: { paired: ["127.0.0.1"] } });
+    const c = await ui(d);
+    await c.next(isMethod("remote.state"));
+    seams.screen = { width: 1920, height: 1200 };
+    await c.next(isMethod("remote.state", (p) => (p as RemoteState).host.display?.height === 1200));
+    expect(d.remote.state().host).toEqual({ kind: "apollo", status: "ready", display: { width: 1920, height: 1200 } });
+    const streams = () => seams.children.filter((ch) => ch.args[0] === "stream").map((ch) => ch.args.slice(1).join(" "));
+    await c.request("remote.open", { node: d.identity.id });
+    expect(streams().at(-1)).toBe("127.0.0.1 Desktop --resolution 1920x1200 --fps 60 --bitrate 34560 --display-mode windowed --absolute-mouse --quit-after");
+    expect(seams.commands).toContain("reg query HKCU\\Software\\Moonlight Game Streaming Project\\Moonlight /v width");
+    // a change of resolution reaches the state at the next poll, and the next window
+    seams.screen = { width: 2560, height: 1440 };
+    await c.next(isMethod("remote.state", (p) => (p as RemoteState).host.display?.width === 2560));
+    await c.request("remote.open", { node: d.identity.id });
+    expect(streams().at(-1)).toContain(" --resolution 2560x1440 --fps 60 --bitrate 55296 ");
+    // saved in Moonlight's own window: its settings, none of Cophyla's picks
+    seams.moonlightSaved = true;
+    await c.request("remote.open", { node: d.identity.id });
+    expect(streams().at(-1)).toBe("127.0.0.1 Desktop --display-mode windowed --absolute-mouse --quit-after");
+  });
+
+  test("remote.open with settings opens Moonlight's own window for the desktop app on this machine, and for nobody else", async () => {
+    const { d, seams } = await start();
+    const c = await ui(d);
+    expect(await c.request<object>("remote.open", { node: d.identity.id, settings: true })).toEqual({});
+    expect(seams.children.map((ch) => `${ch.command} ${ch.args.join(" ")}`.trim())).toEqual([seams.moonlight]);
+    expect(audit(d, "remote.open")[0]!.outcome).toBe("ok");
+    // a phone has no Moonlight here, nor does an app on another node
+    const { token } = d.grants.createController("phone");
+    const phone = await TestClient.connect(d.api.url);
+    clients.push(phone);
+    await phone.call("hello", { token, kind: "controller", audio: { in: false, out: false } });
+    expect((await failure(phone, "remote.open", { node: d.identity.id, settings: true })).message).toMatch(/desktop app on this machine/);
+    const elsewhere = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FC9", kind: "ui", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" } as unknown as Client;
+    await expect(d.remote.settings(elsewhere)).rejects.toThrow(/desktop app on this machine/);
+    expect(seams.children).toHaveLength(1);
   });
 
   test("the pin the host is asked to accept goes through the host's own gate rule and can be denied", async () => {

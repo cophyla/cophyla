@@ -47,7 +47,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 
@@ -938,6 +938,11 @@ function createRemote(): HTMLElement {
   const beside = actionButton("remote-beside", "Beside", "remote-beside");
   beside.title = "Show this desktop beside the pane";
   head.append(el("span", "remote-label", "Desktop"), el("span", "remote-words"), connect, beside);
+  // Moonlight's own window, where its settings are: once saved there, Connect follows them.
+  const moonlight = actionButton("remote-moonlight", "Moonlight settings", "remote-moonlight");
+  moonlight.title = "Moonlight's own window: once you save its settings, Connect uses them instead of Cophyla's picks";
+  const viewing = el("div", "remote-viewing");
+  viewing.append(moonlight);
   // Sharing this desktop: on, tried again, or off; the note says who can still connect, or who may have to approve the installer.
   const share = el("div", "remote-share");
   share.append(actionButton("remote-share-on", "Share this desktop", "remote-share"), actionButton("remote-retry", "Retry", "remote-share"), actionButton("remote-share-off", "Stop sharing", "remote-unshare"));
@@ -967,7 +972,7 @@ function createRemote(): HTMLElement {
   const buttons = el("div", "remote-invite-buttons");
   buttons.append(actionButton("remote-invite-open", "Open in Artemis", "remote-invite-open"), actionButton("remote-invite-done", "Done", "remote-invite-close"));
   invite.append(el("p", "remote-invite-hint", "In Artemis on the phone, add this PC and pair with:"), el("p", "remote-invite-code"), el("p", "remote-invite-pass"), el("p", "remote-invite-left"), buttons);
-  block.append(head, el("p", "remote-note"), el("div", "remote-viewers"), actions, form, invite, share);
+  block.append(head, viewing, el("p", "remote-note"), el("div", "remote-viewers"), actions, form, invite, share);
   return block;
 }
 
@@ -994,8 +999,9 @@ function updateViewer(node: HTMLElement, viewer: RemoteViewer, remote: RemoteCar
 
 /**
  * The desktop block: hidden when the node has no host to show; Share while it is off, Stop
- * sharing (and Retry) while it is on; Connect, Beside, the PIN form and the phone code while it
- * serves, opening in place.
+ * sharing (and Retry) while it is on; Connect, Beside, Moonlight's settings, the PIN form and
+ * the phone code while it serves, opening in place. Beside waits only while the desktop shows
+ * on this tab: on another, it shows it here too.
  */
 function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state: ViewState, ui: UiState): void {
   setHidden(block, remote === undefined);
@@ -1014,12 +1020,17 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
   setText(connect, opening ? "Connecting…" : "Connect");
   connect.dataset["node"] = remote.node;
   connect.disabled = !state.connected || opening;
-  const shownHere = ui.remoteView?.node === remote.node;
+  const view = ui.remoteView?.node === remote.node ? ui.remoteView : undefined;
+  const shownHere = view !== undefined && remoteHere(view, viewerTab(ui.selected, ui.terminal) ?? "chat", tabNode(state, ui.selected, ui.terminal));
   const beside = block.querySelector<HTMLButtonElement>(".remote-beside")!;
   setHidden(beside, !remote.beside);
-  setText(beside, shownHere && ui.remoteView?.phase === "opening" ? "Opening…" : "Beside");
+  setText(beside, view?.phase === "opening" ? "Opening…" : "Beside");
   beside.dataset["node"] = remote.node;
-  beside.disabled = !state.connected || (shownHere && ui.remoteView?.phase !== "failed");
+  beside.disabled = !state.connected || (shownHere && view.phase !== "failed");
+  const moonlight = block.querySelector<HTMLButtonElement>(".remote-moonlight")!;
+  setHidden(block.querySelector<HTMLElement>(".remote-viewing")!, !remote.settings);
+  moonlight.dataset["node"] = remote.node;
+  moonlight.disabled = !state.connected;
   const busy = ui.sharing.get(remote.node);
   const shareOn = block.querySelector<HTMLButtonElement>(".remote-share-on")!;
   const retry = block.querySelector<HTMLButtonElement>(".remote-retry")!;

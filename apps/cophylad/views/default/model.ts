@@ -24,7 +24,7 @@
 // What the brain sees on its next turn (`brain.context`) is shown a block at a time, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, Controller, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -2954,6 +2954,8 @@ export interface RemoteCard {
   connect: boolean;
   /** This client can show the desktop beside its view: the desktop app, whose host lays it over the view, onto another node's. */
   beside: boolean;
+  /** This client can open Moonlight's own window, where its settings are: the desktop app, whose Connect opens Moonlight. */
+  settings: boolean;
   /** The host takes a viewer's PIN. */
   pair: boolean;
   /** The host mints a code for a phone; only Apollo does. */
@@ -2997,6 +2999,7 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
     streaming: remote.streaming,
     connect: ready && viewer,
     beside: ready && elsewhere && state.hostEmbed,
+    settings: ready && elsewhere,
     pair: ready,
     invite: ready && remote.host.kind === "apollo",
     share: off,
@@ -3050,22 +3053,29 @@ export function shareWords(message: string, name: string): string {
 // --- the desktop beside the view ---------------------------------------------------------------
 
 /**
- * Another node's desktop shown beside the view, one at a time: whose, the stream once its page
- * is up, and how far it got. Kept across tab switches; gone when it closes, its stream ends or
- * the line to the node goes.
+ * Another node's desktop shown beside the view, one at a time: whose, the tab it was opened or
+ * last shown on, the stream once its page is up with its picture's size, and how far it got.
+ * Kept across tab switches, shown on the tabs of that machine and its own (`remoteHere`);
+ * gone when it closes, its stream ends or the line to the node goes.
  */
 export interface RemoteView {
   node: NodeId;
   name: string;
+  /** The tab it was opened or last shown on, by `viewerTab`'s key; `chat` for the chat. */
+  from: string;
   stream?: string;
+  /** The picture's size, for its aspect, when the node said. */
+  video?: DisplaySize;
   phase: "opening" | "open" | "failed";
   error?: string;
 }
 
 export type RemoteViewEvent =
-  | { type: "open"; node: NodeId; name: string }
-  | { type: "opened"; node: NodeId; stream: string }
+  | { type: "open"; node: NodeId; name: string; from: string }
+  | { type: "opened"; node: NodeId; stream: string; video?: DisplaySize }
   | { type: "failed"; node: NodeId; error: string }
+  /** Beside again from a tab it does not show on: it shows there too, as that tab's. */
+  | { type: "show"; from: string }
   /** The host says a stream it showed is gone. */
   | { type: "ended"; stream: string }
   /** The line to the node went. */
@@ -3076,17 +3086,34 @@ export type RemoteViewEvent =
 export function remoteViewStep(view: RemoteView | undefined, ev: RemoteViewEvent): RemoteView | undefined {
   switch (ev.type) {
     case "open":
-      return { node: ev.node, name: ev.name, phase: "opening" };
+      return { node: ev.node, name: ev.name, from: ev.from, phase: "opening" };
     case "opened":
-      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, stream: ev.stream, phase: "open" } : view;
+      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, from: view.from, stream: ev.stream, ...(ev.video ? { video: ev.video } : {}), phase: "open" } : view;
     case "failed":
-      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, phase: "failed", error: ev.error } : view;
+      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, from: view.from, phase: "failed", error: ev.error } : view;
+    case "show":
+      return view ? { ...view, from: ev.from } : view;
     case "ended":
       return view?.stream === ev.stream ? undefined : view;
     case "lost":
     case "close":
       return undefined;
   }
+}
+
+/** The machine a tab is on: an agent's node, a bare terminal's; none for the chat. */
+export function tabNode(state: ViewState, selected: string | undefined, terminal: string | undefined): NodeId | undefined {
+  if (terminal !== undefined) return state.terminals.get(terminal)?.node;
+  return selected !== undefined ? state.sessions.get(selected)?.session.node : undefined;
+}
+
+/**
+ * Whether the desktop shows on the selected tab (`tab`, `viewerTab`'s key or `chat`, on
+ * `node`): on that machine's tabs, and on the one it was opened or last shown on, so Beside
+ * from the chat or another machine's tab shows it there. Elsewhere it hides, its stream kept.
+ */
+export function remoteHere(view: RemoteView, tab: string, node: NodeId | undefined): boolean {
+  return node === view.node || tab === view.from;
 }
 
 /** The desktop panel's share of the width beside the pane, in percent: the usual, and the least and most its divider goes to. */
@@ -3139,6 +3166,22 @@ export function remotePlace(slot: Box | undefined, over: { shown: boolean; cover
   const height = Math.round(slot.top + slot.height) - y;
   if (width < PLACE_MIN || height < PLACE_MIN) return null;
   return { x, y, width, height };
+}
+
+/**
+ * The place fitted to a picture of `aspect` (width over height): as wide as the place, at its
+ * top, and narrower, centred across, only where its height runs out. The page then has the
+ * picture's own shape and draws no bands; below it shows the panel. Unchanged with no aspect.
+ */
+export function fitPlace(place: RemotePlace, aspect: number | undefined): RemotePlace {
+  if (aspect === undefined || !Number.isFinite(aspect) || aspect <= 0) return place;
+  let width = place.width;
+  let height = Math.round(width / aspect);
+  if (height > place.height) {
+    height = place.height;
+    width = Math.round(height * aspect);
+  }
+  return { x: place.x + Math.floor((place.width - width) / 2), y: place.y, width, height };
 }
 
 /** The same place, or both hidden: the host is asked again only when it moved. */
