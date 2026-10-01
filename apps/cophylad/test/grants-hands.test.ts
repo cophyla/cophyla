@@ -6,7 +6,7 @@
 // inside its link and forgets the cluster, a phone's sockets close (on a backup too, when the
 // replica loses its row), a pending invite goes with its relay peer. Removing a full node that
 // held the replica re-keys every other node over its live link, and marks the offline ones to
-// be invited again. A guest follows the backup that takes over.
+// be invited again. A guest follows the backup the user makes the primary.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -236,16 +236,21 @@ describe("re-keying", () => {
   }, 40_000);
 });
 
-describe("failover with grants", () => {
-  test("a guest follows the backup that takes over", async () => {
+describe("a new primary with grants", () => {
+  test("a guest follows the backup the user makes the primary", async () => {
     const p = await primaryUp();
-    const backup = await secondaryOf(p, { backup: true, failoverMs: 300 });
+    const backup = await secondaryOf(p, { backup: true });
     await waitFor(() => (backup.nodes.replicaState?.snapshots ?? 0) >= 1, 5000);
     const guest = await secondaryOf(p, { hands: true });
     // the guest was told where the backup is
     await waitFor(() => guest.nodes.registry.get(backup.identity.id) !== undefined, 5000);
     await p.d.stop();
     primaries.length = 0;
+    await waitFor(() => !backup.nodes.linked(), 5000);
+    // the user chooses the backup from its own app, the primary being gone
+    const own = await client(backup);
+    clients.push(own);
+    await own.request("node.promote", { id: backup.identity.id });
     await waitFor(() => backup.nodes.roleOf() === "primary", 10_000);
     await waitFor(() => guest.nodes.linked() && guest.nodes.primaryId() === backup.identity.id, 10_000);
     expect(guest.nodes.roleOf()).toBe("secondary");

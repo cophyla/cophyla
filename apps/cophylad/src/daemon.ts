@@ -237,6 +237,8 @@ export interface Daemon {
   paths: Paths;
   config: Config;
   store: Store;
+  /** The daemon's log: what the entry point writes a failure nothing caught to. */
+  log: Logger;
   identity: NodeIdentity;
   node: () => Node;
   token: string;
@@ -381,7 +383,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     bus,
     log: log.child("cloud"),
     nodeId: identity.id,
-    nodeName: identity.name,
+    // read at each sign-in: the name the user gave the machine by then
+    get nodeName() {
+      return identity.name;
+    },
     keys: opts.cloud?.keys ?? ENTITLEMENT_KEYS,
     ...(opts.cloud?.fetch ? { fetch: opts.cloud.fetch } : {}),
     ...(opts.cloud?.openBrowser ? { openBrowser: opts.cloud.openBrowser } : {}),
@@ -736,7 +741,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     config: config.remote,
     store,
     nodeId: identity.id,
-    nodeName: identity.name,
+    // read each time: the user may rename the machine while it runs
+    get nodeName() {
+      return identity.name;
+    },
     dir: join(p.data, "remote"),
     sidecarsDir: p.sidecars,
     bus,
@@ -1123,7 +1131,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("grants"),
   });
   const methods = withForwarding({
-    ...foundationMethods({ asks, node, promote: (id) => nodes!.promote(id), restart: (force, by) => restart.request({ force, by }) }),
+    ...foundationMethods({ asks, node, promote: (id) => nodes!.promote(id), rename: (id, name) => nodes!.rename(id, name), restart: (force, by) => restart.request({ force, by }) }),
     ...attachMethods({ sessions, workspaces, profiles, clients, nodeId: identity.id, onWatch: () => deliver.shown(), ...(limits ? { limits } : {}) }),
     ...fileMethods({ files, nodeId: identity.id }),
     ...viewMethods({ views }),
@@ -1380,6 +1388,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     paths: p,
     config,
     store,
+    log,
     identity,
     node,
     token,

@@ -224,27 +224,28 @@ describe("a datagram is believed only after a probe", () => {
     expect(claimer.d.nodes.roleOf()).toBe("primary");
   }, 30_000);
 
-  test("a waiting backup does not stop waiting for a datagram alone", async () => {
+  test("a primary keeps the role against a higher epoch the user did not choose, and steps down to one the user did", async () => {
     const lan = new MemoryLan();
     const primary = await startPrimary({ discovery: lan });
     primaries.push(primary);
     const fake = await impostor(lan);
-    // Every query is answered by the forger at a higher epoch.
+    const endpoint = `127.0.0.1:${fake.d.controller!.port}`;
     const beacon = await forger(lan, primary.d.nodes.member()!.cluster, fake.d.controller!.port);
-    // A backup: linked, then its primary gone; it waits, and a forged beacon does not send it seeking.
-    const backup = await startSecondary(primary, { discovery: lan, backup: true, failoverMs: 3000 });
-    started.push(backup);
-    await linked(backup, 8000);
-    await stopAll(primary.d);
-    primaries = primaries.filter((p) => p !== primary);
-    await waitFor(() => backup.nodes.state() === "waiting", 8000);
-    for (let i = 0; i < 5; i++) {
-      beacon();
-      await Bun.sleep(100);
-    }
-    expect(backup.nodes.state()).toBe("waiting");
-    // It promotes on its own schedule, the forger notwithstanding.
-    await waitFor(() => backup.nodes.roleOf() === "primary", 10_000);
-    expect(backup.nodes.transitions.some((t) => t.from === "waiting" && t.to === "seeking")).toBe(false);
-  }, 40_000);
+    // The probe opens and answers as an older node does once it promoted itself while cut off: a higher epoch, not chosen.
+    let chosen = false;
+    const outbound = (primary.d.nodes as unknown as { outbound: { probe: (e: string) => Promise<unknown> } }).outbound;
+    outbound.probe = async (e) => {
+      if (e !== endpoint) throw new Error("not there");
+      return { nodeId: newId("node"), role: "primary", epoch: primary.d.nodes.epoch() + 5, ...(chosen ? { chosen: true } : {}) };
+    };
+    beacon();
+    await Bun.sleep(600);
+    expect(primary.d.nodes.state()).toBe("primary");
+    expect(primary.d.nodes.transitions.some((t) => t.to === "stepping_down")).toBe(false);
+    // The same epoch, chosen by the user there: this primary steps down to it (one probe per endpoint a second).
+    chosen = true;
+    await Bun.sleep(1100);
+    beacon();
+    await waitFor(() => primary.d.nodes.transitions.some((t) => t.to === "stepping_down"), 5000);
+  }, 30_000);
 });

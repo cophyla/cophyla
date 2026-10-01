@@ -63,8 +63,8 @@ export interface RemoteDeps {
   /** Where the sharing switch is kept once the app has set it. */
   store: { meta: { get(key: string): string | undefined; set(key: string, value: string): void } };
   nodeId: string;
-  /** This node's name: the host is called by it, and so is this node's viewer in other hosts' lists. */
-  nodeName: string;
+  /** This node's name, read each time (the user may rename the machine): the host is called by it, and so is this node's viewer in other hosts' lists. */
+  readonly nodeName: string;
   /** `<home>/data/remote`: the host credentials and the capture script. */
   dir: string;
   /** `<home>/data/sidecars`: the web viewer's releases. */
@@ -178,7 +178,9 @@ export class Remote {
       ...(deps.web?.command ? { command: deps.web.command } : {}),
       lanIps: deps.lanIps,
       pairOn: deps.pairOn,
-      viewerName: `${deps.nodeName} web`,
+      get viewerName() {
+        return `${deps.nodeName} web`;
+      },
       iceServersFile: join(deps.dir, "ice-servers.json"),
     });
     this.proxy = new RemoteProxy({

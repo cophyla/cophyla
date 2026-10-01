@@ -79,6 +79,7 @@ export const requestScopes = {
   "guest.leave": "nodes",
   "guest.remove": "nodes",
   "node.promote": "nodes",
+  "node.rename": "nodes",
   "node.restart": "nodes",
   "listener.list": "nodes",
   "listener.remove": "nodes",

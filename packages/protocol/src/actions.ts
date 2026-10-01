@@ -22,6 +22,7 @@ export const actions = {
 
   "node.list": { risk: "read" },
   "node.promote": { risk: "exec" },
+  "node.rename": { risk: "write" },
   "node.restart": { risk: "exec" },
   "profile.list": { risk: "read" },
   "profile.limits": { risk: "read" },

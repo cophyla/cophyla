@@ -502,6 +502,8 @@ export class Inbound {
         cluster: p.cluster,
         role: this.deps.role(),
         epoch: this.deps.epoch(),
+        // every primary is the one the user chose at its epoch: an older node's own promotion says nothing of it
+        ...(this.deps.role() === "primary" ? { chosen: true } : {}),
         ...(this.deps.role() !== "primary" && primary ? { primary } : {}),
       };
     }
@@ -609,7 +611,7 @@ export class Inbound {
     for (const p of this.peers.values()) if (p.id !== except) p.notify("registry.update", { nodes: this.registryFor(p) });
   }
 
-  /** The registry as a node is sent it: whole, or, to a hands node, the primary and the backups alone, what it needs to follow a failover. */
+  /** The registry as a node is sent it: whole, or, to a hands node, the primary and the backups alone, what it needs to follow the primary the user chooses next. */
   private registryFor(peer: NodePeer): NodeRecord[] {
     const nodes = this.deps.registry.list();
     return peer.info.hands ? nodes.filter((n) => n.role === "primary" || n.backup === true) : nodes;

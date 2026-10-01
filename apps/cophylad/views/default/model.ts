@@ -2742,6 +2742,33 @@ export function restartable(state: ViewState, node: Node): boolean {
   return node.id === state.node && state.client?.kind === "ui" && state.scopes.includes("nodes");
 }
 
+/**
+ * What a machine's card offers to make it the primary, or nothing: the role moves only by the
+ * user's choice. From an app that sees the primary, any other connected machine holding the
+ * replica, which the primary hands the role to. From an app on a secondary that reaches no
+ * primary, that computer itself: it takes the role, and the old primary, back, follows it.
+ */
+export function promoteOffer(state: ViewState, node: Node): { title: string; ask: string } | undefined {
+  if (!state.scopes.includes("nodes") || node.hands || node.role === "primary" || state.node === undefined) return undefined;
+  const talking = state.nodes.get(state.node);
+  if (!talking) return undefined;
+  if (talking.role === "primary") {
+    if (node.status !== "online" || !node.backup) return undefined;
+    return { title: `Make ${node.name} the primary: the brain, the chat and the tasks move there`, ask: `Make ${node.name} the primary? The brain, the chat and the tasks move there, and ${talking.name} becomes a secondary.` };
+  }
+  // the app sees a secondary on its own: its primary is out of reach
+  if (node.id !== talking.id) return undefined;
+  const old = [...state.nodes.values()].find((n) => n.role === "primary" && n.id !== node.id)?.name ?? "The primary";
+  return { title: `${old} cannot be reached: make ${node.name} the primary`, ask: `Make ${node.name} the primary? ${old} cannot be reached now; when it is back, it follows ${node.name} as a secondary.` };
+}
+
+/** Whether a machine's card offers Rename: an app with the nodes scope, and a machine it reaches (itself, or a connected one through the primary) that is not lent as hands. */
+export function renamable(state: ViewState, node: Node): boolean {
+  if (!state.scopes.includes("nodes") || node.hands || state.node === undefined) return false;
+  if (node.id === state.node) return true;
+  return state.nodes.get(state.node)?.role === "primary" && node.status === "online";
+}
+
 /** What a restart would cut off, when the node refused it for that. */
 export function restartWords(reasons: string[]): string {
   return reasons.length === 0 ? "Busy." : `Busy: ${reasons.join(", ")}. Restarting now cuts ${reasons.length === 1 ? "it" : "them"} off.`;
@@ -2760,12 +2787,19 @@ export function linkWords(state: ViewState): { status: "connected" | "gone"; tit
   return { status: "connected", title: about ? `Connected to cophylad — ${about}` : "Connected to cophylad" };
 }
 
-/** One card per node, this one first, then by name: its bars from the latest sample and its processes summed by owner. */
+/**
+ * One card per node: the computer the app runs on first (the one it talks to, from a phone),
+ * then the primary, then by name; its bars from the latest sample and its processes summed by
+ * owner. The line beside the name says which is this computer (a desktop app's own, never a
+ * phone's) and each one's role.
+ */
 export function selectNodes(state: ViewState): NodeCard[] {
-  const nodes = [...state.nodes.values()].sort((a, b) => Number(b.id === state.node) - Number(a.id === state.node) || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  const first = hereNode(state);
+  const own = state.client?.node;
+  const nodes = [...state.nodes.values()].sort((a, b) => Number(b.id === first) - Number(a.id === first) || Number(b.role === "primary") - Number(a.role === "primary") || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
   return nodes.map((node) => {
     const sample = state.metrics.get(node.id);
-    const sub = [node.role, node.backup ? "backup" : "", node.via === "relay" ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
+    const sub = [node.id === own ? "this computer" : "", node.role, node.via === "relay" ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
     const card: NodeCard = { node, sub, bars: [], owners: [] };
     if (!sample) {
       card.bars.push({ label: "cpu", words: "—" }, { label: "memory", words: "—" });

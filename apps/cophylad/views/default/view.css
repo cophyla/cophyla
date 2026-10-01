@@ -2325,6 +2325,72 @@ button:disabled {
   color: #fff;
 }
 
+/* --- a machine's role and name: Make primary, asked in place, and Rename ------------------------ */
+
+.node-choose {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.node-choose-ask {
+  margin: 0;
+  color: var(--ink);
+}
+
+.node-choose-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.node-choose button {
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+  padding: 3px 8px;
+}
+
+.node-choose button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.node-choose .node-promote-confirm,
+.node-choose .node-rename-save {
+  border-color: var(--cophyla);
+  background: var(--cophyla);
+  color: #fff;
+}
+
+.node-choose .node-promote-confirm:hover:not(:disabled),
+.node-choose .node-rename-save:hover:not(:disabled) {
+  border-color: var(--cophyla-ink);
+  color: #fff;
+}
+
+.node-rename-form {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.node-rename-input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
 /* --- grants: Add a machine, Join another computer, Invite a phone, and the invites ------------ */
 
 .node-tools {

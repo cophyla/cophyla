@@ -484,7 +484,7 @@ export type RemoteConfig = z.infer<typeof RemoteConfig>;
 /** A `host:port` another node is reached at. */
 const ENDPOINT = /^[A-Za-z0-9.\-[\]:%]+:\d{1,5}$/;
 
-/** The `nodes` module: the link to the primary, discovery on the LAN, the heartbeat and failover timings. */
+/** The `nodes` module: the link to the primary, discovery on the LAN, the heartbeat and the timings of a link. */
 export const NodesConfig = z.object({
   /** Accept other nodes on the LAN listener: what makes this node a primary others can join. */
   accept: z.boolean().default(false),
@@ -500,13 +500,13 @@ export const NodesConfig = z.object({
   /** Milliseconds between a primary's beacons. */
   beacon_ms: z.number().int().positive().default(5000),
   heartbeat_ms: z.number().int().positive().default(5000),
-  /** How long a backup waits without a primary before it promotes itself, times its rank. */
-  failover_ms: z.number().int().positive().default(15000),
   /** How long a starting primary listens for a live one before it takes the role. */
   claim_wait_ms: z.number().int().nonnegative().default(3000),
   reconnect_ms: z.number().int().positive().default(2000),
   reconnect_max_ms: z.number().int().positive().default(30000),
   hello_timeout_ms: z.number().int().positive().default(5000),
+  /** How long a secondary that lost its link holds its own clients' hellos for the link to come back, before it serves them alone. */
+  relink_grace_ms: z.number().int().nonnegative().default(8000),
   /** Link through the server's relay when the primary is on another network, and let the server's registry arbitrate the role; needs a signed-in account whose plan has the relay. */
   relay: z.boolean().default(true),
   /** Milliseconds between a primary's lease renewals on the server's registry. */
@@ -570,10 +570,11 @@ export const Config = z.object({
   node: z
     .object({
       role: NodeRole.default("primary"),
-      /** Defaults to the hostname. */
+      /** Defaults to the hostname; a name the user gives the machine in the app wins over it. */
       name: z.string().min(1).optional(),
+      /** Hold the replica, so the user can make this machine the primary with the state. */
       backup: z.boolean().default(false),
-      /** Which backup promotes first: 1 before 2. */
+      /** The order backups are tried in by a node seeking the primary: 1 before 2. */
       backup_rank: z.number().int().min(1).default(1),
       scope: NodeScope.default({ kind: "machine" }),
       /** The IANA zone cron triggers run in and the brain tells the time in; the machine's own when absent. */
@@ -621,10 +622,10 @@ export { Decision, PrincipalKind, RiskClass };
 export const DEFAULT_CONFIG_TOML = `# cophylad configuration. Every setting has a default; delete a line to get it back.
 
 [node]
-# role = "primary"        # primary runs the brain; secondary is hands only
-# name = "desk"           # defaults to the hostname
-# backup = false          # a secondary that replicates the primary and can take over
-# backup_rank = 1         # which backup promotes first: 1 before 2
+# role = "primary"        # primary starts a cluster of its own; secondary waits for an invite
+# name = "desk"           # defaults to the hostname; a name given in the app wins
+# backup = false          # a secondary that holds the replica, so it can be made the primary
+# backup_rank = 1         # the order backups are tried in: 1 before 2
 # tz = "Europe/Istanbul"  # the zone schedules run in; the machine's own when absent
 
 [node.scope]
@@ -886,9 +887,10 @@ limits = true                  # each login's session and weekly limits: Claude'
 # output = 7.5
 # cache_read = 0.15
 
-# Nodes: several machines, one primary. A primary accepts links on the LAN listener; a new
-# machine joins with an invite the primary mints (cophylad invite, or Add node in the app;
-# cophylad join on the new machine), which gives it a grant of its own in data/link.json.
+# Nodes: several machines, one primary, the one the user chose (Make primary in the app).
+# A primary accepts links on the LAN listener; a new machine joins with an invite the
+# primary mints (cophylad invite, or Add node in the app; cophylad join on the new machine),
+# which gives it a grant of its own in data/link.json.
 [nodes]
 accept = false                 # accept other nodes on the LAN listener
 # primary = "192.168.1.44:4818"  # where the primary is, when discovery cannot find it
@@ -897,11 +899,11 @@ discovery_port = 4819
 discovery_interval_ms = 2000   # between queries while seeking
 beacon_ms = 5000               # between a primary's beacons
 heartbeat_ms = 5000
-failover_ms = 15000            # a backup promotes after this without a primary, times its rank
 claim_wait_ms = 3000           # a starting primary listens this long for a live one first
 reconnect_ms = 2000
 reconnect_max_ms = 30000
 hello_timeout_ms = 5000
+relink_grace_ms = 8000         # a secondary that lost its link holds its own app this long for it
 relay = true                   # reach a primary on another network through the server's relay (signed in, a plan with it)
 registry_heartbeat_ms = 15000  # a primary renews its lease on the server's registry this often
 

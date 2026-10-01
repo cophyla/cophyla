@@ -102,10 +102,11 @@ export const serverLinkRequests = {
   /**
    * Every signed-in daemon at each link-up, with itself at its current role and epoch. A
    * primary's register is arbitrated like a claim: the answer names the holder when it is
-   * another node, and the daemon steps down to it.
+   * another node, and the daemon steps down to it. `chosen`: the user made this node the
+   * primary at this epoch, which alone lets a higher epoch take a live lease.
    */
   "registry.register": {
-    params: z.object({ node: Node, epoch: z.number().int().nonnegative().optional() }),
+    params: z.object({ node: Node, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional() }),
     result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
   },
   /** The primary's lease renewal; an answer naming another node means the lease went elsewhere. */
@@ -113,9 +114,12 @@ export const serverLinkRequests = {
     params: z.object({ node: NodeId }),
     result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
   },
-  /** A node asking for the primary role at `epoch`; refused, the answer names the holder. */
+  /**
+   * A node asking for the primary role at `epoch`; refused, the answer names the holder.
+   * `chosen` as on `registry.register`: without it a live lease is never taken.
+   */
   "registry.claim": {
-    params: z.object({ node: NodeId, epoch: z.number().int().nonnegative().optional() }),
+    params: z.object({ node: NodeId, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional() }),
     result: z.object({ granted: z.boolean(), primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
   },
   /**

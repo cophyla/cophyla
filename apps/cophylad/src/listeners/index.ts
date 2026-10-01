@@ -3,7 +3,7 @@
 // note for its next turn or a notification) and removes it with `listener.remove`; the user
 // sees them in the app's settings (`listener.list`) and may remove one. They live on the
 // primary, one key each in the store's `listeners` namespace, so a brain restart keeps their
-// counts and a backup that takes over has them; the brain's store methods refuse the
+// counts and a backup the user makes the primary has them; the brain's store methods refuse the
 // namespace. At most `MAX_LISTENERS`.
 //
 // Every event on the stream is matched against them (`match.ts`). A fire counts down

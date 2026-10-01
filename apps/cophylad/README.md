@@ -646,22 +646,33 @@ a sealed `node.leave {reason: revoked}`, and the node forgets the cluster. After
 secondary streams its sessions, asks,
 workspaces, audit rows and samples up and serves the requests the primary forwards, each
 gated here as principal `node` under `[gate.policy.node]`; its own clients are relayed to
-the primary while the link holds and served locally when it drops. A backup (`[node] backup
-= true`) also takes a replica of the primary-only tables and the editable files, applied at
-the store with the scheduler and the hooks inactive, and promotes itself after
-`[nodes] failover_ms × backup_rank` without a heartbeat; `node.promote` from a client hands
-the role over on purpose. Every transition of the role machine is a `node.state`.
+the primary while the link holds; when it drops, a hello waits up to `[nodes]
+relink_grace_ms` for it, and is served locally after. A backup (`[node] backup = true`)
+also takes a replica of the primary-only tables and the editable files, applied at the store
+with the scheduler and the hooks inactive.
+
+The primary is the machine the user chose, and nothing else moves the role: a secondary that
+loses its primary seeks it again however long it is gone, and never promotes itself. The
+choice is `node.promote` (Make primary on a machine's card): on the primary it hands the role
+to a linked backup at the next epoch; on a secondary that reaches no primary it names that
+machine, which takes the role an epoch above every one it knows of, and the old primary,
+back, hears the later choice and links to it. The choice is kept in the store
+(`chosen_primary`), so a restart claims or seeks by it whatever `[node] role` says; the
+epoch counts the choices, and a primary steps down only to a higher one the other end says
+was chosen. A machine's name is the user's too: `node.rename` (Rename on its card) keeps it
+in that machine's store over `[node] name` and the host name, and a machine that joins takes
+the name its invite was given. Every transition of the role machine is a `node.state`.
 
 Across networks the link goes through the server relay (`[nodes] relay = true`, the last
 candidate): the secondary is a relay peer of its own grant, with the relay token its
 enrollment gave it and no account of its own, the server routes it to the primary its
-registry names, the same handshake runs inside the tunnel, and the join says `via: relay`. The server's registry then arbitrates the role: a signed-in node waits
-for its link before it claims, takes the primary role only with a grant, registers at every
-link-up, renews its lease every `[nodes] registry_heartbeat_ms` while primary, and steps
-down when the server names another holder; a backup that lost its primary through the relay
-waits for a grant rather than promote on the timer, since a lost tunnel says nothing about
-which side is alive. Signed out, or on the free plan, the one-network rules above hold
-unchanged.
+registry names, the same handshake runs inside the tunnel, and the join says `via: relay`.
+The server's registry then arbitrates the role: a signed-in node waits for its link before
+it claims, takes the primary role only with a grant, registers at every link-up, renews its
+lease every `[nodes] registry_heartbeat_ms` while primary, and steps down when the server
+names another holder. Its claims and a primary's register say `chosen`, and the server lets
+no higher epoch without it (an older daemon that promoted itself while cut off) take a live
+lease. Signed out, or on the free plan, the one-network rules above hold unchanged.
 
 ## Tests
 
@@ -680,7 +691,8 @@ engine on this machine when it is one, and the whole over the socket with the fa
 the `test/nodes-*.test.ts` files start two or three daemons in one process, invited and
 joined over the loopback LAN listener with `test/nodes-helpers.ts`, for the link, forwarding,
 forged rows and beacons (`test/nodes-hardening.test.ts`), the relay,
-discovery on an in-memory LAN, replication, failover and metrics across the link, and, in
+discovery on an in-memory LAN, replication, the user's choice of primary and the names
+(`test/nodes-choice.test.ts`, `test/nodes-names.test.ts`) and metrics across the link, and, in
 `test/nodes-relay-server.test.ts` and `test/nodes-registry.test.ts`, linked through the fake
 server's relay with its registry arbitrating the role; the `test/grants-*.test.ts` files test
 the store, enrollment and its refusals, the sealed link against injected and replayed records,

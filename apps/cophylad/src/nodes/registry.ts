@@ -89,6 +89,17 @@ export class Registry {
     return next;
   }
 
+  /** This node took the primary role: every other row that still says primary is from before, and says secondary now. */
+  demoteOthers(): void {
+    for (const row of [...this.rows.values()]) {
+      if (row.role !== "primary") continue;
+      const next: NodeRecord = { ...row, role: "secondary", capabilities: { ...row.capabilities, brain: false } };
+      this.rows.set(row.id, next);
+      this.deps.store.nodes.upsert(next);
+      this.deps.bus.emit("node.state", next);
+    }
+  }
+
   /** Every peer marked offline: what a secondary does when its link drops and nothing else is known. */
   markAllOffline(): void {
     for (const id of [...this.rows.keys()]) this.markOffline(id);

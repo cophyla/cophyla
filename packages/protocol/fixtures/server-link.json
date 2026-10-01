@@ -29,6 +29,7 @@
       "params": [
         {
           "epoch": 3,
+          "chosen": true,
           "node": {
             "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
             "name": "desk",
@@ -50,7 +51,7 @@
       "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }, {}]
     },
     "registry.claim": {
-      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }],
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4, "chosen": true }],
       "results": [{ "granted": false }, { "granted": true, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "granted": false, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }]
     },
     "relay.grant": {

@@ -47,7 +47,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -148,6 +148,10 @@ export interface UiState {
   grantBusy?: boolean;
   /** A machine being removed from its card: asked in place, then on its way. */
   removing?: { node: string; phase: "asking" | "removing" };
+  /** A machine being made the primary from its card: asked in place, then on its way. */
+  promoting?: { node: string; phase: "asking" | "promoting" };
+  /** A machine being named from its card: a field in place of its buttons, and Save on its way. */
+  renaming?: { node: string; busy?: boolean };
   /** This node leaving the primary it joined: asked in place, then on its way. */
   leaving?: "asking" | "leaving";
   /** Whether Copy put the invite's text on the clipboard, for the invite it was pressed on. */
@@ -725,13 +729,79 @@ function updateFold(b: HTMLElement, key: string, label: string, open: boolean): 
   b.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-/** A machine's card: its bars, its processes folded under a switch until the user opens them, its desktop, and Restart. */
+/** A machine's card: its role and name the user sets, its bars, its processes folded under a switch until the user opens them, its desktop, and Restart. */
 function createNodeCard(): HTMLElement {
   const card = el("div", "node-card");
   const head = el("div", "node-head");
   head.append(el("span", "dot"), el("span", "node-name"), el("span", "node-badge"), el("span", "node-sub"));
-  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createRestart(), createNodeGrant());
+  card.append(head, createNodeChoose(), el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createRestart(), createNodeGrant());
   return card;
+}
+
+/** The role and the name, the user's to set: Make primary, asked in place, and Rename, a field in place of the buttons. */
+function createNodeChoose(): HTMLElement {
+  const block = el("div", "node-choose");
+  const form = el("form", "node-rename-form");
+  const input = el("input", "node-rename-input");
+  input.type = "text";
+  input.maxLength = 64;
+  input.required = true;
+  input.autocomplete = "off";
+  input.setAttribute("aria-label", "the machine's name");
+  const save = el("button", "node-rename-save", "Save");
+  save.type = "submit";
+  form.append(input, save, actionButton("node-rename-cancel", "Cancel", "node-rename-cancel"));
+  const buttons = el("div", "node-choose-buttons");
+  buttons.append(
+    actionButton("node-promote", "Make primary", "node-promote"),
+    actionButton("node-promote-confirm", "Make primary", "node-promote-confirm"),
+    actionButton("node-promote-cancel", "Cancel", "node-promote-cancel"),
+    actionButton("node-rename", "Rename", "node-rename"),
+  );
+  block.append(form, el("p", "node-choose-ask"), buttons);
+  return block;
+}
+
+function updateNodeChoose(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
+  const offer = promoteOffer(state, card.node);
+  const canRename = renamable(state, card.node);
+  const promoting = ui.promoting?.node === card.node.id ? ui.promoting : undefined;
+  const renaming = ui.renaming?.node === card.node.id ? ui.renaming : undefined;
+  setHidden(block, !offer && !canRename && !promoting && !renaming);
+  if (block.hidden) return;
+  const form = block.querySelector<HTMLFormElement>(".node-rename-form")!;
+  setHidden(form, !renaming);
+  form.dataset["node"] = card.node.id;
+  const input = form.querySelector<HTMLInputElement>(".node-rename-input")!;
+  // the field starts from the name once, as it opens, and is the user's after
+  if (renaming && form.dataset["open"] !== card.node.id) {
+    input.value = card.node.name;
+    form.dataset["open"] = card.node.id;
+  }
+  if (!renaming) delete form.dataset["open"];
+  input.disabled = renaming?.busy === true;
+  const save = form.querySelector<HTMLButtonElement>(".node-rename-save")!;
+  setText(save, renaming?.busy ? "Saving…" : "Save");
+  save.disabled = !state.connected || renaming?.busy === true;
+  const ask = block.querySelector<HTMLElement>(".node-choose-ask")!;
+  setText(ask, promoting?.phase === "asking" && offer ? offer.ask : "");
+  setHidden(ask, promoting?.phase !== "asking");
+  const start = block.querySelector<HTMLButtonElement>(".node-promote")!;
+  setHidden(start, !offer || promoting !== undefined || renaming !== undefined);
+  start.dataset["node"] = card.node.id;
+  start.title = offer?.title ?? "";
+  start.disabled = !state.connected;
+  const confirm = block.querySelector<HTMLButtonElement>(".node-promote-confirm")!;
+  setHidden(confirm, promoting === undefined);
+  confirm.dataset["node"] = card.node.id;
+  setText(confirm, promoting?.phase === "promoting" ? "Making it the primary…" : "Make primary");
+  confirm.disabled = !state.connected || promoting?.phase === "promoting";
+  setHidden(block.querySelector<HTMLElement>(".node-promote-cancel")!, promoting?.phase !== "asking");
+  const rename = block.querySelector<HTMLButtonElement>(".node-rename")!;
+  setHidden(rename, !canRename || renaming !== undefined || promoting !== undefined);
+  rename.dataset["node"] = card.node.id;
+  rename.title = `Name ${card.node.name} as you call it`;
+  rename.disabled = !state.connected;
 }
 
 /** A machine's grant on its card: Remove, asked in place; on this node, once it joined another, Leave. */
@@ -794,8 +864,9 @@ function updateNodeCard(node: HTMLElement, card: NodeCard, state: ViewState, ui:
   setText(badge, grant.badge ?? "");
   setData(badge, "role", grant.badge ?? "");
   setHidden(badge, grant.badge === undefined);
-  badge.title = grant.badge === "hands" ? "Hands: this node runs what the primary asks, and reaches no other machine" : grant.badge === "full" ? "A full member: it can take over when the primary is off" : "";
+  badge.title = grant.badge === "hands" ? "Hands: this node runs what the primary asks, and reaches no other machine" : grant.badge === "full" ? "A full member: you can make it the primary" : "";
   setText(node.querySelector(".node-sub")!, card.sub);
+  updateNodeChoose(node.querySelector<HTMLElement>(".node-choose")!, card, state, ui);
   node.title = `${card.node.name} (${card.node.platform}) · ${[card.sub, grant.end ?? ""].filter(Boolean).join(" · ") || "online"}`;
   reconcile(node.querySelector<HTMLElement>(".node-bars")!, card.bars, (b) => b.label, createBar, updateBar);
   const key = processesKey(card.node.id);
@@ -1268,7 +1339,7 @@ function createNodeInviteForm(): HTMLFormElement {
   const role = el("select", "grant-role");
   role.name = "role";
   role.setAttribute("aria-label", "What the machine may be");
-  role.append(option("hands", "Hands: it runs what this computer asks, and reaches no other machine"), option("full", "Full member: it can take over when this computer is off"));
+  role.append(option("hands", "Hands: it runs what this computer asks, and reaches no other machine"), option("full", "Full member: you can make it the primary, with the chat and the tasks"));
   const submit = el("button", "grant-submit", "Make the invite");
   submit.type = "submit";
   form.append(el("p", "grant-form-head", "Add a machine"), nameInput("what to call it", "What to call the machine"), role, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));

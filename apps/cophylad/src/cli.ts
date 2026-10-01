@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { encode } from "uqr";
-import { ACCESS_PRESETS, request } from "@cophyla/protocol";
+import { ACCESS_PRESETS, request, UNNAMED_NODE } from "@cophyla/protocol";
 import type { AccessPreset } from "@cophyla/protocol";
 import type { ClientRequestName, ClientResult, RpcMessage } from "@cophyla/protocol";
 import { loadConfig, paths, resolveHome } from "./config/load.ts";
@@ -157,7 +157,7 @@ export async function runCommand(command: Command, argv: string[], how: { local?
         if (values.access !== undefined) throw new Error("a node has --role, not --access");
         const role = values.role ?? "hands";
         if (role !== "hands" && role !== "full") throw new Error("--role is hands or full");
-        const r = await call(where, "grant.invite", { kind: "node", name: values.name ?? "new node", role, ...ends }, as);
+        const r = await call(where, "grant.invite", { kind: "node", name: values.name ?? UNNAMED_NODE, role, ...ends }, as);
         process.stderr.write(`An invite for ${r.grant.name} (${role}), good until ${new Date(r.invite.expiresAt).toLocaleString()}.\nOn the new machine: ${prog} join (or, to lend it one folder, cophyla node add), then paste this line:\n\n`);
         process.stdout.write(r.invite.text + "\n");
         return 0;

@@ -1,9 +1,9 @@
 // The grants: one row per credential that reaches this node from outside, a phone (`controller`,
 // its id a controller id) or a node (`node`, a `grt_` id), each with its own key and access.
 // A row lives in `kv` under one of two namespaces: `grants`, minted on the primary and
-// replicated with the rest of its kv, so a backup that takes over knows every phone and node;
-// or `grants.local`, minted on a node that was not the primary (a phone paired on a
-// secondary), which never leaves it. Reads take both; a write goes where the row lives, a new
+// replicated with the rest of its kv, so a backup the user makes the primary knows every
+// phone and node; or `grants.local`, minted on a node that was not the primary (a phone
+// paired on a secondary), which never leaves it. Reads take both; a write goes where the row lives, a new
 // row where this node's role says.
 //
 // A phone's token is shown once, when it is minted, and kept only as a SHA-256 hash; the key

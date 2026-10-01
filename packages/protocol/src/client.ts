@@ -719,8 +719,15 @@ export const clientRequests = {
   "guest.leave": { params: z.object({ name: z.string().min(1) }), result: z.object({ guest: GuestInfo }) },
   /** A workspace node is removed: it leaves, what it held goes (its sessions' ids kept as tombstones), its id is retired. */
   "guest.remove": { params: z.object({ name: z.string().min(1) }), result: Empty },
-  /** Hands the primary role to a backup by the user's choice; the current primary steps down and rejoins. */
+  /**
+   * Makes a machine the primary, by the user's choice and no one else's. On the primary it
+   * hands the role to a linked backup, and the primary steps down and links to it. On a
+   * secondary that reaches no primary it names this machine: it takes the role at a choice
+   * above every one it knows of, and the old primary, back, links here.
+   */
   "node.promote": { params: z.object({ id: NodeId }), result: Empty },
+  /** Names a machine as the user calls it: kept on that machine, over `[node] name` and its own. The machine must be reachable. */
+  "node.rename": { params: z.object({ id: NodeId, name: z.string().trim().min(1).max(64) }), result: Empty },
   /**
    * Stops the daemon this client is connected to and starts it again. `conflict` with the
    * `reasons` while something would be cut off (an open ask, a held hook response, an agent

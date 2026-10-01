@@ -155,6 +155,12 @@ export interface RelayedAs {
 /** On a secondary: a client's hello answered by the primary, its frames tunnelled from then on. */
 export interface RelayUplink {
   linked(): boolean;
+  /**
+   * While a lost link may come back in a moment: resolves once it is back or the moment is
+   * over, so a hello is relayed rather than served here for a few seconds; undefined when
+   * there is nothing to wait for.
+   */
+  settle?(): Promise<void> | undefined;
   open(peer: string, info: HelloInfo, origin: string, port: ClientSocket, as?: RelayedAs): Promise<HelloResult>;
   frame(peer: string, text: string): void;
   close(peer: string): void;
@@ -631,6 +637,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       // unless it is a terminal command of this machine asking to be served here.
       const relay = deps.nodes?.relay;
       const local = p.local === true && listener === "loopback";
+      // A link that just dropped is usually back in a second or two: the client waits for it rather than seeing this node alone in between.
+      if (relay && !local && !relay.linked()) await relay.settle?.();
       if (relay?.linked() && !local) {
         const peer = ws.data.provisional;
         const port = portOf(ws);

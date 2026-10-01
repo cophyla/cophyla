@@ -98,6 +98,8 @@ export const nodeLinkRequests = {
       epoch: z.number().int().nonnegative(),
       /** Where the primary is, when the answerer is not it. */
       primary: Endpoint.optional(),
+      /** The answerer is the primary because the user chose it at `epoch`: only such a primary's higher epoch makes another step down. */
+      chosen: z.boolean().optional(),
     }),
   },
   /** What the secondary holds; the primary answers with the registry and a link id. */
@@ -145,6 +147,8 @@ export const nodeLinkRequests = {
       cluster: ClusterId,
       primary: z.object({ id: NodeId, name: z.string() }),
       role: GrantRole,
+      /** What the user called the machine in the invite: its name from here on, unless the user gave it one already. */
+      name: z.string().min(1).optional(),
       expiresAt: Timestamp.optional(),
       /** The primary's LAN listener: the endpoints to try and the SHA-256 of its key. */
       lan: z.object({ endpoints: z.array(Endpoint), spki: z.string().min(1) }).optional(),

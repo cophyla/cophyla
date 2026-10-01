@@ -78,6 +78,7 @@ export interface MethodDeps {
   node: () => Node;
   /** Hands the primary role to a backup; absent in a daemon without the nodes module. */
   promote?: (id: string) => Promise<void>;
+  rename?: (id: string, name: string) => Promise<void>;
   /** Stops this daemon and starts it again; throws `conflict` while busy unless forced. */
   restart?: (force: boolean, by: string) => void;
 }
@@ -92,6 +93,14 @@ export function foundationMethods(deps: MethodDeps): MethodTable {
       handler: async (p) => {
         if (!deps.promote) throw new RpcError("unsupported", "this node has no peers");
         await deps.promote(p.id);
+        return {};
+      },
+    },
+    "node.rename": {
+      target: (p) => p.id,
+      handler: async (p) => {
+        if (!deps.rename) throw new RpcError("unsupported", "this node names no machine");
+        await deps.rename(p.id, p.name);
         return {};
       },
     },

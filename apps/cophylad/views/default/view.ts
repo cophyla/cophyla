@@ -954,6 +954,39 @@ async function submitJoin(form: HTMLFormElement): Promise<void> {
   void loadGrants();
 }
 
+/** Makes a machine the primary once the user confirmed on its card: the role moves only this way. */
+async function promoteNode(node: string): Promise<void> {
+  ui.promoting = { node, phase: "promoting" };
+  draw();
+  try {
+    await rpc.request("node.promote", { id: node });
+  } catch (e) {
+    fail("make primary", e);
+  } finally {
+    ui.promoting = undefined;
+    draw();
+  }
+  void loadNodes();
+}
+
+/** Names a machine as the user typed it on its card. */
+async function renameNode(form: HTMLFormElement): Promise<void> {
+  const node = form.dataset["node"];
+  const name = form.querySelector<HTMLInputElement>(".node-rename-input")?.value.trim() ?? "";
+  if (!node || !name) return;
+  ui.renaming = { node, busy: true };
+  draw();
+  try {
+    await rpc.request("node.rename", { id: node, name });
+    ui.renaming = undefined;
+  } catch (e) {
+    fail("rename", e);
+    ui.renaming = { node };
+  }
+  draw();
+  void loadNodes();
+}
+
 /** Leaves the primary once the user confirmed on this node's card. */
 async function leavePrimary(): Promise<void> {
   ui.leaving = "leaving";
@@ -2610,6 +2643,33 @@ document.addEventListener("click", (ev) => {
       ui.leaving = undefined;
       draw();
       return;
+    case "node-promote":
+      if (target.dataset["node"]) ui.promoting = { node: target.dataset["node"], phase: "asking" };
+      ui.renaming = undefined;
+      draw();
+      return;
+    case "node-promote-confirm":
+      if (target.dataset["node"]) void promoteNode(target.dataset["node"]);
+      return;
+    case "node-promote-cancel":
+      ui.promoting = undefined;
+      draw();
+      return;
+    case "node-rename": {
+      const node = target.dataset["node"];
+      if (!node) return;
+      ui.renaming = { node };
+      ui.promoting = undefined;
+      draw();
+      const input = document.querySelector<HTMLInputElement>(`.node-card[data-node="${node}"] .node-rename-input`);
+      input?.focus();
+      input?.select();
+      return;
+    }
+    case "node-rename-cancel":
+      ui.renaming = undefined;
+      draw();
+      return;
     case "remote-open":
       if (target.dataset["node"]) void openRemote(target.dataset["node"]);
       return;
@@ -2693,6 +2753,11 @@ document.addEventListener("submit", (ev) => {
     void pairRemote(form);
     return;
   }
+  if (form.classList.contains("node-rename-form")) {
+    ev.preventDefault();
+    void renameNode(form);
+    return;
+  }
   if (form.classList.contains("folder-go")) {
     // A path typed into the picker, gone to with Enter or Go.
     ev.preventDefault();
@@ -2767,7 +2832,8 @@ document.addEventListener("mousedown", (ev) => {
 });
 
 // Escape takes back the utterance being heard or transcribed, before anything else; otherwise
-// it shrinks an invite's QR code shown large, closes the Files panel's menu, New terminal's menu
+// it shrinks an invite's QR code shown large, puts away a machine's name field or its Make
+// primary question, closes the Files panel's menu, New terminal's menu
 // or the ⋮ menu, and the focus goes back to its row or its button; with none open, it puts away
 // the rail lying over a phone's pane, then closes the brain's context, and then the file open in
 // the viewer. A terminal keeps its own Escape: xterm stops the key before it gets here.
@@ -2778,6 +2844,14 @@ document.addEventListener("keydown", (ev) => {
     cancelVoice();
   } else if (ui.qrZoom) {
     ui.qrZoom = false;
+    draw();
+  } else if (ui.renaming && !ui.renaming.busy) {
+    const node = ui.renaming.node;
+    ui.renaming = undefined;
+    draw();
+    document.querySelector<HTMLButtonElement>(`.node-card[data-node="${node}"] .node-rename`)?.focus();
+  } else if (ui.promoting?.phase === "asking") {
+    ui.promoting = undefined;
     draw();
   } else if (ui.fileMenu) {
     ev.preventDefault();

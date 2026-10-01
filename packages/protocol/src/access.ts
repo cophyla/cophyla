@@ -270,6 +270,7 @@ export const requestFilters = {
   "grant.revoke": { names: "global" },
   "node.list": { names: "global" },
   "node.promote": { names: "global" },
+  "node.rename": { names: "global" },
   "node.restart": { names: "global" },
   "node.join": { names: "global" },
   "node.leave": { names: "global" },

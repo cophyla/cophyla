@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1290,12 +1290,60 @@ describe("default view: nodes and metrics", () => {
     let cards = selectNodes(state);
     expect(cards.map((c) => c.node.name)).toEqual(["desk", "laptop"]);
     expect(cards[0]!.sub).toBe("primary");
-    expect(cards[1]!.sub).toBe("secondary · backup");
+    expect(cards[1]!.sub).toBe("secondary");
     expect(cards[0]!.bars.map((b) => b.words)).toEqual(["—", "—"]);
     apply(state, { type: "node.state", params: node(OTHER, "laptop", { backup: true, status: "offline" }) });
     cards = selectNodes(state);
-    expect(cards[1]!.sub).toBe("secondary · backup · offline");
+    expect(cards[1]!.sub).toBe("secondary · offline");
     expect(cards[1]!.node.status).toBe("offline");
+  });
+
+  test("the computer the app runs on comes first and says so; then the primary; a phone's card says this computer of none", () => {
+    // The desktop app on the laptop, relayed to the desk: the laptop first, as this computer, then the desk, the primary.
+    const onLaptop = initialState();
+    apply(onLaptop, { type: "host.ready", params: { ...READY, client: { ...CLIENT, node: OTHER }, scopes: [...CLIENT.scopes, "nodes"] as Scope[] } });
+    apply(onLaptop, { type: "host.state", params: { connected: true } });
+    apply(onLaptop, { type: "nodes", nodes: [node(OTHER, "laptop", { backup: true }), node(NODE, "desk"), node("node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "attic")] });
+    expect(selectNodes(onLaptop).map((c) => [c.node.name, c.sub])).toEqual([
+      ["laptop", "this computer · secondary"],
+      ["desk", "primary"],
+      ["attic", "secondary"],
+    ]);
+    // A phone talking to the desk: the desk first, and no card is this computer.
+    const phone = initialState();
+    apply(phone, { type: "host.ready", params: { ...READY, client: { ...CLIENT, kind: "controller" } } });
+    apply(phone, { type: "nodes", nodes: [node(OTHER, "laptop"), node(NODE, "desk")] });
+    expect(selectNodes(phone).map((c) => [c.node.name, c.sub])).toEqual([
+      ["desk", "primary"],
+      ["laptop", "secondary"],
+    ]);
+  });
+
+  test("Make primary: from an app on the primary, each other connected backup; from a secondary alone, that computer; never a hands node", () => {
+    const state = withNodes();
+    expect(promoteOffer(state, node(NODE, "desk"))).toBeUndefined();
+    expect(promoteOffer(state, node(OTHER, "laptop", { backup: true }))?.ask).toBe("Make laptop the primary? The brain, the chat and the tasks move there, and desk becomes a secondary.");
+    expect(promoteOffer(state, node(OTHER, "laptop"))).toBeUndefined();
+    expect(promoteOffer(state, node(OTHER, "laptop", { backup: true, status: "offline" }))).toBeUndefined();
+    expect(promoteOffer(state, node(OTHER, "laptop", { backup: true, hands: true }))).toBeUndefined();
+    // Without the nodes scope, nothing.
+    expect(promoteOffer(ready(), node(OTHER, "laptop", { backup: true }))).toBeUndefined();
+    // An app on the laptop that reaches no primary: the laptop itself, and no other.
+    const alone = initialState();
+    apply(alone, { type: "host.ready", params: { ...READY, node: OTHER, client: { ...CLIENT, node: OTHER }, scopes: [...CLIENT.scopes, "nodes"] as Scope[] } });
+    apply(alone, { type: "host.state", params: { connected: true } });
+    apply(alone, { type: "nodes", nodes: [node(OTHER, "laptop", { backup: true }), node(NODE, "desk", { status: "offline" })] });
+    expect(promoteOffer(alone, node(OTHER, "laptop", { backup: true }))).toEqual({ title: "desk cannot be reached: make laptop the primary", ask: "Make laptop the primary? desk cannot be reached now; when it is back, it follows laptop as a secondary." });
+    expect(promoteOffer(alone, node("node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "attic", { backup: true }))).toBeUndefined();
+  });
+
+  test("Rename: the machine the app talks to, and from the primary each connected one; never a hands node", () => {
+    const state = withNodes();
+    expect(renamable(state, node(NODE, "desk"))).toBe(true);
+    expect(renamable(state, node(OTHER, "laptop"))).toBe(true);
+    expect(renamable(state, node(OTHER, "laptop", { status: "offline" }))).toBe(false);
+    expect(renamable(state, node(OTHER, "laptop", { hands: true }))).toBe(false);
+    expect(renamable(ready(), node(NODE, "desk"))).toBe(false);
   });
 
   test("a sample makes the bars and sums the processes by owner, sessions named as their tabs, busiest first", () => {

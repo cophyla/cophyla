@@ -59,6 +59,8 @@ export interface HelloAnswer {
   role: "primary" | "secondary";
   epoch: number;
   primary?: string;
+  /** A primary the user chose at `epoch`; absent from an older node, whose epoch may be one it gave itself. */
+  chosen?: boolean;
 }
 
 export interface Linked {
@@ -142,6 +144,8 @@ export interface OutboundDeps {
   remote?: Remote;
   /** This node's profiles, which the primary's clients may set. */
   profiles?: Pick<Profiles, "update">;
+  /** Names this machine, as the primary's clients may. */
+  rename?: (name: string) => void;
   /** The direct connections, so the primary's clients can switch them here, and their state goes up on link; a relayed link offers a data channel through them. */
   direct?: Direct;
   /** `[direct] nodes`: whether a relayed link tries a data channel. */
@@ -307,7 +311,7 @@ export class Outbound {
     const sock = this.socketFor(raw, "probe", false);
     try {
       const a = await this.hello(sock.rpc, m);
-      return { nodeId: a.nodeId, role: a.role, epoch: a.epoch, ...(a.primary !== undefined ? { primary: a.primary } : {}) };
+      return { nodeId: a.nodeId, role: a.role, epoch: a.epoch, ...(a.primary !== undefined ? { primary: a.primary } : {}), ...(a.chosen ? { chosen: true } : {}) };
     } finally {
       sock.rpc.close("probe done");
       sock.sock.close(1000, "probe done");
@@ -392,6 +396,7 @@ export class Outbound {
         metricsSubscriber: this.subscriberFor(j.linkId),
         ...(this.deps.remote ? { remote: this.deps.remote } : {}),
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),
+        ...(this.deps.rename ? { rename: this.deps.rename } : {}),
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
         ...(this.deps.confine ? { confine: this.deps.confine } : {}),
         ...(this.deps.answerHere ? { answerHere: this.deps.answerHere } : {}),

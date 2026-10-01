@@ -30,6 +30,8 @@ export interface PrimaryOptions {
   daemon?: Partial<DaemonOptions>;
   /** Milliseconds; the tests keep the link fast. */
   heartbeatMs?: number;
+  /** How long this node's own clients' hellos wait for a lost link, once it is a secondary; short in the tests. */
+  relinkGraceMs?: number;
   home?: string;
   /** No LAN listener at all: other nodes reach this primary through the server relay only. */
   noLan?: boolean;
@@ -61,7 +63,7 @@ export async function startPrimary(opts: PrimaryOptions = {}): Promise<Primary> 
   }
   const toml =
     `[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
-    `[controller]\nenabled = false\nport = 0\n\n[nodes]\naccept = ${opts.noLan ? "false" : "true"}\ndiscovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nclaim_wait_ms = 300\n${opts.nodes ?? ""}\n` +
+    `[controller]\nenabled = false\nport = 0\n\n[nodes]\naccept = ${opts.noLan ? "false" : "true"}\ndiscovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nclaim_wait_ms = 300\nrelink_grace_ms = ${opts.relinkGraceMs ?? 200}\n${opts.nodes ?? ""}\n` +
     brainToml +
     (opts.toml ?? "");
   const home = opts.home ?? scratch;
@@ -97,7 +99,8 @@ export interface SecondaryOptions {
   discovery?: DiscoveryTransport;
   daemon?: Partial<DaemonOptions>;
   heartbeatMs?: number;
-  failoverMs?: number;
+  /** How long this node's own clients' hellos wait for a lost link; short in the tests. */
+  relinkGraceMs?: number;
   /** Leave `[nodes] primary` out: the node finds the primary by discovery or the registry. */
   noEndpoint?: boolean;
   /** The invite without its LAN part: the node redeems it, and links, through the server relay. */
@@ -141,7 +144,7 @@ export async function startSecondary(primary: Pick<Primary, "d" | "endpoint">, o
     `[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n` +
     (opts.agent ? `[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` : "") +
     `[node]\nrole = "secondary"\nbackup = ${opts.backup ? "true" : "false"}\nbackup_rank = ${opts.rank ?? 1}\n${opts.node ?? ""}\n[controller]\nenabled = ${opts.controller ? "true" : "false"}\nport = 0\n\n` +
-    `[nodes]\n${opts.noEndpoint ? "" : `primary = "${primary.endpoint}"\n`}discovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nreconnect_ms = 100\nreconnect_max_ms = 400\nfailover_ms = ${opts.failoverMs ?? 300}\nclaim_wait_ms = 300\n${opts.nodes ?? ""}\n` +
+    `[nodes]\n${opts.noEndpoint ? "" : `primary = "${primary.endpoint}"\n`}discovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nreconnect_ms = 100\nreconnect_max_ms = 400\nclaim_wait_ms = 300\nrelink_grace_ms = ${opts.relinkGraceMs ?? 200}\n${opts.nodes ?? ""}\n` +
     rules +
     (opts.toml ?? "");
   const home = opts.home ?? scratch;

@@ -1,4 +1,5 @@
 [
+  { "schema": "client.requests.node.rename.params", "why": "a name of blanks", "value": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "   " } },
   { "schema": "client.requests.direct.offer.params", "why": "an offer without its key", "value": { "sdp": "v=0\r\n" } },
   { "schema": "entities.DirectReport", "why": "a day that is not a date", "value": { "day": "yesterday", "counts": [] } },
   { "schema": "entities.DirectReport", "why": "a count of nothing", "value": { "day": "2026-09-24", "counts": [{ "kind": "client", "path": "host", "count": 0 }] } },

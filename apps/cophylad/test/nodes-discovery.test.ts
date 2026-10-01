@@ -1,7 +1,8 @@
 // Discovery over a LAN in memory: a secondary whose grant no longer says where the primary
 // is finds it by its answer to a query; a primary of another cluster is ignored; `[nodes]
-// primary` wins over what the network says; a configured primary that joined a cluster
-// yields to its live primary. The datagram parser refuses what is not a beacon.
+// primary` wins over what the network says; a machine that joined a cluster seeks the
+// primary the user chose, whatever its config says. The datagram parser refuses what is not
+// a beacon.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -55,11 +56,11 @@ describe("discovery", () => {
     expect(told.nodes.primaryId()).toBe(mine.d.identity.id);
   }, 30_000);
 
-  test("a configured primary listens for a live one before it claims the role, and yields to it", async () => {
+  test("a machine that joined and restarts configured primary seeks the primary the user chose: the config chooses nothing", async () => {
     const lan = new MemoryLan();
     const live = await startPrimary({ discovery: lan });
     primaries.push(live);
-    // A node that joined the live primary's cluster, then restarted configured primary: it hears the live one within its claim wait and joins it as a backup.
+    // A node that joined the live primary's cluster, then restarted configured primary: it never claims, and joins the live one as a backup.
     const joined = await startSecondary(live, { discovery: lan, noEndpoint: true });
     await linked(joined, 8000);
     await joined.stop();
@@ -71,7 +72,7 @@ describe("discovery", () => {
     const d = Object.assign(await startDaemon({ home, port: 0, log: silentLogger, brain: false, embedder: null, nodes: { discovery: lan } }), { home });
     started.push(d);
     expect(d.nodes.roleOf()).toBe("secondary");
-    expect(d.nodes.transitions[0]).toMatchObject({ from: "claiming", to: "seeking" });
+    expect(d.nodes.transitions.some((t) => t.from === "claiming" || t.to === "claiming")).toBe(false);
     await linked(d, 8000);
     expect(d.nodes.primaryId()).toBe(live.d.identity.id);
     expect(live.d.nodes.registry.get(d.identity.id)?.backup).toBe(true);

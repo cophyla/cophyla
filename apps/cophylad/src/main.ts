@@ -9,6 +9,11 @@ import { startDaemon } from "./daemon.ts";
 import { loginEnv } from "./login-env.ts";
 import { RESTART_ENV, waitForExit } from "./restart.ts";
 
+/** What the log keeps of a failure: its message and its stack. */
+function failure(e: unknown): Record<string, unknown> {
+  return e instanceof Error ? { error: e.message, stack: e.stack ?? "" } : { error: String(e) };
+}
+
 const command = Bun.argv[2];
 if (command !== undefined && (COMMANDS as readonly string[]).includes(command)) {
   process.exit(await runCommand(command as Command, Bun.argv.slice(3)));
@@ -70,6 +75,16 @@ try {
   };
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
+  // A promise that fails with nothing to catch it must not take the daemon down: every link,
+  // client and session would be cut off and found again from the start, and a primary's
+  // role with them. It is logged with its stack, and the daemon goes on. An exception thrown
+  // where nothing catches it may have left a module half done: logged, and the daemon exits
+  // for the app (or the service) to start it again.
+  process.on("unhandledRejection", (reason) => daemon.log.error("a promise failed and nothing caught it", failure(reason)));
+  process.on("uncaughtException", (e) => {
+    daemon.log.error("an exception nothing caught; stopping", failure(e));
+    process.exit(1);
+  });
 } catch (e) {
   if (e instanceof ConfigError) {
     console.error(e.message);

@@ -1,7 +1,9 @@
 // The registry client: the nodes module's window on the server's arbitration. `active`
 // says whether the server may be asked at all (the link is up, the plan has the relay,
 // `[nodes] relay` is on); the three calls carry the role machine's claims, registers and
-// heartbeats; `onUp` fires once the link is up and the entitlement refreshed, so a
+// heartbeats. A node claims the role only where the user chose it, and a primary holds it
+// for the same reason, so both say `chosen`: the server lets no other higher epoch take a
+// live lease; `onUp` fires once the link is up and the entitlement refreshed, so a
 // listener that registers on it knows the plan; `onPrimary` carries the server's
 // `registry.primary` frames, the grant that went to another node. Nothing here decides a
 // role: the nodes module does, with the grant invariant described there. A secondary's
@@ -75,11 +77,11 @@ export class RegistryClient implements Arbiter {
   }
 
   async register(node: Node, epoch: number): Promise<HolderAnswer> {
-    return this.holder(await this.deps.request("registry.register", { node, epoch }, { timeoutMs: REQUEST_TIMEOUT_MS }));
+    return this.holder(await this.deps.request("registry.register", { node, epoch, ...(node.role === "primary" ? { chosen: true } : {}) }, { timeoutMs: REQUEST_TIMEOUT_MS }));
   }
 
   async claim(epoch: number): Promise<ClaimAnswer> {
-    const r = (await this.deps.request("registry.claim", { node: this.deps.nodeId, epoch }, { timeoutMs: REQUEST_TIMEOUT_MS })) as { granted?: unknown };
+    const r = (await this.deps.request("registry.claim", { node: this.deps.nodeId, epoch, chosen: true }, { timeoutMs: REQUEST_TIMEOUT_MS })) as { granted?: unknown };
     return { granted: r?.granted === true, ...this.holder(r) };
   }
 

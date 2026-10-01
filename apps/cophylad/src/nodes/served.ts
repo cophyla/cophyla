@@ -9,8 +9,10 @@
 // hands node's, whose desktop is its owner's), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
 // `session.files`, `session.git` and `session.file`, so their explorer shows this node's
-// sessions' files and their viewer a file's text, and the terminal requests, so they see,
-// open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`.
+// sessions' files and their viewer a file's text, the terminal requests, so they see,
+// open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`,
+// and `node.rename`, so they name this machine (not a guest's or a confined one's: its name
+// is its owner's).
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
 // requests are checked: a session, a workspace or a path outside is refused, and so is the
@@ -72,6 +74,8 @@ export const NODE_SERVED_METRICS = ["metrics.subscribe", "metrics.unsubscribe", 
 export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.enable", "remote.disable"] as const;
 /** And what the user sets on this node's profiles from an app on the primary. */
 export const NODE_SERVED_PROFILES = ["profile.update"] as const;
+/** And the name the user gives this machine from an app on the primary. */
+export const NODE_SERVED_NAME = ["node.rename"] as const;
 
 /** The direct connections' switch, served for the primary's clients. */
 export const NODE_SERVED_DIRECT = ["direct.enable", "direct.disable"] as const;
@@ -145,6 +149,8 @@ export interface ServeDeps {
   remote?: Remote;
   /** This node's profiles, for `profile.update`. */
   profiles?: Pick<Profiles, "update">;
+  /** Names this machine, for `node.rename`. */
+  rename?: (name: string) => void;
   direct?: Direct;
   /** This node's sessions' folders, repositories and files, for `session.files`, `session.git` and `session.file`. */
   files?: Pick<SessionFiles, "list" | "git" | "read">;
@@ -317,6 +323,10 @@ export class NodeServer {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone: its profiles are its own");
       return this.serveProfile(params);
     }
+    if ((NODE_SERVED_NAME as readonly string[]).includes(method)) {
+      if (this.confined() || this.deps.hands?.()) throw new RpcError("denied", "this machine is lent to the primary, not given: its name is its owner's");
+      return this.serveRename(params);
+    }
     if ((NODE_SERVED_DIRECT as readonly string[]).includes(method)) return this.serveDirect(method as (typeof NODE_SERVED_DIRECT)[number], params);
     if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
     if ((NODE_SERVED_TERMINALS as readonly string[]).includes(method)) return this.serveTerminals(method as (typeof NODE_SERVED_TERMINALS)[number], params);
@@ -391,6 +401,19 @@ export class NodeServer {
     if (!parsed.success) throw new RpcError("invalid", "bad params for profile.update", parsed.error.issues);
     const p = parsed.data;
     return this.deps.gate.run({ principal: this.deps.principal, action: "profile.update", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => ({ profile: profiles.update(p.id, updatePatch(p.patch)) }));
+  }
+
+  /** This machine's name, given from an app on the primary: gated here, as the owner's policy says. */
+  private async serveRename(params: unknown): Promise<unknown> {
+    const rename = this.deps.rename;
+    if (!rename) throw new RpcError("unsupported", "this node takes no name from the primary");
+    const parsed = clientRequests["node.rename"].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", "bad params for node.rename", parsed.error.issues);
+    const p = parsed.data;
+    return this.deps.gate.run({ principal: this.deps.principal, action: "node.rename", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => {
+      rename(p.name);
+      return {};
+    });
   }
 
   /** An invite from, a revoke on, or the sharing of this node's own desktop host, for the primary's clients. */

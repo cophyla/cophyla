@@ -13,6 +13,8 @@ import { GrantRef, NodeId, Timestamp } from "./ids.ts";
 
 export const INVITE_TEXT_PREFIX = "cophyla-invite:";
 export const INVITE_LINK_PREFIX = "cophyla://invite?i=";
+/** The name a node invite carries when the user gave the machine none: never taken for its name. */
+export const UNNAMED_NODE = "new node";
 
 /** 32 bytes as hex. */
 export const Secret = z.string().regex(/^[0-9a-f]{64}$/, { message: "expected 32 bytes as hex" });

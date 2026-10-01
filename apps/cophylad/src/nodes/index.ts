@@ -1,13 +1,16 @@
 // The nodes module: the registry, the link to the primary or the links from the
 // secondaries, discovery on the network, replication to the backups, and the role this
-// node holds. A node configured primary listens for a live primary of a higher epoch before
-// it takes the role; a secondary seeks the primary (the configured endpoint, then whoever
-// answers a broadcast, then the registry's last primary and backups by rank), links, and
-// serves what the primary forwards. A backup whose primary is gone waits `failover_ms`
-// times its rank, then promotes itself at the next epoch and starts the brain; a primary
-// that hears a higher epoch steps down and rejoins as a backup; the user can hand the role
-// over with `node.promote`. Every role change is announced as `node.state` and closes this
-// node's own clients, which reconnect into the right mode.
+// node holds. The primary is the machine the user chose, and no other: the choice is kept
+// in the store (`chosen_primary`), and the epoch counts the user's choices. The chosen node
+// listens for a live primary of a higher epoch (a later choice) before it takes the role;
+// every other node seeks it (the configured endpoint, then whoever answers a broadcast, then
+// the registry's last primary and backups by rank), links, and serves what the primary
+// forwards. A secondary that loses its primary seeks it again and never takes the role on
+// its own. The user moves the role with `node.promote`: on the primary it hands the role to
+// a linked backup; on a secondary that reaches no primary it names that machine, which takes
+// the role a choice above every one it knows of. A primary that hears a chosen higher epoch
+// steps down and links to it. Every role change is announced as `node.state` and closes
+// this node's own clients, which reconnect into the right mode.
 //
 // Membership is a grant, kept in `data/link.json`: the cluster's first primary mints the
 // cluster's id and a grant for itself; any other machine joins by redeeming an invite the
@@ -23,18 +26,17 @@
 //
 // Across networks the server's registry arbitrates, through the cloud module's `Arbiter`:
 // while it is active (signed in, a plan with the relay, `[nodes] relay` on, the link up) a
-// node *takes* the role only with a grant — a starting primary claims, a backup's failover
-// claims, a takeover claims — and *keeps* a role through a link outage, reconciling at
-// every link-up with `registry.register`. A grant that went elsewhere arrives as
-// `registry.primary` and the holder steps down to it. The relay, reached with the relay token
-// this node's own grant was given at enrollment and no account of its own, is the last
-// candidate of a seek, and the first after a step-down to a node with no LAN endpoint. A
-// backup whose link was a tunnel never promotes without the registry's word: with the server
-// unreachable it keeps waiting; a directly linked backup keeps milestone 9's rule.
+// node *takes* the role only with a grant — the chosen node claims as it starts, a takeover
+// the user handed over claims, the user's choice of an unlinked secondary claims, each as
+// `chosen` — and *keeps* a role through a link outage, reconciling at every link-up with
+// `registry.register`. A grant that went elsewhere arrives as `registry.primary` and the
+// holder steps down to it. The relay, reached with the relay token this node's own grant
+// was given at enrollment and no account of its own, is the last candidate of a seek, and
+// the first after a step-down to a node with no LAN endpoint.
 
 import { existsSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError } from "@cophyla/protocol";
+import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
 import type { Ask, ClientNotificationParams, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
@@ -167,10 +169,15 @@ export interface NodesDeps {
   now?: () => number;
 }
 
-/** Whether a backup whose primary is gone may take the role now: never without a grant when its link was a tunnel. */
-export function mayPromote(opts: { lostVia: Via | undefined; arbiterActive: boolean }): boolean {
-  if (opts.arbiterActive) return true;
-  return opts.lostVia !== "relay";
+/**
+ * The machine the user chose as the primary, as this node knew it at start: the one kept in
+ * the store; else, from before it was kept, the node that minted the cluster (this one) or the
+ * one that invited this node. A higher epoch a joined node held then was its own failover's,
+ * never the user's choice, so it counts for nothing here.
+ */
+export function chosenPrimary(opts: { kept?: string; self: string; via?: "self" | "join"; inviter?: string }): string {
+  if (opts.kept) return opts.kept;
+  return opts.via === "join" && opts.inviter ? opts.inviter : opts.self;
 }
 
 /** How long a node invite may be redeemed, unless the minter says otherwise. */
@@ -186,6 +193,8 @@ interface Candidate {
   endpoint: string;
   nodeId?: string;
   epoch?: number;
+  /** The node answered as a primary the user chose: what makes a primary step down to a higher epoch. */
+  chosen?: boolean;
   heardAt: number;
 }
 
@@ -202,7 +211,6 @@ export class Nodes {
   private discovery?: DiscoverySocket;
   private beaconTimer?: ReturnType<typeof setTimeout>;
   private queryTimer?: ReturnType<typeof setTimeout>;
-  private waitTimer?: ReturnType<typeof setTimeout>;
   /** The loop that tries the ways to the primary while this node seeks it. */
   private seeker: Seeker;
   /** Primaries heard on the network, newest first. */
@@ -211,8 +219,8 @@ export class Nodes {
   private preferred?: string;
   /** The relay first at the next seek: the holder the registry named has no LAN endpoint we know. */
   private preferRelay = false;
-  /** How the last link to the primary ran, for the failover rule. */
-  private lostVia?: Via;
+  /** When this secondary last lost its link or began to seek: its own clients' hellos wait for the link a moment from then. */
+  private seekingSince?: number;
   private registryTimer?: ReturnType<typeof setTimeout>;
   private offArbiter: (() => void)[] = [];
   /** This node's membership: its grant, key and cluster; none while it is in no cluster. */
@@ -233,8 +241,12 @@ export class Nodes {
     const membership = readLinkFile(deps.paths.linkFile);
     if (membership) this.membership = membership;
     const hands = membership?.role === "hands";
-    // A node joined as hands never claims the role, whatever it was configured; one in no cluster waits for an invite unless it starts one.
-    const start = hands ? "seeking" : configured === "primary" ? "claiming" : membership ? "seeking" : "unlinked";
+    // A node joined as hands never claims the role, whatever it was configured; one in no cluster waits for an invite unless it starts one;
+    // in a cluster, the machine the user chose claims it and every other seeks it.
+    let start: RoleState;
+    if (hands) start = "seeking";
+    else if (!membership) start = configured === "primary" ? "claiming" : "unlinked";
+    else start = this.chosenAtStart(deps, membership) === deps.identity.id ? "claiming" : "seeking";
     this.role = new RoleMachine({ configured, epoch, start });
     this.role.hands = hands;
     this.role.configuredBackup = deps.config.node.backup;
@@ -327,6 +339,7 @@ export class Nodes {
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
+      rename: (name) => this.renameSelf(name),
       ...(deps.files ? { files: deps.files } : {}),
       ...(deps.terminals ? { terminals: deps.terminals } : {}),
       ...(deps.direct?.() ? { direct: deps.direct()! } : {}),
@@ -339,7 +352,7 @@ export class Nodes {
       log: this.log.child("outbound"),
       onLinked: (info) => this.onLinked(info.primary, info.epoch, info.via),
       onLost: (reason) => this.onLost(reason),
-      onTakeover: (epoch) => this.promoteSelf(epoch, "takeover"),
+      onTakeover: (epoch) => this.promoteSelf(epoch),
       onLeave: (reason, primary) => this.onPrimaryLeaving(reason, primary),
       ...(deps.now ? { now: deps.now } : {}),
     });
@@ -360,6 +373,22 @@ export class Nodes {
 
   private now(): number {
     return (this.deps.now ?? Date.now)();
+  }
+
+  /** The machine the user chose, as this node knew it when it stopped. */
+  private chosenAtStart(deps: NodesDeps, membership: LinkFile): string {
+    const kept = deps.store.meta.get("chosen_primary");
+    return chosenPrimary({ ...(kept ? { kept } : {}), self: deps.identity.id, via: membership.via, ...(membership.primary ? { inviter: membership.primary.id } : {}) });
+  }
+
+  /** Keeps the machine the user chose, so a restart claims or seeks by it. */
+  private keepChosen(node: string): void {
+    if (this.deps.store.meta.get("chosen_primary") !== node) this.deps.store.meta.set("chosen_primary", node);
+  }
+
+  /** The machine the user chose, as this node knows it now. */
+  chosen(): string | undefined {
+    return this.role.role === "primary" ? this.deps.identity.id : (this.deps.store.meta.get("chosen_primary") ?? this.outbound.primaryId ?? undefined);
   }
 
   private arbiter(): Arbiter | undefined {
@@ -486,8 +515,38 @@ export class Nodes {
     return {
       accepting: () => !this.stopped && this.membership !== undefined,
       acceptSocket: (sock) => this.inbound.acceptSocket(sock),
-      relay: this.outbound.relay,
+      relay: { ...this.outbound.relay, settle: () => this.settle() },
     };
+  }
+
+  /** Hellos held for a link that may be back in a moment, released when it is or the moment is over. */
+  private settling = new Set<() => void>();
+
+  /**
+   * A secondary that lost its link, or began to seek it, within `relink_grace_ms`: a hello of
+   * its own clients waits for the link until then, so the app goes on seeing the primary's
+   * state through a blip instead of this node's alone and then the primary's again, each
+   * swap a reconnect. Undefined when there is nothing to wait for.
+   */
+  private settle(): Promise<void> | undefined {
+    const grace = this.deps.config.nodes.relink_grace_ms;
+    if (this.stopped || this.role.hands || grace === 0 || this.role.state !== "seeking" || this.seekingSince === undefined) return undefined;
+    const left = this.seekingSince + grace - this.now();
+    if (left <= 0) return undefined;
+    return new Promise<void>((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.settling.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(done, left);
+      this.settling.add(done);
+    });
+  }
+
+  /** The link is back, or the wait is over for another reason: every held hello goes on. */
+  private settled(): void {
+    for (const done of [...this.settling]) done();
   }
 
   /** What a new client of the primary hears beside this node's own: the mirrors and the registry. */
@@ -605,7 +664,7 @@ export class Nodes {
 
   // --- lifecycle ---------------------------------------------------------------------------------
 
-  /** Settles the starting role: resolves once a configured primary has claimed or yielded, or a secondary has begun seeking. */
+  /** Settles the starting role: resolves once the chosen primary has claimed or yielded, or a secondary has begun seeking. */
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
@@ -648,8 +707,21 @@ export class Nodes {
     const deadline = this.now() + wait;
     this.query();
     // The registry's last primary and backups are asked directly, since a broadcast may not reach them.
+    // Only a primary's answer is a rival: a secondary's (a backup waiting for this very node) names
+    // at most where its primary is, which is probed in turn; taking its own id and epoch for a
+    // primary's made a returning primary yield to its backup at the same epoch.
     const endpoints = [...(this.registry.primary()?.endpoints ?? []), ...this.registry.backups().flatMap((b) => b.endpoints)];
-    void Promise.all(endpoints.map((e) => this.outbound.probe(e).then((a) => this.heardPrimary({ endpoint: a.role === "primary" ? e : (a.primary ?? e), nodeId: a.nodeId, epoch: a.epoch, heardAt: this.now() })).catch(() => undefined)));
+    void Promise.all(
+      endpoints.map((e) =>
+        this.outbound
+          .probe(e)
+          .then((a) => {
+            if (a.role === "primary") this.heardPrimary({ endpoint: e, nodeId: a.nodeId, epoch: a.epoch, ...(a.chosen ? { chosen: true } : {}), heardAt: this.now() });
+            else if (a.primary) this.verifyCandidate(a.primary);
+          })
+          .catch(() => undefined),
+      ),
+    );
     while (this.now() < deadline && this.role.state === "claiming") await Bun.sleep(Math.min(100, Math.max(1, deadline - this.now())));
     if (this.role.state !== "claiming") return;
     // Signed in: the registry may hold the role elsewhere, so the link is given a moment to come up before the LAN's answer stands.
@@ -690,6 +762,8 @@ export class Nodes {
     if (answer.epoch !== undefined) this.role.setEpoch(answer.epoch);
     this.deps.store.meta.set("epoch", String(this.role.epoch));
     this.role.configuredBackup = true;
+    // the user chose it after this node: a later choice
+    if (answer.primary) this.keepChosen(answer.primary);
     if (answer.primary) this.aimAt(answer.primary, answer.epoch);
     if (this.role.state !== "seeking") this.role.go("seeking");
     this.startSeeking();
@@ -733,15 +807,8 @@ export class Nodes {
         }
         return;
       case "seeking":
-      case "waiting":
-        if (answer.primary && answer.primary !== me) {
-          this.aimAt(answer.primary, answer.epoch);
-          if (this.role.state === "waiting") {
-            this.clearTimers();
-            this.role.go("seeking");
-            this.startSeeking();
-          } else this.kickSeek();
-        } else if (this.role.state === "seeking") this.kickSeek();
+        if (answer.primary && answer.primary !== me) this.aimAt(answer.primary, answer.epoch);
+        this.kickSeek();
         return;
       default:
         return;
@@ -767,12 +834,6 @@ export class Nodes {
           this.log.warn("the registry granted the primary role to another node; stepping down", { holder: primary, epoch });
           void this.stepDown(primary, this.registry.endpointsOf(primary), epoch, true);
         }
-        return;
-      case "waiting":
-        this.aimAt(primary, epoch);
-        this.clearTimers();
-        this.role.go("seeking");
-        this.startSeeking();
         return;
       case "seeking":
         this.aimAt(primary, epoch);
@@ -825,6 +886,7 @@ export class Nodes {
     if (this.stopped) return;
     this.stopped = true;
     this.clearTimers();
+    this.settled();
     this.stopMembershipClock();
     this.stopRegistryHeartbeat();
     for (const off of this.offArbiter) off();
@@ -842,8 +904,8 @@ export class Nodes {
   }
 
   private clearTimers(): void {
-    for (const t of [this.beaconTimer, this.queryTimer, this.waitTimer]) if (t) clearTimeout(t);
-    this.beaconTimer = this.queryTimer = this.waitTimer = undefined;
+    for (const t of [this.beaconTimer, this.queryTimer]) if (t) clearTimeout(t);
+    this.beaconTimer = this.queryTimer = undefined;
     this.seeker.clearTimer();
   }
 
@@ -871,6 +933,9 @@ export class Nodes {
     if (!this.membership) this.foundCluster();
     else this.deps.grants.setCluster(this.membership.cluster);
     if (this.role.state !== "primary") this.role.go("primary");
+    this.keepChosen(this.deps.identity.id);
+    // the primary is this node: a row that still says another one is from before
+    this.registry.demoteOthers();
     this.replicator.start();
     this.startBeacon();
     // granted by the registry (the claim came through it): the lease is renewed from now on
@@ -885,44 +950,74 @@ export class Nodes {
   }
 
   /**
-   * This node takes the role at `epoch`: after a failover wait, or handed over by the
-   * primary. With the registry reachable the role is claimed there first: a failover asks
-   * at this node's own epoch (the server lands a new holder above the old one's), a
-   * takeover at the epoch the primary handed over. Refused, a failover seeks the holder and
-   * a takeover answers `conflict` to the primary that asked.
+   * The primary handed the role here by the user's choice (`node.takeover`). With the registry
+   * reachable the role is claimed there first, at the epoch the primary handed over; refused,
+   * the primary that asked hears `conflict`.
    */
-  private async promoteSelf(epoch: number, cause: "failover" | "takeover"): Promise<void> {
+  private async promoteSelf(epoch: number): Promise<void> {
     if (this.role.role === "primary") return;
     if (this.arbiterActive()) {
       const arb = this.arbiter()!;
       let answer: Awaited<ReturnType<Arbiter["claim"]>>;
       try {
-        answer = await arb.claim(cause === "takeover" ? epoch : this.role.epoch);
+        answer = await arb.claim(epoch);
       } catch (e) {
-        if (cause === "takeover") throw new RpcError("unavailable", `the registry did not answer the claim: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
-        this.log.warn("the registry did not answer the failover claim; waiting again", { error: e instanceof Error ? e.message : String(e) });
-        if (this.role.state === "waiting") this.startWaiting();
-        return;
+        throw new RpcError("unavailable", `the registry did not answer the claim: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
       }
       if (!answer.granted) {
-        this.log.warn("the registry refused the promotion; another node holds the role", { holder: answer.primary, epoch: answer.epoch, cause });
+        this.log.warn("the registry refused the takeover; another node holds the role", { holder: answer.primary, epoch: answer.epoch });
         if (answer.epoch !== undefined) this.role.setEpoch(answer.epoch);
-        if (cause === "takeover") throw new RpcError("conflict", `the registry holds the primary role at ${answer.primary ?? "another node"}`);
-        this.clearTimers();
-        if (answer.primary) this.aimAt(answer.primary, answer.epoch);
-        if (this.role.state !== "seeking") this.role.go("seeking");
-        this.startSeeking();
-        return;
+        throw new RpcError("conflict", `the registry holds the primary role at ${answer.primary ?? "another node"}`);
       }
       if (answer.epoch !== undefined) epoch = Math.max(epoch, answer.epoch);
-      this.log.info("the registry granted the promotion", { epoch, cause });
+      this.log.info("the registry granted the takeover", { epoch });
     }
+    await this.takeRole(epoch, "takeover");
+  }
+
+  /**
+   * The user chose this machine while it reaches no primary: it takes the role a choice above
+   * every one it knows of, its own epoch's and, when the registry can be asked, the holder's
+   * there. The old primary, back, hears the later choice and links here.
+   */
+  private async chooseSelf(): Promise<void> {
+    if (this.role.hands) throw new RpcError("denied", "a machine joined as hands is never the primary");
+    if (!this.membership || this.role.state === "unlinked") throw new RpcError("conflict", "this machine is in no cluster");
+    if (!this.role.is("seeking", "linked")) throw new RpcError("conflict", "the role is changing here already");
+    if (this.outbound.linked()) {
+      const name = this.outbound.primaryId ? (this.registry.get(this.outbound.primaryId)?.name ?? this.outbound.primaryId) : "the primary";
+      throw new RpcError("conflict", `this machine is linked to ${name}: choose it from there`);
+    }
+    let epoch = this.role.epoch + 1;
+    if (this.arbiterActive()) {
+      const arb = this.arbiter()!;
+      let answer: Awaited<ReturnType<Arbiter["claim"]>>;
+      try {
+        // a secondary's register names the holder and takes nothing: the choice lands above it
+        const holder = await arb.register(this.self(), this.role.epoch);
+        if (holder.epoch !== undefined) epoch = Math.max(epoch, holder.epoch + 1);
+        answer = await arb.claim(epoch);
+      } catch (e) {
+        throw new RpcError("unavailable", `the registry did not answer: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
+      }
+      if (!answer.granted) throw new RpcError("conflict", `the registry holds the primary role at ${answer.primary ?? "another node"}, chosen later`);
+      if (answer.epoch !== undefined) epoch = Math.max(epoch, answer.epoch);
+    }
+    if (!this.role.is("seeking", "linked") || this.outbound.linked()) throw new RpcError("conflict", "the primary came back while the choice was made: choose it from there");
+    this.log.warn("the user chose this machine as the primary", { epoch });
+    await this.takeRole(epoch, "chosen");
+  }
+
+  /** This node is the primary from here on, at `epoch`: handed over, or chosen while it reached no primary. */
+  private async takeRole(epoch: number, cause: "takeover" | "chosen"): Promise<void> {
     this.clearTimers();
     this.seeker.abandon();
+    this.seekingSince = undefined;
+    this.settled();
     this.role.setEpoch(epoch);
     this.role.go("promoting");
     this.log.warn("promoting to primary", { epoch: this.role.epoch, cause });
-    if (cause === "failover") this.outbound.close("promoting");
+    if (cause === "chosen") this.outbound.close("promoting");
     this.replica?.dispose();
     this.replica = undefined;
     this.deps.store.meta.set("epoch", String(this.role.epoch));
@@ -933,16 +1028,51 @@ export class Nodes {
     await this.deps.startBrain();
     this.deps.scheduler.start();
     await this.deps.editable.rescan();
-    this.closeOwnClients("promoted to primary");
+    // the client that chose it is answered first
+    this.closeOwnClients("promoted to primary", cause === "chosen");
     this.announce();
+  }
+
+  /**
+   * `node.rename`: the name the user gives a machine. This machine's is kept here; a linked
+   * node's is set on it over its link, from the primary, and comes back up as its row.
+   */
+  async rename(id: string, name: string): Promise<void> {
+    if (id === this.deps.identity.id) {
+      this.renameSelf(name);
+      return;
+    }
+    if (this.role.role !== "primary") throw new RpcError("unavailable", "another machine is named through the primary, which this machine does not reach now");
+    if (!this.inbound.linked(id)) throw this.registry.get(id) ? new RpcError("unavailable", `${this.registry.get(id)!.name} is not connected: name it while it is`) : new RpcError("not_found", `no node ${id}`);
+    await this.inbound.forward(id, "node.rename", { id, name });
+  }
+
+  /** This machine's name, as the user gave it: kept in the store, over `[node] name` and the host's, and announced. */
+  private renameSelf(name: string): void {
+    const clean = name.trim();
+    if (!clean || clean === this.deps.identity.name) return;
+    this.deps.identity.name = clean;
+    this.deps.store.meta.set("node_name", clean);
+    this.log.info("this machine's name", { name: clean });
+    this.announce();
+    // the other nodes' copies of the registry follow, so an app that sees one of them alone names this machine right too
+    if (this.role.role === "primary") this.inbound.broadcastRegistry();
   }
 
   /** The node this primary is handing the role to, while the takeover is in flight. */
   private handingOver?: string;
 
-  /** The user hands the role to a linked backup: it takes the next epoch, then this node steps down to it. */
+  /**
+   * The user makes a machine the primary. On the primary: a linked backup takes the next
+   * epoch, then this node steps down to it. On a secondary that reaches no primary: this
+   * machine, chosen, takes the role.
+   */
   async promote(id: string): Promise<void> {
-    if (this.role.role !== "primary") throw new RpcError("conflict", "only the primary can hand the role over");
+    if (this.role.role !== "primary") {
+      if (id !== this.deps.identity.id) throw new RpcError("conflict", "only the primary hands the role to another machine; a machine that reaches no primary can only be made the primary itself");
+      await this.chooseSelf();
+      return;
+    }
     if (id === this.deps.identity.id) throw new RpcError("invalid", "this node is the primary already");
     const peer = this.inbound.peer(id);
     if (!peer?.open) throw new RpcError("not_found", `node ${id} is not linked`);
@@ -971,6 +1101,7 @@ export class Nodes {
     this.stopRegistryHeartbeat();
     this.role.setEpoch(epoch);
     this.deps.store.meta.set("epoch", String(this.role.epoch));
+    this.keepChosen(to);
     await this.deps.stopBrain();
     this.deps.scheduler.stop();
     this.replicator.stop();
@@ -992,6 +1123,8 @@ export class Nodes {
   private startSeeking(): void {
     if (this.stopped) return;
     if (this.role.state !== "seeking") this.role.go("seeking");
+    // the moment this node's own clients' hellos wait for the link, from the first try
+    this.seekingSince ??= this.now();
     this.startQueries();
     this.kickSeek();
   }
@@ -1034,56 +1167,33 @@ export class Nodes {
   }
 
   /**
-   * A round found no primary. A backup asks the registry at its own epoch (granted only once
-   * the holder's lease lapsed) and takes the role when granted; the network is asked again.
+   * A round found no primary. The registry, when it can be asked, names the holder to try
+   * next (a register at this node's role takes nothing); the network is asked again. Nothing
+   * here takes the role: only the user does.
    */
   private async missed(): Promise<boolean> {
-    if (this.role.backup && this.arbiterActive()) {
-      const arb = this.arbiter()!;
+    if (this.arbiterActive()) {
       try {
-        const answer = await arb.claim(this.role.epoch);
+        const answer = await this.arbiter()!.register(this.self(), this.role.epoch);
         if (this.role.state !== "seeking" || this.stopped) return true;
-        if (answer.granted) {
-          this.log.warn("no primary reachable and the registry's lease lapsed: taking the role", { epoch: answer.epoch });
-          void this.promoteGranted(answer.epoch ?? this.role.epoch + 1);
-          return true;
-        }
-        if (answer.primary) this.aimAt(answer.primary, answer.epoch);
+        if (answer.primary && answer.primary !== this.deps.identity.id) this.aimAt(answer.primary, answer.epoch);
       } catch (e) {
-        this.log.debug("registry claim after a fruitless seek failed", { error: e instanceof Error ? e.message : String(e) });
+        this.log.debug("registry register after a fruitless seek failed", { error: e instanceof Error ? e.message : String(e) });
       }
     }
     this.query();
     return false;
   }
 
-  /** A grant the registry gave a seeking backup: the role, taken without a second claim. */
-  private async promoteGranted(epoch: number): Promise<void> {
+  private onLinked(primary: string, epoch: number, _via: Via): void {
     this.clearTimers();
-    this.seeker.abandon();
-    this.role.setEpoch(epoch);
-    this.role.go("promoting");
-    this.log.warn("promoting to primary", { epoch: this.role.epoch, cause: "registry" });
-    this.replica?.dispose();
-    this.replica = undefined;
-    this.deps.store.meta.set("epoch", String(this.role.epoch));
-    const released = this.deps.tasks.releaseUnknownAsks((id) => this.deps.asks.get(id)?.status === "open");
-    if (released > 0) this.log.info("tasks released from asks that went with the old primary", { count: released });
-    this.becomePrimary({ initial: false });
-    await this.deps.startBrain();
-    this.deps.scheduler.start();
-    await this.deps.editable.rescan();
-    this.closeOwnClients("promoted to primary");
-    this.announce();
-  }
-
-  private onLinked(primary: string, epoch: number, via: Via): void {
-    this.clearTimers();
-    this.lostVia = via;
     this.role.setEpoch(epoch);
     this.deps.store.meta.set("epoch", String(this.role.epoch));
     const row = this.registry.get(primary);
     if (row) this.deps.store.meta.set("last_primary", JSON.stringify({ id: primary, epoch, endpoints: row.endpoints }));
+    this.keepChosen(primary);
+    this.seekingSince = undefined;
+    this.settled();
     if (this.role.state !== "linked") this.role.go("linked");
     if (this.role.backup) {
       this.replica = new Replica({
@@ -1102,6 +1212,7 @@ export class Nodes {
     this.announce();
   }
 
+  /** The link to the primary went: this node seeks it again, and its own clients' hellos wait a moment for it. */
   private onLost(reason: string): void {
     if (this.stopped || this.role.role === "primary") return;
     const primary = this.outbound.primaryId ?? this.registry.primary()?.id;
@@ -1109,11 +1220,11 @@ export class Nodes {
     this.replica?.dispose();
     this.replica = undefined;
     if (this.role.state === "linked") {
-      if (this.role.backup) this.startWaiting();
-      else this.startSeeking();
+      this.log.warn("link to the primary lost; seeking it again", { primary, reason });
+      this.seekingSince = undefined;
+      this.startSeeking();
     }
     this.announce();
-    void reason;
   }
 
   /** The primary said it is going: to `primary` if it named one, else whoever answers. */
@@ -1126,42 +1237,6 @@ export class Nodes {
     if (primary) {
       this.preferred = this.registry.endpointsOf(primary)[0];
       this.role.configuredBackup = this.role.backup;
-    }
-  }
-
-  /** A backup without a primary: counts down `failover_ms` times its rank, still listening for one. */
-  private startWaiting(): void {
-    if (this.role.state !== "waiting") this.role.go("waiting");
-    const wait = this.deps.config.nodes.failover_ms * this.deps.config.node.backup_rank;
-    this.log.warn("primary lost; waiting before promotion", { waitMs: wait, rank: this.deps.config.node.backup_rank, via: this.lostVia ?? "direct" });
-    this.startQueries();
-    if (this.waitTimer) clearTimeout(this.waitTimer);
-    this.waitTimer = setTimeout(() => {
-      this.waitTimer = undefined;
-      if (this.role.state !== "waiting" || this.stopped) return;
-      // A link that ran through a tunnel says nothing about the primary's health once the server is out of reach: keep waiting.
-      if (!mayPromote({ lostVia: this.lostVia, arbiterActive: this.arbiterActive() })) {
-        this.log.warn("the primary was linked through the relay and the registry cannot be asked; waiting on", { waitMs: wait });
-        this.startWaiting();
-        return;
-      }
-      void this.promoteSelf(this.role.epoch + 1, "failover");
-    }, wait);
-    if (typeof this.waitTimer === "object" && "unref" in this.waitTimer) this.waitTimer.unref();
-    // Known endpoints are asked directly too: a primary that came back may not have beaconed yet.
-    void this.probeKnown();
-  }
-
-  private async probeKnown(): Promise<void> {
-    for (const e of this.endpointCandidates()) {
-      if (this.role.state !== "waiting") return;
-      try {
-        const a = await this.outbound.probe(e);
-        if (a.role === "primary") this.heardPrimary({ endpoint: e, nodeId: a.nodeId, epoch: a.epoch, heardAt: this.now() });
-        else if (a.primary) this.heardPrimary({ endpoint: a.primary, nodeId: undefined, epoch: a.epoch, heardAt: this.now() });
-      } catch {
-        // not there
-      }
     }
   }
 
@@ -1184,17 +1259,14 @@ export class Nodes {
       }
       case "primary": {
         if (c.nodeId === this.handingOver) return;
-        if ((c.epoch ?? 0) > mine && c.nodeId) {
-          this.log.warn("a primary of a higher epoch is live; stepping down to it", { endpoint: c.endpoint, node: c.nodeId, epoch: c.epoch });
-          void this.stepDown(c.nodeId, [c.endpoint], c.epoch!);
+        if ((c.epoch ?? 0) <= mine || !c.nodeId) return;
+        // A later choice of the user's moves the role; an older node that gave itself a higher epoch while it was cut off does not.
+        if (!c.chosen) {
+          this.log.warn("a primary of a higher epoch the user did not choose is live; this node keeps the role", { endpoint: c.endpoint, node: c.nodeId, epoch: c.epoch, mine });
+          return;
         }
-        return;
-      }
-      case "waiting": {
-        this.preferred = c.endpoint;
-        this.clearTimers();
-        this.role.go("seeking");
-        this.startSeeking();
+        this.log.warn("the user chose another primary later; stepping down to it", { endpoint: c.endpoint, node: c.nodeId, epoch: c.epoch });
+        void this.stepDown(c.nodeId, [c.endpoint], c.epoch!);
         return;
       }
       case "seeking": {
@@ -1341,6 +1413,7 @@ export class Nodes {
       cluster: m.cluster,
       primary: { id: this.deps.identity.id, name: this.deps.identity.name },
       role: row.role ?? "full",
+      ...(row.name !== UNNAMED_NODE ? { name: row.name } : {}),
       ...(row.expiresAt !== undefined ? { expiresAt: row.expiresAt } : {}),
       ...(endpoints.length > 0 && spki !== undefined ? { lan: { endpoints, spki } } : {}),
       ...(relay ? { relay } : {}),
@@ -1430,6 +1503,9 @@ export class Nodes {
       writeLinkFile(this.deps.paths.linkFile, file);
       this.membership = file;
       this.role.hands = file.role === "hands";
+      // the name the user gave this machine in the invite is its name, unless the user named it here already
+      if (answer.name && this.deps.store.meta.get("node_name") === undefined && this.deps.config.node.name === undefined) this.renameSelf(answer.name);
+      this.keepChosen(answer.primary.id);
       // the folders shared are this node's workspaces, so the primary has somewhere to start a session
       if (paths.length > 0) this.deps.workspaces.fromScope({ kind: "workspaces", paths });
       this.log.info("joined a cluster", { primary: answer.primary.id, name: answer.primary.name, grant: answer.grant, role: answer.role, via: answer.via, relay: answer.relay !== undefined });
@@ -1571,6 +1647,8 @@ export class Nodes {
     this.clearTimers();
     this.stopMembershipClock();
     this.seeker.abandon();
+    this.seekingSince = undefined;
+    this.settled();
     this.role.go("unlinked");
     closeLink();
     this.replica?.dispose();
@@ -1662,7 +1740,7 @@ export class Nodes {
       .probe(endpoint)
       .then((a) => {
         if (this.stopped || a.role !== "primary") return;
-        this.heardPrimary({ endpoint, nodeId: a.nodeId, epoch: a.epoch, heardAt: this.now() });
+        this.heardPrimary({ endpoint, nodeId: a.nodeId, epoch: a.epoch, ...(a.chosen ? { chosen: true } : {}), heardAt: this.now() });
       })
       .catch((e: unknown) => this.log.debug("a datagram's endpoint failed its probe", { endpoint, error: e instanceof Error ? e.message : String(e) }))
       .finally(() => this.probing.delete(endpoint));
@@ -1676,7 +1754,7 @@ export class Nodes {
     if (!this.discovery || this.queryTimer) return;
     const tick = () => {
       this.queryTimer = undefined;
-      if (this.stopped || !this.role.is("seeking", "waiting", "claiming")) return;
+      if (this.stopped || !this.role.is("seeking", "claiming")) return;
       this.query();
       this.queryTimer = setTimeout(tick, this.deps.config.nodes.discovery_interval_ms);
       if (typeof this.queryTimer === "object" && "unref" in this.queryTimer) this.queryTimer.unref();

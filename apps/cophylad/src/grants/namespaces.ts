@@ -1,7 +1,7 @@
 // The kv namespaces the grants live in. `grants` is minted on the primary and replicated with
-// the rest of its kv, so a backup that takes over knows every phone and node; `grants.local`
-// is minted on any other node (a phone paired on a secondary) and never leaves it; `cluster`
-// holds the cluster's id. They are the daemon's own: the brain's store methods refuse them,
+// the rest of its kv, so a backup the user makes the primary knows every phone and node;
+// `grants.local` is minted on any other node (a phone paired on a secondary) and never leaves
+// it; `cluster` holds the cluster's id. They are the daemon's own: the brain's store methods refuse them,
 // and so they refuse `controllers`, where the paired phones lived before grants,
 // `listeners`, whose fires the platform counts (the brain goes through `listener.*`), and
 // `voice.origins`, the device each user message came from, which no backup carries.

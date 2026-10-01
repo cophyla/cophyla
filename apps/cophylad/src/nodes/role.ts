@@ -1,23 +1,23 @@
-// The role state machine. A node configured primary starts by CLAIMING (listening for a
-// live primary of a higher epoch before it takes the role) unless it has never heard of
-// another node and cannot discover one; a secondary starts SEEKING. LINKED is a secondary
-// with a live link; WAITING is a backup whose primary is gone, counting down to PROMOTE;
-// STEP_DOWN hands the role to another node. UNLINKED is a node in no cluster, waiting for an
-// invite to redeem; a node that leaves its cluster goes back to it. The machine holds the
-// state and the epoch and checks each transition; the nodes module does the work each state
-// means.
+// The role state machine. The primary is the machine the user chose, and the epoch counts
+// the user's choices. The chosen node starts by CLAIMING (listening for a live primary of a
+// higher epoch, a later choice, before it takes the role) unless it has never heard of
+// another node and cannot discover one; every other node starts SEEKING the chosen one.
+// LINKED is a secondary with a live link; one that loses it seeks again, and never takes the
+// role on its own. PROMOTING is the user's choice landing here; STEP_DOWN hands the role to
+// the node the user chose. UNLINKED is a node in no cluster, waiting for an invite to redeem;
+// a node that leaves its cluster goes back to it. The machine holds the state and the epoch
+// and checks each transition; the nodes module does the work each state means.
 
 import type { NodeRole } from "@cophyla/protocol";
 
-export type RoleState = "unlinked" | "claiming" | "primary" | "seeking" | "linked" | "waiting" | "promoting" | "stepping_down" | "stopped";
+export type RoleState = "unlinked" | "claiming" | "primary" | "seeking" | "linked" | "promoting" | "stepping_down" | "stopped";
 
 const ALLOWED: Record<RoleState, RoleState[]> = {
   unlinked: ["seeking", "stopped"],
   claiming: ["primary", "seeking", "stopped", "unlinked"],
   primary: ["stepping_down", "stopped"],
-  seeking: ["linked", "waiting", "stopped", "promoting", "unlinked"],
-  linked: ["seeking", "waiting", "promoting", "stopped", "unlinked"],
-  waiting: ["seeking", "promoting", "stopped", "unlinked"],
+  seeking: ["linked", "stopped", "promoting", "unlinked"],
+  linked: ["seeking", "promoting", "stopped", "unlinked"],
   promoting: ["primary", "stopped"],
   stepping_down: ["seeking", "stopped"],
   stopped: [],
@@ -48,7 +48,7 @@ export class RoleMachine {
     return this.stateValue === "primary" || this.stateValue === "promoting" ? "primary" : "secondary";
   }
 
-  /** Whether this node stands by as a backup: configured so, or a primary that stepped down; never a node joined as hands. */
+  /** Whether this node holds the replica, so the user can make it the primary with the state: configured so, or a primary that stepped down; never a node joined as hands. */
   get backup(): boolean {
     return !this.hands && (this.configured === "primary" || this.configuredBackup);
   }

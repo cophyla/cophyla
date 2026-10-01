@@ -162,15 +162,17 @@ describe("config", () => {
       discovery_interval_ms: 2000,
       beacon_ms: 5000,
       heartbeat_ms: 5000,
-      failover_ms: 15000,
       claim_wait_ms: 3000,
       reconnect_ms: 2000,
       reconnect_max_ms: 30000,
       hello_timeout_ms: 5000,
+      relink_grace_ms: 8000,
       relay: true,
       registry_heartbeat_ms: 15000,
     });
     expect(c.node.backup_rank).toBe(1);
+    // the failover timer is gone (the user chooses the primary): an old config's line is ignored
+    expect(parseConfig("[nodes]\nfailover_ms = 15000\n").nodes).not.toHaveProperty("failover_ms");
     const s = parseConfig('[node]\nrole = "secondary"\nbackup = true\nbackup_rank = 2\n[nodes]\nprimary = "192.168.1.44:4818"\ntoken = "0123456789abcdef0123456789abcdef"\ndiscovery = false\n');
     expect(s.nodes.primary).toBe("192.168.1.44:4818");
     expect(s.nodes.token).toBe("0123456789abcdef0123456789abcdef");

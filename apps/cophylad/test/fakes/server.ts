@@ -108,6 +108,8 @@ export interface FakeServerOptions {
   /** The registry's lease and close grace, shorter in a failover test. */
   leaseMs?: number;
   closeGraceMs?: number;
+  /** The largest WebSocket message taken, as the real server's 4 MiB; Bun's default otherwise. */
+  maxPayloadLength?: number;
 }
 
 export class FakeServer {
@@ -115,6 +117,8 @@ export class FakeServer {
   readonly kid: string;
   /** Every link method seen, in order. */
   readonly seen: string[] = [];
+  /** Every socket that closed: a link's node or a relay peer, with the close's code. */
+  readonly closes: { kind: string; node?: string; code: number; reason: string }[] = [];
   /** Every HTTP request: `METHOD /path`. */
   readonly http: { method: string; path: string; headers: Record<string, string> }[] = [];
   /** Every `stt.transcribe`: the sample count and the language. */
@@ -192,7 +196,7 @@ export class FakeServer {
   lease: Lease | undefined;
   readonly nodeRows = new Map<string, { role: string; epoch: number; via: string }>();
   /** Every `registry.*` answer, for the tests. */
-  readonly registryLog: { method: string; node: string; answer: unknown }[] = [];
+  readonly registryLog: { method: string; node: string; answer: unknown; chosen?: boolean }[] = [];
   private tunnels = new Set<Tunnel>();
   private nextRequest = 0;
   private pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -211,11 +215,13 @@ export class FakeServer {
       port: 0,
       fetch: (req, server) => this.fetch(req, server),
       websocket: {
+        ...(opts.maxPayloadLength !== undefined ? { maxPayloadLength: opts.maxPayloadLength } : {}),
         open: (ws) => {
           this.sockets.add(ws);
         },
         message: (ws, message) => this.message(ws, typeof message === "string" ? message : Buffer.from(message).toString("utf8")),
-        close: (ws) => {
+        close: (ws, code, reason) => {
+          this.closes.push({ kind: ws.data.kind, ...(ws.data.node ? { node: ws.data.node } : {}), code, reason });
           this.sockets.delete(ws);
           this.socketGone(ws);
         },
@@ -279,12 +285,13 @@ export class FakeServer {
     if (this.lease) this.lease.until = this.now() - 1;
   }
 
-  /** The real server's rule: the tie rule only for two primaries meeting (a register), never for a claim. */
-  private arbitrate(claim: { node: string; epoch: number }, mode: "claim" | "register" = "claim"): boolean {
+  /** The real server's rule: only a chosen higher epoch takes a live lease; the tie rule only for two chosen primaries meeting (a register), never for a claim. */
+  private arbitrate(claim: { node: string; epoch: number; chosen: boolean }, mode: "claim" | "register" = "claim"): boolean {
     const l = this.lease;
     const now = this.now();
     if (!l || l.until <= now) return true;
     if (l.node === claim.node) return true;
+    if (!claim.chosen) return false;
     if (claim.epoch > l.epoch) return true;
     if (mode === "register" && claim.epoch === l.epoch && claim.node < l.node) return true;
     return false;
@@ -737,9 +744,9 @@ export class FakeServer {
         this.nodeRows.set(node.id, { role: node.role, epoch, via: node.via });
         let answer: unknown;
         if (node.role !== "primary") answer = this.holder();
-        else if (this.arbitrate({ node: node.id, epoch }, "register")) answer = this.grant(node.id, epoch);
+        else if (this.arbitrate({ node: node.id, epoch, chosen: p["chosen"] === true }, "register")) answer = this.grant(node.id, epoch);
         else answer = { primary: this.lease!.node, epoch: this.lease!.epoch };
-        this.registryLog.push({ method, node: node.id, answer });
+        this.registryLog.push({ method, node: node.id, answer, ...(p["chosen"] === true ? { chosen: true } : {}) });
         return answer;
       }
       case "registry.heartbeat": {
@@ -754,8 +761,8 @@ export class FakeServer {
         if (this.plan !== "pro") throw fail("denied", "the plan has no relay: the registry is part of it");
         const node = String(p["node"] ?? "");
         const epoch = typeof p["epoch"] === "number" ? p["epoch"] : 0;
-        const answer = this.arbitrate({ node, epoch }) ? { granted: true, ...this.grant(node, epoch) } : { granted: false, primary: this.lease!.node, epoch: this.lease!.epoch };
-        this.registryLog.push({ method, node, answer });
+        const answer = this.arbitrate({ node, epoch, chosen: p["chosen"] === true }) ? { granted: true, ...this.grant(node, epoch) } : { granted: false, primary: this.lease!.node, epoch: this.lease!.epoch };
+        this.registryLog.push({ method, node, answer, ...(p["chosen"] === true ? { chosen: true } : {}) });
         return answer;
       }
       case "push.register": {
