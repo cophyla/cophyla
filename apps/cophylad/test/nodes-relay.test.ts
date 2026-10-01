@@ -71,6 +71,28 @@ describe("relayed clients", () => {
     primary = undefined;
   }, 30_000);
 
+  test("a relayed client hears its hello's answer first, then the primary's welcome", async () => {
+    // The desktop shell drops whatever comes before its hello's answer: the primary's welcome,
+    // which comes down the link ahead of the answer, must reach the client after it.
+    primary = await startPrimary();
+    const desk = primary.d.workspaces.put({ node: primary.d.identity.id, path: primary.d.home, name: "desk" });
+    secondary = await startSecondary(primary);
+    await linked(secondary);
+    const ws = new WebSocket(secondary.api.url);
+    const frames: { id?: unknown; method?: string; params?: { id?: string }; result?: unknown }[] = [];
+    ws.addEventListener("message", (ev) => frames.push(JSON.parse(String(ev.data))));
+    await new Promise((r) => ws.addEventListener("open", r, { once: true }));
+    ws.send(JSON.stringify({ jsonrpc: "2.0", id: "hello", method: "hello", params: { token: secondary.token, kind: "ui", name: "laptop app", audio: { in: false, out: false } } }));
+    try {
+      await waitFor(() => frames.some((f) => f.method === "workspace.state" && f.params?.id === desk.id));
+      expect(frames[0]!.id).toBe("hello");
+      expect((frames[0]!.result as { node: string }).node).toBe(primary.d.identity.id);
+      expect(frames.slice(1).some((f) => f.method === "node.state" && f.params?.id === primary!.d.identity.id)).toBe(true);
+    } finally {
+      ws.close();
+    }
+  }, 30_000);
+
   test("a linked secondary's controller listener relays a paired phone, and revoking it closes the relayed socket", async () => {
     primary = await startPrimary();
     secondary = await startSecondary(primary, { controller: true });

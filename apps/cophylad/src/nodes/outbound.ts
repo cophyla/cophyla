@@ -719,7 +719,8 @@ export class Outbound {
     open: async (peerId, info, origin, port, as = {}) => {
       const peer = this.peer;
       if (!peer?.open) throw new RpcError("unavailable", "not linked");
-      // Registered before the request: the primary's welcome frames come down before its answer does.
+      // Registered before the request: the primary's welcome frames come down before its answer
+      // does, and the port holds them until the client has its answer.
       this.relayed.set(peerId, port);
       try {
         const params = { peer: peerId, client: info, origin, ...(as.grant !== undefined ? { grant: as.grant } : {}), ...(as.access !== undefined ? { access: as.access } : {}) };

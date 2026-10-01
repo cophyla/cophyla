@@ -641,7 +641,13 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       if (relay && !local && !relay.linked()) await relay.settle?.();
       if (relay?.linked() && !local) {
         const peer = ws.data.provisional;
-        const port = portOf(ws);
+        // The primary's welcome comes down the link ahead of its answer, and a client reads
+        // nothing before its hello's result (the desktop shell drops it): the frames wait here
+        // until the result has gone.
+        const direct = portOf(ws);
+        const held: [string, SendOptions | undefined][] = [];
+        let holding = true;
+        const port: Port = { ...direct, send: (data, o) => (holding ? void held.push([data, o]) : direct.send(data, o)) };
         const info: HelloInfo = { kind: p.kind, audio: p.audio, ...(p.name !== undefined ? { name: p.name } : {}), ...(client.node !== undefined ? { node: client.node } : {}) };
         // The phone's grant goes up with it: the primary holds it to its own row, or to this access.
         const relayedResult = await relay.open(peer, info, ws.data.origin, port, controller ? { grant: controller.id, access } : {});
@@ -652,6 +658,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         sockets.set(local.id, ws);
         registry.add(local, port, "relayed");
         send(ws, success(req.id, relayedResult));
+        holding = false;
+        for (const [data, o] of held.splice(0)) direct.send(data, o);
         log.info("client connected, relayed to the primary", { client: relayedResult.client.id, kind: client.kind, name: client.name, node: relayedResult.node });
         return;
       }
