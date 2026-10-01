@@ -52,6 +52,8 @@ export interface BrainMethod<N extends CapabilityRequestName> {
   ask?: (params: CapabilityParams<N>) => { title: string; detail?: string };
   /** The request is on something the brain started itself, which a built-in rule may allow. */
   own?: (params: CapabilityParams<N>) => boolean;
+  /** The request lets a session do more unasked than asking before each edit, which no built-in rule allows. */
+  loosens?: (params: CapabilityParams<N>) => boolean;
   handler: (params: CapabilityParams<N>, ctx: BrainMethodContext) => Promise<CapabilityResult<N>> | CapabilityResult<N>;
 }
 
@@ -102,9 +104,19 @@ export async function profileLimits(profiles: Profiles, limits: LimitsReader | u
 
 const A_HARNESS: Record<string, string> = { claude: "a Claude", codex: "a Codex", muse: "a Muse", acp: "an ACP" };
 
-/** The spawn ask's words, for a node whose rules ask before the brain starts a session. */
-export function spawnAsk(p: { harness: string; workspace: string; prompt: string }, workspace: string | undefined): { title: string; detail: string } {
-  return { title: `Start ${A_HARNESS[p.harness] ?? `a ${p.harness}`} session in ${workspace ?? p.workspace}?`, detail: p.prompt };
+/**
+ * The spawn ask's words, for a node whose rules ask before the brain starts a session, or a
+ * start in a mode looser than asking before each edit: the mode, and what the session does in it.
+ */
+export function spawnAsk(p: { harness: string; workspace: string; prompt: string; mode?: LaunchMode }, workspace: string | undefined): { title: string; detail: string } {
+  const start = `Start ${A_HARNESS[p.harness] ?? `a ${p.harness}`} session in ${workspace ?? p.workspace}`;
+  if (p.mode === undefined) return { title: `${start}?`, detail: p.prompt };
+  return { title: `${start} in ${MODE_WORDS[p.mode]} mode?`, detail: `${IN_MODE[p.mode]}\n\n${p.prompt}` };
+}
+
+/** A start in a mode that lets the session do more unasked than asking before each edit. */
+export function spawnLoosens<T extends { mode?: LaunchMode }>(p: T): p is T & { mode: LaunchMode } {
+  return p.mode !== undefined && sessionModeRisk(p.mode) === "exec";
 }
 
 /** What a session does in each mode, for the ask before the brain puts it there. */
@@ -174,6 +186,8 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     "session.spawn": {
       target: (p) => p.workspace,
+      // The built-in rule lets the brain start a session that asks before each edit; a looser one is the user's to approve.
+      loosens: spawnLoosens,
       ask: (p) => spawnAsk(p, deps.workspaces.get(p.workspace)?.name),
       handler: async (p) => {
         if (p.harness === "acp") throw new RpcError("unsupported", "a generic ACP agent arrives in a later milestone");

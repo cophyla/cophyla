@@ -64,7 +64,8 @@ export const CapabilityHello = z.object({
    * `session.send` takes `task`, `clear` and `mode`, and `session.spawn` takes `mode`;
    * `task.ready.cleared`: an unblocked `task.ready` names the blocker that cleared;
    * `task.list.parent`: `task.list` filters by `parent`; `session.git`: the brain reads a
-   * session's repository.
+   * session's repository; `spawn.mode`: `session.spawn` takes any of a Claude session's
+   * modes, one looser than asking before each edit under the user's ask.
    */
   features: z.array(z.string()).optional(),
 });
@@ -295,9 +296,9 @@ export const LlmResult = z.object({
 export type LlmResult = z.infer<typeof LlmResult>;
 
 /**
- * The modes a message or a start may put a Claude session in: none looser than asking before
- * each write, so a rule that lets the brain message a session never loosens it unasked. A
- * looser mode is `session.mode`'s, under its own ask.
+ * The modes a message may put a Claude session in: none looser than asking before each write,
+ * so a rule that lets the brain message a session never loosens it unasked. A looser mode is
+ * `session.mode`'s, or a start's, under an ask of its own.
  */
 export const WorkMode = z.enum(["default", "plan"]);
 export type WorkMode = z.infer<typeof WorkMode>;
@@ -377,8 +378,13 @@ export const capabilityRequests = {
       task: TaskId.optional(),
       /** The installation to start under; the harness's default profile on that node when absent. */
       profile: ProfileId.optional(),
-      /** A Claude session's mode, over the profile's launch. */
-      mode: WorkMode.optional(),
+      /**
+       * A Claude session's mode, over the profile's launch: `bypassPermissions` starts it with
+       * `--dangerously-skip-permissions`. One looser than asking before each edit (`sessionModeRisk`
+       * says `exec`) is never allowed by the built-in rule that lets the brain start a session:
+       * it asks, unless the user's own rules say otherwise.
+       */
+      mode: LaunchMode.optional(),
     }),
     result: z.object({ id: SessionId }),
   },

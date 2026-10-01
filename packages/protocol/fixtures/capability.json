@@ -2,7 +2,7 @@
   "hello": [
     { "protocolVersion": 1, "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary" },
     { "protocolVersion": 1, "platformVersion": "0.1.3", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary", "tz": "Europe/Istanbul" },
-    { "protocolVersion": 1, "platformVersion": "0.13.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary", "tz": "Europe/Istanbul", "features": ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git"] },
+    { "protocolVersion": 1, "platformVersion": "0.13.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "primary", "tz": "Europe/Istanbul", "features": ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode"] },
     { "protocolVersion": 1, "protocolRange": { "min": 1, "max": 1 }, "brainVersion": "0.1.0", "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "role": "brain" },
     { "protocolVersion": 1, "platformVersion": "0.1.0", "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "role": "secondary" }
   ],
@@ -215,7 +215,8 @@
         { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "add the store migration", "model": { "tier": "smart" }, "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" },
         { "harness": "acp", "agent": "gemini", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "write a tool" },
         { "harness": "codex", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "run the tests", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FBA" },
-        { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "plan section 1", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "plan" }
+        { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "plan section 1", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "plan" },
+        { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "build section 1", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "bypassPermissions" }
       ],
       "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }]
     },

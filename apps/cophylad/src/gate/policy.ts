@@ -20,6 +20,11 @@ export interface PolicyQuery {
   sessionKey?: string;
   /** The request is on something the principal started itself: a message to a session the brain started. */
   own?: boolean;
+  /**
+   * The request lets a session do more unasked than asking before each edit: a start in
+   * bypass permissions mode. No built-in rule allows it; the user's own rules still decide.
+   */
+  loosens?: boolean;
 }
 
 export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "config.class";
@@ -28,9 +33,10 @@ export type PolicySource = "control" | "system" | "session" | "remembered" | "co
  * The brain's own conversation and bookkeeping, allowed without a prompt: a brain that had
  * to ask before every reply could not converse. So is starting a session: the user asked for
  * it, and the session runs under their own account in their own terminal, where they watch it.
- * Anything else that reaches a session, a machine or the network stays under the class
- * default (`ask`) unless config says otherwise; `"brain:session.spawn" = "ask"` in
- * `[gate.rules]` puts the ask back.
+ * A start in a mode looser than asking before each edit is not covered (`loosens`): it falls
+ * to the class default, which asks. Anything else that reaches a session, a machine or the
+ * network stays under the class default (`ask`) unless config says otherwise;
+ * `"brain:session.spawn" = "ask"` in `[gate.rules]` puts the ask back.
  */
 export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:ui.say": "allow",
@@ -126,9 +132,11 @@ export class Policy {
       const d = this.config.rules[key];
       if (d) return { decision: d, source: "config.rule", rule: key };
     }
-    for (const key of keys) {
-      const d = BUILTIN_RULES[key] ?? (q.own ? BUILTIN_OWN_RULES[key] : undefined);
-      if (d) return { decision: d, source: "builtin.rule", rule: key };
+    if (!q.loosens) {
+      for (const key of keys) {
+        const d = BUILTIN_RULES[key] ?? (q.own ? BUILTIN_OWN_RULES[key] : undefined);
+        if (d) return { decision: d, source: "builtin.rule", rule: key };
+      }
     }
     const klass = this.config.policy[q.principal as Exclude<PrincipalKind, "system">];
     return { decision: klass[q.risk], source: "config.class" };

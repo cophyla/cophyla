@@ -155,7 +155,8 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   adopts the hosts already running, starts one on demand through `@tether-pty/client`, and
   knows every terminal by host, id and pid. A session cophylad starts is spawned there under
   its profile's directory (Claude's own `~/.claude` by leaving `CLAUDE_CONFIG_DIR` unset),
-  with the profile's launch and one `--settings <data>/claude/settings-<profile>.json` that
+  with the profile's launch (its mode replaced by the one `session.spawn` names, `bypassPermissions`
+  as `--dangerously-skip-permissions`) and one `--settings <data>/claude/settings-<profile>.json` that
   folds in the launch's own (`claude/start.ts`, `claude/launch-args.ts`), shows in the apps
   with no window of its own (`[tether].window_on_start` opens one at once; `session.focus`
   does when asked), and has its first prompt typed once it registers.
@@ -324,7 +325,10 @@ the platform's own under `apps/cophylad/models/` when absent, fetched once by
 `vector_max_rows` (vectors kept in memory, newest first) and `backfill_batch`. Every brain
 request is a gate action under the `brain`
 principal, so `[gate.rules] "brain:session.spawn" = "ask"` puts an agent start in front of
-the user.
+the user. A start in a mode looser than manual (`acceptEdits`, `auto`, `bypassPermissions`) is
+asked about without that rule: the built-in one does not cover it (`loosens` on the gate's
+query), so the class default decides unless `[gate.rules]` or a remembered answer does. A
+workspace node refuses one from the other cluster outright.
 
 `[brain] show_context = true` puts a Context button beside the chat's ⋮: `brain.context` asks
 the brain for `context.preview` (`BrainLink.request`, the one request the daemon makes of the

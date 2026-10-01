@@ -10,7 +10,7 @@
 // Rows leave without where the machine keeps a session's transcript, terminal or job.
 
 import { RpcError } from "@cophyla/protocol";
-import type { CapabilityRequestName, Hit, MetricsSample, Node, Session, WorkMode } from "@cophyla/protocol";
+import type { CapabilityRequestName, Hit, LaunchMode, MetricsSample, Node, Session, WorkMode } from "@cophyla/protocol";
 import { sendOptions } from "../brain-link/methods.ts";
 import type { BrainMethodTable } from "../brain-link/methods.ts";
 import type { AsksView } from "../gate/asks.ts";
@@ -93,7 +93,7 @@ export function guestServedTable(deps: GuestServeDeps, primaryId: string): Brain
     },
     "session.spawn": {
       target: (p: { workspace: string }) => p.workspace,
-      handler: async (p: { harness: string; workspace: string; prompt: string; model?: unknown; task?: string; mode?: WorkMode }) => {
+      handler: async (p: { harness: string; workspace: string; prompt: string; model?: unknown; task?: string; mode?: LaunchMode }) => {
         if (p.harness !== "claude" && p.harness !== "codex" && p.harness !== "muse") throw new RpcError("unsupported", `this node does not run ${p.harness} sessions`);
         try {
           const s = await deps.sessions.spawn(

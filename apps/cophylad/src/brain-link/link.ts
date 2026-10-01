@@ -36,7 +36,7 @@ import { ReplyStream } from "./stream.ts";
  * What this platform does beyond the protocol version, named in its hello: a brain relies on
  * one only when it is named (`CapabilityHello.features`).
  */
-export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git"] as const;
+export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode"] as const;
 
 export type BrainState = "down" | "starting" | "up" | "refused" | "stopped";
 
@@ -418,6 +418,7 @@ export class BrainLink {
     const risk = (impl as { risk?: (p: unknown) => string | undefined }).risk?.(p);
     const ask = (impl as { ask?: (p: unknown) => { title: string; detail?: string } }).ask?.(p);
     const own = (impl as { own?: (p: unknown) => boolean }).own?.(p) === true;
+    const loosens = (impl as { loosens?: (p: unknown) => boolean }).loosens?.(p) === true;
     if (name === "tool.run" && risk === undefined) {
       this.inflight.delete(key);
       throw new RpcError("not_found", `no tool ${(p as { name: string }).name}`);
@@ -437,6 +438,7 @@ export class BrainLink {
           ...(risk !== undefined ? { risk: risk as "read" | "write" | "exec" | "network" } : {}),
           ...(ask ? { ask } : {}),
           ...(own ? { own: true } : {}),
+          ...(loosens ? { loosens: true } : {}),
           ...(this.instanceIdValue ? { sessionKey: this.instanceIdValue } : {}),
           ...(this.lastEventId ? { correlation: this.lastEventId } : {}),
           ...(thread ? { thread: thread.id } : {}),

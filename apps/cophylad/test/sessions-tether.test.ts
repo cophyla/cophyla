@@ -720,7 +720,7 @@ describe("an agent CLI in a terminal no session stands for yet", () => {
 });
 
 describe("how a session cophylad starts is launched", () => {
-  const spawned = async (prompt: string, extra: { profile?: string; model?: { model: string } } = {}) => {
+  const spawned = async (prompt: string, extra: { profile?: string; model?: { model: string }; mode?: "plan" | "bypassPermissions" } = {}) => {
     const started = await mini.sessions.spawn({ harness: "claude", workspace, prompt, ...extra }, { profiles: mini.profiles });
     return { s: started, fs: [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.session"] === started.native.id)! };
   };
@@ -753,6 +753,21 @@ describe("how a session cophylad starts is launched", () => {
     const merged = JSON.parse(readFileSync(argv[argv.indexOf("--settings") + 1]!, "utf8"));
     expect(merged).toEqual({ permissions: { defaultMode: "auto" }, env: { A: "1" }, showClearContextOnPlanAccept: true });
     mini.profiles.update(profileId("fake"), { launch: null });
+  });
+
+  test("the mode a start names replaces the launch's: bypassing permissions is --dangerously-skip-permissions, the launch's other flags stay", async () => {
+    mini.profiles.update(profileId("fake"), { launch: { mode: "plan", args: ["--effort", "high"] } });
+    try {
+      const bypassing = (await spawned("Skip the prompts", { mode: "bypassPermissions" })).fs.spawn.argv;
+      expect(bypassing).toContain("--dangerously-skip-permissions");
+      expect(bypassing).not.toContain("--permission-mode");
+      expect(bypassing.slice(bypassing.indexOf("--effort"), bypassing.indexOf("--effort") + 2)).toEqual(["--effort", "high"]);
+      const planning = (await spawned("Plan first", { mode: "plan" })).fs.spawn.argv;
+      expect(planning.slice(planning.indexOf("--permission-mode"), planning.indexOf("--permission-mode") + 2)).toEqual(["--permission-mode", "plan"]);
+      expect(planning).not.toContain("--dangerously-skip-permissions");
+    } finally {
+      mini.profiles.update(profileId("fake"), { launch: null });
+    }
   });
 
   test("under Claude's own directory the variable is left unset, and an inherited one taken out", async () => {

@@ -66,8 +66,10 @@ process. They are the public contract; the design notes behind them are kept pri
   now, and the usual account and the launch set from the app (`null` hands either back).
   `HarnessProfile` gains `defaultBy`, `automatic` and `launch`, all optional and additive.
 - **Handing a session its work.** `session.send` gains `task`, `clear` and `mode`, and
-  `session.spawn` a `mode`; the mode is `WorkMode`, `default` or `plan` alone, so a message
-  never loosens one (a looser mode is `session.mode`'s, asked on its own). `task.ready` gains
+  `session.spawn` a `mode`. A message's mode is `WorkMode`, `default` or `plan` alone, so a
+  message never loosens one (a looser mode is `session.mode`'s, asked on its own). A start's is
+  any `LaunchMode`, `bypassPermissions` too: one looser than `default` is asked about whatever
+  built-in rule lets the brain start sessions, and the hello names it `spawn.mode`. `task.ready` gains
   `cleared`, the blocker that cleared; the task filter `parent`; `session.git {id, log?}` is a
   capability request too, and `log` (up to 20) adds `GitCommit`s on both protocols. The
   brain's `hello` gains `features`, naming what the platform does, since an older one ignores

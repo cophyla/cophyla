@@ -171,8 +171,8 @@ export interface SpawnParams {
   model?: ModelRef;
   task?: string;
   profile?: string;
-  /** A Claude session's mode, over the profile's launch. */
-  mode?: WorkMode;
+  /** A Claude session's mode, over the profile's launch: `bypassPermissions` is `--dangerously-skip-permissions`. */
+  mode?: PermissionMode;
 }
 
 export type AskCloseReason = "terminal" | "expired" | "aborted" | "stopped" | "daemon_stop";

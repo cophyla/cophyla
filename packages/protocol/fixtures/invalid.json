@@ -33,7 +33,7 @@
   { "schema": "client.requests.session.history.params", "why": "around negative", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "around": -1 } },
   { "schema": "client.requests.session.mode.params", "why": "a mode Claude Code does not have", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "yolo" } },
   { "schema": "capability.requests.session.send.params", "why": "a message cannot loosen a session's mode", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "go", "mode": "bypassPermissions" } },
-  { "schema": "capability.requests.session.spawn.params", "why": "a start cannot loosen a session's mode", "value": { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "go", "mode": "acceptEdits" } },
+  { "schema": "capability.requests.session.spawn.params", "why": "a mode Claude Code does not have", "value": { "harness": "claude", "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "prompt": "go", "mode": "yolo" } },
   { "schema": "capability.requests.session.git.params", "why": "more commits than the log lists", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "log": 21 } },
   { "schema": "client.requests.session.files.params", "why": "an empty list of folders", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": [] } },
   { "schema": "client.requests.session.files.result", "why": "an entry neither folder nor file", "value": { "root": "/srv", "dirs": [{ "dir": "", "entries": [{ "name": "dev", "kind": "device" }] }] } },

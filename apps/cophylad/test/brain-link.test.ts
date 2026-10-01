@@ -1,6 +1,7 @@
 // brain-link over the socket with the fake brain: the handshake and an audit row for every
 // brain request with `principal.kind = brain` and the event's correlation; an out-of-range
-// brain refused; `session.spawn` under an `ask` rule held as `pending` and answered; `cancel`
+// brain refused; `session.spawn` under an `ask` rule held as `pending` and answered, and one in
+// bypass permissions mode asked about under the built-in rule, started in it or declined; `cancel`
 // on a held request; `ui.ask` as a choice Ask whose answer comes back; `ui.say` quoting a
 // prior result verbatim with a source and an unknown cite left unresolved; `chat.delta` then
 // `chat.message` under one id for a completion flagged `reply`, nothing for one that is not,
@@ -114,7 +115,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git"] });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);
@@ -274,6 +275,55 @@ describe("brain-link", () => {
     const limits = await waitFor(() => brainFrames(log).find((f) => f.dir === "in" && f.frame["id"] === "r3" && f.frame["result"] !== undefined));
     expect(limits.frame["result"]).toEqual({ limits: {} });
     await c.request("ask.answer", { id: ask.id, option: "deny" });
+  });
+
+  test("by the built-in rule the brain starts a session in plan mode unasked; one in bypass permissions mode is asked about, then starts in it", async () => {
+    const { d, c } = await start(
+      ({ ws }) => ({
+        on: [
+          {
+            event: "user.message",
+            match: { text: "start" },
+            requests: [
+              { method: "session.spawn", params: { harness: "claude", workspace: ws, prompt: "read the code", mode: "plan" } },
+              { method: "session.spawn", params: { harness: "claude", workspace: ws, prompt: "build it", mode: "bypassPermissions" } },
+              { method: "ui.say", params: { blocks: [{ type: "text", text: "started $res[0].id $last.id" }] } },
+            ],
+          },
+        ],
+      }),
+      { builtin: ["brain:session.spawn"] },
+    );
+    await waitFor(() => d.brain?.state === "up");
+    await c.request("chat.send", { text: "start two" });
+    const askState = await c.next(isMethod("ask.state", (p) => (p as { status: string }).status === "open"));
+    const ask = askState.params as { id: string; source: unknown; title: string; detail: string };
+    expect(ask.source).toEqual({ kind: "gate", action: "session.spawn", principal: { kind: "brain" } });
+    expect([ask.title, ask.detail]).toEqual(["Start a Claude session in work in bypass permissions mode?", "It will run every tool without asking.\n\nbuild it"]);
+    // The plan-mode start went ahead while the bypass one waits on the user.
+    expect(brainAudit(d).filter((e) => e.action === "session.spawn").map((e) => e.decision)).toEqual(["allow", "ask"]);
+    expect(d.sessions.list().map((s) => s.mode)).toEqual(["plan"]);
+    await c.request("ask.answer", { id: ask.id, option: "allow" });
+    const reply = await c.next(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "orchestrator"));
+    const [, planned, bypassing] = ((reply.params as { message: Message }).message.content[0] as { text: string }).text.split(" ");
+    expect(d.sessions.get(planned!)?.mode).toBe("plan");
+    expect(d.sessions.get(bypassing!)?.mode).toBe("bypassPermissions");
+    expect(d.sessions.get(bypassing!)?.origin).toBe("orchestrator");
+    expect(brainAudit(d).filter((e) => e.action === "session.spawn").map((e) => [e.decision, e.outcome])).toEqual([["allow", "ok"], ["ask", "ok"]]);
+  });
+
+  test("a start in bypass permissions mode the user declines starts nothing, and the brain hears it was denied", async () => {
+    const { d, c, log } = await start(
+      ({ ws }) => ({ on: [{ event: "user.message", match: { text: "start" }, requests: [{ method: "session.spawn", params: { harness: "claude", workspace: ws, prompt: "build it", mode: "bypassPermissions" } }] }] }),
+      { builtin: ["brain:session.spawn"] },
+    );
+    await waitFor(() => d.brain?.state === "up");
+    await c.request("chat.send", { text: "start one" });
+    const askState = await c.next(isMethod("ask.state", (p) => (p as { status: string }).status === "open"));
+    await c.request("ask.answer", { id: (askState.params as { id: string }).id, option: "deny" });
+    const errorFrame = await waitFor(() => brainFrames(log).find((f) => f.dir === "in" && f.frame["id"] === "r1" && f.frame["error"] !== undefined));
+    expect((errorFrame.frame["error"] as { data: { code: string } }).data.code).toBe("denied");
+    expect(d.sessions.list()).toEqual([]);
   });
 
   test("cancel withdraws a held request: the ask is cancelled and the brain gets cancelled", async () => {

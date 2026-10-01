@@ -2,9 +2,10 @@
 // resolved it: `..`, a junction or a link planted inside, a short 8.3 name, another case, a
 // folder that does not exist yet. The primary's requests there are refused past the folders
 // (a spawn in a workspace outside, a workspace put outside, a file read outside or through a
-// junction, the desktop, an editable or a network tool, the node's profiles); its lists, its
-// searches and its samples answer what is inside; what goes up the link is what is inside.
-// A node that answers its own asks answers them alone. The node's own apps see everything.
+// junction, the desktop, an editable or a network tool, the node's profiles, a start in a mode
+// looser than asking before each edit); its lists, its searches and its samples answer what is
+// inside; what goes up the link is what is inside. A node that answers its own asks answers
+// them alone. The node's own apps see everything.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -191,11 +192,16 @@ describe("what a confined node serves", () => {
 
   test("refused past the folders; lists, searches and samples answer what is inside", async () => {
     const t = tree();
-    const { s, inside, outside, wsIn, wsOut, ran } = server(t);
+    const { s, inside, outside, wsIn, wsOut, ran, audited } = server(t);
     let n = 0;
     const call = (method: string, params: unknown) => s.serve(method, params, ++n);
     expect(await refused(call("session.spawn", { harness: "claude", workspace: wsOut.id, prompt: "x" }))).toMatch(/outside the folders/);
     expect(await refused(call("session.spawn", { harness: "claude", workspace: wsIn.id, prompt: "x" }))).toBe("served");
+    // a mode looser than asking is the owner's launch's, inside the folders too: refused before the gate asks anyone
+    const gated = audited.length;
+    expect(await refused(call("session.spawn", { harness: "claude", workspace: wsIn.id, prompt: "x", mode: "bypassPermissions" }))).toMatch(/asks before each edit unless its owner's launch says otherwise/);
+    expect(audited.length).toBe(gated);
+    expect(await refused(call("session.spawn", { harness: "claude", workspace: wsIn.id, prompt: "x", mode: "plan" }))).toBe("served");
     expect(await refused(call("workspace.put", { node: NODE, path: join(t.junction, "deeper"), name: "x" }))).toMatch(/outside/);
     expect(await refused(call("workspace.put", { node: NODE, path: join(t.shared, "src"), name: "x" }))).toBe("served");
     expect(await refused(call("tool.run", { name: "mine", args: {} }))).toMatch(/editable tools/);
@@ -203,7 +209,7 @@ describe("what a confined node serves", () => {
     expect(await refused(call("remote.screenshot", { node: NODE }))).toMatch(/not its desktop/);
     expect(await refused(call("remote.invite", { node: NODE }))).toMatch(/not its desktop/);
     expect(await refused(call("profile.update", { id: newId("profile"), patch: {} }))).toMatch(/profiles are its own/);
-    expect(ran).toEqual([`spawn ${wsIn.id}`, `put ${join(t.shared, "src")}`]);
+    expect(ran).toEqual([`spawn ${wsIn.id}`, `spawn ${wsIn.id}`, `put ${join(t.shared, "src")}`]);
     // an explorer looks into a session inside alone
     expect(await refused(call("session.files", { id: outside.id }))).toMatch(/outside the folders/);
     expect(await refused(call("session.git", { id: outside.id }))).toMatch(/outside the folders/);
@@ -211,7 +217,7 @@ describe("what a confined node serves", () => {
     expect(await refused(call("session.git", { id: inside.id }))).toBe("served");
     expect(await refused(call("session.file", { id: outside.id, path: "a.md" }))).toMatch(/outside the folders/);
     expect(await refused(call("session.file", { id: inside.id, path: "a.md" }))).toBe("served");
-    expect(ran.slice(2)).toEqual([`files ${inside.id}`, `git ${inside.id}`, `read ${inside.id} a.md`]);
+    expect(ran.slice(3)).toEqual([`files ${inside.id}`, `git ${inside.id}`, `read ${inside.id} a.md`]);
     expect(((await call("session.list", {})) as { sessions: Session[] }).sessions.map((x) => x.id)).toEqual([inside.id]);
     expect(((await call("workspace.list", {})) as { workspaces: Workspace[] }).workspaces.map((x) => x.id)).toEqual([wsIn.id]);
     expect(((await call("recall", { query: "x" })) as { hits: Hit[] }).hits.map((h) => h.snippet)).toEqual(["in"]);

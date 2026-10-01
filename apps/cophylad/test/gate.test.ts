@@ -64,6 +64,18 @@ describe("policy precedence", () => {
     expect(trusting.policy.decide({ principal: "node", action: "session.spawn", risk: "exec" })).toMatchObject({ decision: "allow", source: "config.rule" });
   });
 
+  test("a start in a looser mode is not the built-in rule's: it asks, unless the user's own rules or answers allow it", () => {
+    const { policy } = harness();
+    expect(policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_1", loosens: true })).toMatchObject({ decision: "ask", source: "config.class" });
+    const trusting = harness('[gate.rules]\n"brain:session.spawn@ws_1" = "allow"\n');
+    expect(trusting.policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_1", loosens: true })).toMatchObject({ decision: "allow", source: "config.rule", rule: "brain:session.spawn@ws_1" });
+    expect(trusting.policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_2", loosens: true })).toMatchObject({ decision: "ask", source: "config.class" });
+    policy.remember({ principal: "brain", action: "session.spawn", target: "ws_1" }, "allow", "always", user);
+    expect(policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_1", loosens: true })).toMatchObject({ decision: "allow", source: "remembered" });
+    const open = harness('[gate.policy.brain]\nexec = "allow"\n');
+    expect(open.policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_1", loosens: true })).toMatchObject({ decision: "allow", source: "config.class" });
+  });
+
   test("the brain messages a session it started without asking; any other session still asks, and config beats both", () => {
     const { policy } = harness();
     expect(policy.decide({ principal: "brain", action: "session.send", risk: "write", target: "sess_1", own: true })).toMatchObject({ decision: "allow", source: "builtin.rule", rule: "brain:session.send" });

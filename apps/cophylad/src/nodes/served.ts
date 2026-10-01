@@ -18,15 +18,16 @@
 // requests are checked: a session, a workspace or a path outside is refused, and so is the
 // state of a repository whose root is above them; the lists and the searches answer what is
 // inside, and the audit row keeps that answer; editable and network tools, the desktop,
-// this node's profiles and its terminals are refused. An ask this node does not hold, or one about something
-// outside, is `not_found`. On a node that answers its asks itself (`--answer-here`), the
-// primary answers none of them.
+// this node's profiles and its terminals are refused, and so is a start in a mode looser than
+// asking before each edit, a profile's launch being the owner's. An ask this node does not
+// hold, or one about something outside, is `not_found`. On a node that answers its asks
+// itself (`--answer-here`), the primary answers none of them.
 
 import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
+import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
-import { brainMethods, sendOptions } from "../brain-link/methods.ts";
+import { brainMethods, sendOptions, spawnLoosens } from "../brain-link/methods.ts";
 import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "../brain-link/methods.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
@@ -242,6 +243,8 @@ export class NodeServer {
       }
       case "session.spawn":
         c.require(local?.workspace(String(p["workspace"]))?.path, "that workspace");
+        // The mode is the launch's, and a confined node's profiles are its owner's.
+        if (spawnLoosens(p as { mode?: LaunchMode })) throw new RpcError("denied", "this node shares folders alone: a session started here asks before each edit unless its owner's launch says otherwise");
         return;
       case "workspace.put":
         c.require(String(p["path"]), "that folder");
@@ -344,6 +347,7 @@ export class NodeServer {
     const target = (impl as { target?: (p: unknown) => string | undefined }).target?.(p);
     const risk = (impl as { risk?: (p: unknown) => RiskClass | undefined }).risk?.(p);
     const ask = (impl as { ask?: (p: unknown) => { title: string; detail?: string } }).ask?.(p);
+    const loosens = (impl as { loosens?: (p: unknown) => boolean }).loosens?.(p) === true;
     if (name === "tool.run" && risk === undefined) {
       this.inflight.delete(key);
       throw new RpcError("not_found", `no tool ${(p as { name: string }).name}`);
@@ -357,6 +361,7 @@ export class NodeServer {
           ...(target !== undefined ? { target } : {}),
           ...(risk !== undefined ? { risk } : {}),
           ...(ask ? { ask } : {}),
+          ...(loosens ? { loosens: true } : {}),
           sessionKey: this.deps.sessionKey,
         },
         // Shaped inside, so the audit row keeps what the primary was answered, not the whole list.
