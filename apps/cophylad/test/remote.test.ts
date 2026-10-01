@@ -12,9 +12,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditEntry, RemoteState } from "@cophyla/protocol";
+import { Bus } from "../src/bus.ts";
+import { RemoteConfig } from "../src/config/schema.ts";
 import type { Daemon } from "../src/daemon.ts";
 import { HostApi, PERM_VIEWER } from "../src/remote/host.ts";
+import { Remote } from "../src/remote/index.ts";
 import { silentLogger } from "../src/log.ts";
+import type { Sidecars } from "../src/sidecars/index.ts";
 import { startFakeApollo } from "./fakes/apollo.ts";
 import type { FakeApollo } from "./fakes/apollo.ts";
 import { remoteSeams, TINY_JPEG } from "./fakes/remote.ts";
@@ -90,6 +94,37 @@ async function start(opts: StartOptions = {}): Promise<Started> {
   current = { d, fake, seams, scratch, brainLog };
   return current;
 }
+
+/** The same home started again, config.toml untouched, the host still up. */
+async function restart(s: Started): Promise<Started> {
+  for (const c of clients.splice(0)) c.close();
+  // stopped, not removed: the store with the switch in it stays
+  await s.d.stop();
+  const { startDaemon } = await import("../src/daemon.ts");
+  const d = Object.assign(
+    await startDaemon({
+      home: s.scratch,
+      port: 0,
+      log: silentLogger,
+      brain: false,
+      embedder: null,
+      remote: {
+        os: "windows",
+        exec: s.seams.exec,
+        hostApi: (kind) => new HostApi({ kind, port: s.fake.port, log: silentLogger, timeoutMs: 3000 }),
+        moonlight: { spawn: s.seams.spawn, command: s.seams.moonlight },
+        screenshot: s.seams.screenshot,
+      },
+    }),
+    { home: s.scratch },
+  );
+  await d.remote.ready();
+  current = { ...s, d };
+  return current;
+}
+
+/** A client of the host's, as a viewer it paired outside cophylad. */
+const hostClient = (uuid: string, name: string, connected = false) => ({ uuid, name, perm: 119480064, connected, allow_client_commands: true, always_use_virtual_display: false, display_mode: "", enable_legacy_ordering: true });
 
 async function ui(d: Daemon, name = "desk"): Promise<TestClient> {
   const c = await TestClient.connect(d.api.url);
@@ -346,8 +381,8 @@ describe("remote desktop", () => {
     const c = await ui(d);
     const state = (await c.next(isMethod("remote.state"))).params as RemoteState;
     expect(state.host.status).toBe("off");
-    expect((await failure(c, "remote.pair", { node: d.identity.id, pin: "1234" })).message).toMatch(/enabled is off/);
-    expect((await failure(c, "remote.invite", { node: d.identity.id })).message).toMatch(/enabled is off/);
+    expect((await failure(c, "remote.pair", { node: d.identity.id, pin: "1234" })).message).toMatch(/sharing is off/);
+    expect((await failure(c, "remote.invite", { node: d.identity.id })).message).toMatch(/sharing is off/);
     expect((await d.remote.screenshot()).width).toBe(1280);
     const nodes = await c.request<{ nodes: { capabilities: { remote: boolean } }[] }>("node.list");
     expect(nodes.nodes[0]!.capabilities.remote).toBe(false);
@@ -357,6 +392,82 @@ describe("remote desktop", () => {
     clients.push(phone);
     await phone.call("hello", { token, kind: "controller", audio: { in: false, out: false } });
     expect((await failure(phone, "remote.open", { node: d.identity.id })).message).toMatch(/controller listener/);
+  });
+
+  test("remote.enable shares a desktop config.toml leaves off; the switch outlives a restart, either way", async () => {
+    let s = await start({ enabled: false });
+    const c = await ui(s.d);
+    await c.next(isMethod("remote.state"));
+    expect(await c.request<object>("remote.enable", {})).toEqual({});
+    await c.next(isMethod("remote.state", (p) => (p as RemoteState).host.status === "ready"), 10_000);
+    expect(s.d.store.meta.get("remote_enabled")).toBe("1");
+    expect(audit(s.d, "remote.enable")[0]!.outcome).toBe("ok");
+    const nodes = await c.request<{ nodes: { capabilities: { remote: boolean } }[] }>("node.list");
+    expect(nodes.nodes[0]!.capabilities.remote).toBe(true);
+    // enabling again while it is up changes nothing
+    await c.request("remote.enable", {});
+    expect(s.fake.restarts).toBe(1);
+
+    s = await restart(s);
+    expect(s.d.remote.state().host).toEqual({ kind: "apollo", status: "ready" });
+    const c2 = await ui(s.d);
+    await c2.request("remote.disable", {});
+    expect(s.d.remote.state().host.status).toBe("off");
+    s = await restart(s);
+    expect(s.d.remote.state().host.status).toBe("off");
+   }, 30_000);
+
+  test("remote.disable ends the streams and keeps the pairings: a Windows host is still read, and its viewers can be revoked", async () => {
+    const { d, fake } = await start();
+    const c = await ui(d);
+    fake.clients.push(hostClient("UUID-X", "laptop", true), hostClient("UUID-Y", "tablet"));
+    await waitFor(() => d.remote.state().streaming);
+    await c.request("remote.disable", { node: d.identity.id });
+    // the stream ended, the pairing kept
+    expect(fake.requests).toContain("POST /api/clients/disconnect");
+    expect(fake.clients.find((x) => x.uuid === "UUID-X")!.connected).toBe(false);
+    const off = d.remote.state();
+    expect(off.host).toEqual({ kind: "apollo", status: "off" });
+    expect(off.viewers.map((v) => v.id).sort()).toEqual(["UUID-X", "UUID-Y"]);
+    expect(off.streaming).toBe(false);
+    const nodes = await c.request<{ nodes: { capabilities: { remote: boolean } }[] }>("node.list");
+    expect(nodes.nodes[0]!.capabilities.remote).toBe(false);
+
+    // still read: a viewer connecting to the service directly shows, as one still paired
+    fake.connect("UUID-Y");
+    await waitFor(() => d.remote.state().streaming);
+    // nothing new is handed out while off; what is there can be taken back
+    expect((await failure(c, "remote.invite", { node: d.identity.id })).message).toMatch(/sharing is off/);
+    expect((await failure(c, "remote.pair", { node: d.identity.id, pin: "1234" })).message).toMatch(/sharing is off/);
+    await c.request("remote.revoke", { node: d.identity.id, viewer: "UUID-X" });
+    expect(fake.clients.map((x) => x.uuid)).toEqual(["UUID-Y"]);
+    expect(d.store.meta.get("remote_enabled")).toBe("0");
+    expect(audit(d, "remote.disable")[0]!.outcome).toBe("ok");
+
+    // shared again, it comes back without a second restart of the host's config
+    await c.request("remote.enable", {});
+    await waitFor(() => d.remote.state().host.status === "ready", 10_000);
+    expect(fake.restarts).toBe(1);
+  });
+
+  test("a daemon started with sharing off reads a Windows host that runs anyway, with credentials it knows", async () => {
+    const credentials = { username: "me", password: "pw" };
+    const { d, fake } = await start({ enabled: false, hostCredentials: credentials, toml: `host_user = "me"\nhost_password = "pw"\n` });
+    // nothing is configured or restarted: the host is only read
+    expect(fake.restarts).toBe(0);
+    expect(fake.config).toEqual({});
+    fake.clients.push(hostClient("UUID-Z", "phone"));
+    await waitFor(() => d.remote.state().viewers.length === 1);
+    expect(d.remote.state().host).toEqual({ kind: "apollo", status: "off" });
+    const c = await ui(d);
+    await c.request("remote.revoke", { node: d.identity.id, viewer: "UUID-Z" });
+    expect(fake.clients).toEqual([]);
+  });
+
+  test("a desktop client cannot show this node's own desktop beside its view", async () => {
+    const { d } = await start();
+    const c = await ui(d);
+    expect((await failure(c, "remote.open", { node: d.identity.id, embed: true })).code).toBe("invalid");
   });
 
   test("a sunshine host has no invite codes and streaming comes from serverinfo", async () => {
@@ -370,5 +481,77 @@ describe("remote desktop", () => {
     const streaming = (await c.next(isMethod("remote.state", (p) => (p as RemoteState).streaming))).params as RemoteState;
     expect(streaming.viewers[0]).toMatchObject({ id: "UUID-1", name: "laptop", kind: "native" });
     expect(streaming.viewers[0]!.connected).toBeUndefined();
+  });
+});
+
+describe("remote desktop on a sidecar host", () => {
+  test("remote.disable stops the host and its list; one switched off while it comes up is stopped again", async () => {
+    const fake = await startFakeApollo({ kind: "sunshine" });
+    const scratch = tempHome();
+    const meta = new Map<string, string>();
+    let release: () => void = () => undefined;
+    let held = Promise.resolve();
+    const calls: string[] = [];
+    const sidecar = {
+      start: async () => {
+        calls.push("start");
+        await held;
+      },
+      stop: async () => void calls.push("stop"),
+      state: () => ({ status: "ready" }),
+    };
+    const sidecars = { spawn: () => sidecar, forget: () => undefined } as unknown as Sidecars;
+    const remote = new Remote({
+      config: RemoteConfig.parse({ enabled: false, host_command: "/opt/sunshine/bin/sunshine", poll_ms: 100 }),
+      store: { meta: { get: (k: string) => meta.get(k), set: (k: string, v: string) => void meta.set(k, v) } },
+      nodeId: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      nodeName: "box",
+      dir: join(scratch, "remote"),
+      sidecarsDir: join(scratch, "sidecars"),
+      bus: new Bus(),
+      log: silentLogger,
+      sidecars,
+      pairOn: async () => undefined,
+      addressOf: () => undefined,
+      lanIps: () => [],
+      os: "linux",
+      hostApi: (kind) => new HostApi({ kind, port: fake.port, log: silentLogger, timeoutMs: 3000 }),
+    });
+    try {
+      remote.start();
+      await remote.ready();
+      expect(remote.state().host).toEqual({ kind: "none", status: "off" });
+      expect(calls).toEqual([]);
+
+      remote.enable();
+      await remote.ready();
+      expect(remote.state().host).toEqual({ kind: "sunshine", status: "ready" });
+      fake.clients.push(hostClient("UUID-1", "laptop"));
+      await waitFor(() => remote.state().viewers.length === 1);
+
+      await remote.disable();
+      expect(calls).toEqual(["start", "stop"]);
+      expect(remote.state()).toMatchObject({ host: { kind: "sunshine", status: "off" }, viewers: [], streaming: false });
+      // its list is not read any more
+      fake.clients.push(hostClient("UUID-2", "tablet"));
+      await Bun.sleep(300);
+      expect(remote.state().viewers).toEqual([]);
+      await expect(remote.revoke("UUID-1")).rejects.toThrow(/sharing is off/);
+
+      // switched on, and off again while the host is starting: it gives up and the host goes
+      held = new Promise((r) => (release = r));
+      remote.enable();
+      await waitFor(() => calls.length === 3);
+      expect(remote.state().host.status).toBe("starting");
+      await remote.disable();
+      release();
+      await remote.ready();
+      expect(remote.state().host.status).toBe("off");
+      expect(calls).toEqual(["start", "stop", "start", "stop"]);
+    } finally {
+      await remote.stop();
+      await fake.stop();
+      removeHome(scratch);
+    }
   });
 });

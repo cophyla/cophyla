@@ -2,7 +2,8 @@
 // manifest is callable from every web view, silently. Four lists must agree without a
 // cargo build: `#[tauri::command] fn <name>` in the sources, `generate_handler![…]`,
 // commands.txt (what build.rs declares), and the `allow-<name>` grants in the capability
-// files. A grant must go to the host window alone; the host CSP must confine frames to the
+// files. A grant must go to the host web view alone, never by its window, which a stream's
+// page beside the view shares; the host CSP must confine frames to the
 // view origin; and no updater plugin may be present. The installer's package must carry the
 // shell's identity and version, and the launcher's hooks must be the four the bundler inserts.
 
@@ -105,12 +106,13 @@ describe("app command manifest", () => {
     for (const name of declared) expect(kebab(name)).toMatch(/^[a-z0-9-]+$/);
   });
 
-  test("a capability that grants an app command applies to the host window only, with no remote origin", () => {
+  test("a capability that grants an app command applies to the host web view only, with no remote origin", () => {
     for (const cap of capabilities()) {
       const grantsApp = cap.permissions.some((p) => /^allow-/.test(typeof p === "string" ? p : p.identifier));
       if (!grantsApp) continue;
-      expect(cap.windows).toEqual(["host"]);
-      expect(cap.webviews ?? []).toEqual([]);
+      // by window it would reach a stream's page laid over the host window too
+      expect(cap.webviews).toEqual(["host"]);
+      expect(cap.windows ?? []).toEqual([]);
       expect(cap.remote).toBeUndefined();
     }
   });

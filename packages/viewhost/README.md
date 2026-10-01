@@ -13,7 +13,7 @@ injected, so the tests run under `bun test` with no browser.
 | File | Holds |
 |---|---|
 | `src/connection.ts` | the link to cophylad: frames and link state in, a request/response API out, ids in the `h<n>` namespace. The transport is injected (`TauriIo`), so the shell can put the socket on its native side and the controller can hold it in the page |
-| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one; `filePaths`, it says where files dropped from the desktop are, through `host.filePaths`; `docFrame`, where it serves the document frame a view runs an HTML file's scripts in); a host that says `talk` says `host.mic` when its microphone goes off or comes back, with why, and again after `host.ready` while it is off; a host with a microphone says `host.recording` when it starts or stops recording an utterance and `host.levels` meanwhile, to a view with the voice scope alone, and `host.recording` again after `host.ready` while it records |
+| `src/bridge.ts` | one view's share of that connection: validates each frame, refuses `hello`, unknown methods and anything outside the view's scopes, remaps ids, and narrows the notifications the view hears; `host.ready` says what the host has of its own (`menu`, the phone's bar; `talk`, a microphone and no talk button, so the view draws one; `filePaths`, it says where files dropped from the desktop are, through `host.filePaths`; `docFrame`, where it serves the document frame a view runs an HTML file's scripts in; `embed`, it lays a stream page over the view where `host.place` says); a host that says `talk` says `host.mic` when its microphone goes off or comes back, with why, and again after `host.ready` while it is off; a host with a microphone says `host.recording` when it starts or stops recording an utterance and `host.levels` meanwhile, to a view with the voice scope alone, and `host.recording` again after `host.ready` while it records |
 | `src/snapshot.ts` | the daemon's picture as the host last saw it — live sessions, workspaces, nodes and their desktops, open tasks and asks, the latest `voice.state`, the words of this client's utterance so far (`voice.partial`, kept whole and replayed whole), a voice setup in progress, the account, the brain's turn while it runs (`chat.progress`) — replayed to a view that mounts later, since cophylad sends them once after `hello` |
 | `src/viewhost.ts` | loads the default view into a sandboxed frame, runs a `Bridge` over it, and reloads it when a reconnect or `view.changed` finds a new version; `recording` and `levels` pass the host's microphone on to the view mounted, and to one mounted while it records |
 | `src/chooser.ts`, `src/chooser.css` | the view picker a view opens with `host.chooseView`: a layer over the frame listing `view.list`, where picking one sets the node's default and loads it. Each host page links the stylesheet (`@cophyla/viewhost/chooser.css`), since the controller's policy refuses inline styles |
@@ -51,6 +51,16 @@ beside the staged view), which the bridge hands the view in `host.ready`.
   leaves the user no way to another.
 - `host.settings` needs none either, for the same reason, and every view must offer it beside
   Change view: the settings are the user's, and the frame is all they see.
+- `host.open` needs `remote`: it shows a page `remote.open` answered (a stream page, an
+  invite link) as the host can. A host that says `embed` in `host.ready` (the desktop app)
+  lays a stream page over the view for `host.open {url, stream, embed: true}`, hidden until
+  `host.place {stream, rect: {x, y, width, height}}` puts it over a rectangle in the frame's
+  coordinates (the host cuts it to the frame) or `rect: null` hides it, and closes it with
+  `host.close {stream}`; all three need `remote`. The host hides what it laid there while its
+  own picker or settings are open (`onOverlay`), closes it when the view's document goes,
+  replaced or reloaded by the view (`onUnmount`), and says `host.streamClosed {stream}` to a
+  view with `remote` when a stream it showed is gone, however it ended. Nothing of the view
+  can be drawn over that page, so the view hides it while something of its own lies over it.
 - `host.openLink` needs none: it opens a web page the user clicked (a URL in a terminal) in
   their browser, and only that. The bridge lets through an http or https URL with a host and
   no credentials in it (`webLink`), and `ViewHost` only while the page has the user's

@@ -94,6 +94,8 @@ export const requestScopes = {
   "remote.close": "remote",
   "remote.pipe.open": null,
   "remote.revoke": "remote",
+  "remote.enable": "remote",
+  "remote.disable": "remote",
   "account.login": "account",
   "account.logout": "account",
   "account.apiKey": "account",

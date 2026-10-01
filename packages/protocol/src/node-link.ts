@@ -192,10 +192,11 @@ export const nodeLinkRequests = {
   /**
    * Either way: a ticket to `node`'s stream page for a viewer on another node, which fetches
    * the page through pipes. Gated on the host as the node that asked, with the viewer's
-   * `name` in the ask. `stream` names the viewer's session there.
+   * `name` in the ask. `stream` names the viewer's session there. `lowLatency` seeds the page
+   * with the settings that keep the video a few frames behind (an older host ignores it).
    */
   "remote.ticket": {
-    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport }),
+    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport, lowLatency: z.boolean().optional() }),
     result: z.object({ path: z.string(), stream: z.string() }),
   },
   /**

@@ -27,6 +27,13 @@ use tauri::{AppHandle, Manager, RunEvent, Runtime, Theme, WebviewUrl, WebviewWin
 
 pub const HIDDEN_FLAG: &str = "--hidden";
 
+/// The host page starts its audio with no click first, as the phone app's does: wry's own
+/// flags, and the autoplay policy that lets an AudioContext run from the start. Every web view
+/// of the app takes the same (a stream's too): WebView2 runs them in one browser, which
+/// refuses a web view asking for other ones.
+#[cfg(windows)]
+pub const BROWSER_ARGS: &str = "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required";
+
 /// Shows or hides the app in the Dock (macOS); nothing elsewhere.
 pub fn dock<R: Runtime>(app: &AppHandle<R>, visible: bool) {
     #[cfg(target_os = "macos")]
@@ -57,7 +64,8 @@ fn caption_color<R: Runtime>(window: &tauri::WebviewWindow<R>) {
 }
 
 fn hide_window<R: Runtime>(app: &AppHandle<R>) {
-    if let Some(w) = app.get_webview_window(cophylad::HOST_LABEL) {
+    // the window, not the web view window: with a stream laid over it, it holds more than one web view
+    if let Some(w) = app.get_window(cophylad::HOST_LABEL) {
         let _ = w.hide();
     }
     dock(app, false);
@@ -144,15 +152,13 @@ fn main() {
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
         .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, dropped::dropped_paths, stream::stream_open, stream::stream_close, links::open_link, voice::ptt_shortcut])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
             let builder = WebviewWindowBuilder::new(app, cophylad::HOST_LABEL, WebviewUrl::App("index.html".into()));
-            // The host page starts its audio with no click first, as the phone app's does: wry's
-            // own flags, and the autoplay policy that lets an AudioContext run from the start.
             #[cfg(windows)]
-            let builder = builder.additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required");
+            let builder = builder.additional_browser_args(BROWSER_ARGS);
             let window = builder
                 .title("Cophyla")
                 .inner_size(1100.0, 760.0)

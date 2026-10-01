@@ -44,7 +44,7 @@ const UPDATE_POSITION: usize = 2;
 
 pub fn show_window<R: Runtime>(app: &AppHandle<R>) {
     crate::dock(app, true);
-    if let Some(w) = app.get_webview_window(HOST_LABEL) {
+    if let Some(w) = app.get_window(HOST_LABEL) {
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();

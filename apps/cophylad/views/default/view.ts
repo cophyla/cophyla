@@ -51,14 +51,16 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, DirectState, GrantEnd, HostReady, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
+import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteViewStep, remoteViewWidth, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, recentWorkspaces, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, draftOf, explorerSession, HOME_PLACE, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
 import { FileViewer } from "./fileview.ts";
 import type { ViewerTarget } from "./fileview.ts";
+import { RemotePanel } from "./remoteview.ts";
+import type { RemoteCover } from "./remoteview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
@@ -71,6 +73,9 @@ const ui: UiState = {
   expanded: new Set(),
   pinnedFocus: false,
   opening: new Set(),
+  sharing: new Map(),
+  remoteDock: "beside",
+  remoteWidth: REMOTE_VIEW_WIDTH.usual,
   modes: new Map(),
   fit: false,
   scale: 100,
@@ -108,6 +113,11 @@ const viewer = new FileViewer(
 );
 /** What the brain sees on its next turn, over the pane, while the user has it open. */
 const contextView = new ContextView(rpc);
+/** Another node's desktop beside the pane, or over it, which the host lays over the view where the panel says. */
+const remotePanel = new RemotePanel({
+  place: (stream, rect) => rpc.request("host.place", { stream, rect }),
+  cover: () => remoteCover(),
+});
 /** The microphone's wave, just over the input, while the host records. */
 const waves = new Waves();
 roots.composer.before(waves.el);
@@ -121,6 +131,7 @@ function draw(opts: RenderOptions = {}): void {
   render(roots, state, ui, { ...opts, railShown: railShown() });
   syncTerminal();
   syncViewer();
+  syncRemote();
   revealListed();
 }
 
@@ -207,6 +218,7 @@ rpc.onNotification((n) => {
         prefs = ready.prefs;
         if (!splitDrag) ui.railSplit = railSplit(prefs["railSplit"]);
         restoreViewerPrefs(prefs["viewer"]);
+        restoreRemotePrefs(prefs["remoteView"]);
       }
       dispatch({ type: "host.ready", params: ready });
       return;
@@ -214,6 +226,14 @@ rpc.onNotification((n) => {
     case "host.menu":
       toggleRail();
       return;
+    case "host.streamClosed": {
+      const stream = (n.params as { stream?: unknown } | undefined)?.stream;
+      if (typeof stream !== "string") return;
+      const before = ui.remoteView;
+      ui.remoteView = remoteViewStep(before, { type: "ended", stream });
+      if (ui.remoteView !== before) draw();
+      return;
+    }
     case "host.mic":
       dispatch({ type: "host.mic", params: n.params as { error?: string } });
       return;
@@ -229,7 +249,11 @@ rpc.onNotification((n) => {
       const p = n.params as { connected: boolean };
       // The line is back: a restart asked for is done. Gone, the node let go of the button itself.
       if (p.connected) ui.restart = undefined;
-      else ui.talking = false;
+      else {
+        ui.talking = false;
+        // the stream read through the node: the host closes its page, and the panel goes
+        ui.remoteView = remoteViewStep(ui.remoteView, { type: "lost" });
+      }
       dispatch({ type: "host.state", params: p });
       if (p.connected) {
         void loadProfiles();
@@ -258,9 +282,13 @@ rpc.onNotification((n) => {
       }
       return;
     }
-    case "remote.state":
-      dispatch({ type: "remote.state", params: n.params as RemoteState });
+    case "remote.state": {
+      const s = n.params as RemoteState;
+      dispatch({ type: "remote.state", params: s });
+      // the desktop beside the view stopped sharing: its stream ended there, and the panel goes
+      if (ui.remoteView?.node === s.node && s.host.status === "off") closeBeside();
       return;
+    }
     case "account.state":
       dispatch({ type: "account.state", params: n.params as AccountState });
       if ((n.params as AccountState).subject !== undefined) stopLoginClock();
@@ -1584,11 +1612,13 @@ function syncViewer(): void {
     viewer.hide();
     return;
   }
-  const dock = narrow.matches ? "over" : ui.viewerDock;
+  // While a desktop sits beside the pane, a file lies over the pane: two columns beside it would leave it none.
+  const crowded = narrow.matches || (ui.remoteView !== undefined && remoteDock() === "beside");
+  const dock = crowded ? "over" : ui.viewerDock;
   const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !narrow.matches, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}) });
+  viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !crowded, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}) });
 }
 
 /** Opens a file in the viewer of a tab, read through `from`, at a line when one is given, and shows it in Files; on a phone the rail goes, so it shows. */
@@ -1742,14 +1772,163 @@ function saveViewerPrefs(): void {
   void rpc.request("host.savePrefs", { prefs }).catch(() => {});
 }
 
-// --- the viewer's divider ------------------------------------------------------------------------
+// --- a desktop beside the pane -------------------------------------------------------------------
+
+/** Where the desktop sits: as the user docked it, and over the pane on a narrow window. */
+function remoteDock(): ViewerDock {
+  return narrow.matches ? "over" : ui.remoteDock;
+}
+
+/**
+ * The desktop shown beside the view, or over the pane; under a file or the context lying over
+ * the same pane it waits, its stream hidden. Beside it, the pinned prompts centre over the pane
+ * rather than the frame, clear of the stream.
+ */
+function syncRemote(): void {
+  const v = ui.remoteView;
+  if (!v) {
+    remotePanel.hide();
+    syncPinned(false);
+    return;
+  }
+  const dock = remoteDock();
+  const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
+  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: dock === "over" && (viewer.shown !== undefined || contextView.shown) });
+  syncPinned(dock === "beside");
+}
+
+/** The pinned prompts over the pane's column while the desktop takes the right of the window. */
+function syncPinned(beside: boolean): void {
+  if (!beside) {
+    if (roots.app.dataset["remote"] !== undefined) delete roots.app.dataset["remote"];
+    return;
+  }
+  const panes = document.getElementById("panes")!.getBoundingClientRect();
+  roots.app.dataset["remote"] = "beside";
+  roots.app.style.setProperty("--pinned-left", `${Math.round(panes.left + panes.width / 2)}px`);
+  roots.app.style.setProperty("--pinned-room", `${Math.round(panes.width)}px`);
+}
+
+/** What of the view lies over the desktop now: the QR code shown large, a rail over a phone's pane, the menus, the pinned prompts. */
+function remoteCover(): RemoteCover {
+  const box = (e: Element) => {
+    const r = e.getBoundingClientRect();
+    return { left: r.left, top: r.top, width: r.width, height: r.height };
+  };
+  const menus = Array.from(roots.app.querySelectorAll<HTMLElement>(".rail-menu, .new-terminal-menu"))
+    .filter((m) => !m.hidden && m.getClientRects().length > 0)
+    .map(box);
+  return {
+    covered: ui.qrZoom === true || (phone.matches && railShown()),
+    menus,
+    ...(roots.pinned.hidden ? {} : { pinned: box(roots.pinned) }),
+  };
+}
+
+/**
+ * Shows a node's desktop beside the view: the node's ticket to a page the host lays over the
+ * view, one desktop at a time. The first time, the host asks to pair this node's viewer, so
+ * the panel says it is opening meanwhile. Closed before it opened, the stream ends.
+ */
+async function openBeside(node: string): Promise<void> {
+  if (!state.scopes.includes("remote")) return;
+  const name = state.nodes.get(node)?.name ?? node;
+  const old = ui.remoteView;
+  if (old?.node === node && old.phase !== "failed") return;
+  if (old?.stream) void rpc.request("host.close", { stream: old.stream }).catch(() => {});
+  ui.remoteView = remoteViewStep(old, { type: "open", node, name });
+  putRailAway();
+  draw();
+  try {
+    const opened = await rpc.request<{ url?: string; stream?: string }>("remote.open", { node, embed: true });
+    if (!opened.url || !opened.stream) {
+      // a node from before the desktop beside the view opens Moonlight's window instead
+      ui.remoteView = remoteViewStep(ui.remoteView, { type: "failed", node, error: "Cophyla on this machine is older than the desktop beside the view: it opened Moonlight's window instead. Update it to show desktops here." });
+      draw();
+      return;
+    }
+    const stream = opened.stream;
+    if (ui.remoteView?.node !== node || ui.remoteView.phase !== "opening") {
+      void rpc.request("remote.close", { stream }).catch(() => {});
+      return;
+    }
+    await rpc.request("host.open", { node, url: opened.url, stream, embed: true });
+    const was = ui.remoteView;
+    ui.remoteView = remoteViewStep(was, { type: "opened", node, stream });
+    // closed while the host opened it
+    if (ui.remoteView?.stream !== stream) void rpc.request("host.close", { stream }).catch(() => {});
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    ui.remoteView = remoteViewStep(ui.remoteView, { type: "failed", node, error: connectWords(e instanceof ViewRpcError ? e.code : undefined, message) });
+  }
+  draw();
+}
+
+/** Closes the desktop beside the view: the host closes its page, and the node ends the stream. */
+function closeBeside(): void {
+  const v = ui.remoteView;
+  ui.remoteView = remoteViewStep(v, { type: "close" });
+  if (v?.stream) void rpc.request("host.close", { stream: v.stream }).catch(() => {});
+  draw();
+}
+
+/** The desktop beside the view, in Moonlight's own window instead: the quickest it can be. */
+function moonlightInstead(): void {
+  const node = ui.remoteView?.node;
+  if (!node) return;
+  closeBeside();
+  void openRemote(node);
+}
+
+/** Shares a node's desktop, or stops; the node's next `remote.state` shows how it went. */
+async function shareRemote(node: string, on: boolean): Promise<void> {
+  if (!state.scopes.includes("remote") || ui.sharing.has(node)) return;
+  ui.sharing.set(node, on ? "on" : "off");
+  draw();
+  try {
+    await rpc.request(on ? "remote.enable" : "remote.disable", { node });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    dispatch({ type: "error", message: `${on ? "share" : "stop sharing"}: ${shareWords(message, state.nodes.get(node)?.name ?? node)}` });
+  } finally {
+    ui.sharing.delete(node);
+    draw();
+  }
+}
+
+/** The desktop panel's place as the device kept it: beside or over the pane, and how wide. */
+function restoreRemotePrefs(value: unknown): void {
+  if (!value || typeof value !== "object") return;
+  const v = value as { dock?: unknown; width?: unknown };
+  if (v.dock === "over" || v.dock === "beside") ui.remoteDock = v.dock;
+  if (!viewerDrag) ui.remoteWidth = remoteViewWidth(v.width);
+}
+
+function saveRemotePrefs(): void {
+  prefs = { ...prefs, remoteView: { dock: ui.remoteDock, width: ui.remoteWidth } };
+  void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+}
+
+// --- the dividers of the file viewer and the desktop ---------------------------------------------
 
 /** The room the pane keeps beside the viewer, whatever the divider is dragged to. */
 const PANE_MIN = 320;
-/** The divider is held: where in the viewer the pointer took it, from its left edge. */
-let viewerDrag: { pointer: number; grab: number } | undefined;
 
-/** The most of the width the viewer may take: what leaves the pane its room beside the rail. */
+/** The panels a divider widens: the file viewer, and the desktop beside the pane. */
+type Panel = "file" | "remote";
+
+/** A divider is held: whose, and where in the panel the pointer took it, from its left edge. */
+let viewerDrag: { pointer: number; grab: number; panel: Panel } | undefined;
+
+function panelOf(split: Element): Panel {
+  return split.closest(".remote-view") ? "remote" : "file";
+}
+
+function panelEl(panel: Panel): HTMLElement {
+  return panel === "remote" ? remotePanel.el : viewer.el;
+}
+
+/** The most of the width a panel may take: what leaves the pane its room beside the rail. */
 function widestViewer(): number | undefined {
   const body = document.getElementById("body")!.getBoundingClientRect();
   if (body.width <= 0) return undefined;
@@ -1757,7 +1936,7 @@ function widestViewer(): number | undefined {
   return ((body.width - rail - PANE_MIN) / body.width) * 100;
 }
 
-/** The share of the width the viewer takes with its left edge at `x`, no more than the widest. */
+/** The share of the width a panel takes with its left edge at `x`, no more than the widest. */
 function viewerWidthAt(x: number): number | undefined {
   const body = document.getElementById("body")!.getBoundingClientRect();
   const most = widestViewer();
@@ -1772,40 +1951,61 @@ function setViewerWidth(value: number, save: boolean): void {
   if (save) saveViewerPrefs();
 }
 
+/** The same for the desktop, whose stream follows its slot; the pinned prompts follow the pane. */
+function setRemoteWidth(value: number, save: boolean): void {
+  ui.remoteWidth = remoteViewWidth(value);
+  remotePanel.setWidth(ui.remoteWidth);
+  syncPinned(ui.remoteView !== undefined && remoteDock() === "beside");
+  if (save) saveRemotePrefs();
+}
+
+function setPanelWidth(panel: Panel, value: number, save: boolean): void {
+  if (panel === "remote") setRemoteWidth(value, save);
+  else setViewerWidth(value, save);
+}
+
 document.addEventListener("pointerdown", (ev) => {
   const split = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-split");
   if (!split || ev.button !== 0) return;
   ev.preventDefault();
   split.setPointerCapture(ev.pointerId);
-  viewerDrag = { pointer: ev.pointerId, grab: ev.clientX - viewer.el.getBoundingClientRect().left };
+  const panel = panelOf(split);
+  viewerDrag = { pointer: ev.pointerId, grab: ev.clientX - panelEl(panel).getBoundingClientRect().left, panel };
   split.dataset["dragging"] = "true";
 });
 document.addEventListener("pointermove", (ev) => {
   if (!viewerDrag || ev.pointerId !== viewerDrag.pointer) return;
   const at = viewerWidthAt(ev.clientX - viewerDrag.grab);
-  if (at !== undefined) setViewerWidth(at, false);
+  if (at !== undefined) setPanelWidth(viewerDrag.panel, at, false);
 });
 for (const type of ["pointerup", "pointercancel"] as const) {
   document.addEventListener(type, (ev) => {
     if (!viewerDrag || ev.pointerId !== viewerDrag.pointer) return;
+    const panel = viewerDrag.panel;
     viewerDrag = undefined;
-    const split = viewer.el.querySelector<HTMLElement>(".viewer-split");
+    const split = panelEl(panel).querySelector<HTMLElement>(".viewer-split");
     if (split) delete split.dataset["dragging"];
-    setViewerWidth(ui.viewerWidth, true);
+    setPanelWidth(panel, panel === "remote" ? ui.remoteWidth : ui.viewerWidth, true);
   });
 }
 document.addEventListener("dblclick", (ev) => {
-  if ((ev.target as Element | null)?.closest(".viewer-split")) setViewerWidth(VIEWER_WIDTH.usual, true);
+  const split = (ev.target as Element | null)?.closest(".viewer-split");
+  if (!split) return;
+  const panel = panelOf(split);
+  setPanelWidth(panel, panel === "remote" ? REMOTE_VIEW_WIDTH.usual : VIEWER_WIDTH.usual, true);
 });
-// From the keyboard: left widens the file, right widens the pane, Shift by more.
+// From the keyboard: left widens the panel, right widens the pane, Shift by more.
 document.addEventListener("keydown", (ev) => {
-  if (!(ev.target as Element | null)?.classList.contains("viewer-split")) return;
+  const split = ev.target as Element | null;
+  if (!split?.classList.contains("viewer-split")) return;
+  const panel = panelOf(split);
+  const [width, bounds] = panel === "remote" ? [ui.remoteWidth, REMOTE_VIEW_WIDTH] : [ui.viewerWidth, VIEWER_WIDTH];
   const step = ev.shiftKey ? 10 : 2;
-  const to = ev.key === "ArrowLeft" ? ui.viewerWidth + step : ev.key === "ArrowRight" ? ui.viewerWidth - step : ev.key === "Home" ? VIEWER_WIDTH.min : ev.key === "End" ? VIEWER_WIDTH.max : undefined;
+  const to = ev.key === "ArrowLeft" ? width + step : ev.key === "ArrowRight" ? width - step : ev.key === "Home" ? bounds.min : ev.key === "End" ? bounds.max : undefined;
   if (to === undefined) return;
   ev.preventDefault();
   const most = widestViewer();
-  setViewerWidth(most !== undefined ? Math.min(to, most) : to, true);
+  setPanelWidth(panel, most !== undefined ? Math.min(to, most) : to, true);
 });
 
 /** The explorer's rows the arrows move through: folders and files, in order. */
@@ -2343,6 +2543,26 @@ document.addEventListener("click", (ev) => {
       return;
     case "remote-open":
       if (target.dataset["node"]) void openRemote(target.dataset["node"]);
+      return;
+    case "remote-beside":
+      if (target.dataset["node"]) void openBeside(target.dataset["node"]);
+      return;
+    case "remote-share":
+      if (target.dataset["node"]) void shareRemote(target.dataset["node"], true);
+      return;
+    case "remote-unshare":
+      if (target.dataset["node"]) void shareRemote(target.dataset["node"], false);
+      return;
+    case "remote-view-moonlight":
+      moonlightInstead();
+      return;
+    case "remote-view-dock":
+      ui.remoteDock = remoteDock() === "over" ? "beside" : "over";
+      saveRemotePrefs();
+      draw();
+      return;
+    case "remote-view-close":
+      closeBeside();
       return;
     case "remote-pin": {
       const node = target.dataset["node"];

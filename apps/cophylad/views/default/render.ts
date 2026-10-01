@@ -48,7 +48,7 @@ import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
@@ -123,6 +123,13 @@ export interface UiState {
   restart?: { phase: "asking" | "busy" | "restarting"; reasons?: string[] };
   /** Nodes whose Connect is on its way: a viewer pairing can wait on an ask. */
   opening: Set<string>;
+  /** Nodes whose desktop is being shared or stopped: the button waits for the answer, which can wait on an ask there. */
+  sharing: Map<string, "on" | "off">;
+  /** Another node's desktop shown beside the view (or over the pane): one at a time, kept across tabs. */
+  remoteView?: RemoteView;
+  /** Where that desktop sits on a wide window, and its share of the width beside the pane: kept on the device. */
+  remoteDock: ViewerDock;
+  remoteWidth: number;
   /** The user showed or put away the rail; undefined is the width's own: beside the pane on a desk, away on a phone, where it slides in over the pane. */
   rail?: "open" | "closed";
   /** The backup's passphrase form is open, for turning it on (`replace` starting over) or restoring. */
@@ -801,7 +808,14 @@ function actionButton(className: string, text: string, action: string): HTMLButt
 function createRemote(): HTMLElement {
   const block = el("div", "node-remote");
   const head = el("div", "remote-head");
-  head.append(el("span", "remote-label", "Desktop"), el("span", "remote-words"), actionButton("remote-connect", "Connect", "remote-open"));
+  const connect = actionButton("remote-connect", "Connect", "remote-open");
+  connect.title = "Open this desktop in Moonlight, in a window of its own";
+  const beside = actionButton("remote-beside", "Beside", "remote-beside");
+  beside.title = "Show this desktop beside the pane";
+  head.append(el("span", "remote-label", "Desktop"), el("span", "remote-words"), connect, beside);
+  // Sharing this desktop: on, tried again, or off; the note says who can still connect, or who may have to approve the installer.
+  const share = el("div", "remote-share");
+  share.append(actionButton("remote-share-on", "Share this desktop", "remote-share"), actionButton("remote-retry", "Retry", "remote-share"), actionButton("remote-share-off", "Stop sharing", "remote-unshare"));
   const actions = el("div", "remote-actions");
   actions.append(actionButton("remote-pin-start", "Pair by PIN", "remote-pin"), actionButton("remote-invite-start", "Invite a phone", "remote-invite"));
   // The PIN a viewer shows when it is added: Moonlight on another machine, or Artemis without an invite.
@@ -828,7 +842,7 @@ function createRemote(): HTMLElement {
   const buttons = el("div", "remote-invite-buttons");
   buttons.append(actionButton("remote-invite-open", "Open in Artemis", "remote-invite-open"), actionButton("remote-invite-done", "Done", "remote-invite-close"));
   invite.append(el("p", "remote-invite-hint", "In Artemis on the phone, add this PC and pair with:"), el("p", "remote-invite-code"), el("p", "remote-invite-pass"), el("p", "remote-invite-left"), buttons);
-  block.append(head, el("div", "remote-viewers"), actions, form, invite);
+  block.append(head, el("p", "remote-note"), el("div", "remote-viewers"), actions, form, invite, share);
   return block;
 }
 
@@ -846,14 +860,18 @@ function updateViewer(node: HTMLElement, viewer: RemoteViewer, remote: RemoteCar
   setText(node.querySelector(".remote-viewer-name")!, viewer.name ?? viewer.id.slice(0, 8));
   setText(node.querySelector(".remote-viewer-sub")!, viewerWords(viewer, Date.now()));
   const forget = node.querySelector<HTMLButtonElement>(".remote-viewer-forget")!;
-  // A browser's session ends; a paired app is unpaired and has to pair again.
-  setText(forget, viewer.kind === "web" ? "End" : "Forget");
+  // A browser's session ends; a paired app is unpaired and has to pair again; off, a pairing is revoked.
+  setText(forget, viewer.kind === "web" ? "End" : remote.share ? "Revoke" : "Forget");
   forget.dataset["node"] = remote.node;
   forget.dataset["viewer"] = viewer.id;
   forget.disabled = !state.connected;
 }
 
-/** The desktop block: hidden when the node has no host to show; the PIN form and the phone code open in place. */
+/**
+ * The desktop block: hidden when the node has no host to show; Share while it is off, Stop
+ * sharing (and Retry) while it is on; Connect, Beside, the PIN form and the phone code while it
+ * serves, opening in place.
+ */
 function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state: ViewState, ui: UiState): void {
   setHidden(block, remote === undefined);
   if (!remote) return;
@@ -862,12 +880,35 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
   const words = block.querySelector<HTMLElement>(".remote-words")!;
   setText(words, remote.words);
   words.title = `${remote.host.kind === "none" ? "no host" : remote.host.kind} · ${remote.words}`;
+  const note = block.querySelector<HTMLElement>(".remote-note")!;
+  setText(note, remote.note ?? "");
+  setHidden(note, remote.note === undefined);
   const opening = ui.opening.has(remote.node);
   const connect = block.querySelector<HTMLButtonElement>(".remote-connect")!;
   setHidden(connect, !remote.connect);
   setText(connect, opening ? "Connecting…" : "Connect");
   connect.dataset["node"] = remote.node;
   connect.disabled = !state.connected || opening;
+  const shownHere = ui.remoteView?.node === remote.node;
+  const beside = block.querySelector<HTMLButtonElement>(".remote-beside")!;
+  setHidden(beside, !remote.beside);
+  setText(beside, shownHere && ui.remoteView?.phase === "opening" ? "Opening…" : "Beside");
+  beside.dataset["node"] = remote.node;
+  beside.disabled = !state.connected || (shownHere && ui.remoteView?.phase !== "failed");
+  const busy = ui.sharing.get(remote.node);
+  const shareOn = block.querySelector<HTMLButtonElement>(".remote-share-on")!;
+  const retry = block.querySelector<HTMLButtonElement>(".remote-retry")!;
+  const shareOff = block.querySelector<HTMLButtonElement>(".remote-share-off")!;
+  setHidden(shareOn, !remote.share);
+  setText(shareOn, busy === "on" ? "Sharing…" : "Share this desktop");
+  setHidden(retry, !remote.retry);
+  setText(retry, busy === "on" ? "Retrying…" : "Retry");
+  setHidden(shareOff, !remote.stop);
+  setText(shareOff, busy === "off" ? "Stopping…" : "Stop sharing");
+  for (const b of [shareOn, retry, shareOff]) {
+    b.dataset["node"] = remote.node;
+    b.disabled = !state.connected || busy !== undefined;
+  }
   reconcile(block.querySelector<HTMLElement>(".remote-viewers")!, remote.viewers, (v) => v.id, createViewer, (node, v) => updateViewer(node, v, remote, state));
 
   const pinOpen = state.remotePin === remote.node && remote.pair;

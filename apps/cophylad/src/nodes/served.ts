@@ -4,8 +4,9 @@
 // request held on an ask reports `pending` up the link; `cancel` is served first, before
 // the table; `metrics.subscribe`, `metrics.unsubscribe` and `metrics.history` (client
 // methods, not capability ones) are served here too, so the primary's clients can watch
-// this node, `remote.invite` and `remote.revoke` likewise, so they can hand out and take
-// back access to this desktop, `profile.update`, so they can set this node's profiles,
+// this node, `remote.invite`, `remote.revoke`, `remote.enable` and `remote.disable` likewise,
+// so they can hand out and take back access to this desktop and switch its sharing (not on a
+// hands node's, whose desktop is its owner's), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
 // and `session.files`, `session.git` and `session.file`, so their explorer shows this node's
 // sessions' files and their viewer a file's text.
@@ -28,7 +29,7 @@ import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
 import type { Remote } from "../remote/index.ts";
-import { updatePatch } from "../api/methods.ts";
+import { revokeAsk, shareAsk, updatePatch } from "../api/methods.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { FilesResult, SessionFiles } from "../sessions/files.ts";
@@ -62,8 +63,8 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
 
 /** The client-protocol metrics requests a node serves over the link, on top of the capability slice. */
 export const NODE_SERVED_METRICS = ["metrics.subscribe", "metrics.unsubscribe", "metrics.history"] as const;
-/** The client-protocol remote requests a node serves the same way: an invite from, and a revoke on, this desktop's host. */
-export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke"] as const;
+/** The client-protocol remote requests a node serves the same way: an invite from, and a revoke on, this desktop's host, and its sharing switched. */
+export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.enable", "remote.disable"] as const;
 /** And what the user sets on this node's profiles from an app on the primary. */
 export const NODE_SERVED_PROFILES = ["profile.update"] as const;
 
@@ -143,6 +144,8 @@ export interface ServeDeps {
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
   answerHere?: () => boolean;
+  /** This node joined as hands: a guest, whose desktop the primary does not switch. */
+  hands?: () => boolean;
   /** This node's own sessions, workspaces and asks, for the checks. */
   local?: {
     session(id: string): Session | undefined;
@@ -296,6 +299,7 @@ export class NodeServer {
     if ((NODE_SERVED_METRICS as readonly string[]).includes(method)) return this.serveMetrics(method as (typeof NODE_SERVED_METRICS)[number], params);
     if ((NODE_SERVED_REMOTE as readonly string[]).includes(method)) {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not its desktop");
+      if ((method === "remote.enable" || method === "remote.disable") && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: sharing its desktop is its owner's to switch");
       return this.serveRemote(method as (typeof NODE_SERVED_REMOTE)[number], params);
     }
     if ((NODE_SERVED_PROFILES as readonly string[]).includes(method)) {
@@ -378,16 +382,27 @@ export class NodeServer {
     return this.deps.gate.run({ principal: this.deps.principal, action: "profile.update", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => ({ profile: profiles.update(p.id, updatePatch(p.patch)) }));
   }
 
-  /** An invite from, or a revoke on, this node's own desktop host, for the primary's clients. */
+  /** An invite from, a revoke on, or the sharing of this node's own desktop host, for the primary's clients. */
   private async serveRemote(method: (typeof NODE_SERVED_REMOTE)[number], params: unknown): Promise<unknown> {
     const remote = this.deps.remote;
     if (!remote) throw new RpcError("unsupported", "this node has no remote module");
     const def = clientRequests[method];
     const parsed = def.params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { node: string; viewer?: string };
-    return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, target: p.viewer ?? p.node, sessionKey: this.deps.sessionKey }, (): Promise<unknown> =>
-      method === "remote.invite" ? remote.invite() : remote.revoke(p.viewer!),
+    const p = parsed.data as { node?: string; viewer?: string };
+    const target = p.viewer ?? p.node;
+    // the viewer by the name the host lists it under, as the user knows it
+    const viewer = p.viewer !== undefined ? remote.state().viewers.find((v) => v.id === p.viewer) : undefined;
+    const ask = method === "remote.enable" || method === "remote.disable" ? shareAsk(method === "remote.enable") : method === "remote.revoke" ? revokeAsk(viewer?.name ?? p.viewer!) : undefined;
+    return this.deps.gate.run(
+      { principal: this.deps.principal, action: method, args: p, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey },
+      async (): Promise<unknown> => {
+        if (method === "remote.invite") return remote.invite();
+        if (method === "remote.revoke") return remote.revoke(p.viewer!);
+        if (method === "remote.enable") remote.enable();
+        else await remote.disable();
+        return {};
+      },
     );
   }
 

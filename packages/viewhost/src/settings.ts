@@ -996,6 +996,8 @@ export interface SettingsPanelDeps {
   refocus?: () => void;
   /** Opens a web page in the user's browser: a licence's link. A new window when absent. */
   openLink?: (url: string) => Promise<void>;
+  /** Hears the layer open and close: what the host lays over the page goes under it meanwhile. */
+  onToggle?: (open: boolean) => void;
 }
 
 /** The layer itself: opened by `host.settings`, drawn from a `SettingsModel`. */
@@ -1065,6 +1067,7 @@ export class SettingsPanel {
     this.deps.voice?.listMics?.();
     this.render();
     close.focus();
+    this.deps.onToggle?.(true);
     void model.load();
     void model.loadSpeech();
     void model.loadListeners();
@@ -1082,6 +1085,7 @@ export class SettingsPanel {
     this.keyNote = "";
     this.apiKeyDrafts.clear();
     document.removeEventListener("keydown", this.onKey);
+    this.deps.onToggle?.(false);
     this.deps.refocus?.();
   }
 

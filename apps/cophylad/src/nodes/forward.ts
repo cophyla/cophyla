@@ -89,11 +89,13 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "recall":
     case "metrics.query":
     case "metrics.history":
-    // The desktop's owner pairs, invites, revokes and captures; `remote.open` runs where the client is and is never here.
+    // The desktop's owner pairs, invites, revokes, captures and switches sharing; `remote.open` runs where the client is and is never here.
     case "remote.pair":
     case "remote.invite":
     case "remote.revoke":
     case "remote.screenshot":
+    case "remote.enable":
+    case "remote.disable":
     // Direct connections are each node's own to switch.
     case "direct.enable":
     case "direct.disable":

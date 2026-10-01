@@ -123,13 +123,14 @@ function socket(url: string, cookie: string): Promise<{ ws: WebSocket; frames: (
   });
 }
 
-/** The page at `base` + `path`: claimed, then the home page, the API and the stream socket; the cookie. */
+/** The page at `base` + `path`: claimed, then the home page, the API and the stream socket; the claim page. */
 async function watch(base: string, path: string): Promise<string> {
   const claim = await get(`${base}${path}`);
   expect(claim.status).toBe(200);
   const setCookie = claim.headers.get("set-cookie")!;
   expect(setCookie).toMatch(/^cophyla_remote=[0-9a-f]{32}; Path=\/remote; HttpOnly; SameSite=Strict$/);
-  expect(await claim.text()).toContain(`s.dataTransport="webrtc"`);
+  const page = await claim.text();
+  expect(page).toContain(`s.dataTransport="webrtc"`);
   const cookie = setCookie.split(";")[0]!;
   expect(await (await get(`${base}/remote/`, { cookie })).text()).toContain("Moonlight Web");
   expect(((await (await get(`${base}/remote/api/user`, { cookie })).json()) as { name: string }).name).toBe("cophyla");
@@ -139,7 +140,7 @@ async function watch(base: string, path: string): Promise<string> {
   ws.send("ping");
   await waitFor(() => frames.length >= 2);
   expect(frames[1]).toBe("cophyla:ping");
-  return cookie;
+  return page;
 }
 
 describe("a desktop with no route to it", () => {
@@ -162,7 +163,8 @@ describe("a desktop with no route to it", () => {
     // the row every client with the audit stream hears keeps no live ticket
     expect((row.result!.body as { path: string }).path).toBe("/remote/?t=[redacted]");
 
-    await watch(`http://127.0.0.1:${m[1]}`, m[2]!);
+    // the window on this machine is seeded for low latency, as the view beside the pane is
+    expect(await watch(`http://127.0.0.1:${m[1]}`, m[2]!)).toContain("s.canvasRenderer=true;");
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "laptop app"));
     // the pipes ran here and there
     expect(p.d.pipes.count).toBeGreaterThan(0);
@@ -173,6 +175,16 @@ describe("a desktop with no route to it", () => {
     await waitFor(() => p.d.pipes.count === 0 && s.pipes.count === 0, 5000);
     // the forwarder went with it
     await expect(fetch(`http://127.0.0.1:${m[1]}/remote/`)).rejects.toThrow();
+
+    // beside the view: the same way, through a forwarder here
+    const beside = ui.request<{ url: string; stream: string }>("remote.open", { node: s.identity.id, embed: true });
+    await allowOn(s);
+    const embedded = await beside;
+    const e = /^http:\/\/127\.0\.0\.1:(\d+)(\/remote\/\?t=[0-9a-f]{32})$/.exec(embedded.url)!;
+    expect(e).not.toBeNull();
+    expect(await watch(`http://127.0.0.1:${e[1]}`, e[2]!)).toContain("s.canvasRenderer=true;");
+    await ui.request("remote.close", { stream: embedded.stream });
+    await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
   });
 
   test("a phone on the relay: the path and WebRTC, its pipes through the primary; the phone gone ends the session there", async () => {
@@ -201,7 +213,7 @@ describe("a desktop with no route to it", () => {
     };
     const f = new TestForwarder(link, s.identity.id);
     closers.push(() => f.stop());
-    await watch(`http://127.0.0.1:${f.port}`, opened.path);
+    expect(await watch(`http://127.0.0.1:${f.port}`, opened.path)).not.toContain("canvasRenderer");
     expect(f.failures).toEqual([]);
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "Pixel"));
 

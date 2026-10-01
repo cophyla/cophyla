@@ -93,6 +93,9 @@ export const actions = {
   // A connection to the stream proxy, which itself asks for the ticket `remote.open` minted.
   "remote.pipe.open": { risk: "read", control: true },
   "remote.revoke": { risk: "write" },
+  // Starting the desktop's host may install it; stopping only ends what streams.
+  "remote.enable": { risk: "exec" },
+  "remote.disable": { risk: "write" },
   // A node asking for a stream page of this desktop for a viewer of its own (the node link's).
   "remote.ticket": { risk: "exec" },
   "remote.screenshot": { risk: "exec" },

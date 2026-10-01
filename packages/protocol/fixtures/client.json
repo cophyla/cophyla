@@ -398,7 +398,7 @@
     "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "laptop" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234" }], "results": [{}] },
     "remote.invite": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "otp": "2357", "link": "art://192.168.1.44:47989?pin=2357&passphrase=cophyla-7f3a&name=study", "passphrase": "cophyla-7f3a", "expiresAt": 1758196980000 }, { "otp": "482913" }] },
     "remote.open": {
-      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "forward": true }],
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "forward": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "embed": true }],
       "results": [
         {},
         { "url": "https://192.168.1.44:4818/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60" },
@@ -410,6 +410,8 @@
     "remote.close": { "params": [{ "stream": "str_9c1e" }], "results": [{}] },
     "remote.pipe.open": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "pipe": "p7", "window": 262144 }] },
     "remote.revoke": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "phone" }], "results": [{}] },
+    "remote.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
+    "remote.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "account.login": { "params": [{}], "results": [{ "verificationUrl": "https://example.com/device", "userCode": "ABCD-EFGH", "expiresAt": 1758197400000 }] },
     "account.logout": { "params": [{}], "results": [{}] },
     "account.apiKey": {

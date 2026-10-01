@@ -104,7 +104,7 @@ pub fn truncate(text: &str, max: usize) -> String {
 /// Whether the app's window has the focus: the view shows the asks, and a notification would only repeat them.
 pub fn window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
     use tauri::Manager;
-    app.get_webview_window(crate::cophylad::HOST_LABEL).and_then(|w| w.is_focused().ok()).unwrap_or(false)
+    app.get_window(crate::cophylad::HOST_LABEL).and_then(|w| w.is_focused().ok()).unwrap_or(false)
 }
 
 /// What an activation does: a button answers the ask through the host page, anything else shows the window.
@@ -116,7 +116,7 @@ fn activated<R: Runtime>(app: &AppHandle<R>, action: Option<&str>) {
         }
         None => {
             crate::dock(app, true);
-            if let Some(w) = app.get_webview_window(crate::cophylad::HOST_LABEL) {
+            if let Some(w) = app.get_window(crate::cophylad::HOST_LABEL) {
                 let _ = w.show();
                 let _ = w.unminimize();
                 let _ = w.set_focus();

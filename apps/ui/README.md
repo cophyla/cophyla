@@ -34,9 +34,9 @@ cophylad outlive the app.
 
 | Path | What |
 |---|---|
-| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `dropped.rs` the paths of files dropped on a view (`dropped/` a small piece per platform), `tray.rs` |
+| `src-tauri/` | the Rust shell: `main.rs` composition, `cophylad.rs` the link and the spawn, `install.rs` installed mode, `views.rs` the `view` protocol, `commands.rs` the five app commands, `notify.rs` toasts and the AUMID, `stream.rs` a remote desktop's window, or its page laid over the host window beside the view (`Window::add_child`, which is why `tauri` has its `unstable` feature), `links.rs` a clicked link in the system browser, `voice.rs` the microphone grant and the talk key, `dropped.rs` the paths of files dropped on a view (`dropped/` a small piece per platform), `tray.rs` |
 | `src-tauri/commands.txt` | the app manifest's command list, read by `build.rs` |
-| `src-tauri/capabilities/host.json` | what the `host` window may call; the only capability file |
+| `src-tauri/capabilities/host.json` | what the `host` web view may call, granted by the web view's label and never the window's, which a stream's page beside the view shares; the only capability file |
 | `host/` | the host page: `main.ts`, `voice.ts`, `index.html`, `host.css`, `inliner.ts` — the shell's half, the rest is `@cophyla/viewhost`, whose view picker's `chooser.css` the build copies beside them, and `@cophyla/voicehost`, whose worklet, wake worker and `wake/` files it copies too |
 | `scripts/build-host.ts` | bundles `host/` into `dist/`, which is `frontendDist` |
 | `test/` | `bun test`: the shell's own host modules over fakes, and the manifest check |

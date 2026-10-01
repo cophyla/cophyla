@@ -65,7 +65,7 @@ export class StreamLinks {
         const name = p.name ?? "a viewer on another node";
         return this.deps.gate.run(
           { principal: { kind: "node", id: from.id }, action: "remote.ticket", target: name, args: p, risk: "exec", sessionKey: from.sessionKey, ask: pairAsk(name) },
-          () => remote.ticket(StreamLinks.viewerKey(from.id, p.viewer), p.name, p.transport),
+          () => remote.ticket(StreamLinks.viewerKey(from.id, p.viewer), p.name, p.transport, p.lowLatency ? { lowLatency: true } : {}),
           onPending ? { onPending } : {},
         );
       }

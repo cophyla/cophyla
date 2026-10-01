@@ -580,12 +580,32 @@ export const pairAsk = (name: string | undefined): { title: string; detail: stri
   detail: `${name ?? "A viewer"} asked to pair with this node's desktop host. Allowing gives it the screen, the mouse, the keyboard and the clipboard until it is revoked.`,
 });
 
+/** The words the gate uses when a viewer of this desktop is taken back from elsewhere: by the name the host knows it under. */
+export const revokeAsk = (name: string): { title: string; detail: string } => ({
+  title: `Revoke ${name}?`,
+  detail: `${name} can no longer view or control this desktop until it pairs again, and a stream it has open ends.`,
+});
+
+/** The words the gate uses when sharing this desktop is switched on or off from elsewhere. */
+export const shareAsk = (on: boolean): { title: string; detail: string } =>
+  on
+    ? {
+        title: "Share this desktop?",
+        detail: "Its streaming host starts, and is installed first when it is missing. Viewers still need a pairing of their own, which is asked for separately.",
+      }
+    : {
+        title: "Stop sharing this desktop?",
+        detail: "The streams going on end. Paired viewers stay paired; where the host runs as a service they can still connect to it directly until they are revoked.",
+      };
+
 /**
- * Remote desktop. `remote.pair`, `remote.invite` and `remote.revoke` act on the node they
- * name and are forwarded there; `remote.open` is answered by the node this socket is on,
- * which runs the viewer: a window for a desktop client, a stream page for a controller;
- * `remote.close` ends a stream it opened; `remote.pipe.open` opens one connection of a
- * stream page toward the node whose desktop it shows, for the phone's own forwarder.
+ * Remote desktop. `remote.pair`, `remote.invite`, `remote.revoke`, `remote.enable` and
+ * `remote.disable` act on the node they name (this one without it, for the switch) and are
+ * forwarded there; `remote.open` is answered by the node this socket is on, which runs the
+ * viewer: a window for a desktop client, or a loopback page it shows beside its view, a
+ * stream page for a controller; `remote.close` ends a stream it opened; `remote.pipe.open`
+ * opens one connection of a stream page toward the node whose desktop it shows, for the
+ * phone's own forwarder.
  */
 export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
   return {
@@ -600,7 +620,7 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
     },
     "remote.open": {
       target: (p) => p.node,
-      handler: (p, ctx) => deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true }),
+      handler: (p, ctx) => deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}) }),
     },
     "remote.close": {
       target: (p) => p.stream,
@@ -609,6 +629,22 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
     "remote.revoke": {
       target: (p) => p.viewer,
       handler: (p) => deps.remote.revoke(p.viewer),
+    },
+    "remote.enable": {
+      target: (p) => p.node,
+      ask: () => shareAsk(true),
+      handler: () => {
+        deps.remote.enable();
+        return {};
+      },
+    },
+    "remote.disable": {
+      target: (p) => p.node,
+      ask: () => shareAsk(false),
+      handler: async () => {
+        await deps.remote.disable();
+        return {};
+      },
     },
     "remote.pipe.open": {
       target: (p) => p.node,

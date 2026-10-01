@@ -174,6 +174,8 @@ export interface HostReady {
   filePaths?: boolean;
   /** Where the host serves the document frame, in which an HTML file's scripts run apart from the view (@cophyla/protocol's docframe.ts). */
   docFrame?: string;
+  /** The host lays a stream page over the view where the view places it (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
+  embed?: boolean;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -199,6 +201,8 @@ export interface ViewState {
   hostFilePaths: boolean;
   /** Where the host serves the document frame; none on a host too old to serve it, which draws an HTML file with no scripts. */
   hostDocFrame?: string;
+  /** The host lays another node's desktop over the view, beside the pane: the desktop app. */
+  hostEmbed: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -348,6 +352,7 @@ export function initialState(): ViewState {
     hostMenu: false,
     hostTalk: false,
     hostFilePaths: false,
+    hostEmbed: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -519,6 +524,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.hostMenu = p.menu === true;
       state.hostTalk = p.talk === true;
       state.hostFilePaths = p.filePaths === true;
+      state.hostEmbed = p.embed === true;
       if (typeof p.docFrame === "string" && p.docFrame !== "") state.hostDocFrame = p.docFrame;
       else delete state.hostDocFrame;
       return state;
@@ -2784,39 +2790,62 @@ export interface RemoteCard {
   host: RemoteHost;
   /** The host's state in words: what it is doing, or why it cannot serve. */
   words: string;
+  /** A line under them, when there is more to say: who can still connect while it is off, who may have to approve the installer. */
+  note?: string;
   streaming: boolean;
   /** This client can open a viewer on the node: the host serves, and it is not the desktop the app runs on. */
   connect: boolean;
+  /** This client can show the desktop beside its view: the desktop app, whose host lays it over the view, onto another node's. */
+  beside: boolean;
   /** The host takes a viewer's PIN. */
   pair: boolean;
   /** The host mints a code for a phone; only Apollo does. */
   invite: boolean;
-  /** Watching first, then the newest. */
+  /** Sharing is off: Share this desktop. */
+  share: boolean;
+  /** Sharing is on, whether the host is up, coming up or failing: Stop sharing. */
+  stop: boolean;
+  /** The host could not come up: Retry. */
+  retry: boolean;
+  /** Watching first, then the newest; while sharing is off, the devices still paired with a host that runs anyway. */
   viewers: RemoteViewer[];
 }
 
 /**
  * A node's desktop block, or undefined when there is none to show: without the `remote`
- * scope, for a node that is not online, or one whose host is off. A controller opens any
- * node's desktop in a page; the desktop app opens a window, and never onto the desktop it
- * runs on.
+ * scope, or for a node that is not online. Off, it offers to share the desktop. A controller
+ * opens any node's desktop in a page; the desktop app opens a window, or shows it beside the
+ * view, and never onto the desktop it runs on.
  */
 export function selectRemote(state: ViewState, node: Node): RemoteCard | undefined {
   if (!state.scopes.includes("remote") || node.status !== "online") return undefined;
   const remote = state.remote.get(node.id);
-  if (!remote || remote.host.status === "off") return undefined;
-  const ready = remote.host.status === "ready";
+  if (!remote) return undefined;
+  const status = remote.host.status;
+  const ready = status === "ready";
+  const off = status === "off";
   const client = state.client;
-  const viewer = client?.kind === "controller" || (client?.kind === "ui" && client.node !== undefined && client.node !== node.id);
+  const elsewhere = client?.kind === "ui" && client.node !== undefined && client.node !== node.id;
+  const viewer = client?.kind === "controller" || elsewhere;
+  // Off, a host that runs anyway (a Windows service) still lists who it would let in.
+  const viewers = off ? remote.viewers.filter((v) => v.kind === "native") : remote.viewers;
+  // The installer's prompt comes up on the machine itself: someone there may have to answer it.
+  const away = !(client?.kind === "ui" && client.node === node.id);
+  const note = remoteNote(remote.host, { paired: off ? viewers.length : 0, ...(away ? { at: node.name } : {}) });
   return {
     node: node.id,
     host: remote.host,
     words: remoteWords(remote.host, remote.streaming),
+    ...(note !== undefined ? { note } : {}),
     streaming: remote.streaming,
     connect: ready && viewer,
+    beside: ready && elsewhere && state.hostEmbed,
     pair: ready,
     invite: ready && remote.host.kind === "apollo",
-    viewers: [...remote.viewers].sort((a, b) => Number(b.connected === true) - Number(a.connected === true) || b.since - a.since),
+    share: off,
+    stop: !off,
+    retry: status === "unavailable",
+    viewers: [...viewers].sort((a, b) => Number(b.connected === true) - Number(a.connected === true) || b.since - a.since),
   };
 }
 
@@ -2835,6 +2864,131 @@ export function remoteWords(host: RemoteHost, streaming: boolean): string {
     case "unavailable":
       return host.reason ? `unavailable: ${host.reason}` : "unavailable";
   }
+}
+
+/**
+ * What more there is to say of a host: off, that the devices still paired with one that runs
+ * anyway (a Windows service) can still connect to it; installing on a machine away from this
+ * client, that the installer may wait on someone there.
+ */
+export function remoteNote(host: RemoteHost, more: { paired?: number; at?: string }): string | undefined {
+  const n = more.paired ?? 0;
+  if (host.status === "off" && n > 0) return `${n} paired device${n === 1 ? "" : "s"} can still connect until revoked`;
+  if (host.status === "installing" && more.at !== undefined) return `someone at ${more.at} may need to approve the installer`;
+  return undefined;
+}
+
+/**
+ * Why Share or Stop sharing did nothing, in words to act on: this app, or the machine it
+ * would reach, is from before the switch; the node's own words otherwise.
+ */
+export function shareWords(message: string, name: string): string {
+  // this app's own bridge, built before the switch, knows no such request
+  if (/^unknown method remote\.(enable|disable)/.test(message)) return "this app is older than desktop sharing: update it";
+  // the machine it goes to answers neither: it is older
+  if (/remote\.(enable|disable) is not served|unknown method/.test(message)) return `Cophyla on ${name} is older than desktop sharing from here: update it there`;
+  return message;
+}
+
+// --- the desktop beside the view ---------------------------------------------------------------
+
+/**
+ * Another node's desktop shown beside the view, one at a time: whose, the stream once its page
+ * is up, and how far it got. Kept across tab switches; gone when it closes, its stream ends or
+ * the line to the node goes.
+ */
+export interface RemoteView {
+  node: NodeId;
+  name: string;
+  stream?: string;
+  phase: "opening" | "open" | "failed";
+  error?: string;
+}
+
+export type RemoteViewEvent =
+  | { type: "open"; node: NodeId; name: string }
+  | { type: "opened"; node: NodeId; stream: string }
+  | { type: "failed"; node: NodeId; error: string }
+  /** The host says a stream it showed is gone. */
+  | { type: "ended"; stream: string }
+  /** The line to the node went. */
+  | { type: "lost" }
+  | { type: "close" };
+
+/** The panel after an event; an answer for a desktop the panel no longer shows changes nothing. */
+export function remoteViewStep(view: RemoteView | undefined, ev: RemoteViewEvent): RemoteView | undefined {
+  switch (ev.type) {
+    case "open":
+      return { node: ev.node, name: ev.name, phase: "opening" };
+    case "opened":
+      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, stream: ev.stream, phase: "open" } : view;
+    case "failed":
+      return view?.node === ev.node && view.phase === "opening" ? { node: view.node, name: view.name, phase: "failed", error: ev.error } : view;
+    case "ended":
+      return view?.stream === ev.stream ? undefined : view;
+    case "lost":
+    case "close":
+      return undefined;
+  }
+}
+
+/** The desktop panel's share of the width beside the pane, in percent: the usual, and the least and most its divider goes to. */
+export const REMOTE_VIEW_WIDTH = { usual: 50, min: 25, max: 80 } as const;
+
+/** A share for the desktop panel's divider: a number held to its bounds, anything else the usual. */
+export function remoteViewWidth(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return REMOTE_VIEW_WIDTH.usual;
+  return Math.round(Math.min(REMOTE_VIEW_WIDTH.max, Math.max(REMOTE_VIEW_WIDTH.min, value)) * 10) / 10;
+}
+
+/** A rectangle in the view's own coordinates: an element's bounding box. */
+export interface Box {
+  left: number;
+  top: number;
+  width: number;
+  height: number;
+}
+
+/** Where the host is to put the desktop: its slot in the view's coordinates, whole pixels. */
+export interface RemotePlace {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+/** The least of the slot worth showing the desktop in. */
+const PLACE_MIN = 40;
+
+function crosses(a: Box, b: Box): boolean {
+  return a.left < b.left + b.width && b.left < a.left + a.width && a.top < b.top + b.height && b.top < a.top + a.height;
+}
+
+/**
+ * Where the desktop goes, or `null` to hide it: the host lays it over the view, where nothing
+ * of the view can be drawn over it. Hidden while the panel is not shown, while something of
+ * the view lies over it (the invite's QR code, a menu crossing it); cut below the pinned
+ * prompts where they cross its top.
+ */
+export function remotePlace(slot: Box | undefined, over: { shown: boolean; covered?: boolean; menus?: Box[]; pinned?: Box }): RemotePlace | null {
+  if (!over.shown || over.covered || !slot) return null;
+  if ((over.menus ?? []).some((m) => crosses(m, slot))) return null;
+  let top = slot.top;
+  const pinned = over.pinned;
+  if (pinned && pinned.width > 0 && pinned.height > 0 && crosses(pinned, slot)) top = Math.max(top, pinned.top + pinned.height + 6);
+  const x = Math.round(slot.left);
+  const y = Math.round(top);
+  const width = Math.round(slot.left + slot.width) - x;
+  const height = Math.round(slot.top + slot.height) - y;
+  if (width < PLACE_MIN || height < PLACE_MIN) return null;
+  return { x, y, width, height };
+}
+
+/** The same place, or both hidden: the host is asked again only when it moved. */
+export function samePlace(a: RemotePlace | null | undefined, b: RemotePlace | null): boolean {
+  if (a === undefined) return false;
+  if (a === null || b === null) return a === b;
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
 }
 
 /**

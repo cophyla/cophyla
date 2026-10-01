@@ -6,7 +6,8 @@
 // opened with the same header. The cookie is `Secure`, except for a ticket minted for a
 // forwarder on the viewer's own loopback (`http://127.0.0.1`), claimed from there, since a
 // browser drops a `Secure` cookie on plain HTTP. Each ticket says how the
-// page carries its video (the transport it seeds), and names the stream it opens, which
+// page carries its video (the transport it seeds, and for a low-latency one the renderer and
+// codec that keep the video a few frames behind), and names the stream it opens, which
 // its client ends with `remote.close`. A session is a `web` viewer in this node's
 // `remote.state`: revoked by `remote.revoke`, and forgotten with its sockets when the client
 // that opened it disconnects, like a view ticket.
@@ -22,11 +23,17 @@ export interface RemoteTarget {
   appId: number;
 }
 
-/** How a ticket's page is served: the video's transport (the node's `[remote] web_transport` without it), and whether its cookie may be `Secure`. */
+/**
+ * How a ticket's page is served: the video's transport (the node's `[remote] web_transport`
+ * without it), whether its cookie may be `Secure`, and whether the page is seeded with the
+ * settings that keep the video a few frames behind: drawn on a canvas, HEVC where the browser
+ * decodes it (measured: 67 ms against 167–183 with the viewer's defaults).
+ */
 export interface TicketOptions {
   name?: string;
   transport?: StreamTransport;
   secureCookie?: boolean;
+  lowLatency?: boolean;
 }
 
 export interface RemoteSession {
@@ -39,6 +46,7 @@ export interface RemoteSession {
   target: RemoteTarget;
   transport?: StreamTransport;
   secureCookie?: boolean;
+  lowLatency?: boolean;
   since: number;
   /** The bridged stream sockets open under this session. */
   bridges: Set<Bridge>;
@@ -132,10 +140,10 @@ export class RemoteTickets {
     this.forgetWhere((c) => c === client);
   }
 
-  /** Forgets the tickets and ends the sessions of every client `which` picks. */
-  forgetWhere(which: (client: string) => boolean): void {
-    for (const t of [...this.tickets]) if (which(t[1].client)) this.tickets.delete(t[0]);
-    for (const s of [...this.sessions.values()]) if (which(s.client)) this.revoke(s.id);
+  /** Forgets the tickets and ends the sessions `which` picks, by their client and the desktop they show. */
+  forgetWhere(which: (client: string, target: RemoteTarget) => boolean): void {
+    for (const t of [...this.tickets]) if (which(t[1].client, t[1].target)) this.tickets.delete(t[0]);
+    for (const s of [...this.sessions.values()]) if (which(s.client, s.target)) this.revoke(s.id);
   }
 
   /** The sessions as viewers: the phone's name, the moment it claimed, streaming while a socket is bridged. */
@@ -182,7 +190,18 @@ function definedOf(opts: TicketOptions): TicketOptions {
   if (opts.name !== undefined) out.name = opts.name;
   if (opts.transport !== undefined) out.transport = opts.transport;
   if (opts.secureCookie !== undefined) out.secureCookie = opts.secureCookie;
+  if (opts.lowLatency !== undefined) out.lowLatency = opts.lowLatency;
   return out;
+}
+
+/**
+ * What the claim page sets in the stream page's settings: the ticket's transport, and for a
+ * low-latency one the canvas renderer and HEVC where the browser decodes it (H.264 where it
+ * does not; AV1 shows no picture in moonlight-web 2.10.0).
+ */
+export function seedScript(transport: StreamTransport, lowLatency: boolean): string {
+  const low = lowLatency ? `s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";` : "";
+  return `try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(transport)};${low}localStorage.setItem(k,JSON.stringify(s))}catch(e){}`;
 }
 
 /** A `Host` on this machine's loopback: the page came through a forwarder here, over plain HTTP. */
@@ -269,7 +288,7 @@ export class RemoteProxy {
     return new Response(res.body, { status: res.status, headers: out });
   }
 
-  /** The ticket page: the cookie, the ticket's transport into the page's storage, then the stream page. */
+  /** The ticket page: the cookie, the ticket's settings into the page's storage, then the stream page. */
   private claim(ticket: string, host: string | null): Response {
     const session = this.deps.tickets.claim(ticket);
     if (!session) return new Response("that ticket is not open", { status: 403, headers: { "cache-control": "no-store" } });
@@ -279,7 +298,7 @@ export class RemoteProxy {
     const path = `/remote/stream.html?hostId=${session.target.hostId}&appId=${session.target.appId}`;
     const html =
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body>` +
-      `<script nonce="${nonce}">try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(session.transport ?? this.deps.transport())};localStorage.setItem(k,JSON.stringify(s))}catch(e){}` +
+      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true)}` +
       `location.replace(${JSON.stringify(path)})</script></body></html>`;
     return new Response(html, {
       status: 200,

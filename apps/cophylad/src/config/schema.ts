@@ -442,7 +442,11 @@ export type MetricsConfig = z.infer<typeof MetricsConfig>;
 
 /** The `remote` module: this node's desktop host, the viewers it acquires, the web sidecar and the screenshot. */
 export const RemoteConfig = z.object({
-  /** Share this node's desktop: run (and, with `install`, acquire) the host. Off, the node can still view others and take screenshots. */
+  /**
+   * Share this node's desktop: run (and, with `install`, acquire) the host. Off, the node can
+   * still view others and take screenshots. Once the app's Share or Stop sharing has been
+   * used, that switch, kept on the node, wins over this.
+   */
   enabled: z.boolean().default(false),
   /** Which host to run: `auto` takes whichever is installed, Apollo first (Apollo is Windows-only). */
   host: z.enum(["auto", "apollo", "sunshine"]).default("auto"),
@@ -908,7 +912,7 @@ registry_heartbeat_ms = 15000  # a primary renews its lease on the server's regi
 # for the desktop app, the moonlight-web sidecar for a phone) is acquired on first use. The
 # brain's screenshot needs no host at all.
 [remote]
-enabled = false
+enabled = false                # share this desktop; the app's Share / Stop sharing, once used, wins over this
 host = "auto"                  # auto | apollo | sunshine
 install = true                 # acquire a missing host or viewer through the package manager
 # host_command = "C:\\Program Files\\Apollo\\sunshine.exe"   # over the known install paths

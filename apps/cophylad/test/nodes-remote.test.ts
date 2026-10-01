@@ -154,4 +154,78 @@ describe("remote desktop across nodes", () => {
     secondary = undefined;
     await waitFor(() => !primary!.d.remote.states().some((s) => s.node === gone), 10_000);
   }, 60_000);
+
+  test("the desktop app on the primary shares the secondary's desktop, asked there, and shows it beside its view on a loopback page seeded for low latency", async () => {
+    const hostB = await startFakeApollo();
+    hostB.acceptAny = true;
+    fakes.push(hostB);
+    const seamsP = remoteSeams();
+    const seamsS = remoteSeams();
+    primary = await startPrimary({ toml: `[node]\nname = "study"\n\n${remoteToml(false, seamsP)}`, daemon: { remote: seamsFor(seamsP) } });
+    secondary = await startSecondary(primary, { gateRules: { "node:remote.pair": "allow" }, toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS, hostB) } });
+    await linked(secondary);
+    const desk = await client(primary.d, "desk-a");
+    clients.push(desk);
+    await waitFor(() => primary!.d.remote.states().some((s) => s.node === secondary!.identity.id && s.host.status === "off"), 10_000);
+
+    // Share: served on the secondary, whose gate asks in its own words; answered from the primary
+    const sharing = desk.request("remote.enable", { node: secondary.identity.id });
+    const ask = (await desk.next(isMethod("ask.state", (p) => (p as Ask).status === "open" && (p as Ask).source.kind === "gate"), 10_000)).params as Ask;
+    expect(ask.title).toBe("Share this desktop?");
+    expect(ask.node).toBe(secondary.identity.id);
+    await desk.request("ask.answer", { id: ask.id, option: "allow" });
+    expect(await sharing).toEqual({});
+    await desk.next(isMethod("remote.state", (p) => (p as RemoteState).node === secondary!.identity.id && (p as RemoteState).host.status === "ready"), 10_000);
+    const row = rows(secondary, "remote.enable")[0]!;
+    expect(row.principal).toEqual({ kind: "node", id: primary.d.identity.id });
+    expect(rows(primary.d, "remote.enable")[0]!.principal.kind).toBe("user");
+
+    // Beside: the primary's own web viewer, paired with the secondary's host, on this machine's loopback
+    const { url, stream } = await desk.request<{ url: string; stream: string }>("remote.open", { node: secondary.identity.id, embed: true });
+    expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/remote\/\?t=[0-9a-f]{32}$/);
+    expect(stream).toMatch(/^stream_[0-9a-f]{16}$/);
+    expect(hostB.clients.map((c) => c.name)).toEqual(["study web"]);
+    expect(seamsP.commands.some((x) => x.startsWith(seamsP.moonlight))).toBe(false);
+    const claim = await fetch(url);
+    expect(claim.status).toBe(200);
+    expect(claim.headers.get("set-cookie")).not.toContain("Secure");
+    const page = await claim.text();
+    expect(page).toContain(`s.dataTransport="websocket";s.canvasRenderer=true;`);
+    await waitFor(() => primary!.d.remote.state().viewers.some((v) => v.kind === "web" && v.name === "desk-a"));
+    await desk.request("remote.close", { stream });
+    await waitFor(() => !primary!.d.remote.state().viewers.some((v) => v.kind === "web"));
+
+    // Stop sharing, also served and asked there
+    const stopping = desk.request("remote.disable", { node: secondary.identity.id });
+    const stopAsk = (await desk.next(isMethod("ask.state", (p) => (p as Ask).status === "open" && (p as Ask).id !== ask.id), 10_000)).params as Ask;
+    expect(stopAsk.title).toBe("Stop sharing this desktop?");
+    await desk.request("ask.answer", { id: stopAsk.id, option: "allow" });
+    expect(await stopping).toEqual({});
+    await waitFor(() => primary!.d.remote.states().some((s) => s.node === secondary!.identity.id && s.host.status === "off"), 10_000);
+    expect(secondary.store.meta.get("remote_enabled")).toBe("0");
+
+    // off, the host still lists who it paired, and a pairing is taken back there, asked by its name
+    const off = primary.d.remote.states().find((s) => s.node === secondary!.identity.id)!;
+    const web = off.viewers.find((v) => v.name === "study web")!;
+    expect(web.kind).toBe("native");
+    const revoking = desk.request("remote.revoke", { node: secondary.identity.id, viewer: web.id });
+    const revokeAsk = (await desk.next(isMethod("ask.state", (p) => (p as Ask).status === "open" && (p as Ask).title.startsWith("Revoke")), 10_000)).params as Ask;
+    expect(revokeAsk.title).toBe("Revoke study web?");
+    await desk.request("ask.answer", { id: revokeAsk.id, option: "allow" });
+    expect(await revoking).toEqual({});
+    expect(hostB.clients.map((c) => c.name)).toEqual([]);
+  }, 60_000);
+
+  test("a hands node's desktop is not switched from the primary", async () => {
+    const seamsP = remoteSeams();
+    const seamsS = remoteSeams();
+    primary = await startPrimary({ toml: remoteToml(false, seamsP), daemon: { remote: seamsFor(seamsP) } });
+    secondary = await startSecondary(primary, { hands: true, gateRules: { "node:remote.enable": "allow" }, toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS) } });
+    await linked(secondary);
+    const desk = await client(primary.d, "desk-a");
+    clients.push(desk);
+    const r = await desk.call("remote.enable", { node: secondary.identity.id });
+    expect("error" in r && r.error.message).toMatch(/joined as hands/);
+    expect(secondary.store.meta.get("remote_enabled")).toBeUndefined();
+  }, 60_000);
 });

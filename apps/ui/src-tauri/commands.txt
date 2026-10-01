@@ -9,6 +9,8 @@ notify_ask
 dismiss_ask
 dropped_paths
 stream_open
+stream_embed
+stream_place
 stream_close
 open_link
 ptt_shortcut

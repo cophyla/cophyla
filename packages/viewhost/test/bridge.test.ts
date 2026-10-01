@@ -78,7 +78,7 @@ describe("bridge", () => {
     const bridge = new Bridge({ manifest: { ...MANIFEST, scopes: [...MANIFEST.scopes!, "remote"] }, clientScopes: client, instance: 1, host }, { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) });
     bridge.fromView(req("r1", "host.open", { url: "https://h/remote/?t=abc" }));
     bridge.fromView(req("r2", "host.open", { url: "javascript:alert(1)" }));
-    bridge.fromView(req("r3", "host.close", {}));
+    bridge.fromView(req("r3", "host.frobnicate", {}));
     await Bun.sleep(0);
     expect(toCophylad).toEqual([]);
     expect(opened).toEqual([{ method: "host.open", params: { url: "https://h/remote/?t=abc" } }]);
@@ -244,6 +244,43 @@ describe("bridge", () => {
     expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("filePaths");
     bare.fromView(req("r12", "host.filePaths", { names: ["a.txt"] }));
     expect(bareOut.at(-1)).toMatchObject({ id: "r12", error: { data: { code: "unsupported" } } });
+  });
+
+  test("a host that lays stream pages over the view says embed in host.ready; host.place and host.close are its, for the remote scope; host.streamClosed reaches that scope alone", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    const host = async (method: string, params: unknown) => {
+      calls.push({ method, params });
+      return method === "host.open" ? { embedded: true } : {};
+    };
+    const scopes = [...MANIFEST.scopes!, "remote" as const];
+    const toCophylad: unknown[] = [];
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: { ...MANIFEST, scopes }, clientScopes: [...CLIENT.scopes, "remote"], instance: 1, host, embed: true }, { toCophylad: (f) => toCophylad.push(f), toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect((toView[0] as RpcNotification).params).toMatchObject({ embed: true });
+    bridge.fromView(req("p1", "host.open", { url: "http://127.0.0.1:5000/remote/?t=abc", stream: "stream_1", embed: true }));
+    bridge.fromView(req("p2", "host.place", { stream: "stream_1", rect: { x: 10, y: 20, width: 300, height: 200 } }));
+    bridge.fromView(req("p3", "host.place", { stream: "stream_1", rect: null }));
+    bridge.fromView(req("p4", "host.close", { stream: "stream_1" }));
+    await Bun.sleep(0);
+    expect(toCophylad).toEqual([]);
+    expect(calls.map((c) => c.method)).toEqual(["host.open", "host.place", "host.place", "host.close"]);
+    expect(toView.find((f) => (f as { id: unknown }).id === "p1")).toEqual({ jsonrpc: "2.0", id: "p1", result: { embedded: true } });
+    bridge.streamClosed("stream_1");
+    expect(toView.at(-1)).toEqual({ jsonrpc: "2.0", method: "host.streamClosed", params: { stream: "stream_1" } });
+
+    // without the remote scope: denied, and told nothing
+    const narrowOut: RpcMessage[] = [];
+    const narrow = new Bridge({ manifest: MANIFEST, clientScopes: [...CLIENT.scopes, "remote"], instance: 2, host, embed: true }, { toCophylad: () => {}, toView: (f) => narrowOut.push(f) });
+    narrow.fromView(req("n1", "host.place", { stream: "stream_1", rect: null }));
+    narrow.fromView(req("n2", "host.close", { stream: "stream_1" }));
+    narrow.streamClosed("stream_1");
+    expect(narrowOut.map((f) => (f as { error?: { data: { code: string } } }).error?.data.code)).toEqual(["denied", "denied"]);
+    expect(calls).toHaveLength(4);
+    // a host that lays nothing over the view says no embed
+    const { bridge: bare, toView: bareOut } = make();
+    bare.ready(HELLO);
+    expect((bareOut[0] as RpcNotification).params).not.toHaveProperty("embed");
   });
 
   test("host.ready names where the host serves the document frame, when it serves one", () => {

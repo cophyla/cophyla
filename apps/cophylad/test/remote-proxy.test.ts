@@ -17,7 +17,7 @@ import type { RemoteState } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { silentLogger } from "../src/log.ts";
 import { HostApi } from "../src/remote/host.ts";
-import { loopbackHost, RemoteTickets } from "../src/remote/proxy.ts";
+import { loopbackHost, RemoteProxy, RemoteTickets } from "../src/remote/proxy.ts";
 import { startFakeApollo } from "./fakes/apollo.ts";
 import type { FakeApollo } from "./fakes/apollo.ts";
 import { FAKE_WEB, remoteSeams } from "./fakes/remote.ts";
@@ -208,7 +208,10 @@ describe("remote web viewer", () => {
     expect(claim.status).toBe(200);
     const setCookie = claim.headers.get("set-cookie")!;
     expect(setCookie).toMatch(/^cophyla_remote=[0-9a-f]{32}; Path=\/remote; HttpOnly; SameSite=Strict$/);
-    expect(await claim.text()).toContain(`s.dataTransport="websocket"`);
+    const page = await claim.text();
+    expect(page).toContain(`s.dataTransport="websocket"`);
+    // only a ticket for the view beside the app's pane is seeded for low latency
+    expect(page).not.toContain("canvasRenderer");
     const cookie = setCookie.split(";")[0]!;
     expect((await get(`${origin}/remote/`, { cookie })).status).toBe(200);
 
@@ -263,5 +266,33 @@ describe("remote web viewer", () => {
     expect(tickets.list()).toEqual([]);
     for (const host of ["127.0.0.1:50123", "localhost:9", "[::1]:4000", "127.0.0.1"]) expect(loopbackHost(host)).toBe(true);
     for (const host of ["192.168.1.44:4818", "127.0.0.1.evil:1", "[fe80::1]:4818", null]) expect(loopbackHost(host)).toBe(false);
+  });
+
+  test("a low-latency ticket seeds the canvas renderer and HEVC where the page decodes it; others are left as they were", async () => {
+    const tickets = new RemoteTickets();
+    const proxy = new RemoteProxy({ tickets, upstream: () => undefined, transport: () => "webrtc", log: silentLogger });
+    const target = { node: "node_x", hostId: 1, appId: 2 };
+    const claim = async (ticket: string) => {
+      const res = await proxy.handle(new Request(`http://127.0.0.1:50123/remote/?t=${ticket}`, { headers: { host: "127.0.0.1:50123" } }), () => false);
+      return res!.text();
+    };
+    const low = await claim(tickets.mint("client_a", target, { transport: "websocket", secureCookie: false, lowLatency: true }).ticket);
+    expect(low).toContain(`s.dataTransport="websocket";s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";`);
+    const plain = await claim(tickets.mint("client_a", target).ticket);
+    expect(plain).toContain(`s.dataTransport="webrtc";localStorage.setItem`);
+    expect(plain).not.toContain("videoCodec");
+  });
+
+  test("the sessions showing one desktop are ended together, a client's on others left", () => {
+    const tickets = new RemoteTickets();
+    const mine = { node: "node_self", hostId: 1, appId: 2 };
+    const other = { node: "node_other", hostId: 3, appId: 4 };
+    tickets.claim(tickets.mint("client_a", mine).ticket);
+    tickets.claim(tickets.mint("node_b:client_c", mine).ticket);
+    tickets.claim(tickets.mint("client_a", other).ticket);
+    const waiting = tickets.mint("client_d", mine);
+    tickets.forgetWhere((_client, t) => t.node === "node_self");
+    expect(tickets.list().map((s) => s.target.node)).toEqual(["node_other"]);
+    expect(tickets.claim(waiting.ticket)).toBeUndefined();
   });
 });

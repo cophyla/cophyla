@@ -127,7 +127,10 @@
       ]
     },
     "remote.ticket": {
-      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel 8", "transport": "webrtc" }],
+      "params": [
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel 8", "transport": "webrtc" },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true }
+      ],
       "results": [{ "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }]
     },
     "remote.pipe.open": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "n3" }], "results": [{ "window": 262144 }] },

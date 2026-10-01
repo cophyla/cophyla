@@ -16,7 +16,8 @@ path = "src/main.rs"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+# `unstable` for Window::add_child: a stream's page laid over the view (stream.rs).
+tauri = { version = "2", features = ["tray-icon", "unstable"] }
 tauri-plugin-single-instance = "2"
 # The talk key: held anywhere on the desktop, it is push-to-talk (voice.rs).
 tauri-plugin-global-shortcut = "2"

@@ -762,14 +762,16 @@ export const clientRequests = {
   /**
    * Opens `node`'s desktop for this client, answered by the node the socket is on. A desktop
    * client gets a native viewer window (`{}`) where the host is on its LAN, or a loopback
-   * `url` and its `stream` to show in a window of its own where it is not. A controller
-   * gets the URL of a stream page on this node's controller origin; one that `forward`s
-   * gets the page's `path` instead, which it fetches through its own forwarder: on the LAN
-   * over its pinned socket (`transport: websocket`), off it through pipes to `node`, the
-   * host, whose video then goes over WebRTC (`transport: webrtc`).
+   * `url` and its `stream` to show in a window of its own where it is not. One that asks to
+   * `embed` it, to show beside its view, gets a loopback `url` and its `stream` either way: a
+   * page of this node's web viewer where the host is on its LAN, the host's own through pipes
+   * where it is not. A controller gets the URL of a stream page on this node's controller
+   * origin; one that `forward`s gets the page's `path` instead, which it fetches through its
+   * own forwarder: on the LAN over its pinned socket (`transport: websocket`), off it through
+   * pipes to `node`, the host, whose video then goes over WebRTC (`transport: webrtc`).
    */
   "remote.open": {
-    params: z.object({ node: NodeId, forward: z.boolean().optional() }),
+    params: z.object({ node: NodeId, forward: z.boolean().optional(), embed: z.boolean().optional() }),
     result: z.object({
       url: z.string().optional(),
       path: z.string().optional(),
@@ -787,6 +789,18 @@ export const clientRequests = {
    */
   "remote.pipe.open": { params: z.object({ node: NodeId.optional() }), result: z.object({ pipe: PipeId, window: z.number().int().positive() }) },
   "remote.revoke": { params: z.object({ node: NodeId, viewer: z.string() }), result: Empty },
+  /**
+   * Shares `node`'s desktop (this node's without it): its host is located, installed when
+   * missing, and started; also what Retry is when the host is unavailable. Kept on the node
+   * over `[remote] enabled` in config.toml from then on.
+   */
+  "remote.enable": { params: z.object({ node: NodeId.optional() }), result: Empty },
+  /**
+   * Stops sharing it: the streams going on end, the pairings stay. Where the host is a service
+   * (Windows) it keeps running, so the paired viewers are still listed, can still be revoked,
+   * and can still connect to it directly until they are.
+   */
+  "remote.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   "account.login": {
     params: Empty,
     result: z.object({ verificationUrl: z.string(), userCode: z.string(), expiresAt: Timestamp }),

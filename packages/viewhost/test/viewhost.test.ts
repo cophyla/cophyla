@@ -91,4 +91,58 @@ describe("view host", () => {
     expect(requests).toEqual(["view.list", "view.list", "view.list", "view.list"]);
     expect(host.manifest?.version).toBe("v2");
   });
+
+  test("what the host lays over the view goes when the view reloads itself or is replaced, and hides while the picker or the settings are open", async () => {
+    // Any element: every property a no-op function or another such element, its listeners kept.
+    const listeners: { type: string; fn: () => void }[] = [];
+    const element = (): unknown =>
+      new Proxy(function () {}, {
+        get: (_t, key) => {
+          if (key === "addEventListener") return (type: string, fn: () => void) => listeners.push({ type, fn });
+          if (key === Symbol.iterator) return function* () {};
+          if (key === "isConnected") return true;
+          if (key === "then") return undefined;
+          return element();
+        },
+        set: () => true,
+        apply: () => element(),
+      });
+    (globalThis as unknown as { window: unknown }).window = { addEventListener: () => {} };
+    (globalThis as unknown as { document: unknown }).document = { createElement: () => element(), body: element(), addEventListener: () => {}, removeEventListener: () => {} };
+    const g = globalThis as unknown as { HTMLInputElement?: unknown };
+    g.HTMLInputElement ??= class {};
+    const conn = {
+      state: { state: "connected", hello: { client: { scopes: [] } } },
+      connected: true,
+      // the picker's and the settings' own reads never answer: their layers are all this needs
+      request: (method: string) => (method === "view.list" ? Promise.resolve({ views: [view("default", true, "v1")] }) : new Promise(() => {})),
+      send: async () => ({}),
+    } as unknown as Connection;
+    const cache = { replay: () => [] } as unknown as SnapshotCache;
+    let unmounts = 0;
+    const overlays: boolean[] = [];
+    const host = new ViewHost({
+      conn,
+      cache,
+      container: { replaceChildren: () => {} } as unknown as HTMLElement,
+      stage: async () => ({ base: "http://view.localhost/" }),
+      embed: true,
+      onUnmount: () => void unmounts++,
+      onOverlay: (open) => void overlays.push(open),
+    });
+    await host.load();
+    const loads = () => listeners.filter((l) => l.type === "load");
+    loads()[0]!.fn();
+    expect(unmounts).toBe(0);
+    // the view's document loaded again: the old one's stream goes
+    loads()[0]!.fn();
+    expect(unmounts).toBe(1);
+    // the view replaced: so does this one's
+    await host.load();
+    expect(unmounts).toBe(2);
+
+    host.chooseView();
+    host.openSettings();
+    expect(overlays).toEqual([true, true]);
+  });
 });

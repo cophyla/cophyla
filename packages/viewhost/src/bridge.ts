@@ -10,7 +10,11 @@
 // connection's; a manifest that lists none lets the view send nothing. A `host.*` request
 // is the host's own, never cophylad's: `host.open` shows a URL `remote.open` answered (a stream
 // page, an invite link), allowed only to a view holding the `remote` scope and only where
-// the host has the seam; `host.chooseView` shows the host's view picker and `host.settings`
+// the host has the seam; a host that can lay a stream page over the view (`embed` in
+// `host.ready`: the desktop app) opens one there for `host.open {embed: true}`, puts it over
+// the rectangle `host.place` names or hides it, and ends it with `host.close`, likewise for
+// the `remote` scope, and says `host.streamClosed` when one it showed is gone, however that
+// came about; `host.chooseView` shows the host's view picker and `host.settings`
 // the host's settings, to any view, since what is picked or set there is the user's doing and
 // never the view's; `host.openLink` opens a web page the user clicked (a URL in a terminal) in
 // their browser, to any view, only http and https and never with credentials in it, and only
@@ -74,6 +78,8 @@ export interface HostReady {
   filePaths?: boolean;
   /** Where the host serves the document frame, which the view may frame to run an HTML file's scripts. */
   docFrame?: string;
+  /** The host lays a stream page over the view where it says (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
+  embed?: true;
 }
 
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
@@ -116,13 +122,15 @@ export interface BridgeConfig {
   filePaths?: (names?: string[]) => Promise<string[]>;
   /** Where the host serves the document frame; absent, `host.ready` names none. */
   docFrame?: string;
+  /** The host lays stream pages over the view (`embed` in `host.ready`). */
+  embed?: boolean;
 }
 
 /** The requests a view may make of the host itself, by method. */
 export type HostRequests = (method: string, params: unknown) => Promise<unknown>;
 
 /** The host requests a view may make, and the scope each needs; `null` is none. */
-const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null };
+const HOST_METHODS: Record<string, Scope | null> = { "host.open": "remote", "host.place": "remote", "host.close": "remote", "host.chooseView": null, "host.settings": null, "host.openLink": null, "host.savePrefs": null, "host.filePaths": null };
 
 /** The record a `host.savePrefs` keeps: a plain object whose JSON fits in `PREFS_MAX`. */
 export function viewPrefs(params: unknown): ViewPrefs {
@@ -187,6 +195,7 @@ export class Bridge {
   /** `host.filePaths`: the paths, once the names, if any, are file names. */
   private filePaths?: HostRequests;
   private docFrame?: string;
+  private embed: boolean;
   private n = 0;
   /** The host's microphone as last said, so a view that loads while it is off hears it. */
   private micState: HostMic = {};
@@ -235,6 +244,7 @@ export class Bridge {
     const dropped = cfg.filePaths;
     if (dropped) this.filePaths = async (_method, params) => ({ paths: await dropped(droppedNames(params)) });
     if (cfg.docFrame) this.docFrame = cfg.docFrame;
+    this.embed = cfg.embed === true;
     this.io = io;
   }
 
@@ -334,6 +344,7 @@ export class Bridge {
     if (prefs) params.prefs = prefs;
     if (this.filePaths) params.filePaths = true;
     if (this.docFrame) params.docFrame = this.docFrame;
+    if (this.embed) params.embed = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
     if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));
@@ -357,6 +368,11 @@ export class Bridge {
     if (active === this.recordingNow) return;
     this.recordingNow = active;
     if (this.scopes.includes("voice")) this.io.toView(notification("host.recording", { active }));
+  }
+
+  /** A stream the host showed for the view is gone: its window closed, or the page over the view ended. */
+  streamClosed(stream: string): void {
+    if (this.scopes.includes("remote")) this.io.toView(notification("host.streamClosed", { stream }));
   }
 
   /** How loud the microphone was over its last frame, while it records, 0 to 1 per 20 ms. */

@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, recentWorkspaces, selectTerminalTabs, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1494,21 +1494,115 @@ describe("default view: remote desktop", () => {
     expect(selectRemote(browser, browser.nodes.get(OTHER)!)!.connect).toBe(false);
   });
 
-  test("no block without the scope, for an offline node, or a host that is off; only a ready host offers anything, and codes only Apollo's", () => {
+  test("no block without the scope or for an offline node; off, it offers to share; only a ready host offers anything else, and codes only Apollo's", () => {
     const state = viewing();
     apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "none", status: "off" } }) });
-    expect(selectRemote(state, state.nodes.get(OTHER)!)).toBeUndefined();
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "off", share: true, stop: false, retry: false, connect: false, beside: false, pair: false, invite: false, viewers: [] });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.note).toBeUndefined();
+    // a node that has said nothing of its desktop shows none
     expect(selectRemote(state, state.nodes.get(NODE)!)).toBeUndefined();
     apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "sunshine", status: "ready" } }) });
     expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, pair: true, invite: false });
     apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "unavailable", reason: "the service is stopped" } }) });
-    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "unavailable: the service is stopped", connect: false, pair: false, invite: false });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "unavailable: the service is stopped", connect: false, pair: false, invite: false, retry: true, stop: true, share: false });
     apply(state, { type: "node.state", params: node(OTHER, "laptop", { status: "offline" }) });
     expect(selectRemote(state, state.nodes.get(OTHER)!)).toBeUndefined();
     const narrow = viewing();
     narrow.scopes = narrow.scopes.filter((s) => s !== "remote");
     apply(narrow, { type: "remote.state", params: remote(OTHER) });
     expect(selectRemote(narrow, narrow.nodes.get(OTHER)!)).toBeUndefined();
+  });
+
+  test("Share, Stop sharing and Beside: the desktop app shows another node's desktop beside the view where its host lays it there; never its own, never a phone", () => {
+    const state = viewing();
+    for (const id of [NODE, OTHER]) apply(state, { type: "remote.state", params: remote(id) });
+    // a desktop app whose host lays nothing over the view
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: false, stop: true, share: false });
+    apply(state, { type: "host.ready", params: { ...READY, client: { ...CLIENT, node: NODE }, scopes: [...CLIENT.scopes, "nodes", "metrics:read", "remote"] as Scope[], embed: true } });
+    expect(state.hostEmbed).toBe(true);
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: true, stop: true });
+    expect(selectRemote(state, state.nodes.get(NODE)!)).toMatchObject({ connect: false, beside: false, stop: true, pair: true });
+    // starting, it can be stopped, not shown
+    apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "starting", step: "credentials" } }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "credentials", connect: false, beside: false, stop: true, retry: false });
+    const phone = viewing({ kind: "controller" });
+    apply(phone, { type: "remote.state", params: remote(OTHER) });
+    expect(selectRemote(phone, phone.nodes.get(OTHER)!)).toMatchObject({ connect: true, beside: false, stop: true });
+  });
+
+  test("off, a host that runs anyway lists the devices still paired and says they can still connect; installing elsewhere, someone there may have to approve it", () => {
+    const state = viewing();
+    const viewers = [
+      { id: "UUID-1", name: "tablet", kind: "native" as const, since: 1 },
+      { id: "UUID-2", name: "laptop", kind: "native" as const, since: 2, connected: true },
+      { id: "web_1", name: "Pixel", kind: "web" as const, since: 3 },
+    ];
+    apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "off" }, viewers, streaming: true }) });
+    const off = selectRemote(state, state.nodes.get(OTHER)!)!;
+    expect(off.words).toBe("off");
+    expect(off.note).toBe("2 paired devices can still connect until revoked");
+    expect(off.viewers.map((v) => v.id)).toEqual(["UUID-2", "UUID-1"]);
+    expect(remoteNote({ kind: "apollo", status: "off" }, { paired: 1 })).toBe("1 paired device can still connect until revoked");
+    expect(remoteNote({ kind: "apollo", status: "off" }, { paired: 0 })).toBeUndefined();
+    // installing on the laptop, seen from the desk: someone at the laptop may have to answer the installer
+    apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "installing", step: "installing apollo", progress: 0.5 } }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)).toMatchObject({ words: "installing apollo 50%", note: "someone at laptop may need to approve the installer", stop: true });
+    // on the desk itself it comes up in front of the user
+    apply(state, { type: "remote.state", params: remote(NODE, { host: { kind: "apollo", status: "installing", step: "installing apollo" } }) });
+    expect(selectRemote(state, state.nodes.get(NODE)!)!.note).toBeUndefined();
+    expect(remoteNote({ kind: "apollo", status: "starting" }, { at: "laptop" })).toBeUndefined();
+  });
+
+  test("the refusals of Share and Stop sharing in words: this app older, or the machine it reaches", () => {
+    expect(shareWords("unknown method remote.enable", "laptop")).toBe("this app is older than desktop sharing: update it");
+    expect(shareWords("remote.disable is not served over the node link", "laptop")).toBe("Cophyla on laptop is older than desktop sharing from here: update it there");
+    expect(shareWords("unknown method", "laptop")).toBe("Cophyla on laptop is older than desktop sharing from here: update it there");
+    const hands = "this node joined as hands: sharing its desktop is its owner" + String.fromCharCode(39) + "s to switch";
+    expect(shareWords(hands, "laptop")).toBe(hands);
+  });
+
+  test("the desktop beside the view: opening, open with its stream, failed; an answer for another desktop, or after it closed, changes nothing; its stream ending or the line going closes it", () => {
+    let v = remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop" });
+    expect(v).toEqual({ node: OTHER, name: "laptop", phase: "opening" });
+    expect(remoteViewStep(v, { type: "opened", node: NODE, stream: "stream_x" })).toBe(v);
+    v = remoteViewStep(v, { type: "opened", node: OTHER, stream: "stream_1" });
+    expect(v).toEqual({ node: OTHER, name: "laptop", stream: "stream_1", phase: "open" });
+    // an open one does not fail or open again under a late answer
+    expect(remoteViewStep(v, { type: "failed", node: OTHER, error: "late" })).toBe(v);
+    expect(remoteViewStep(v, { type: "ended", stream: "stream_other" })).toBe(v);
+    expect(remoteViewStep(v, { type: "ended", stream: "stream_1" })).toBeUndefined();
+    expect(remoteViewStep(v, { type: "lost" })).toBeUndefined();
+    expect(remoteViewStep(v, { type: "close" })).toBeUndefined();
+    const failed = remoteViewStep(remoteViewStep(undefined, { type: "open", node: OTHER, name: "laptop" }), { type: "failed", node: OTHER, error: "denied by policy" });
+    expect(failed).toEqual({ node: OTHER, name: "laptop", phase: "failed", error: "denied by policy" });
+    // closed while it opened: the answer finds nothing to open
+    expect(remoteViewStep(undefined, { type: "opened", node: OTHER, stream: "stream_2" })).toBeUndefined();
+    // another desktop takes its place
+    expect(remoteViewStep(v, { type: "open", node: NODE, name: "desk" })).toEqual({ node: NODE, name: "desk", phase: "opening" });
+  });
+
+  test("where the host is told to put the desktop: the slot in whole pixels; hidden while not shown, covered or crossed by a menu; below the pinned prompts where they cross it", () => {
+    const slot = { left: 600.4, top: 70.6, width: 599.6, height: 700 };
+    expect(remotePlace(slot, { shown: true })).toEqual({ x: 600, y: 71, width: 600, height: 700 });
+    expect(remotePlace(slot, { shown: false })).toBeNull();
+    expect(remotePlace(undefined, { shown: true })).toBeNull();
+    expect(remotePlace(slot, { shown: true, covered: true })).toBeNull();
+    // the Files panel's menu over the rail leaves it be; one reaching over it hides it
+    expect(remotePlace(slot, { shown: true, menus: [{ left: 200, top: 300, width: 180, height: 60 }] })).not.toBeNull();
+    expect(remotePlace(slot, { shown: true, menus: [{ left: 560, top: 300, width: 180, height: 60 }] })).toBeNull();
+    // the prompts at the top of the frame, crossing the slot: it starts under them
+    expect(remotePlace(slot, { shown: true, pinned: { left: 240, top: 10, width: 720, height: 120 } })).toEqual({ x: 600, y: 136, width: 600, height: 635 });
+    expect(remotePlace(slot, { shown: true, pinned: { left: 240, top: 10, width: 720, height: 0 } })).toEqual({ x: 600, y: 71, width: 600, height: 700 });
+    // too little of it left
+    expect(remotePlace({ left: 0, top: 0, width: 30, height: 400 }, { shown: true })).toBeNull();
+    expect(samePlace(undefined, null)).toBe(false);
+    expect(samePlace(null, null)).toBe(true);
+    expect(samePlace({ x: 1, y: 2, width: 3, height: 4 }, { x: 1, y: 2, width: 3, height: 4 })).toBe(true);
+    expect(samePlace({ x: 1, y: 2, width: 3, height: 4 }, null)).toBe(false);
+    expect(remoteViewWidth(undefined)).toBe(REMOTE_VIEW_WIDTH.usual);
+    expect(remoteViewWidth(5)).toBe(REMOTE_VIEW_WIDTH.min);
+    expect(remoteViewWidth(95)).toBe(REMOTE_VIEW_WIDTH.max);
+    expect(remoteViewWidth(42.44)).toBe(42.4);
   });
 
   test("the host's state in words", () => {

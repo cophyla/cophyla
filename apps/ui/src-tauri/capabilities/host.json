@@ -1,8 +1,8 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "host",
-  "description": "What the host page may call. Views load in a sandboxed frame on another origin and hold no capability at all; the allow-* entries are the app's own commands, under the ACL because build.rs declares them from commands.txt.",
-  "windows": [
+  "description": "What the host page may call. Views load in a sandboxed frame on another origin and hold no capability at all; the allow-* entries are the app's own commands, under the ACL because build.rs declares them from commands.txt. Granted to the host web view, not its window, which a stream's page beside the view shares.",
+  "webviews": [
     "host"
   ],
   "permissions": [
@@ -20,6 +20,8 @@
     "allow-dismiss-ask",
     "allow-dropped-paths",
     "allow-stream-open",
+    "allow-stream-embed",
+    "allow-stream-place",
     "allow-stream-close",
     "allow-open-link",
     "allow-ptt-shortcut"

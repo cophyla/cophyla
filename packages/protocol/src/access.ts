@@ -294,6 +294,8 @@ export const requestFilters = {
   "remote.close": { names: "open" },
   "remote.pipe.open": { names: (p, self) => [{ node: p.node ?? self }] },
   "remote.revoke": { names: (p) => [{ node: p.node }] },
+  "remote.enable": { names: (p, self) => [{ node: p.node ?? self }] },
+  "remote.disable": { names: (p, self) => [{ node: p.node ?? self }] },
   // a node's direct connections are its settings; a phone's own data channel is about nothing a limit cuts
   "direct.enable": { names: "global" },
   "direct.disable": { names: "global" },

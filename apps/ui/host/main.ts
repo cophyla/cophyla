@@ -2,9 +2,9 @@
 // link, keeps the daemon's snapshot for whatever view mounts, loads the default view into
 // a sandboxed frame and reloads it when cophylad says it changed, and toasts asks. Until a view
 // is up it says where the link is, in one line; after that it renders nothing of its own:
-// the view is the product, and shows the link itself. A staged update is the tray's. A
-// desktop with no route to it opens, through `host.open`, in a window of its own (open.ts);
-// a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
+// the view is the product, and shows the link itself. A staged update is the tray's. Another
+// node's desktop opens, through `host.open`, in a window of its own or beside the view, laid
+// over the frame where the view places it (open.ts); a link clicked in a view (`host.openLink`) opens in the system browser. Where the files a
 // view had dropped on it from the desktop are (`host.filePaths`) the shell says, from the drop
 // it saw pass into the page (dropped.rs); on Windows the view asks WebView2 for them instead.
 // Voice is voice.ts: the microphone, the wake words, the talk key and the speaker, and its
@@ -48,13 +48,24 @@ const voice = new DesktopVoice({
   onLevels: (levels) => viewhost.levels(levels),
   log: (m) => console.info(m),
 });
-const streams = new StreamWindows({ invoke: io.invoke, request: (method, params) => conn.request(method, params), log: (m) => console.warn(m) });
+const streams = new StreamWindows({
+  invoke: io.invoke,
+  request: (method, params) => conn.request(method, params),
+  // a stream beside the view is placed in the frame's coordinates
+  frame: () => viewEl.querySelector("iframe")?.getBoundingClientRect(),
+  onClosed: (stream) => viewhost.streamClosed(stream),
+  log: (m) => console.warn(m),
+});
 // The view's files come over the host's connection and are staged on the shell's native side.
 const viewhost = new ViewHost({
   conn,
   cache,
   container: viewEl,
   host: streams.host,
+  // a stream's page laid over the view: hidden under the host's own layers, gone with the view's document
+  embed: true,
+  onOverlay: (open) => streams.overlay(open),
+  onUnmount: () => streams.unmounted(),
   openLink: (url) => io.invoke<void>("open_link", { url }),
   // With no names on Linux, whose web view shows a page no dropped file (dropped.rs).
   filePaths: (names) => io.invoke<string[]>("dropped_paths", { names: names ?? null }),

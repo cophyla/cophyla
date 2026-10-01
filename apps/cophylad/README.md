@@ -511,20 +511,31 @@ only the requests it knows, carries it too.
 
 ## Remote desktop
 
-`[remote] enabled = true` shares this node's desktop; viewing another node's needs no flag,
-since every `remote.open` is gated. With it on, the module finds the host (Apollo, else
+Sharing this node's desktop is a switch: `remote.enable` and `remote.disable` (the app's Share
+and Stop sharing, forwarded to the node they name and gated there), kept in the store as
+`remote_enabled` over `[remote] enabled`, which is only where it starts. Viewing another
+node's needs no flag, since every `remote.open` is gated. With it on, the module finds the host (Apollo, else
 Sunshine, or `[remote] host_command`), installs it with winget, brew or flatpak when it is
 missing and `[remote] install` is on (the Windows installer elevates, so the user answers
 UAC), starts the Windows service if it is stopped, sets the host's credentials through its
 welcome endpoint into `data/remote/host.json` unless `host_user` and `host_password` are
 set, writes the node's name into its config, and polls `/api/clients/list` every `poll_ms`
 for the viewers and whether one streams. Each step is `remote.state.host`; the node's
-`capabilities.remote` is true while the host is `ready`.
+`capabilities.remote` is true while the host is `ready`. Switched on again while it is
+`unavailable`, it tries again; switched off while it comes up, the bring-up gives way. Off, the
+host's connected clients are disconnected and the web sessions showing this desktop end, and
+the pairings stay: a sidecar host stops, while a Windows service keeps running and is still
+polled, so its viewers are listed and can be revoked (they can still connect to it directly).
+A node that starts off reads such a service the same way when it knows the credentials.
 
 `remote.open` is answered by the node the client's socket is on. For the desktop app on
 this machine (a loopback `ui` client, named by this node) it runs moonlight-qt: `list` to
 see whether it is paired, else `pair --pin` with a random PIN that `remote.pair` has the
-host's node accept, then `stream <host> Desktop` in a window. For a controller on the LAN
+host's node accept, then `stream <host> Desktop` in a window. Asked to `embed` it, for the
+desktop app to show beside its view, it answers instead a ticket to this node's own
+moonlight-web on the stream proxy's loopback port (`loopback.ts`), WebSocket transport and
+low-latency settings (canvas renderer, HEVC where the page decodes it), or, with no route to
+the host, the host's ticket through a forwarder as for a window. For a controller on the LAN
 listener it fetches moonlight-web v2.10.0 into `data/sidecars/moonlight-web/` the first
 time, starts it on a loopback port under `/remote`, adds and pairs the host through its REST
 API (`hosts.json` beside it keeps the ids), and answers a one-use URL

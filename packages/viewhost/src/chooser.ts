@@ -34,6 +34,8 @@ export interface ViewChooserDeps {
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
   refocus?: () => void;
+  /** Hears the layer open and close: what the host lays over the page goes under it meanwhile. */
+  onToggle?: (open: boolean) => void;
 }
 
 export class ViewChooser {
@@ -101,6 +103,7 @@ export class ViewChooser {
     document.addEventListener("keydown", this.onKey);
     this.render();
     close.focus();
+    this.deps.onToggle?.(true);
     void this.list(layer);
   }
 
@@ -109,6 +112,7 @@ export class ViewChooser {
     this.layer.remove();
     this.layer = undefined;
     document.removeEventListener("keydown", this.onKey);
+    this.deps.onToggle?.(false);
     this.deps.refocus?.();
   }
 

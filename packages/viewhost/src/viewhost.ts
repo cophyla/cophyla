@@ -17,7 +17,10 @@
 // Where the files come from is the host's: the desktop app fetches them with `view.get` and
 // stages them on its native side, the controller asks the node for a `view.stage` ticket.
 // Staging also says where the host serves the document frame, when it does, and the view is
-// told in its `host.ready`.
+// told in its `host.ready`. A host that lays stream pages over the view (`embed`) hears when
+// what it laid there must go under the page's own layers (`onOverlay`, while the picker or
+// the settings are open) and when it must go altogether (`onUnmount`: the view was replaced,
+// or reloaded itself), and tells the view a stream is gone with `streamClosed`.
 
 import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
@@ -59,6 +62,12 @@ export interface ViewHostDeps {
   store?: Pick<Storage, "getItem" | "setItem">;
   /** Where the files just dropped on a view from the desktop are, by their names or with none, for a view's `host.filePaths`: the desktop app's shell. */
   filePaths?: (names?: string[]) => Promise<string[]>;
+  /** The host lays stream pages over the view (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
+  embed?: boolean;
+  /** The view's document went: replaced, or reloaded by the view itself. What the host laid over it goes. */
+  onUnmount?: () => void;
+  /** The picker or the settings opened (`true`) or both are closed again: what the host laid over the view hides meanwhile. */
+  onOverlay?: (open: boolean) => void;
   onError?: (message: string) => void;
 }
 
@@ -150,10 +159,12 @@ export class ViewHost {
       showing: () => this.mounted?.manifest.id,
       reload: () => this.load(),
       refocus: () => this.mounted?.frame.focus(),
+      onToggle: () => this.overlay(),
     });
     this.settings = new SettingsPanel({
       request: (method, params) => deps.conn.request(method, params),
       refocus: () => this.mounted?.frame.focus(),
+      onToggle: () => this.overlay(),
       ...(deps.voice ? { voice: deps.voice } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
@@ -205,6 +216,7 @@ export class ViewHost {
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),
         ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
         ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
+        ...(this.deps.embed ? { embed: true } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },
       {
@@ -216,8 +228,12 @@ export class ViewHost {
     // Kept by the bridge until the view is ready to hear it.
     if (this.deps.talk && this.deps.voice) bridge.mic(hostMic(this.deps.voice));
     if (this.recordingNow) bridge.recording(true);
+    let loaded = false;
     frame.addEventListener("load", () => {
       if (this.mounted?.frame !== frame) return;
+      // the view loaded itself again: what the host laid over its last document goes
+      if (loaded) this.deps.onUnmount?.();
+      loaded = true;
       if (conn.connected && conn.state.hello) {
         bridge.ready(conn.state.hello);
         for (const n of this.deps.cache.replay()) bridge.fromCophylad(n);
@@ -232,6 +248,12 @@ export class ViewHost {
     if (!this.mounted) return;
     this.mounted.frame.remove();
     this.mounted = undefined;
+    this.deps.onUnmount?.();
+  }
+
+  /** The picker or the settings opened or closed: the host hears whether either is open now. */
+  private overlay(): void {
+    this.deps.onOverlay?.(this.chooser.isOpen || this.settings.isOpen);
   }
 
   /** The view picker over the frame: what a view's `host.chooseView` opens. */
@@ -264,6 +286,11 @@ export class ViewHost {
   /** How loud the microphone was over its last frame, while it records. */
   levels(levels: number[]): void {
     this.mounted?.bridge.levels(levels);
+  }
+
+  /** A stream the host showed for the view is gone: the mounted view is told. */
+  streamClosed(stream: string): void {
+    this.mounted?.bridge.streamClosed(stream);
   }
 
   /** Every frame from cophylad that is not the host's own response. */

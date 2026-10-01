@@ -393,7 +393,7 @@ enum Attempt {
 /// Nothing listens and another version waits: hand over to the launcher rather than start a
 /// daemon of this version. The launcher waits for this process, rotates, and starts `current`.
 fn relaunch<R: Runtime>(app: &AppHandle<R>, install: &Install, version: &str) -> bool {
-    let hidden = app.get_webview_window(HOST_LABEL).and_then(|w| w.is_visible().ok()).map(|v| !v).unwrap_or(false);
+    let hidden = app.get_window(HOST_LABEL).and_then(|w| w.is_visible().ok()).map(|v| !v).unwrap_or(false);
     match install.relaunch(hidden, false) {
         Ok(()) => {
             log::info!("relaunching through the launcher: version {version} waits (this is {OWN_VERSION})");

@@ -380,6 +380,7 @@ export class Outbound {
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
         ...(this.deps.confine ? { confine: this.deps.confine } : {}),
         ...(this.deps.answerHere ? { answerHere: this.deps.answerHere } : {}),
+        hands: this.deps.hands,
         ...(this.deps.local ? { local: this.deps.local } : {}),
         ...(this.deps.tools ? { tools: this.deps.tools } : {}),
         ...(this.deps.files ? { files: this.deps.files } : {}),

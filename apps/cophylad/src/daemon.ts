@@ -727,6 +727,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // stream with no route to its desktop gets its ticket there over the links, and its pipes.
   remote = new Remote({
     config: config.remote,
+    store,
     nodeId: identity.id,
     nodeName: identity.name,
     dir: join(p.data, "remote"),
@@ -1346,7 +1347,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     voice: config.voice.enabled ? voice.stageStates() : "off",
     controller: controller?.origin ?? "off",
     metrics: config.metrics.enabled ? metrics.snapshot().engine : "off",
-    remote: config.remote.enabled ? remote.state().host.status : "off",
+    remote: remote.enabled ? remote.state().host.status : "off",
     nodes: nodes.state(),
     cluster: nodes.member()?.cluster ?? "none",
     account: cloud.signedIn ? cloud.state().plan : "signed out",
