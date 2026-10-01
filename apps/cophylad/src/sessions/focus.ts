@@ -1,6 +1,6 @@
 // `session.focus`: raise the window that owns a session's process, by walking the process
 // tree up from the pid to the nearest ancestor that has a window. One raiser per platform:
-// Windows walks with PowerShell and `SetForegroundWindow`; macOS walks with `ps` and asks
+// Windows walks with PowerShell and `SetForegroundWindow`, and reads a command line natively; macOS walks with `ps` and asks
 // System Events for the nearest ancestor that is a GUI process, which needs the Automation
 // permission, and in Terminal and iTerm2 selects the session's own tab by its tty (iTerm2
 // runs its shells under an `iTermServer` that launchd adopts, so the app is not an ancestor
@@ -17,6 +17,7 @@ import { readFileSync } from "node:fs";
 import { basename } from "node:path";
 import type { Logger } from "../log.ts";
 import { darwinArgv, installNameOf } from "../metrics/macos.ts";
+import { windowsCommandLine } from "../metrics/windows.ts";
 
 /**
  * `denied`: the OS refused the permission raising needs (macOS's Automation); `waiting`: the
@@ -27,6 +28,8 @@ export type RaiseResult = "raised" | "not_found" | "unsupported" | "denied" | "w
 export interface ProcessInfo {
   pid: number;
   name: string;
+  /** When it started, ms since the epoch, where the process table says: with the pid, which process it is. */
+  startedAt?: number;
 }
 
 export interface ProcessTree {
@@ -195,11 +198,17 @@ Write-Output $w.CommandLine
 /** How long a command-line read may take: an ask waits on it. */
 const COMMAND_LINE_TIMEOUT_MS = 5000;
 
+/** A command line read natively: the line, `undefined` when the process cannot be read, `null` when there is no native way here. */
+export type NativeCommandLine = (pid: number) => string | undefined | null;
+
 export class WindowsRaiser implements WindowRaiser {
   private exec: Exec;
+  private native: NativeCommandLine;
 
-  constructor(exec: Exec = runCommand) {
-    this.exec = exec;
+  constructor(exec?: Exec, native?: NativeCommandLine) {
+    this.exec = exec ?? runCommand;
+    // a test that scripts PowerShell scripts the command line with it
+    this.native = native ?? (exec ? () => null : windowsCommandLine);
   }
 
   /**
@@ -211,7 +220,10 @@ export class WindowsRaiser implements WindowRaiser {
     return this.exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", `& {${script}} ${Math.trunc(arg)}`], opts);
   }
 
+  /** Natively (`windowsCommandLine`), and through PowerShell's CIM only where that cannot be done. */
   async commandLine(pid: number): Promise<string[] | undefined> {
+    const native = this.native(pid);
+    if (native !== null) return native ? splitWindowsCommandLine(native) : undefined;
     const r = await this.powershell(COMMAND_LINE_SCRIPT, pid, { timeoutMs: COMMAND_LINE_TIMEOUT_MS });
     const line = r.out.trim();
     return r.code === 0 && line ? splitWindowsCommandLine(line) : undefined;
@@ -255,7 +267,7 @@ export function parsePsTable(text: string): Map<number, { ppid: number; name: st
 }
 
 /** The chain from `pid` up through the parent links of a table, nearest first, stopping at a cycle or an unknown pid. */
-export function walkUp(pid: number, parentOf: (pid: number) => { ppid: number; name: string } | undefined): ProcessInfo[] {
+export function walkUp(pid: number, parentOf: (pid: number) => { ppid: number; name: string; startedAt?: number } | undefined): ProcessInfo[] {
   const out: ProcessInfo[] = [];
   const seen = new Set<number>();
   let cur = pid;
@@ -263,7 +275,7 @@ export function walkUp(pid: number, parentOf: (pid: number) => { ppid: number; n
     seen.add(cur);
     const p = parentOf(cur);
     if (!p) break;
-    out.push({ pid: cur, name: p.name });
+    out.push({ pid: cur, name: p.name, ...(p.startedAt !== undefined ? { startedAt: p.startedAt } : {}) });
     cur = p.ppid;
   }
   return out;
@@ -272,12 +284,13 @@ export function walkUp(pid: number, parentOf: (pid: number) => { ppid: number; n
 /**
  * A raiser whose walks up the process tree read the whole table once, from `read`: the metrics
  * engine's, one system call on Windows, where each step of the raiser's own walk is a query of
- * its own. Where the table cannot be read, the raiser walks as it does.
+ * its own, and which says when each process started. Where the table cannot be read, the
+ * raiser walks as it does.
  */
-export function withProcessTable(raiser: WindowRaiser, read: () => Promise<{ pid: number; parent: number; name: string }[] | undefined>): WindowRaiser {
+export function withProcessTable(raiser: WindowRaiser, read: () => Promise<{ pid: number; parent: number; name: string; startedAt?: number }[] | undefined>): WindowRaiser {
   const table = async () => {
     const rows = await read().catch(() => undefined);
-    return rows && rows.length > 0 ? new Map(rows.map((p) => [p.pid, { ppid: p.parent, name: p.name }])) : undefined;
+    return rows && rows.length > 0 ? new Map(rows.map((p) => [p.pid, { ppid: p.parent, name: p.name, ...(p.startedAt !== undefined ? { startedAt: p.startedAt } : {}) }])) : undefined;
   };
   return {
     raise: (pid) => raiser.raise(pid),

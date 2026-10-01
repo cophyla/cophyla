@@ -67,6 +67,8 @@ export interface SessionRecord {
    * daemon is not the session's process, and its terminal is found by the CLI marked in one.
    */
   hostedBy?: "daemon";
+  /** Codex: what started the thread, from its rollout (`codex-tui`, `Codex Desktop`): a desktop app's thread is in no terminal. */
+  originator?: string;
 }
 
 export interface SessionSeed {
@@ -311,8 +313,13 @@ export interface SessionHost {
   merge(from: SessionRecord, into: SessionRecord, at?: number): void;
   /** Claude: the processes showing the agents screen now, each with the terminal it was a session's in when known. */
   agentWindows(harness: AttachedHarness, windows: { pid: number; terminal?: TerminalRef }[]): void;
-  /** Codex: a record hosted by the daemon is given the one terminal whose CLI stands for it, when exactly one does. */
-  linkMarked(rec: SessionRecord): void;
+  /**
+   * Codex: a record hosted by the daemon is given the terminal whose CLI stands for it: the one
+   * that fits, or of several the one whose CLI started just before the thread. With `handOver`
+   * (its first hook since it was made or resumed), a CLI that went on to this thread from an
+   * older one's hands its terminal over.
+   */
+  linkMarked(rec: SessionRecord, opts?: { handOver?: boolean }): void;
   patch(rec: SessionRecord, patch: Partial<Session>, at?: number): void;
   /** The permission mode a session is in, as its harness said; a Claude session's shows as its `mode`. */
   noteMode(rec: SessionRecord, mode: string, at?: number): void;

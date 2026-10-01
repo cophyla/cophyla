@@ -111,7 +111,8 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   its first prompt a Codex or Muse CLI is known only by its tether terminal: a terminal no
   session holds that retitles itself is looked for a `codex`, `claude` or `muse-bin` below
   its program, in one read of the process table shared by every terminal waiting and spaced
-  at least 2 s apart, and its row carries `harness` until a session holds it
+  at least 2 s apart, and looked at again when a session that held it ends; its row carries
+  `harness` until a session holds it, and the mark when its CLI started
   (`sessions/tether/cli.ts`). The profiles are rebuilt when a login file changes, looked at
   every five seconds by `stat` alone: a harness installed or signed in after start gets its
   hooks and its host then, and a new Codex or Muse login restarts that profile's app-server
@@ -258,10 +259,16 @@ no hook. Only lines written since a tail opened count as growth: the history a f
 reads counts by the file's mtime. An ended thread is listed again while it stays recent, and
 resumed only when its rollout grew past where it was recorded to; a stale row stops the
 paging unless its thread is live. A thread the shared app-server daemon runs
-(`--managed-daemon`) has its hooks run below the daemon, whose pid is no session's: its process
-is the CLI marked in the one terminal that fits it (its folder, or a title of its folder's
-name), and until one fits it is judged by the window too. The README of a shipped build says
-so.
+(`--managed-daemon`) has its hooks run below the daemon, whose pid is no session's. The daemon
+is told by its command line, read once per process (natively on Windows); a read that fails
+says nothing, and a later hook reads it again. The thread's process is the CLI marked in a
+terminal that fits it (its folder, or a title of its folder's name); of several, the one whose
+CLI started just before the thread (its id says when it was made), and none when two started
+too close together to tell. A CLI that goes on to another thread (`/new`, `/resume`) hands it
+the terminal at its first hook; a thread resumed, a terminal freed by a session that ended, and
+a restart look again. A thread a Codex desktop app started takes none. Until one fits, a thread
+is judged by the window too, and it cannot be stopped from the app: its only pid would be the
+daemon's, which runs every CLI's threads. The README of a shipped build says so.
 
 `[sessions]` in `config.toml` tunes it: `poll_ms`, `codex_list_ms`, `hook_timeout_s`,
 `receipt_timeout_ms`, `codex_recent_ms`, `claude_hook_grace_ms`, `install_hooks`,

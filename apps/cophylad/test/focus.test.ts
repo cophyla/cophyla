@@ -1,10 +1,10 @@
 // The window raisers over canned commands: every platform's walk and raise runs here on any
 // host, since the commands are injected. What each raiser does with a real desktop is the
-// Mac and Linux visits' job.
+// Mac and Linux visits' job. On Windows, a live process's command line is read natively.
 
 import { describe, expect, test } from "bun:test";
 import { createLogger } from "../src/log.ts";
-import { DarwinRaiser, LinuxRaiser, UnsupportedRaiser, WindowsRaiser, defaultRaiser, itermSessionScript, parsePsTable, parseProcStatus, parseUnixIds, parseWmctrlList, splitWindowsCommandLine, terminalTabScript, tmuxSocketArgs, walkUp, withTmux } from "../src/sessions/focus.ts";
+import { DarwinRaiser, LinuxRaiser, UnsupportedRaiser, WindowsRaiser, defaultRaiser, itermSessionScript, parsePsTable, parseProcStatus, parseUnixIds, parseWmctrlList, splitWindowsCommandLine, terminalTabScript, tmuxSocketArgs, walkUp, withProcessTable, withTmux } from "../src/sessions/focus.ts";
 import type { Exec, ExecResult, RaiseResult, WindowRaiser } from "../src/sessions/focus.ts";
 
 type Call = { file: string; args: string[] };
@@ -290,6 +290,59 @@ describe("windows raiser", () => {
     expect(calls[0]!.args.at(-1)!.endsWith("} 4321")).toBe(true);
     const gone = canned({ "powershell.exe": { code: 1, out: "", err: "" } });
     expect(await new WindowsRaiser(gone.exec).commandLine(4321)).toBeUndefined();
+  });
+
+  test("a command line is read natively first, and through CIM only where there is no native read", async () => {
+    const { exec, calls } = canned({ "powershell.exe": ok('"C:\\bin\\codex.exe" app-server\r\n') });
+    const answers = new Map<number, string | undefined | null>([
+      [1, '"C:\\bin\\codex.exe" app-server --listen unix:// --managed-daemon'],
+      [2, undefined],
+      [3, null],
+    ]);
+    const r = new WindowsRaiser(exec, (pid) => answers.get(pid)!);
+    expect(await r.commandLine(1)).toEqual(["C:\\bin\\codex.exe", "app-server", "--listen", "unix://", "--managed-daemon"]);
+    // Not readable natively is not readable: the process is gone, or not this user's.
+    expect(await r.commandLine(2)).toBeUndefined();
+    expect(calls).toHaveLength(0);
+    expect(await r.commandLine(3)).toEqual(["C:\\bin\\codex.exe", "app-server"]);
+    expect(calls).toHaveLength(1);
+  });
+
+  test.skipIf(process.platform !== "win32")("reads a live process's command line natively, exactly as it was started; none for one gone or the System process", async () => {
+    const args = ["-e", "setTimeout(() => {}, 10000)", "a b", 'c"d', "e\\"];
+    const child = Bun.spawn([process.execPath, ...args], { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true });
+    try {
+      const argv = await new WindowsRaiser().commandLine(child.pid);
+      expect(argv?.slice(1)).toEqual(args);
+      expect(argv?.[0]?.toLowerCase()).toEndWith("bun.exe");
+    } finally {
+      child.kill();
+      await child.exited;
+    }
+    expect(await new WindowsRaiser().commandLine(child.pid)).toBeUndefined();
+    expect(await new WindowsRaiser().commandLine(4)).toBeUndefined();
+  });
+});
+
+describe("start times along a chain", () => {
+  test("a walk and the process table carry when each process started, where the table says", async () => {
+    expect(walkUp(7, (p) => ({ 7: { ppid: 8, name: "a", startedAt: 5 }, 8: { ppid: 0, name: "b" } })[p])).toEqual([
+      { pid: 7, name: "a", startedAt: 5 },
+      { pid: 8, name: "b" },
+    ]);
+    const rows = [
+      { pid: 20, parent: 10, name: "codex.exe", startedAt: 2000 },
+      { pid: 10, parent: 1, name: "pwsh.exe", startedAt: 1000 },
+      { pid: 1, parent: 0, name: "init" },
+    ];
+    const r = withProcessTable(new UnsupportedRaiser(), async () => rows);
+    const chain = [
+      { pid: 20, name: "codex.exe", startedAt: 2000 },
+      { pid: 10, name: "pwsh.exe", startedAt: 1000 },
+      { pid: 1, name: "init" },
+    ];
+    expect(await r.ancestors(20)).toEqual(chain);
+    expect((await r.ancestorsOf!([20])).get(20)).toEqual(chain);
   });
 });
 

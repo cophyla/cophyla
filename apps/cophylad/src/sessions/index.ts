@@ -46,6 +46,7 @@ import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, 
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
+import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
 import { Injections } from "./injections.ts";
 import type { PendingSend } from "./injections.ts";
@@ -67,7 +68,8 @@ import { pickOpener } from "./terminals.ts";
 import type { TerminalOpener } from "./terminals.ts";
 import { cliOfName, TerminalClis } from "./tether/cli.ts";
 import type { ProcessRow } from "./tether/cli.ts";
-import type { TerminalChange, Tether } from "./tether/index.ts";
+import type { TerminalChange, TerminalEntry, Tether } from "./tether/index.ts";
+import { uuidv7Time } from "./uuidv7.ts";
 
 export interface SessionsDeps {
   store: Store;
@@ -238,6 +240,8 @@ interface LiveRecord extends SessionRecord {
   pendingResults?: Map<string, PendingResult>;
   /** The ids of the tool calls recorded lately, the last `RECENT_CALLS`. */
   calls?: Set<string>;
+  /** When its current life began: the record made, met again from the store, or resumed. A newer one may take an older one's CLI. */
+  since?: number;
 }
 
 /** A hook's tool result, held until its call is recorded. */
@@ -256,6 +260,16 @@ const TERMINAL_HARNESSES: readonly string[] = ["claude", "codex", "muse"];
 const PROFILES_CHECK_MS = 5000;
 /** The title Claude's agents screen gives its terminal, after a count of what waits (`1 awaiting input · claude agents`). */
 const AGENTS_TITLE = /(?:^|·\s*)claude agents$/i;
+/**
+ * Among several terminals a Codex thread fits, the CLI it came from started just before the
+ * thread (a CLI makes its first thread as it starts, ~0.3 s in): by no more than `CLI_LEAD_MS`
+ * after it (a start time read to the second), by no more than `CLI_MAX_MS` before it, and with
+ * no other CLI started within `CLI_RIVAL_MS` before it. One that started after the thread wins
+ * only with no other started within `CLI_MAX_MS` before it.
+ */
+const CLI_LEAD_MS = 1000;
+const CLI_MAX_MS = 20000;
+const CLI_RIVAL_MS = 2000;
 
 /** A process showing a harness's agents screen, and the terminal it is in once found. */
 interface AgentWindow {
@@ -521,7 +535,7 @@ export class Sessions implements SessionHost {
   private load(): void {
     const now = this.now();
     for (const session of this.deps.store.sessions.listLive()) {
-      const rec = this.adopt(session);
+      const rec = this.adopt(session, now);
       if (session.native.transport === "acp") {
         this.end(rec, "daemon_restart", now);
         continue;
@@ -535,8 +549,8 @@ export class Sessions implements SessionHost {
     this.log.info("sessions loaded", { count: this.byId.size });
   }
 
-  private adopt(session: Session): LiveRecord {
-    const rec: LiveRecord = { session, handles: {}, liveness: "heuristic", hookTools: new Map() };
+  private adopt(session: Session, since = this.now()): LiveRecord {
+    const rec: LiveRecord = { session, handles: {}, liveness: "heuristic", hookTools: new Map(), since };
     this.byId.set(session.id, rec);
     this.byNative.set(nativeKey(session.harness, session.native.id), session.id);
     return rec;
@@ -870,34 +884,78 @@ export class Sessions implements SessionHost {
    */
   private cliChanged(ref: TerminalRef): void {
     this.agentsChanged(ref);
-    for (const rec of this.byId.values()) if (rec.hostedBy === "daemon") this.linkMarked(rec);
+    this.relinkHosted();
+  }
+
+  /** Every live record the daemon hosts with no terminal yet looks for its CLI's, the one active last first. */
+  private relinkHosted(): void {
+    const waiting = [...this.byId.values()].filter((r) => r.hostedBy === "daemon" && r.session.status !== "ended" && !r.session.native.terminal);
+    for (const rec of waiting.sort((a, b) => b.session.lastActivity - a.session.lastActivity)) this.linkMarked(rec);
   }
 
   /**
    * A Codex thread the app-server daemon runs: its hooks come from under the daemon, which says
    * nothing of the CLI the user typed in. That CLI is the one marked in a terminal no session
-   * holds, in the thread's folder or titled with its name (Codex titles its terminal so): when
-   * exactly one terminal fits, the record takes it, and the CLI as its process, which it then
-   * ends with. With two or more, none is guessed.
+   * holds, in the thread's folder or titled with its name (Codex titles its terminal so): the
+   * record takes it, and the CLI as its process, which it then ends with. Of several that fit,
+   * the CLI that started just before the thread (its id says when) is taken, and none when two
+   * started too close together to tell. A thread a desktop app started takes none.
+   *
+   * A CLI goes on to another thread (`/new`, `/resume`) with no word to the one it leaves: at the
+   * new thread's first hook (`handOver`), with no free terminal that fits and the one that does
+   * held by an older thread through the same CLI, that thread lets the terminal and the CLI go,
+   * living on by its rollout's recency, and the new one takes them.
    */
-  linkMarked(rec: SessionRecord): void {
+  linkMarked(rec: SessionRecord, opts: { handOver?: boolean } = {}): void {
     const tether = this.deps.tether;
     const clis = this.clis;
-    if (!tether || !clis || rec.session.status === "ended" || rec.session.native.terminal) return;
+    if (!tether || !clis || rec.session.status === "ended" || rec.session.native.terminal || desktopOriginated(rec.originator)) return;
     const folder = pathKey(rec.session.cwd);
     const name = titleWord(basename(rec.session.cwd));
-    const fits = tether.list().filter((e) => {
-      if (e.info.status !== "running" || clis.markOf(e.ref)?.harness !== rec.session.harness || this.sessionOfTerminal(e.ref)) return false;
+    const fitting = tether.list().filter((e) => {
+      if (e.info.status !== "running" || clis.markOf(e.ref)?.harness !== rec.session.harness) return false;
       return pathKey(e.info.cwdReported || e.info.cwd) === folder || (name !== "" && e.info.title !== undefined && titleWord(e.info.title) === name);
     });
-    if (fits.length !== 1) {
-      if (fits.length > 1) this.log.info("more than one terminal fits a daemon-hosted session; none is taken", { id: rec.session.id, terminals: fits.map((e) => e.ref.id) });
+    const fits = fitting.filter((e) => !this.sessionOfTerminal(e.ref));
+    if (fits.length === 0) {
+      if (opts.handOver) this.handOver(rec as LiveRecord, fitting);
       return;
     }
-    const entry = fits[0]!;
+    const entry = fits.length === 1 ? fits[0] : this.startedJustBefore(rec, fits);
+    if (!entry) {
+      this.log.info("more than one terminal fits a daemon-hosted session, and its time tells none; none is taken", { id: rec.session.id, terminals: fits.map((e) => e.ref.id) });
+      return;
+    }
     const pid = clis.markOf(entry.ref)!.pid;
     this.patch(rec, { native: { ...rec.session.native, terminal: entry.ref, pid } });
-    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid });
+    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid, of: fits.length });
+  }
+
+  /** Of several terminals that fit a thread, the one whose CLI started just before it, by the thread's id; none when that cannot be told. */
+  private startedJustBefore(rec: SessionRecord, fits: TerminalEntry[]): TerminalEntry | undefined {
+    const t = uuidv7Time(rec.session.native.id);
+    const starts = fits.map((e) => ({ e, at: this.clis?.markOf(e.ref)?.startedAt }));
+    if (t === undefined || starts.some((s) => s.at === undefined)) return undefined;
+    let best: { e: TerminalEntry; at: number } | undefined;
+    for (const s of starts as { e: TerminalEntry; at: number }[]) if (s.at <= t + CLI_LEAD_MS && (!best || s.at > best.at)) best = s;
+    if (!best || t - best.at > CLI_MAX_MS) return undefined;
+    const from = best.at > t ? t - CLI_MAX_MS : t - CLI_RIVAL_MS;
+    if (starts.some((s) => s !== best && s.at! > from && s.at! <= t + CLI_LEAD_MS)) return undefined;
+    return best.e;
+  }
+
+  /** The new thread a CLI went on to takes the CLI's terminal from the older one it held (`linkMarked`). */
+  private handOver(rec: LiveRecord, fitting: TerminalEntry[]): void {
+    if (fitting.length !== 1) return;
+    const entry = fitting[0]!;
+    const mark = this.clis?.markOf(entry.ref);
+    const holder = this.recordOfTerminal(entry.ref);
+    if (!mark || !holder || holder === rec || holder.hostedBy !== "daemon" || holder.session.native.pid !== mark.pid) return;
+    if (holder.since === undefined || rec.since === undefined || holder.since >= rec.since) return;
+    const { terminal: _terminal, pid: _pid, ...native } = holder.session.native;
+    this.patch(holder, { native });
+    this.patch(rec, { native: { ...rec.session.native, terminal: entry.ref, pid: mark.pid } });
+    this.log.info("a CLI went on to another thread, which takes its terminal", { id: rec.session.id, from: holder.session.id, terminal: entry.ref.id, pid: mark.pid });
   }
 
   /**
@@ -999,7 +1057,12 @@ export class Sessions implements SessionHost {
 
   /** The session running in a terminal, when one is. */
   sessionOfTerminal(ref: TerminalRef): Session | undefined {
-    for (const rec of this.byId.values()) if (rec.session.status !== "ended" && sameTerminal(rec.session.native.terminal, ref)) return { ...rec.session };
+    const rec = this.recordOfTerminal(ref);
+    return rec ? { ...rec.session } : undefined;
+  }
+
+  private recordOfTerminal(ref: TerminalRef): LiveRecord | undefined {
+    for (const rec of this.byId.values()) if (rec.session.status !== "ended" && sameTerminal(rec.session.native.terminal, ref)) return rec;
     return undefined;
   }
 
@@ -1044,6 +1107,7 @@ export class Sessions implements SessionHost {
   ensure(seed: SessionSeed): SessionRecord {
     const now = this.now();
     let rec = this.find(seed.harness, seed.nativeId) as LiveRecord | undefined;
+    let revived = false;
     // An attached adapter that meets a spawned session in a registry or thread list leaves it alone.
     if (rec && rec.session.native.transport === "acp" && seed.transport !== "acp" && rec.session.status !== "ended") return rec;
     // The reverse race: the harness wrote its registry entry before `session/new` returned and an
@@ -1061,6 +1125,7 @@ export class Sessions implements SessionHost {
           // Still ended: the caller skips it.
           if (!this.ranAfterEnd(rec, seed)) return rec;
           this.revive(rec, seed, now);
+          revived = true;
         }
       } else {
         const node = this.ownerFor(seed);
@@ -1109,6 +1174,7 @@ export class Sessions implements SessionHost {
     } else if (rec.session.status === "ended") {
       if (!this.ranAfterEnd(rec, seed)) return rec;
       this.revive(rec, seed, now);
+      revived = true;
     }
     // Refresh handles and the parts of the seed that can change.
     Object.assign(rec.handles, seed.handles ?? {});
@@ -1128,6 +1194,8 @@ export class Sessions implements SessionHost {
     if (Object.keys(patch).length > 0) this.patch(rec, patch, now);
     this.terminalAbove(rec);
     if (relaunched) this.queueMirror(rec, now);
+    // A daemon-hosted thread resumed with no word of its CLI (a thread list has none): the CLI's terminal is looked for again.
+    if (revived && rec.hostedBy) this.linkMarked(rec);
     return rec;
   }
 
@@ -1176,6 +1244,7 @@ export class Sessions implements SessionHost {
     delete rec.session.endedAt;
     rec.session.status = seed.status ?? "idle";
     rec.session.lastActivity = now;
+    rec.since = now;
     if (seed.pid !== undefined) rec.session.native.pid = seed.pid;
     else delete rec.session.native.pid;
     if (seed.job !== undefined) rec.session.native.job = seed.job;
@@ -1394,6 +1463,13 @@ export class Sessions implements SessionHost {
     this.event(rec, "ended", { reason }, undefined, at);
     this.log.info("session ended", { id: rec.session.id, harness: rec.session.harness, reason });
     this.broadcast(rec, true);
+    // The terminal it held is free: its CLI is looked for again (one started anew in it kept its
+    // title), and a daemon-hosted thread waiting for a terminal may take it.
+    const term = rec.session.native.terminal;
+    if (term && !this.stopped) {
+      this.clis?.reconsider(term);
+      this.relinkHosted();
+    }
   }
 
   /**
@@ -1893,7 +1969,9 @@ export class Sessions implements SessionHost {
    * its window goes with it. A session of the user's is theirs: `unsupported`, unless the user
    * asked (`as: user`), when it ends with the terminal it runs in if cophylad started that
    * terminal, the shell of a New terminal the session was typed into included; in a window of
-   * the user's own, its process ends and their shell stays.
+   * the user's own, its process ends and their shell stays. A Codex thread with no terminal
+   * whose process is the app-server daemon, or may be, is `unsupported`: the daemon runs every
+   * CLI's threads.
    */
   async stopSession(id: string, opts: { as?: "user" | "brain" } = {}, part?: string): Promise<void> {
     const rec = this.must(id, part);
@@ -1927,6 +2005,11 @@ export class Sessions implements SessionHost {
     }
     const pid = rec.session.native.pid;
     if (pid === undefined) throw new RpcError("unsupported", "the session's process is not known");
+    // A Codex thread whose CLI is not known runs in the app-server daemon, which every CLI shares: never ended for one thread.
+    if (rec.session.harness === "codex" && !rec.session.native.terminal) {
+      const argv = rec.hostedBy ? undefined : await this.deps.raiser.commandLine(pid).catch(() => undefined);
+      if (argv === undefined || isManagedDaemon(argv)) throw new RpcError("unsupported", "the session runs in Codex's shared app-server, and its CLI is not known");
+    }
     try {
       if (this.deps.kill) this.deps.kill(pid);
       else process.kill(pid);

@@ -1,5 +1,6 @@
 // The Windows engine on a real machine: this process is in the walk as `bun.exe` with its
-// parent, a CPU time near `process.cpuUsage` and a working set near `memoryUsage().rss`;
+// parent, a CPU time near `process.cpuUsage`, a working set near `memoryUsage().rss` and its
+// start time;
 // the machine's totals grow between two readings; and through the module, the row comes
 // out owned by the platform. `hostEngine` on this platform is that engine with NVML folded
 // in, and a GPU reading, when there is one, is well-formed.
@@ -27,6 +28,9 @@ describe.skipIf(!onWindows)("metrics windows engine", () => {
     expect(me.parent).toBe(process.ppid);
     expect(Math.abs(me.cpuTimeNs / 1e6 - (usage.user + usage.system) / 1000)).toBeLessThan(250);
     expect(Math.abs(me.rss - rss) / rss).toBeLessThan(0.25);
+    // Its start, from the walk's creation time.
+    expect(Math.abs(me.startedAt! - performance.timeOrigin)).toBeLessThan(5000);
+    expect(a.processes.every((p) => p.startedAt === undefined || p.startedAt <= Date.now())).toBe(true);
     expect(a.processes.length).toBeGreaterThan(20);
     expect(a.processes.every((p) => p.pid > 0 && p.name.length > 0)).toBe(true);
     expect(a.memory.total).toBeGreaterThan(a.memory.used);

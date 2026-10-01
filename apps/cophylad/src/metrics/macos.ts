@@ -8,14 +8,15 @@
 //
 // Another user's process (root's `login` between Terminal and every shell it runs,
 // WindowServer) refuses both, but `PROC_PIDT_SHORTBSDINFO` still gives its parent and name:
-// it is listed with no CPU time or memory of its own, so a walk up the tree passes through it.
+// it is listed with no CPU time, memory or start time of its own, so a walk up the tree passes through it.
 // A process whose name is a version (Claude Code's native install runs
 // `~/.local/share/claude/versions/2.1.243`, and macOS names a process by its file) is named
 // after the folder its `versions/` is in, from `proc_pidpath`.
 //
 // proc_taskinfo: pti_virtual_size u64 @0, pti_resident_size u64 @8, pti_total_user u64 @16,
 // pti_total_system u64 @24 (mach absolute time units; scaled by mach_timebase_info).
-// proc_bsdinfo: pbi_ppid u32 @16, pbi_comm char[16] @48, pbi_name char[32] @64.
+// proc_bsdinfo: pbi_ppid u32 @16, pbi_comm char[16] @48, pbi_name char[32] @64,
+// pbi_start_tvsec u64 @120, pbi_start_tvusec u64 @128.
 // proc_bsdshortinfo (64 bytes): pbsi_ppid u32 @4, pbsi_comm char[16] @16.
 // host_cpu_load_info: cpu_ticks[4] u32 = user, system, idle, nice.
 // vm_statistics64: free u32 @0, active @4, inactive @8, wire @12, ..., compressor_page_count @128.
@@ -199,9 +200,12 @@ export class MacEngine implements MetricsEngine {
       if (pid <= 0) continue;
       let parent: number;
       let name: string;
+      let startedAt: number | undefined;
       if (this.libproc.proc_pidinfo(pid, PROC_PIDTBSDINFO, 0n, this.ptr(this.bsd), this.bsd.byteLength) > 0) {
         parent = bsd.getUint32(16, true);
         name = this.cstring(this.bsd, 64, 32) || this.cstring(this.bsd, 48, 16) || "?";
+        const sec = Number(bsd.getBigUint64(120, true));
+        if (sec > 0) startedAt = sec * 1000 + Math.floor(Number(bsd.getBigUint64(128, true)) / 1000);
       } else if (this.libproc.proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0n, this.ptr(this.short), this.short.byteLength) > 0) {
         parent = short.getUint32(4, true);
         name = this.cstring(this.short, 16, 16) || "?";
@@ -214,7 +218,7 @@ export class MacEngine implements MetricsEngine {
         rss = Number(task.getBigUint64(8, true));
         cpuTimeNs = Number(task.getBigUint64(16, true) + task.getBigUint64(24, true)) * this.tickNs;
       }
-      processes.push({ pid, parent, name, cpuTimeNs, rss });
+      processes.push({ pid, parent, name, cpuTimeNs, rss, ...(startedAt !== undefined ? { startedAt } : {}) });
     }
     for (const pid of this.renamed.keys()) if (!seen.has(pid)) this.renamed.delete(pid);
 

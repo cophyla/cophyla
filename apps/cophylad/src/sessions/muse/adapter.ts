@@ -28,12 +28,13 @@ import type { MuseAnswer, Question } from "../questions.ts";
 import type { ProfileChange } from "../profiles.ts";
 import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
+import { uuidv7, uuidv7Time } from "../uuidv7.ts";
 import { MuseHost, museErrorKind } from "./host.ts";
 import { locateMuse } from "./locate.ts";
 import type { MuseBinary } from "./locate.ts";
 import { ensureMusePlugin, museFiles, museManifest, writeMusePlugin } from "./plugin.ts";
 import type { PluginStatus } from "./plugin.ts";
-import { applyMuseEvent, newMuseState, parseJson, settledEvents, statsFor, uuidv7Time } from "./view.ts";
+import { applyMuseEvent, newMuseState, parseJson, settledEvents, statsFor } from "./view.ts";
 import type { MuseItem, MuseViewState, ViewEvent } from "./view.ts";
 
 const LIST_LIMIT = 200;
@@ -126,17 +127,6 @@ export interface MuseAdapterOptions {
   /** Runs a `muse` command to its end; a test records it. */
   run?: (argv: string[], env: Record<string, string | undefined>) => Promise<{ code: number; out: string }>;
   home?: string;
-}
-
-/** A new UUIDv7: what Muse takes for a session's id and a command's. */
-export function uuidv7(now: number = Date.now()): string {
-  const r = crypto.getRandomValues(new Uint8Array(10));
-  const hex = (b: Uint8Array) => [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-  const t = Math.max(0, Math.floor(now)).toString(16).padStart(12, "0").slice(-12);
-  r[0] = (r[0]! & 0x0f) | 0x70;
-  r[2] = (r[2]! & 0x3f) | 0x80;
-  const rand = hex(r);
-  return `${t.slice(0, 8)}-${t.slice(8, 12)}-${rand.slice(0, 4)}-${rand.slice(4, 8)}-${rand.slice(8, 20)}`;
 }
 
 async function runCommand(argv: string[], env: Record<string, string | undefined>): Promise<{ code: number; out: string }> {

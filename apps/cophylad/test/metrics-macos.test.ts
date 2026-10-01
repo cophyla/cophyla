@@ -1,5 +1,5 @@
-// The macOS engine against the real libproc: this process is there with its parent and its own
-// CPU time; another user's process (launchd, root's) is listed with its parent, so a walk up the
+// The macOS engine against the real libproc: this process is there with its parent, its own
+// CPU time and its start; another user's process (launchd, root's) is listed with its parent, so a walk up the
 // tree passes through it; a process run from a `versions/` folder is named after its install,
 // as Claude Code's native install is; the GPU is read from IOKit, the engine's too. Skipped off macOS.
 
@@ -51,6 +51,8 @@ describe.skipIf(!onMac)("metrics macos engine", () => {
     expect(self!.parent).toBe(process.ppid);
     expect(self!.cpuTimeNs).toBeGreaterThan(0);
     expect(self!.rss).toBeGreaterThan(1_000_000);
+    expect(Math.abs(self!.startedAt! - performance.timeOrigin)).toBeLessThan(5000);
+    expect(s.processes.every((p) => p.startedAt === undefined || p.startedAt <= Date.now())).toBe(true);
     const launchd = s.processes.find((p) => p.pid === 1);
     expect(launchd).toMatchObject({ pid: 1, parent: 0, name: "launchd" });
     expect(s.cores).toBeGreaterThan(0);

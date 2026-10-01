@@ -10,8 +10,10 @@
 // run -- codex`) is marked by its name, with no look. Every terminal waiting to be looked at is
 // looked at in one read of the process table, 300 ms after the first of them came and never
 // sooner than 2 s after the read before: a terminal that retitles itself all the time costs a
-// read every 2 s at most, and one at rest none. A mark stays while its process lives, which a
-// signal-0 kill tells at each tick without a read.
+// read every 2 s at most, and one at rest none. A terminal a session held is looked at again
+// when the session ends. A mark stays while its process lives, which a signal-0 kill tells at
+// each tick without a read. A mark carries when its CLI started, where the table says: it
+// tells which of two CLIs in one folder a new Codex thread came from.
 
 import type { HarnessKind, TerminalRef } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
@@ -22,12 +24,15 @@ export interface ProcessRow {
   pid: number;
   parent: number;
   name: string;
+  /** When it started, ms since the epoch, where the table says. */
+  startedAt?: number;
 }
 
-/** A terminal's CLI: its harness and the process that is the CLI. */
+/** A terminal's CLI: its harness, the process that is the CLI, and when that started where known. */
 export interface CliMark {
   harness: Extract<HarnessKind, "claude" | "codex" | "muse">;
   pid: number;
+  startedAt?: number;
 }
 
 /** The CLI a process is, by its image name; `codex-x86_64-…` is the Linux binary's own name, cut to 15 characters there. */
@@ -54,7 +59,7 @@ export function findCli(root: number, table: ProcessRow[]): CliMark | undefined 
     if (seen.has(p.pid)) continue;
     seen.add(p.pid);
     const harness = cliOfName(p.name);
-    if (harness) return { harness, pid: p.pid };
+    if (harness) return { harness, pid: p.pid, ...(p.startedAt !== undefined ? { startedAt: p.startedAt } : {}) };
     queue.push(...(children.get(p.pid) ?? []));
   }
   return undefined;
@@ -136,12 +141,21 @@ export class TerminalClis {
     const retitled = known && this.titles.get(key) !== info.title;
     this.titles.set(key, info.title);
     if (!known) {
-      // Its own program may be the CLI, told by name.
+      // Its own program may be the CLI, told by name, started when tether started it.
       const own = cliOfName(info.argv[0] ?? "");
-      if (own && info.pid !== undefined) this.mark(key, ref, { harness: own, pid: info.pid });
+      if (own && info.pid !== undefined) this.mark(key, ref, { harness: own, pid: info.pid, startedAt: info.startedAt });
       return;
     }
     if (retitled) this.consider(change.entry);
+  }
+
+  /**
+   * A session that held the terminal ended: it is looked at again, since a held one never is,
+   * and a CLI started again in it while it was held may have kept the title it had.
+   */
+  reconsider(ref: TerminalRef): void {
+    const entry = this.deps.get(ref);
+    if (entry) this.consider(entry);
   }
 
   /** Each tick: a mark whose process has gone goes with it. */

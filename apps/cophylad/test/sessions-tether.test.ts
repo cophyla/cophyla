@@ -8,8 +8,10 @@
 // brain cannot stop it, the user can: in a New terminal's shell the terminal ends with it, in a
 // window of the user's own its process ends and the shell's terminal stays.
 // An agent CLI in a terminal no session holds is marked from one read of the process table
-// when the terminal retitles itself, reads coalesced and spaced, never for a held terminal;
-// a Codex thread the app-server daemon runs takes the one terminal whose CLI fits it.
+// when the terminal retitles itself, reads coalesced and spaced, never for a held terminal,
+// with when the CLI started; a Codex thread the app-server daemon runs takes the one terminal
+// whose CLI fits it, never when a desktop app started it, and of threads waiting, the one active
+// last takes a terminal freed.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -21,7 +23,7 @@ import { silentLogger } from "../src/log.ts";
 import { ClaudeAdapter } from "../src/sessions/claude/adapter.ts";
 import type { WindowRaiser } from "../src/sessions/focus.ts";
 import { SEND_PREFIX } from "../src/sessions/index.ts";
-import { cliOfName, findCli } from "../src/sessions/tether/cli.ts";
+import { cliOfName, findCli, TerminalClis } from "../src/sessions/tether/cli.ts";
 import type { ProcessRow } from "../src/sessions/tether/cli.ts";
 import { Tether } from "../src/sessions/tether/index.ts";
 import type { Run } from "../src/sessions/tether/index.ts";
@@ -533,6 +535,15 @@ describe("which process is a terminal's CLI", () => {
     expect(cliOfName("C:\\Users\\u\\AppData\\Local\\Programs\\muse\\muse-bin-1.4.0-R4161.1.exe")).toBe("muse");
     expect(cliOfName("muse")).toBeUndefined();
   });
+
+  test("a mark carries when its CLI started: the table's, or tether's for a terminal whose own program is the CLI", () => {
+    expect(findCli(10, [{ pid: 10, parent: 1, name: "pwsh.exe", startedAt: 100 }, { pid: 11, parent: 10, name: "codex.exe", startedAt: 1234 }])).toEqual({ harness: "codex", pid: 11, startedAt: 1234 });
+    const ref = { host: "h", id: "t1" };
+    const clis = new TerminalClis({ list: () => [], get: () => undefined, held: () => false, isAlive: () => true, changed: () => {}, log: silentLogger });
+    const info = { session: "t1", pid: 77, argv: ["codex"], cwd: "C:/w", cols: 80, rows: 24, labels: {}, status: "running" as const, startedAt: 5678, seq: 0, clients: [] };
+    clis.onTerminal({ entry: { ref, info } });
+    expect(clis.markOf(ref)).toEqual({ harness: "codex", pid: 77, startedAt: 5678 });
+  });
 });
 
 describe("an agent CLI in a terminal no session stands for yet", () => {
@@ -594,6 +605,37 @@ describe("an agent CLI in a terminal no session stands for yet", () => {
     expect(rec.session.native.terminal).toEqual(refOf(shell));
     mini.sessions.end(rec, "exit");
     other.exit(0);
+  });
+
+  test("a thread a Codex desktop app started takes no CLI's terminal", () => {
+    const rec = codexRecord("desktop-thread");
+    rec.hostedBy = "daemon";
+    rec.originator = "Codex Desktop";
+    mini.sessions.linkMarked(rec);
+    expect(rec.session.native.terminal).toBeUndefined();
+    rec.originator = "codex-tui";
+    mini.sessions.linkMarked(rec);
+    expect(rec.session.native.terminal).toEqual(refOf(shell));
+    mini.sessions.end(rec, "exit");
+  });
+
+  test("of two threads waiting for a terminal, the one active last takes the one freed", () => {
+    const holder = codexRecord("holding");
+    holder.hostedBy = "daemon";
+    mini.sessions.linkMarked(holder);
+    expect(holder.session.native.terminal).toEqual(refOf(shell));
+    const older = codexRecord("waiting-older");
+    const newer = codexRecord("waiting-newer");
+    for (const r of [older, newer]) {
+      r.hostedBy = "daemon";
+      mini.sessions.linkMarked(r);
+      expect(r.session.native.terminal).toBeUndefined();
+    }
+    mini.sessions.patch(newer, {}, Date.now() + 5000);
+    mini.sessions.end(holder, "exit");
+    expect(newer.session.native.terminal).toEqual(refOf(shell));
+    expect(older.session.native.terminal).toBeUndefined();
+    for (const r of [older, newer]) mini.sessions.end(r, "exit");
   });
 
   test("title changes together are looked at in one read, and a terminal that keeps retitling costs one read per gap at most", async () => {

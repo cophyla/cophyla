@@ -1,11 +1,14 @@
 // The Linux engine over a fixture `/proc` on every platform (the stat line parsed after its
-// last parenthesis, ticks and pages scaled, a directory that is not a pid skipped, memory
-// from MemTotal − MemAvailable), and over the real `/proc` on Linux: this process's own row
-// matches what the process says about itself.
+// last parenthesis, ticks and pages scaled, a start from the boot time and the start ticks,
+// none without a boot time, a directory that is not a pid skipped, memory from MemTotal −
+// MemAvailable), and over the real `/proc` on Linux: this process's own row matches what the
+// process says about itself.
 
 import { describe, expect, test } from "bun:test";
+import { cpSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { LinuxEngine, parseStat } from "../src/metrics/linux.ts";
+import { tempHome } from "./helpers.ts";
 
 const FIXTURE = join(import.meta.dir, "fixtures", "proc");
 
@@ -24,11 +27,22 @@ describe("metrics linux engine", () => {
     expect(claude.parent).toBe(1);
     expect(claude.cpuTimeNs).toBe((1234 + 567) * 1e7);
     expect(claude.rss).toBe(51200 * 4096);
+    // Started 6 ticks after the boot.
+    expect(claude.startedAt).toBe(1790000000 * 1000 + 60);
     expect(s.processes.find((p) => p.pid === 43)!.parent).toBe(42);
   });
 
+  test("with no boot time in /proc/stat, no process has a start", () => {
+    const root = join(tempHome(), "proc");
+    cpSync(FIXTURE, root, { recursive: true });
+    writeFileSync(join(root, "stat"), readFileSync(join(root, "stat"), "utf8").replace(/^btime.*$/m, ""));
+    const s = new LinuxEngine({ procRoot: root, cores: 2 }).sample();
+    expect(s.processes).toHaveLength(3);
+    expect(s.processes.every((p) => p.startedAt === undefined)).toBe(true);
+  });
+
   test("a stat line with spaces and parentheses in the name parses after the last one; a broken line is skipped", () => {
-    expect(parseStat("7 (a (b) c) S 3 7 7 0 -1 0 0 0 0 0 10 20 0 0 20 0 1 0 5 100 25 0")).toEqual({ name: "a (b) c", parent: 3, ticks: 30, rssPages: 25 });
+    expect(parseStat("7 (a (b) c) S 3 7 7 0 -1 0 0 0 0 0 10 20 0 0 20 0 1 0 5 100 25 0")).toEqual({ name: "a (b) c", parent: 3, ticks: 30, rssPages: 25, startTicks: 5 });
     expect(parseStat("garbage")).toBeUndefined();
   });
 
@@ -43,6 +57,9 @@ describe("metrics linux engine", () => {
     // Ticks are 10 ms; the walk itself burned a little since `cpuUsage` was read.
     expect(Math.abs(me.cpuTimeNs / 1e6 - (usage.user + usage.system) / 1000)).toBeLessThan(200);
     expect(me.rss).toBeGreaterThan(1_000_000);
+    // Its start, to the second the boot time is read to.
+    expect(Math.abs(me.startedAt! - performance.timeOrigin)).toBeLessThan(5000);
+    expect(s.processes.every((p) => p.startedAt !== undefined && p.startedAt <= Date.now())).toBe(true);
     expect(s.memory.total).toBeGreaterThan(0);
     expect(s.cpu.totalNs).toBeGreaterThan(s.cpu.busyNs);
   });

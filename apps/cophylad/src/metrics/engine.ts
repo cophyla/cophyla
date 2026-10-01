@@ -1,5 +1,5 @@
 // The engine interface behind the sampler: one raw reading of the machine, every process
-// with its cumulative CPU time, parent, name and resident memory, and the GPUs where a
+// with its cumulative CPU time, parent, name, resident memory and start time, and the GPUs where a
 // driver reports them (NVML for NVIDIA's, IOKit's IOAccelerator on a Mac). The OS engines live beside this file; `hostEngine` picks the one for
 // this platform and falls back to an engine that reads nothing, logged once, so a machine
 // the engines cannot read still runs the daemon.
@@ -14,6 +14,8 @@ export interface RawProcess {
   cpuTimeNs: number;
   /** Resident set, bytes. */
   rss: number;
+  /** When the process started, ms since the epoch: with the pid, which process it is. Absent where unknown. */
+  startedAt?: number;
 }
 
 export interface RawGpu {

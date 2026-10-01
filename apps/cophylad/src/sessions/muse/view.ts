@@ -205,10 +205,3 @@ export function settledEvents(events: ViewEvent[]): ViewEvent[] {
   while (end > 0 && events[end - 1]!.method === "item/completed") end--;
   return events.slice(0, end);
 }
-
-/** The time a UUIDv7 carries, in milliseconds; `undefined` for any other id (a child's is a v4). */
-export function uuidv7Time(id: string): number | undefined {
-  const m = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.exec(id);
-  if (!m) return undefined;
-  return parseInt(m[1]! + m[2]!, 16);
-}
