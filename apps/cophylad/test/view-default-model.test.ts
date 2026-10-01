@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, selectWaitingAgents, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, waitingLabel, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1867,6 +1867,42 @@ describe("default view: terminals", () => {
     // They go with the line, and come again with the next list.
     apply(s, { type: "host.state", params: { connected: false } });
     expect(s.terminals.size).toBe(0);
+  });
+
+  test("an agent CLI waiting for its first prompt stands with the sessions in its folder, after them, and leaves Terminals", () => {
+    const s = scoped(withTerminals());
+    apply(s, { type: "workspace.state", params: { id: "wks_app", node: NODE, path: "C:\\src\\app", name: "My App", origin: "discovered", lastActivity: 1 } });
+    apply(s, { type: "session.state", params: session("sess_a", 100, { cwd: "C:\\src\\app", workspace: "wks_app" }) });
+    apply(s, {
+      type: "terminals",
+      terminals: [
+        term("t-codex", 5, { harness: "codex", title: "⠋ app" }),
+        term("t-deep", 6, { harness: "codex", cwd: "C:\\src\\app\\web" }),
+        term("t-alone", 7, { harness: "muse", cwd: "C:\\src\\lib" }),
+        term("t-shell", 8),
+        term("t-agents", 9, { agents: "claude", harness: "claude" }),
+        term("t-done", 10, { harness: "codex", status: "exited" }),
+      ],
+    });
+    const waiting = selectWaitingAgents(s);
+    expect(waiting.map((t) => t.id).sort()).toEqual(["t-alone", "t-codex", "t-deep"]);
+    const groups = selectGroups(s, waiting);
+    expect(groups.map((g) => [g.name, g.sessions.map((c) => c.session.id), g.terminals.map((t) => t.id), g.count])).toEqual([
+      // A folder inside the workspace's joins its group; one with no session stands on its own.
+      ["lib", [], ["t-alone"], 1],
+      ["My App", ["sess_a"], ["t-codex", "t-deep"], 3],
+    ]);
+    // Without them the rail is as it was.
+    expect(selectGroups(s).map((g) => g.name)).toEqual(["My App"]);
+    // The CLI's thread starts: its session holds the terminal, which waits no more.
+    apply(s, { type: "session.state", params: session("sess_codex", 200, { harness: "codex", cwd: "C:\\src\\app", native: { id: "thread", transport: "app-server", terminal: { host: HOST, id: "t-codex" } } }) });
+    apply(s, { type: "terminal.state", params: term("t-codex", 5, { session: "sess_codex", title: "fix the build | app" }) });
+    expect(selectWaitingAgents(s).map((t) => t.id).sort()).toEqual(["t-alone", "t-deep"]);
+    // Its tab: a name, the title the CLI set (its spinner off), or the folder's name when the title is only a program's path.
+    expect(waitingLabel(term("t", 1, { harness: "codex", name: "build" }))).toBe("build");
+    expect(waitingLabel(term("t", 1, { harness: "codex", title: "⠹ app" }))).toBe("app");
+    expect(waitingLabel(term("t", 1, { harness: "codex", title: "C:\\WINDOWS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" }))).toBe("app");
+    expect(waitingLabel(term("t", 1, { harness: "codex" }))).toBe("app");
   });
 
   test("a bare terminal's tab says where it works: its workspace's name or its folder's, then its own name when that says more than its program", () => {

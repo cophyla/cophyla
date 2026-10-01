@@ -45,7 +45,8 @@ describe("shim command", () => {
     writeFileSync(shim, 'process.stdin.resume(); process.stdin.on("end", () => { process.stdout.write("{\\"ok\\":1}"); process.exitCode = process.argv[2] === "codex" ? 0 : 3; });');
     const run = async (command: string) => {
       const p = Bun.spawn(["powershell.exe", "-NoProfile", "-Command", command], { stdin: "pipe", stdout: "pipe", stderr: "pipe", windowsHide: true });
-      p.stdin!.end("{}");
+      p.stdin!.write("{}");
+      p.stdin!.end();
       const [out, code] = await Promise.all([new Response(p.stdout).text(), p.exited]);
       return { out, code };
     };

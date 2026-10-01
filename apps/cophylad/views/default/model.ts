@@ -9,7 +9,8 @@
 // samples added, beside each login's plan limits as the node's latest sample carries them.
 // The node's terminals are rows too: a session's own is reached from its pane, and the bare
 // ones (a shell the user started here, in a workspace they picked) get tabs of their own,
-// under Terminals, named by where they work.
+// under Terminals, named by where they work; one whose agent CLI waits for its first prompt
+// stands with the sessions in its folder instead.
 // The grants are rows too: each phone and node with its access and its end, an invite just
 // minted while its panel shows, the ones still pending, and what the desktop offers this node
 // (Join a primary while it is alone, Leave once it joined one).
@@ -1081,8 +1082,10 @@ export interface SessionGroup {
   name: string;
   path: string;
   sessions: SessionCard[];
+  /** The agent CLIs in terminals here that no session stands for yet (`waitingAgent`), after the sessions. */
+  terminals: Terminal[];
   groups: SessionGroup[];
-  /** Its sessions and every one in the groups inside it: what its heading says it holds while folded. */
+  /** Its tabs and every one in the groups inside it: what its heading says it holds while folded. */
   count: number;
 }
 
@@ -1105,9 +1108,11 @@ export function placeKey(path: string, platform?: Platform): string {
  * session works (a worktree under its repository, a repository under a folder of them) is a
  * group under the innermost such group; a session with no workspace whose cwd is inside a
  * group's folder joins the innermost such group rather than heading one. The outermost groups
- * are the outermost folders of a node where a session is open.
+ * are the outermost folders of a node where a session is open. An agent CLI waiting in a
+ * terminal (`terminals`, from `selectWaitingAgents`) is placed as a session is, by the folder
+ * its terminal started in, and its tab follows the sessions' there.
  */
-export function selectGroups(state: ViewState): SessionGroup[] {
+export function selectGroups(state: ViewState, terminals: Terminal[] = []): SessionGroup[] {
   interface Place {
     node: string;
     key: string;
@@ -1117,24 +1122,33 @@ export function selectGroups(state: ViewState): SessionGroup[] {
     workspace: boolean;
   }
   const places = new Map<string, Place>();
-  const own = new Map<SessionCard, Place>();
-  for (const card of state.sessions.values()) {
-    const s = card.session;
-    if (s.status === "ended") continue;
-    const w = s.workspace ? state.workspaces.get(s.workspace) : undefined;
-    const path = w?.path ?? s.cwd;
-    const key = placeKey(path, state.nodes.get(s.node)?.platform);
-    const id = `${s.node}\n${key}`;
+  const placeOf = (node: NodeId, path: string, w: Workspace | undefined): Place => {
+    const key = placeKey(path, state.nodes.get(node)?.platform);
+    const id = `${node}\n${key}`;
     let place = places.get(id);
     if (!place) {
-      place = { node: s.node, key, path, name: w?.name ?? lastPart(path), workspace: w !== undefined };
+      place = { node, key, path, name: w?.name ?? lastPart(path), workspace: w !== undefined };
       places.set(id, place);
     } else if (w && !place.workspace) {
       // A bare cwd met first, then the workspace at the same folder: the workspace names it.
       place.name = w.name;
       place.workspace = true;
     }
-    own.set(card, place);
+    return place;
+  };
+  const own = new Map<SessionCard, Place>();
+  for (const card of state.sessions.values()) {
+    const s = card.session;
+    if (s.status === "ended") continue;
+    const w = s.workspace ? state.workspaces.get(s.workspace) : undefined;
+    own.set(card, placeOf(s.node, w?.path ?? s.cwd, w));
+  }
+  const ownTerminal = new Map<Terminal, Place>();
+  for (const t of terminals) {
+    const key = placeKey(t.cwd, state.nodes.get(t.node)?.platform);
+    let w: Workspace | undefined;
+    for (const x of state.workspaces.values()) if (x.node === t.node && placeKey(x.path, state.nodes.get(t.node)?.platform) === key) w = x;
+    ownTerminal.set(t, placeOf(t.node, w?.path ?? t.cwd, w));
   }
   // Nesting is by path on one node; a folder is not inside itself.
   const inside = (inner: Place, outer: Place) => inner.node === outer.node && inner.key.startsWith(outer.key + "/");
@@ -1148,11 +1162,10 @@ export function selectGroups(state: ViewState): SessionGroup[] {
   const heads = new Set<Place>();
   for (const p of places.values()) if (p.workspace || innermost(p, places.values()) === undefined) heads.add(p);
   const groups = new Map<Place, SessionGroup>();
-  for (const head of heads) groups.set(head, { key: `${head.node}\n${head.key}`, name: head.name, path: head.path, sessions: [], groups: [], count: 0 });
-  for (const [card, place] of own) {
-    const head = heads.has(place) ? place : innermost(place, heads)!;
-    groups.get(head)!.sessions.push(card);
-  }
+  for (const head of heads) groups.set(head, { key: `${head.node}\n${head.key}`, name: head.name, path: head.path, sessions: [], terminals: [], groups: [], count: 0 });
+  const headOf = (place: Place): SessionGroup => groups.get(heads.has(place) ? place : innermost(place, heads)!)!;
+  for (const [card, place] of own) headOf(place).sessions.push(card);
+  for (const [t, place] of ownTerminal) headOf(place).terminals.push(t);
   const roots: SessionGroup[] = [];
   for (const [head, group] of groups) {
     const parent = innermost(head, heads);
@@ -1172,7 +1185,8 @@ export function selectGroups(state: ViewState): SessionGroup[] {
     let total = 0;
     for (const g of level) {
       g.sessions.sort(byStart);
-      g.count = g.sessions.length + settle(g.groups);
+      g.terminals.sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+      g.count = g.sessions.length + g.terminals.length + settle(g.groups);
       total += g.count;
     }
     return total;
@@ -1192,6 +1206,33 @@ function lastPart(path: string): string {
 export function selectTerminalTabs(state: ViewState, shown?: string): Terminal[] {
   const out = [...state.terminals.values()].filter((t) => (t.session === undefined || !state.sessions.has(t.session)) && (t.status === "running" || t.id === shown));
   return out.sort((a, b) => b.startedAt - a.startedAt || (a.id < b.id ? -1 : 1));
+}
+
+/**
+ * Whether a terminal holds an agent CLI that no session stands for yet: a Codex or Muse CLI
+ * before its first prompt (it starts no thread until then), or Claude's before it registers.
+ * Its tab stands with the sessions in its folder (`selectGroups`), not under Terminals.
+ */
+export function waitingAgent(state: ViewState, t: Terminal): boolean {
+  return t.status === "running" && t.harness !== undefined && t.agents === undefined && (t.session === undefined || !state.sessions.has(t.session));
+}
+
+/** The terminals whose agent CLI waits for its first prompt, for `selectGroups`. */
+export function selectWaitingAgents(state: ViewState): Terminal[] {
+  return [...state.terminals.values()].filter((t) => waitingAgent(state, t));
+}
+
+/**
+ * A waiting agent's tab, in its folder's group: its name, or the title its CLI set (a spinner
+ * before it off) unless that is only a program's path, or else its folder's name, as a
+ * session's tab with no title of its own says.
+ */
+export function waitingLabel(t: Terminal): string {
+  if (t.name) return t.name;
+  const title = t.title?.replace(/^[^\p{L}\p{N}]+/u, "").trim();
+  const program = (s: string) => lastPart(s).toLowerCase().replace(/\.exe$/, "");
+  if (title && !/[\\/]/.test(title) && program(title) !== program(t.argv0)) return title;
+  return lastPart(t.cwd);
 }
 
 /** What a terminal is called on its tab: its name, Claude's agents when it shows their screen, the title its program set, or the program. */

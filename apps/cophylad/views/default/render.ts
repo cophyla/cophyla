@@ -47,7 +47,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, selectWaitingAgents, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerWords, voiceBusy, voiceDot, voiceWords, waitingAgent, waitingLabel, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 
 /** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
@@ -569,11 +569,14 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
   tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}`;
 }
 
-/** A folder's heading, its sessions' tabs, and the workspaces inside it, each a group like this one. */
+/**
+ * A folder's heading, its sessions' tabs, the tabs of the agent CLIs waiting there for their
+ * first prompt, and the workspaces inside it, each a group like this one.
+ */
 function createGroup(): HTMLElement {
   const group = el("div", "tab-group");
   // The name folds the group's tabs and the groups inside it away and back.
-  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"), el("div", "tab-subgroups"));
+  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"), el("div", "tab-group-list tab-group-waiting"), el("div", "tab-subgroups"));
   return group;
 }
 
@@ -585,9 +588,12 @@ function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, u
   name.title = group.path;
   setData(name, "group", group.key);
   name.setAttribute("aria-expanded", folded ? "false" : "true");
-  const list = node.querySelector<HTMLElement>(":scope > .tab-group-list")!;
+  const list = node.querySelector<HTMLElement>(":scope > .tab-group-list:not(.tab-group-waiting)")!;
   setHidden(list, folded);
   reconcile(list, group.sessions, (c) => c.session.id, createTab, (tab, c) => updateTab(tab, c, state, ui));
+  const waiting = node.querySelector<HTMLElement>(":scope > .tab-group-waiting")!;
+  setHidden(waiting, folded || group.terminals.length === 0);
+  reconcile(waiting, group.terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui, false, true));
   const inner = node.querySelector<HTMLElement>(":scope > .tab-subgroups")!;
   setHidden(inner, folded || group.groups.length === 0);
   reconcile(inner, group.groups, (g) => g.key, createGroup, (n, g) => updateGroup(n, g, state, ui));
@@ -645,7 +651,8 @@ function updateMachineGroup(node: HTMLElement, g: TerminalGroup, state: ViewStat
   reconcile(list, g.terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui, false));
 }
 
-function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiState, withMachine: boolean): void {
+/** A bare terminal's tab: under Terminals, or (`waiting`) in its folder's group, an agent CLI waiting for its first prompt. */
+function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiState, withMachine: boolean, waiting = false): void {
   setData(tab, "terminal", t.id);
   setData(tab, "status", t.status === "running" ? "idle" : "ended");
   tab.setAttribute("aria-current", ui.terminal === t.id ? "true" : "false");
@@ -655,8 +662,8 @@ function updateTermTab(tab: HTMLElement, t: Terminal, state: ViewState, ui: UiSt
   setData(icon, "tone", "quiet");
   // The same black window a session in a terminal has its mark in, with a prompt for a plain program.
   setData(icon, "tether", "1");
-  icon.setAttribute("aria-label", t.status === "running" ? mark.kind : `${mark.kind}, ended`);
-  setText(tab.querySelector(".tab-title")!, terminalTabLabel(state, t, withMachine));
+  icon.setAttribute("aria-label", t.status !== "running" ? `${mark.kind}, ended` : waiting ? `${mark.kind}, waiting for its first prompt` : mark.kind);
+  setText(tab.querySelector(".tab-title")!, waiting ? waitingLabel(t) : terminalTabLabel(state, t, withMachine));
   tab.title = `${t.argv0} in ${t.cwd}${t.status === "running" ? "" : ", ended"}${t.windows > 0 ? `, ${t.windows} window${t.windows === 1 ? "" : "s"} open` : ""}`;
 }
 
@@ -1664,11 +1671,12 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   // The chat tab pulses while the orchestrator works or a reply streams, and while a phone is in a conversation.
   setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && state.progress === undefined && !voiceBusy(state));
 
-  const groups = selectGroups(state);
+  const canTerminal = state.scopes.includes("terminal");
+  // An agent CLI waiting for its first prompt stands with the sessions in its folder.
+  const groups = selectGroups(state, canTerminal ? selectWaitingAgents(state) : []);
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
-  const canTerminal = state.scopes.includes("terminal");
-  renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal) : [], state, ui);
+  renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
   const newTerminal = root.querySelector<HTMLButtonElement>(".tab-new-terminal")!;
   setHidden(newTerminal, !canTerminal);
   newTerminal.disabled = !state.connected;
