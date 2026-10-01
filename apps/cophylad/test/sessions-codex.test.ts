@@ -339,7 +339,7 @@ describe("codex adapter over the fake app-server", () => {
     const hook = (doc.hooks["Stop"]![0] as { hooks: { command: string; commandWindows: string }[] }).hooks[0]!;
     expect(hook.command.startsWith('"')).toBe(true);
     expect(hook.command).toContain('cophylad-hook-shim.mjs" codex prof_');
-    expect(hook.commandWindows).toBe(`& ${hook.command}`);
+    expect(hook.commandWindows).toBe(`try { & ${hook.command}; exit $LASTEXITCODE } catch { exit 0 }`);
     expect(Object.keys(readJson<Record<string, string>>(join(home, "trust.json"), {}))).toHaveLength(6);
     const list = mini.sessions.list();
     expect(list.map((s) => s.native.id)).toEqual([THREAD]);

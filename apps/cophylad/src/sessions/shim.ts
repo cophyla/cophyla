@@ -99,10 +99,14 @@ export type HookShell = "sh" | "powershell";
  * quoted and forward-slashed for the shell it is written for. Keyed on the shell alone,
  * never on the platform or the harness: Claude Code reads the `sh` form everywhere (Git
  * Bash on Windows), Codex reads `command` with `sh` and `commandWindows` with PowerShell.
+ * The PowerShell form exits with the runtime's code, and 0 with no opinion when the runtime
+ * cannot be started at all: Codex runs some hooks (those of the short threads it starts
+ * itself, to title a thread) as its sandbox's own Windows user, which cannot see a runtime
+ * under the user's profile, and would show each such hook as failed.
  */
 export function shimCommand(shimPath: string, harness: AttachedHarness, profileId: string, opts: { runtime?: string; shell?: HookShell } = {}): string {
   const call = `${shellPath(opts.runtime ?? process.execPath)} ${shellPath(shimPath)} ${harness} ${profileId}`;
-  return opts.shell === "powershell" ? `& ${call}` : call;
+  return opts.shell === "powershell" ? `try { & ${call}; exit $LASTEXITCODE } catch { exit 0 }` : call;
 }
 
 /**
