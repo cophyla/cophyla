@@ -184,7 +184,7 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
       // A session the brain started on another node is its own there too: the mirror knows its origin.
       ...(entry.own
         ? {
-            own: (p: unknown) => entry.own!(p) || (name === "session.send" && host.mirrorSessions().some((s) => s.id === P(p)["id"] && s.origin === "orchestrator")),
+            own: (p: unknown) => entry.own!(p) || ((name === "session.send" || name === "session.stop") && host.mirrorSessions().some((s) => s.id === P(p)["id"] && s.origin === "orchestrator")),
           }
         : {}),
       // A tool run elsewhere is gated here at its risk when this node knows the tool, else as exec; the owner re-gates with the tool's own risk.

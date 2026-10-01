@@ -367,7 +367,10 @@ export class ClaudeAdapter implements HarnessAdapter {
     let tail = rec.tail;
     if (!tail || tail.path !== path) {
       tail = this.host.openTail(rec, path);
+      // A name the user gave outlives a cleared context: the host keeps it on the parser it drops.
+      const named = (rec.parser as { named?: boolean } | undefined)?.named === true;
       rec.parser = newClaudeState();
+      if (named) (rec.parser as ClaudeTranscriptState).named = true;
       this.host.watch(dirname(path));
     }
     const state = rec.parser as ClaudeTranscriptState;

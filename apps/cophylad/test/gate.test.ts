@@ -74,6 +74,13 @@ describe("policy precedence", () => {
     expect(strict.policy.decide({ principal: "brain", action: "session.send", risk: "write", own: true })).toMatchObject({ decision: "ask", source: "config.rule" });
   });
 
+  test("the brain stops a session it started without asking; a session of the user's still asks", () => {
+    const { policy } = harness();
+    expect(policy.decide({ principal: "brain", action: "session.stop", risk: "exec", target: "sess_1", own: true })).toMatchObject({ decision: "allow", source: "builtin.rule", rule: "brain:session.stop" });
+    expect(policy.decide({ principal: "brain", action: "session.stop", risk: "exec", target: "sess_1" })).toMatchObject({ decision: "ask", source: "config.class" });
+    expect(policy.decide({ principal: "node", action: "session.stop", risk: "exec", own: true })).toMatchObject({ decision: "ask", source: "config.class" });
+  });
+
   test("a config rule beats the class default, a target rule beats an action rule", () => {
     const { policy } = harness('[gate.rules]\n"brain:session.send" = "allow"\n"brain:tool.run@my.deploy" = "deny"\n"*:remote.open" = "deny"\n');
     expect(policy.decide({ principal: "brain", action: "session.send", risk: "write" })).toMatchObject({ decision: "allow", source: "config.rule", rule: "brain:session.send" });

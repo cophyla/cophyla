@@ -58,6 +58,15 @@ export const CapabilityHello = z.object({
   role: z.union([NodeRole, z.literal("brain")]),
   /** The platform's IANA time zone: what a cron trigger without `tz` runs in and what the brain tells the time in. */
   tz: z.string().optional(),
+  /**
+   * What the platform does beyond its protocol version, in its hello: a brain uses one of these
+   * only when it is named, since an older platform drops what it does not know. `send.prepare`:
+   * `session.send` takes `task`, `clear` and `mode`, and `session.spawn` takes `mode`;
+   * `task.ready.cleared`: an unblocked `task.ready` names the blocker that cleared;
+   * `task.list.parent`: `task.list` filters by `parent`; `session.git`: the brain reads a
+   * session's repository.
+   */
+  features: z.array(z.string()).optional(),
 });
 export type CapabilityHello = z.infer<typeof CapabilityHello>;
 
@@ -94,8 +103,12 @@ export const capabilityEvents = {
   }),
   "user.activity": event({ state: ActivityState, source: UserMessageSource }),
   "voice.transcript": event({ text: z.string() }),
-  /** `event` is the custom event that fired an event trigger: its name and payload, so the task can act on them. */
-  "task.ready": event({ id: TaskId, cause: z.enum(["trigger", "unblocked"]), event: z.object({ name: z.string(), payload: z.unknown() }).optional() }),
+  /**
+   * `event` is the custom event that fired an event trigger: its name and payload, so the task
+   * can act on them. `cleared`, on an unblocked one, is the blocker that cleared: a task that
+   * finished, an ask answered, a session that went idle or ended.
+   */
+  "task.ready": event({ id: TaskId, cause: z.enum(["trigger", "unblocked"]), event: z.object({ name: z.string(), payload: z.unknown() }).optional(), cleared: TaskBlocker.optional() }),
   "task.updated": event({ id: TaskId }),
   "thread.updated": event({ id: ThreadId }),
   "workspace.updated": event({ id: WorkspaceId }),
@@ -145,6 +158,8 @@ export const TaskFilter = z.object({
   status: z.array(TaskStatus).optional(),
   workspace: WorkspaceId.optional(),
   blocker: z.enum(["user", "ask", "task", "session"]).optional(),
+  /** A plan's steps: the tasks whose `parent` it is, finished ones included. */
+  parent: TaskId.optional(),
 });
 
 export const TaskCreate = z.object({
@@ -279,6 +294,39 @@ export const LlmResult = z.object({
 });
 export type LlmResult = z.infer<typeof LlmResult>;
 
+/**
+ * The modes a message or a start may put a Claude session in: none looser than asking before
+ * each write, so a rule that lets the brain message a session never loosens it unasked. A
+ * looser mode is `session.mode`'s, under its own ask.
+ */
+export const WorkMode = z.enum(["default", "plan"]);
+export type WorkMode = z.infer<typeof WorkMode>;
+
+/** A commit as `session.git`'s `log` lists it: its short hash, its subject, and when it was made. */
+export const GitCommit = z.object({ commit: z.string(), subject: z.string(), at: Timestamp });
+export type GitCommit = z.infer<typeof GitCommit>;
+
+/**
+ * A repository as VS Code's status bar has it: the branch checked out (none while HEAD is
+ * detached), the commit it is at (none before the first), the branch it tracks, the commits
+ * it has that one lacks (`ahead`, to push) and the other way (`behind`, to pull) as of the
+ * last fetch, and how many files changed or are new. `log`, when asked for, holds the last
+ * commits, newest first.
+ */
+export const GitState = z.object({
+  branch: z.string().optional(),
+  commit: z.string().optional(),
+  upstream: z.string().optional(),
+  ahead: z.number().int().nonnegative().optional(),
+  behind: z.number().int().nonnegative().optional(),
+  changes: z.number().int().nonnegative(),
+  log: z.array(GitCommit).optional(),
+});
+export type GitState = z.infer<typeof GitState>;
+
+/** The most commits `session.git` lists. */
+export const GIT_LOG_MAX = 20;
+
 /** What `session.send` answers: `held` when the harness will hold the message for approval in its own terminal. */
 export const SendResult = z.object({
   status: z.enum(["queued", "held"]),
@@ -307,6 +355,15 @@ export const capabilityRequests = {
        * the harness says. The brain sending for itself cannot set it.
        */
       as: z.enum(["user", "brain"]).optional(),
+      /** The task the session works on from this message: it becomes the session's `task`. */
+      task: TaskId.optional(),
+      /**
+       * Clears the session's context first: `/clear` typed into a Claude session cophylad types
+       * into, idle with nothing waiting, and the new context awaited. `mode` is set next, then
+       * the text goes. Empty text with any of the three only prepares the session.
+       */
+      clear: z.boolean().optional(),
+      mode: WorkMode.optional(),
     }),
     result: SendResult,
   },
@@ -320,6 +377,8 @@ export const capabilityRequests = {
       task: TaskId.optional(),
       /** The installation to start under; the harness's default profile on that node when absent. */
       profile: ProfileId.optional(),
+      /** A Claude session's mode, over the profile's launch. */
+      mode: WorkMode.optional(),
     }),
     result: z.object({ id: SessionId }),
   },
@@ -335,6 +394,11 @@ export const capabilityRequests = {
     }),
     result: Empty,
   },
+  /**
+   * The repository a session's working directory is in, as the client protocol's `session.git`
+   * has it, with its last `log` commits when asked; none outside one, or without git.
+   */
+  "session.git": { params: z.object({ id: SessionId, log: z.number().int().positive().max(GIT_LOG_MAX).optional() }), result: z.object({ git: GitState.optional() }) },
   /** Puts a Claude session in a permission mode, as the client protocol's `session.mode` does. */
   "session.mode": { params: z.object({ id: SessionId, mode: LaunchMode }), result: z.object({ mode: LaunchMode }) },
   "ask.answer": {

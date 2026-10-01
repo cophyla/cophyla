@@ -25,7 +25,7 @@ import type { Stats } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
-import type { ClientResult, FileEntry, FileText, FolderListing, GitState, Session } from "@cophyla/protocol";
+import type { ClientResult, FileEntry, FileText, FolderListing, GitCommit, GitState, Session } from "@cophyla/protocol";
 import { ConvertError, convertKind, systemConverter } from "./convert.ts";
 import type { ImageConverter } from "./convert.ts";
 import { isWithin } from "./paths.ts";
@@ -192,6 +192,18 @@ export function parseGitStatus(out: string): GitState {
     }
   }
   return git;
+}
+
+/** What `git log --format=%h%x09%ct%x09%s` says: a commit a line, its hash, time in seconds and subject apart by tabs. */
+export function parseGitLog(out: string): GitCommit[] {
+  const log: GitCommit[] = [];
+  for (const line of out.split(/\r?\n/)) {
+    const [commit, seconds, ...subject] = line.split("\t");
+    const at = Number(seconds);
+    if (!commit || !Number.isFinite(at) || seconds === undefined || seconds === "") continue;
+    log.push({ commit, subject: subject.join("\t"), at: at * 1000 });
+  }
+  return log;
 }
 
 /**
@@ -495,19 +507,31 @@ export class SessionFiles {
     await this.deps.revealer(at.path, at.kind);
   }
 
-  /** The repository the session's directory is in; undefined outside one, or without git. */
-  git(id: string): Promise<GitState | undefined> {
+  /**
+   * The repository the session's directory is in, with its last `log` commits when asked for;
+   * undefined outside one, or without git. Reads of one directory at once share one run.
+   */
+  git(id: string, log?: number): Promise<GitState | undefined> {
     const cwd = this.cwd(id);
-    let read = this.reading.get(cwd);
+    const key = `${cwd}\0${log ?? 0}`;
+    let read = this.reading.get(key);
     if (!read) {
-      read = this.readGit(cwd).finally(() => this.reading.delete(cwd));
-      this.reading.set(cwd, read);
+      read = this.readGit(cwd, log).finally(() => this.reading.delete(key));
+      this.reading.set(key, read);
     }
     return read;
   }
 
-  private async readGit(cwd: string): Promise<GitState | undefined> {
-    const r = await (this.deps.git ?? runGit)(["status", "--porcelain=v2", "--branch"], cwd);
-    return r && r.code === 0 ? parseGitStatus(r.out) : undefined;
+  private async readGit(cwd: string, log?: number): Promise<GitState | undefined> {
+    const run = this.deps.git ?? runGit;
+    const r = await run(["status", "--porcelain=v2", "--branch"], cwd);
+    if (!r || r.code !== 0) return undefined;
+    const git = parseGitStatus(r.out);
+    // A number, never an option: nothing from the request reaches git's arguments but it.
+    if (log !== undefined && log > 0 && git.commit !== undefined) {
+      const l = await run(["log", "-n", String(Math.floor(log)), "--format=%h%x09%ct%x09%s"], cwd);
+      if (l && l.code === 0) git.log = parseGitLog(l.out);
+    }
+    return git;
   }
 }

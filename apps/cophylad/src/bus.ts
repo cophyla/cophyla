@@ -14,7 +14,7 @@
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
 
-import type { Ask, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
 
 export interface UserMessageEvent {
@@ -46,6 +46,8 @@ export interface TaskReadyEvent {
   cause: "trigger" | "unblocked";
   /** The custom event that fired an event trigger. */
   event?: { name: string; payload: unknown };
+  /** On an unblocked one: the blocker that cleared. */
+  cleared?: TaskBlocker;
 }
 
 /** A resource of this node crossed a threshold, or came back under it. */

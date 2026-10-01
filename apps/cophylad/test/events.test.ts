@@ -93,6 +93,23 @@ describe("event stream: the mapping", () => {
     expect(events).toHaveLength(1);
   });
 
+  test("a new mode or task on a session's row is a session.updated without an event", () => {
+    const a = session("sess_01ARZ3NDEKTSV4RRFFQ69G5FB1");
+    const { bus, sessions, events } = setup([a]);
+    const planning = session(a.id, "idle", { mode: "plan" });
+    sessions.set(a.id, planning);
+    bus.emit("session.state", planning);
+    bus.emit("session.state", planning);
+    expect(events).toHaveLength(1);
+    expect((events[0]!.params as { session: Session }).session.mode).toBe("plan");
+    const handed = session(a.id, "idle", { mode: "plan", task: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" });
+    sessions.set(a.id, handed);
+    bus.emit("session.state", handed);
+    expect(events).toHaveLength(2);
+    expect((events[1]!.params as { session: Session; event?: unknown }).session.task).toBe("task_01ARZ3NDEKTSV4RRFFQ69G5FB2");
+    expect((events[1]!.params as { event?: unknown }).event).toBeUndefined();
+  });
+
   test("an open harness ask is session.ask; a gate ask or a closed one is not", () => {
     const { bus, names } = setup();
     const ask = (source: Ask["source"], status: Ask["status"]): Ask => ({ id: newId("ask"), node: NODE, type: "permission", title: "t", options: [], status, source, createdAt: 1, answerableBy: ["user"] });
@@ -107,7 +124,7 @@ describe("event stream: the mapping", () => {
     const now = 50;
     bus.emit("task.state", { id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", title: "t", createdBy: { kind: "brain" }, status: "ready", priority: "normal", sessions: [], createdAt: now, updatedAt: 77 });
     bus.emit("task.ready", { at: 78, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "trigger", event: { name: "my.ping", payload: { a: 1 } } });
-    bus.emit("task.ready", { at: 79, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "unblocked" });
+    bus.emit("task.ready", { at: 79, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "unblocked", cleared: { kind: "task", task: "task_01ARZ3NDEKTSV4RRFFQ69G5FB3" } });
     bus.emit("thread.state", { id: "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", startedAt: 1, tags: [], sessions: [] });
     bus.emit("workspace.state", { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", node: NODE, path: "/x", name: "x", origin: "user", tags: [], lastActivity: 12 });
     bus.emit("user.message", { at: 3, text: "hi", source: "ui", mode: "quick", message: "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", thread: "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3" });
@@ -121,7 +138,7 @@ describe("event stream: the mapping", () => {
     expect(events.map((e) => e.name)).toEqual(["task.updated", "task.ready", "task.ready", "thread.updated", "workspace.updated", "user.message", "user.activity", "voice.transcript", "tools.changed", "prompts.changed", "memory.changed", "events.changed"]);
     expect(events[0]!.params).toEqual({ at: 77, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" });
     expect(events[1]!.params).toEqual({ at: 78, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "trigger", event: { name: "my.ping", payload: { a: 1 } } });
-    expect(events[2]!.params).toEqual({ at: 79, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "unblocked" });
+    expect(events[2]!.params).toEqual({ at: 79, id: "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", cause: "unblocked", cleared: { kind: "task", task: "task_01ARZ3NDEKTSV4RRFFQ69G5FB3" } });
     expect(events[4]!.params).toEqual({ at: 12, id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0" });
     expect(events[5]!.params).toEqual({ at: 3, text: "hi", source: "ui", mode: "quick", message: "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4", thread: "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3" });
     // The words the user has said so far: text and time, nothing about the client that heard them.

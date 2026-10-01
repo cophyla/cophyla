@@ -51,11 +51,13 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
 };
 
 /**
- * Allowed only on what the principal started: the brain messaging a session it started. A
- * message to any other session, the user's own, stays under the rules above.
+ * Allowed only on what the principal started: the brain messaging or stopping a session it
+ * started. A message to any other session, the user's own, and a stop of one, stay under the
+ * rules above.
  */
 export const BUILTIN_OWN_RULES: Readonly<Record<string, Decision>> = {
   "brain:session.send": "allow",
+  "brain:session.stop": "allow",
 };
 
 export interface PolicyDecision {

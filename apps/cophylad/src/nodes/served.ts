@@ -22,7 +22,7 @@ import { capabilityRequests, clientRequests, RpcError } from "@cophyla/protocol"
 import type { Ask, CapabilityRequestName, CapabilityResult, FileText, Hit, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
-import { brainMethods } from "../brain-link/methods.ts";
+import { brainMethods, sendOptions } from "../brain-link/methods.ts";
 import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "../brain-link/methods.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
@@ -106,7 +106,7 @@ export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: 
   // A message forwarded by the primary says whose it is; the brain's own table never asks.
   const send: BrainMethodTable["session.send"] = {
     target: (p) => p.id,
-    handler: (p) => deps.sessions.send(p.id, p.text, { from: p.as ?? "brain" }),
+    handler: (p) => deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain")),
   };
   out["session.send"] = send;
   // So does a stop: the user's may end a session of their own.
@@ -415,7 +415,7 @@ export class NodeServer {
     if (!files) throw new RpcError("unsupported", "this node lists no files");
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true; whole?: true; at?: number };
+    const p = parsed.data as { id: string; dirs?: string[]; path?: string; image?: true; whole?: true; at?: number; log?: number };
     const c = this.confined();
     const cwd = this.deps.local?.session(p.id)?.cwd;
     c?.require(cwd, "that session");
@@ -428,7 +428,7 @@ export class NodeServer {
     return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
       if (method === "session.files") return files.list(p.id, p.dirs);
       if (method === "session.file") return files.read(p.id, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
-      const git = await files.git(p.id);
+      const git = await files.git(p.id, p.log);
       return git ? { git } : {};
     });
   }

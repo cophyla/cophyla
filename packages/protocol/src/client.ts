@@ -44,7 +44,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
-import { LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
+import { GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -312,22 +312,6 @@ export const FolderListing = z.object({
 export type FolderListing = z.infer<typeof FolderListing>;
 
 /**
- * A repository as VS Code's status bar has it: the branch checked out (none while HEAD is
- * detached), the commit it is at (none before the first), the branch it tracks, the commits
- * it has that one lacks (`ahead`, to push) and the other way (`behind`, to pull) as of the
- * last fetch, and how many files changed or are new.
- */
-export const GitState = z.object({
-  branch: z.string().optional(),
-  commit: z.string().optional(),
-  upstream: z.string().optional(),
-  ahead: z.number().int().nonnegative().optional(),
-  behind: z.number().int().nonnegative().optional(),
-  changes: z.number().int().nonnegative(),
-});
-export type GitState = z.infer<typeof GitState>;
-
-/**
  * A file under a session's working directory as a viewer shows it: its path there as it was
  * asked for, its size in bytes and when it last changed (ms since the epoch), and its text,
  * the first MiB of it where `truncated` says; a file that is not text (`binary`) comes
@@ -465,8 +449,12 @@ export const clientRequests = {
     params: z.object({ id: SessionId, dirs: z.array(z.string().max(4096)).min(1).max(64).optional() }),
     result: z.object({ root: z.string(), dirs: z.array(FolderListing) }),
   },
-  /** The repository a session's working directory is in, as a status bar shows it, without fetching; none outside one, or without git. Answered by the session's node. */
-  "session.git": { params: z.object({ id: SessionId }), result: z.object({ git: GitState.optional() }) },
+  /**
+   * The repository a session's working directory is in, as a status bar shows it, without
+   * fetching; with `log`, its last commits too; none outside one, or without git. Answered by
+   * the session's node.
+   */
+  "session.git": { params: z.object({ id: SessionId, log: z.number().int().positive().max(GIT_LOG_MAX).optional() }), result: z.object({ git: GitState.optional() }) },
   /**
    * A file under a session's working directory, by its path there (`/` between the names), for
    * a viewer: its text, decoded from UTF-8 or from UTF-16 by its byte order mark, or that it is

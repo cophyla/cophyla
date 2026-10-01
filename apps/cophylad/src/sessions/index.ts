@@ -27,7 +27,7 @@ import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { realpathSync } from "node:fs";
 import { basename, join } from "node:path";
-import type { Ask, AskAnswer, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef } from "@cophyla/protocol";
+import type { Ask, AskAnswer, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
 import type { HookHarness, HookMeta } from "../api/hooks.ts";
@@ -94,6 +94,8 @@ export interface SessionsDeps {
   env?: Record<string, string | undefined>;
   /** How long a session whose context was cleared waits for its new id; a test shortens it. */
   clearGraceMs?: number;
+  /** How long a send that clears a context waits for the new one; a test shortens it. */
+  clearWaitMs?: number;
   /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
   resultHoldMs?: number;
   /** Prices a session's tokens when the harness states no cost of its own; undefined for a model with no price. */
@@ -126,10 +128,21 @@ export interface SessionsView {
   get(id: string): Session | undefined;
   history(id: string, opts?: { before?: number; around?: number; limit?: number }): SessionEvent[];
   annotate(id: string, patch: { intent?: string; summary?: string; tags?: string[] }): Session;
-  send(id: string, text: string, opts?: { from?: "user" | "brain" }): Promise<{ status: "queued" | "held"; ref: string }>;
+  send(id: string, text: string, opts?: SendOptions): Promise<{ status: "queued" | "held"; ref?: string }>;
   stopSession(id: string, opts?: { as?: "user" | "brain" }): Promise<void>;
   spawn(params: SpawnParams, opts: SpawnOptions): Promise<Session>;
   pids(): Map<number, string>;
+}
+
+/**
+ * Who a message is from, and how the session is prepared for it: the task it works on from
+ * now, its context cleared, its mode set, in that order and before the text goes.
+ */
+export interface SendOptions {
+  from?: "user" | "brain";
+  task?: string;
+  clear?: boolean;
+  mode?: WorkMode;
 }
 
 /** Where a spawn finds its profile. */
@@ -156,6 +169,8 @@ export interface SpawnParams {
   model?: ModelRef;
   task?: string;
   profile?: string;
+  /** A Claude session's mode, over the profile's launch. */
+  mode?: WorkMode;
 }
 
 export type AskCloseReason = "terminal" | "expired" | "aborted" | "stopped" | "daemon_stop";
@@ -205,6 +220,10 @@ interface LiveRecord extends SessionRecord {
   launch?: { pid: number | undefined; read: Promise<ClaudeLaunch | undefined> };
   /** Messages waiting to be typed into its terminal, one after another. */
   typing?: Promise<void>;
+  /** How many of those are not typed yet. */
+  toType?: number;
+  /** Sends that cleared its context, waiting for the record to follow it to its new id. */
+  clearWaiters?: (() => void)[];
   /** Claude: a change of permission mode being pressed in its terminal; the next waits for it, and so does a message typed meanwhile. */
   moding?: Promise<void>;
   /** Claude: its context was just cleared (`SessionEnd` with reason `clear`); it ends unless its new id turns up first. */
@@ -248,6 +267,8 @@ const FOLD_MS = 2000;
 
 /** How long a session whose context was cleared waits for its new id before it counts as ended. */
 const CLEAR_GRACE_MS = 5000;
+/** How long a send that types `/clear` waits for the new context. */
+const CLEAR_WAIT_MS = 10000;
 /**
  * How long a hook's tool result waits for its call. The transcript is read ≥150 ms after it
  * changes; a sub-agent's call, which is never in it, is known from the hook and not waited for.
@@ -682,8 +703,10 @@ export class Sessions implements SessionHost {
    * The same process now goes by another session id. The record follows it: origin, task,
    * workspace and terminal stay, the old id stays an alias so a late hook still finds it,
    * and the transcript starts over at the new one's. The intent goes: the new conversation's
-   * first prompt, or the plan it was cleared to carry out, says what it is for now. What the
-   * session spent under the old id is kept as the base its stats count on from.
+   * first prompt, or the plan it was cleared to carry out, says what it is for now. A name
+   * the user gave stays, as the id does: the new conversation's generated title never
+   * replaces it. What the session spent under the old id is kept as the base its stats count
+   * on from.
    */
   rekey(rec: SessionRecord, nativeId: string, at = this.now()): void {
     const live = rec as LiveRecord;
@@ -701,12 +724,16 @@ export class Sessions implements SessionHost {
     delete rec.session.intent;
     delete rec.session.transcript;
     rec.tail = undefined;
-    rec.parser = undefined;
+    // The adapter reads the new transcript with a parser of its own; only the name carries over.
+    rec.parser = (rec.parser as { named?: boolean } | undefined)?.named === true ? { named: true } : undefined;
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
     this.deps.store.sessions.update(rec.session);
     this.log.info("session re-keyed", { id: rec.session.id, from, to: nativeId });
     this.event(rec, "notification", { type: "context_cleared", from, to: nativeId }, undefined, at);
     this.broadcast(rec, true);
+    const waiters = live.clearWaiters;
+    live.clearWaiters = undefined;
+    for (const w of waiters ?? []) w();
   }
 
   /**
@@ -1518,6 +1545,7 @@ export class Sessions implements SessionHost {
     if (part === undefined && this.deps.owners?.ownerOf(workspace.path) !== undefined) throw new RpcError("conflict", `${workspace.path} is lent to a workspace node: a session started there would be the other cluster's`);
     // A workspace node's sessions run headless: no window, no terminal of the owner's.
     const headless = part !== undefined;
+    if (params.mode !== undefined && params.harness !== "claude") throw new RpcError("unsupported", `only a Claude Code session starts in a mode: ${params.harness} has none`);
     let profile: HarnessProfile | undefined;
     if (params.profile !== undefined) {
       profile = opts.profiles.get(params.profile);
@@ -1530,7 +1558,9 @@ export class Sessions implements SessionHost {
     if (profile.status === "missing") throw new RpcError("unavailable", `profile ${profile.name} has no configuration directory`);
     const model = params.model && "model" in params.model ? params.model.model.slice(params.model.model.indexOf("/") + 1) : undefined;
     if (params.harness === "muse") return this.spawnMuse(params, workspace, profile, model, headless);
-    const launch = params.harness === "claude" ? opts.profiles.launch?.(profile.id) : undefined;
+    const profileLaunch = params.harness === "claude" ? opts.profiles.launch?.(profile.id) : undefined;
+    // The mode asked for replaces the launch's own; the launch's other flags stay.
+    const launch = params.mode !== undefined ? { ...(profileLaunch ?? { args: [] }), mode: params.mode } : profileLaunch;
     if (params.harness === "claude" && this.config.launch === "terminal" && !headless) {
       const started = await this.spawnInTerminal(params, workspace, profile, launch, model);
       if (started) return started;
@@ -2009,9 +2039,22 @@ export class Sessions implements SessionHost {
    * Muse session in one, everyone's are, as Muse has no other way in. A session cophylad runs
    * headless is prompted through what runs it. Anything else goes over the harness's own
    * channel, which a Claude session reads as another agent's message.
+   *
+   * The session is prepared first, as asked: its context cleared (`/clear` typed, whatever
+   * `brain_sends` says, since it is terminal control like Shift+Tab, and the new context
+   * awaited), then its mode set, then the task it works on from now written on it; what it
+   * cannot take is refused before anything is typed. The task goes on last, so the new
+   * context's start is not heard as the task's session going idle. Empty text with any of
+   * these only prepares.
    */
-  async send(id: string, text: string, opts: { from?: "user" | "brain" } = {}, part?: string): Promise<{ status: "queued" | "held"; ref: string }> {
+  async send(id: string, text: string, opts: SendOptions = {}, part?: string): Promise<{ status: "queued" | "held"; ref?: string }> {
     const rec = this.must(id, part);
+    const prepares = opts.clear === true || opts.mode !== undefined || opts.task !== undefined;
+    if (opts.clear === true || opts.mode !== undefined) this.canPrepare(rec, opts);
+    if (opts.clear === true) await this.clearContext(rec);
+    if (opts.mode !== undefined) await this.setMode(id, opts.mode, part);
+    if (opts.task !== undefined && rec.session.task !== opts.task) this.patch(rec, { task: opts.task });
+    if (prepares && text === "") return { status: "queued" };
     if (this.typesInto(rec) && (opts.from !== "brain" || this.config.brain_sends === "typed" || rec.session.harness === "muse")) {
       const ref = `cophylad-${ulid(this.now())}`;
       this.queueTyped(rec, text, ref);
@@ -2051,6 +2094,58 @@ export class Sessions implements SessionHost {
     }
   }
 
+  /**
+   * Refuses a clear or a mode a session cannot take, before anything is done: only a Claude
+   * session has either; a clear needs one cophylad types into, idle with nothing waiting and
+   * nothing still being typed; a mode, one it types into or runs over ACP.
+   */
+  private canPrepare(rec: LiveRecord, opts: { clear?: boolean; mode?: WorkMode }): void {
+    if (rec.session.status === "ended") throw new RpcError("conflict", "the session has ended");
+    if (rec.session.harness !== "claude") throw new RpcError("unsupported", `only a Claude Code session's context is cleared or its mode set: this is a ${rec.session.harness} session`);
+    if (opts.clear === true) {
+      if (!this.typesInto(rec)) throw new RpcError("unsupported", "the session runs where cophylad cannot type: /clear in its own window clears its context");
+      const s = rec.session;
+      if (s.status !== "idle" || s.waiting !== undefined) {
+        const doing = s.status === "busy" ? "working" : s.status === "needs_permission" ? "asking for permission" : s.status === "needs_input" ? "waiting for an answer" : `waiting on ${s.waiting?.on === "shell" ? "its shells" : "the user"}`;
+        throw new RpcError("conflict", `the session is ${doing}: its context can be cleared once it is idle`);
+      }
+      const typing = (rec.toType ?? 0) > 0 || this.injections.pending(s.id).some((p) => p.typed === true);
+      if (typing || (rec.held !== undefined && !rec.held.settled) || rec.inputAsk !== undefined) throw new RpcError("conflict", "a message is still going into the session: its context can be cleared once it has landed");
+      return;
+    }
+    if (rec.session.native.transport !== "acp" && !this.typesInto(rec)) throw new RpcError("unsupported", "the session runs where cophylad cannot type: Shift+Tab in its own window changes its mode");
+  }
+
+  /**
+   * Clears a Claude session's context from its terminal: `/clear` typed as a message is, and
+   * the record followed to the process's new id (`rekey`). Fails when that has not happened
+   * within `CLEAR_WAIT_MS` of the typing being queued.
+   */
+  private async clearContext(rec: LiveRecord): Promise<void> {
+    const ref = `cophylad-clear-${ulid(this.now())}`;
+    let release!: () => void;
+    const cleared = new Promise<"cleared">((r) => (release = () => r("cleared")));
+    (rec.clearWaiters ??= []).push(release);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waitMs = this.deps.clearWaitMs ?? CLEAR_WAIT_MS;
+    const late = new Promise<"late">((r) => {
+      timer = setTimeout(() => r("late"), waitMs);
+      unref(timer);
+    });
+    this.queueTyped(rec, "/clear", ref);
+    try {
+      if ((await Promise.race([cleared, late])) === "late") {
+        const withdrawn = this.injections.get(ref)?.state === "withdrawn";
+        throw new RpcError("unavailable", withdrawn ? "/clear could not be typed into the session" : `the session's context was not cleared within ${Math.round(waitMs / 1000)}s of /clear`);
+      }
+    } finally {
+      if (timer) clearTimeout(timer);
+      rec.clearWaiters = rec.clearWaiters?.filter((w) => w !== release);
+      if (rec.clearWaiters?.length === 0) rec.clearWaiters = undefined;
+    }
+    this.log.info("context cleared for a message", { session: rec.session.id, native: rec.session.native.id });
+  }
+
   /** Whether a message to this session is typed into its terminal rather than sent over the pipe. */
   private typesInto(rec: LiveRecord): boolean {
     const terminal = rec.session.native.terminal !== undefined && this.deps.tether?.available === true;
@@ -2066,13 +2161,19 @@ export class Sessions implements SessionHost {
   /** Types a message once those before it are typed; a message that cannot be typed is withdrawn. */
   private queueTyped(rec: LiveRecord, text: string, ref: string): void {
     const prev = rec.typing ?? Promise.resolve();
-    rec.typing = prev.then(() => this.typeNow(rec, text, ref)).catch((e: unknown) => {
-      const error = e instanceof Error ? e.message : String(e);
-      this.log.warn("message not typed", { session: rec.session.id, ref, error });
-      const p = this.injections.get(ref);
-      if (p) this.injections.settle(ref, "withdrawn");
-      if (rec.session.status !== "ended" && !this.stopped) this.event(rec, "notification", { type: "message", ref, state: "withdrawn", message: error });
-    });
+    rec.toType = (rec.toType ?? 0) + 1;
+    rec.typing = prev
+      .then(() => this.typeNow(rec, text, ref))
+      .catch((e: unknown) => {
+        const error = e instanceof Error ? e.message : String(e);
+        this.log.warn("message not typed", { session: rec.session.id, ref, error });
+        const p = this.injections.get(ref);
+        if (p) this.injections.settle(ref, "withdrawn");
+        if (rec.session.status !== "ended" && !this.stopped) this.event(rec, "notification", { type: "message", ref, state: "withdrawn", message: error });
+      })
+      .finally(() => {
+        rec.toType = Math.max(0, (rec.toType ?? 1) - 1);
+      });
   }
 
   /**
@@ -2165,7 +2266,8 @@ export class Sessions implements SessionHost {
     this.log.info("message delivered", { session: rec.session.id, ref: p.ref, typed: p.typed === true });
     if (p.typed) {
       this.event(rec, "user_turn", { text: capText(p.text), source: "typed", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
-      if (rec.session.intent === undefined && p.text.trim()) this.patch(rec, { intent: oneLine(p.text) });
+      // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.
+      if (rec.session.intent === undefined && p.text.trim() && !p.text.trimStart().startsWith("/")) this.patch(rec, { intent: oneLine(p.text) });
     } else {
       this.event(rec, "notification", { type: "message", ref: p.ref, state: "delivered" });
     }
@@ -2339,8 +2441,11 @@ export class Sessions implements SessionHost {
         const patch: Partial<Session> = {};
         if (hook.title && rec.session.title === undefined) patch.title = hook.title;
         if (Object.keys(patch).length) this.patch(rec, patch, now);
-        this.event(rec, "status", { status: "idle", source: hook.source }, raw, now);
-        this.setStatus(rec, rec.session.status === "busy" ? "busy" : "idle", now);
+        // A session that starts again while it works (a context cleared by its plan's row, a
+        // compaction) is still at it: its record's status is what the event says, not idle.
+        const status = rec.session.status === "busy" ? "busy" : "idle";
+        this.event(rec, "status", { status, source: hook.source }, raw, now);
+        this.setStatus(rec, status, now);
         return {};
       }
       case "UserPromptSubmit": {
@@ -2561,8 +2666,10 @@ export class Sessions implements SessionHost {
   /**
    * "Yes, clear context": the CLI clears a context only from its own dialog, so the plan goes
    * on in a session cophylad starts in the same directory, under the same profile and in the
-   * mode the row named, with the plan as its first message; the old session's turn ends. When
-   * no session can be started, the plan goes on where it is, in that mode.
+   * mode the row named, with the plan as its first message; the old session's turn ends. The
+   * task the old session worked on goes with the plan: the new one carries it out, and the
+   * old one only planned. When no session can be started, the plan goes on where it is, in
+   * that mode.
    */
   private async buildInFreshSession(rec: LiveRecord, plan: HeldPlan, answer: AskAnswer): Promise<Record<string, unknown>> {
     try {
@@ -2578,7 +2685,12 @@ export class Sessions implements SessionHost {
         workspace,
         prompt: freshPlanPrompt(plan.text, rec.session.transcript?.path, answer.text?.trim() || undefined),
         mode: plan.goOn,
+        ...(rec.session.task !== undefined ? { task: rec.session.task } : {}),
       });
+      if (rec.session.task !== undefined) {
+        delete rec.session.task;
+        this.patch(rec, {});
+      }
       this.event(rec, "notification", { type: "plan_continued", session: fresh.session.id, mode: plan.goOn, message: "The plan is being built in a new session with a clear context" });
       this.log.info("plan continues in a fresh session", { session: rec.session.id, fresh: fresh.session.id, mode: plan.goOn });
       return handedOffDecision();

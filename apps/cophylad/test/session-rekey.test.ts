@@ -123,6 +123,51 @@ describe("a session whose id changes in the same process", () => {
     expect(rec.session.intent).toBe("Aim assist for gathering");
   });
 
+  test("a name the user gave survives a clear: the new conversation's generated title does not replace it", async () => {
+    alive.add(750);
+    const dir = join(cwd, "n");
+    mkdirSync(dir, { recursive: true });
+    const at = new Date().toISOString();
+    const row = (r: Record<string, unknown>) => JSON.stringify({ ...r, timestamp: at }) + "\n";
+    writeFileSync(join(dir, "n-old.jsonl"), row({ type: "custom-title", customTitle: "Assembly Implementer" }) + row({ type: "ai-title", aiTitle: "Fix the assembly" }));
+    writeRegistry(registry, { pid: 750, sessionId: "n-old", cwd: dir });
+    await mini.sessions.tick();
+    const rec = mini.sessions.find("claude", "n-old")!;
+    const n = (id: string, event: ClaudeHookEvent["hook_event_name"], extra: Record<string, unknown> = {}) => ({ ...hook(id, event, extra), cwd: dir, transcript_path: join(dir, `${id}.jsonl`) }) as ClaudeHookEvent;
+    await mini.sessions.onHook("claude", n("n-old", "UserPromptSubmit", { prompt: "plan section 1" }), { via: "http" });
+    await mini.sessions.tick();
+    expect(rec.session.title).toBe("Assembly Implementer");
+
+    await mini.sessions.onHook("claude", n("n-old", "SessionEnd", { reason: "clear" }), { via: "http" });
+    writeFileSync(join(dir, "n-new.jsonl"), row({ type: "ai-title", aiTitle: "Plan section 2" }));
+    await mini.sessions.onHook("claude", n("n-new", "SessionStart", { source: "clear" }), { via: "http" });
+    clearRegistry(registry, 750);
+    writeRegistry(registry, { pid: 750, sessionId: "n-new", cwd: dir });
+    await mini.sessions.tick();
+    expect(rec.session.native.id).toBe("n-new");
+    expect(rec.session.title).toBe("Assembly Implementer");
+
+    // Unnamed, the new conversation's title is taken as ever.
+    alive.add(760);
+    const dir2 = join(cwd, "u");
+    mkdirSync(dir2, { recursive: true });
+    writeFileSync(join(dir2, "u-old.jsonl"), row({ type: "ai-title", aiTitle: "Fix the assembly" }));
+    writeRegistry(registry, { pid: 760, sessionId: "u-old", cwd: dir2 });
+    await mini.sessions.tick();
+    const other = mini.sessions.find("claude", "u-old")!;
+    const u = (id: string, event: ClaudeHookEvent["hook_event_name"], extra: Record<string, unknown> = {}) => ({ ...hook(id, event, extra), cwd: dir2, transcript_path: join(dir2, `${id}.jsonl`) }) as ClaudeHookEvent;
+    await mini.sessions.onHook("claude", u("u-old", "UserPromptSubmit", { prompt: "fix it" }), { via: "http" });
+    await mini.sessions.tick();
+    expect(other.session.title).toBe("Fix the assembly");
+    await mini.sessions.onHook("claude", u("u-old", "SessionEnd", { reason: "clear" }), { via: "http" });
+    writeFileSync(join(dir2, "u-new.jsonl"), row({ type: "ai-title", aiTitle: "Plan section 2" }));
+    await mini.sessions.onHook("claude", u("u-new", "SessionStart", { source: "clear" }), { via: "http" });
+    clearRegistry(registry, 760);
+    writeRegistry(registry, { pid: 760, sessionId: "u-new", cwd: dir2 });
+    await mini.sessions.tick();
+    expect(other.session.title).toBe("Plan section 2");
+  });
+
   test("a clear with no new id ends the session once the grace runs out", async () => {
     alive.add(500);
     writeRegistry(registry, { pid: 500, sessionId: "c-old", cwd: join(cwd, "c") });

@@ -223,7 +223,7 @@ export function fileMethods(deps: FileMethodDeps): MethodTable {
     "session.git": {
       target: (p) => p.id,
       handler: async (p) => {
-        const git = await deps.files.git(p.id);
+        const git = await deps.files.git(p.id, p.log);
         return git ? { git } : {};
       },
     },

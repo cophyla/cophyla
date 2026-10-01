@@ -692,6 +692,10 @@ export class Store {
         where.push("json_extract(blocker, '$.kind') = $blocker");
         params["blocker"] = filter.blocker;
       }
+      if (filter.parent !== undefined) {
+        where.push("parent = $parent");
+        params["parent"] = filter.parent;
+      }
       const sql = `SELECT * FROM tasks${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY updated_at DESC, id DESC`;
       return (this.db.query(sql).all(params) as TaskRow[]).map(taskFromRow);
     },
@@ -1341,6 +1345,8 @@ export interface TaskListFilter {
   status?: TaskStatus[];
   workspace?: string;
   blocker?: "user" | "ask" | "task" | "session";
+  /** A plan's steps. */
+  parent?: string;
 }
 
 interface TaskRow {

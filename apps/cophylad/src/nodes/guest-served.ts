@@ -10,7 +10,8 @@
 // Rows leave without where the machine keeps a session's transcript, terminal or job.
 
 import { RpcError } from "@cophyla/protocol";
-import type { CapabilityRequestName, Hit, MetricsSample, Node, Session } from "@cophyla/protocol";
+import type { CapabilityRequestName, Hit, MetricsSample, Node, Session, WorkMode } from "@cophyla/protocol";
+import { sendOptions } from "../brain-link/methods.ts";
 import type { BrainMethodTable } from "../brain-link/methods.ts";
 import type { AsksView } from "../gate/asks.ts";
 import type { SessionsView, SpawnOptions } from "../sessions/index.ts";
@@ -88,11 +89,11 @@ export function guestServedTable(deps: GuestServeDeps, primaryId: string): Brain
     },
     "session.send": {
       target: (p: { id: string }) => p.id,
-      handler: (p: { id: string; text: string; as?: "user" | "brain" }) => deps.sessions.send(p.id, p.text, { from: p.as ?? "brain" }),
+      handler: (p: { id: string; text: string; as?: "user" | "brain"; task?: string; clear?: boolean; mode?: WorkMode }) => deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain")),
     },
     "session.spawn": {
       target: (p: { workspace: string }) => p.workspace,
-      handler: async (p: { harness: string; workspace: string; prompt: string; model?: unknown; task?: string }) => {
+      handler: async (p: { harness: string; workspace: string; prompt: string; model?: unknown; task?: string; mode?: WorkMode }) => {
         if (p.harness !== "claude" && p.harness !== "codex" && p.harness !== "muse") throw new RpcError("unsupported", `this node does not run ${p.harness} sessions`);
         try {
           const s = await deps.sessions.spawn(
@@ -102,6 +103,7 @@ export function guestServedTable(deps: GuestServeDeps, primaryId: string): Brain
               prompt: p.prompt,
               ...(p.model ? { model: p.model as never } : {}),
               ...(p.task !== undefined ? { task: p.task } : {}),
+              ...(p.mode !== undefined ? { mode: p.mode } : {}),
               // the owner's choice, never the primary's
               ...(deps.profile !== undefined ? { profile: deps.profile } : {}),
             },

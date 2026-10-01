@@ -298,6 +298,22 @@ describe("listeners", () => {
     expect(r.listeners.list()).toEqual([]);
   });
 
+  test("a listener filtered on a session goes when the session ends, after the end's fire; one on another session stays", async () => {
+    const r = rig();
+    const s1 = session(S1);
+    const s2 = session(S2);
+    r.said(s1, "status", { status: "busy" });
+    r.said(s2, "status", { status: "busy" });
+    const idle = r.add({ on: ["session.idle", "session.ask"], session: S1, deliver: "wake" });
+    const end = r.add({ on: ["session.ended"], session: S1 });
+    const other = r.add({ on: ["session.idle"], session: S2 });
+    r.bus.emit("session.state", { ...s1, status: "ended", endedAt: T0 });
+    await flush();
+    expect(r.fired.map((f) => f.listener.id)).toEqual([end.id]);
+    expect(r.removed.map((x) => [x.id, x.why]).sort()).toEqual([[idle.id, "until"], [end.id, "until"]].sort());
+    expect(r.listeners.list().map((l) => l.id)).toEqual([other.id]);
+  });
+
   test("what add refuses, with words the model can act on; the cap; a metric fills in this node; remove by the user or the brain", async () => {
     const r = rig();
     r.tasks.set(T1, task(T1, { status: "done" }));

@@ -349,7 +349,7 @@ describe("codex adapter over the fake app-server", () => {
     const s = mini.sessions.list()[0]!;
     const r = await mini.sessions.send(s.id, "hello");
     expect(r.status).toBe("queued");
-    expect(r.ref.startsWith("cophylad-")).toBe(true);
+    expect(r.ref!.startsWith("cophylad-")).toBe(true);
     await waitFor(() => queueLog().some((q) => q.op === "add" && q.clientUserMessageId === r.ref));
     await waitFor(() => queueLog().some((q) => q.op === "delete"), 2000);
     const n = await waitFor(() => events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref));
@@ -360,7 +360,7 @@ describe("codex adapter over the fake app-server", () => {
     const s = mini.sessions.list()[0]!;
     const r = await mini.sessions.send(s.id, "run the tests");
     const lines = readFileSync(FIXTURE, "utf8").split("\n").filter((l) => l.trim());
-    const queuedRow = lines[11]!.replace("cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0", r.ref);
+    const queuedRow = lines[11]!.replace("cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0", r.ref!);
     writeFileSync(rolloutPath, lines.slice(0, 11).join("\n") + "\n" + queuedRow + "\n", { flag: "w" });
     await mini.sessions.tick();
     const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);

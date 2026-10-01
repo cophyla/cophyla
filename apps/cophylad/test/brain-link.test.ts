@@ -114,7 +114,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);
@@ -248,6 +248,7 @@ describe("brain-link", () => {
               { method: "session.spawn", params: { harness: "claude", workspace: ws, prompt: "say hi" } },
               { method: "session.send", params: { id: "$last.id", text: "and the docs" } },
               { method: "profile.limits", params: {} },
+              { method: "session.stop", params: { id: "$res[0].id" } },
               { method: "session.send", params: { id: users.session.id, text: "hello there" } },
             ],
           },
@@ -256,8 +257,12 @@ describe("brain-link", () => {
     );
     await c.request("chat.send", { text: "spawn one" });
     const askState = await c.next(isMethod("ask.state", (p) => (p as { status: string }).status === "open"));
-    const ask = askState.params as { id: string; source: { action: string } };
+    const ask = askState.params as { id: string; source: { action: string }; title: string; detail: string };
     expect(ask.source.action).toBe("session.send");
+    // The ask says what the message is, not the request's JSON.
+    expect([ask.title, ask.detail]).toEqual(["Message work?", "hello there"]);
+    // The session it started is its own to stop.
+    expect(brainAudit(d).filter((e) => e.action === "session.stop").map((e) => [e.decision, e.outcome])).toEqual([["allow", "ok"]]);
     const audit = brainAudit(d);
     expect(audit.filter((e) => e.action === "session.spawn").map((e) => [e.decision, e.outcome])).toEqual([["allow", "ok"]]);
     const sends = audit.filter((e) => e.action === "session.send");

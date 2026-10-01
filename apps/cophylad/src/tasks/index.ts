@@ -1,11 +1,13 @@
 // The task table and the blockers the platform clears itself: an answered ask, a completed
 // task, a session that went idle or ended. Each cleared blocker moves the task to `ready` and
-// raises `task.ready` for the brain; a task blocked on a session that has already gone idle
-// or ended, or on an ask already closed, settles at once, so a fast agent or a fast answer
-// cannot slip between the event and the block. A harness ask answered while the agent that
-// raised it still runs puts its task back on that session: the agent continues, and the task
-// is ready when it goes idle. A task with a trigger (a time, a cron expression, an event)
-// waits `pending` until the scheduler fires it through `fire`, which makes it `ready` with
+// raises `task.ready` for the brain, naming the blocker that cleared; a task blocked on a
+// session that has already gone idle or ended, or on an ask already closed, settles at once,
+// so a fast agent or a fast answer cannot slip between the event and the block. A harness ask
+// answered while the agent that raised it still runs puts its task back on that session: the
+// agent continues, and the task is ready when it goes idle. A session serving a task is in
+// its `sessions`: one it was blocked on, and one whose `task` names it (started for it, or
+// handed it). A task with a trigger (a time, a cron expression, an event) waits `pending`
+// until the scheduler fires it through `fire`, which makes it `ready` with
 // `task.ready {cause: trigger}`; a recurring cron or event task marked done goes back to
 // `pending` with its result kept, so it fires again. Every change is streamed as `task.state`.
 
@@ -119,6 +121,8 @@ export class Tasks {
     if (patch.sessions !== undefined) t.sessions = patch.sessions;
     if (patch.result !== undefined) t.result = patch.result;
     let settled = false;
+    // The session a task waits on serves it, whether or not it has settled already.
+    if (patch.blocker && patch.blocker.kind === "session" && !t.sessions.includes(patch.blocker.session)) t.sessions = [...t.sessions, patch.blocker.session];
     if (patch.blocker !== undefined) {
       if (patch.blocker === null) {
         delete t.blocker;
@@ -158,7 +162,7 @@ export class Tasks {
     t.updatedAt = now;
     this.deps.store.tasks.update(t);
     this.deps.bus.emit("task.state", t);
-    if (settled && t.status === "ready") this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked" });
+    if (settled && t.status === "ready" && patch.blocker) this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked", cleared: patch.blocker });
     if (done) this.unblock("task", t.id);
     return t;
   }
@@ -200,7 +204,7 @@ export class Tasks {
       t.updatedAt = now;
       this.deps.store.tasks.update(t);
       this.deps.bus.emit("task.state", t);
-      this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked" });
+      this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked", cleared: kind === "task" ? { kind, task: id } : { kind, session: id } });
       cleared.push(t);
     }
     return cleared;
@@ -230,15 +234,27 @@ export class Tasks {
       t.updatedAt = now;
       this.deps.store.tasks.update(t);
       this.deps.bus.emit("task.state", t);
-      if (t.status === "ready") this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked" });
+      if (t.status === "ready") this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked", cleared: { kind: "ask", ask: ask.id } });
     }
   }
 
   private onSessionState(session: Session): void {
+    this.join(session);
     const was = this.sessionSettled.get(session.id);
     const now = settled(session);
     this.sessionSettled.set(session.id, now);
     if (now && was !== true) this.unblock("session", session.id);
+  }
+
+  /** A session whose `task` names an open task it is not yet in joins that task's `sessions`. */
+  private join(session: Session): void {
+    if (session.task === undefined) return;
+    const t = this.deps.store.tasks.get(session.task);
+    if (!t || t.status === "done" || t.status === "cancelled" || t.sessions.includes(session.id)) return;
+    t.sessions = [...t.sessions, session.id];
+    t.updatedAt = this.now();
+    this.deps.store.tasks.update(t);
+    this.deps.bus.emit("task.state", t);
   }
 
   /**
@@ -250,12 +266,13 @@ export class Tasks {
     for (const t of this.deps.store.tasks.list({ status: ["blocked"], blocker: "ask" })) {
       if (t.blocker?.kind !== "ask" || isOpen(t.blocker.ask)) continue;
       const now = this.now();
+      const cleared = t.blocker;
       delete t.blocker;
       t.status = "ready";
       t.updatedAt = now;
       this.deps.store.tasks.update(t);
       this.deps.bus.emit("task.state", t);
-      this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked" });
+      this.deps.bus.emit("task.ready", { at: now, id: t.id, cause: "unblocked", cleared });
       n++;
     }
     return n;

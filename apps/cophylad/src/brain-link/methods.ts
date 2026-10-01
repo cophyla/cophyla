@@ -5,7 +5,7 @@
 // Requests that belong to later milestones answer `unsupported`.
 
 import { RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session, WorkMode } from "@cophyla/protocol";
 import { annotate } from "../annotate.ts";
 import type { Chat } from "../chat/index.ts";
 import type { MemoryFiles } from "../editable/memory.ts";
@@ -16,6 +16,7 @@ import type { GateContext } from "../gate/index.ts";
 import type { Listeners } from "../listeners/index.ts";
 import type { Llm } from "../llm/index.ts";
 import type { Metrics } from "../metrics/index.ts";
+import type { SessionFiles } from "../sessions/files.ts";
 import type { Sessions } from "../sessions/index.ts";
 import { MODE_WORDS } from "../sessions/claude/launch.ts";
 import { pairAsk } from "../api/methods.ts";
@@ -84,6 +85,8 @@ export interface BrainMethodDeps {
   limits?: LimitsReader;
   /** The brain's listeners; absent on a node that keeps none, and `listener.*` is then `unsupported`. */
   listeners?: Listeners;
+  /** The sessions' repositories, for `session.git`; absent, it is `unsupported`. */
+  files?: Pick<SessionFiles, "git">;
 }
 
 /** What `profile.limits` reads: `PlanLimits.fresh`. */
@@ -114,9 +117,27 @@ const IN_MODE: Record<LaunchMode, string> = {
   dontAsk: "It will refuse whatever is not allowed already, asking nothing.",
 };
 
+/** A session as an ask names it: its title, else its folder's name. */
+function sessionName(session: Session | undefined, id: string): string {
+  return session?.title ?? session?.cwd.split(/[\\/]/).filter(Boolean).pop() ?? id;
+}
+
+/**
+ * The words of the ask before the brain messages a session of the user's: what will happen to
+ * it, in order, and the message. One request is one decision, however many steps it takes.
+ */
+export function sendAsk(p: { id: string; text: string; clear?: boolean; mode?: WorkMode }, session: Session | undefined): { title: string; detail: string } {
+  const steps = [...(p.clear ? ["clear its context"] : []), ...(p.mode ? [`put it in ${MODE_WORDS[p.mode]} mode`] : [])];
+  const name = sessionName(session, p.id);
+  const first = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
+  if (steps.length === 0) return { title: `Message ${name}?`, detail: p.text };
+  if (p.text === "") return { title: `Prepare ${name}?`, detail: `${first(steps.join(", then "))}; nothing is sent.` };
+  return { title: `Prepare ${name} and message it?`, detail: `${first(steps.join(", "))}, then send:\n\n${p.text}` };
+}
+
 /** The words of the ask a node's rules open before the brain changes a session's mode. */
 export function modeAsk(p: { id: string; mode: LaunchMode }, session: Session | undefined): { title: string; detail: string } {
-  const name = session?.title ?? session?.cwd.split(/[\\/]/).filter(Boolean).pop() ?? p.id;
+  const name = sessionName(session, p.id);
   return { title: `Put ${name} in ${MODE_WORDS[p.mode]} mode?`, detail: IN_MODE[p.mode] };
 }
 
@@ -148,7 +169,8 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       target: (p) => p.id,
       // A session the brain started is its own to message; the user's are asked about.
       own: (p) => deps.sessions.get(p.id)?.origin === "orchestrator",
-      handler: (p) => deps.sessions.send(p.id, p.text, { from: "brain" }),
+      ask: (p) => sendAsk(p, deps.sessions.get(p.id)),
+      handler: (p) => deps.sessions.send(p.id, p.text, sendOptions(p, "brain")),
     },
     "session.spawn": {
       target: (p) => p.workspace,
@@ -156,7 +178,7 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       handler: async (p) => {
         if (p.harness === "acp") throw new RpcError("unsupported", "a generic ACP agent arrives in a later milestone");
         const session = await deps.sessions.spawn(
-          { harness: p.harness, workspace: p.workspace, prompt: p.prompt, ...(p.model ? { model: p.model } : {}), ...(p.task !== undefined ? { task: p.task } : {}), ...(p.profile !== undefined ? { profile: p.profile } : {}) },
+          { harness: p.harness, workspace: p.workspace, prompt: p.prompt, ...(p.model ? { model: p.model } : {}), ...(p.task !== undefined ? { task: p.task } : {}), ...(p.profile !== undefined ? { profile: p.profile } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) },
           { profiles: deps.profiles },
         );
         const thread = deps.chat.peek();
@@ -166,9 +188,19 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     "session.stop": {
       target: (p) => p.id,
+      // A session the brain started is its own to stop; the user's are asked about.
+      own: (p) => deps.sessions.get(p.id)?.origin === "orchestrator",
       handler: async (p) => {
         await deps.sessions.stopSession(p.id);
         return {};
+      },
+    },
+    "session.git": {
+      target: (p) => p.id,
+      handler: async (p) => {
+        if (!deps.files) throw new RpcError("unsupported", "this node reads no repositories");
+        const git = await deps.files.git(p.id, p.log);
+        return git ? { git } : {};
       },
     },
     "session.mode": {
@@ -378,6 +410,11 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     // `cancel` is served by the link itself, before the table.
   };
+}
+
+/** What a `session.send` asks of the session beyond its text, as `Sessions.send` takes it. */
+export function sendOptions(p: { task?: string; clear?: boolean; mode?: WorkMode }, from: "user" | "brain"): { from: "user" | "brain"; task?: string; clear?: boolean; mode?: WorkMode } {
+  return { from, ...(p.task !== undefined ? { task: p.task } : {}), ...(p.clear ? { clear: true } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) };
 }
 
 function listenersOf(deps: { listeners?: Listeners }): Listeners {

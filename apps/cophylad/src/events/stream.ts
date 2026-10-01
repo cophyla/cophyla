@@ -1,9 +1,9 @@
 // The one event stream: the daemon's bus events as capability events, plus the custom
 // events hooks raise, heard by the brain's feed, the hooks, the task scheduler and the
 // recorder alike. A session event becomes `session.discovered` the first time a session is
-// seen and `session.updated` every time; a session whose row alone changed (an annotate
-// or a new title: the intent, summary, tags or title) becomes `session.updated` without an
-// `event`; a session that ended becomes `session.ended`; an open harness ask `session.ask`;
+// seen and `session.updated` every time; a session whose row alone changed (an annotate,
+// a new title, a mode or a task: the intent, summary, tags, title, mode or task) becomes
+// `session.updated` without an `event`; a session that ended becomes `session.ended`; an open harness ask `session.ask`;
 // task, thread and workspace changes their `*.updated`; a user message, the user's
 // activity, a node's pressure, the editable layer's notices and the brain's listeners' fires
 // and removals pass through. `custom` turns a hook's emit into `event.custom` with its
@@ -29,8 +29,8 @@ export interface EventStreamDeps {
 /** Bytes of JSON a custom payload may take; a bigger one is dropped with a warning. */
 export const CUSTOM_PAYLOAD_CAP = 64 * 1024;
 
-/** The fields a `session.state` alone can change that the brain shows: the ones `annotate` writes. */
-const annotation = (s: Session): string => JSON.stringify([s.intent ?? null, s.summary ?? null, s.tags, s.title ?? null]);
+/** The fields a `session.state` alone can change that the brain shows: the ones `annotate` writes, the title, the mode and the task. */
+const annotation = (s: Session): string => JSON.stringify([s.intent ?? null, s.summary ?? null, s.tags, s.title ?? null, s.mode ?? null, s.task ?? null]);
 
 /**
  * The name and payload a trigger or a hook handler keys on: a custom event answers to its
@@ -91,7 +91,7 @@ export class EventStream {
         this.emit({ name: "session.ask", params: { at: ask.createdAt, session: ask.source.session, ask } });
       }),
       bus.on("task.state", (task) => this.emit({ name: "task.updated", params: { at: task.updatedAt, id: task.id } })),
-      bus.on("task.ready", (e) => this.emit({ name: "task.ready", params: { at: e.at, id: e.id, cause: e.cause, ...(e.event ? { event: e.event } : {}) } })),
+      bus.on("task.ready", (e) => this.emit({ name: "task.ready", params: { at: e.at, id: e.id, cause: e.cause, ...(e.event ? { event: e.event } : {}), ...(e.cleared ? { cleared: e.cleared } : {}) } })),
       bus.on("thread.state", (thread) => this.emit({ name: "thread.updated", params: { at: thread.endedAt ?? this.now(), id: thread.id } })),
       bus.on("workspace.state", (w) => this.emit({ name: "workspace.updated", params: { at: w.lastActivity, id: w.id } })),
       bus.on("user.message", (m) => this.emit({ name: "user.message", params: { at: m.at, text: m.text, source: m.source, ...(m.mode ? { mode: m.mode } : {}), message: m.message, thread: m.thread, ...(m.speak !== undefined ? { speak: m.speak } : {}) } })),

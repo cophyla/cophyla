@@ -1,8 +1,9 @@
 // Tasks: status from the input, patches that block and unblock, completion timestamps, and
 // the blockers the platform clears itself: an answered ask, a completed task, a session
-// that went idle or ended, each raising `task.ready`; a harness ask answered while its agent
-// runs on hands the task back to the session, and a block on something already settled
-// settles at once.
+// that went idle or ended, each raising `task.ready` with the blocker that cleared; a harness
+// ask answered while its agent runs on hands the task back to the session, and a block on
+// something already settled settles at once. A session a task waits on, or whose `task` names
+// it, is in its `sessions`; a plan's steps list by `parent`.
 
 import { describe, expect, test } from "bun:test";
 import { newId } from "@cophyla/protocol";
@@ -82,7 +83,7 @@ describe("tasks", () => {
     expect(tasks.get(t.id)!.status).toBe("ready");
     expect(tasks.get(t.id)!.blocker).toBeUndefined();
     expect(tasks.get(other.id)!.status).toBe("blocked");
-    expect(ready).toEqual([{ at: expect.any(Number), id: t.id, cause: "unblocked" }]);
+    expect(ready).toEqual([{ at: expect.any(Number), id: t.id, cause: "unblocked", cleared: { kind: "ask", ask: ask.id } }]);
     const ask2 = asks.open({ type: "choice", source: { kind: "brain" }, title: "y", options: [], answerableBy: ["user"] });
     tasks.update(t.id, { blocker: { kind: "ask", ask: ask2.id } }, BRAIN);
     asks.cancel(ask2.id);
@@ -147,7 +148,81 @@ describe("tasks", () => {
     expect(ready).toEqual([]);
     tasks.update(first.id, { status: "done" }, BRAIN);
     expect(tasks.get(second.id)!.status).toBe("ready");
-    expect(ready.map((r) => r.id)).toEqual([second.id]);
+    expect(ready).toEqual([{ at: expect.any(Number), id: second.id, cause: "unblocked", cleared: { kind: "task", task: first.id } }]);
+  });
+
+  test("a session a task is blocked on joins the task, settled or not, and its idle names it as what cleared", () => {
+    const { tasks, bus, ready, session } = setup();
+    bus.emit("session.state", session("busy"));
+    const t = tasks.create({ title: "t" }, BRAIN);
+    const blocked = tasks.update(t.id, { blocker: { kind: "session", session: SESSION } }, BRAIN);
+    expect(blocked.sessions).toEqual([SESSION]);
+    bus.emit("session.state", session("idle"));
+    expect(ready).toEqual([{ at: expect.any(Number), id: t.id, cause: "unblocked", cleared: { kind: "session", session: SESSION } }]);
+    // Blocked on one already idle: ready at once, and the session is still the task's.
+    const u = tasks.create({ title: "u" }, BRAIN);
+    const settled = tasks.update(u.id, { blocker: { kind: "session", session: SESSION } }, BRAIN);
+    expect(settled.status).toBe("ready");
+    expect(settled.sessions).toEqual([SESSION]);
+    expect(ready[1]).toEqual({ at: expect.any(Number), id: u.id, cause: "unblocked", cleared: { kind: "session", session: SESSION } });
+    // Blocked again on the same session: it is not listed twice.
+    bus.emit("session.state", session("busy"));
+    expect(tasks.update(u.id, { blocker: { kind: "session", session: SESSION } }, BRAIN).sessions).toEqual([SESSION]);
+  });
+
+  test("a parked ask answered while the agent works: the session the task was blocked on keeps it blocked until idle", () => {
+    const { tasks, asks, bus, ready, session } = setup();
+    bus.emit("session.state", session("busy"));
+    // The brain blocked the task on the session alone, never listing it: the session is the task's all the same.
+    const t = tasks.create({ title: "t" }, BRAIN);
+    tasks.update(t.id, { blocker: { kind: "session", session: SESSION } }, BRAIN);
+    const ask = asks.open({ type: "permission", source: { kind: "harness", session: SESSION }, title: "plan", options: [{ id: "yes", label: "Yes" }], answerableBy: ["user", "brain"] });
+    bus.emit("session.state", session("needs_permission"));
+    tasks.update(t.id, { blocker: { kind: "ask", ask: ask.id } }, BRAIN);
+    asks.answer(ask.id, { option: "yes" }, BRAIN);
+    bus.emit("session.state", session("busy"));
+    expect(tasks.get(t.id)!.status).toBe("blocked");
+    expect(ready).toEqual([]);
+    bus.emit("session.state", session("idle"));
+    expect(tasks.get(t.id)!.status).toBe("ready");
+    expect(ready).toEqual([{ at: expect.any(Number), id: t.id, cause: "unblocked", cleared: { kind: "session", session: SESSION } }]);
+  });
+
+  test("a session whose task names an open task joins it, once; a finished task is left alone", () => {
+    const { tasks, bus, states, session } = setup();
+    const t = tasks.create({ title: "t", detail: "in plan mode" }, BRAIN);
+    tasks.update(t.id, { status: "active" }, BRAIN);
+    const before = states.length;
+    bus.emit("session.state", { ...session("busy"), task: t.id });
+    expect(tasks.get(t.id)!.sessions).toEqual([SESSION]);
+    expect(states.length).toBe(before + 1);
+    expect(states.at(-1)!.sessions).toEqual([SESSION]);
+    bus.emit("session.state", { ...session("idle"), task: t.id });
+    expect(tasks.get(t.id)!.sessions).toEqual([SESSION]);
+    expect(states.length).toBe(before + 1);
+    const done = tasks.create({ title: "done" }, BRAIN);
+    tasks.update(done.id, { status: "done" }, BRAIN);
+    bus.emit("session.state", { ...session("idle"), task: done.id });
+    expect(tasks.get(done.id)!.sessions).toEqual([]);
+  });
+
+  test("a plan's steps list by parent, finished ones included", () => {
+    const { tasks } = setup();
+    const plan = tasks.create({ title: "plan" }, BRAIN);
+    const one = tasks.create({ title: "one", parent: plan.id }, BRAIN);
+    const two = tasks.create({ title: "two", parent: plan.id, blocker: { kind: "task", task: one.id } }, BRAIN);
+    tasks.create({ title: "elsewhere" }, BRAIN);
+    tasks.update(one.id, { status: "done", result: { summary: "ok" } }, BRAIN);
+    expect(tasks.list({ parent: plan.id }).map((t) => t.id).sort()).toEqual([one.id, two.id].sort());
+    expect(tasks.list({ parent: plan.id, status: ["done"] }).map((t) => t.id)).toEqual([one.id]);
+  });
+
+  test("tasks released from asks this node does not hold name the ask", () => {
+    const { tasks, asks, ready } = setup();
+    const ask = asks.open({ type: "permission", source: { kind: "harness", session: SESSION }, title: "x", options: [{ id: "allow", label: "Allow" }], answerableBy: ["user"] });
+    const t = tasks.create({ title: "t", blocker: { kind: "ask", ask: ask.id } }, BRAIN);
+    expect(tasks.releaseUnknownAsks(() => false)).toBe(1);
+    expect(ready).toEqual([{ at: expect.any(Number), id: t.id, cause: "unblocked", cleared: { kind: "ask", ask: ask.id } }]);
   });
 
   test("a session idle while its own shells run, or with a dialog open, is still at the work: the task waits for plain idle", () => {

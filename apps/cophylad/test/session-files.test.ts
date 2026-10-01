@@ -17,7 +17,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
 import { ConvertError, convertKind, systemConverter } from "../src/sessions/convert.ts";
 import type { ImageConverter } from "../src/sessions/convert.ts";
-import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitStatus, SessionFiles, WHOLE_CHUNK, wholeMime } from "../src/sessions/files.ts";
+import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitLog, parseGitStatus, SessionFiles, WHOLE_CHUNK, wholeMime } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { systemRevealer } from "../src/sessions/reveal.ts";
 import type { Revealer } from "../src/sessions/reveal.ts";
@@ -435,6 +435,13 @@ describe("a session's repository", () => {
     const state = await filesFor(join(two, "sub")).git("s1");
     expect(state).toMatchObject({ branch: "main", upstream: "origin/main", ahead: 1, behind: 1, changes: 1 });
     expect(state!.commit).toMatch(/^[0-9a-f]{8}$/);
+    expect(state!.log).toBeUndefined();
+    // With `log`, the last commits, newest first, each with its subject and time.
+    const logged = await filesFor(join(two, "sub")).git("s1", 5);
+    expect(logged!.log!.map((c) => c.subject)).toEqual(["mine", "first"]);
+    expect(logged!.log![0]!.commit).toMatch(/^[0-9a-f]{4,}$/);
+    expect(Math.abs(logged!.log![0]!.at - Date.now())).toBeLessThan(10 * 60_000);
+    expect((await filesFor(join(two, "sub")).git("s1", 1))!.log).toHaveLength(1);
     // outside any repository there is none
     expect(await filesFor(temp()).git("s1")).toBeUndefined();
   }, 30_000);
@@ -459,6 +466,23 @@ describe("a session's repository", () => {
     expect(b).toEqual(a);
     await files.git("s1");
     expect(runs).toBe(2);
+  });
+
+  test("the log is read with its count alone as the argument, and parsed a commit a line", async () => {
+    const calls: string[][] = [];
+    const files = filesFor(temp(), {
+      git: async (args) => {
+        calls.push(args);
+        if (args[0] === "status") return { code: 0, out: "# branch.oid abcdef12\n# branch.head main\n" };
+        return { code: 0, out: "abcdef1\t1758196700\tSection 1: the store\tand a tab\n0123456\t1758190000\tStart\n" };
+      },
+    });
+    expect(await files.git("s1", 3)).toEqual({ branch: "main", commit: "abcdef12", changes: 0, log: [{ commit: "abcdef1", subject: "Section 1: the store\tand a tab", at: 1758196700000 }, { commit: "0123456", subject: "Start", at: 1758190000000 }] });
+    expect(calls[1]).toEqual(["log", "-n", "3", "--format=%h%x09%ct%x09%s"]);
+    // Before the first commit there is no log to read.
+    const empty = filesFor(temp(), { git: async (args) => (args[0] === "status" ? { code: 0, out: "# branch.oid (initial)\n# branch.head main\n" } : { code: 128, out: "" }) });
+    expect(await empty.git("s1", 3)).toEqual({ branch: "main", changes: 0 });
+    expect(parseGitLog("")).toEqual([]);
   });
 });
 

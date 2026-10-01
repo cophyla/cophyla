@@ -62,8 +62,8 @@
       ]
     },
     "session.git": {
-      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],
-      "results": [{ "git": { "branch": "master", "commit": "1e0d3291", "upstream": "origin/master", "ahead": 2, "behind": 1, "changes": 3 } }, { "git": { "commit": "a8d9def0", "changes": 0 } }, { "git": { "changes": 0 } }, {}]
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "log": 5 }],
+      "results": [{ "git": { "branch": "master", "commit": "1e0d3291", "upstream": "origin/master", "ahead": 2, "behind": 1, "changes": 3 } }, { "git": { "commit": "a8d9def0", "changes": 0 } }, { "git": { "changes": 0 } }, {}, { "git": { "branch": "master", "commit": "1e0d3291", "changes": 0, "log": [{ "commit": "1e0d3291", "subject": "Fix the build", "at": 1758196700000 }] } }]
     },
     "session.file": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "apps/cophylad/src/main.ts" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "README.md" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "Assets/icon.png", "image": true }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "docs/guide.pdf", "whole": true, "image": true }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "docs/guide.pdf", "whole": true, "at": 1572864 }],

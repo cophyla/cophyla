@@ -13,8 +13,9 @@
 // wake or notify fire of a listener that serves a request of the user's (`asked`) says whether
 // its result is read out (`speak`), as the delivery of speech decides at the fire; and every
 // listener added, fired or gone is told to it, for the speaker button. A listener `until` a
-// task goes when the task is done or cancelled, one `until` a session when the session ends.
-// Every removal, whatever its cause, is raised as `listener.removed`.
+// task goes when the task is done or cancelled, one `until` a session, or filtered on one,
+// when the session ends (after its last fire, on the end itself). Every removal, whatever its
+// cause, is raised as `listener.removed`.
 //
 // A metric listener watches its node's samples (`metric.ts`): this node's through an
 // in-process watcher of the metrics module, which samples faster only while one exists,
@@ -205,7 +206,13 @@ export class Listeners {
       if (!matches(l, e, this.ctx)) continue;
       this.fire(l, { name: e.name, params: e.params as Record<string, unknown> });
     }
-    if (e.name === "session.ended") this.untilSettled(e.params.session.id);
+    if (e.name === "session.ended") this.sessionEnded(e.params.session.id);
+    this.flush();
+  }
+
+  /** A session ended: the listeners `until` it or filtered on it hear nothing more of it. */
+  private sessionEnded(id: string): void {
+    for (const l of [...this.listeners.values()]) if (l.until === id || l.session === id) this.drop(l.id, "until");
     this.flush();
   }
 

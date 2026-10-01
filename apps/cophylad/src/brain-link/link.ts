@@ -32,6 +32,12 @@ import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "./me
 import type { QuoteLookup } from "./quotes.ts";
 import { ReplyStream } from "./stream.ts";
 
+/**
+ * What this platform does beyond the protocol version, named in its hello: a brain relies on
+ * one only when it is named (`CapabilityHello.features`).
+ */
+export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git"] as const;
+
 export type BrainState = "down" | "starting" | "up" | "refused" | "stopped";
 
 export type BrainCheckResult = { ok: true } | { ok: false; reason: string };
@@ -223,7 +229,7 @@ export class BrainLink {
     log.info("brain starting", { command: loc.command, args: loc.args, origin: loc.origin, pid: rpc.pid });
     let hello: unknown;
     try {
-      hello = await rpc.request("hello", { protocolVersion: PROTOCOL_VERSION, platformVersion: this.deps.platformVersion, nodeId: this.deps.nodeId, role: this.deps.role, tz: this.deps.tz }, { timeoutMs: this.deps.config.hello_timeout_ms });
+      hello = await rpc.request("hello", { protocolVersion: PROTOCOL_VERSION, platformVersion: this.deps.platformVersion, nodeId: this.deps.nodeId, role: this.deps.role, tz: this.deps.tz, features: [...PLATFORM_FEATURES] }, { timeoutMs: this.deps.config.hello_timeout_ms });
     } catch (e) {
       if (this.rpc !== rpc) return;
       log.warn("brain hello failed", { error: e instanceof Error ? e.message : String(e) });
