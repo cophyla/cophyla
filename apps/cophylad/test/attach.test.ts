@@ -7,10 +7,10 @@
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import type { Server } from "node:net";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Ask, AuditEntry, HarnessProfile, Session, SessionEvent, Workspace } from "@cophyla/protocol";
 import { ClientSession as SessionSchema, ClientWorkspace as WorkspaceSchema } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
@@ -473,6 +473,96 @@ describe("attach: sessions over the socket", () => {
     expect(other.notifications.some((n) => n.method === "session.event")).toBe(false);
     other.close();
     await c.request("session.watch", { ids: [session.id] });
+  });
+
+  // The session's transcript, as the hooks name it: a call's row and its result's, as Claude writes them.
+  const transcript = () => join(profileDir, "projects", "x", `${SESSION_ID}.jsonl`);
+  const appendRows = (...rows: unknown[]) => {
+    mkdirSync(dirname(transcript()), { recursive: true });
+    appendFileSync(transcript(), rows.map((r) => JSON.stringify(r)).join("\n") + "\n");
+  };
+  const callRow = (id: string, name: string, input: unknown, text?: string) => ({
+    type: "assistant",
+    uuid: `a-${id}`,
+    timestamp: new Date().toISOString(),
+    message: { id: `m-${id}`, role: "assistant", content: [...(text ? [{ type: "text", text }] : []), { type: "tool_use", id, name, input }] },
+  });
+  const resultRow = (id: string, content: string, toolUseResult: unknown, isError = false) => ({
+    type: "user",
+    uuid: `u-${id}`,
+    timestamp: new Date().toISOString(),
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content, ...(isError ? { is_error: true } : {}) }] },
+    toolUseResult,
+  });
+  const shell = (stdout: string) => ({ stdout, stderr: "", interrupted: false, isImage: false, noOutputExpected: false });
+  const toolEvents = (from: number) => history().slice(from).filter((e) => e.kind === "tool_call" || e.kind === "tool_result" || e.kind === "assistant_text");
+  const resultsFor = (id: string) => history().filter((e) => e.kind === "tool_result" && (e.payload as { id?: string }).id === id);
+
+  test("a Bash PostToolUse carries its call's id and says the stdout, recorded after its call; a long input alone does not mark it cut", async () => {
+    const before = history().length;
+    const input = { command: "echo hello", description: "x".repeat(2000) };
+    appendRows(callRow("toolu_a1", "Bash", input, "Running it."));
+    await post(hookBase("PostToolUse", { tool_name: "Bash", tool_input: input, tool_response: shell("hello"), tool_use_id: "toolu_a1" }));
+    const evs = toolEvents(before);
+    expect(evs.map((e) => e.kind)).toEqual(["assistant_text", "tool_call", "tool_result"]);
+    const result = evs[2]!.payload as Record<string, unknown>;
+    expect(result).toMatchObject({ tool: "Bash", id: "toolu_a1", result: "hello" });
+    expect(String(result["input"]).endsWith("…")).toBe(true);
+    expect(result["truncated"]).toBeUndefined();
+    // The transcript's own copy of the result, read later, is not recorded again.
+    appendRows(resultRow("toolu_a1", "hello", shell("hello")));
+    await d.sessions.tick();
+    expect(resultsFor("toolu_a1")).toHaveLength(1);
+  });
+
+  test("a PostToolUseFailure says its error, as an error", async () => {
+    appendRows(callRow("toolu_f1", "Bash", { command: "ls nope" }));
+    await post(hookBase("PostToolUseFailure", { tool_name: "Bash", tool_input: { command: "ls nope" }, tool_use_id: "toolu_f1", error: "Exit code 2\nls: cannot access 'nope': No such file or directory", is_interrupt: false }));
+    expect(resultsFor("toolu_f1").map((e) => e.payload)).toEqual([
+      expect.objectContaining({ tool: "Bash", id: "toolu_f1", result: "Exit code 2\nls: cannot access 'nope': No such file or directory", isError: true }),
+    ]);
+    appendRows(resultRow("toolu_f1", "Exit code 2\nls: cannot access 'nope': No such file or directory", "Error: Exit code 2", true));
+    await d.sessions.tick();
+    expect(resultsFor("toolu_f1")).toHaveLength(1);
+  });
+
+  test("a hook that comes before its call is on disk waits for the call, then follows it", async () => {
+    const before = history().length;
+    const read = { type: "text", file: { filePath: join(CWD, "a.txt"), content: "alpha\nbeta\ngamma\n", numLines: 3, startLine: 1, totalLines: 3 } };
+    await post(hookBase("PostToolUse", { tool_name: "Read", tool_input: { file_path: join(CWD, "a.txt") }, tool_response: read, tool_use_id: "toolu_h1" }));
+    expect(resultsFor("toolu_h1")).toHaveLength(0);
+    appendRows(callRow("toolu_h1", "Read", { file_path: join(CWD, "a.txt") }), resultRow("toolu_h1", "1\talpha\n2\tbeta\n3\tgamma", read));
+    await d.sessions.tick();
+    const evs = toolEvents(before);
+    expect(evs.map((e) => [e.kind, (e.payload as { id?: string }).id])).toEqual([
+      ["tool_call", "toolu_h1"],
+      ["tool_result", "toolu_h1"],
+    ]);
+    expect((evs[1]!.payload as { result: string }).result).toBe(`read ${join(CWD, "a.txt")}, lines 1–3 of 3`);
+  });
+
+  test("two identical calls give two results, not four", async () => {
+    const before = history().length;
+    const input = { command: "echo same" };
+    await post(hookBase("PostToolUse", { tool_name: "Bash", tool_input: input, tool_response: shell("same"), tool_use_id: "toolu_d1" }));
+    await post(hookBase("PostToolUse", { tool_name: "Bash", tool_input: input, tool_response: shell("same"), tool_use_id: "toolu_d2" }));
+    appendRows(callRow("toolu_d1", "Bash", input), resultRow("toolu_d1", "same", shell("same")), callRow("toolu_d2", "Bash", input), resultRow("toolu_d2", "same", shell("same")));
+    await d.sessions.tick();
+    expect(toolEvents(before).map((e) => [e.kind, (e.payload as { id?: string }).id])).toEqual([
+      ["tool_call", "toolu_d1"],
+      ["tool_result", "toolu_d1"],
+      ["tool_call", "toolu_d2"],
+      ["tool_result", "toolu_d2"],
+    ]);
+  });
+
+  test("a sub-agent's result is recorded at once; one whose call never comes, once the hold is up", async () => {
+    await post(hookBase("PostToolUse", { tool_name: "Bash", tool_input: { command: "echo sub" }, tool_response: shell("sub"), tool_use_id: "toolu_s1", agent_id: "a317b77de673e391d", agent_type: "general-purpose" }));
+    expect(resultsFor("toolu_s1").map((e) => (e.payload as { result: string }).result)).toEqual(["sub"]);
+    await post(hookBase("PostToolUse", { tool_name: "Bash", tool_input: { command: "echo lost" }, tool_response: shell("lost"), tool_use_id: "toolu_n1" }));
+    expect(resultsFor("toolu_n1")).toHaveLength(0);
+    await waitFor(() => resultsFor("toolu_n1").length === 1, 4000);
+    expect(resultsFor("toolu_n1")[0]!.payload).toMatchObject({ id: "toolu_n1", result: "lost" });
   });
 
   test("session.history serves the newest window and session.focus is refused without a window", async () => {

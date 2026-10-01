@@ -60,6 +60,7 @@ import type { GoOnMode, PlanOffer } from "./permissions.ts";
 import type { ProfileChange, Profiles } from "./profiles.ts";
 import { answersForHook, askInputFromQuestion, hookDecision, questionsFromAskUserQuestion } from "./questions.ts";
 import type { HookAnswers, Question } from "./questions.ts";
+import { toolResultText } from "./results.ts";
 import { shimArgv, shimCommand, writeHookJson, writeShim } from "./shim.ts";
 import { mtimeOf, REPLAY_BYTES, Tail } from "./tail.ts";
 import { pickOpener } from "./terminals.ts";
@@ -93,6 +94,8 @@ export interface SessionsDeps {
   env?: Record<string, string | undefined>;
   /** How long a session whose context was cleared waits for its new id; a test shortens it. */
   clearGraceMs?: number;
+  /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
+  resultHoldMs?: number;
   /** Prices a session's tokens when the harness states no cost of its own; undefined for a model with no price. */
   pricer?: (model: string, tokens: { in: number; out: number; cacheRead?: number; cacheWrite?: number }) => number | undefined;
   /** Ends a stopped session's process; `process.kill` unless a test records it. */
@@ -212,6 +215,18 @@ interface LiveRecord extends SessionRecord {
   ancestry?: { pid: number; chain?: ProcessInfo[] };
   /** Hooks handled so far: tells a Stop's late settling that another hook came meanwhile. */
   hooks?: number;
+  /** Claude: tool results from hooks waiting for their call to be recorded first, by the call's id. */
+  pendingResults?: Map<string, PendingResult>;
+  /** The ids of the tool calls recorded lately, the last `RECENT_CALLS`. */
+  calls?: Set<string>;
+}
+
+/** A hook's tool result, held until its call is recorded. */
+interface PendingResult {
+  payload: Record<string, unknown>;
+  raw: unknown;
+  at: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** A Claude Code process by its image name. */
@@ -233,6 +248,13 @@ const FOLD_MS = 2000;
 
 /** How long a session whose context was cleared waits for its new id before it counts as ended. */
 const CLEAR_GRACE_MS = 5000;
+/**
+ * How long a hook's tool result waits for its call. The transcript is read ≥150 ms after it
+ * changes; a sub-agent's call, which is never in it, is known from the hook and not waited for.
+ */
+const RESULT_HOLD_MS = 1500;
+/** Tool call ids a record remembers, so a result whose call is in already does not wait. */
+const RECENT_CALLS = 256;
 /** Between screen checks while a message waits to be typed. */
 const TYPE_POLL_MS = 400;
 /** How long a message typed and sent waits for the harness to show it before Enter is pressed once more. */
@@ -452,6 +474,7 @@ export class Sessions implements SessionHost {
       if (rec.held) this.closeHeld(rec, "daemon_stop");
       if (rec.inputAsk) this.closeInput(rec, "daemon_stop");
       if (rec.clearing) clearTimeout(rec.clearing);
+      this.flushResults(rec);
     }
     await this.syncing;
     if (this.acp) await this.acp.stopAll();
@@ -670,6 +693,8 @@ export class Sessions implements SessionHost {
       clearTimeout(live.clearing);
       live.clearing = undefined;
     }
+    // The old transcript is read no further.
+    this.flushResults(live);
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
     rec.session.native = { ...rec.session.native, id: nativeId };
     if (rec.session.stats) rec.statsBase = rec.session.stats;
@@ -702,6 +727,7 @@ export class Sessions implements SessionHost {
     }
     if (live.held) this.closeHeld(live, "stopped", rec.session.status === "ended" ? "ended" : "idle");
     if (live.inputAsk) this.closeInput(live, "stopped");
+    this.flushResults(live);
     const { pid, terminal } = rec.session.native;
     if (pid !== undefined && terminal) this.leftBehind.set(pid, terminal);
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
@@ -1253,7 +1279,54 @@ export class Sessions implements SessionHost {
       this.deps.bus.emit("session.event", wire);
     }
     this.broadcast(rec);
+    if (kind === "tool_call") this.called(rec as LiveRecord, payload);
     return e;
+  }
+
+  /** A call was recorded: a hook's result waiting for it follows it at once. */
+  private called(rec: LiveRecord, payload: unknown): void {
+    const id = payload !== null && typeof payload === "object" ? (payload as { id?: unknown }).id : undefined;
+    if (typeof id !== "string" || id === "") return;
+    const calls = (rec.calls ??= new Set());
+    calls.add(id);
+    if (calls.size > RECENT_CALLS) calls.delete(calls.values().next().value!);
+    this.flushResult(rec, id);
+  }
+
+  /** The adapter's catch-up read of a record's log, where it has one. */
+  private readNow(rec: LiveRecord, adapter: HarnessAdapter | undefined, now: number): void {
+    if (!adapter?.readNow || rec.session.status === "ended") return;
+    try {
+      adapter.readNow(rec, now);
+    } catch (e) {
+      this.log.warn("catch-up read failed", { id: rec.session.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /** A hook's tool result waits for its call: recorded right after it, or once the hold is up, the log read once more first. */
+  private holdResult(rec: LiveRecord, id: string, payload: Record<string, unknown>, raw: unknown, at: number): void {
+    // The same id again: the first goes in now.
+    this.flushResult(rec, id);
+    const timer = setTimeout(() => {
+      if (!rec.pendingResults?.has(id)) return;
+      if (!this.stopped) this.readNow(rec, this.adapters.get(rec.session.harness as AttachedHarness), this.now());
+      this.flushResult(rec, id);
+    }, this.deps.resultHoldMs ?? RESULT_HOLD_MS);
+    unref(timer);
+    (rec.pendingResults ??= new Map()).set(id, { payload, raw, at, timer });
+  }
+
+  private flushResult(rec: LiveRecord, id: string): void {
+    const p = rec.pendingResults?.get(id);
+    if (!p) return;
+    rec.pendingResults!.delete(id);
+    clearTimeout(p.timer);
+    this.event(rec, "tool_result", p.payload, p.raw, p.at);
+  }
+
+  /** Every result still waiting, recorded now: the record ends, or leaves its log behind. */
+  private flushResults(rec: LiveRecord): void {
+    for (const id of [...(rec.pendingResults?.keys() ?? [])]) this.flushResult(rec, id);
   }
 
   end(rec: SessionRecord, reason: string, at = this.now()): void {
@@ -1272,6 +1345,8 @@ export class Sessions implements SessionHost {
         live.draining = false;
       }
     }
+    // A result whose call the last pass did not find goes in without it.
+    this.flushResults(live);
     // Its transcript's last lines say the conversation went on as a background job: its window
     // exiting is not its end, and the record waits for the job.
     if (rec.continuing) {
@@ -2288,24 +2363,27 @@ export class Sessions implements SessionHost {
       case "PostToolUse":
       case "PostToolUseFailure": {
         const key = toolKey(hook.toolName, hook.toolInput);
-        rec.hookTools.set(key, now);
+        // A sub-agent's tool is in its own transcript: the session's never records it a second time.
+        if (!hook.agentId) rec.hookTools.set(hook.toolUseId ?? key, now);
         if (rec.held && !rec.held.settled && (rec.held.key.endsWith(key) || this.sameQuestions(rec.held, hook))) this.closeHeld(rec, "terminal");
+        // What the log holds before this result, its call included, is recorded first; the
+        // result's own row there, if written yet, is skipped by the mark above.
+        this.readNow(rec, adapter, now);
         const input = summariseValue(hook.toolInput, TOOL_CALL_CAP);
-        const result = summariseValue(hook.toolResponse, TOOL_RESULT_CAP);
-        this.event(
-          rec,
-          "tool_result",
-          {
-            tool: hook.toolName,
-            ...(hook.toolUseId ? { id: hook.toolUseId } : {}),
-            input: input.value,
-            result: result.value,
-            ...(input.truncated || result.truncated ? { truncated: true } : {}),
-            ...(hook.name === "PostToolUseFailure" ? { isError: true } : {}),
-          },
-          raw,
-          now,
-        );
+        const result = summariseValue(toolResultText(hook.harness, hook.toolName, hook.toolResponse, hook.error), TOOL_RESULT_CAP);
+        const payload = {
+          tool: hook.toolName,
+          ...(hook.toolUseId ? { id: hook.toolUseId } : {}),
+          input: input.value,
+          result: result.value,
+          ...(result.truncated ? { truncated: true } : {}),
+          ...(hook.name === "PostToolUseFailure" ? { isError: true } : {}),
+        };
+        // Claude writes a call's row to its transcript with the result's, just after the hook:
+        // the result waits for its call, unless a sub-agent ran it or the call is in already.
+        const waits = hook.harness === "claude" && hook.toolUseId !== undefined && !hook.agentId && rec.session.transcript !== undefined && !rec.calls?.has(hook.toolUseId);
+        if (waits) this.holdResult(rec, hook.toolUseId!, payload, raw, now);
+        else this.event(rec, "tool_result", payload, raw, now);
         if (rec.session.status !== "needs_permission" && rec.session.status !== "needs_input") this.setStatus(rec, "busy", now);
         return {};
       }

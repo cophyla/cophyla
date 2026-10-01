@@ -20,6 +20,7 @@ import type { ProcessTree } from "../focus.ts";
 import { capText, oneLine, rawIfSmall, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin } from "../paths.ts";
+import { toolResultText } from "../results.ts";
 import { acceptsCrossSessionInbound, installClaudeHooks, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
@@ -28,7 +29,7 @@ import type { ClaudeLive, IsAlive } from "./registry.ts";
 import { applyClaudeRow, newClaudeState, rowAt, statsFor } from "./transcript.ts";
 import type { ClaudeTranscriptState } from "./transcript.ts";
 
-/** A tool result from a hook suppresses the transcript's copy for this long. */
+/** A tool result from a hook with no call id suppresses the transcript's copy of the same tool and input for this long. */
 const HOOK_TOOL_TTL_MS = 120000;
 /** How long a conversation sent to the background waits for its job to register before it counts as gone. */
 const CONTINUE_GRACE_MS = 60000;
@@ -413,13 +414,16 @@ export class ClaudeAdapter implements HarnessAdapter {
           }
           case "tool_result": {
             if (!record) break;
+            // Recorded from its hook already: by the call's id, or by tool and input from a CLI whose hooks carry none.
+            if (item.id && rec.hookTools.delete(item.id)) break;
             const key = toolKey(item.name, item.input);
             const fromHook = rec.hookTools.get(key);
             if (fromHook !== undefined && now - fromHook <= HOOK_TOOL_TTL_MS) {
               rec.hookTools.delete(key);
               break;
             }
-            const result = summariseValue(item.content, TOOL_RESULT_CAP);
+            // An error's text is the block's; the row's `toolUseResult` then says `Error: ` before it.
+            const result = summariseValue(toolResultText("claude", item.name, item.isError ? item.content : (item.response ?? item.content)), TOOL_RESULT_CAP);
             this.host.event(rec, "tool_result", { tool: item.name, id: item.id, result: result.value, ...(result.truncated ? { truncated: true } : {}), ...(item.isError ? { isError: true } : {}) }, rawIfSmall(row), item.at);
             break;
           }
@@ -452,6 +456,10 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   drain(rec: SessionRecord, now: number): void {
+    this.tailTranscript(rec, now);
+  }
+
+  readNow(rec: SessionRecord, now: number): void {
     this.tailTranscript(rec, now);
   }
 

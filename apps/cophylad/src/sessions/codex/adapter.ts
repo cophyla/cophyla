@@ -20,6 +20,7 @@ import { capText, oneLine, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESUL
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin } from "../paths.ts";
 import type { ProfileChange } from "../profiles.ts";
+import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
 import { CodexAppServer } from "./appserver.ts";
 import { HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
@@ -326,7 +327,7 @@ export class CodexAdapter implements HarnessAdapter {
               rec.hookTools.delete(item.callId);
               break;
             }
-            const result = summariseValue(item.output, TOOL_RESULT_CAP);
+            const result = summariseValue(toolResultText("codex", item.name, item.output), TOOL_RESULT_CAP);
             this.host.event(rec, "tool_result", { tool: item.name, id: item.callId, result: result.value, ...(result.truncated ? { truncated: true } : {}) }, rawIfSmall(row), item.at);
             break;
           }
@@ -343,6 +344,10 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   drain(rec: SessionRecord, now: number): void {
+    this.tailRollout(rec, this.entries.get(rec.session.profile), now);
+  }
+
+  readNow(rec: SessionRecord, now: number): void {
     this.tailRollout(rec, this.entries.get(rec.session.profile), now);
   }
 
@@ -407,7 +412,6 @@ export class CodexAdapter implements HarnessAdapter {
     }
     rec.liveness = "hook";
     rec.lastRolloutActivity = this.host.now();
-    if (hook.name === "PostToolUse" && hook.toolUseId) rec.hookTools.set(hook.toolUseId, this.host.now());
     if (meta.ppid !== undefined && !rec.ancestorsChecked && this.opts.raiser) {
       rec.ancestorsChecked = true;
       const target = rec;

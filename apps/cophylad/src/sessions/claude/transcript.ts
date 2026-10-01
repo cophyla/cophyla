@@ -10,7 +10,8 @@ export type ClaudeItem =
   | { kind: "peer"; from: string; text: string; at: number }
   | { kind: "assistant_text"; text: string; at: number }
   | { kind: "tool_call"; id: string; name: string; input: unknown; at: number }
-  | { kind: "tool_result"; id: string; name?: string; input?: unknown; content: unknown; isError?: boolean; at: number }
+  /** `response` is the row's `toolUseResult`, the object a PostToolUse hook carries, when the row holds one result. */
+  | { kind: "tool_result"; id: string; name?: string; input?: unknown; content: unknown; response?: unknown; isError?: boolean; at: number }
   | { kind: "title"; title: string }
   /** A plan's clear-context row opened the conversation to carry the plan out; `heading` is the plan's first line. */
   | { kind: "plan"; heading: string }
@@ -90,11 +91,8 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
       const content = message?.["content"];
       const when = at(r);
       if (Array.isArray(content)) {
-        let hadResult = false;
-        for (const block of content) {
-          const b = block as Row;
-          if (b["type"] !== "tool_result") continue;
-          hadResult = true;
+        const results = content.filter((b) => (b as Row)?.["type"] === "tool_result") as Row[];
+        for (const b of results) {
           const id = String(b["tool_use_id"] ?? "");
           const use = state.toolUses.get(id);
           const item: ClaudeItem = { kind: "tool_result", id, content: b["content"], at: when };
@@ -102,10 +100,11 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
             item.name = use.name;
             item.input = use.input;
           }
+          if (results.length === 1 && r["toolUseResult"] !== undefined) item.response = r["toolUseResult"];
           if (b["is_error"] === true) item.isError = true;
           items.push(item);
         }
-        if (hadResult) break;
+        if (results.length > 0) break;
       }
       const origin = r["origin"] as Row | undefined;
       if (origin && origin["kind"] === "peer") {

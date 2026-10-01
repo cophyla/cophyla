@@ -44,7 +44,10 @@ export interface SessionRecord {
   tail?: Tail;
   /** Per-adapter parser state over the transcript or rollout. */
   parser?: unknown;
-  /** Tool results recorded from hooks, keyed on tool name and input, so the transcript does not record them twice. */
+  /**
+   * Tool results recorded from hooks, keyed on the call's id (on tool name and input when a
+   * hook has no id), so the transcript does not record them twice.
+   */
   hookTools: Map<string, number>;
   /** The shim's parent pid has been checked for the harness's own process among its ancestors. */
   ancestorsChecked?: boolean;
@@ -108,6 +111,10 @@ export interface NormalisedHook {
   toolInput?: unknown;
   toolResponse?: unknown;
   toolUseId?: string;
+  /** Claude: a PostToolUseFailure's error, which it sends in place of a response. */
+  error?: string;
+  /** Claude: the sub-agent that ran the tool, whose own transcript holds the call. */
+  agentId?: string;
   message?: string;
   notificationType?: string;
   source?: string;
@@ -151,8 +158,11 @@ export function normaliseHook(harness: AttachedHarness, e: ClaudeHookEvent | Cod
   set("reason", e.reason);
   set("lastAssistantMessage", e.last_assistant_message);
   set("model", e.model);
+  set("toolUseId", e.tool_use_id);
   if (harness === "claude") {
     const c = e as ClaudeHookEvent;
+    set("error", c.error);
+    set("agentId", c.agent_id);
     set("promptId", c.prompt_id);
     set("message", c.message);
     set("notificationType", c.notification_type);
@@ -160,7 +170,6 @@ export function normaliseHook(harness: AttachedHarness, e: ClaudeHookEvent | Cod
   } else {
     const x = e as CodexHookEvent | MuseHookEvent;
     set("promptId", x.turn_id);
-    set("toolUseId", x.tool_use_id);
     if (harness === "muse") set("message", (e as MuseHookEvent).message);
   }
   return n;
@@ -222,6 +231,12 @@ export interface HarnessAdapter {
   onHook(hook: NormalisedHook, rec: SessionRecord | undefined, meta: HookMeta): SessionRecord | undefined | null;
   /** One tail pass over a record about to end, so its transcript's last lines are recorded before the end. */
   drain?(rec: SessionRecord, now: number): void;
+  /**
+   * A synchronous catch-up read of the session's log, before a hook's tool result is recorded:
+   * what the log holds before the result, its call included, is recorded first. Claude and
+   * Codex only; Muse's view is read over RPC and gives a call and its result together.
+   */
+  readNow?(rec: SessionRecord, now: number): void;
   /**
    * Claude: what a session whose turn just stopped waits on. The harness writes that about when
    * the Stop hook fires, sometimes just after: a promise while it has not said yet.

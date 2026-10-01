@@ -26,6 +26,7 @@ import { permissionAsk } from "../permissions.ts";
 import { askInputFromQuestion, museAnswer, questionsFromMuse } from "../questions.ts";
 import type { MuseAnswer, Question } from "../questions.ts";
 import type { ProfileChange } from "../profiles.ts";
+import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
 import { MuseHost, museErrorKind } from "./host.ts";
 import { locateMuse } from "./locate.ts";
@@ -487,7 +488,7 @@ export class MuseAdapter implements HarnessAdapter {
           rec.hookTools.delete(item.callId);
           return undefined;
         }
-        const result = summariseValue(item.output, TOOL_RESULT_CAP);
+        const result = summariseValue(toolResultText("muse", item.tool, item.output), TOOL_RESULT_CAP);
         this.host.event(rec, "tool_result", { tool: item.tool, id: item.callId, result: result.value, ...(result.truncated ? { truncated: true } : {}), ...(item.isError ? { isError: true } : {}) }, undefined, item.at);
         return undefined;
       }
@@ -572,7 +573,6 @@ export class MuseAdapter implements HarnessAdapter {
     rec.lastRolloutActivity = now;
     rec.lastHookAt = now;
     if (hook.name === "UserPromptSubmit" && hook.promptId) this.attached(rec).hookTurns.add(hook.promptId);
-    if ((hook.name === "PostToolUse" || hook.name === "PostToolUseFailure") && hook.toolUseId) rec.hookTools.set(hook.toolUseId, now);
     if (meta.ppid !== undefined && !rec.ancestorsChecked && this.opts.raiser) {
       rec.ancestorsChecked = true;
       const target = rec;

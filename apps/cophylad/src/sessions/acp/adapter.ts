@@ -21,6 +21,7 @@ import type { AttachedHarness, SessionHost, SessionRecord } from "../model.ts";
 import { permissionDetail } from "../permissions.ts";
 import { askInputFromQuestion, contentForElicitation, questionsFromElicitation } from "../questions.ts";
 import type { Question } from "../questions.ts";
+import { toolResultText } from "../results.ts";
 
 /** The harnesses with an ACP adapter package: Muse runs headless on its own host instead. */
 export type AcpHarness = Exclude<AttachedHarness, "muse">;
@@ -447,7 +448,7 @@ export class AcpAdapter {
           if (!call.announced) this.announce(child, call, undefined, now);
           if (call.done) return;
           call.done = true;
-          const result = summariseValue(u["rawOutput"] ?? (u["content"] as unknown) ?? null, TOOL_RESULT_CAP);
+          const result = summariseValue(toolResultText(child.rec.session.harness, call.name ?? call.kind, u["rawOutput"] ?? (u["content"] as unknown) ?? null), TOOL_RESULT_CAP);
           this.deps.host.event(
             child.rec,
             "tool_result",

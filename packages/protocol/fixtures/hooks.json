@@ -26,7 +26,8 @@
         "hook_event_name": "PostToolUse",
         "tool_name": "Write",
         "tool_input": { "file_path": "C:\\D\\orchestrator\\x.txt", "content": "hello" },
-        "tool_response": { "filePath": "C:\\D\\orchestrator\\x.txt", "success": true }
+        "tool_response": { "filePath": "C:\\D\\orchestrator\\x.txt", "success": true },
+        "tool_use_id": "toolu_01QDzCxx63Qi69Xjeg8deNVK"
       },
       {
         "session_id": "3f0c1b2a-7a2e-4c1e-9f0e-1c2d3e4f5a6b",

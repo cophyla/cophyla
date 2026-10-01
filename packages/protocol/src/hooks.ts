@@ -41,8 +41,11 @@ export const ClaudeHookEvent = z.object({
   tool_name: z.string().optional(),
   tool_input: z.unknown().optional(),
   tool_response: z.unknown().optional(),
+  tool_use_id: z.string().optional(),
   error: z.string().optional(),
   permission_suggestions: z.array(z.unknown()).optional(),
+  /** Set when a sub-agent ran the tool: its call is in the sub-agent's transcript, not the session's. */
+  agent_id: z.string().optional(),
   // Notification
   message: z.string().optional(),
   notification_type: z.string().optional(),
