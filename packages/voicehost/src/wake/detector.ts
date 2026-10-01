@@ -118,11 +118,11 @@ export class WakeDetector {
     return bytes;
   }
 
-  /** The heads, thresholds and scales the node said to run. */
+  /** The heads, thresholds, patience and scales the node said to run. */
   configure(mode: PhoneWake): void {
     if (!this.worker) return;
     this.configured = mode;
-    this.post({ type: "configure", heads: headsOf(mode).map((h) => ({ head: h.head, threshold: h.threshold, scale: h.scale })) });
+    this.post({ type: "configure", heads: headsOf(mode).map((h) => ({ head: h.head, threshold: h.threshold, ...(h.patience !== undefined ? { patience: h.patience } : {}), scale: h.scale })) });
   }
 
   /** A frame to listen to; the page keeps its own, since this one is handed over. */

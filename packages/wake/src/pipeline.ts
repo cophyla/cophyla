@@ -7,7 +7,9 @@
 // The node runs it on onnxruntime-node and the phone on onnxruntime-web, so it imports
 // neither: the sessions and the tensor constructor are the few members both runtimes have.
 //
-// Several heads listen at once, one per phrase, each at its own threshold. A head is trained
+// Several heads listen at once, one per phrase, each at its own threshold, and each fires once
+// it has scored at or over it for its `patience` of chunks in a row: one by default, so a single
+// chunk fires, and more for a head that false-wakes on brief near misses. A head is trained
 // at one input scale: openWakeWord's own heads on int16-range audio, livekit-wakeword's on
 // -1..1. The features are computed once per scale the heads use, so heads of one scale share
 // them and a second scale costs a second pass through the two feature models.
@@ -40,6 +42,8 @@ export interface WakeHead {
   readonly session: WakeSession;
   readonly threshold: number;
   readonly scale: Scale;
+  /** The chunks in a row it must score at or over its threshold before it fires; 1 when absent. */
+  readonly patience?: number;
 }
 
 /** The loaded models: the two feature models every head shares, and the heads. */
@@ -51,8 +55,8 @@ export interface WakeModels {
 }
 
 /**
- * What some audio scored. `fired` names the first head that reached its threshold, with its
- * score; otherwise `score` is the highest any head reached and `head` the one that reached it,
+ * What some audio scored. `fired` names the first head that fired (its threshold reached for
+ * its patience of chunks), with its score; otherwise `score` is the highest any head reached and `head` the one that reached it,
  * both absent while no chunk has been scored.
  */
 export interface WakeScore {
@@ -107,6 +111,8 @@ export class WakePipeline {
   private models: WakeModels;
   private pending = new Int16Array(0);
   private features = new Map<Scale, Features>();
+  /** Each head's chunks in a row at or over its threshold so far. */
+  private runs = new Map<string, number>();
 
   constructor(models: WakeModels) {
     this.models = models;
@@ -116,6 +122,7 @@ export class WakePipeline {
   reset(): void {
     this.pending = new Int16Array(0);
     for (const f of this.features.values()) f.reset();
+    this.runs.clear();
   }
 
   /** The chunks this audio completed, scored: the first head to fire, or the best score when none did. */
@@ -143,7 +150,12 @@ export class WakePipeline {
       const emb = this.features.get(head.scale)!.emb;
       const out = await head.session.run({ [head.session.inputNames[0]!]: new ort.Tensor("float32", emb, [1, N_EMB, EMB_DIM]) });
       const score = (out[head.session.outputNames[0]!]!.data as Float32Array)[0] ?? 0;
-      if (score >= head.threshold) return { fired: true, score, head: head.name };
+      const run = score >= head.threshold ? (this.runs.get(head.name) ?? 0) + 1 : 0;
+      this.runs.set(head.name, run);
+      if (run > 0 && run >= (head.patience ?? 1)) {
+        this.runs.set(head.name, 0);
+        return { fired: true, score, head: head.name };
+      }
       if (score > best.score) best = { fired: false, score, head: head.name };
     }
     return best;

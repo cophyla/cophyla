@@ -341,12 +341,18 @@ export class VoiceHost {
 
   /**
    * A frame from the node. Speech is played here and never handed on: true says it was
-   * taken. This client's `voice.state` moves where frames go and is handed on too.
+   * taken. This client's `voice.state` moves where frames go and is handed on too, and so does
+   * the wake stage set up anew (other heads picked in Settings), which asks `voice.wakeword` again.
    */
   handleFrame(frame: { method?: string; params?: unknown }): boolean {
     if (frame.method === "voice.audio") {
       this.audio.play(frame.params as SpeechFrame);
       return true;
+    }
+    if (frame.method === "voice.setup") {
+      const setup = frame.params as { stage?: unknown; step?: unknown } | undefined;
+      if (setup?.stage === "wake" && setup.step === "ready") this.negotiate();
+      return false;
     }
     if (frame.method === "voice.state") {
       const params = frame.params as { state: VoiceState; client?: string };

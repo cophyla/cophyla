@@ -17,12 +17,18 @@ export const OUT_RATE = 24000;
 /** Samples in one `voice.audio` frame from the controller. */
 export const FRAME = 640;
 
-/** One phrase the wake word listens for: its head's file, the score it fires at, the scale it was trained at, and what is said. */
+/**
+ * One phrase the wake word listens for: its head's file, the score it fires at, the chunks in a
+ * row it must score so before it fires, the scale it was trained at, what is said, and how it
+ * is said when the model has heads for more than one way of saying it.
+ */
 export interface WakeHeadInfo {
   name: string;
   threshold: number;
+  patience: number;
   scale: Scale;
   phrase: string;
+  sound?: string;
 }
 
 /** A loaded wake model; a stream per conversation, the sessions shared. */
@@ -165,7 +171,10 @@ export interface EngineFactory {
   readonly speech?: SpeechInstaller;
   /** The model names this configuration needs, so they are fetched before a stage loads. */
   models(config: VoiceConfig): string[];
+  /** Loads the heads `config.wake_model` names; never called with none. */
   wake(dir: string, config: VoiceConfig): Promise<WakeModel>;
+  /** Every head the wake model has, at the numbers `config` would run it at, for the app to pick from; read, not loaded. */
+  wakeHeads?(dir: string, config: VoiceConfig): WakeHeadInfo[];
   /** `maxSpeechMs` closes an utterance the wake word began that goes on that long: the recogniser's own limit. */
   vad(dir: string, config: VoiceConfig, opts?: { maxSpeechMs?: number }): Promise<() => VadEngine>;
   stt(dir: string, config: VoiceConfig, opts?: EngineLoadOptions): Promise<SttEngine>;

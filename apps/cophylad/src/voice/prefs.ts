@@ -1,6 +1,6 @@
 // The voice settings the app sets over config.toml (`voice.configure`): the engine that
 // speaks, a voice for each engine one was picked for, how fast replies are read, the engine
-// that transcribes, and where the online engines go first. They are this node's own, like its
+// that transcribes, where the online engines go first, and the wake words listened for. They are this node's own, like its
 // profiles: kept in the store's kv under `voice`, which replication leaves out, since each
 // machine speaks with its own models.
 
@@ -21,7 +21,12 @@ export interface VoicePrefs {
   /** Where online transcription and speech go first; `[providers] stt` and `tts` as they are when absent. */
   sttRoute?: VoiceRoute;
   ttsRoute?: VoiceRoute;
+  /** The wake model's heads that listen, by file name, over `[voice] wake_model`; none at all turns the wake word off. */
+  wake?: string[];
 }
+
+/** At most this many heads listen at once, as `[voice] wake_model` allows. */
+export const MAX_WAKE_HEADS = 8;
 
 /** Where the app's picks are kept. */
 export interface VoicePrefsStore {
@@ -44,6 +49,8 @@ export function storePrefs(store: Pick<Store, "kv">): VoicePrefsStore {
       if (sttRoute.success) out.sttRoute = sttRoute.data;
       const ttsRoute = VoiceRouteSchema.safeParse((raw as { ttsRoute?: unknown }).ttsRoute);
       if (ttsRoute.success) out.ttsRoute = ttsRoute.data;
+      const wake = (raw as { wake?: unknown }).wake;
+      if (Array.isArray(wake) && wake.length <= MAX_WAKE_HEADS && wake.every((h) => typeof h === "string" && h.length > 0 && h.length <= 128)) out.wake = [...new Set(wake as string[])];
       const speed = SpeechSpeed.safeParse(raw.speed);
       if (speed.success && speed.data !== 1) out.speed = speed.data;
       if (raw.voices && typeof raw.voices === "object") {

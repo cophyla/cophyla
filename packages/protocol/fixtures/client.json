@@ -124,6 +124,16 @@
             { "head": "hey_phyla_v0.1.onnx", "threshold": 0.6, "scale": "int16", "phrase": "Hey Phyla" }
           ]
         },
+        {
+          "mode": "phone",
+          "head": "cophyla_v0.2.onnx",
+          "threshold": 0.7,
+          "scale": "int16",
+          "heads": [
+            { "head": "cophyla_v0.2.onnx", "threshold": 0.7, "patience": 3, "scale": "int16", "phrase": "Cophyla" },
+            { "head": "hey_phyla_v0.2.onnx", "threshold": 0.8, "patience": 3, "scale": "int16", "phrase": "Hey Phyla" }
+          ]
+        },
         { "mode": "node" },
         { "mode": "off" }
       ]
@@ -183,11 +193,29 @@
           "ttsRoute": "cloud",
           "keys": { "gemini": { "source": "app", "last4": "x9Qa" }, "deepinfra": { "source": "none" } },
           "engines": [{ "id": "gemini-live", "stage": "stt", "label": "Gemini Live", "detail": "Words appear as you speak.", "local": false }]
+        },
+        {
+          "enabled": true,
+          "tts": "piper",
+          "source": "config",
+          "speed": 1,
+          "stage": { "status": "ready", "engine": "piper" },
+          "stt": "nemotron",
+          "sttSource": "config",
+          "sttStage": { "status": "ready", "engine": "nemotron" },
+          "engines": [],
+          "wake": [
+            { "head": "cophyla_v0.2.onnx", "phrase": "Cophyla", "sound": "ko-FILL-uh", "on": true },
+            { "head": "hey_phyla_v0.2.onnx", "phrase": "Hey Phyla", "sound": "hey FILL-uh", "on": false },
+            { "head": "hey_jarvis_v0.1.onnx", "phrase": "Hey Jarvis", "on": false }
+          ],
+          "wakeSource": "app",
+          "wakeStage": { "status": "ready", "engine": "openwakeword" }
         }
       ]
     },
     "voice.configure": {
-      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, { "stt": "gemini-live", "sttRoute": "own" }, { "sttRoute": null, "ttsRoute": "cloud" }, {}],
+      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, { "stt": "gemini-live", "sttRoute": "own" }, { "sttRoute": null, "ttsRoute": "cloud" }, { "wake": ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] }, { "wake": [] }, { "wake": null }, {}],
       "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "speed": 2, "stage": { "status": "loading", "engine": "kokoro" }, "stt": "nemotron", "sttSource": "config", "sttStage": { "status": "ready", "engine": "nemotron" }, "engines": [] }]
     },
     "voice.install": {

@@ -9,7 +9,10 @@
 // for the wake words and which ones the node listens for, whether replies are spoken, the
 // talk key, which microphone it listens on (the system's default, or one picked, which
 // `micOptions` lists), and what is wrong with the microphone when something is. On every host it holds
-// the node's engines: the one that transcribes and the one that reads replies out
+// the node's wake words, a box each for every phrase its wake model has, ticked for the ones
+// that listen (none ticked, only the talk key and the button wake it), with where the pick came
+// from and a way back to config.toml's (`voice.configure` `wake`), and the node's engines:
+// the one that transcribes and the one that reads replies out
 // (`voice.settings`, set with `voice.configure`), the voice, the speed replies are read at,
 // where each choice came from with a way back to config.toml's, and Hear it
 // (`voice.preview`). An online engine says where it goes first, the account's server (Cophyla
@@ -28,7 +31,7 @@
 // where the launch in use came from (set here, config.toml, or the user's own last session
 // there) and a Reset. It reads with the host's own connection and writes with
 // `profile.update`. It closes on its ✕, on Escape and on a click outside its card, and says
-// what failed beside what failed. `settingsRows`, `speechRow`, `listenerLine` and
+// what failed beside what failed. `settingsRows`, `speechRow`, `wakeRow`, `listenerLine` and
 // `SettingsModel` are DOM-free; the panel draws them. Its look is `settings.css`, which each
 // host page links.
 
@@ -542,6 +545,66 @@ export function sttRow(s: SpeechSettings, busy = false, note?: string): SpeechRo
   return engineRow(s, "stt", busy, note);
 }
 
+/** One phrase the node's wake model has, as its box shows it. */
+export interface WakeChoiceRow {
+  head: string;
+  label: string;
+  /** How it is said, when the model says. */
+  sound?: string;
+  on: boolean;
+}
+
+/** The wake words part of the Voice section: a box per phrase, what listens in words, and where the pick came from. */
+export interface WakeRow {
+  choices: WakeChoiceRow[];
+  status: string;
+  trouble: boolean;
+  source: string;
+  /** Picked here: the reset hands it back to config.toml. */
+  reset: boolean;
+  busy: boolean;
+  note?: string;
+}
+
+/** "“A”", "“A” and “B”", "“A”, “B” and “C”". */
+function quoted(names: string[]): string {
+  const q = names.map((n) => `“${n}”`);
+  return q.length <= 1 ? (q[0] ?? "") : `${q.slice(0, -1).join(", ")} and ${q[q.length - 1]}`;
+}
+
+/** The node's wake words, from its `voice.settings`; none from a node that cannot pick them or whose wake word is off. */
+export function wakeRow(s: SpeechSettings, busy = false, note?: string): WakeRow | undefined {
+  const heads = s.wake;
+  if (!heads || heads.length === 0) return undefined;
+  const choices = heads.map((h) => ({ head: h.head, label: titleCase(h.phrase), ...(h.sound ? { sound: h.sound } : {}), on: h.on }));
+  const on = choices.filter((c) => c.on);
+  const stage = s.wakeStage;
+  let status: string;
+  let trouble = false;
+  if (!s.enabled) {
+    status = "Voice is off on this computer: it is turned on in config.toml, under [voice].";
+    trouble = true;
+  } else if (on.length === 0) status = "No wake word listens: hold the talk key, or the button, to talk.";
+  else if (stage?.status === "loading") status = "Loading the wake words…";
+  else if (stage && (stage.status === "unavailable" || stage.status === "failed")) {
+    status = `The wake words cannot listen${stage.reason ? `: ${stage.reason}` : "."}`;
+    trouble = true;
+  } else {
+    // The same phrase said two ways reads as one name; how each is said is beside its box.
+    const names = [...new Set(on.map((c) => c.label))];
+    status = `Listening for ${quoted(names)}.`;
+  }
+  return {
+    choices,
+    status,
+    trouble,
+    source: s.wakeSource === "app" ? "Picked here." : "From config.toml.",
+    reset: s.wakeSource === "app",
+    busy: busy || s.installing !== undefined,
+    ...(note ? { note } : {}),
+  };
+}
+
 /** How often the panel asks again while an engine loads. */
 export const SPEECH_POLL_MS = 1000;
 
@@ -565,6 +628,7 @@ export class SettingsModel {
   speechBusy = false;
   speechNote = "";
   sttNote = "";
+  wakeNote = "";
   /** A key being saved or cleared, and why the last one could not be, by vendor. */
   readonly keyBusy = new Set<ProviderKeyName>();
   readonly keyNotes = new Map<ProviderKeyName, string>();
@@ -657,6 +721,26 @@ export class SettingsModel {
     return this.speech?.sttStage ? sttRow(this.speech, this.speechBusy, this.sttNote || undefined) : undefined;
   }
 
+  /** The node's wake words; none from a node that cannot pick them. */
+  wakeRow(): WakeRow | undefined {
+    return this.speech ? wakeRow(this.speech, this.speechBusy, this.wakeNote || undefined) : undefined;
+  }
+
+  /** One wake word on or off, the others as they are, in the model's order. */
+  setWake(head: string, on: boolean): Promise<void> {
+    const heads = this.speech?.wake;
+    const choice = heads?.find((h) => h.head === head);
+    if (!heads || !choice || choice.on === on) return Promise.resolve();
+    const wake = heads.filter((h) => (h.head === head ? on : h.on)).map((h) => h.head);
+    return this.configure({ wake }, "wake");
+  }
+
+  /** Back to config.toml's wake words. */
+  resetWake(): Promise<void> {
+    if (this.speech?.wakeSource !== "app") return Promise.resolve();
+    return this.configure({ wake: null }, "wake");
+  }
+
   /** The node's keys, a row each; none from a node that cannot say. */
   keyRows(): KeyRow[] {
     return this.speech ? keyRows(this.speech, this.keyBusy, this.keyNotes) : [];
@@ -715,8 +799,9 @@ export class SettingsModel {
     this.afterSpeech();
   }
 
-  private setNote(stage: "stt" | "tts", note: string): void {
+  private setNote(stage: "stt" | "tts" | "wake", note: string): void {
     if (stage === "stt") this.sttNote = note;
+    else if (stage === "wake") this.wakeNote = note;
     else this.speechNote = note;
   }
 
@@ -759,7 +844,7 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute }, stage: "stt" | "tts" = "tts"): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute; wake?: string[] | null }, stage: "stt" | "tts" | "wake" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
     this.setNote(stage, "");
@@ -781,7 +866,7 @@ export class SettingsModel {
     if (this.speechTimer) clearTimeout(this.speechTimer);
     this.speechTimer = undefined;
     const s = this.speech;
-    if (s && (s.installing || (s.enabled && (s.stage.status === "loading" || s.sttStage?.status === "loading")))) {
+    if (s && (s.installing || (s.enabled && (s.stage.status === "loading" || s.sttStage?.status === "loading" || s.wakeStage?.status === "loading")))) {
       this.speechTimer = setTimeout(() => {
         this.speechTimer = undefined;
         void this.loadSpeech();
@@ -1070,7 +1155,8 @@ export class SettingsPanel {
     }
     if (voice.setMic) box.append(this.micRow(voice, v));
     if (v.micNote) box.append(paragraph("host-settings-source", v.micNote));
-    const words = v.phrases.length > 0 ? v.phrases.map((p) => `“${titleCase(p)}”`).join(", ") : "the node's wake words";
+    // A name heard by two heads (said two ways) is named once.
+    const words = v.phrases.length > 0 ? [...new Set(v.phrases.map(titleCase))].map((p) => `“${p}”`).join(", ") : "the node's wake words";
     box.append(
       toggle("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)),
       toggle("voice:speak", "Speak the replies to what I say", v.speak, (on) => voice.setSpeak(on)),
@@ -1114,6 +1200,8 @@ export class SettingsPanel {
     key.append(span("host-settings-label", "Hold to talk"), input, save);
     box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Shift+Space or Ctrl+Shift+F9; empty for none."));
     if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
+    const wake = model.wakeRow();
+    if (wake) box.append(this.wake(wake, model));
     const stt = model.sttRow();
     if (stt) box.append(this.speech(stt, model));
     if (speech) box.append(this.speech(speech, model));
@@ -1142,11 +1230,50 @@ export class SettingsPanel {
   private speechOnly(speech: SpeechRow, model: SettingsModel): HTMLElement {
     const box = section("Voice", "How Cophyla hears you and reads its replies out when you talk to it.");
     box.dataset["section"] = "voice";
+    const wake = model.wakeRow();
+    if (wake) box.append(this.wake(wake, model));
     const stt = model.sttRow();
     if (stt) box.append(this.speech(stt, model));
     box.append(this.speech(speech, model));
     const keys = model.keyRows();
     if (keys.length > 0) box.append(this.keys(keys, model));
+    return box;
+  }
+
+  /** The node's wake words: a box each, ticked for the ones that listen, with how each is said, what listens, where the pick came from and Reset. */
+  private wake(row: WakeRow, model: SettingsModel): HTMLElement {
+    const box = document.createElement("div");
+    box.className = "host-settings-speech host-settings-wake";
+    box.dataset["stage"] = "wake";
+    const top = document.createElement("div");
+    top.className = "host-settings-controls";
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "host-settings-reset";
+    reset.dataset["focus"] = "wake:reset";
+    reset.textContent = "Reset";
+    reset.title = "Forget what was picked here: config.toml's wake words are used again";
+    reset.hidden = !row.reset;
+    reset.disabled = row.busy;
+    reset.addEventListener("click", () => void model.resetWake());
+    top.append(span("host-settings-label", "Wake words"), reset);
+    box.append(top);
+    for (const c of row.choices) {
+      const line = document.createElement("label");
+      line.className = "host-settings-toggle";
+      line.dataset["head"] = c.head;
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = c.on;
+      tick.disabled = row.busy;
+      tick.dataset["focus"] = `wake:${c.head}`;
+      tick.addEventListener("change", () => void model.setWake(c.head, tick.checked));
+      line.append(tick, span("", c.label));
+      if (c.sound) line.append(span("host-settings-sound", `said ${c.sound}`));
+      box.append(line);
+    }
+    box.append(paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status), paragraph("host-settings-source", row.source));
+    if (row.note) box.append(paragraph("host-settings-error", row.note));
     return box;
   }
 

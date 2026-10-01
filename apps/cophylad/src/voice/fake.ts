@@ -7,7 +7,7 @@
 
 import type { VoiceConfig } from "../config/schema.ts";
 import type { Sidecars } from "../sidecars/index.ts";
-import type { EngineFactory, EngineLoadOptions, SpeechInstaller, SpeechInstallProgress, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeModel } from "./engines.ts";
+import type { EngineFactory, EngineLoadOptions, SpeechInstaller, SpeechInstallProgress, SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine, WakeHeadInfo, WakeModel } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 import { phraseOf } from "./openwakeword.ts";
 
@@ -63,6 +63,11 @@ export class FakeEngines implements EngineFactory {
   failStage?: "wake" | "stt" | "tts";
   /** Set per test to hold a stage in `loading` until the promise settles. */
   hold: Partial<Record<"wake" | "stt" | "tts", Promise<unknown>>> = {};
+  /** The heads the fake wake model has, for the app to pick from; the configured ones when unset. */
+  wakeCatalog?: string[];
+  /** The heads each wake load listened with, in order, and how many models were closed. */
+  readonly wakeLoads: string[][] = [];
+  wakeClosed = 0;
   /** The speech engines loaded, by the name the configuration gave, with the voice each started in; and how many were closed. */
   readonly ttsLoads: { engine: string; voice?: number }[] = [];
   ttsClosed = 0;
@@ -119,8 +124,8 @@ export class FakeEngines implements EngineFactory {
   async wake(_dir: string, config: VoiceConfig): Promise<WakeModel> {
     await this.hold.wake;
     if (this.failStage === "wake") throw new Error("fake wake failure");
-    const threshold = (name: string) => (typeof config.wake_threshold === "number" ? config.wake_threshold : (config.wake_threshold?.[name] ?? 0.7));
-    const heads = config.wake_model.map((name) => ({ name, threshold: threshold(name), scale: config.wake_scale ?? ("int16" as const), phrase: phraseOf(name) }));
+    const heads = this.headInfo(config.wake_model, config);
+    this.wakeLoads.push(heads.map((h) => h.name));
     const first = heads[0]!.name;
     return {
       heads,
@@ -128,8 +133,19 @@ export class FakeEngines implements EngineFactory {
         feed: async (pcm) => (isWake(pcm) ? { fired: true, score: 1, head: first } : { fired: false, score: 0 }),
         reset: () => {},
       }),
-      close: () => {},
+      close: () => {
+        this.wakeClosed++;
+      },
     };
+  }
+
+  wakeHeads(_dir: string, config: VoiceConfig): WakeHeadInfo[] {
+    return this.headInfo(this.wakeCatalog ?? config.wake_model, config);
+  }
+
+  private headInfo(names: readonly string[], config: VoiceConfig): WakeHeadInfo[] {
+    const threshold = (name: string) => (typeof config.wake_threshold === "number" ? config.wake_threshold : (config.wake_threshold?.[name] ?? 0.7));
+    return names.map((name) => ({ name, threshold: threshold(name), patience: 1, scale: config.wake_scale ?? ("int16" as const), phrase: phraseOf(name) }));
   }
 
   async vad(): Promise<() => VadEngine> {

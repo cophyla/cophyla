@@ -2,12 +2,13 @@
 // same `WakePipeline` the node runs, over the frames the page hands it while it listens.
 // One thread and no proxy (the page is not cross-origin isolated), and the wasm's bytes come
 // from the page, which fetched and checked them, so the runtime never looks for a URL of
-// its own. The node names the heads to listen with, one per phrase, each with its threshold;
+// its own. The node names the heads to listen with, one per phrase, each with its threshold
+// and how many chunks in a row it must score over it;
 // when one fires it says so with the head and the frame's number and starts over; every ten
 // seconds it says how long a chunk takes.
 //
 // in:  init {wasm, mel, embedding, heads: [{name, bytes}]}   → ready | error {reason}
-//      configure {heads: [{head, threshold, scale}]}
+//      configure {heads: [{head, threshold, patience?, scale}]}
 //      frame {seq, pcm}                                      → wake {score, seq, head}
 //      reset
 // out: stats {msPerChunk, chunks, peak}, every 10 s
@@ -25,7 +26,7 @@ const scope = globalThis as unknown as WorkerScope;
 
 export type WorkerIn =
   | { type: "init"; wasm: ArrayBuffer; mel: ArrayBuffer; embedding: ArrayBuffer; heads: { name: string; bytes: ArrayBuffer }[] }
-  | { type: "configure"; heads: { head: string; threshold: number; scale: Scale }[] }
+  | { type: "configure"; heads: { head: string; threshold: number; patience?: number; scale: Scale }[] }
   | { type: "frame"; seq: number; pcm: ArrayBuffer }
   | { type: "reset" };
 
@@ -75,7 +76,7 @@ function configure(msg: Extract<WorkerIn, { type: "configure" }>): void {
   const heads = msg.heads.map((h) => {
     const session = own.heads.get(h.head);
     if (!session) throw new Error(`no wake head ${h.head} in this build`);
-    return { name: h.head, session, threshold: h.threshold, scale: h.scale };
+    return { name: h.head, session, threshold: h.threshold, ...(h.patience !== undefined ? { patience: h.patience } : {}), scale: h.scale };
   });
   if (heads.length === 0) throw new Error("no wake heads to listen with");
   pipeline = new WakePipeline({ ort, mel: own.mel, emb: own.emb, heads });

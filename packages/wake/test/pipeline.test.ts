@@ -31,14 +31,14 @@ function session(out: (input: Float32Array) => Float32Array): WakeSession & { ru
 }
 
 /** Heads that score what they are told to, per chunk after the window fills. */
-function models(heads: { name: string; threshold: number; scale: Scale; scores: number[] }[]) {
+function models(heads: { name: string; threshold: number; scale: Scale; scores: number[]; patience?: number }[]) {
   const mel = session(() => new Float32Array(5 * 32));
   const emb = session(() => new Float32Array(96));
   const sessions = heads.map((h) => {
     let i = 0;
     return { ...h, session: session(() => new Float32Array([h.scores[i++] ?? 0])) };
   });
-  const m: WakeModels = { ort: { Tensor }, mel, emb, heads: sessions.map((h) => ({ name: h.name, threshold: h.threshold, scale: h.scale, session: h.session })) };
+  const m: WakeModels = { ort: { Tensor }, mel, emb, heads: sessions.map((h) => ({ name: h.name, threshold: h.threshold, scale: h.scale, session: h.session, ...(h.patience !== undefined ? { patience: h.patience } : {}) })) };
   return { m, mel, emb, sessions };
 }
 
@@ -100,5 +100,29 @@ describe("the wake pipeline", () => {
     p.reset();
     for (let i = 0; i < 15; i++) expect((await p.feed(chunk())).fired).toBe(false);
     expect(await p.feed(chunk())).toEqual({ fired: true, score: 0.875, head: "a" });
+  });
+
+  test("a patient head fires only once it has scored over its threshold that many chunks in a row", async () => {
+    const { m } = models([{ name: "a", threshold: 0.5, scale: "int16", patience: 3, scores: [0.75, 0.75, 0.25, 0.75, 0.75, 0.875, 0.75] }]);
+    const p = new WakePipeline(m);
+    for (let i = 0; i < 15; i++) await p.feed(chunk());
+    // Two over, then one under: the run starts again.
+    expect(await p.feed(chunk())).toEqual({ fired: false, score: 0.75, head: "a" });
+    expect((await p.feed(chunk())).fired).toBe(false);
+    expect((await p.feed(chunk())).fired).toBe(false);
+    expect((await p.feed(chunk())).fired).toBe(false);
+    expect((await p.feed(chunk())).fired).toBe(false);
+    // The third in a row fires, and the run starts over after it.
+    expect(await p.feed(chunk())).toEqual({ fired: true, score: 0.875, head: "a" });
+    expect((await p.feed(chunk())).fired).toBe(false);
+  });
+
+  test("a reset forgets a run under way", async () => {
+    const { m } = models([{ name: "a", threshold: 0.5, scale: "int16", patience: 2, scores: [0.75, 0.75, 0.75] }]);
+    const p = new WakePipeline(m);
+    for (let i = 0; i < 16; i++) await p.feed(chunk());
+    p.reset();
+    for (let i = 0; i < 16; i++) expect((await p.feed(chunk())).fired).toBe(false);
+    expect(await p.feed(chunk())).toEqual({ fired: true, score: 0.75, head: "a" });
   });
 });

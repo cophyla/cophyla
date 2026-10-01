@@ -346,6 +346,20 @@
   margin: 0 0 6px;
 }
 
+/* the node's wake words: a box each, how it is said after its name */
+.host-settings-wake .host-settings-toggle {
+  margin: 0 0 4px;
+}
+
+.host-settings-sound {
+  color: #6c6679;
+  font-size: 12px;
+}
+
+.host-settings-toggle input:disabled {
+  cursor: default;
+}
+
 .host-settings-voice {
   width: 72px;
 }

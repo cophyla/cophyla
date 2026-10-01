@@ -4,8 +4,10 @@
 // the phone runs too. The node listens for a controller that does not detect the word itself.
 //
 // The model's manifest lists its heads (`heads`) and may say, per head, the score it fires
-// at, the scale it was trained at and the phrase it hears (`head_params`); the config picks
-// which heads listen and may set the threshold and the scale over the manifest's.
+// at, the chunks in a row it must score so (`patience`), the scale it was trained at, the
+// phrase it hears and how that is said (`sound`, for a model with heads for more than one way
+// of saying a phrase) in `head_params`; the config, or the app over it, picks which heads
+// listen, and the config may set the threshold and the scale over the manifest's.
 
 import { basename, join } from "node:path";
 import { WakePipeline } from "@cophyla/wake";
@@ -42,6 +44,12 @@ export function phraseOf(file: string): string {
     .replace(/_/g, " ");
 }
 
+/** Every head a model directory has, in the manifest's order, each with the numbers it would run at under these options. */
+export function allWakeHeads(manifest: VoiceManifest, opts: Omit<WakeLoadOptions, "heads"> = {}): WakeHeadInfo[] {
+  const available = paramStrings(manifest, "heads");
+  return available.length > 0 ? wakeHeads(manifest, { ...opts, heads: available }).heads : [];
+}
+
 /** The heads a model directory would listen with under these options: the configured ones it has, each with its numbers. */
 export function wakeHeads(manifest: VoiceManifest, opts: WakeLoadOptions = {}): { heads: WakeHeadInfo[]; missing: string[] } {
   const available = paramStrings(manifest, "heads");
@@ -59,11 +67,15 @@ export function wakeHeads(manifest: VoiceManifest, opts: WakeLoadOptions = {}): 
     const p = params(name);
     const configured = typeof opts.threshold === "number" ? opts.threshold : opts.threshold?.[name];
     const own = typeof p["threshold"] === "number" && p["threshold"] >= 0 && p["threshold"] <= 1 ? p["threshold"] : undefined;
+    const patience = typeof p["patience"] === "number" && Number.isInteger(p["patience"]) && p["patience"] >= 1 && p["patience"] <= 16 ? p["patience"] : 1;
+    const sound = typeof p["sound"] === "string" && p["sound"] ? p["sound"] : undefined;
     return {
       name,
       threshold: configured ?? own ?? DEFAULT_THRESHOLD,
+      patience,
       scale: opts.scale ?? scaleOf(p["scale"]) ?? scaleOf(manifest.params["scale"]) ?? "int16",
       phrase: typeof p["phrase"] === "string" && p["phrase"] ? p["phrase"] : phraseOf(name),
+      ...(sound ? { sound } : {}),
     };
   });
   return { heads, missing };

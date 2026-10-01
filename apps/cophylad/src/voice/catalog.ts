@@ -30,21 +30,27 @@ export const VOICE_MODELS: VoiceModelSpec[] = [
   {
     name: "wake-openwakeword",
     kind: "wake",
-    version: "1.2.0",
+    version: "1.3.0",
     params: {
       scale: "int16",
       mel: "melspectrogram.onnx",
       embedding: "embedding_model.onnx",
-      heads: ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
+      // The v0.2 heads hear the name as it is said now, ko-FILL-uh; the v0.1 ones its first
+      // sound, ko-FY-la, for whoever still says it so. The app's Settings picks among them.
+      heads: ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
       head_params: {
-        "cophyla_v0.1.onnx": { threshold: 0.7, phrase: "Cophyla" },
-        "hey_phyla_v0.1.onnx": { threshold: 0.6, phrase: "Hey Phyla" },
+        "cophyla_v0.2.onnx": { threshold: 0.7, patience: 3, phrase: "Cophyla", sound: "ko-FILL-uh" },
+        "hey_phyla_v0.2.onnx": { threshold: 0.8, patience: 3, phrase: "Hey Phyla", sound: "hey FILL-uh" },
+        "cophyla_v0.1.onnx": { threshold: 0.7, phrase: "Cophyla", sound: "ko-FY-la" },
+        "hey_phyla_v0.1.onnx": { threshold: 0.6, phrase: "Hey Phyla", sound: "hey FY-la" },
       },
     },
     sources: [
       { kind: "file", url: `${OWW}/melspectrogram.onnx`, local: "melspectrogram.onnx", sha256: "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f" },
       { kind: "file", url: `${OWW}/embedding_model.onnx`, local: "embedding_model.onnx", sha256: "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f" },
       // Cophyla's own heads (packages/wake/heads/README.md says how they were made).
+      { kind: "repo", path: "packages/wake/heads/cophyla_v0.2.onnx", local: "cophyla_v0.2.onnx", sha256: "7575b45b89cf1b0f943921ccf349442dd61258d2cee064b863e42bd8de543fb7" },
+      { kind: "repo", path: "packages/wake/heads/hey_phyla_v0.2.onnx", local: "hey_phyla_v0.2.onnx", sha256: "46fd0d8916cd8ed36d8d2f3e9ab11095c4f5ebcb33f3b396d565dfede7672490" },
       { kind: "repo", path: "packages/wake/heads/cophyla_v0.1.onnx", local: "cophyla_v0.1.onnx", sha256: "b08ab17c1ff81a3293c7e8d3c4623d9c9a3b0bacbb291311e7d7d2b9e8b984e9" },
       { kind: "repo", path: "packages/wake/heads/hey_phyla_v0.1.onnx", local: "hey_phyla_v0.1.onnx", sha256: "4ec1d76da29e8581bb8d1d48a453336a35752159403a144df16657e1975f8a36" },
     ],

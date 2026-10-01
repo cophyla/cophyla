@@ -770,9 +770,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.next = action.params;
       return state;
     case "voice.setup":
-      // A step that ended says so once and then there is nothing to show.
-      if (action.params.step === "ready" || action.params.step === "failed") delete state.setup;
-      else state.setup = action.params;
+      // A step that ended says so once and then there is nothing to show; the wake word set
+      // up anew (other heads picked) leaves another stage's install showing.
+      if (action.params.step === "ready" || action.params.step === "failed") {
+        if (!state.setup || state.setup.stage === action.params.stage) delete state.setup;
+      } else state.setup = action.params;
       return state;
     case "pairing":
       if (action.offer) state.pairing = action.offer;

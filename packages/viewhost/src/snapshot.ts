@@ -64,8 +64,10 @@ export class SnapshotCache {
     if (n.method === "voice.setup") {
       const v = n.params as VoiceSetupParams | undefined;
       if (!v || typeof v !== "object" || typeof v.step !== "string") return;
-      if (v.step === "ready" || v.step === "failed") this.voiceSetup = undefined;
-      else this.voiceSetup = v;
+      // A step that ended clears its own stage's: the wake word set up anew leaves an install's progress be.
+      if (v.step === "ready" || v.step === "failed") {
+        if (!this.voiceSetup || this.voiceSetup.stage === v.stage) this.voiceSetup = undefined;
+      } else this.voiceSetup = v;
       return;
     }
     if (n.method === "voice.next") {

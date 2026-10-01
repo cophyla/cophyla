@@ -21,6 +21,12 @@
 // it listens and the node detects the words for it, as before. The desktop app is a client
 // like the phone in this: it carries the same heads and hears the words itself.
 //
+// Which of the wake model's heads listen is config.toml's `wake_model` unless the app picked
+// others in Settings (`voice.configure` `wake`), none at all turning the wake word off. A new
+// pick loads behind the answer; once it is up, every client is told (`voice.setup`, stage
+// `wake`, step `ready`) and asks `voice.wakeword` again, and a word from a head that no longer
+// listens, heard by a client that has not asked yet, is let go.
+//
 // Audio goes as Opus both ways when the controller says it speaks it (`audio.codecs`), and
 // as PCM otherwise: a frame up names its codec, and the speech down is encoded once per
 // conversation in the codec the controller asked for, each frame numbered within its reply.
@@ -57,12 +63,13 @@ import { composeSpeech } from "./compose.ts";
 import type { SpeechNames } from "./compose.ts";
 import { Conversation } from "./conversation.ts";
 import { OpusDecoder, OpusEncoder, opusRate } from "./opus.ts";
-import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
+import type { EngineFactory, ModelResolver, SttEngine, TtsEngine, VadEngine, WakeHeadInfo, WakeModel } from "./engines.ts";
 import { IN_RATE } from "./engines.ts";
 import type { StageState } from "./engines.ts";
 import { speechEngine } from "./catalog.ts";
 import { atSpeed } from "./tempo.ts";
 import { localSttEngine, sherpaEngine, STT_MODELS, TTS_MODELS, VAD_MODEL, WAKE_MODEL } from "./local.ts";
+import { MAX_WAKE_HEADS } from "./prefs.ts";
 import type { VoicePrefs, VoicePrefsStore } from "./prefs.ts";
 
 type VoiceSetup = import("@cophyla/protocol").ClientNotificationParams<"voice.setup">;
@@ -72,6 +79,8 @@ const MAX_CHUNK_BYTES = 64 * 1024;
 
 /** How long `voice.wakeword` waits on a wake stage still loading before it answers `node`. */
 export const WAKE_WAIT_MS = 10_000;
+/** How long a wake model another took the place of is kept, so a chunk it is scoring finishes first. */
+const WAKE_CLOSE_MS = 5000;
 
 /** The least time between two `voice.partial`s to a client; the latest words go at the end of it. */
 export const PARTIAL_MS = 250;
@@ -199,6 +208,10 @@ export class Voice {
   private loading?: Promise<void>;
   /** The wake stage's latest load, settled once it is ready or unavailable. */
   private wakeLoading?: Promise<void>;
+  /** Counts wake loads, so one a newer pick overtook is dropped when it lands. */
+  private wakeLoads = 0;
+  /** Every head the wake model has, for the app to pick from; read at each wake load. */
+  private wakeCatalog: WakeHeadInfo[] = [];
   /** Settles once `start` has run: the daemon takes clients seconds before it starts voice. */
   private begun: Promise<void>;
   private markBegun!: () => void;
@@ -308,12 +321,12 @@ export class Voice {
     return this.prefs().speed ?? 1;
   }
 
-  /** config.toml with the app's picks over it: the engines, and the speech engine's voice when one was set for it. */
+  /** config.toml with the app's picks over it: the engines, the speech engine's voice when one was set for it, and the wake words. */
   private effective(): VoiceConfig {
     const prefs = this.prefs();
     const tts = ttsAlias(prefs.tts ?? this.config.tts);
     const voice = prefs.voices?.[tts] ?? (tts === ttsAlias(this.config.tts) ? this.config.tts_voice : undefined);
-    const out: VoiceConfig = { ...this.config, tts, stt: sttAlias(prefs.stt ?? this.config.stt) };
+    const out: VoiceConfig = { ...this.config, tts, stt: sttAlias(prefs.stt ?? this.config.stt), wake_model: prefs.wake ?? this.config.wake_model };
     if (voice === undefined) delete out.tts_voice;
     else out.tts_voice = voice;
     return out;
@@ -332,15 +345,50 @@ export class Voice {
     return dir;
   }
 
+  /**
+   * Loads the heads picked to listen, and reads every head the model has for the app. With none
+   * picked the stage is `off` and nothing listens. A load a newer pick overtook is dropped.
+   */
   private async loadWake(): Promise<void> {
     if (this.config.wake === "off") return;
-    await this.stage("wake", "openwakeword", async () => {
-      this.wakeModel = await this.deps.engines.wake(await this.dir(WAKE_MODEL), this.config);
+    const load = ++this.wakeLoads;
+    const config = this.effective();
+    const engine = "openwakeword";
+    this.setStage("wake", { status: "loading", engine });
+    let model: WakeModel | undefined;
+    try {
+      const dir = await this.dir(WAKE_MODEL);
+      const catalog = this.deps.engines.wakeHeads?.(dir, config);
+      if (catalog && load === this.wakeLoads) this.wakeCatalog = catalog;
+      if (config.wake_model.length > 0) model = await this.deps.engines.wake(dir, config);
+    } catch (e) {
+      if (load !== this.wakeLoads || this.stopped) return;
+      const reason = e instanceof Error ? e.message : String(e);
+      this.setStage("wake", { status: "unavailable", engine, reason });
+      this.log.warn("voice stage unavailable", { stage: "wake", engine, reason });
+      return;
+    }
+    if (load !== this.wakeLoads || this.stopped) {
+      await model?.close();
+      return;
+    }
+    const before = this.wakeModel;
+    this.wakeModel = model;
+    this.setStage("wake", { status: model ? "ready" : "off", engine });
+    if (model) this.log.info("voice stage ready", { stage: "wake", engine, heads: model.heads.map((h) => h.name) });
+    else this.log.info("no wake word listens: none is picked", { stage: "wake" });
+    // A controller the node listens for hears with the new model from now on, or with none.
+    for (const c of this.conversations.values()) if (!this.phoneWake.has(c.client)) c.useWake(model?.stream());
+    if (before && before !== model) setTimeout(() => void Promise.resolve(before.close()).catch(() => {}), WAKE_CLOSE_MS).unref?.();
+  }
+
+  /** The wake stage loads again (a new pick, a new model); the clients that hear the word themselves are told to ask again once it is up. */
+  private reloadWake(): void {
+    const loading = (this.wakeLoading = this.loadWake());
+    void loading.then(() => {
+      if (this.wakeLoading !== loading || this.stopped) return;
+      this.setup({ stage: "wake", engine: "openwakeword", step: "ready" });
     });
-    // A controller that streamed before the model was loaded is listened to from now on.
-    const model = this.wakeModel;
-    if (this.stopped || !model || this.stages.wake.status !== "ready") return;
-    for (const c of this.conversations.values()) if (!this.phoneWake.has(c.client)) c.useWake(model.stream());
   }
 
   /**
@@ -536,6 +584,13 @@ export class Voice {
       engines,
       ...(this.installing ? { installing: { engine: this.installing.engine, step: this.installing.step, progress: this.installing.progress } } : {}),
       ...(this.installError ? { installError: this.installError } : {}),
+      ...(this.config.wake !== "off"
+        ? {
+            wake: this.wakeCatalog.map((h) => ({ head: h.name, phrase: h.phrase, ...(h.sound ? { sound: h.sound } : {}), on: config.wake_model.includes(h.name) })),
+            wakeSource: prefs.wake !== undefined ? ("app" as const) : ("config" as const),
+            wakeStage: stage(this.stages.wake),
+          }
+        : {}),
     };
   }
 
@@ -544,10 +599,19 @@ export class Voice {
    * back. A new engine loads behind the answer; a new voice for the one loaded, and a new
    * speed for any, is used from its next line.
    */
-  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null; sttRoute?: VoiceRoute | null; ttsRoute?: VoiceRoute | null }): VoiceSettings {
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null; sttRoute?: VoiceRoute | null; ttsRoute?: VoiceRoute | null; wake?: string[] | null }): VoiceSettings {
     if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
     const before = this.effective();
     const prefs: VoicePrefs = { ...this.prefs() };
+    if (patch.wake !== undefined && patch.wake !== null) {
+      if (this.config.wake === "off") throw new RpcError("unavailable", "the wake word is off in config.toml");
+      const heads = [...new Set(patch.wake)];
+      if (heads.length > MAX_WAKE_HEADS) throw new RpcError("invalid", `at most ${MAX_WAKE_HEADS} wake words listen at once`);
+      const known = new Set(this.wakeCatalog.map((h) => h.name));
+      const unknown = known.size > 0 ? heads.filter((h) => !known.has(h)) : [];
+      if (unknown.length > 0) throw new RpcError("invalid", `the wake model has no ${unknown.join(", ")}`);
+      prefs.wake = heads;
+    } else if (patch.wake === null) delete prefs.wake;
     if (patch.tts === null) delete prefs.tts;
     else if (patch.tts !== undefined) prefs.tts = patch.tts;
     if (patch.stt === null) delete prefs.stt;
@@ -570,8 +634,9 @@ export class Voice {
     }
     this.deps.prefs.write(prefs);
     const after = this.effective();
-    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt, sttRoute: prefs.sttRoute, ttsRoute: prefs.ttsRoute });
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt, sttRoute: prefs.sttRoute, ttsRoute: prefs.ttsRoute, wake: after.wake_model });
     if (this.config.enabled && !this.stopped) {
+      if (after.wake_model.join(",") !== before.wake_model.join(",")) this.reloadWake();
       if (after.stt !== before.stt) void this.loadStt();
       if (after.tts !== before.tts) void this.loadTts();
       // The engine in place takes the voice now; one still loading takes it as it lands.
@@ -858,7 +923,7 @@ export class Voice {
    */
   async wakeword(client: Client, heads: string[]): Promise<WakewordMode> {
     if (!client.audio.in) throw new RpcError("invalid", "this client has no microphone");
-    if (!this.config.enabled || this.config.wake === "off") {
+    if (!this.config.enabled || this.config.wake === "off" || this.effective().wake_model.length === 0) {
       this.phoneWake.delete(client.id);
       return { mode: "off" };
     }
@@ -880,7 +945,7 @@ export class Voice {
         head: first.name,
         threshold: first.threshold,
         scale: first.scale,
-        heads: listening.map((h) => ({ head: h.name, threshold: h.threshold, scale: h.scale, phrase: h.phrase })),
+        heads: listening.map((h) => ({ head: h.name, threshold: h.threshold, ...(h.patience > 1 ? { patience: h.patience } : {}), scale: h.scale, phrase: h.phrase })),
       };
     }
     if (was) {
@@ -897,6 +962,12 @@ export class Voice {
    */
   wake(client: Client, score: number, head?: string, lead?: number): void {
     this.hearable(client);
+    // A client that has not asked `voice.wakeword` since the heads changed still runs the old ones.
+    const listening = this.wakeModel?.heads;
+    if (this.effective().wake_model.length === 0 || (head && listening && !listening.some((h) => h.name === head))) {
+      this.log.debug("wake word (phone) ignored: that head does not listen", { client: client.id, ...(head ? { head } : {}) });
+      return;
+    }
     const heard = this.conversation(client)?.wakeHeard(lead) ?? false;
     if (heard) this.log.info("wake word (phone)", { client: client.id, score: Number(score.toFixed(3)), ...(head ? { head } : {}) });
     else this.log.debug("wake word (phone) ignored: an utterance is in progress", { client: client.id });
@@ -948,7 +1019,7 @@ export class Voice {
     this.log.info("voice model changed", { model: name, dir });
     const speech = sherpaEngine(this.effective().tts);
     const stt = localSttEngine(this.effective().stt);
-    if (name === WAKE_MODEL) void (this.wakeLoading = this.loadWake());
+    if (name === WAKE_MODEL) this.reloadWake();
     else if (name === VAD_MODEL || (stt && name === STT_MODELS[stt])) void this.loadStt();
     else if (speech && name === TTS_MODELS[speech]) void this.loadTts();
   }

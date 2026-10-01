@@ -117,10 +117,14 @@ export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six 
 export const VoiceSetupStage = z.enum(["wake", "stt", "tts"]);
 export const VoiceSetupStep = z.enum(["uv", "venv", "deps", "weights", "runtime", "model", "starting", "ready", "failed"]);
 
-/** One phrase a client's wake word listens for: the head's file, the score it fires at, its input scale, what is said. */
+/**
+ * One phrase a client's wake word listens for: the head's file, the score it fires at, the
+ * chunks in a row it must score so before it fires (1 when absent), its input scale, what is said.
+ */
 export const WakeHeadMode = z.object({
   head: z.string().min(1),
   threshold: z.number().min(0).max(1),
+  patience: z.number().int().min(1).max(16).optional(),
   scale: z.enum(["int16", "unit"]),
   phrase: z.string().min(1).max(64).optional(),
 });
@@ -209,6 +213,19 @@ export const SpeechEngineInfo = z.object({
 });
 export type SpeechEngineInfo = z.infer<typeof SpeechEngineInfo>;
 
+/**
+ * One phrase the node's wake model can listen for, for the app's picker: its head's file, what
+ * is said, how it is said when the model has heads for more than one way of saying it, and
+ * whether it listens now.
+ */
+export const WakeHeadChoice = z.object({
+  head: z.string().min(1).max(128),
+  phrase: z.string().min(1).max(64),
+  sound: z.string().min(1).max(64).optional(),
+  on: z.boolean(),
+});
+export type WakeHeadChoice = z.infer<typeof WakeHeadChoice>;
+
 /** A voice stage as the app shows it: loading, ready, not installed on this machine, or why it is not up. */
 export const VoiceStageState = z.object({
   status: z.enum(["off", "uninstalled", "unavailable", "loading", "ready", "failed"]),
@@ -224,8 +241,10 @@ export type VoiceStageState = z.infer<typeof VoiceStageState>;
  * once the engine is loaded), the `speed` replies are read at, whichever engine reads them,
  * and the speech stage; the same for transcription (`stt`,
  * `sttSource`, `sttStage`); where the online engines go first (`sttRoute`, `ttsRoute`) and
- * the keys they would use; every engine there is for either; and the install under way or
- * the last one that failed.
+ * the keys they would use; every engine there is for either; the install under way or the
+ * last one that failed; and the wake words: every phrase the wake model has, each saying
+ * whether it listens (`wake`), where that pick came from (`wakeSource`) and the wake stage,
+ * none from a node whose wake word is off in config.toml.
  */
 export const VoiceSettings = z.object({
   enabled: z.boolean(),
@@ -246,6 +265,9 @@ export const VoiceSettings = z.object({
   engines: z.array(SpeechEngineInfo),
   installing: z.object({ engine: z.string(), step: z.enum(["runtime", "model"]), progress: z.number().min(0).max(1) }).optional(),
   installError: z.object({ engine: z.string(), message: z.string() }).optional(),
+  wake: z.array(WakeHeadChoice).max(32).optional(),
+  wakeSource: z.enum(["app", "config"]).optional(),
+  wakeStage: VoiceStageState.optional(),
 });
 export type VoiceSettings = z.infer<typeof VoiceSettings>;
 
@@ -551,8 +573,11 @@ export const clientRequests = {
    * The engine or the voice, set from the app over config.toml; `null` hands either back to
    * it. A voice belongs to the engine it was set for. The speed is every engine's, from the
    * next line on; `null` is the engines' own pace. A route says where the online engines go
-   * first, from the next utterance or line on; `null` is `cloud`. Answered at once: the engine
-   * loads behind the answer, and `voice.settings` says when its stage is up.
+   * first, from the next utterance or line on; `null` is `cloud`. `wake` names the wake model's
+   * heads that listen, an empty list none (the talk key and the button still work), `null`
+   * config.toml's; the clients that hear the word themselves are told to ask `voice.wakeword`
+   * again once the heads are loaded (`voice.setup`, stage `wake`, step `ready`). Answered at
+   * once: the engine loads behind the answer, and `voice.settings` says when its stage is up.
    */
   "voice.configure": {
     params: z.object({
@@ -562,6 +587,7 @@ export const clientRequests = {
       stt: SttEngineId.nullable().optional(),
       sttRoute: VoiceRoute.nullable().optional(),
       ttsRoute: VoiceRoute.nullable().optional(),
+      wake: z.array(z.string().min(1).max(128)).max(8).nullable().optional(),
     }),
     result: VoiceSettings,
   },

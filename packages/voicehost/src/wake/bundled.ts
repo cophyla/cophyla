@@ -16,8 +16,10 @@ export const BUNDLED = {
   wasm: { file: "ort-wasm-simd-threaded.wasm", sha256: "3398c10d07d229bd91b364548e130e0e51a8e5704b88c7c083ebbeb78842dee2" },
   mel: { file: "melspectrogram.onnx", sha256: "ba2b0e0f8b7b875369a2c89cb13360ff53bac436f2895cced9f479fa65eb176f" },
   embedding: { file: "embedding_model.onnx", sha256: "70d164290c1d095d1d4ee149bc5e00543250a7316b59f31d056cff7bd3075c1f" },
-  /** One per phrase; the node's answer names the threshold and the input scale each runs at. */
+  /** One per phrase; the node's answer names the threshold, the patience and the input scale each runs at. */
   heads: [
+    { file: "cophyla_v0.2.onnx", sha256: "7575b45b89cf1b0f943921ccf349442dd61258d2cee064b863e42bd8de543fb7" },
+    { file: "hey_phyla_v0.2.onnx", sha256: "46fd0d8916cd8ed36d8d2f3e9ab11095c4f5ebcb33f3b396d565dfede7672490" },
     { file: "cophyla_v0.1.onnx", sha256: "b08ab17c1ff81a3293c7e8d3c4623d9c9a3b0bacbb291311e7d7d2b9e8b984e9" },
     { file: "hey_phyla_v0.1.onnx", sha256: "4ec1d76da29e8581bb8d1d48a453336a35752159403a144df16657e1975f8a36" },
   ],

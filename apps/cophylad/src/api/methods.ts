@@ -518,6 +518,7 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
           ...(p.stt !== undefined ? { stt: p.stt } : {}),
           ...(p.sttRoute !== undefined ? { sttRoute: p.sttRoute } : {}),
           ...(p.ttsRoute !== undefined ? { ttsRoute: p.ttsRoute } : {}),
+          ...(p.wake !== undefined ? { wake: p.wake } : {}),
         }),
     },
     "voice.install": { target: (p) => p.engine, handler: (p) => deps.voice.install(p.engine) },

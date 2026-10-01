@@ -458,9 +458,9 @@ describe("voice", () => {
 
 // --- the wake word on the phone ----------------------------------------------------------------
 
-const HEAD = "cophyla_v0.1.onnx";
+const HEAD = "cophyla_v0.2.onnx";
 /** Every head the node listens with by default: a client that carries them all hears the words itself. */
-const HEADS = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"];
+const HEADS = ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"];
 const PHONE_MODE: WakewordMode = {
   mode: "phone",
   head: HEAD,
@@ -468,7 +468,7 @@ const PHONE_MODE: WakewordMode = {
   scale: "int16",
   heads: [
     { head: HEAD, threshold: 0.7, scale: "int16", phrase: "cophyla" },
-    { head: "hey_phyla_v0.1.onnx", threshold: 0.7, scale: "int16", phrase: "hey phyla" },
+    { head: "hey_phyla_v0.2.onnx", threshold: 0.7, scale: "int16", phrase: "hey phyla" },
   ],
 };
 const idByName = (d: Daemon, name: string): string => d.clients.list().find((c) => c.name === name)!.id;
@@ -1235,6 +1235,100 @@ describe("the speech engine picked in the app", () => {
     expect(prefs.read()).toEqual({ speed: 1.5 });
     prefs.write({});
     expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+  });
+});
+
+describe("the wake words picked in the app", () => {
+  const settings = (c: TestClient) => c.request<VoiceSettings>("voice.settings", {});
+  const configure = (c: TestClient, patch: object) => c.request<VoiceSettings>("voice.configure", patch);
+  /** The wake model's heads: the two that hear ko-FILL-uh, and the two before them. */
+  const MODEL = ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx", "cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"];
+  const told = (c: TestClient) => c.notifications.filter(isMethod("voice.setup", (p) => (p as { stage: string; step: string }).stage === "wake" && (p as { step: string }).step === "ready")).length;
+  const loaded = (engines: FakeEngines, heads: string[]) => waitFor(() => JSON.stringify(engines.wakeLoads.at(-1)) === JSON.stringify(heads));
+  const engines = () => Object.assign(new FakeEngines({ transcript: TRANSCRIPT }), { wakeCatalog: MODEL });
+
+  test("every head the model has is listed, config.toml's listening until the app picks others, which load behind the answer and hand back with null", async () => {
+    const { d, ui, phone, engines: fake } = await start({ engines: engines() });
+    const first = await settings(ui);
+    expect(first.wake).toEqual([
+      { head: "cophyla_v0.2.onnx", phrase: "cophyla", on: true },
+      { head: "hey_phyla_v0.2.onnx", phrase: "hey phyla", on: true },
+      { head: "cophyla_v0.1.onnx", phrase: "cophyla", on: false },
+      { head: "hey_phyla_v0.1.onnx", phrase: "hey phyla", on: false },
+    ]);
+    expect(first).toMatchObject({ wakeSource: "config", wakeStage: { status: "ready", engine: "openwakeword" } });
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: MODEL })).toMatchObject({ mode: "phone", heads: [{ head: "cophyla_v0.2.onnx" }, { head: "hey_phyla_v0.2.onnx" }] });
+
+    const picked = await configure(ui, { wake: ["cophyla_v0.1.onnx", "cophyla_v0.2.onnx", "cophyla_v0.1.onnx"] });
+    expect(picked.wake!.filter((h) => h.on).map((h) => h.head)).toEqual(["cophyla_v0.2.onnx", "cophyla_v0.1.onnx"]);
+    expect(picked.wakeSource).toBe("app");
+    await loaded(fake, ["cophyla_v0.1.onnx", "cophyla_v0.2.onnx"]);
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toEqual({ wake: ["cophyla_v0.1.onnx", "cophyla_v0.2.onnx"] });
+    // Once they are up every client is told, and one that hears the words itself asks again.
+    await waitFor(() => told(phone) === 1 && told(ui) === 1);
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: MODEL })).toMatchObject({ mode: "phone", heads: [{ head: "cophyla_v0.1.onnx" }, { head: "cophyla_v0.2.onnx" }] });
+    // The model before them is let go once a chunk it was scoring would have finished.
+    await waitFor(() => fake.wakeClosed === 1, 8000);
+
+    const back = await configure(ui, { wake: null });
+    expect(back.wakeSource).toBe("config");
+    expect(back.wake!.filter((h) => h.on).map((h) => h.head)).toEqual(["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"]);
+    await loaded(fake, ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"]);
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+    // The same heads again load nothing.
+    const loads = fake.wakeLoads.length;
+    await configure(ui, { wake: ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] });
+    await sleep(100);
+    expect(fake.wakeLoads.length).toBe(loads);
+
+    expect(await ui.call("voice.configure", { wake: ["hey_jarvis_v0.1.onnx"] })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await ui.call("voice.configure", { wake: Array.from({ length: 9 }, (_, i) => `h${i}.onnx`) })).toMatchObject({ error: { data: { code: "invalid" } } });
+  }, 30_000);
+
+  test("none picked turns the wake word off: the clients hear it so, and the talk button still works", async () => {
+    const { d, ui, phone } = await start({ engines: engines() });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: MODEL });
+    const none = await configure(ui, { wake: [] });
+    expect(none.wake!.every((h) => !h.on)).toBe(true);
+    await waitFor(() => d.voice.stageStates().wake.status === "off");
+    expect(await phone.request<WakewordMode>("voice.wakeword", { heads: MODEL })).toEqual({ mode: "off" });
+    // A phone that has not asked again yet is not woken by the head it still runs.
+    await phone.request("voice.wake", { score: 0.9, head: "cophyla_v0.2.onnx" });
+    await sleep(150);
+    expect(states(phone)).toEqual([]);
+    // Nor does the node listen over the frames of one that streams.
+    say(phone, wakeChunk());
+    await sleep(150);
+    expect(states(phone)).toEqual([]);
+    expect((await settings(ui)).wakeStage).toMatchObject({ status: "off" });
+    await phone.request("voice.ptt", { active: true });
+    await waitFor(() => states(phone).includes("listening"));
+  }, 20_000);
+
+  test("a word from a head that no longer listens is let go; one that does, or that names none, wakes", async () => {
+    const { ui, phone, engines: fake } = await start({ engines: engines() });
+    await phone.request<WakewordMode>("voice.wakeword", { heads: MODEL });
+    await configure(ui, { wake: ["hey_phyla_v0.2.onnx"] });
+    await loaded(fake, ["hey_phyla_v0.2.onnx"]);
+    await phone.request("voice.wake", { score: 0.9, head: "cophyla_v0.2.onnx" });
+    await sleep(150);
+    expect(states(phone)).toEqual([]);
+    await phone.request("voice.wake", { score: 0.9, head: "hey_phyla_v0.2.onnx" });
+    await waitFor(() => states(phone).includes("listening"));
+  }, 20_000);
+
+  test("a pick is kept in the store and read back; one that no longer parses reads as none", () => {
+    const store = new Store(":memory:");
+    store.migrate();
+    const prefs = storePrefs(store);
+    prefs.write({ wake: ["cophyla_v0.2.onnx"] });
+    expect(prefs.read()).toEqual({ wake: ["cophyla_v0.2.onnx"] });
+    prefs.write({ wake: [] });
+    expect(prefs.read()).toEqual({ wake: [] });
+    store.kv.put(VOICE_KV_NS, "prefs", { wake: "cophyla_v0.2.onnx" });
+    expect(prefs.read()).toEqual({});
+    store.kv.put(VOICE_KV_NS, "prefs", { wake: [1, 2] });
+    expect(prefs.read()).toEqual({});
   });
 });
 

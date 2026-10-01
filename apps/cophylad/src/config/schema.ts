@@ -302,8 +302,8 @@ export const ControllerConfig = z.object({
 });
 export type ControllerConfig = z.infer<typeof ControllerConfig>;
 
-/** The phrases the wake word listens for unless the config names others: "Cophyla" and "Hey Phyla". */
-export const DEFAULT_WAKE_HEADS = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"] as const;
+/** The phrases the wake word listens for unless the config or the app names others: "Cophyla" and "Hey Phyla", said ko-FILL-uh. */
+export const DEFAULT_WAKE_HEADS = ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] as const;
 
 /** The voice pipeline: which engine serves each stage, and what each one needs. */
 export const VoiceConfig = z.object({
@@ -328,7 +328,8 @@ export const VoiceConfig = z.object({
   /**
    * The keyword heads inside the wake model directory, one per phrase, all listening at once;
    * one name or a list. A head the model does not have is skipped. A phone that carries every
-   * one runs them itself, at the thresholds and scales the node gives it.
+   * one runs them itself, at the thresholds and scales the node gives it. The app's Settings
+   * can pick others over this list, or none.
    */
   wake_model: z
     .union([z.string().min(1), z.array(z.string().min(1)).min(1).max(8)])
@@ -828,8 +829,8 @@ enabled = false
 wake = "openwakeword"          # openwakeword | off (push-to-talk still works)
 stt = "nemotron"               # moonshine-tiny | moonshine-base (English) | whisper-base (99 languages) | nemotron (live words, 40 languages), on this machine once installed | gemini-live (live words) or gemini (each utterance once it ends), over [providers] stt | off
 tts = "piper"                  # piper (fastest) | kokoro | supertonic (31 languages), on the CPU once installed | chatterbox (GPU sidecar, bootstrapped on demand) | kokoro-online ([providers] tts) | off; the app's Settings picks and installs
-wake_model = ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"]   # "Cophyla", "Hey Phyla"; a client that carries them all hears them itself, otherwise it streams and the node listens
-# wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.1.onnx" = 0.6 }; each head's own from the model when absent
+wake_model = ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"]   # "Cophyla", "Hey Phyla", said ko-FILL-uh (the v0.1 heads hear ko-FY-la); the app's Settings can pick others; a client that carries them all hears them itself, otherwise it streams and the node listens
+# wake_threshold = 0.6         # one for every phrase, or { "cophyla_v0.2.onnx" = 0.6 }; each head's own from the model when absent
 # wake_scale = "int16"         # the scale the heads were trained at: int16 | unit; each head's own when absent
 vad_min_silence_ms = 700       # silence that ends an utterance
 stt_threads = 2

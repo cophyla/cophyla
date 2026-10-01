@@ -510,6 +510,9 @@ describe("the wake detector", () => {
     expect(BUNDLED_HEADS).not.toContain("hey_jarvis_v0.1.onnx");
     expect(BUNDLED_HEADS).toContain("cophyla_v0.1.onnx");
     expect(BUNDLED_HEADS).toContain("hey_phyla_v0.1.onnx");
+    // The heads for the name as it is said now, ko-FILL-uh, ship beside them.
+    expect(BUNDLED_HEADS).toContain("cophyla_v0.2.onnx");
+    expect(BUNDLED_HEADS).toContain("hey_phyla_v0.2.onnx");
     await Bun.sleep(0);
     expect([...cache.map.keys()].sort()).toEqual(BUNDLED_FILES.map((f) => f.sha256).sort());
     const init = worker.sent[0]!;
@@ -591,6 +594,9 @@ describe("the wake detector", () => {
     });
     d.configure({ mode: "phone", head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" });
     expect(worker.sent.at(-1)!.msg).toEqual({ type: "configure", heads: [{ head: "cophyla_v0.1.onnx", threshold: 0.6, scale: "unit" }] });
+    // A head the node says must score over its threshold several chunks in a row is told so.
+    d.configure({ mode: "phone", head: "cophyla_v0.2.onnx", threshold: 0.7, scale: "int16", heads: [{ head: "cophyla_v0.2.onnx", threshold: 0.7, patience: 3, scale: "int16" }] });
+    expect(worker.sent.at(-1)!.msg).toEqual({ type: "configure", heads: [{ head: "cophyla_v0.2.onnx", threshold: 0.7, patience: 3, scale: "int16" }] });
   });
 });
 
@@ -650,6 +656,32 @@ describe("the microphone", () => {
     expect(micWords(named("OverconstrainedError"))).toBe("the microphone picked is not connected");
     expect(micWords(named("NotReadableError"))).toContain("could not be read");
     expect(micWords(new Error("something else"))).toBe("something else");
+  });
+});
+
+describe("other wake words picked on the node", () => {
+  test("the wake stage set up anew asks voice.wakeword again with the heads carried; another stage's setup does not, and both are handed on", async () => {
+    const asked: { method: string; params: unknown }[] = [];
+    const link = {
+      connected: true,
+      state: { hello: { client: { id: "cli_me" } } },
+      request: <T>(method: string, params: unknown): Promise<T> => {
+        asked.push({ method, params });
+        return Promise.resolve({ mode: "off" } as T);
+      },
+      send: async () => {},
+    };
+    const host = new VoiceHost({ link, listening: true, log: () => {} });
+    // The detector as it is once loaded: the page carries every bundled head.
+    const configured: unknown[] = [];
+    (host as unknown as { detector: object }).detector = { ready: true, heads: BUNDLED_HEADS, configure: (m: unknown) => configured.push(m), reset: () => {} };
+    expect(host.handleFrame({ method: "voice.setup", params: { stage: "stt", engine: "nemotron", step: "ready" } })).toBe(false);
+    expect(asked.filter((a) => a.method === "voice.wakeword")).toHaveLength(0);
+    expect(host.handleFrame({ method: "voice.setup", params: { stage: "wake", engine: "openwakeword", step: "ready" } })).toBe(false);
+    expect(asked.filter((a) => a.method === "voice.wakeword").map((a) => a.params)).toEqual([{ heads: BUNDLED_HEADS }]);
+    await Bun.sleep(0);
+    // The node answered that none listens: the page stops listening for any.
+    expect(host.view.wake).toBe("off");
   });
 });
 

@@ -5,11 +5,13 @@
 // words, what a pick and a reset send, and the second-by-second read while an engine loads.
 // Where an online engine goes first and the node's own keys: the choice under an online engine
 // only, the key rows in words with only the last four, and what a route, a key and a clear send.
-// Last, what Cophyla listens for: each listener's line, a Remove, and a node with none.
+// The node's wake words: a box per phrase with how it is said, what listens in words, and the
+// list a tick, an untick and a reset send. Last, what Cophyla listens for: each listener's
+// line, a Remove, and a node with none.
 
 import { describe, expect, test } from "bun:test";
 import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey } from "../src/settings.ts";
+import { joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -501,6 +503,81 @@ describe("routes and keys", () => {
     fail = true;
     expect(await m.setKey("gemini", "short")).toBe(false);
     expect(m.keyRows()[0]!.note).toBe("Not saved: invalid: account.apiKey: apiKey: too short");
+    m.dispose();
+  });
+});
+
+describe("the node's wake words", () => {
+  const WAKE: NonNullable<VoiceSettings["wake"]> = [
+    { head: "cophyla_v0.2.onnx", phrase: "Cophyla", sound: "ko-FILL-uh", on: true },
+    { head: "hey_phyla_v0.2.onnx", phrase: "Hey Phyla", sound: "hey FILL-uh", on: true },
+    { head: "cophyla_v0.1.onnx", phrase: "Cophyla", sound: "ko-FY-la", on: false },
+    { head: "hey_jarvis_v0.1.onnx", phrase: "hey jarvis", on: false },
+  ];
+  const withWake = (over: Partial<VoiceSettings> = {}) => speech({ wake: WAKE, wakeSource: "config", wakeStage: { status: "ready", engine: "openwakeword" }, ...over });
+
+  test("a box per phrase with how it is said, what listens in words, and where the pick came from", () => {
+    const row = wakeRow(withWake())!;
+    expect(row.choices).toEqual([
+      { head: "cophyla_v0.2.onnx", label: "Cophyla", sound: "ko-FILL-uh", on: true },
+      { head: "hey_phyla_v0.2.onnx", label: "Hey Phyla", sound: "hey FILL-uh", on: true },
+      { head: "cophyla_v0.1.onnx", label: "Cophyla", sound: "ko-FY-la", on: false },
+      { head: "hey_jarvis_v0.1.onnx", label: "Hey Jarvis", on: false },
+    ]);
+    expect(row).toMatchObject({ status: "Listening for “Cophyla” and “Hey Phyla”.", trouble: false, source: "From config.toml.", reset: false });
+    // Both ways of saying a name read as the name once.
+    const both = WAKE.map((h) => (h.head.startsWith("cophyla") ? { ...h, on: true } : { ...h, on: false }));
+    expect(wakeRow(withWake({ wake: both, wakeSource: "app" }))).toMatchObject({ status: "Listening for “Cophyla”.", source: "Picked here.", reset: true });
+    expect(wakeRow(withWake({ wake: WAKE.map((h) => ({ ...h, on: false })) }))!.status).toBe("No wake word listens: hold the talk key, or the button, to talk.");
+    expect(wakeRow(withWake({ wakeStage: { status: "loading" } }))!.status).toBe("Loading the wake words…");
+    expect(wakeRow(withWake({ wakeStage: { status: "unavailable", reason: "no model" } }))).toMatchObject({ status: "The wake words cannot listen: no model", trouble: true });
+    expect(wakeRow(withWake({ enabled: false }))!.trouble).toBe(true);
+    // A node that cannot pick them, or whose wake word is off, leaves the part out.
+    expect(wakeRow(speech())).toBeUndefined();
+    expect(wakeRow(speech({ wake: [] }))).toBeUndefined();
+  });
+
+  test("a tick and an untick send the whole list in the model's order, the box as it is sends nothing, and a reset hands it back", async () => {
+    let now = withWake();
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => {
+        const wake = p["wake"] as string[] | null;
+        now = { ...now, wake: WAKE.map((h) => ({ ...h, on: wake === null ? h.head.includes("v0.2") : wake.includes(h.head) })), wakeSource: wake === null ? "config" : "app" };
+        return now;
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setWake("cophyla_v0.1.onnx", true);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { wake: ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx", "cophyla_v0.1.onnx"] } });
+    await m.setWake("cophyla_v0.2.onnx", false);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { wake: ["hey_phyla_v0.2.onnx", "cophyla_v0.1.onnx"] } });
+    expect(m.wakeRow()).toMatchObject({ source: "Picked here.", reset: true });
+    const before = asked.length;
+    await m.setWake("hey_phyla_v0.2.onnx", true);
+    await m.setWake("nope.onnx", true);
+    expect(asked.length).toBe(before);
+    await m.resetWake();
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { wake: null } });
+    // Back on config.toml's, a reset sends nothing.
+    const after = asked.length;
+    await m.resetWake();
+    expect(asked.length).toBe(after);
+    m.dispose();
+  });
+
+  test("a refused pick says so beside the boxes", async () => {
+    const { request } = fakeConnection({
+      "voice.settings": () => withWake(),
+      "voice.configure": () => {
+        throw new Error("invalid: the wake model has no cophyla_v0.1.onnx");
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setWake("cophyla_v0.1.onnx", true);
+    expect(m.wakeRow()!.note).toBe("Not saved: invalid: the wake model has no cophyla_v0.1.onnx");
     m.dispose();
   });
 });

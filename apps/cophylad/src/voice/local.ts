@@ -15,8 +15,8 @@ import type { Logger } from "../log.ts";
 import type { Sidecars } from "../sidecars/index.ts";
 import { applyProcessAffinity } from "./affinity.ts";
 import { chatterboxEngine } from "./chatterbox.ts";
-import type { EngineFactory, EngineLoadOptions, SttEngine, TtsEngine, VadEngine, WakeModel } from "./engines.ts";
-import { OpenWakeWord } from "./openwakeword.ts";
+import type { EngineFactory, EngineLoadOptions, SttEngine, TtsEngine, VadEngine, WakeHeadInfo, WakeModel } from "./engines.ts";
+import { allWakeHeads, OpenWakeWord } from "./openwakeword.ts";
 import { speechEngine } from "./catalog.ts";
 import type { SpeechInstaller } from "./engines.ts";
 import { installEngine, modelInstalled, pendingBytes, runtimeInstalled } from "./install.ts";
@@ -165,8 +165,17 @@ export function localEngines(deps: LocalEnginesDeps): LocalEngines {
         ...(config.wake_scale ? { scale: config.wake_scale } : {}),
       });
       if (model.missing.length > 0) deps.log.warn("wake heads the model does not have are skipped", { missing: model.missing, dir });
-      deps.log.info("wake phrases", { heads: model.heads.map((h) => `${h.phrase} (${h.threshold})`) });
+      deps.log.info("wake phrases", { heads: model.heads.map((h) => `${h.phrase}${h.sound ? ` (${h.sound})` : ""} at ${h.threshold}${h.patience > 1 ? ` x${h.patience}` : ""}`) });
       return model;
+    },
+
+    wakeHeads(dir: string, config: VoiceConfig): WakeHeadInfo[] {
+      const manifest = readVoiceManifest(dir);
+      if (!manifest) return [];
+      return allWakeHeads(manifest, {
+        ...(config.wake_threshold !== undefined ? { threshold: config.wake_threshold } : {}),
+        ...(config.wake_scale ? { scale: config.wake_scale } : {}),
+      });
     },
 
     async vad(dir: string, config: VoiceConfig, opts?: { maxSpeechMs?: number }): Promise<() => VadEngine> {

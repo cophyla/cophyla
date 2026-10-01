@@ -237,7 +237,8 @@ means adding it in all four places, and the test says which one was missed.
 The app has a microphone and a speaker, as the phone does, through the same
 `@cophyla/voicehost`: the host page (`host/voice.ts`) captures 16 kHz mono from launch, hears
 the node's wake words itself in a worker ("Cophyla" and "Hey Phyla" by default:
-the ones `[voice] wake_model` names on the node), sends audio to cophylad only after a word
+the ones `[voice] wake_model` names on the node, or those picked in Settings, after which it
+asks again which to listen for), sends audio to cophylad only after a word
 or while the talk key or the view's talk button is held, and plays the spoken replies. It
 keeps running while the window is hidden in the tray, so a wake word works with the app out
 of sight. The hello says what the page has (`audio: {in, out, codecs, played}`), passed to

@@ -45,7 +45,7 @@ describe("config", () => {
       wake: "openwakeword",
       stt: "nemotron",
       tts: "piper",
-      wake_model: ["cophyla_v0.1.onnx", "hey_phyla_v0.1.onnx"],
+      wake_model: ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"],
       vad_min_silence_ms: 700,
       stt_threads: 2,
       tts_threads: 2,

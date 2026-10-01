@@ -472,17 +472,26 @@ on for the device that pressed: the pending results are read out there whatever 
 hear; a reply the brain was not told to speak is then read out by the node itself.
 
 The wake word listens for several phrases at once, one keyword head each: `wake_model` names
-them (by default "Cophyla" and "Hey Phyla"), each at its own threshold and input
-scale from the model's manifest (`head_params`) unless `wake_threshold` or `wake_scale` says
-otherwise, and a head the model folder lacks is skipped with a warning. It is heard on the
-client — the phone or the desktop app — when the client carries every one of them. A client
-names the heads it carries with `voice.wakeword`; when they cover the node's the answer is
-`phone` with `heads`, each with its threshold, scale and phrase (and the first again as
-`head`, `threshold` and `scale` for an older app), the node runs no wake word over that
-client's frames, and the client sends `voice.wake` and then the audio once it heard a word.
+them (by default "Cophyla" and "Hey Phyla" as the name is said, ko-FILL-uh; the model also has
+the v0.1 heads, which hear ko-FY-la), each at its own threshold, patience (the 80 ms chunks in a
+row it must score over its threshold before it fires) and input scale from the model's manifest
+(`head_params`) unless `wake_threshold` or `wake_scale` says otherwise, and a head the model
+folder lacks is skipped with a warning. The app's Settings picks which heads listen over
+`wake_model` (`voice.configure` `wake`, kept in the store like the engines, `null` handing it
+back, an empty list none at all): `voice.settings` lists every head the model has (`wake`, each
+with its phrase, how it is said and whether it listens), where the pick came from
+(`wakeSource`) and the wake stage (`wakeStage`, `off` with none picked). A new pick loads behind
+the answer; once it is up every client is told (`voice.setup`, stage `wake`, step `ready`) and
+asks `voice.wakeword` again, and a `voice.wake` from a head that no longer listens is let go.
+It is heard on the client — the phone or the desktop app — when the client carries every one
+of them. A client names the heads it carries with `voice.wakeword`; when they cover the node's
+the answer is `phone` with `heads`, each with its threshold, patience, scale and phrase (and
+the first again as `head`, `threshold` and `scale` for an older app), the node runs no wake
+word over that client's frames, and the client sends `voice.wake` and then the audio once it
+heard a word.
 The answer waits up to ten seconds for a wake stage still loading. Otherwise the answer is
 `node` and the client streams while it listens, as does a controller that never asks; `off`
-means voice or the wake word is off here. A word fires a moment after it ends, often inside the
+means voice or the wake word is off here, or no head is picked. A word fires a moment after it ends, often inside the
 next word, so the recogniser also hears the 160 ms before it fired: the node keeps them for a
 client it listens for, and a client sends them after `voice.wake` and counts them in its
 `lead`; the VAD does not hear them, so a false accept is still abandoned untranscribed. Each
