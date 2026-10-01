@@ -17,7 +17,7 @@ import type { RemoteState } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { silentLogger } from "../src/log.ts";
 import { HostApi } from "../src/remote/host.ts";
-import { hideCursorIn, loopbackHost, RemoteProxy, RemoteTickets, seedScript } from "../src/remote/proxy.ts";
+import { decoderSizeScript, loopbackHost, RemoteProxy, RemoteTickets, seedScript, streamPageFor } from "../src/remote/proxy.ts";
 import { startFakeApollo } from "./fakes/apollo.ts";
 import type { FakeApollo } from "./fakes/apollo.ts";
 import { FAKE_WEB, remoteSeams } from "./fakes/remote.ts";
@@ -296,9 +296,32 @@ describe("remote web viewer", () => {
     expect(tickets.list()[0]).toMatchObject({ video, hideCursor: true });
   });
 
-  test("a session that hides the pointer gets the stream page rewritten, fetched whole and kept out of the cache; every other response, and every other session's, as it came", async () => {
-    expect(hideCursorIn("<html><head><title>x</title></head><body></body></html>")).toBe("<html><head><title>x</title><style>.video-stream{cursor:none}</style></head><body></body></html>");
-    expect(hideCursorIn("<video></video>")).toBe("<style>.video-stream{cursor:none}</style><video></video>");
+  test("the decoder script gives the page's video decoder the stream's size where the page gives none, and leaves a size the page gives", () => {
+    const seen: Record<string, unknown>[] = [];
+    class FakeDecoder {
+      configure(config: Record<string, unknown>): void {
+        seen.push(config);
+      }
+    }
+    const window = { VideoDecoder: FakeDecoder };
+    const body = /^<script>([\s\S]*)<\/script>$/.exec(decoderSizeScript(1920, 1200))![1]!;
+    new Function("window", body)(window);
+    new FakeDecoder().configure({ codec: "hev1.2.4.L120.90", optimizeForLatency: true });
+    new FakeDecoder().configure({ codec: "avc1.640033", codedWidth: 2560, codedHeight: 1440 });
+    expect(seen).toEqual([
+      { codec: "hev1.2.4.L120.90", optimizeForLatency: true, codedWidth: 1920, codedHeight: 1200 },
+      { codec: "avc1.640033", codedWidth: 2560, codedHeight: 1440 },
+    ]);
+    // a page with no decoder of its own is left alone
+    expect(() => new Function("window", body)({})).not.toThrow();
+  });
+
+  test("a sized session, or one that hides the pointer, gets the stream page rewritten, fetched whole and kept out of the cache; every other response, and every other session's, as it came", async () => {
+    const video = { width: 1920, height: 1200 };
+    expect(streamPageFor("<html><head><title>x</title></head><body></body></html>", { hideCursor: true })).toBe("<html><head><title>x</title><style>.video-stream{cursor:none}</style></head><body></body></html>");
+    expect(streamPageFor("<html><head><title>x</title></head></html>", { hideCursor: true, video })).toBe(`<html><head><title>x</title>${decoderSizeScript(1920, 1200)}<style>.video-stream{cursor:none}</style></head></html>`);
+    expect(streamPageFor("<video></video>", { hideCursor: true })).toBe("<style>.video-stream{cursor:none}</style><video></video>");
+    expect(streamPageFor("<html><head></head></html>", {})).toBe("<html><head></head></html>");
     const asked: { path: string; headers: Headers }[] = [];
     const upstream = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
       const url = new URL(String(input));
@@ -309,7 +332,7 @@ describe("remote web viewer", () => {
     const tickets = new RemoteTickets();
     const proxy = new RemoteProxy({ tickets, upstream: () => "http://127.0.0.1:1", transport: () => "websocket", log: silentLogger, fetch: upstream as typeof fetch });
     const target = { node: "node_x", hostId: 1, appId: 2 };
-    const session = async (opts: { hideCursor?: boolean }) => {
+    const session = async (opts: { hideCursor?: boolean; video?: { width: number; height: number; fps: number; bitrate: number } }) => {
       const res = await proxy.handle(new Request(`http://127.0.0.1:50123/remote/?t=${tickets.mint("client_a", target, { secureCookie: false, ...opts }).ticket}`, { headers: { host: "127.0.0.1:50123" } }), () => false);
       return res!.headers.get("set-cookie")!.split(";")[0]!;
     };
@@ -331,10 +354,18 @@ describe("remote web viewer", () => {
     expect(script.headers.get("etag")).toBe('"j1"');
     expect(asked.at(-1)!.headers.get("if-none-match")).toBe('"s0"');
 
+    // a sized session's page tells the decoder the stream's size
+    const sized = await session({ video: { width: 2560, height: 1440, fps: 60, bitrate: 55296 } });
+    const sizedPage = await (await get(sized, "/remote/stream.html?hostId=1&appId=2")).text();
+    expect(sizedPage).toContain("codedWidth:2560,codedHeight:1440");
+    expect(sizedPage).not.toContain("cursor:none");
+
     // the phone's session: the page as it came
     const plain = await session({});
     const untouched = await get(plain, "/remote/stream.html?hostId=1&appId=2");
-    expect(await untouched.text()).not.toContain("cursor:none");
+    const untouchedText = await untouched.text();
+    expect(untouchedText).not.toContain("cursor:none");
+    expect(untouchedText).not.toContain("codedWidth");
     expect(untouched.headers.get("etag")).toBe('"s1"');
     expect(asked.at(-1)!.headers.get("if-none-match")).toBe('"s0"');
   });

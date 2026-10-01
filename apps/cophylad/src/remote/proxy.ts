@@ -9,7 +9,8 @@
 // page carries its video (the transport it seeds, and for a low-latency one the renderer and
 // codec that keep the video a few frames behind, for the desktop app the size, frame rate and
 // bitrate it is to ask for, and whether the user's own pointer hides over the picture, which
-// shows the desktop's), and names the stream it opens, which its client ends with
+// shows the desktop's; the stream page of such a session is rewritten, its video decoder told
+// the stream's size), and names the stream it opens, which its client ends with
 // `remote.close`. A session is a `web` viewer in this node's
 // `remote.state`: revoked by `remote.revoke`, and forgotten with its sockets when the client
 // that opened it disconnects, like a view ticket.
@@ -217,16 +218,31 @@ export function seedScript(transport: StreamTransport, lowLatency: boolean, vide
   return `try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(transport)};${low}${sized}localStorage.setItem(k,JSON.stringify(s))}catch(e){}`;
 }
 
-/** The stream page's path, which a session that hides the pointer gets rewritten. */
+/** The stream page's path, which a sized session, or one that hides the pointer, gets rewritten. */
 export const STREAM_PAGE = "/remote/stream.html";
 
 /** The user's pointer hidden over the picture; the desktop's own cursor is in the video. */
 export const HIDE_CURSOR_STYLE = "<style>.video-stream{cursor:none}</style>";
 
-/** The stream page with the pointer hidden over the picture: the style goes last in its head. */
-export function hideCursorIn(html: string): string {
+/**
+ * The stream's size given to the page's video decoder where moonlight-web gives none:
+ * configured without it, WebView2's hardware HEVC decoder hands back frames of the right
+ * coded size marked visible only over Chromium's default 1280×720, and the canvas renderer
+ * draws that corner of the picture alone (measured: coded 1920×1216, visible 1280×720).
+ */
+export function decoderSizeScript(width: number, height: number): string {
+  return `<script>(function(){var D=window.VideoDecoder;if(!D)return;var c=D.prototype.configure;D.prototype.configure=function(f){return c.call(this,f&&f.codedWidth===undefined?Object.assign({},f,{codedWidth:${Math.round(width)},codedHeight:${Math.round(height)}}):f)}})()</script>`;
+}
+
+/**
+ * The stream page as a session needs it, last in its head: the decoder told the stream's size
+ * for a sized session, and the pointer hidden over the picture for one that hides it.
+ */
+export function streamPageFor(html: string, opts: { hideCursor?: boolean; video?: { width: number; height: number } }): string {
+  const added = (opts.video ? decoderSizeScript(opts.video.width, opts.video.height) : "") + (opts.hideCursor ? HIDE_CURSOR_STYLE : "");
+  if (!added) return html;
   const at = html.search(/<\/head>/i);
-  return at < 0 ? HIDE_CURSOR_STYLE + html : html.slice(0, at) + HIDE_CURSOR_STYLE + html.slice(at);
+  return at < 0 ? added + html : html.slice(0, at) + added + html.slice(at);
 }
 
 /** A `Host` on this machine's loopback: the page came through a forwarder here, over plain HTTP. */
@@ -290,8 +306,8 @@ export class RemoteProxy {
       return undefined;
     }
 
-    // The one page rewritten, for a session that hides the pointer: asked for whole, never from the browser's cache.
-    const rewrite = session.hideCursor === true && url.pathname === STREAM_PAGE && req.method === "GET";
+    // The one page rewritten, for a sized session or one that hides the pointer: asked for whole, never from the browser's cache.
+    const rewrite = (session.hideCursor === true || session.video !== undefined) && url.pathname === STREAM_PAGE && req.method === "GET";
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP.has(k)) headers.set(k, v);
     headers.set(WEB_USER_HEADER, WEB_USER);
@@ -315,7 +331,7 @@ export class RemoteProxy {
     if (html) out.set("content-security-policy", "frame-ancestors 'self'");
     out.set("x-content-type-options", "nosniff");
     if (rewrite && html && res.status === 200) {
-      const text = hideCursorIn(await res.text());
+      const text = streamPageFor(await res.text(), { ...(session.hideCursor ? { hideCursor: true } : {}), ...(session.video ? { video: session.video } : {}) });
       for (const k of ["content-encoding", "etag", "last-modified"]) out.delete(k);
       out.set("cache-control", "no-store");
       return new Response(text, { status: 200, headers: out });

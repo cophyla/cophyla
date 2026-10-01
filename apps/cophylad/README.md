@@ -553,9 +553,11 @@ moonlight-qt's own window instead, where they are saved. Asked to `embed` it, fo
 desktop app to show beside its view, it answers instead a ticket to this node's own
 moonlight-web on the stream proxy's loopback port (`loopback.ts`), WebSocket transport and
 low-latency settings (canvas renderer, HEVC where the page decodes it) at the same size and
-bitrate, which it answers as `video`, the stream page given a style that hides the user's
-pointer over the picture; or, with no route to the host, the host's ticket through a
-forwarder as for a window, sized there and held to 15 Mbps. For a controller on the LAN
+bitrate, which it answers as `video`, the stream page given a script that tells its video
+decoder the stream's size (WebView2's hardware HEVC decoder, told none, shows only a
+1280×720 corner of each frame) and a style that hides the user's pointer over the picture;
+or, with no route to the host, the host's ticket through a forwarder as for a window, sized
+there and held to 15 Mbps. For a controller on the LAN
 listener it fetches moonlight-web v2.10.0 into `data/sidecars/moonlight-web/` the first
 time, starts it on a loopback port under `/remote`, adds and pairs the host through its REST
 API (`hosts.json` beside it keeps the ids), and answers a one-use URL

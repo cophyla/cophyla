@@ -173,6 +173,7 @@ describe("a desktop with no route to it", () => {
     expect(watched.page).toContain(`s.canvasRenderer=true;`);
     expect(watched.page).toContain(`s.videoSize="custom";s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=15000;`);
     expect(watched.stream).toContain("<style>.video-stream{cursor:none}</style></head>");
+    expect(watched.stream).toContain("codedWidth:1920,codedHeight:1200");
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "laptop app"));
     // the pipes ran here and there
     expect(p.d.pipes.count).toBeGreaterThan(0);
@@ -229,6 +230,7 @@ describe("a desktop with no route to it", () => {
     expect(phoneWatched.page).not.toContain("canvasRenderer");
     expect(phoneWatched.page).not.toContain("videoSize");
     expect(phoneWatched.stream).not.toContain("cursor:none");
+    expect(phoneWatched.stream).not.toContain("codedWidth");
     expect(f.failures).toEqual([]);
     await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "Pixel"));
 

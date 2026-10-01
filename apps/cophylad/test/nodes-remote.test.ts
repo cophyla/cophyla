@@ -201,7 +201,11 @@ describe("remote desktop across nodes", () => {
     const streamPage = await fetch(new URL(/"(\/remote\/stream\.html[^"]*)"/.exec(page)![1]!, url), { headers: { cookie } });
     expect(streamPage.headers.get("cache-control")).toBe("no-store");
     expect(streamPage.headers.get("etag")).toBeNull();
-    expect(await streamPage.text()).toContain("<title>Stream: Desktop</title><style>.video-stream{cursor:none}</style></head>");
+    // and tells its video decoder the stream's size, which the hardware HEVC decoder needs to show all of it
+    const streamText = await streamPage.text();
+    expect(streamText).toContain("<title>Stream: Desktop</title><script>");
+    expect(streamText).toContain("codedWidth:2560,codedHeight:1440");
+    expect(streamText).toContain("<style>.video-stream{cursor:none}</style></head>");
     await waitFor(() => primary!.d.remote.state().viewers.some((v) => v.kind === "web" && v.name === "desk-a"));
     await desk.request("remote.close", { stream });
     await waitFor(() => !primary!.d.remote.state().viewers.some((v) => v.kind === "web"));
