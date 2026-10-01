@@ -49,8 +49,8 @@ again.
 | `views/` | 2 | `view.list`, `view.get` and `view.setDefault` over the built-in views in `../views/`, `.ts` type-stripped on serve |
 | `rpc/` | 3, 9 | JSON-RPC over any transport (`peer.ts`): a child process's stdio for the brain and the ACP adapters (`stdio.ts`), a WebSocket for the node link (`ws.ts`) |
 | `chat/` | 3 | the chat stream: threads and messages, `chat.send` as `user.message` for the brain, `ui.say` stored and streamed with the steps its turn took, `ui.ask`, typing as `user.activity` |
-| `tasks/` | 3 | the task table and the blockers the platform clears itself (an answered ask, a done task, a session gone idle or ended) with `task.ready` on each; a blocker on something already settled settles at once, and a harness ask answered while its agent runs hands the task back to the session |
-| `listeners/` | — | what the brain hears beyond the user: its listeners in the `kv` namespace `listeners` (the brain's store requests refuse it), each event on the stream matched by kind and filter (`match.ts`), a fire counted down, held back by its cooldown and raised as `listener.fired` a microtask after the event, every removal (spent, `until` over, the user's, the brain's) as `listener.removed`; a metric condition watched over its node's samples with a re-arm after five points back (`metric.ts`), this node's through the metrics module's in-process watcher, another's over the link's watch as `listener:<id>`; started and stopped with the primary role beside the scheduler (`index.ts`) |
+| `tasks/` | 3 | the task table and the blockers the platform clears itself (an answered ask, a done task, a session gone idle or ended) with `task.ready` on each, naming the blocker that `cleared`; a blocker on something already settled settles at once, and a harness ask answered while its agent runs hands the task back to the session; a session the task waits on, or whose `task` names it, joins its `sessions`; `task.list` filters by `parent` for a plan's steps |
+| `listeners/` | — | what the brain hears beyond the user: its listeners in the `kv` namespace `listeners` (the brain's store requests refuse it), each event on the stream matched by kind and filter (`match.ts`), a fire counted down, held back by its cooldown and raised as `listener.fired` a microtask after the event, every removal (spent, `until` over, the session it filters on ended, the user's, the brain's) as `listener.removed`; a metric condition watched over its node's samples with a re-arm after five points back (`metric.ts`), this node's through the metrics module's in-process watcher, another's over the link's watch as `listener:<id>`; started and stopped with the primary role beside the scheduler (`index.ts`) |
 | `tools/` | 3 | the built-in tools behind `tool.run`: `fs.read`, `fs.grep`, `fs.glob`, `fs.outline`, `http.get`, paths relative to a workspace, caps from `[tools]` |
 | `editable/` | 3, 6 | prompts and memory as markdown files with frontmatter under `~/.cophyla/prompts` and `~/.cophyla/memory`; a memory write or delete reaches the index through `onChange` |
 | `llm/` | 3, 11 | `llm.complete` walked along the `[providers] llm` route list: a tier or a `vendor/model` to a provider (`gemini.ts`, the cloud module's `server`), streamed as `llm.delta`; `unavailable` and `quota_exceeded` pass a call to the next route |
@@ -160,9 +160,13 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   does when asked), and has its first prompt typed once it registers.
   A client's `session.send` is typed with no prefix, waiting while an ask is open or the
   prompt holds half-typed text (`claude/screen.ts` reads Claude's screen); the brain's sends
-  stay on the pipe unless `[sessions].brain_sends = "typed"`. A new session id in the same
-  process (`/clear`, the clear-context row) re-keys the record (`Sessions.rekey`), and a
-  plan's "Yes, clear context" is pressed by key in the terminal. `entry.ts` writes the
+  stay on the pipe unless `[sessions].brain_sends = "typed"`. A send may prepare the session
+  first, in order: `clear` types `/clear` whatever `brain_sends` says and waits for the new
+  context, `mode` (plan or default) is set as `session.mode` sets it, and `task` is written
+  on the session; empty text only prepares. A new session id in the same
+  process (`/clear`, the clear-context row) re-keys the record (`Sessions.rekey`), keeping a
+  name the user gave it, and a plan's "Yes, clear context" is pressed by key in the terminal;
+  built in a fresh session instead, the plan takes the old session's task with it. `entry.ts` writes the
   Windows Terminal profile that starts the user's own `claude` in tether, and
   `<home>/editors/tether.json`, the tether command the VS Code extension's terminal runs (on a
   Mac with iTerm2, an iTerm2 dynamic profile in place of Windows Terminal's).
@@ -566,7 +570,8 @@ the chat's tab.
 `views/tsconfig.json` typechecks them with the DOM library.
 
 The files a view shows come from `sessions/files.ts`: `session.files` lists a session's folder
-a level at a time, `session.git` reads its repository, and `session.file` (and `terminal.file`,
+a level at a time, `session.git` reads its repository (with `log`, its last commits too; the
+brain reads it as well), and `session.file` (and `terminal.file`,
 for the folder a bare terminal started in) reads a file under it, its text, or with `whole` its
 bytes 1.5 MiB at a time up to 64 MiB, for what the viewer draws: an image, a PDF, what a page
 loads. `resolveUnder` holds every one of them under the folder, past `..` and links. A TIFF or a

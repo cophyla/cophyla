@@ -65,6 +65,13 @@ process. They are the public contract; the design notes behind them are kept pri
   id, patch: {usual?, launch?}}` → `{profile}`** on the client's: a profile's plan limits read
   now, and the usual account and the launch set from the app (`null` hands either back).
   `HarnessProfile` gains `defaultBy`, `automatic` and `launch`, all optional and additive.
+- **Handing a session its work.** `session.send` gains `task`, `clear` and `mode`, and
+  `session.spawn` a `mode`; the mode is `WorkMode`, `default` or `plan` alone, so a message
+  never loosens one (a looser mode is `session.mode`'s, asked on its own). `task.ready` gains
+  `cleared`, the blocker that cleared; the task filter `parent`; `session.git {id, log?}` is a
+  capability request too, and `log` (up to 20) adds `GitCommit`s on both protocols. The
+  brain's `hello` gains `features`, naming what the platform does, since an older one ignores
+  what it does not know. All additive.
 - **`Session.profile` is required.** This is the one non-additive change the package has made:
   a `Session` now names the `HarnessProfile` it was found under. It is allowed because only
   cophylad produces `Session` values and nothing has shipped; every other schema change stays
