@@ -44,6 +44,7 @@ import type { Logger } from "../log.ts";
 import { SampleFeed, slackFor } from "../metrics/delivery.ts";
 import type { ProcessDetail } from "../metrics/delivery.ts";
 import { RpcPeer } from "../rpc/peer.ts";
+import { plainRow } from "../sessions/tether/title.ts";
 import type { Mirror } from "./mirror.ts";
 import { NodePeer } from "./peer.ts";
 import type { Registry } from "./registry.ts";
@@ -556,7 +557,7 @@ export class Inbound {
       const sessions = own(p.sessions, (s) => ({ node: s.node, session: s.id }));
       const workspaces = own(p.workspaces, (w) => ({ node: w.node, workspace: w.id }));
       const asks = own(p.asks, (a) => ({ node: a.node, ask: a.id }));
-      const terminals: Terminal[] = own(p.terminals ?? [], (t) => ({ node: t.node }));
+      const terminals: Terminal[] = own(p.terminals ?? [], (t) => ({ node: t.node })).map(plainRow);
       const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length;
       if (dropped > 0) this.log.warn("join rows refused: not the joiner's", { node: p.node.id, count: dropped });
       this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals });
@@ -748,7 +749,7 @@ export class Inbound {
         this.log.debug("bad upward notification ignored", { node: peer.id, method });
         return;
       }
-      const value = parsed.data;
+      const value = name === "terminal.state" ? plainRow(parsed.data as Terminal) : parsed.data;
       // A row about any other node is the registry this node was given, echoed: nothing new.
       if (name === "node.state" && (value as NodeRecord).id !== peer.id) return;
       const refused = refuseClaim((UPWARD_NOTIFICATIONS[name] as (v: unknown, o: OwnerLookup) => UpwardClaim)(value, { sender: peer.id, mirror: this.deps.mirror }), peer.id, this.deps.isLocal);
@@ -760,6 +761,8 @@ export class Inbound {
         this.routeSample(peer.id, value as MetricsSample);
         return;
       }
+      // A node on an older build tells each frame of a CLI's spinner: with it off, a row that only spun is nothing new.
+      if (name === "terminal.state" && JSON.stringify(this.deps.mirror.terminal(peer.id, (value as Terminal).id)) === JSON.stringify(value)) return;
       this.deps.mirror.apply(peer.id, method, value);
       if (name === "node.state") {
         // The node's own row changed (a voice stage, its desktop host): the registry's copy

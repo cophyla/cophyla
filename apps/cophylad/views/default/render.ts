@@ -53,7 +53,7 @@ import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import type { AccountBar, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
@@ -200,6 +200,8 @@ export interface RenderOptions {
   anchor?: boolean;
   /** The rail shows at this width, as the user left it or by the width's own. */
   railShown?: boolean;
+  /** How much of the chat's items to draw, as what changed asks (`chatDraw`); all of them unless said. */
+  chat?: ChatDraw;
 }
 
 export interface Roots {
@@ -2857,6 +2859,45 @@ function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: U
   }
 }
 
+/**
+ * The row an item shows, which the model replaces whole when it changes; none for what streams
+ * into its object in place (a reply's words) or is short-lived (the turn's progress, the words
+ * heard), which is drawn every time.
+ */
+function rowOf(item: StreamItem): object | undefined {
+  switch (item.kind) {
+    case "ask":
+      return item.ask;
+    case "audit":
+      return item.entry;
+    case "thread":
+      return item.thread;
+    case "message":
+      return item.message;
+    case "task":
+      return item.task;
+    case "streaming":
+    case "progress":
+    case "heard":
+      return undefined;
+  }
+}
+
+/** Each chat item's element and the row it was last drawn from. */
+const drawnRows = new WeakMap<HTMLElement, object>();
+
+/**
+ * Draws a chat item: with `own`, an element already drawn from the same row is left as it is,
+ * since nothing else it shows changed; with `all`, every one is drawn again.
+ */
+function drawItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: UiState, chat: ChatDraw): void {
+  const row = rowOf(item);
+  if (chat === "own" && row !== undefined && drawnRows.get(node) === row) return;
+  updateItem(node, item, state, ui);
+  if (row !== undefined) drawnRows.set(node, row);
+  else drawnRows.delete(node);
+}
+
 function ensureEmpty(stream: HTMLElement, state: ViewState): void {
   let empty = stream.querySelector<HTMLElement>(".empty");
   const show = state.audit.size === 0 && state.messages.size === 0 && state.streaming.size === 0 && state.tasks.size === 0 && heardText(state) === "";
@@ -3108,7 +3149,9 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
     holder = el("div", "items");
     roots.stream.append(holder);
   }
-  reconcile(holder, items, keyOf, createItem, (node, item) => updateItem(node, item, state, ui));
+  // A change no chat item shows (a terminal's title, a node's sample) leaves them as they are.
+  const chat = opts.chat ?? "all";
+  if (chat !== "none") reconcile(holder, items, keyOf, createItem, (node, item) => drawItem(node, item, state, ui, chat));
   reconcile(roots.sessions, [...state.sessions.values()], (c) => c.session.id, createPane, (node, c) => updatePane(node, c, state, ui));
   renderComposer(roots.composer, state, ui);
   renderDevices(roots.devices, state, ui);

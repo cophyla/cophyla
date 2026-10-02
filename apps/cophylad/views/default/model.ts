@@ -895,6 +895,46 @@ export function apply(state: ViewState, action: Action): ViewState {
   }
 }
 
+/**
+ * What drawing after an action asks of the chat's items, the most of the view to draw: `none`
+ * when it changed nothing an item shows (a terminal's row, a node's samples, an open tab's
+ * timeline); `own` when it changed only the items it streams into, adds or takes away (a reply's
+ * words as they come, the turn's progress, the words heard); `all` for the rest, any of which
+ * may change what a chip or a row says (a session's name, a folder Files listed, a new thread).
+ */
+export type ChatDraw = "none" | "own" | "all";
+
+export function chatDraw(action: Action): ChatDraw {
+  switch (action.type) {
+    case "terminal.state":
+    case "terminals":
+    case "metrics.sample":
+    case "spend.loading":
+    case "metrics.spend":
+    case "session.event":
+    case "history.loading":
+    case "history":
+    case "draft":
+    case "send.result":
+      return "none";
+    case "chat.delta":
+    case "chat.retract":
+    case "chat.progress":
+    case "voice.partial":
+    case "voice.state":
+      return "own";
+    default:
+      return "all";
+  }
+}
+
+const CHAT_DRAW_RANK: Record<ChatDraw, number> = { none: 0, own: 1, all: 2 };
+
+/** The more of the chat two actions drawn together ask for. */
+export function widerChatDraw(a: ChatDraw, b: ChatDraw): ChatDraw {
+  return CHAT_DRAW_RANK[a] >= CHAT_DRAW_RANK[b] ? a : b;
+}
+
 /** Adds the samples' per-profile deltas to a node's spend, each sample once: only what is newer than the last counted. */
 function countSpend(state: ViewState, node: NodeId, samples: SpendDelta[]): void {
   let spend = state.spend.get(node);

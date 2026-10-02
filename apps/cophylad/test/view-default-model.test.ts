@@ -2,8 +2,8 @@
 // grouped by the folder they work in), the stream and a
 // timeline look like after the daemon's snapshot, live events, history pages, sends, asks,
 // audit rows, the conversation's threads and messages (loaded and streamed) and the open
-// tasks, with what a scheduled task offers to the user and how its trigger reads; which
-// session the view watches, what a tab drops when it closes, whether this client loads
+// tasks, with what a scheduled task offers to the user and how its trigger reads; how much
+// of the chat each change draws; which session the view watches, what a tab drops when it closes, whether this client loads
 // history unasked and the buttons that load it when it does not; the nodes' cards, from the
 // registry and the samples, with the spend per profile built on the node's totals and each
 // live sample counted once, beside each login's plan limits from the latest sample; and each
@@ -17,8 +17,8 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
-import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -848,6 +848,48 @@ describe("default view: what streams and what loads", () => {
     apply(s, { type: "chat.loaded", threads: [thread("thr_4", 400, { endedAt: 450, topic: "the gate" })], messages: [message("msg_8", "thr_4", 410, "user", "fix it")], limit: 1 });
     expect(s.oldestThread).toBe("thr_4");
     expect(selectStream(s).items.map(keyOf)).toEqual(["thread:thr_4", "message:msg_8", "thread:thr_5", "message:msg_9"]);
+  });
+
+  test("a terminal's row or a tab's event draws none of the chat; a reply streaming, its own item; anything else, all of it", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100, { title: "Tidy the build" }) });
+    open(s, "sess_a");
+    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 200)], messages: [message("msg_1", "thr_1", 210, "user", "fix it"), message("msg_2", "thr_1", 220, "orchestrator", "On it.")], limit: 1 });
+    const rows = () => selectStream(s).items.map((i) => (i.kind === "message" ? i.message : i.kind === "thread" ? i.thread : i));
+    const shown = rows();
+    const who = s.sessions.get("sess_a")!.session;
+    const row: Terminal = { id: "t1", node: NODE, host: "h", argv0: "codex", cwd: "C:\\x", cols: 80, rows: 24, title: "build", status: "running", windows: 0, startedAt: 1 };
+    // What a `none` changes, no item shows: the stream holds the same rows, and a chip's session is the same.
+    const none: Action[] = [
+      { type: "terminal.state", params: row },
+      { type: "terminals", terminals: [row] },
+      { type: "session.event", params: event("sess_a", 1, "assistant_text", { text: "hi" }) },
+      { type: "history.loading", session: "sess_a" },
+      { type: "draft", session: "sess_a", text: "and the tests" },
+    ];
+    for (const action of none) {
+      expect(chatDraw(action)).toBe("none");
+      apply(s, action);
+    }
+    expect(rows()).toEqual(shown);
+    rows().forEach((r, i) => expect(r).toBe(shown[i]!));
+    expect(s.sessions.get("sess_a")!.session).toBe(who);
+    // A reply's words stream into their own item; the rows before it stay the same objects.
+    const delta: Action = { type: "chat.delta", params: { message: "msg_3", block: 0, delta: { type: "text", text: "Done" } } };
+    expect(chatDraw(delta)).toBe("own");
+    apply(s, delta);
+    expect(rows().slice(0, shown.length).every((r, i) => r === shown[i])).toBe(true);
+    expect(chatDraw({ type: "chat.progress", params: {} })).toBe("own");
+    expect(chatDraw({ type: "voice.partial", params: { text: "and" } })).toBe("own");
+    // A session renamed or a message landed may change what any chip says.
+    expect(chatDraw({ type: "session.state", params: session("sess_a", 100, { title: "Tidy it" }) })).toBe("all");
+    expect(chatDraw({ type: "chat.message", params: { message: message("msg_3", "thr_1", 230, "orchestrator", "Done") } })).toBe("all");
+    expect(chatDraw({ type: "files", place: "p", asked: ["."] })).toBe("all");
+    // Drawn together, the most any of them asks.
+    expect(widerChatDraw("none", "own")).toBe("own");
+    expect(widerChatDraw("own", "none")).toBe("own");
+    expect(widerChatDraw("all", "own")).toBe("all");
+    expect(widerChatDraw("none", "none")).toBe("none");
   });
 });
 

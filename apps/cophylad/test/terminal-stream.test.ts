@@ -4,9 +4,9 @@
 // repaint; a batch holds at most 64 KiB; a client that fell behind, or all of them when the
 // daemon's subscription did, get a repaint instead of what they missed. Watching neither types
 // nor sizes; `input` types, `drive` sizes, on a connection of its own. Each terminal's row is
-// told once per change. A shell started in a workspace runs in its folder and counts as work
-// there. Through the daemon: the rows reach a client at hello and in
-// `terminal.list`, and opening a terminal to type into it is gated as `exec`.
+// told once per change, and a title that only spins is none. A shell started in a workspace
+// runs in its folder and counts as work there. Through the daemon: the rows reach a client at
+// hello and in `terminal.list`, and opening a terminal to type into it is gated as `exec`.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -211,6 +211,22 @@ describe("terminal streams", () => {
     bus.emit("session.state", session);
     await waitFor(() => told.some((r) => r.session === session.id));
     expect(rows.list().find((r) => r.id === t.id)?.session).toBe(session.id);
+  });
+
+  test("a title that only spins is told once, without its spinner; new words are a change", async () => {
+    told.length = 0;
+    // Each frame further apart than the rows wait, as Codex's braille and Claude Code's halves turn.
+    for (const frame of ["⠋", "⠙", "⠹", "◐", "◑", "✳"]) {
+      t.retitle(`${frame} build the docs`);
+      await sleep(40);
+    }
+    await waitFor(() => told.length > 0);
+    expect(told.map((r) => r.title)).toEqual(["build the docs"]);
+    t.retitle("⠸ fix the tests");
+    await waitFor(() => told.length > 1);
+    await sleep(60);
+    expect(told.map((r) => r.title)).toEqual(["build the docs", "fix the tests"]);
+    expect(rows.list().find((r) => r.id === t.id)?.title).toBe("fix the tests");
   });
 
   test("a shell started in a workspace runs in its folder, and counts as work there", async () => {

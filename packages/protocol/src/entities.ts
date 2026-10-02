@@ -293,6 +293,7 @@ export const Terminal = z.object({
   pid: z.number().int().positive().optional(),
   cols: z.number().int().positive(),
   rows: z.number().int().positive(),
+  /** The title its program set, without the spinner an agent CLI turns before it: a title that only spins is not a change. */
   title: z.string().optional(),
   status: TerminalStatus,
   exitCode: z.number().int().optional(),

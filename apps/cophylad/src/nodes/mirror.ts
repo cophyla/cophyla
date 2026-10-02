@@ -96,6 +96,11 @@ export class Mirror {
     return undefined;
   }
 
+  /** A node's terminal as its last row told it, while it runs. */
+  terminal(node: string, id: string): Terminal | undefined {
+    return this.nodes.get(node)?.terminals.get(id);
+  }
+
   ownerOfTerminal(id: string): string | undefined {
     for (const [node, m] of this.nodes) if (m.terminals.has(id)) return node;
     return undefined;

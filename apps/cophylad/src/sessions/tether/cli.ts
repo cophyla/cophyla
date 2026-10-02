@@ -18,6 +18,7 @@
 import type { HarnessKind, TerminalRef } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
 import type { TerminalChange, TerminalEntry } from "./index.ts";
+import { plainTitle } from "./title.ts";
 
 /** One process as the process table gives it. */
 export interface ProcessRow {
@@ -92,7 +93,7 @@ function keyOf(ref: TerminalRef): string {
 export class TerminalClis {
   private deps: TerminalClisDeps;
   private marks = new Map<string, { ref: TerminalRef; mark: CliMark }>();
-  private titles = new Map<string, string | undefined>();
+  private titles = new Map<string, string>();
   private pending = new Map<string, TerminalRef>();
   private timer?: ReturnType<typeof setTimeout>;
   private lastRead = -Infinity;
@@ -115,7 +116,7 @@ export class TerminalClis {
   /** Looks at every running terminal once: the daemon may have started under CLIs already open. */
   start(): void {
     for (const e of this.deps.list()) {
-      this.titles.set(keyOf(e.ref), e.info.title);
+      this.titles.set(keyOf(e.ref), plainTitle(e.info.title ?? ""));
       this.consider(e);
     }
   }
@@ -137,9 +138,11 @@ export class TerminalClis {
       this.clear(key);
       return;
     }
+    // A spinner turning is no new title: only the words after it are compared.
+    const title = plainTitle(info.title ?? "");
     const known = this.titles.has(key);
-    const retitled = known && this.titles.get(key) !== info.title;
-    this.titles.set(key, info.title);
+    const retitled = known && this.titles.get(key) !== title;
+    this.titles.set(key, title);
     if (!known) {
       // Its own program may be the CLI, told by name, started when tether started it.
       const own = cliOfName(info.argv[0] ?? "");

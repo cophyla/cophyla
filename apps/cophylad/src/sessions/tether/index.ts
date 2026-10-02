@@ -17,6 +17,7 @@ import type { TetherConfig } from "../../config/schema.ts";
 import type { Logger } from "../../log.ts";
 import { itermInstalled } from "../terminals.ts";
 import { locateTether, stageTether } from "./locate.ts";
+import { plainTitle } from "./title.ts";
 
 export interface RunResult {
   code: number;
@@ -444,9 +445,10 @@ export class Tether {
    * A terminal as the client protocol carries it, with the session running in it when there is
    * one, the harness whose agents screen it shows, or the harness whose CLI runs in it.
    */
-  /** A terminal's row: on this node, or on the workspace node whose folder it started in. */
+  /** A terminal's row: on this node, or on the workspace node whose folder it started in; its title with no spinner before it. */
   toTerminal(entry: TerminalEntry, session?: string, agents?: HarnessKind, harness?: HarnessKind, node?: string): Terminal {
     const i = entry.info;
+    const title = plainTitle(i.title ?? "");
     return {
       id: entry.ref.id,
       node: node ?? this.opts.nodeId,
@@ -457,7 +459,7 @@ export class Tether {
       ...(i.pid !== undefined ? { pid: i.pid } : {}),
       cols: i.cols,
       rows: i.rows,
-      ...(i.title ? { title: i.title } : {}),
+      ...(title ? { title } : {}),
       status: i.status,
       ...(i.exit ? { exitCode: i.exit.code } : {}),
       ...(session ? { session } : {}),

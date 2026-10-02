@@ -40,6 +40,8 @@ export class FakeSession {
   rows = 32;
   status: "running" | "exited" = "running";
   exitCode?: number;
+  /** The title the program set, as `retitle` sets it. */
+  title?: string;
   /** The screen as rows of runs; `setScreen` fills it from text. */
   cells: Run[][] = [];
   /** Everything typed, in order: `paste:<text>`, `keys:<names>`, `write:<data>`. */
@@ -77,6 +79,7 @@ export class FakeSession {
       labels: this.spawn.labels,
       status: this.status,
       ...(this.exitCode !== undefined ? { exit: { code: this.exitCode } } : {}),
+      ...(this.title !== undefined ? { title: this.title } : {}),
       startedAt: 1,
       seq: this.seq,
       clients: this.clients,
@@ -111,6 +114,12 @@ export class FakeSession {
     this.cols = cols;
     this.rows = rows;
     this.host.emit({ ev: "resized", session: this.id, cols, rows });
+  }
+
+  /** The program set its title, as an OSC sequence would. */
+  retitle(title: string): void {
+    this.title = title;
+    this.host.emit({ ev: "title", session: this.id, title });
   }
 
   exit(code: number): void {
