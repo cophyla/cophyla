@@ -184,14 +184,14 @@ describe("plan approval from a terminal session", () => {
     await mini.sessions.stopSession(fresh.id);
   });
 
-  test("a start in plan mode puts the session in it over the profile's launch; another harness has no mode", async () => {
+  test("a start in plan mode puts the session in it over the profile's launch; Codex has no plan mode", async () => {
     const ws = mini.workspaces.put({ node: mini.sessions.nodeId, path: cwd, name: "work" });
     const s = await mini.sessions.spawn({ harness: "claude", workspace: ws.id, prompt: "Implement this plan: section 1", mode: "plan" }, { profiles: mini.profiles });
     const said = await waitFor(() => events(s.id).find((e) => e.kind === "assistant_text"), 5000);
     expect(said.payload).toEqual({ text: "mode=plan" });
     await mini.sessions.stopSession(s.id);
     const refused = await mini.sessions.spawn({ harness: "codex", workspace: ws.id, prompt: "x", mode: "plan" }, { profiles: mini.profiles }).then(() => undefined, (e: unknown) => e);
-    expect(refused).toMatchObject({ code: "unsupported", message: expect.stringContaining("codex has none") });
+    expect(refused).toMatchObject({ code: "unsupported", message: "a Codex session starts in default or bypassPermissions mode, not plan" });
   });
 
   test("when no session can start, clear context builds the plan where it is, in the row's mode", async () => {

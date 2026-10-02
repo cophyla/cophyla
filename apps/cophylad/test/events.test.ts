@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { newId } from "@cophyla/protocol";
-import type { Ask, Session, SessionEvent } from "@cophyla/protocol";
+import type { Ask, Session, SessionEvent, Terminal } from "@cophyla/protocol";
 import { Bus } from "../src/bus.ts";
 import type { ChangedEvent } from "../src/bus.ts";
 import { builtinEvents, EventCatalogue } from "../src/events/catalogue.ts";
@@ -159,6 +159,24 @@ describe("event stream: the mapping", () => {
     stream.prime([]);
     bus.emit("session.state", session(a.id, "ended"));
     expect(names().filter((n) => n === "session.ended")).toHaveLength(0);
+  });
+
+  test("a terminal's row is terminal.waiting only when it begins or stops holding a CLI no session stands for", () => {
+    const { bus, events } = setup();
+    const row = (extra: Partial<Terminal>): Terminal => ({ id: "7d1e0a93c2b4", node: NODE, host: "a1b2c3d4e5f60718", argv0: "pwsh.exe", cwd: "C:\\D\\x", cols: 120, rows: 32, status: "running", windows: 0, startedAt: 1, ...extra });
+    bus.emit("terminal.state", row({ title: "pwsh" }));
+    expect(events).toHaveLength(0);
+    bus.emit("terminal.state", row({ title: "x", harness: "codex" }));
+    // A retitle while it waits is nothing.
+    bus.emit("terminal.state", row({ title: "x · busy", harness: "codex" }));
+    // A session holds it: the CLI no longer waits.
+    bus.emit("terminal.state", row({ title: "x", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }));
+    bus.emit("terminal.state", row({ title: "x", harness: "codex" }));
+    bus.emit("terminal.state", row({ harness: "codex", status: "exited" }));
+    bus.emit("terminal.state", row({ status: "exited" }));
+    expect(events.map((e) => e.name)).toEqual(["terminal.waiting", "terminal.waiting", "terminal.waiting", "terminal.waiting"]);
+    expect(events.map((e) => (e.params as { terminal: Terminal }).terminal.harness ?? "-")).toEqual(["codex", "-", "codex", "codex"]);
+    expect((events[3]!.params as { terminal: Terminal }).terminal.status).toBe("exited");
   });
 
   test("a listener that throws does not stop the next; dispose ends everything", () => {

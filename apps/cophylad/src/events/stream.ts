@@ -6,12 +6,13 @@
 // `session.updated` without an `event`; a session that ended becomes `session.ended`; an open harness ask `session.ask`;
 // task, thread and workspace changes their `*.updated`; a user message, the user's
 // activity, a node's pressure, the editable layer's notices and the brain's listeners' fires
-// and removals pass through. `custom` turns a hook's emit into `event.custom` with its
+// and removals pass through. A terminal's row becomes `terminal.waiting` only when it begins
+// or stops holding an agent CLI no session stands for. `custom` turns a hook's emit into `event.custom` with its
 // payload as plain JSON, carrying the hook's name as `origin` so the hook never hears its
 // own, and the emit depth so a ping-pong between hooks ends. Nothing is announced at a brain
 // handshake: `prime` marks the live sessions known.
 
-import type { CapabilityEventName, CapabilityEventParams, Session } from "@cophyla/protocol";
+import type { CapabilityEventName, CapabilityEventParams, Session, Terminal } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Logger } from "../log.ts";
 
@@ -46,6 +47,8 @@ export class EventStream {
   private known = new Set<string>();
   /** The annotation last seen per known session, so only a change is announced. */
   private annotations = new Map<string, string>();
+  /** The harness of each terminal's waiting CLI, by `host/id`, so only a change is announced. */
+  private waiting = new Map<string, string>();
   private listeners = new Set<StreamListener>();
   private unsubscribe: (() => void)[] = [];
 
@@ -102,12 +105,23 @@ export class EventStream {
       bus.on("memory.changed", (c) => this.emit({ name: "memory.changed", params: { at: c.at } })),
       bus.on("events.changed", (c) => this.emit({ name: "events.changed", params: { at: c.at, ...(c.problems ? { problems: c.problems } : {}) } })),
       bus.on("node.pressure", (p) => this.emit({ name: "node.pressure", params: { at: p.at, node: p.node, resource: p.resource, level: p.level } })),
+      bus.on("terminal.state", (t) => this.onTerminal(t)),
       bus.on("node.joined", (node) => this.emit({ name: "node.joined", params: { at: this.now(), node } })),
       bus.on("node.left", (e) => this.emit({ name: "node.left", params: { at: e.at, node: e.node } })),
       bus.on("entitlement.updated", (e) => this.emit({ name: "entitlement.updated", params: { at: e.at, token: e.token } })),
       bus.on("listener.fired", (e) => this.emit({ name: "listener.fired", params: e })),
       bus.on("listener.removed", (e) => this.emit({ name: "listener.removed", params: e })),
     );
+  }
+
+  /** A terminal's row: `terminal.waiting` only when it begins or stops holding an agent CLI no session stands for, never for a retitle. */
+  private onTerminal(t: Terminal): void {
+    const key = `${t.host}/${t.id}`;
+    const now = t.status === "running" && t.session === undefined ? t.harness : undefined;
+    if (this.waiting.get(key) === now) return;
+    if (now === undefined) this.waiting.delete(key);
+    else this.waiting.set(key, now);
+    this.emit({ name: "terminal.waiting", params: { at: this.now(), terminal: t } });
   }
 
   /** At each brain handshake: the live sessions are known, so the brain is not told of them twice. */

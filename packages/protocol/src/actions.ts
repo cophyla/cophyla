@@ -41,6 +41,8 @@ export const actions = {
   "session.file": { risk: "read" },
   "session.reveal": { risk: "read" },
   "terminal.list": { risk: "read" },
+  // A first prompt typed into the user's waiting CLI: a message to a session of theirs.
+  "terminal.prompt": { risk: "write" },
   "terminal.spawn": { risk: "exec" },
   // Watching is a read; typing into it (`input`, `drive`) is `exec`, and so is ending it.
   "terminal.open": { risk: "read" },

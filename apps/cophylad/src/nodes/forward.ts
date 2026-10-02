@@ -87,6 +87,7 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "terminal.open":
     case "terminal.close":
     case "terminal.file":
+    case "terminal.prompt":
       return node(host.ownerOfTerminal(p["terminal"] as string));
     case "terminal.spawn": {
       // A shell in a workspace starts where the workspace is; else on the node named.
@@ -194,6 +195,11 @@ function dedupe<T extends { id: string }>(rows: T[]): T[] {
 /** What runs on the primary after a forwarded call answered, by the node that answered it. */
 const after: Record<string, (result: unknown, params: unknown, host: ForwardHost, node: string) => void> = {
   "session.spawn": (result, _params, host) => {
+    const thread = host.chat.peek();
+    const id = (result as { id?: string }).id;
+    if (thread && id) host.chat.touchSession(thread.id, id);
+  },
+  "terminal.prompt": (result, _params, host) => {
     const thread = host.chat.peek();
     const id = (result as { id?: string }).id;
     if (thread && id) host.chat.touchSession(thread.id, id);

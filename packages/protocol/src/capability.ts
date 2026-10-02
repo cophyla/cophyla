@@ -38,6 +38,7 @@ import {
   ListenerSpec,
   PressureLevel,
   PressureResource,
+  Terminal,
 } from "./entities.ts";
 import { AskId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
@@ -65,7 +66,10 @@ export const CapabilityHello = z.object({
    * `task.ready.cleared`: an unblocked `task.ready` names the blocker that cleared;
    * `task.list.parent`: `task.list` filters by `parent`; `session.git`: the brain reads a
    * session's repository; `spawn.mode`: `session.spawn` takes any of a Claude session's
-   * modes, one looser than asking before each edit under the user's ask.
+   * modes, one looser than asking before each edit under the user's ask; `codex.bypass`: it
+   * takes `bypassPermissions` for a Codex session too; `terminal.prompt`: the brain sees the
+   * agent CLIs waiting at their first prompt (`terminal.list`, `terminal.waiting`) and gives
+   * one its first prompt (`terminal.prompt`).
    */
   features: z.array(z.string()).optional(),
 });
@@ -117,6 +121,12 @@ export const capabilityEvents = {
   "node.joined": event({ node: Node }),
   "node.left": event({ node: NodeId }),
   "node.pressure": event({ node: NodeId, resource: PressureResource, level: PressureLevel }),
+  /**
+   * A terminal began or stopped holding an agent CLI no session stands for yet (a Codex or Muse
+   * CLI before its first prompt): its row, with `harness` while it waits and without once a
+   * session holds it, the CLI went or the terminal exited. Only the change is told, never a retitle.
+   */
+  "terminal.waiting": event({ terminal: Terminal }),
   /** `problems`: the editable files that failed to load, so the brain can hand them back to whoever wrote them. */
   "tools.changed": event({ problems: z.array(EditableProblem).optional() }),
   "prompts.changed": event({}),
@@ -380,12 +390,24 @@ export const capabilityRequests = {
       profile: ProfileId.optional(),
       /**
        * A Claude session's mode, over the profile's launch: `bypassPermissions` starts it with
-       * `--dangerously-skip-permissions`. One looser than asking before each edit (`sessionModeRisk`
-       * says `exec`) is never allowed by the built-in rule that lets the brain start a session:
-       * it asks, unless the user's own rules say otherwise.
+       * `--dangerously-skip-permissions`. A Codex session takes `default` or `bypassPermissions`,
+       * `--dangerously-bypass-approvals-and-sandbox`, and only in a terminal. One looser than
+       * asking before each edit (`sessionModeRisk` says `exec`) is never allowed by the built-in
+       * rule that lets the brain start a session: it asks, unless the user's own rules say otherwise.
        */
       mode: LaunchMode.optional(),
     }),
+    result: z.object({ id: SessionId }),
+  },
+  /** The terminals, as the client protocol's `terminal.list` has them: a row whose `harness` is set holds an agent CLI waiting at its first prompt. */
+  "terminal.list": { params: Empty, result: z.object({ terminals: z.array(Terminal) }) },
+  /**
+   * Types a first prompt into a terminal whose agent CLI waits at its prompt with no session
+   * yet, as the user would type it, and waits for the session it then becomes, which carries
+   * `task`. The CLI and its terminal stay the user's.
+   */
+  "terminal.prompt": {
+    params: z.object({ terminal: z.string(), text: z.string().min(1), task: TaskId.optional() }),
     result: z.object({ id: SessionId }),
   },
   "session.stop": {

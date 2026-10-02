@@ -42,6 +42,7 @@ export function builtinEvents(node: string): EventDefinition[] {
     def("memory.changed", "a memory file changed"),
     def("events.changed", "the hooks, and so the custom events, were reloaded"),
     def("node.pressure", "a node crossed a resource threshold"),
+    def("terminal.waiting", "a terminal began or stopped holding an agent CLI waiting at its first prompt, which no session stands for yet"),
     def("node.joined", "a node came"),
     def("node.left", "a node went"),
     def("listener.fired", "a listener of the brain's heard what it listens for; the listener and the event that fired it are inside"),

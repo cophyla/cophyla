@@ -115,7 +115,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode"] });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);

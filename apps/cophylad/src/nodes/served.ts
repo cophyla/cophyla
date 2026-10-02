@@ -55,6 +55,7 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
   "session.spawn",
   "session.stop",
   "session.mode",
+  "terminal.prompt",
   "ask.answer",
   "annotate",
   "workspace.list",
@@ -259,6 +260,8 @@ export class NodeServer {
       case "remote.pair":
       case "remote.screenshot":
         throw new RpcError("denied", "this node shares folders alone, not its desktop");
+      case "terminal.prompt":
+        throw new RpcError("denied", "this node shares folders alone: nothing is typed into its terminals for the primary");
       default:
         return;
     }

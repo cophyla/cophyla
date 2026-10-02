@@ -221,7 +221,7 @@ export interface HarnessAdapter {
   expectTerminal?(ref: TerminalRef, what: TerminalExpectation): void;
   /** The record a terminal's session was claimed as, once it has been. */
   claimed?(ref: TerminalRef): SessionRecord | undefined;
-  /** Whether a profile's sessions report through cophylad's hooks, which alone find one in a terminal. Muse only. */
+  /** Whether a profile's sessions report through cophylad's hooks, which alone find one in a terminal. Muse and Codex. */
   hooked?(profileId: string): Promise<boolean>;
   /** Sessions the adapter runs itself, headless, through the harness's own host. Muse only. */
   headless?: HeadlessRunner;

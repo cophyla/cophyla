@@ -36,7 +36,7 @@ import { ReplyStream } from "./stream.ts";
  * What this platform does beyond the protocol version, named in its hello: a brain relies on
  * one only when it is named (`CapabilityHello.features`).
  */
-export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode"] as const;
+export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt"] as const;
 
 export type BrainState = "down" | "starting" | "up" | "refused" | "stopped";
 

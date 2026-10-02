@@ -121,6 +121,12 @@ export class CodexAdapter implements HarnessAdapter {
     return this.entries.get(profileId)?.trust;
   }
 
+  /** Whether a profile's threads report through cophylad's hooks, trusted: only a hook finds a thread in its terminal. */
+  async hooked(profileId: string): Promise<boolean> {
+    const trust = this.entries.get(profileId)?.trust;
+    return trust !== undefined && trust.refused === undefined && trust.trusted > 0;
+  }
+
   async start(profiles: HarnessProfile[], hooks: HookInstallSpec | undefined): Promise<void> {
     for (const profile of profiles) if (profile.status !== "missing") await this.add(profile, hooks);
   }

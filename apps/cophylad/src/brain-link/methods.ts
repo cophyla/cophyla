@@ -5,7 +5,7 @@
 // Requests that belong to later milestones answer `unsupported`.
 
 import { RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session, WorkMode } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session, Terminal, WorkMode } from "@cophyla/protocol";
 import { annotate } from "../annotate.ts";
 import type { Chat } from "../chat/index.ts";
 import type { MemoryFiles } from "../editable/memory.ts";
@@ -89,6 +89,8 @@ export interface BrainMethodDeps {
   listeners?: Listeners;
   /** The sessions' repositories, for `session.git`; absent, it is `unsupported`. */
   files?: Pick<SessionFiles, "git">;
+  /** This node's terminal rows, for `terminal.list`; absent, there are none. */
+  terminals?: { list(): Terminal[] };
 }
 
 /** What `profile.limits` reads: `PlanLimits.fresh`. */
@@ -146,6 +148,18 @@ export function sendAsk(p: { id: string; text: string; clear?: boolean; mode?: W
   if (p.text === "") return { title: `Prepare ${name}?`, detail: `${first(steps.join(", then "))}; nothing is sent.` };
   return { title: `Prepare ${name} and message it?`, detail: `${first(steps.join(", "))}, then send:\n\n${p.text}` };
 }
+
+/**
+ * The words of the ask before the brain types a first prompt into a CLI of the user's waiting
+ * in a terminal: which CLI, where, and the prompt.
+ */
+export function promptAsk(p: { terminal: string; text: string }, terminal: Terminal | undefined): { title: string; detail: string } {
+  const where = terminal ? (terminal.cwd.split(/[\\/]/).filter(Boolean).pop() ?? terminal.cwd) : `terminal ${p.terminal}`;
+  const cli = terminal?.harness ? `the ${CLI_NAME[terminal.harness] ?? terminal.harness} CLI` : "the CLI";
+  return { title: `Give ${cli} in ${where} its first prompt?`, detail: p.text };
+}
+
+const CLI_NAME: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse" };
 
 /** The words of the ask a node's rules open before the brain changes a session's mode. */
 export function modeAsk(p: { id: string; mode: LaunchMode }, session: Session | undefined): { title: string; detail: string } {
@@ -207,6 +221,18 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       handler: async (p) => {
         await deps.sessions.stopSession(p.id);
         return {};
+      },
+    },
+    "terminal.list": { handler: () => ({ terminals: deps.terminals?.list() ?? [] }) },
+    // The user's CLI and terminal: typing into them is a message to a session of theirs, asked about.
+    "terminal.prompt": {
+      target: (p) => p.terminal,
+      ask: (p) => promptAsk(p, deps.terminals?.list().find((t) => t.id === p.terminal)),
+      handler: async (p) => {
+        const session = await deps.sessions.promptTerminal(p.terminal, p.text, p.task !== undefined ? { task: p.task } : {});
+        const thread = deps.chat.peek();
+        if (thread) deps.chat.touchSession(thread.id, session.id);
+        return { id: session.id };
       },
     },
     "session.git": {

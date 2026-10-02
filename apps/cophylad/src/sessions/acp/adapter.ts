@@ -127,6 +127,9 @@ const PACKAGES: Record<AcpHarness, string> = {
 /** The mode each adapter is put in so the agent's prompts reach the queue. */
 const ASK_MODE: Record<AcpHarness, string> = { claude: "default", codex: "read-only" };
 
+/** codex-acp's mode that asks for nothing and runs with no sandbox: bypass permissions, over ACP. */
+export const CODEX_ACP_FULL_ACCESS = "agent-full-access";
+
 const DETAIL_CHARS = 2000;
 
 /** `node` when it is on PATH, else the daemon's own Bun. */

@@ -830,7 +830,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The nodes module: the role, the links, the mirrors. The brain is started and stopped
   // through it, since a promotion or a step-down moves the brain with the role.
   const speech = { target: (p: Parameters<Delivery["target"]>[0]) => (delivery ? delivery.target(p) : ("legacy" as const)) };
-  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, ...(limits ? { limits } : {}) };
+  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, terminals: { list: () => nodeTerminals?.rows.list() ?? [] }, ...(limits ? { limits } : {}) };
   // The link is built before anything can raise an event, so a hook's first emit or a
   // trigger missed while the daemon was down waits in its outbox for the handshake; the
   // brain itself is spawned once everything it can ask for is there.

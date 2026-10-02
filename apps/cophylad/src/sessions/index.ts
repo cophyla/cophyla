@@ -38,7 +38,7 @@ import { redact } from "../gate/audit.ts";
 import type { Logger } from "../log.ts";
 import type { SessionListFilter, Store } from "../store/index.ts";
 import type { Workspaces } from "../workspaces/index.ts";
-import { AcpAdapter } from "./acp/adapter.ts";
+import { AcpAdapter, CODEX_ACP_FULL_ACCESS } from "./acp/adapter.ts";
 import { looserOnTheWay, MODE_WORDS, permissionModeOf, readLaunch } from "./claude/launch.ts";
 import { isAlive as processAlive } from "./claude/registry.ts";
 import type { ClaudeLaunch, PermissionMode } from "./claude/launch.ts";
@@ -47,6 +47,8 @@ import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
+import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
+import { codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
 import { Injections } from "./injections.ts";
 import type { PendingSend } from "./injections.ts";
@@ -379,6 +381,8 @@ export class Sessions implements SessionHost {
   private agentsListeners = new Set<(ref: TerminalRef) => void>();
   /** The agent CLIs in terminals no session holds yet. */
   private clis?: TerminalClis;
+  /** Terminals a first prompt went into for a harness that names its sessions itself (Codex), and the record each became. */
+  private firstPrompts: { ref: TerminalRef; harness: AttachedHarness; origin: "orchestrator" | "user"; workspace?: string; task?: string; intent?: string; since: number; expiresAt: number; rec?: SessionRecord }[] = [];
   /** What cophylad installs in a harness's settings, kept for a profile that comes later. */
   private spec?: HookInstallSpec;
   private profilesCheckedAt = -Infinity;
@@ -1302,6 +1306,7 @@ export class Sessions implements SessionHost {
 
   patch(rec: SessionRecord, patch: Partial<Session>, at = this.now()): void {
     const before = rec.session.native.pid;
+    const terminalBefore = rec.session.native.terminal;
     // A harness that reports tokens but no cost gets one from the price table, when its model is known.
     if (patch.stats && patch.stats.cost === 0 && patch.stats.model && this.deps.pricer) {
       const cost = this.deps.pricer(patch.stats.model, patch.stats.tokens);
@@ -1316,6 +1321,8 @@ export class Sessions implements SessionHost {
     this.broadcast(rec);
     // A process learned from a hook's ancestors may run below a terminal.
     if (patch.native && patch.native.pid !== before) this.terminalAbove(rec as LiveRecord);
+    // A terminal taken may be the one a first prompt went into.
+    if (rec.session.native.terminal && !sameTerminal(rec.session.native.terminal, terminalBefore)) this.claimTerminal(rec);
   }
 
   /** The permission mode a session is in: every one seen is kept, and a Claude session's shows as its `mode`. */
@@ -1622,7 +1629,8 @@ export class Sessions implements SessionHost {
     if (part === undefined && this.deps.owners?.ownerOf(workspace.path) !== undefined) throw new RpcError("conflict", `${workspace.path} is lent to a workspace node: a session started there would be the other cluster's`);
     // A workspace node's sessions run headless: no window, no terminal of the owner's.
     const headless = part !== undefined;
-    if (params.mode !== undefined && params.harness !== "claude") throw new RpcError("unsupported", `only a Claude Code session starts in a mode: ${params.harness} has none`);
+    if (params.mode !== undefined && params.harness === "codex" && params.mode !== "default" && params.mode !== "bypassPermissions") throw new RpcError("unsupported", `a Codex session starts in default or bypassPermissions mode, not ${params.mode}`);
+    if (params.mode !== undefined && params.harness !== "claude" && params.harness !== "codex") throw new RpcError("unsupported", `only a Claude Code or Codex session starts in a mode: ${params.harness} has none`);
     let profile: HarnessProfile | undefined;
     if (params.profile !== undefined) {
       profile = opts.profiles.get(params.profile);
@@ -1635,6 +1643,7 @@ export class Sessions implements SessionHost {
     if (profile.status === "missing") throw new RpcError("unavailable", `profile ${profile.name} has no configuration directory`);
     const model = params.model && "model" in params.model ? params.model.model.slice(params.model.model.indexOf("/") + 1) : undefined;
     if (params.harness === "muse") return this.spawnMuse(params, workspace, profile, model, headless);
+    if (params.harness === "codex") return this.spawnCodex(params, workspace, profile, model, headless);
     const profileLaunch = params.harness === "claude" ? opts.profiles.launch?.(profile.id) : undefined;
     // The mode asked for replaces the launch's own; the launch's other flags stay.
     const launch = params.mode !== undefined ? { ...(profileLaunch ?? { args: [] }), mode: params.mode } : profileLaunch;
@@ -1654,6 +1663,204 @@ export class Sessions implements SessionHost {
       ...(launch?.mode ? { mode: launch.mode } : {}),
     });
     return { ...rec.session };
+  }
+
+  /**
+   * Starts a Codex session: its CLI in a tether terminal when `sessions.launch` says a terminal,
+   * tether is here and the profile's threads report through cophylad's hooks, which alone find
+   * a thread in its terminal; headless over ACP otherwise, or when the terminal cannot be had.
+   * Bypass permissions is the CLI's `--dangerously-bypass-approvals-and-sandbox`, and the ACP
+   * adapter's full-access mode.
+   */
+  private async spawnCodex(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, model: string | undefined, headless: boolean): Promise<Session> {
+    if (this.config.launch === "terminal" && this.deps.tether?.available && !headless) {
+      if (await this.adapters.get("codex")?.hooked?.(profile.id)) {
+        const started = await this.spawnCodexInTether(params, workspace, profile, model);
+        if (started) return started;
+      } else {
+        this.log.warn("Codex has not trusted cophylad's hooks, which alone find a thread in a terminal; starting it headless", { profile: profile.id, workspace: workspace.id });
+      }
+    }
+    const rec = await this.acp!.spawn({
+      harness: "codex",
+      profile,
+      cwd: workspace.path,
+      workspace: workspace.id,
+      prompt: params.prompt,
+      ...(params.task !== undefined ? { task: params.task } : {}),
+      ...(model !== undefined ? { model } : {}),
+      ...(params.mode === "bypassPermissions" ? { mode: CODEX_ACP_FULL_ACCESS } : {}),
+    });
+    return { ...rec.session };
+  }
+
+  /**
+   * Starts a Codex session in a tether terminal, running `codex` as the user does with the
+   * first prompt as its argument (`codex/start.ts`), typed instead when the CLI is a batch
+   * file. Codex picks the thread's id itself, at that first prompt: the terminal is expected,
+   * and the record that takes it (by the CLI's pid, or by its mark when the shared app-server
+   * daemon runs the thread) is the session, carrying what it was started for. A session that
+   * does not arrive is reported with what its screen waits on, and left alone: the
+   * expectation outlives the wait, so one answered later still arrives knowing its task.
+   * `undefined` when tether cannot start it, and the caller starts it headless.
+   */
+  private async spawnCodexInTether(params: SpawnParams, workspace: { id: string; path: string }, profile: HarnessProfile, model: string | undefined): Promise<Session | undefined> {
+    const tether = this.deps.tether!;
+    const intent = capText(params.prompt.replace(/\s+/g, " ").trim(), 200);
+    const title = sessionName(intent) || "cophylad session";
+    const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
+    const command = profile.exec?.command ?? Bun.which("codex") ?? "codex";
+    const typed = runsUnderCmd(command);
+    const argv = codexArgv({ command, ...(profile.exec ? { args: profile.exec.args } : {}), ...(model ? { model } : {}), bypass: params.mode === "bypassPermissions", ...(typed ? {} : { prompt: params.prompt }) });
+    const since = this.now();
+    let term: TerminalRef;
+    try {
+      term = (await tether.spawn({ argv, cwd: workspace.path, env: this.codexSpawnEnv(profile), labels: { app: "cophylad", "cophylad.spawn": ulid(since) } })).ref;
+    } catch (e) {
+      this.log.warn("tether could not start the Codex session; starting it headless", { workspace: workspace.id, error: e instanceof Error ? e.message : String(e) });
+      return undefined;
+    }
+    this.expectFirstPrompt(term, "codex", { origin: "orchestrator", workspace: workspace.id, ...(params.task !== undefined ? { task: params.task } : {}), intent }, since);
+    const window = tether.windowOnStart
+      ? await this.openWindow(term, title, workspace.path).catch((e: unknown) => {
+          this.log.warn("no window opened on the session; it runs with none", { terminal: term.id, error: e instanceof Error ? e.message : String(e) });
+          return undefined;
+        })
+      : undefined;
+    const deadline = this.now() + timeoutMs;
+    const rec = typed ? await this.typeIntoCodex(term, params.prompt, deadline) : await this.awaitTerminalSession("codex", () => this.claimedBy(term), timeoutMs, term);
+    if (!rec) {
+      const screen = await tether.screen(term, "text").catch(() => undefined);
+      const on = screen ? codexWaitingOn(screen) : undefined;
+      this.log.warn("a Codex session started in tether has not registered", { workspace: workspace.id, terminal: term.id, typed, waiting: on });
+      const why = on ? `it is waiting on ${on}` : screen ? `its screen ends:\n${tail(screen)}` : "its terminal cannot be read";
+      throw new RpcError("unavailable", `a Codex session started in ${workspace.path} did not register within ${Math.round(timeoutMs / 1000)}s: ${why}`);
+    }
+    this.log.info("codex session started in tether", { session: rec.session.id, terminal: term.id, host: term.host, window, workspace: workspace.id, bypass: params.mode === "bypassPermissions" });
+    return { ...rec.session };
+  }
+
+  /**
+   * Types a first prompt into a Codex CLI once its composer is up, and waits for the thread
+   * it makes to take the terminal (`expectFirstPrompt`). The text pasted and Enter pressed, as
+   * `submit` does; Enter once more when no thread came within a few seconds, since a TUI still
+   * drawing can take the first as a newline, and an empty composer ignores it. The record, or
+   * `undefined` when none came by the deadline.
+   */
+  private async typeIntoCodex(term: TerminalRef, text: string, deadline: number): Promise<SessionRecord | undefined> {
+    const tether = this.deps.tether!;
+    while (this.now() < deadline && !this.stopped) {
+      if (tether.get(term)?.info.status === "exited") return undefined;
+      const screen = await tether.screen(term).catch(() => undefined);
+      if (screen && codexComposerUp(screen)) break;
+      await sleep(TYPE_POLL_MS);
+    }
+    if (this.now() >= deadline || this.stopped) return undefined;
+    await submit(await tether.client(term.host), term.id, text);
+    const first = await this.awaitTerminalSession("codex", () => this.claimedBy(term), Math.min(TYPE_VERIFY_MS, Math.max(0, deadline - this.now())), term);
+    if (first) return first;
+    if (tether.get(term)?.info.status === "exited" || this.now() >= deadline) return undefined;
+    await tether.keys(term, ["Enter"]).catch(() => undefined);
+    this.log.info("Enter pressed again: no thread came of the first prompt yet", { terminal: term.id });
+    return this.awaitTerminalSession("codex", () => this.claimedBy(term), Math.max(0, deadline - this.now()), term);
+  }
+
+  /**
+   * Gives an agent CLI waiting at its first prompt in a terminal (`cliOf`: no session holds
+   * it, a Codex or Muse CLI before its first prompt) that prompt, typed as the user would type
+   * it, and waits for the session it becomes, which carries `task`. The CLI and its terminal
+   * stay the user's, and so does the session.
+   */
+  async promptTerminal(id: string, text: string, opts: { task?: string } = {}): Promise<Session> {
+    const tether = this.deps.tether;
+    if (!tether?.available) throw new RpcError("unsupported", "tether is not on this node");
+    const entry = tether.list().find((e) => e.ref.id === id);
+    if (!entry || entry.info.status !== "running") throw new RpcError("not_found", `no running terminal ${id}`);
+    const held = this.sessionOfTerminal(entry.ref);
+    if (held) throw new RpcError("conflict", `terminal ${id} holds session ${held.id}: send to it instead`);
+    const harness = this.clis?.markOf(entry.ref)?.harness;
+    if (harness !== "codex" && harness !== "muse") throw new RpcError("conflict", `terminal ${id} holds no agent CLI waiting at its first prompt`);
+    const ref = entry.ref;
+    const cwd = entry.info.cwdReported || entry.info.cwd;
+    // A terminal in a lent folder is the other cluster's.
+    if (this.deps.owners?.ownerOf(entry.info.cwd) !== undefined) throw new RpcError("not_found", `no running terminal ${id}`);
+    const workspace = this.deps.workspaces.list({ node: this.nodeId }).find((w) => pathKey(w.path) === pathKey(cwd))?.id;
+    const intent = capText(text.replace(/\s+/g, " ").trim(), 200);
+    const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
+    const deadline = this.now() + timeoutMs;
+    const what = { ...(workspace !== undefined ? { workspace } : {}), ...(opts.task !== undefined ? { task: opts.task } : {}), intent };
+    let rec: SessionRecord | undefined;
+    if (harness === "codex") {
+      this.expectFirstPrompt(ref, "codex", { origin: "user", ...what });
+      rec = await this.typeIntoCodex(ref, text, deadline);
+    } else {
+      const adapter = this.adapters.get("muse");
+      if (!adapter?.expectTerminal) throw new RpcError("unsupported", "this daemon does not run Muse sessions");
+      const pid = this.clis?.markOf(ref)?.pid ?? entry.info.pid;
+      adapter.expectTerminal(ref, { ...(pid !== undefined ? { pid } : {}), ...what, expiresAt: this.now() + TERMINAL_EXPECT_MS });
+      const typed = (await this.awaitMusePrompt(ref, deadline)) && (await this.typeFirstPrompt(ref, text, deadline));
+      rec = typed ? await this.awaitTerminalSession("muse", () => adapter.claimed?.(ref), Math.max(0, deadline - this.now()), ref) : undefined;
+    }
+    if (!rec) {
+      const screen = await tether.screen(ref, "text").catch(() => undefined);
+      const on = screen ? (harness === "codex" ? codexWaitingOn(screen) : museWaitingOn(screen)) : undefined;
+      this.log.warn("a first prompt typed into a waiting CLI made no session", { terminal: id, harness, waiting: on });
+      const why = on ? `it is waiting on ${on}` : screen ? `its screen ends:\n${tail(screen)}` : "its terminal cannot be read";
+      throw new RpcError("unavailable", `the ${harness} CLI in ${cwd} made no session within ${Math.round(timeoutMs / 1000)}s: ${why}`);
+    }
+    this.log.info("a waiting CLI took its first prompt", { session: rec.session.id, terminal: id, harness, task: opts.task });
+    return { ...rec.session };
+  }
+
+  /**
+   * A first prompt goes into a terminal for a harness that names its sessions itself (Codex):
+   * the record that next takes the terminal is that session (`claimTerminal`). One per terminal.
+   */
+  private expectFirstPrompt(ref: TerminalRef, harness: AttachedHarness, what: { origin: "orchestrator" | "user"; workspace?: string; task?: string; intent?: string }, since = this.now()): void {
+    this.firstPrompts = this.firstPrompts.filter((x) => !sameTerminal(x.ref, ref) && x.expiresAt > this.now());
+    this.firstPrompts.push({ ...what, ref, harness, since, expiresAt: this.now() + TERMINAL_EXPECT_MS });
+  }
+
+  /** The record a first prompt into this terminal became, once one has. */
+  private claimedBy(ref: TerminalRef): SessionRecord | undefined {
+    const rec = this.firstPrompts.find((x) => sameTerminal(x.ref, ref))?.rec;
+    return rec && rec.session.status !== "ended" ? rec : undefined;
+  }
+
+  /**
+   * A record just took a terminal a first prompt went into: it is that session, and carries
+   * what the prompt was for. The first record of the harness to take it whose thread the
+   * prompt made, once: a thread older than the prompt (its UUIDv7 says when it was made) is
+   * another CLI's, which a lone marked terminal in its folder can draw (`linkMarked`). One whose
+   * expectation ran out claims nothing.
+   */
+  private claimTerminal(rec: SessionRecord): void {
+    const term = rec.session.native.terminal;
+    const x = this.firstPrompts.find((e) => sameTerminal(e.ref, term) && e.harness === rec.session.harness);
+    if (!x || x.rec || x.expiresAt < this.now() || rec.session.status === "ended") return;
+    const made = uuidv7Time(rec.session.native.id);
+    if (made !== undefined && made < x.since - CLI_LEAD_MS) {
+      this.log.info("a thread older than the first prompt took its terminal; not claimed", { session: rec.session.id, terminal: term!.id });
+      return;
+    }
+    x.rec = rec;
+    const s = rec.session;
+    const patch: Partial<Session> = {};
+    if (x.origin === "orchestrator" && s.origin !== "orchestrator") patch.origin = "orchestrator";
+    if (x.workspace !== undefined && s.workspace !== x.workspace) patch.workspace = x.workspace;
+    if (x.task !== undefined && s.task !== x.task) patch.task = x.task;
+    if (x.intent !== undefined && s.intent === undefined) patch.intent = x.intent;
+    if (Object.keys(patch).length > 0) this.patch(rec, patch);
+    this.log.info("session met in the terminal its first prompt went into", { session: s.id, native: s.native.id, terminal: term!.id, origin: s.origin, task: s.task });
+  }
+
+  /** The environment a Codex CLI cophylad starts in tether gets: the daemon's own, scrubbed, under the profile (`codexEnv`). */
+  private codexSpawnEnv(profile: HarnessProfile): Record<string, string> {
+    const dir = codexEnv(profile.configDir, this.deps.home);
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...(this.deps.env ?? {}), ...dir.set, ...(profile.env as Record<string, string> | undefined) })) if (v !== undefined) env[k] = v;
+    for (const k of dir.unset) delete env[k];
+    return env;
   }
 
   /**
