@@ -52,9 +52,9 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { answerParams, apply, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, draftOf, explorerSession, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
+import { activePane, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
@@ -2278,9 +2278,9 @@ document.addEventListener("dragstart", (ev) => {
 });
 
 /** The input under the pane that shows, the chat's or the session's, where the user may type. */
-function composerInput(): HTMLInputElement | null {
+function composerInput(): HTMLTextAreaElement | null {
   if (roots.composer.hidden) return null;
-  return roots.composer.querySelector<HTMLInputElement>("form:not([hidden]) input[type=text]:not(:disabled)");
+  return roots.composer.querySelector<HTMLTextAreaElement>("form:not([hidden]) textarea:not(:disabled)");
 }
 
 /**
@@ -2346,7 +2346,7 @@ document.addEventListener("drop", (ev) => {
 });
 
 /** Dropped paths, landing where they were dropped: typed into the terminal, or put in a field at its caret (the pane's is its input's). */
-function land(where: "terminal" | "field" | "pane", text: string, field?: HTMLInputElement): void {
+function land(where: "terminal" | "field" | "pane", text: string, field?: HTMLInputElement | HTMLTextAreaElement): void {
   if (where === "terminal") {
     // With a space after it, as macOS's terminals drop a file, so the next one dropped is a word of its own.
     terminal.paste(`${text} `);
@@ -2396,7 +2396,7 @@ function select(session: string | undefined): boolean {
   putRailAway();
   if (changed) openTab();
   draw();
-  roots.composer.querySelector<HTMLInputElement>("form:not([hidden]) input[type=text]")?.focus();
+  roots.composer.querySelector<HTMLTextAreaElement>("form:not([hidden]) textarea")?.focus();
   return changed;
 }
 
@@ -2884,10 +2884,11 @@ document.addEventListener("submit", (ev) => {
   }
   if (form.classList.contains("composer-form")) {
     ev.preventDefault();
-    const input = form.querySelector<HTMLInputElement>(".composer-text");
+    const input = form.querySelector<HTMLTextAreaElement>(".composer-text");
     if (input && !input.disabled && input.value.trim()) {
       const text = input.value;
       input.value = "";
+      fitField(input);
       void chat(text);
     }
     return;
@@ -2895,13 +2896,22 @@ document.addEventListener("submit", (ev) => {
   if (!form.classList.contains("send")) return;
   ev.preventDefault();
   const session = form.dataset["session"];
-  const input = form.querySelector<HTMLInputElement>(".send-text");
+  const input = form.querySelector<HTMLTextAreaElement>(".send-text");
   if (session && input && !input.disabled) void send(session, input.value);
 });
 
+// In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
+document.addEventListener("keydown", (ev) => {
+  const input = ev.target as HTMLElement | null;
+  if (!input?.matches?.(".composer-text, .send-text") || !enterSends(ev)) return;
+  ev.preventDefault();
+  input.closest("form")?.requestSubmit();
+});
+
 document.addEventListener("input", (ev) => {
-  const input = ev.target as HTMLInputElement;
+  const input = ev.target as HTMLInputElement | HTMLTextAreaElement;
   if (input.classList.contains("composer-text")) {
+    fitField(input as HTMLTextAreaElement);
     typing(input.value.trim() !== "");
     return;
   }
@@ -2911,6 +2921,7 @@ document.addEventListener("input", (ev) => {
     return;
   }
   if (!input.classList.contains("send-text")) return;
+  fitField(input as HTMLTextAreaElement);
   const session = input.closest<HTMLElement>(".send")?.dataset["session"];
   if (session) apply(state, { type: "draft", session, text: input.value });
 });
@@ -3086,13 +3097,18 @@ roots.stream.addEventListener("scroll", () => {
 
 // A pane showing its newest keeps showing it when its box changes size: the frame shown after
 // the phone's Start (a render into a hidden frame cannot scroll), the keyboard opening. Each
-// pane remembers where the user last left it; one never scrolled opens at its newest.
+// pane remembers where the user last left it; one never scrolled opens at its newest. Where the
+// observer put a pane is kept too: its scroll event comes a frame later, after the input may have
+// grown again (a held Shift+Enter), and the pane is still at its newest though it looks short.
 const atEnd = new WeakMap<Element, boolean>();
+const keptAt = new WeakMap<Element, number>();
 document.addEventListener(
   "scroll",
   (ev) => {
     const pane = ev.target;
     if (pane instanceof HTMLElement && (pane === roots.stream || pane.classList.contains("session"))) {
+      if (keptAt.get(pane) === pane.scrollTop) return;
+      keptAt.delete(pane);
       atEnd.set(pane, pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8);
     }
   },
@@ -3100,7 +3116,9 @@ document.addEventListener(
 );
 const keepEnd = new ResizeObserver(() => {
   const pane = activePane(roots);
-  if (pane && pane.clientHeight > 0 && (atEnd.get(pane) ?? true)) pane.scrollTop = pane.scrollHeight;
+  if (!pane || pane.clientHeight === 0 || !(atEnd.get(pane) ?? true)) return;
+  pane.scrollTop = pane.scrollHeight;
+  keptAt.set(pane, pane.scrollTop);
 });
 keepEnd.observe(document.getElementById("panes")!);
 // The input shares the pane column: when it grows, shrinks or hides, the pane above it resizes.

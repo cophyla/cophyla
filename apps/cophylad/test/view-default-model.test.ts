@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 
@@ -624,11 +624,23 @@ describe("default view model", () => {
     expect(parseComposer("/quickly now", false)).toEqual({ text: "/quickly now" });
     expect(parseComposer("   ", false)).toBeUndefined();
     expect(parseComposer("/quick", true)).toBeUndefined();
+    // A message of several lines keeps them, less the blank ones around it.
+    expect(parseComposer("\nfirst line\n\nsecond line\n", false)).toEqual({ text: "first line\n\nsecond line" });
+    expect(parseComposer("/quick\nis it done\nand pushed", false)).toEqual({ text: "is it done\nand pushed", mode: "quick" });
     const s = ready();
     apply(s, { type: "quick.toggle" });
     expect(s.quick).toBe(true);
     apply(s, { type: "quick.toggle", quick: false });
     expect(s.quick).toBe(false);
+  });
+
+  test("in a message field Enter sends, Shift+Enter starts a line, and an IME's Enter commits its word", () => {
+    const key = (over: Partial<Parameters<typeof enterSends>[0]> = {}) => ({ key: "Enter", shiftKey: false, isComposing: false, keyCode: 13, ...over });
+    expect(enterSends(key())).toBe(true);
+    expect(enterSends(key({ shiftKey: true }))).toBe(false);
+    expect(enterSends(key({ isComposing: true }))).toBe(false);
+    expect(enterSends(key({ keyCode: 229 }))).toBe(false);
+    expect(enterSends(key({ key: "a", keyCode: 65 }))).toBe(false);
   });
 
   test("workspaces and profiles are looked up by id", () => {

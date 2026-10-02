@@ -478,6 +478,15 @@ export function parseComposer(text: string, quick: boolean): { text: string; mod
   return m || quick ? { text: body, mode: "quick" } : { text: body };
 }
 
+/**
+ * Whether a key pressed in a message field sends what is typed: Enter does, Shift+Enter starts a
+ * new line as the field would, and an Enter that ends an IME's composition only commits its
+ * word (Safari tells it by key code 229 alone).
+ */
+export function enterSends(key: { key: string; shiftKey: boolean; isComposing: boolean; keyCode: number }): boolean {
+  return key.key === "Enter" && !key.shiftKey && !key.isComposing && key.keyCode !== 229;
+}
+
 function card(state: ViewState, session: Session): SessionCard {
   let c = state.sessions.get(session.id);
   if (!c) {

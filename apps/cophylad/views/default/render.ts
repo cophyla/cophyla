@@ -2957,6 +2957,32 @@ function terminalShown(state: ViewState, ui: UiState): boolean {
   return ui.terminal !== undefined || terminalSession(state, ui) !== undefined;
 }
 
+/**
+ * A message field: a textarea a line high, over an unseen copy of its text that grows it with
+ * its lines (view.css). Enter sends, Shift+Enter starts a line.
+ */
+function messageField(className: string, placeholder: string): HTMLElement {
+  const box = el("div", "field");
+  const copy = el("div", "field-copy");
+  copy.setAttribute("aria-hidden", "true");
+  const input = el("textarea", className);
+  input.name = "text";
+  input.rows = 1;
+  input.autocomplete = "off";
+  input.placeholder = placeholder;
+  // A phone's keyboard labels its Enter Send, which it does here.
+  input.enterKeyHint = "send";
+  box.append(copy, input);
+  return box;
+}
+
+/** Copies a message field's text into its unseen twin, which sizes it: after it changes other than by typing too. */
+export function fitField(input: HTMLTextAreaElement): void {
+  const copy = input.previousElementSibling;
+  // With a space after it, a last empty line is a line too.
+  if (copy?.classList.contains("field-copy")) setText(copy, `${input.value} `);
+}
+
 /** The input under the pane: the chat's, or the selected session's send when its timeline shows. */
 function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void {
   let form = root.querySelector<HTMLFormElement>("form.composer-form");
@@ -2966,27 +2992,24 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
     quick.type = "button";
     quick.dataset["action"] = "quick";
     quick.title = "Answer from what Cophyla already knows, with no tool calls";
-    const input = el("input", "composer-text");
-    input.type = "text";
-    input.name = "text";
-    input.autocomplete = "off";
-    input.placeholder = "Ask about the work";
+    const field = messageField("composer-text", "Ask about the work");
     const button = el("button", "composer-button", "Send");
     button.type = "submit";
     // Held, Cophyla listens (`voice.ptt`); let go, what was said is sent as if typed.
     const talk = el("button", "talk");
     talk.type = "button";
     talk.append(micIcon());
-    form.append(quick, input, talk, button);
+    form.append(quick, field, talk, button);
     root.append(form);
   }
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
   setHidden(form, ui.selected !== undefined || ui.terminal !== undefined);
   const canChat = state.connected && state.scopes.includes("chat");
-  const input = form.querySelector<HTMLInputElement>(".composer-text")!;
+  const input = form.querySelector<HTMLTextAreaElement>(".composer-text")!;
   input.disabled = !canChat;
   input.placeholder = canChat ? (state.quick ? "Quick question" : "Ask about the work") : state.connected ? "This view may not chat" : "Waiting for cophylad";
+  fitField(input);
   form.querySelector<HTMLButtonElement>(".composer-button")!.disabled = !canChat;
   const quick = form.querySelector<HTMLButtonElement>(".quick")!;
   quick.disabled = !canChat;
@@ -3022,14 +3045,9 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   let form = root.querySelector<HTMLFormElement>("form.send");
   if (!form) {
     form = el("form", "send");
-    const input = el("input", "send-text");
-    input.type = "text";
-    input.name = "text";
-    input.placeholder = "Message this session";
-    input.autocomplete = "off";
     const button = el("button", "send-button", "Send");
     button.type = "submit";
-    form.append(input, button);
+    form.append(messageField("send-text", "Message this session"), button);
     root.prepend(form);
   }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
@@ -3038,8 +3056,9 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   const s = card.session;
   const switched = form.dataset["session"] !== s.id;
   setData(form, "session", s.id);
-  const input = form.querySelector<HTMLInputElement>(".send-text")!;
+  const input = form.querySelector<HTMLTextAreaElement>(".send-text")!;
   if (switched || (document.activeElement !== input && input.value !== card.draft)) input.value = card.draft;
+  fitField(input);
   const canSend = state.connected && s.status !== "ended";
   input.disabled = !canSend;
   input.placeholder = canSend ? `Message ${s.harness}` : s.status === "ended" ? "This session has ended" : "Waiting for cophylad";

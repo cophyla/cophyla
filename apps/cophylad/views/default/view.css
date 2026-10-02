@@ -61,7 +61,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
   color: inherit;
 }
@@ -1320,15 +1321,6 @@ button:disabled {
 
 /* sending to a session: the form under its timeline while its tab is selected */
 
-.send-text {
-  flex: 1 1 auto;
-  min-width: 0;
-  padding: 6px 10px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
-  background: var(--card);
-}
-
 .send-text:focus {
   border-color: var(--ink);
   outline: none;
@@ -2013,19 +2005,52 @@ button:disabled {
   padding: 0 20px;
 }
 
+/* A field grown over several lines keeps the buttons at its foot. */
 .composer-form,
 .send {
   display: flex;
+  align-items: flex-end;
   gap: 8px;
   padding-top: 12px;
   padding-bottom: 12px;
 }
 
-.composer-text {
+/* each a line of the field high: 21px of text, 7px of padding and a 1px border each side */
+.composer-form > button,
+.send > button {
+  min-height: 37px;
+}
+
+/* A message field grows with its lines up to two fifths of the window, then scrolls: an unseen
+   copy of its text (render.ts's fitField), laid out as the field's own, sizes the grid cell the
+   field fills. */
+.field {
+  display: grid;
   flex: 1 1 auto;
   min-width: 0;
+}
+
+.field > textarea,
+.field-copy {
+  grid-area: 1 / 1;
+  min-width: 0;
+  max-height: 40vh;
+  margin: 0;
   padding: 7px 10px;
-  border: 1px solid var(--line-strong);
+  border: 1px solid transparent;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+}
+
+.field-copy {
+  visibility: hidden;
+  overflow: hidden;
+}
+
+.field > textarea {
+  overflow-y: auto;
+  resize: none;
+  border-color: var(--line-strong);
   border-radius: 4px;
   background: var(--card);
 }
