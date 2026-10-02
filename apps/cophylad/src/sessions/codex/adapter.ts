@@ -341,7 +341,7 @@ export class CodexAdapter implements HarnessAdapter {
             break;
           case "task_complete":
             status = "idle";
-            if (record) this.host.event(rec, "status", { status: "idle", turn: item.turnId, ...(item.lastMessage ? { lastAssistantMessage: capText(item.lastMessage, 1000) } : {}) }, rawIfSmall(row), item.at);
+            if (record) this.host.event(rec, "status", { status: "idle", turn: item.turnId, ...(item.lastMessage ? { lastAssistantMessage: capText(item.lastMessage, 2000) } : {}) }, rawIfSmall(row), item.at);
             break;
           case "user_message":
             if (item.clientId) {

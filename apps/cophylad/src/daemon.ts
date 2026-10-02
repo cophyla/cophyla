@@ -150,6 +150,9 @@ export const CONTROLLER_DIST: string = resolve(dirname(import.meta.dir), "..", "
 /** The speech sidecar's sources and locks, shipped with the platform and built on demand. */
 export const TTS_PY_DIR: string = resolve(dirname(import.meta.dir), "..", "..", "sidecars", "tts-py");
 
+/** How long an agent's idle holds before a listener hears it: past a turn's end reported twice, and an agent its own background work wakes again within seconds. */
+export const LISTENER_SETTLE_MS = 3000;
+
 export interface DaemonOptions {
   home?: string;
   /** Overrides config.api.port; 0 picks a free one. */
@@ -193,6 +196,8 @@ export interface DaemonOptions {
     manual?: boolean;
     limitsFetch?: typeof fetch;
   };
+  /** The listeners' seams: how long an idle holds before a listener hears it (3000 ms; 0, at once, for tests that want the fire with the event). */
+  listeners?: { settleMs?: number };
   /** The nodes module's seams: the discovery transport (a LAN in memory for tests) and a clock. */
   nodes?: {
     discovery?: DiscoveryTransport;
@@ -647,6 +652,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       unwatch: (client) => nodes!.forwardHost.remoteMetrics.unsubscribe(client),
     },
     log: log.child("listeners"),
+    settleMs: opts.listeners?.settleMs ?? LISTENER_SETTLE_MS,
   });
   /** Where replies are read out, decided on the primary; built once the terminals are. */
   let delivery: Delivery | undefined;

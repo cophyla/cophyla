@@ -687,6 +687,25 @@ describe("claude background jobs, spares, and what an idle session waits on", ()
     expect(seen.every((p) => p.includes("waiting"))).toBe(true);
   });
 
+  test("a turn's end is one status event, with what it waits on and the last words; after an idle the registry read first, the Stop's own event carries the words", async () => {
+    writeRegistry(registry, { pid: 1000, sessionId: "w-a", cwd, status: "busy" });
+    await hook("w-a", "UserPromptSubmit", { prompt: "run the suite" });
+    const id = live("w-a")!.id;
+    const statuses = (from: number) => events(id).slice(from).filter((e) => e.kind === "status").map((e) => e.payload);
+    let from = events(id).length;
+    writeRegistry(registry, { pid: 1000, sessionId: "w-a", cwd, status: "shell" });
+    await hook("w-a", "Stop", { last_assistant_message: "Running the suite." });
+    expect(statuses(from)).toEqual([{ status: "idle", waiting: { on: "shell" }, pid: 1000, lastAssistantMessage: "Running the suite." }]);
+
+    await hook("w-a", "UserPromptSubmit", { prompt: "and again" });
+    writeRegistry(registry, { pid: 1000, sessionId: "w-a", cwd, status: "idle" });
+    await mini.sessions.tick();
+    expect(live("w-a")).toMatchObject({ status: "idle" });
+    from = events(id).length;
+    await hook("w-a", "Stop", { last_assistant_message: "All green." });
+    expect(statuses(from)).toEqual([{ status: "idle", lastAssistantMessage: "All green." }]);
+  });
+
   test("a spare is no session; a record of one from an older daemon ends, and comes back when the spare becomes a job", async () => {
     alive.add(1100);
     writeRegistry(registry, { pid: 1100, sessionId: "spare-1", cwd, kind: "bg", jobId: "spare1", spare: true });

@@ -17,6 +17,15 @@
 // when the session ends (after its last fire, on the end itself). Every removal, whatever its
 // cause, is raised as `listener.removed`.
 //
+// An idle is heard once it has held for `settleMs`: a match on `session.idle` or
+// `session.waiting` waits that long per listener and session, and the session's next status
+// settles it. Another idle or wait the listener hears takes its place, the last words carried
+// over, and waits again; anything else (busy, a permission prompt, a wait the listener is not
+// on) means the agent went on, and nothing is heard; the session's end hears it at once. A
+// harness that reports a turn's end twice, a registry that saw it first, and an agent woken
+// again by its own background work within seconds are one fire or none, so a wake costs a
+// model call only when the agent stopped. Every other kind fires as it comes.
+//
 // A metric listener watches its node's samples (`metric.ts`): this node's through an
 // in-process watcher of the metrics module, which samples faster only while one exists,
 // another node's through the link's metrics watch under the client id `listener:<id>`, its
@@ -24,13 +33,13 @@
 // `start` and `stop` follow the primary role, as the task scheduler does.
 
 import { newId, Listener as ListenerSchema, RpcError } from "@cophyla/protocol";
-import type { Listener, ListenerSpec, MetricsSample, Session, Task } from "@cophyla/protocol";
+import type { Listener, ListenerSpec, MetricsSample, Session, SessionEvent, Task } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { EventStream, StreamEvent } from "../events/stream.ts";
 import type { Logger } from "../log.ts";
 import { LISTENERS_NS } from "../grants/namespaces.ts";
 import type { Store } from "../store/index.ts";
-import { matches, strayFilters } from "./match.ts";
+import { kindOf, matches, sessionOf, strayFilters } from "./match.ts";
 import type { MatchContext } from "./match.ts";
 import { intervalFor, MetricWatch } from "./metric.ts";
 
@@ -67,6 +76,16 @@ export interface ListenersDeps {
   remote?: { watch(client: string, node: string, intervalMs: number): Promise<unknown>; unwatch(client: string): Promise<void> };
   log: Logger;
   now?: () => number;
+  /** How long an idle must hold before a listener hears it; 0, at once. */
+  settleMs?: number;
+}
+
+/** A fire held while an idle settles. */
+interface Pending {
+  listener: string;
+  session: string;
+  event: { name: string; params: Record<string, unknown> };
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface Watch {
@@ -84,6 +103,8 @@ export class Listeners {
   private started = false;
   /** Events for the bus, raised together one microtask after the event that caused them. */
   private queued: (() => void)[] = [];
+  /** Idle fires waiting to settle, by listener and session. */
+  private pending = new Map<string, Pending>();
   /** Set once the delivery of speech is up. */
   speech?: ListenerSpeech;
 
@@ -117,6 +138,8 @@ export class Listeners {
     for (const off of this.unsubscribe) off();
     this.unsubscribe = [];
     for (const id of [...this.watches.keys()]) this.disarm(id);
+    for (const p of this.pending.values()) clearTimeout(p.timer);
+    this.pending.clear();
     this.listeners.clear();
   }
 
@@ -202,12 +225,71 @@ export class Listeners {
   private onEvent(e: StreamEvent): void {
     // A node linked again: its metric listeners watch it again (the link's watch went with the old link).
     if (e.name === "node.joined") for (const l of this.listeners.values()) if (l.on.includes("metric") && l.node === e.params.node.id) this.rewatch(l);
+    this.settle(e);
+    const settling = this.settleMs() > 0 && (kindOf(e) === "session.idle" || kindOf(e) === "session.waiting");
     for (const l of [...this.listeners.values()]) {
       if (!matches(l, e, this.ctx)) continue;
-      this.fire(l, { name: e.name, params: e.params as Record<string, unknown> });
+      const event = { name: e.name, params: e.params as Record<string, unknown> };
+      if (settling) this.hold(l, sessionOf(e, this.ctx)!.id, event);
+      else this.fire(l, event);
     }
     if (e.name === "session.ended") this.sessionEnded(e.params.session.id);
     this.flush();
+  }
+
+  private settleMs(): number {
+    return this.deps.settleMs ?? 0;
+  }
+
+  /**
+   * What the session's next event says of the idles held for it: its end hears them now, and a
+   * status settles them, unless it is an idle or a wait the same listener hears, which takes
+   * the held one's place in `hold`.
+   */
+  private settle(e: StreamEvent): void {
+    if (this.pending.size === 0) return;
+    const ended = e.name === "session.ended";
+    const status = e.name === "session.updated" && e.params.event?.kind === "status";
+    if (!ended && !status) return;
+    const id = sessionOf(e, this.ctx)?.id;
+    const kind = kindOf(e);
+    for (const [key, p] of [...this.pending]) {
+      if (p.session !== id) continue;
+      const l = this.listeners.get(p.listener);
+      if (ended) {
+        this.ripen(key);
+        continue;
+      }
+      if (l && (kind === "session.idle" || kind === "session.waiting") && matches(l, e, this.ctx)) continue;
+      clearTimeout(p.timer);
+      this.pending.delete(key);
+      this.deps.log.debug("idle not heard: the session went on", { listener: p.listener, session: p.session, status: (e.name === "session.updated" ? (e.params.event?.payload as { status?: unknown } | undefined)?.status : undefined) ?? kind });
+    }
+  }
+
+  /** Holds a matched idle for `settleMs`; one held for the same listener and session gives way to it, its last words kept. */
+  private hold(l: Listener, session: string, event: { name: string; params: Record<string, unknown> }): void {
+    const key = `${l.id} ${session}`;
+    const prev = this.pending.get(key);
+    if (prev) {
+      clearTimeout(prev.timer);
+      event = carryLastWords(prev.event, event);
+    }
+    const timer = setTimeout(() => {
+      this.ripen(key);
+      this.flush();
+    }, this.settleMs());
+    this.pending.set(key, { listener: l.id, session, event, timer });
+  }
+
+  /** A held idle is heard: fired as the listener stands now, if it still does. */
+  private ripen(key: string): void {
+    const p = this.pending.get(key);
+    if (!p) return;
+    clearTimeout(p.timer);
+    this.pending.delete(key);
+    const l = this.listeners.get(p.listener);
+    if (l && this.started) this.fire(l, p.event);
   }
 
   /** A session ended: the listeners `until` it or filtered on it hear nothing more of it. */
@@ -241,6 +323,11 @@ export class Listeners {
 
   private drop(id: string, why: RemovedWhy): void {
     this.disarm(id);
+    for (const [key, p] of [...this.pending]) {
+      if (p.listener !== id) continue;
+      clearTimeout(p.timer);
+      this.pending.delete(key);
+    }
     this.listeners.delete(id);
     this.deps.store.kv.delete(LISTENERS_NS, id);
     const at = this.now();
@@ -318,4 +405,15 @@ export class Listeners {
     this.flush();
     return true;
   }
+}
+
+/** The later of two idles of one session, with the earlier one's last words when it has none: a Stop's idle says them, the registry's after it does not. */
+function carryLastWords(prev: Pending["event"], next: Pending["event"]): Pending["event"] {
+  const was = prev.params["event"] as SessionEvent | undefined;
+  const now = next.params["event"] as SessionEvent | undefined;
+  const words = (was?.payload as { lastAssistantMessage?: unknown } | undefined)?.lastAssistantMessage;
+  if (!now || words === undefined) return next;
+  const payload = (now.payload ?? {}) as Record<string, unknown>;
+  if (payload["lastAssistantMessage"] !== undefined) return next;
+  return { ...next, params: { ...next.params, event: { ...now, payload: { ...payload, lastAssistantMessage: words } } } };
 }

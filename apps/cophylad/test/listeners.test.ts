@@ -2,7 +2,9 @@
 // filter; `times` counting down to a last fire that removes the listener; `cooldownS`; a
 // listener `until` a task that settles or a session that ends; what `listener.add` refuses;
 // the fire raised after the event that caused it; the listeners and their counts kept across
-// a restart of the module. A metric condition over a manually ticked sampler: held for its
+// a restart of the module. An idle held for the settle window: a turn's end told twice is one
+// fire with its last words, back to work or into an unheard wait is none, the end hears it at
+// once. A metric condition over a manually ticked sampler: held for its
 // window it fires once, not held it does not, back across the line it re-arms, a line at the
 // scale's end fires again after another window; the sampler runs faster only while a metric
 // listener exists. Another node's metric is watched over the link under `listener:<id>`, its
@@ -75,7 +77,7 @@ interface Rig {
   restart(): void;
 }
 
-function rig(opts: { metricsToml?: string } = {}): Rig {
+function rig(opts: { metricsToml?: string; settleMs?: number } = {}): Rig {
   const store = new Store(":memory:");
   store.migrate();
   const bus = new Bus();
@@ -132,6 +134,7 @@ function rig(opts: { metricsToml?: string } = {}): Rig {
       },
       log: silentLogger,
       now: () => clock.now,
+      ...(opts.settleMs !== undefined ? { settleMs: opts.settleMs } : {}),
     });
   const r: Rig = {
     listeners: make(),
@@ -207,6 +210,75 @@ describe("listeners", () => {
     await flush();
     const later = r.fired.slice(before);
     expect(later.map((f) => f.listener.id)).toEqual([byRow.id, tool.id]);
+  });
+
+  test("an idle is heard once it holds: a turn's end reported twice is one fire with its last words, back to work or into a wait the listener is not on is none, the end hears it at once; other kinds fire as they come", async () => {
+    const SETTLE = 30;
+    const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    const statusOf = (f: Rig["fired"][number]) => (f.event.params["event"] as SessionEvent).payload as Record<string, unknown>;
+    const r = rig({ settleMs: SETTLE });
+    const s1 = session(S1);
+    const s2 = session(S2);
+    r.said(s1, "status", { status: "busy" });
+    r.said(s2, "status", { status: "busy" });
+    const idle = r.add({ on: ["session.idle", "session.ask"], session: S1 });
+    const both = r.add({ on: ["session.idle", "session.waiting"], session: S2 });
+
+    // A Stop's idle with its last words, then the status change's own: one fire, the words kept.
+    r.said(s1, "status", { status: "idle", lastAssistantMessage: "All done." });
+    r.said(s1, "status", { status: "idle", pid: 7 });
+    await flush();
+    expect(r.fired).toHaveLength(0);
+    await sleep(SETTLE * 3);
+    expect(r.fired.map((f) => f.listener.id)).toEqual([idle.id]);
+    expect(statusOf(r.fired[0]!)).toEqual({ status: "idle", pid: 7, lastAssistantMessage: "All done." });
+    expect(r.listeners.get(idle.id)).toMatchObject({ fired: 1 });
+
+    // Idle, then busy again within the window (its background work woke it): nothing.
+    r.said(s1, "status", { status: "idle", lastAssistantMessage: "3 of 33 caught." });
+    r.said(s1, "status", { status: "busy" });
+    // Idle, then waiting on its shells, which this listener is not on: nothing.
+    r.said(s1, "status", { status: "idle" });
+    r.said(s1, "status", { status: "idle", waiting: { on: "shell" } });
+    await sleep(SETTLE * 3);
+    expect(r.fired).toHaveLength(1);
+
+    // A listener on both hears the wait that took the idle's place, once.
+    r.said(s2, "status", { status: "idle", lastAssistantMessage: "Running the suite." });
+    r.said(s2, "status", { status: "idle", waiting: { on: "shell" } });
+    await sleep(SETTLE * 3);
+    expect(r.fired.map((f) => f.listener.id)).toEqual([idle.id, both.id]);
+    expect(statusOf(r.fired[1]!)).toEqual({ status: "idle", waiting: { on: "shell" }, lastAssistantMessage: "Running the suite." });
+
+    // Other kinds fire as they come.
+    const pressure = r.add({ on: ["node.pressure"] });
+    r.bus.emit("node.pressure", { at: r.clock.now, node: NODE, resource: "cpu", level: "warn" });
+    r.bus.emit("ask.state", { id: "ask_01ARZ3NDEKTSV4RRFFQ69G5FB5", node: NODE, type: "permission", source: { kind: "harness", session: S1 }, title: "run?", options: [], answerableBy: ["user"], status: "open", createdAt: T0 });
+    await flush();
+    expect(r.fired.slice(2).map((f) => [f.listener.id, f.event.name])).toEqual([
+      [pressure.id, "node.pressure"],
+      [idle.id, "session.ask"],
+    ]);
+
+    // An idle held when the session ends is heard at once, then the end removes the listener on it.
+    r.said(s1, "status", { status: "idle", lastAssistantMessage: "Bye." });
+    r.bus.emit("session.state", { ...s1, status: "ended", endedAt: r.clock.now });
+    await flush();
+    expect(r.fired.slice(4).map((f) => [f.listener.id, f.event.name])).toEqual([[idle.id, "session.updated"]]);
+    expect(statusOf(r.fired[4]!)).toMatchObject({ lastAssistantMessage: "Bye." });
+    expect(r.removed.map((x) => [x.id, x.why])).toEqual([[idle.id, "until"]]);
+    // A held idle of a listener removed meanwhile is not heard; stop clears what is held.
+    r.said(s2, "status", { status: "busy" });
+    r.said(s2, "status", { status: "idle" });
+    r.listeners.remove(both.id, "user");
+    await sleep(SETTLE * 3);
+    expect(r.fired).toHaveLength(5);
+    const again = r.add({ on: ["session.idle"], session: S2 });
+    r.said(s2, "status", { status: "busy" });
+    r.said(s2, "status", { status: "idle" });
+    r.listeners.stop();
+    await sleep(SETTLE * 3);
+    expect(r.fired.map((f) => f.listener.id)).not.toContain(again.id);
   });
 
   test("task.ready by task, workspace and session; pressure by node and level; joins and leaves; a custom event by name and payload", async () => {

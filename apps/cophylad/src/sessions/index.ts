@@ -1336,27 +1336,29 @@ export class Sessions implements SessionHost {
   /**
    * A status, and for an idle session what it waits on. `waiting` is the harness's word, read
    * from its registry; a status from a hook leaves it as it is, since a hook does not say.
-   * Anything but idle clears it. It is not stored: a restart reads it again.
+   * Anything but idle clears it. It is not stored: a restart reads it again. `said` is what
+   * the hook that brought the status adds to its event (a Stop's last words) and the hook as
+   * raw, so a turn's end is one event. True when the status changed and its event was recorded.
    */
-  setStatus(rec: SessionRecord, status: SessionStatus, at = this.now(), opts?: { waiting: SessionWaiting | undefined }): void {
+  setStatus(rec: SessionRecord, status: SessionStatus, at = this.now(), opts?: { waiting: SessionWaiting | undefined }, said?: { payload: Record<string, unknown>; raw?: unknown }): boolean {
     const live = rec as LiveRecord;
     if (status === "ended") {
       this.end(rec, "status", at);
-      return;
+      return false;
     }
     // Only a resume brings an ended session back, never a status read underneath it.
-    if (rec.session.status === "ended") return;
+    if (rec.session.status === "ended") return false;
     if (live.held && !live.held.settled) {
       // A prompt is being held: only the session's own hooks (PostToolUse, Stop, SessionEnd) can say it is gone.
       // A registry or rollout that reads busy or idle underneath changes nothing.
       rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
-      return;
+      return false;
     }
     if (live.inputAsk && status === "idle") this.closeInput(live, "stopped");
     const waiting = status !== "idle" ? undefined : opts ? opts.waiting : rec.session.waiting;
     if (rec.session.status === status && stableStringify(rec.session.waiting ?? null) === stableStringify(waiting ?? null)) {
       rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
-      return;
+      return false;
     }
     const was = rec.session.status;
     rec.session.status = status;
@@ -1364,9 +1366,10 @@ export class Sessions implements SessionHost {
     else delete rec.session.waiting;
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
     this.deps.store.sessions.update(rec.session);
-    this.event(rec, "status", { status, ...(waiting ? { waiting } : {}), ...(rec.session.native.pid !== undefined ? { pid: rec.session.native.pid } : {}) }, undefined, at);
+    this.event(rec, "status", { status, ...(waiting ? { waiting } : {}), ...(rec.session.native.pid !== undefined ? { pid: rec.session.native.pid } : {}), ...(said?.payload ?? {}) }, said?.raw, at);
     if (status === "idle" && was !== "idle") this.injections.rearm(rec.session.id);
     this.broadcast(rec);
+    return true;
   }
 
   event(rec: SessionRecord, kind: SessionEventKind, payload: unknown, raw?: unknown, at = this.now()): SessionEvent {
@@ -2796,10 +2799,13 @@ export class Sessions implements SessionHost {
         const hooks = rec.hooks;
         const settle = (waiting: SessionWaiting | undefined) => {
           if (this.stopped || stopped.session.status === "ended") return;
-          this.event(stopped, "status", { status: "idle", ...(waiting ? { waiting } : {}), ...(hook.lastAssistantMessage ? { lastAssistantMessage: capText(hook.lastAssistantMessage, 1000) } : {}) }, raw, now);
-          // A hook since (the next turn's prompt) says more than this one did.
-          if (stopped.hooks !== hooks) return;
-          this.setStatus(stopped, "idle", now, adapter.afterStop ? { waiting } : undefined);
+          // Room for an agent's closing report whole: the brain's wake carries it, and one it had to cut sends it to read the history.
+          const words = hook.lastAssistantMessage ? { lastAssistantMessage: capText(hook.lastAssistantMessage, 2000) } : {};
+          // One event for the turn's end: the status it brings, with the last words. A hook since
+          // (the next turn's prompt) says more than this one did, and a status the registry read
+          // first changes nothing: the Stop's own event still carries the words.
+          if (stopped.hooks === hooks && this.setStatus(stopped, "idle", now, adapter.afterStop ? { waiting } : undefined, { payload: words, raw })) return;
+          this.event(stopped, "status", { status: "idle", ...(waiting ? { waiting } : {}), ...words }, raw, now);
         };
         // Idle, or waiting on its own shells or on a dialog: the harness says which about as
         // the hook fires, and a session still said to be busy is waited for, the hook answered meanwhile.
