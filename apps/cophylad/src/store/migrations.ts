@@ -323,4 +323,35 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE messages ADD COLUMN steps TEXT;
   `,
+  // 12: what the brain's model calls cost each conversation: a row per thread and model, the
+  // tokens added as each call ends, so the Context overlay reads a conversation's spend without
+  // walking its audit rows, whose results sit behind the whole prompt each. Filled from the
+  // calls the audit table already holds: the ones whose result was kept and reads as JSON.
+  `
+  CREATE TABLE thread_spend (
+    thread TEXT NOT NULL,
+    model TEXT NOT NULL,
+    calls INTEGER NOT NULL,
+    tokens_in INTEGER NOT NULL,
+    tokens_out INTEGER NOT NULL,
+    cache_read INTEGER NOT NULL,
+    cache_write INTEGER NOT NULL,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL,
+    PRIMARY KEY (thread, model)
+  );
+  INSERT INTO thread_spend (thread, model, calls, tokens_in, tokens_out, cache_read, cache_write, first_at, last_at)
+  SELECT thread, model, COUNT(*), SUM(tin), SUM(tout), SUM(cread), SUM(cwrite), MIN(at), MAX(at) FROM (
+    SELECT thread, at,
+      json_extract(result_body, '$.model') AS model,
+      COALESCE(json_extract(result_body, '$.usage.in'), 0) AS tin,
+      COALESCE(json_extract(result_body, '$.usage.out'), 0) AS tout,
+      COALESCE(json_extract(result_body, '$.usage.cacheRead'), 0) AS cread,
+      COALESCE(json_extract(result_body, '$.usage.cacheWrite'), 0) AS cwrite
+    FROM audit
+    WHERE action = 'llm.complete' AND outcome = 'ok' AND thread IS NOT NULL AND result_body IS NOT NULL AND json_valid(result_body)
+  )
+  WHERE model IS NOT NULL
+  GROUP BY thread, model;
+  `,
 ];

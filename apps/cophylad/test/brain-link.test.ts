@@ -12,12 +12,13 @@
 // relayed as `chat.progress`, told to a client that connects mid-turn and cleared when the
 // brain exits. `brain.context` is off without `[brain] show_context`; on, `check` asks the
 // brain nothing, and a request is the brain's `context.preview`, checked, with the prompt kept
-// out of the audit row; a brain from before it answers `unsupported`.
+// out of the audit row; a brain from before it answers `unsupported`. A model call counts to
+// its thread, and `brain.context` brings that thread's spend, priced, with the next turn's model.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { newId } from "@cophyla/protocol";
+import { ConversationSpend, newId } from "@cophyla/protocol";
 import type { AuditEntry, Hit, Message, Task, TurnProgress } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
@@ -749,7 +750,8 @@ describe("brain-link", () => {
     await waitFor(() => d.brain?.state === "up");
     expect(await c.request<object>("brain.context", { check: true })).toEqual({});
     expect(brainFrames(log).some((f) => f.frame["method"] === "context.preview")).toBe(false);
-    expect(await c.request<object>("brain.context", {})).toEqual({ context: preview });
+    // The thread has no model calls here: its spend is empty, with the next turn's model.
+    expect(await c.request<object>("brain.context", {})).toEqual({ context: preview, spend: { thread: preview.thread, models: [], next: { model: "gemini/gemini-3.8-flash", price: expect.objectContaining({ input: 0.75 }) } } });
     const asked = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "context.preview")!;
     expect(asked.frame["params"]).toEqual({});
     const rows = d.store.audit.list({ limit: 50 }).filter((e) => e.action === "brain.context" && e.outcome === "ok");
@@ -763,6 +765,36 @@ describe("brain-link", () => {
     writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { thread: 7 } }));
     const bad = await c.call("brain.context", {});
     expect("error" in bad && bad.error.data?.code).toBe("unavailable");
+  });
+
+  test("brain.context: a model call counts to the thread it was made in, and the context comes with that thread's spend, priced, and the next turn's model", async () => {
+    const { d, c, scratch } = await start(
+      { on: [{ event: "user.message", requests: [{ method: "llm.complete", params: { model: { tier: "fast" }, messages: [{ role: "user", content: [{ type: "text", text: "$event.text" }] }] } }] }] },
+      // The fake model has a price of its own here, the cache's rate a tenth of the input's.
+      { gemini: { default: [geminiText("ok"), finish("STOP", { promptTokenCount: 1200, candidatesTokenCount: 30, thoughtsTokenCount: 10, cachedContentTokenCount: 800 })] }, brain: 'show_context = true\n\n[metrics.prices]\n"gemini-fake" = { input = 1, output = 4, cache_read = 0.1 }\n' },
+    );
+    await waitFor(() => d.brain?.state === "up");
+    await c.request("chat.send", { text: "hi" });
+    await waitFor(() => brainAudit(d).some((e) => e.action === "llm.complete" && e.outcome === "ok"), 5000);
+    const thread = d.chat.peek()!.id;
+    expect(brainAudit(d).find((e) => e.action === "llm.complete")!.thread).toBe(thread);
+    expect(d.store.threadSpend.of(thread)).toEqual([{ model: "gemini-fake-001", calls: 1, in: 1200, out: 40, cacheRead: 800, cacheWrite: 0, since: expect.any(Number), last: expect.any(Number) }]);
+
+    const preview = { thread, at: 1758196800000, tokens: { situation: 12, working: 8, loaded: 0, log: 5, total: 25 }, rules: "You are Cophyla.", situation: "Now", messages: [], tools: [] };
+    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview }));
+    const fake = { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 };
+    const r = await c.request<{ context: object; spend: ConversationSpend }>("brain.context", {});
+    expect(r.context).toEqual(preview);
+    expect(r.spend).toEqual({
+      thread,
+      models: [{ model: "gemini-fake-001", calls: 1, since: expect.any(Number), last: expect.any(Number), tokens: { in: 1200, out: 40, cacheRead: 800, cacheWrite: 0 }, price: fake, cost: expect.closeTo((400 * 1 + 800 * 0.1 + 40 * 4) / 1e6, 12) }],
+      next: { model: "gemini/gemini-3.8-flash", price: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 } },
+    });
+    expect(ConversationSpend.safeParse(r.spend).success).toBe(true);
+
+    // A context for no thread comes alone.
+    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { ...preview, thread: undefined } }));
+    expect(await c.request<object>("brain.context", {})).toEqual({ context: { ...preview, thread: undefined } });
   });
 
   test("a session annotated by the daemon reaches the brain as one session.updated without an event", async () => {

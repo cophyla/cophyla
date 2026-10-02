@@ -342,6 +342,34 @@
             ],
             "tools": ["agents", "tasks", "files"]
           }
+        },
+        {
+          "context": {
+            "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+            "at": 1758196800000,
+            "tokens": { "situation": 420, "working": 310, "loaded": 0, "log": 60, "total": 790, "rules": 2300, "tools": 3800 },
+            "budgets": { "situation": 2000, "working": 8000, "loaded": 12000, "total": 24000 },
+            "rules": "You are Cophyla.",
+            "situation": "Now: Tuesday 2025-09-18T12:00+03:00 (Europe/Istanbul)",
+            "messages": [],
+            "tools": ["agents"]
+          },
+          "spend": {
+            "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+            "models": [
+              {
+                "model": "gemini-3.8-flash",
+                "calls": 12,
+                "since": 1758190000000,
+                "last": 1758196700000,
+                "tokens": { "in": 84000, "out": 2100, "cacheRead": 30000, "cacheWrite": 0 },
+                "price": { "input": 0.75, "output": 3.75, "cacheRead": 0.075 },
+                "cost": 0.0507
+              },
+              { "model": "local-thing", "calls": 1, "since": 1758190000000, "last": 1758190000000, "tokens": { "in": 10, "out": 2, "cacheRead": 0, "cacheWrite": 0 } }
+            ],
+            "next": { "model": "gemini/gemini-3.8-flash", "price": { "input": 0.75, "output": 3.75, "cacheRead": 0.075 } }
+          }
         }
       ]
     },

@@ -24,7 +24,7 @@
 // What the brain sees on its next turn (`brain.context`) is shown a block at a time, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -2104,10 +2104,143 @@ export function linesBetween(lines: readonly string[], from: readonly [number, n
 
 // --- the brain's context -----------------------------------------------------------------------
 
-/** The Context overlay's head: each tier's estimated tokens, then the total. */
-export function contextTokenWords(t: BrainContext["tokens"]): string {
-  const n = (v: number) => Math.round(v).toLocaleString("en-US");
-  return `situation ${n(t.situation)} · log ${n(t.log)} · working ${n(t.working)} · loaded ${n(t.loaded)} · ${n(t.total)} tokens`;
+/** A token count in full: 26,325,495. */
+export function tokenWords(n: number): string {
+  return Math.round(n).toLocaleString("en-US");
+}
+
+/** Dollars for the Context overlay: cents to two places, a fraction of a cent to two figures, so a short conversation's spend still reads. */
+export function usdWords(usd: number): string {
+  if (!(usd > 0)) return "$0.00";
+  if (usd >= 0.01) return `$${usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return `$${usd.toFixed(Math.min(8, 1 - Math.floor(Math.log10(usd))))}`;
+}
+
+/** A price per million tokens: two places, or as many as its first figure takes ($0.075). */
+export function rateWords(perMillion: number): string {
+  if (!(perMillion > 0)) return "$0.00";
+  return `$${perMillion.toFixed(Math.max(2, 1 - Math.floor(Math.log10(perMillion))))}`;
+}
+
+/** One line of a model's spend: a kind of token, how many, the rate per million it is charged at, and what that came to; neither for a model with no price. */
+export interface SpendLine {
+  kind: "input" | "cached" | "cacheWrite" | "output";
+  label: string;
+  tokens: number;
+  rate?: number;
+  cost?: number;
+}
+
+export interface SpendModel {
+  model: string;
+  calls: number;
+  lines: SpendLine[];
+  /** USD, as the node priced it; none when the model has no price. */
+  cost?: number;
+  /** How much less a cached input token costs than a fresh one, 0 to 1; none without a price. */
+  discount?: number;
+}
+
+/** What a conversation's model calls came to, summed over its models, for the overlay's tiles and its table. */
+export interface SpendSummary {
+  models: SpendModel[];
+  calls: number;
+  /** The first call's time; none before any. */
+  since?: number;
+  /** The priced models' cost. */
+  cost: number;
+  /** The calls to models with no price, which `cost` leaves out. */
+  unpriced: number;
+  /** Input tokens in all, the cached ones among them. */
+  input: number;
+  cached: number;
+  output: number;
+  /** What the cached tokens would have cost more at the input's rate. */
+  saved: number;
+}
+
+const PER_MILLION = 1_000_000;
+
+/**
+ * A conversation's spend line by line: per model, the input not read from a cache, the input
+ * that was (at its own rate, which is what the cache saves), cache writes where there were
+ * any, and the output with its thinking; then the sums over every model.
+ */
+export function spendSummary(spend: ConversationSpend | undefined): SpendSummary {
+  const out: SpendSummary = { models: [], calls: 0, cost: 0, unpriced: 0, input: 0, cached: 0, output: 0, saved: 0 };
+  for (const m of spend?.models ?? []) {
+    const cached = Math.min(m.tokens.cacheRead, m.tokens.in);
+    const p = m.price;
+    const line = (kind: SpendLine["kind"], label: string, tokens: number, rate: number | undefined): SpendLine =>
+      rate === undefined ? { kind, label, tokens } : { kind, label, tokens, rate, cost: (tokens * rate) / PER_MILLION };
+    const lines = [line("input", "Input, not cached", m.tokens.in - cached, p?.input), line("cached", "Input, from cache", cached, p ? (p.cacheRead ?? p.input) : undefined)];
+    if (m.tokens.cacheWrite > 0) lines.push(line("cacheWrite", "Cache writes", m.tokens.cacheWrite, p ? (p.cacheWrite ?? p.input) : undefined));
+    lines.push(line("output", "Output, with thinking", m.tokens.out, p?.output));
+    const discount = p && p.input > 0 ? Math.max(0, 1 - (p.cacheRead ?? p.input) / p.input) : undefined;
+    out.models.push({ model: m.model, calls: m.calls, lines, ...(m.cost !== undefined ? { cost: m.cost } : {}), ...(discount !== undefined ? { discount } : {}) });
+    out.calls += m.calls;
+    out.since = out.since === undefined ? m.since : Math.min(out.since, m.since);
+    if (m.cost !== undefined) out.cost += m.cost;
+    else out.unpriced += m.calls;
+    out.input += m.tokens.in;
+    out.cached += cached;
+    out.output += m.tokens.out;
+    if (p) out.saved += (cached * Math.max(0, p.input - (p.cacheRead ?? p.input))) / PER_MILLION;
+  }
+  return out;
+}
+
+/** One row of the next turn's tokens: a tier with its budget where the brain caps it, or a part every call sends. */
+export interface TierRow {
+  key: "situation" | "log" | "working" | "loaded" | "window" | "rules" | "tools";
+  label: string;
+  tokens: number;
+  budget?: number;
+  /** The share of the budget used, 0 to 1 and past it when over. */
+  share?: number;
+  note?: string;
+}
+
+/** The next turn's tokens, tier by tier against the brain's budgets, then the window against its own, then what goes with every call on top. */
+export function tierRows(c: BrainContext): TierRow[] {
+  const b = c.budgets;
+  const row = (key: TierRow["key"], label: string, tokens: number, budget?: number, note?: string): TierRow => ({
+    key,
+    label,
+    tokens,
+    ...(budget !== undefined && budget > 0 ? { budget, share: tokens / budget } : {}),
+    ...(note !== undefined ? { note } : {}),
+  });
+  const rows = [
+    row("situation", "Situation", c.tokens.situation, b?.situation),
+    row("log", "Log", c.tokens.log, undefined, "cut to fit the window"),
+    row("working", "Working", c.tokens.working, b?.working),
+    row("loaded", "Loaded", c.tokens.loaded, b?.loaded),
+    row("window", "Window", c.tokens.total, b?.total),
+  ];
+  if (c.tokens.rules !== undefined) rows.push(row("rules", "Rules", c.tokens.rules, undefined, "with every call"));
+  if (c.tokens.tools !== undefined) rows.push(row("tools", "Tools", c.tokens.tools, undefined, "with every call"));
+  return rows;
+}
+
+/** The next turn as the overlay's tile says it: its input tokens in all, the window against its budget, and that input's cost at the next model's rate before any cache. */
+export interface NextTurn {
+  tokens: number;
+  window: number;
+  budget?: number;
+  rate?: number;
+  cost?: number;
+}
+
+export function nextTurn(c: BrainContext, spend: ConversationSpend | undefined): NextTurn {
+  const tokens = c.tokens.total + (c.tokens.rules ?? 0) + (c.tokens.tools ?? 0);
+  const rate = spend?.next?.price?.input;
+  return {
+    tokens,
+    window: c.tokens.total,
+    ...(c.budgets ? { budget: c.budgets.total } : {}),
+    ...(rate !== undefined ? { rate, cost: (tokens * rate) / PER_MILLION } : {}),
+  };
 }
 
 /** One block of what the brain sends, as the Context overlay shows it: whose, what kind, and its text. */

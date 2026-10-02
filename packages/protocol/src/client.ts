@@ -71,11 +71,23 @@ export const UpdateComponent = z.enum(["platform", "brain", "model"]);
  * What the brain would send the model on its next turn, built without a model call: the fixed
  * rules before the situation, the situation, the log as the window shows it, the window's
  * messages after the log, the tools it declares by name, and the estimated tokens of each tier.
+ * `total` is the window's (situation, log, working, loaded); the rules and the tools'
+ * declarations go with every call on top of it. `budgets` are the brain's caps on the tiers
+ * and on the window, past which it cuts; a brain from before either sends neither.
  */
 export const BrainContext = z.object({
   thread: ThreadId.optional(),
   at: Timestamp,
-  tokens: z.object({ situation: z.number(), working: z.number(), loaded: z.number(), log: z.number(), total: z.number() }),
+  tokens: z.object({
+    situation: z.number(),
+    working: z.number(),
+    loaded: z.number(),
+    log: z.number(),
+    total: z.number(),
+    rules: z.number().optional(),
+    tools: z.number().optional(),
+  }),
+  budgets: z.object({ situation: z.number(), working: z.number(), loaded: z.number(), total: z.number() }).optional(),
   rules: z.string(),
   situation: z.string(),
   log: z.string().optional(),
@@ -83,6 +95,49 @@ export const BrainContext = z.object({
   tools: z.array(z.string()),
 });
 export type BrainContext = z.infer<typeof BrainContext>;
+
+/** A model's list prices in USD per million tokens: input, output, and input read from or written to a cache where it is priced apart. */
+export const ModelPrice = z.object({
+  input: z.number().nonnegative(),
+  output: z.number().nonnegative(),
+  cacheRead: z.number().nonnegative().optional(),
+  cacheWrite: z.number().nonnegative().optional(),
+});
+export type ModelPrice = z.infer<typeof ModelPrice>;
+
+/**
+ * One model's calls in a conversation: how many, between when, and their tokens summed as the
+ * model reported them. `in` is the whole of each prompt, `cacheRead` the part of it the
+ * provider read from its cache; `out` counts any thinking. `cost` is USD at `price`, the
+ * cached part at the cached rate; both are absent for a model with no price.
+ */
+export const ModelSpend = z.object({
+  model: z.string(),
+  calls: z.number().int().nonnegative(),
+  since: Timestamp,
+  last: Timestamp,
+  tokens: z.object({
+    in: z.number().int().nonnegative(),
+    out: z.number().int().nonnegative(),
+    cacheRead: z.number().int().nonnegative(),
+    cacheWrite: z.number().int().nonnegative(),
+  }),
+  price: ModelPrice.optional(),
+  cost: z.number().nonnegative().optional(),
+});
+export type ModelSpend = z.infer<typeof ModelSpend>;
+
+/**
+ * What the brain's model calls have cost one conversation: every call made while it was the
+ * current thread (its turns, its log keeper's, and the housekeeping in between), by model; and
+ * the model the next turn goes to, with its price.
+ */
+export const ConversationSpend = z.object({
+  thread: ThreadId,
+  models: z.array(ModelSpend),
+  next: z.object({ model: z.string(), price: ModelPrice.optional() }).optional(),
+});
+export type ConversationSpend = z.infer<typeof ConversationSpend>;
 
 /**
  * What a controller needs to reach its node through the server relay from any network:
@@ -744,9 +799,10 @@ export const clientRequests = {
   /**
    * What the brain sees on its next turn, for the Context button: on only with `[brain]
    * show_context`, `unsupported` otherwise. `check` answers `{}` without asking the brain, so
-   * a view can tell whether to show the button; the answer is kept in no audit row.
+   * a view can tell whether to show the button; the answer is kept in no audit row. With the
+   * context comes what the conversation it is for has cost so far, when it has a thread.
    */
-  "brain.context": { params: z.object({ check: z.boolean().optional() }), result: z.object({ context: BrainContext.optional() }) },
+  "brain.context": { params: z.object({ check: z.boolean().optional() }), result: z.object({ context: BrainContext.optional(), spend: ConversationSpend.optional() }) },
   "profile.list": { params: z.object({ node: NodeId.optional() }), result: z.object({ profiles: z.array(HarnessProfile) }) },
   /** Each profile's plan limits, read now when the last reading is old; a node's alone when one is named. */
   "profile.limits": { params: z.object({ node: NodeId.optional() }), result: z.object({ limits: z.record(ProfileId, ProfileLimits) }) },

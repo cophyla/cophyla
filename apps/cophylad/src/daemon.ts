@@ -63,6 +63,7 @@ import { hostEngine } from "./metrics/engine.ts";
 import type { MetricsEngine } from "./metrics/engine.ts";
 import { Metrics } from "./metrics/index.ts";
 import { PlanLimits } from "./metrics/limits.ts";
+import { conversationSpend } from "./metrics/conversation.ts";
 import { Pricer, priceTable } from "./metrics/prices.ts";
 import type { DiscoveryTransport } from "./nodes/discovery.ts";
 import { withForwarding } from "./nodes/forward.ts";
@@ -417,6 +418,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The vendors' keys: typed in the app, config.toml's, or the environment's, asked at every call.
   const keys = openProviderKeys({ dataDir: p.data, config: config.providers, env, log: log.child("keys") });
   const llm = new Llm({ config: config.providers, log: log.child("llm"), env, geminiKey: () => keys.gemini(), providers: [...(opts.providers ?? [new GeminiProvider({ apiKey: () => keys.gemini(), baseUrl: config.providers.gemini.base_url, timeoutMs: config.providers.timeout_ms, log: log.child("gemini") })]), cloud.llmProvider()] });
+  /** The fast tier's model as `vendor/model`, where the brain's turns go; none when no model is configured for it. */
+  const nextModel = (): string | undefined => {
+    try {
+      const r = llm.resolve({ tier: "fast" });
+      return `${r.vendor}/${r.model}`;
+    } catch {
+      return undefined;
+    }
+  };
 
   const sessionsLog = log.child("sessions");
   // The process table the agent CLI in a terminal is found in, and a hook's ancestors: an engine
@@ -453,7 +463,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ];
   };
   // The price table prices a harness session's tokens where the harness states no cost, and the brain's calls in the samples.
-  const pricer = new Pricer(priceTable(config.metrics.prices), log.child("metrics"));
+  const prices = priceTable(config.metrics.prices);
+  const pricer = new Pricer(prices, log.child("metrics"));
   const sessions = new Sessions({
     store,
     bus,
@@ -1141,7 +1152,12 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...taskMethods({ tasks }),
     ...eventMethods({ catalogue }),
     ...listenerMethods({ listeners }),
-    ...brainContextMethods({ show: config.brain.show_context, brain: () => brain }),
+    ...brainContextMethods({
+      show: config.brain.show_context,
+      brain: () => brain,
+      // The brain's turns go to the fast tier: its model is the next turn's, when one is configured.
+      spend: (thread) => conversationSpend(thread, store.threadSpend.of(thread), prices, nextModel()),
+    }),
     ...updateMethods({ update }),
     ...pairingMethods({
       pairing,

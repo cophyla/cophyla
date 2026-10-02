@@ -6,10 +6,10 @@
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
 // `session.files` and `session.git`; the brain's listeners as the settings show them; the
 // speaker button's `voice.hush` and the `voice.presence` a client says where the user is with;
-// `session.mode`; `brain.context`, what the brain sees on its next turn, behind `[brain] show_context`.
+// `session.mode`; `brain.context`, what the brain sees on its next turn and what its conversation has cost, behind `[brain] show_context`.
 
 import { BrainContext, RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
+import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
 import { DOC_FRAME_PATH } from "@cophyla/protocol";
@@ -348,9 +348,11 @@ export interface BrainContextDeps {
   show: boolean;
   /** The link to the brain, when this node runs one. */
   brain: () => Pick<BrainLink, "request"> | undefined;
+  /** What the brain's model calls have cost a thread so far. */
+  spend?: (thread: string) => ConversationSpend;
 }
 
-/** What the brain sees on its next turn, for the chat's Context button: its `context.preview`, asked for now. */
+/** What the brain sees on its next turn, for the chat's Context button: its `context.preview`, asked for now, and what its conversation has cost. */
 export function brainContextMethods(deps: BrainContextDeps): MethodTable {
   return {
     "brain.context": {
@@ -363,7 +365,8 @@ export function brainContextMethods(deps: BrainContextDeps): MethodTable {
         if (!brain) throw new RpcError("unavailable", "no brain runs on this node");
         const parsed = BrainContext.safeParse(await brain.request("context.preview", {}, PREVIEW_TIMEOUT_MS));
         if (!parsed.success) throw new RpcError("unavailable", `the brain answered context.preview with something else: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 300)}`);
-        return { context: parsed.data };
+        const thread = parsed.data.thread;
+        return { context: parsed.data, ...(thread !== undefined && deps.spend ? { spend: deps.spend(thread) } : {}) };
       },
     },
   };

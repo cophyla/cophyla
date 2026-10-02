@@ -300,6 +300,7 @@ export type LlmComplete = z.infer<typeof LlmComplete>;
 export const LlmResult = z.object({
   content: z.array(LlmContent),
   stopReason: z.enum(["end", "tool_use", "max_tokens", "cancelled"]),
+  /** `in` is the whole prompt, the part the provider read from its cache (`cacheRead`) among it, as Gemini counts. */
   usage: TokenCounts,
   model: z.string(),
 });

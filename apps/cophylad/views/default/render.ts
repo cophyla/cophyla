@@ -116,9 +116,9 @@ export interface UiState {
   folderAt: Map<NodeId, string>;
   /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
   railMenu?: { note?: string };
-  /** The node shows the brain's context (`[brain] show_context`): the Context button is there. */
+  /** The node shows the brain's context (`[brain] show_context`): the Context button is there, in the chat's composer. */
   contextOn?: boolean;
-  /** The Context overlay lies over the pane. */
+  /** The user opened the Context overlay: it lies over the conversation while the chat shows, and waits while another tab does. */
   contextOpen?: boolean;
   /**
    * The Files panel's menu is open for a row (`rel`, `""` the folder itself), at the point it
@@ -209,6 +209,8 @@ export interface Roots {
   railbar: HTMLElement;
   pinned: HTMLElement;
   tabs: HTMLElement;
+  /** The chat's own pane, round its conversation: what lies over the chat lies in it, and goes with it. */
+  chat: HTMLElement;
   stream: HTMLElement;
   sessions: HTMLElement;
   /** The pane a bare terminal shows in. */
@@ -1591,11 +1593,6 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     // Between the two, once the node says whether the next reply is read out: the speaker, which silences it.
     const speaker = actionButton("speak-next", "", "hush");
     speaker.append(speakerIcon());
-    // Then, when the node shows the brain's context: the button that lays it over the pane.
-    const context = actionButton("context-open", "", "context-open");
-    context.title = "Context: what the brain sees on its next turn";
-    context.setAttribute("aria-label", context.title);
-    context.hidden = true;
     const more = actionButton("rail-more", "", "rail-more");
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-label", "More");
@@ -1611,7 +1608,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     settings.setAttribute("role", "menuitem");
     settings.title = "Which account agents start under, and with what";
     moreMenu.append(change, settings, el("p", "rail-menu-note"));
-    top.append(chat, speaker, context, more, moreMenu);
+    top.append(chat, speaker, more, moreMenu);
     const list = el("div", "tab-sessions");
     const newTerminal = el("button", "tab-new-terminal", "New terminal");
     newTerminal.type = "button";
@@ -1667,9 +1664,6 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   }
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
   renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
-  const context = root.querySelector<HTMLButtonElement>(".context-open")!;
-  setHidden(context, ui.contextOn !== true);
-  context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
@@ -3006,9 +3000,17 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
     const talk = el("button", "talk");
     talk.type = "button";
     talk.append(micIcon());
-    form.append(quick, field, talk, button);
+    // First, when the node shows the brain's context: the button that lays it over the conversation.
+    const context = actionButton("context-open", "", "context-open");
+    context.title = "Context: what the brain sees on its next turn, and what this conversation has cost";
+    context.setAttribute("aria-label", context.title);
+    context.hidden = true;
+    form.append(context, quick, field, talk, button);
     root.append(form);
   }
+  const context = form.querySelector<HTMLButtonElement>(".context-open")!;
+  setHidden(context, ui.contextOn !== true);
+  context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
   setHidden(form, ui.selected !== undefined || ui.terminal !== undefined);
@@ -3074,7 +3076,7 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
 
 /** The pane that shows: the chat stream or the selected session's. */
 export function activePane(roots: Roots): HTMLElement | undefined {
-  if (!roots.stream.hidden) return roots.stream;
+  if (!roots.chat.hidden) return roots.stream;
   for (const child of Array.from(roots.sessions.children) as HTMLElement[]) if (!child.hidden) return child;
   return undefined;
 }
@@ -3096,7 +3098,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   renderRailbar(roots.railbar, state, ui, opts.railShown ?? false);
   renderTabs(roots.tabs, state, ui);
   renderFileMenu(roots.app, state, ui);
-  setHidden(roots.stream, ui.selected !== undefined || ui.terminal !== undefined);
+  setHidden(roots.chat, ui.selected !== undefined || ui.terminal !== undefined);
   setHidden(roots.terminal, ui.terminal === undefined);
   ensureEmpty(roots.stream, state);
   ensureEarlier(roots.stream, state);

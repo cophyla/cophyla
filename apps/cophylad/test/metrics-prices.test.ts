@@ -1,11 +1,13 @@
 // The price table: exact, bare and prefix lookups, overrides over the built-in prices,
-// cost with and without cache prices, an unknown model logged once; and the token counters
+// cost with and without cache prices, a model call's cost with its cached part inside its
+// input, a conversation's spend by model, an unknown model logged once; and the token counters
 // between samples: llm calls by model, session deltas by profile, an ended session once.
 
 import { describe, expect, test } from "bun:test";
 import type { Session } from "@cophyla/protocol";
 import { createLogger } from "../src/log.ts";
-import { BUILTIN_PRICES, costOf, priceOf, Pricer, priceTable } from "../src/metrics/prices.ts";
+import { conversationSpend, modelPrice } from "../src/metrics/conversation.ts";
+import { BUILTIN_PRICES, completionCost, costOf, priceOf, Pricer, priceTable } from "../src/metrics/prices.ts";
 import { LlmCounter, ProfileSpend } from "../src/metrics/tokens.ts";
 
 const PROFILE_A = "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8";
@@ -42,6 +44,36 @@ describe("metrics prices", () => {
     expect(pricer.cost("acme/never", { in: 1, out: 1 })).toBeUndefined();
     expect(lines.filter((l) => l.includes("no price")).length).toBe(1);
     expect(pricer.cost("gemini/gemini-3.8-flash", { in: 1_000_000, out: 0 })).toBeCloseTo(0.75, 6);
+  });
+
+  test("a model call's cost takes the cached part out of its input and prices it at the cache's rate", () => {
+    const flash = BUILTIN_PRICES["gemini/gemini-3.8-flash"]!;
+    // 1M in, 400k of it from cache, 100k out: 600k × 0.75 + 400k × 0.075 + 100k × 3.75.
+    expect(completionCost(flash, { in: 1_000_000, out: 100_000, cacheRead: 400_000 })).toBeCloseTo(0.45 + 0.03 + 0.375, 6);
+    expect(completionCost(flash, { in: 1_000_000, out: 0 })).toBeCloseTo(0.75, 6);
+    // A cache read the input cannot hold is capped at it; no cache price prices it as input.
+    expect(completionCost(flash, { in: 100, out: 0, cacheRead: 500 })).toBeCloseTo((100 * 0.075) / 1e6, 12);
+    expect(completionCost({ input: 2, output: 4 }, { in: 1_000_000, out: 0, cacheRead: 500_000 })).toBeCloseTo(2, 6);
+  });
+
+  test("a conversation's spend: each model priced, the cached part at its rate, an unknown model unpriced, and the next turn's model", () => {
+    const thread = "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3";
+    const rows = [
+      { model: "gemini-3.8-flash", calls: 3, in: 2_000_000, out: 10_000, cacheRead: 1_000_000, cacheWrite: 0, since: 10, last: 30 },
+      { model: "acme-local", calls: 1, in: 5, out: 5, cacheRead: 0, cacheWrite: 0, since: 20, last: 20 },
+    ];
+    const flash = { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 };
+    expect(conversationSpend(thread, rows, priceTable(), "gemini/gemini-3.8-flash")).toEqual({
+      thread,
+      models: [
+        { model: "gemini-3.8-flash", calls: 3, since: 10, last: 30, tokens: { in: 2_000_000, out: 10_000, cacheRead: 1_000_000, cacheWrite: 0 }, price: flash, cost: expect.closeTo(0.75 + 0.075 + 0.0375, 9) },
+        { model: "acme-local", calls: 1, since: 20, last: 20, tokens: { in: 5, out: 5, cacheRead: 0, cacheWrite: 0 } },
+      ],
+      next: { model: "gemini/gemini-3.8-flash", price: flash },
+    });
+    expect(conversationSpend(thread, [], priceTable(), "acme/never")).toEqual({ thread, models: [], next: { model: "acme/never" } });
+    expect(conversationSpend(thread, [], priceTable())).toEqual({ thread, models: [] });
+    expect(modelPrice({ input: 1, output: 2, cache_read: 0.1 })).toEqual({ input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 });
   });
 });
 

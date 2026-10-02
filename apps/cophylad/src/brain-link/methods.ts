@@ -377,6 +377,8 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
         // hosted route counts as `server/<model>`, since the plan pays for it, not a key.
         const model = route === "server" ? `server/${r.model.slice(r.model.indexOf("/") + 1)}` : `${deps.llm.resolve(p.model).vendor}/${r.model}`;
         deps.metrics?.countLlm(model, { in: r.usage.in, out: r.usage.out });
+        // And to the conversation it was made in, by the model as the result names it, as the audit row keeps it.
+        if (ctx.audit.thread !== undefined) deps.store.threadSpend.add(ctx.audit.thread, r.model, r.usage, Date.now());
         return r;
       },
     },

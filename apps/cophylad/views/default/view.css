@@ -965,6 +965,17 @@ button:disabled {
   min-height: 0;
 }
 
+/* The chat's pane, round its conversation: what lies over the chat (the brain's context) lies
+   in it, and goes with it when another tab shows. */
+.chat-pane {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 #sessions {
   display: contents;
 }
@@ -5666,17 +5677,17 @@ button:disabled {
 
 /* --- the brain's context ------------------------------------------------------------------- */
 
-/* The button beside the chat's speaker, there only while the node shows the brain's context:
-   a stack of layers, lit while the context lies over the pane. */
+/* The button at the start of the chat's composer, there only while the node shows the brain's
+   context: a stack of layers, lit while the context lies over the conversation. */
 .context-open {
-  display: flex;
+  display: inline-flex;
   flex: 0 0 34px;
   align-items: center;
   justify-content: center;
   padding: 0;
-  border: 1px solid transparent;
+  border: 1px solid var(--line-strong);
   border-radius: 4px;
-  background: transparent;
+  background: var(--raised);
   color: var(--muted);
 }
 
@@ -5692,25 +5703,22 @@ button:disabled {
 }
 
 .context-open:hover {
-  background: var(--raised);
+  border-color: var(--muted);
   color: var(--ink);
 }
 
 .context-open[aria-pressed="true"] {
-  border-color: color-mix(in srgb, var(--cophyla) 55%, transparent);
+  border-color: var(--cophyla);
   background: var(--cophyla-wash);
   color: var(--cophyla-ink);
 }
 
-.context-open[hidden] {
-  display: none;
-}
-
-/* What the brain sees on its next turn, laid over the pane as the file viewer is and over it:
-   the tokens of each tier in its head, then sections that fold, each one text as it is sent. */
+/* What the brain sees on its next turn, laid over the chat's conversation and inside its pane,
+   so the composer stays below it and another tab takes it away: three tiles of spend and
+   tokens, then sections that fold, the model's own text as it is sent. */
 .context-view {
   position: absolute;
-  inset: 10px 12px 12px;
+  inset: 10px 12px 6px;
   z-index: 11;
   display: flex;
   flex-direction: column;
@@ -5721,10 +5729,6 @@ button:disabled {
   border-radius: 8px;
   background: var(--card);
   box-shadow: 0 12px 36px rgba(0, 0, 0, 0.55);
-}
-
-.context-view[hidden] {
-  display: none;
 }
 
 .context-head {
@@ -5743,9 +5747,12 @@ button:disabled {
 }
 
 .context-title {
-  flex: 0 0 auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
   font-weight: 600;
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .context-meta {
@@ -5793,6 +5800,117 @@ button:disabled {
   box-shadow: inset 0 0 0 1px var(--cophyla);
 }
 
+/* The tiles: as many in a row as fit, one under another on a phone. */
+.context-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.context-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 9px 12px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+
+.context-tile-label {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.context-tile-value {
+  color: var(--ink);
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 1.25;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.context-tile[data-kind="spend"] .context-tile-value {
+  color: var(--cophyla-ink);
+}
+
+.context-tile-sub {
+  color: var(--faint);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* The input split in two: the part read from cache in the brand's colour, the rest plain. */
+.context-split {
+  display: flex;
+  height: 6px;
+  margin: 5px 0 2px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.context-split-cached {
+  background: var(--cophyla);
+}
+
+.context-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 12px;
+}
+
+.context-key::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  margin-right: 5px;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.context-key[data-kind="cached"] {
+  color: var(--cophyla-ink);
+}
+
+.context-key[data-kind="cached"]::before {
+  background: var(--cophyla);
+}
+
+/* A share of a budget: the brand's colour, the warning's from 80%, the error's past it. */
+.context-meter {
+  display: block;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--line-strong);
+}
+
+.context-tile .context-meter {
+  margin: 5px 0 2px;
+}
+
+.context-meter-fill {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--cophyla);
+}
+
+.context-meter[data-level="high"] .context-meter-fill {
+  background: var(--amber);
+}
+
+.context-meter[data-level="over"] .context-meter-fill {
+  background: var(--rust);
+}
+
 .context-section {
   border-bottom: 1px solid var(--line);
 }
@@ -5813,6 +5931,153 @@ button:disabled {
   margin-left: 8px;
   color: var(--faint);
   font-weight: 400;
+}
+
+/* The spend by model: a head row per model with its cost, a line per kind of token under it,
+   the cached line lit in the brand's wash. Numbers line up on the right. */
+.context-table-wrap {
+  max-width: 760px;
+  margin: 0 12px;
+  overflow-x: auto;
+}
+
+.context-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.context-table th,
+.context-table td {
+  padding: 4px 8px;
+  font-weight: 400;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.context-table thead th {
+  border-bottom: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.context-table .context-num {
+  text-align: right;
+}
+
+.context-model th,
+.context-model td {
+  padding-top: 10px;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.context-model-id {
+  font: 600 12px/1.5 var(--mono);
+}
+
+.context-model-calls {
+  margin-left: 8px;
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.context-line th {
+  padding-left: 16px;
+  color: var(--muted);
+}
+
+.context-line td {
+  color: var(--ink);
+}
+
+.context-line .context-rate {
+  color: var(--muted);
+}
+
+.context-line[data-kind="cached"] th,
+.context-line[data-kind="cached"] td {
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.context-line[data-kind="cached"] > :first-child {
+  border-radius: 4px 0 0 4px;
+}
+
+.context-line[data-kind="cached"] > :last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.context-pill {
+  margin-left: 6px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 55%, transparent);
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 16px;
+}
+
+.context-total th,
+.context-total td {
+  padding-top: 8px;
+  border-top: 1px solid var(--line-strong);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.context-footnote {
+  max-width: var(--measure);
+  margin: 8px 12px 12px;
+  color: var(--faint);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+/* The next turn's tokens: a row per tier, its bar against its budget, its count at the right;
+   the window's row ruled off above the parts every call sends on top of it. */
+.context-tiers {
+  max-width: 760px;
+  padding: 2px 12px 12px;
+  font-size: 12.5px;
+}
+
+.context-tier {
+  display: grid;
+  grid-template-columns: 80px minmax(60px, 1fr) minmax(112px, auto);
+  align-items: center;
+  gap: 12px;
+  padding: 4px 0;
+}
+
+.context-tier-label {
+  color: var(--muted);
+}
+
+.context-tier-note {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.context-tier-count {
+  color: var(--ink);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.context-tier[data-tier="window"] {
+  margin: 2px 0;
+  padding: 6px 0;
+  border-top: 1px solid var(--line);
+  border-bottom: 1px solid var(--line);
+}
+
+.context-tier[data-tier="window"] .context-tier-label,
+.context-tier[data-tier="window"] .context-tier-count {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .context-text {
@@ -5844,9 +6109,10 @@ button:disabled {
   padding: 2px 8px 4px;
 }
 
+/* On a phone it fills the conversation's space edge to edge, over the composer's row still. */
 @media (max-width: 640px) {
   .context-open {
-    flex-basis: 44px;
+    flex-basis: 40px;
   }
 
   .context-view {
@@ -5856,15 +6122,35 @@ button:disabled {
     box-shadow: none;
   }
 
-  .context-head {
-    flex-wrap: wrap;
-    row-gap: 2px;
+  .context-tiles {
+    padding: 8px;
+    gap: 6px;
   }
 
-  .context-meta {
-    order: 3;
-    flex-basis: 100%;
-    padding-left: 24px;
+  .context-tile {
+    padding: 8px 10px;
+  }
+
+  .context-tile-value {
+    font-size: 18px;
+  }
+
+  .context-table-wrap {
+    margin: 0 4px;
+  }
+
+  .context-table th,
+  .context-table td {
+    padding: 4px 6px;
+  }
+
+  .context-line th {
+    padding-left: 10px;
+  }
+
+  .context-tier {
+    grid-template-columns: 64px minmax(40px, 1fr) auto;
+    gap: 8px;
   }
 }
 

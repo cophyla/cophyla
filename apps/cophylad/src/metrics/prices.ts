@@ -70,6 +70,16 @@ export function costOf(price: Price, tokens: Tokens): number {
   return usd;
 }
 
+/**
+ * USD for a model call's tokens as `llm.complete` reports them, where `in` is the whole prompt
+ * and the part read from a cache is among it, not beside it as `costOf` takes it: that part is
+ * priced at the cache's rate and the rest at input.
+ */
+export function completionCost(price: Price, tokens: Tokens): number {
+  const cached = Math.min(tokens.cacheRead ?? 0, tokens.in);
+  return costOf(price, { ...tokens, in: tokens.in - cached, cacheRead: cached });
+}
+
 /** A pricer over a table that logs each unknown model once. */
 export class Pricer {
   private table: PriceTable;

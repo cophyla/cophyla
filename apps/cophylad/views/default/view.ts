@@ -35,9 +35,10 @@
 // the voice row counts down the last seconds before the utterance's limit. The speaker beside
 // the chat's tab says whether the next reply is read out (`voice.next`) and silences it
 // (`voice.hush`); for where replies are read out, the view tells the node whether it is in front
-// and shown, and that the user acts in it (`voice.presence`). Beside the speaker, while the node
-// shows it (`[brain] show_context`, asked with `brain.context {check}` on every connect), Context
-// lays what the brain sees on its next turn over the pane (contextview.ts). Runs in a
+// and shown, and that the user acts in it (`voice.presence`). At the start of the chat's
+// composer, while the node shows it (`[brain] show_context`, asked with `brain.context {check}`
+// on every connect), Context lays what the brain sees on its next turn, and what the
+// conversation has cost, over the conversation alone (contextview.ts). Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
@@ -98,6 +99,7 @@ const roots: Roots = {
   railbar: document.getElementById("railbar")!,
   pinned: document.getElementById("pinned")!,
   tabs: document.getElementById("tabs")!,
+  chat: document.getElementById("chat")!,
   stream: document.getElementById("stream")!,
   sessions: document.getElementById("sessions")!,
   terminal: document.getElementById("terminal")!,
@@ -114,7 +116,7 @@ const viewer = new FileViewer(
     if (tab !== undefined) openFile(tab, t.from, rel, { focus: true });
   },
 );
-/** What the brain sees on its next turn, over the pane, while the user has it open. */
+/** What the brain sees on its next turn, and what the conversation has cost, over the conversation while the user has it open. */
 const contextView = new ContextView(rpc);
 /** Another node's desktop beside the pane, or over it, which the host lays over the view where the panel says. */
 const remotePanel = new RemotePanel({
@@ -134,6 +136,7 @@ function draw(opts: RenderOptions = {}): void {
   render(roots, state, ui, { ...opts, railShown: railShown() });
   syncTerminal();
   syncViewer();
+  syncContext();
   syncRemote();
   revealListed();
 }
@@ -426,20 +429,15 @@ async function loadContextOn(): Promise<void> {
   }
   if (ui.contextOn === on) return;
   ui.contextOn = on;
-  if (!on && ui.contextOpen) {
-    ui.contextOpen = false;
-    contextView.hide();
-  }
+  if (!on) ui.contextOpen = false;
   draw();
 }
 
-/** Lays what the brain sees on its next turn over the pane, asked for afresh, or takes it away on a second press; on a phone the rail goes, so it shows. */
+/** Lays what the brain sees on its next turn over the conversation, asked for afresh, or takes it away on a second press. */
 function toggleContext(): void {
   if (ui.contextOpen) return closeContext();
   ui.devices = undefined;
   ui.contextOpen = true;
-  putRailAway();
-  contextView.show(document.getElementById("panes")!);
   draw();
   contextView.focus();
 }
@@ -447,8 +445,23 @@ function toggleContext(): void {
 function closeContext(): void {
   if (!ui.contextOpen) return;
   ui.contextOpen = false;
-  contextView.hide();
   draw();
+}
+
+/** Whether the chat is the pane that shows: no session's tab and no terminal's is. */
+function chatShown(): boolean {
+  return ui.selected === undefined && ui.terminal === undefined;
+}
+
+/**
+ * The context lies in the chat's pane while the user has it open and the chat shows: another
+ * tab takes it away with the chat, and the chat brings it back, asked for afresh, since the
+ * brain's window will have moved on.
+ */
+function syncContext(): void {
+  const shown = ui.contextOpen === true && ui.contextOn === true && chatShown();
+  if (shown && !contextView.shown) contextView.show(roots.chat);
+  else if (!shown && contextView.shown) contextView.hide();
 }
 
 /**
@@ -457,10 +470,8 @@ function closeContext(): void {
  * to that card and marks it a moment; from its link, it opens at its top.
  */
 function openDevices(focus?: string): void {
-  if (ui.contextOpen) {
-    ui.contextOpen = false;
-    contextView.hide();
-  }
+  // Devices lies over the panes: the context, under it, goes (the draw below takes it away).
+  ui.contextOpen = false;
   ui.devices ??= { errorsAt: state.errorsSeen };
   putRailAway();
   draw();
@@ -2523,7 +2534,7 @@ document.addEventListener("click", (ev) => {
       return;
     case "context-close":
       closeContext();
-      roots.tabs.querySelector<HTMLButtonElement>(".context-open")?.focus();
+      roots.composer.querySelector<HTMLButtonElement>(".context-open")?.focus();
       return;
     case "file-reveal":
       void revealInFileManager();
@@ -2985,10 +2996,10 @@ document.addEventListener("keydown", (ev) => {
   } else if (ui.devices) {
     ev.preventDefault();
     closeDevices(true);
-  } else if (ui.contextOpen) {
+  } else if (contextView.shown) {
     ev.preventDefault();
     closeContext();
-    roots.tabs.querySelector<HTMLButtonElement>(".context-open")?.focus();
+    roots.composer.querySelector<HTMLButtonElement>(".context-open")?.focus();
   } else if (viewer.shown) {
     ev.preventDefault();
     closeViewer();

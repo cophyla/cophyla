@@ -578,6 +578,52 @@ describe("store: milestone 3 tables", () => {
     expect(s.events.history({ limit: 2 }).map((e) => e.at)).toEqual([103, 104]);
     s.close();
   });
+  test("migration 12 sums the audit's model calls by thread and model; a call adds to its thread's row", () => {
+    const s = new Store(":memory:");
+    s.db.transaction(() => {
+      for (const m of MIGRATIONS.slice(0, 11)) s.db.exec(m);
+      s.db.exec("PRAGMA user_version = 11");
+    })();
+    const T1 = "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3";
+    const T2 = "thr_01ARZ3NDEKTSV4RRFFQ69G5FB4";
+    let n = 0;
+    const call = (opts: { thread?: string; at: number; outcome?: "ok" | "error"; body?: unknown }): string => {
+      const id = `aud_01ARZ3NDEKTSV4RRFFQ69G5F${String(++n).padStart(2, "0")}`;
+      s.audit.insert({ id, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", at: opts.at, principal: { kind: "brain" }, action: "llm.complete", args: { model: { tier: "fast" } }, decision: "allow", ...(opts.thread ? { thread: opts.thread } : {}) });
+      s.audit.complete(id, { outcome: opts.outcome ?? "ok", durationMs: 5, ...(opts.body !== undefined ? { result: { summary: "x", bytes: 1, sha256: "a".repeat(64), body: opts.body } } : {}) });
+      return id;
+    };
+    const result = (model: string, usage: object) => ({ content: [], stopReason: "end", usage, model });
+    call({ thread: T1, at: 100, body: result("gemini-3.8-flash", { in: 1000, out: 50, cacheRead: 400 }) });
+    call({ thread: T1, at: 300, body: result("gemini-3.8-flash", { in: 2000, out: 70 }) });
+    call({ thread: T1, at: 200, body: result("gemini-3.1-flash-lite", { in: 10, out: 5 }) });
+    call({ thread: T2, at: 400, body: result("gemini-3.8-flash", { in: 7, out: 1, cacheWrite: 3 }) });
+    // Not counted: a failed call, one outside any thread, one whose result was too big to keep, and one that does not read as JSON.
+    call({ thread: T1, at: 500, outcome: "error" });
+    call({ at: 600, body: result("gemini-3.8-flash", { in: 9, out: 9 }) });
+    call({ thread: T1, at: 700 });
+    const bad = call({ thread: T1, at: 800, body: result("gemini-3.8-flash", { in: 9, out: 9 }) });
+    s.db.query("UPDATE audit SET result_body = '{not json' WHERE id = $id").run({ id: bad });
+    s.audit.insert({ id: "aud_01ARZ3NDEKTSV4RRFFQ69G5FZZ", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", at: 900, principal: { kind: "brain" }, action: "ui.say", args: {}, decision: "allow", thread: T1 });
+
+    expect(s.migrate()).toBe(MIGRATIONS.length);
+    expect(s.threadSpend.of(T1)).toEqual([
+      { model: "gemini-3.8-flash", calls: 2, in: 3000, out: 120, cacheRead: 400, cacheWrite: 0, since: 100, last: 300 },
+      { model: "gemini-3.1-flash-lite", calls: 1, in: 10, out: 5, cacheRead: 0, cacheWrite: 0, since: 200, last: 200 },
+    ]);
+    expect(s.threadSpend.of(T2)).toEqual([{ model: "gemini-3.8-flash", calls: 1, in: 7, out: 1, cacheRead: 0, cacheWrite: 3, since: 400, last: 400 }]);
+
+    // A call from now on adds to its row, or opens one.
+    s.threadSpend.add(T1, "gemini-3.1-flash-lite", { in: 20, out: 10, cacheRead: 5 }, 50);
+    s.threadSpend.add(T1, "gemini-3.1-flash-lite", { in: 30, out: 10 }, 1000);
+    // The model called most comes first.
+    expect(s.threadSpend.of(T1)[0]).toEqual({ model: "gemini-3.1-flash-lite", calls: 3, in: 60, out: 25, cacheRead: 5, cacheWrite: 0, since: 50, last: 1000 });
+    s.threadSpend.add("thr_01ARZ3NDEKTSV4RRFFQ69G5FB5", "gemini-3.8-flash", { in: 1, out: 1 }, 5);
+    expect(s.threadSpend.of("thr_01ARZ3NDEKTSV4RRFFQ69G5FB5")).toHaveLength(1);
+    expect(s.threadSpend.of("thr_01ARZ3NDEKTSV4RRFFQ69G5FB6")).toEqual([]);
+    s.close();
+  });
+
   test("the entitlement row holds one token with its claims; usage counts per period and takes the server's cap", () => {
     const s = new Store(":memory:");
     s.migrate();

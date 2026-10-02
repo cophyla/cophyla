@@ -66,6 +66,29 @@ interface BackupSyncDbRow {
 }
 const backupSyncFromRow = (r: BackupSyncDbRow): BackupSyncRow => ({ kind: r.kind, key: r.key, id: r.id, version: r.version, hash: r.hash, synced: r.synced === 1, size: r.size });
 
+/** One model's calls in a thread, summed: tokens as `llm.complete` reports them, `in` with the cached part among it. */
+export interface ThreadSpendRow {
+  model: string;
+  calls: number;
+  in: number;
+  out: number;
+  cacheRead: number;
+  cacheWrite: number;
+  since: number;
+  last: number;
+}
+
+interface ThreadSpendDbRow {
+  model: string;
+  calls: number;
+  tokens_in: number;
+  tokens_out: number;
+  cache_read: number;
+  cache_write: number;
+  first_at: number;
+  last_at: number;
+}
+
 export class Store {
   readonly db: Database;
   /** The recall index: chunks written alongside messages and session events, memory on request. */
@@ -824,6 +847,28 @@ export class Store {
     },
     clear: (): void => {
       this.db.query("DELETE FROM usage").run();
+    },
+  };
+
+  // --- what the brain's model calls cost each conversation ----------------------------------
+
+  readonly threadSpend = {
+    /** Adds one call's tokens to its thread's row for the model that answered. */
+    add: (thread: string, model: string, usage: { in: number; out: number; cacheRead?: number; cacheWrite?: number }, at: number): void => {
+      this.db
+        .query(
+          `INSERT INTO thread_spend (thread, model, calls, tokens_in, tokens_out, cache_read, cache_write, first_at, last_at)
+           VALUES ($thread, $model, 1, $in, $out, $cacheRead, $cacheWrite, $at, $at)
+           ON CONFLICT(thread, model) DO UPDATE SET calls = calls + 1, tokens_in = tokens_in + excluded.tokens_in,
+             tokens_out = tokens_out + excluded.tokens_out, cache_read = cache_read + excluded.cache_read,
+             cache_write = cache_write + excluded.cache_write, first_at = MIN(first_at, excluded.first_at), last_at = MAX(last_at, excluded.last_at)`,
+        )
+        .run({ thread, model, in: Math.round(usage.in), out: Math.round(usage.out), cacheRead: Math.round(usage.cacheRead ?? 0), cacheWrite: Math.round(usage.cacheWrite ?? 0), at });
+    },
+    /** A thread's rows, the model called most first. */
+    of: (thread: string): ThreadSpendRow[] => {
+      const rows = this.db.query("SELECT model, calls, tokens_in, tokens_out, cache_read, cache_write, first_at, last_at FROM thread_spend WHERE thread = $thread ORDER BY calls DESC, model").all({ thread }) as ThreadSpendDbRow[];
+      return rows.map((r) => ({ model: r.model, calls: r.calls, in: r.tokens_in, out: r.tokens_out, cacheRead: r.cache_read, cacheWrite: r.cache_write, since: r.first_at, last: r.last_at }));
     },
   };
 
