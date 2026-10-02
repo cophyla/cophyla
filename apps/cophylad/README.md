@@ -253,7 +253,9 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   unset, is a Mac's Computer Name ("Ada's MacBook Pro"), not its `.local` host name.
 
 **Codex liveness caveat.** With trusted hooks and the thread's process found, a Codex
-thread's state is exact. Without them, a thread that predates the daemon is listed while it
+thread's state is exact, across a restart too: a thread met again from the store keeps that
+process, once the process table shows the pid still names a `codex` started before the thread
+was last active (a pid another process took meanwhile is let go). Without them, a thread that predates the daemon is listed while it
 changed within `codex_recent_ms` and its status is inferred from the last
 `task_started`/`task_complete`; it goes `ended` after that window with no rollout growth and
 no hook. Only lines written since a tail opened count as growth: the history a fresh tail

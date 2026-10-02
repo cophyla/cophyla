@@ -37,7 +37,7 @@ export interface SessionRecord {
   permissionMode?: string;
   /** Claude: every permission mode seen, which says what the session may go on in after a plan. */
   modesSeen?: Set<string>;
-  /** Codex and Muse: `hook` once a hook has been seen, else the recency heuristic over the rollout or the session log. */
+  /** Codex and Muse: `hook` once a hook has been seen, or met again from the store with the process one gave it; else the recency heuristic over the rollout or the session log. */
   liveness: "hook" | "heuristic";
   /** Codex and Muse: the last sign of activity (the rollout or log written, the list's `updatedAt`, a hook), for the recency rule. */
   lastRolloutActivity?: number;

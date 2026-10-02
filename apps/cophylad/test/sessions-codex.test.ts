@@ -13,7 +13,9 @@
 // go and a stop never ends; not for a `codex exec` under the daemon; a terminal freed by a
 // session that ended goes to one waiting, and its CLI started again is marked again; of two
 // CLIs, the one started just before the thread, or none when that cannot be told; a CLI's
-// `/new` and `/resume` hand its terminal over; and a desktop app's thread takes none.
+// `/new` and `/resume` hand its terminal over; and a desktop app's thread takes none. A thread
+// met again after a restart is judged by its CLI while that runs, however long it sat idle; a
+// pid another program or a later process holds by then is let go, and recency judges it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -1019,5 +1021,90 @@ describe("codex sessions end and resume on evidence", () => {
     writeFileSync(rolloutPath, lines.join("\n") + "\n" + extra + "\n");
     await mini.sessions.tick();
     expect(events().slice(before).map((e) => e.kind)).toEqual(["assistant_text"]);
+  });
+});
+
+describe("a codex session met again after a restart", () => {
+  // Short, so a thread judged by recency would end within the test.
+  const RECENT_MS = 400;
+  let scratch: string;
+  let home: string;
+  let cwd: string;
+  let storePath: string;
+  let profile: string;
+  let mini: Mini;
+  const alive = new Set<number>();
+  const chains = new Map<number, { pid: number; name: string; startedAt?: number }[]>();
+  /** No command line to read: a `codex` above a hook is the session's own process, never the daemon. */
+  const tree = {
+    async ancestors(pid: number) {
+      return chains.get(pid) ?? [];
+    },
+  };
+  const raiser: WindowRaiser = { ...tree, commandLine: async () => undefined, raise: async () => "not_found" };
+  const toml = () =>
+    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\ncodex_list_ms = 100000\ncodex_recent_ms = ${RECENT_MS}\n\n[[profiles]]\nharness = "codex"\nname = "fake"\nconfig_dir = ${tomlString(home)}\ncommand = ${tomlString(process.execPath)}\nargs = [${tomlString(FAKE_CODEX)}]\n`;
+  const start = () =>
+    miniSessions(toml(), (host, log) => [new CodexAdapter({ host, log, version: "0.1.0", raiser: tree, isAlive: (pid) => alive.has(pid) })], { storePath, raiser, deps: { isAlive: (pid) => alive.has(pid) } });
+  const record = (thread: string) => mini.sessions.find("codex", thread)!;
+  const lastEvent = (thread: string) => mini.store.sessionEvents.history(record(thread).session.id, { limit: 50 }).at(-1);
+  /** A CLI in a shell, its thread's first prompt's hook run below it: the CLI becomes the session's process. */
+  const prompted = async (thread: string, shellPid: number, cliPid: number, startedAt: number) => {
+    chains.set(shellPid, [
+      { pid: shellPid, name: "pwsh.exe" },
+      { pid: cliPid, name: "codex.exe", startedAt },
+    ]);
+    alive.add(cliPid);
+    const hook = { hook_event_name: "UserPromptSubmit", session_id: thread, turn_id: "t1", cwd, transcript_path: null, prompt: "hello" } as unknown as CodexHookEvent;
+    await mini.sessions.onHook("codex", hook, { via: "command", ppid: shellPid, profile });
+    await waitFor(() => record(thread).session.native.pid === cliPid);
+  };
+
+  beforeAll(async () => {
+    scratch = tempHome();
+    home = join(scratch, "codex-home");
+    cwd = join(scratch, "work");
+    storePath = join(scratch, "cophyla.sqlite");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    writeFileSync(join(home, "auth.json"), "{}");
+    writeFileSync(join(home, "threads.json"), "[]");
+    mini = await start();
+    profile = mini.profiles.byHarness("codex")[0]!.id;
+  });
+  afterAll(async () => {
+    await mini.stop();
+    removeHome(scratch);
+  });
+
+  test("its CLI still running keeps it live past the window, until the CLI goes; a pid another process took is let go, and the window ends that one", async () => {
+    const before = Date.now() - 60_000;
+    await prompted("kept", 7000, 7001, before);
+    await prompted("renamed", 7100, 7101, before);
+    await prompted("reused", 7200, 7201, before);
+    await mini.stop();
+    // While the daemon was down, 7101 went to another program and 7201 to a later codex.
+    chains.set(7001, [{ pid: 7001, name: "codex.exe", startedAt: before }, { pid: 7000, name: "pwsh.exe" }]);
+    chains.set(7101, [{ pid: 7101, name: "notepad.exe", startedAt: before }]);
+    chains.set(7201, [{ pid: 7201, name: "codex.exe", startedAt: Date.now() + 5000 }]);
+    await sleep(RECENT_MS + 200);
+    mini = await start();
+    // The process table is read once: the pids that are no longer the sessions' are let go.
+    await waitFor(() => record("renamed").session.native.pid === undefined && record("reused").session.native.pid === undefined);
+    expect(record("renamed").liveness).toBe("heuristic");
+    expect(record("reused").liveness).toBe("heuristic");
+    await mini.sessions.tick();
+    expect(record("kept").session.status).not.toBe("ended");
+    expect(record("kept").session.native.pid).toBe(7001);
+    expect(record("kept").liveness).toBe("hook");
+    for (const t of ["renamed", "reused"]) {
+      expect(record(t).session.status).toBe("ended");
+      expect(lastEvent(t)?.payload).toEqual({ reason: "inactive" });
+    }
+    // The CLI quits: the session ends with it.
+    alive.delete(7001);
+    await mini.sessions.tick();
+    expect(record("kept").session.status).toBe("ended");
+    expect(lastEvent("kept")?.payload).toEqual({ reason: "gone" });
   });
 });

@@ -258,6 +258,13 @@ interface PendingResult {
 const CLAUDE_PROCESS = /^claude(\.exe)?$/i;
 /** The harnesses whose CLI runs in a terminal cophylad can find: Claude's and Muse's are typed into as well. */
 const TERMINAL_HARNESSES: readonly string[] = ["claude", "codex", "muse"];
+/**
+ * The process a Codex or Muse record holds, by its image name, as its adapter took it up a
+ * hook's ancestors (or from the CLI a daemon-hosted thread was met in): only a hook gives one.
+ */
+const HOOKED_PROCESS: Readonly<Record<string, RegExp>> = { codex: /codex/i, muse: /muse/i };
+/** How far a process's start, as the process table says it, may fall past the last activity of the record holding it: Linux's is read to the second. */
+const PROCESS_START_SLACK_MS = 2000;
 /** How often the profiles' login files are looked at. */
 const PROFILES_CHECK_MS = 5000;
 /** The title Claude's agents screen gives its terminal, after a count of what waits (`1 awaiting input · claude agents`). */
@@ -538,6 +545,7 @@ export class Sessions implements SessionHost {
    */
   private load(): void {
     const now = this.now();
+    const held: LiveRecord[] = [];
     for (const session of this.deps.store.sessions.listLive()) {
       const rec = this.adopt(session, now);
       if (session.native.transport === "acp") {
@@ -549,8 +557,39 @@ export class Sessions implements SessionHost {
         rec.session.status = "busy";
         this.deps.store.sessions.update(rec.session);
       }
+      if (session.native.pid !== undefined && HOOKED_PROCESS[session.harness]) held.push(rec);
     }
     this.log.info("sessions loaded", { count: this.byId.size });
+    this.keepProcesses(held);
+  }
+
+  /**
+   * Codex and Muse records met again holding a process: only a hook gave them one, so they are
+   * judged by it as before the restart, not by their rollout's or log's recency, which ends a CLI
+   * left idle a while. The process is read once: one of another name, or started after the
+   * record was last active (its pid taken again, as after a reboot), is not the session's, which
+   * lets it go and lives by recency again. One gone or not read is left to the adapter's checks.
+   */
+  private keepProcesses(recs: LiveRecord[]): void {
+    if (recs.length === 0) return;
+    const last = new Map(recs.map((rec) => [rec, rec.session.lastActivity]));
+    for (const rec of recs) rec.liveness = "hook";
+    void this.chainsOf([...new Set(recs.map((rec) => rec.session.native.pid!))])
+      .then((chains) => {
+        for (const rec of recs) {
+          const pid = rec.session.native.pid;
+          const self = pid === undefined ? undefined : chains.get(pid)?.[0];
+          if (this.stopped || rec.session.status === "ended" || !self || self.pid !== pid) continue;
+          const named = HOOKED_PROCESS[rec.session.harness]!.test(self.name);
+          const before = self.startedAt === undefined || self.startedAt <= last.get(rec)! + PROCESS_START_SLACK_MS;
+          if (named && before) continue;
+          rec.liveness = "heuristic";
+          const { pid: _other, ...native } = rec.session.native;
+          this.patch(rec, { native }, rec.session.lastActivity);
+          this.log.info("a session met again holds a process not its own; let go", { id: rec.session.id, pid, name: self.name, startedAt: self.startedAt });
+        }
+      })
+      .catch((e: unknown) => this.log.warn("the processes of sessions met again were not read", { error: e instanceof Error ? e.message : String(e) }));
   }
 
   private adopt(session: Session, since = this.now()): LiveRecord {
@@ -1016,9 +1055,7 @@ export class Sessions implements SessionHost {
       while (this.ancestryWanted.size > 0 && !this.stopped) {
         const batch = [...this.ancestryWanted].flatMap((rec) => (rec.ancestry && !rec.ancestry.chain ? [{ rec, ancestry: rec.ancestry }] : []));
         this.ancestryWanted.clear();
-        const pids = [...new Set(batch.map((b) => b.ancestry.pid))];
-        const tree = this.deps.raiser;
-        const chains = await (tree.ancestorsOf ? tree.ancestorsOf(pids) : Promise.all(pids.map(async (pid) => [pid, await tree.ancestors(pid)] as const)).then((e) => new Map(e))).catch(() => new Map<number, ProcessInfo[]>());
+        const chains = await this.chainsOf([...new Set(batch.map((b) => b.ancestry.pid))]);
         for (const { rec, ancestry } of batch) {
           // A new process was taken on while this read: its own read is queued.
           if (rec.ancestry !== ancestry) continue;
@@ -1029,6 +1066,12 @@ export class Sessions implements SessionHost {
     } finally {
       this.ancestryReading = false;
     }
+  }
+
+  /** The ancestors of each pid, nearest first, in one read of the process table where the platform has one; none where the read failed. */
+  private chainsOf(pids: number[]): Promise<Map<number, ProcessInfo[]>> {
+    const tree = this.deps.raiser;
+    return (tree.ancestorsOf ? tree.ancestorsOf(pids) : Promise.all(pids.map(async (pid) => [pid, await tree.ancestors(pid)] as const)).then((e) => new Map(e))).catch(() => new Map<number, ProcessInfo[]>());
   }
 
   /**
