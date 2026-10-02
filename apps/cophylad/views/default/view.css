@@ -2345,6 +2345,7 @@ button:disabled {
   min-width: 0;
 }
 
+/* A label of three letters never cuts: at 100% it takes a little of the gap instead. */
 .status-meter-label {
   min-width: 0;
   color: var(--faint);
@@ -2352,9 +2353,7 @@ button:disabled {
   font-weight: 600;
   letter-spacing: 0.05em;
   text-transform: uppercase;
-  overflow: hidden;
   white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .status-meter-value {
@@ -2443,75 +2442,94 @@ button:disabled {
   flex-direction: column;
 }
 
-/* Usage: each login a line, its harness's mark, its name and what it spent today, over its
-   session and weekly limits as meters; "Today" names the column the costs stand in. */
-.status-heading-row {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
+/* Memory says used of total, so its column is the widest of a machine's three. */
+.status-machine .status-meters {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr) minmax(0, 1fr);
   gap: 8px;
 }
 
-.status-heading-aside {
+/* Usage: a row per login under the columns' names, its harness's mark beside its name, its
+   session and weekly limits as a share used, coloured as they near the top, and what it
+   spent today. */
+.spend-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.spend-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 42px 34px 42px;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.spend-head {
+  align-items: baseline;
+  margin-bottom: 3px;
+}
+
+.spend-head .status-heading {
   margin: 0;
 }
 
-.status-login-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
+.spend-head .spend-limit,
+.spend-head .spend-cost {
+  color: var(--faint);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
-.status-login {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.status-login-head {
+.spend-name {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 5px;
   min-width: 0;
-  font-size: 12.5px;
 }
 
-.agent-icon.login-mark {
+.agent-icon.spend-mark {
   flex: 0 0 13px;
   width: 13px;
   height: 13px;
-  margin-left: -2px;
 }
 
-.login-mark .agent-mark {
+.spend-mark .agent-mark {
   width: 12px;
   height: 12px;
 }
 
-.status-login-name {
-  flex: 0 1 auto;
+.spend-label {
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.status-login-cost {
-  flex: none;
-  margin-left: auto;
+.spend-limit,
+.spend-cost {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.spend-row:not(.spend-head) .spend-cost {
   color: var(--muted);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
 }
 
-/* Two limits, not three readings: each takes half. */
-.status-login .status-meters {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-
-.status-meter[data-level="none"] .status-meter-value {
+.spend-row:not(.spend-head) .spend-limit[data-level="none"] {
   color: var(--faint);
+}
+
+.spend-limit[data-level="warn"] {
+  color: var(--amber);
+}
+
+.spend-limit[data-level="critical"] {
+  color: var(--rust);
+  font-weight: 600;
 }
 
 
@@ -2923,6 +2941,8 @@ button:disabled {
   font-weight: 400;
   letter-spacing: 0;
   text-transform: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .devices-view .status-meter-value {

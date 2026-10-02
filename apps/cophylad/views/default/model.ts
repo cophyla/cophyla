@@ -2929,7 +2929,7 @@ export interface SpendRow {
   name: string;
   /** The harness the login is for, once `profile.list` said: its mark goes beside the name. */
   harness?: HarnessProfile["harness"];
-  /** The name, with what tells it from another row of the same name: the harness, then the machine. */
+  /** The name, with its machine's when another login of the same harness has the same name; the harness's mark tells the rest apart. */
   label: string;
   spend: Spend;
   /** The login's plan limits, from its node's latest sample. */
@@ -2964,15 +2964,12 @@ export function selectSpend(state: ViewState): SpendRow[] {
     const name = p?.name ?? profile.replace(/^prof_/, "").slice(0, 6);
     rows.push({ profile, name, ...(p ? { harness: p.harness } : {}), label: name, spend, ...(l ? { limits: l } : {}) });
   }
-  // Two logins of one name (each harness's "default") are told apart by their harness, then by their machine.
+  // Two logins of one name are told apart by their harness's mark (each harness's "default"), and of one harness too by their machine.
   for (const row of rows) {
-    const twins = rows.filter((r) => r.name === row.name);
-    if (twins.length === 1) continue;
+    const twins = rows.filter((r) => r.name === row.name && r.harness === row.harness);
     const p = state.profiles.get(row.profile);
-    const harness = row.harness ? HARNESS_NAMES[row.harness] : undefined;
-    const sameHarness = twins.filter((r) => r.harness === row.harness).length > 1;
-    const machine = sameHarness && p && state.nodes.size > 1 ? state.nodes.get(p.node)?.name : undefined;
-    row.label = [row.name, harness, machine].filter(Boolean).join(" · ");
+    const machine = twins.length > 1 && p && state.nodes.size > 1 ? state.nodes.get(p.node)?.name : undefined;
+    if (machine) row.label = `${row.name} · ${machine}`;
   }
   return rows.sort((a, b) => b.spend.cost - a.spend.cost || b.spend.in + b.spend.out - (a.spend.in + a.spend.out) || a.label.localeCompare(b.label));
 }
@@ -2982,28 +2979,17 @@ export const HARNESS_NAMES: Record<HarnessProfile["harness"], string> = { claude
 
 // --- the rail's Status: a line per machine, the usage, a line per phone ------------------------
 
-/** One reading as a share, a value over a track: a machine's cpu, memory or busiest GPU; a login's session or weekly limit; a metered part of the plan. */
+/** One reading as a share, a value over a track: a machine's cpu, memory or busiest GPU, or a metered part of the plan. */
 export interface StatusMeter {
-  /** What it reads: cpu, memory, gpu, session, weekly, or the plan's metric. */
+  /** What it reads: cpu, memory, gpu, or the plan's metric. */
   key: string;
   label: string;
   percent: number;
   words: string;
   /** `none` while the reading is not known: a dash over an empty track. */
   level: "none" | "normal" | "warn" | "critical";
-  /** The reading in full, on hover: the GPU's name, memory used of total, when a limit starts over. */
+  /** The reading in full, on hover: the GPU's name, memory used of total. */
   title: string;
-}
-
-/** A login's two limits as meters: its session (five-hour) window and its week, each with when it starts over. */
-export function usageMeters(row: SpendRow, now: number): StatusMeter[] {
-  const meter = (key: "session" | "weekly", label: string, long: string, w: LimitWindow | undefined): StatusMeter => {
-    if (!w) return { key, label, percent: 0, words: "—", level: "none", title: `${long}: not known` };
-    const p = clamp(w.percent);
-    const left = w.resetsAt !== undefined && w.resetsAt > now ? `, starts over in ${durationWords(w.resetsAt - now)}` : "";
-    return { key, label, percent: p, words: `${Math.round(w.percent)}%`, level: meterLevel(p), title: `${long}: ${Math.round(w.percent)}% used${left}` };
-  };
-  return [meter("session", "Session", "Session limit (five hours)", row.limits?.session), meter("weekly", "Week", "Weekly limit", row.limits?.weekly)];
 }
 
 /** A machine's line in the rail's Status: a glance, all it can do waits in Devices but its desktop. */
@@ -3040,13 +3026,14 @@ function meterLevel(percent: number): "normal" | "warn" | "critical" {
 
 /** A machine's three readings from its latest sample: cpu, memory, and the busiest of its GPUs. */
 export function statusMeters(sample: MetricsSample): StatusMeter[] {
-  const meter = (key: StatusMeter["key"], label: string, percent: number, title: string): StatusMeter => {
+  const meter = (key: StatusMeter["key"], label: string, percent: number, title: string, words?: string): StatusMeter => {
     const p = clamp(percent);
-    return { key, label, percent: p, words: `${Math.round(p)}%`, level: meterLevel(p), title };
+    return { key, label, percent: p, words: words ?? `${Math.round(p)}%`, level: meterLevel(p), title };
   };
   const out = [meter("cpu", "CPU", sample.cpu, `CPU ${percentWords(sample.cpu)}`)];
-  const total = sample.memory.total;
-  out.push(meter("memory", "RAM", total > 0 ? (sample.memory.used / total) * 100 : 0, `Memory ${usedWords(sample.memory.used, total)}`));
+  // memory as used of total, its track the share
+  const { used, total } = sample.memory;
+  out.push(meter("memory", "RAM", total > 0 ? (used / total) * 100 : 0, `Memory ${usedWords(used, total)}`, memoryWords(used, total)));
   const gpu = [...(sample.gpu ?? [])].sort((a, b) => b.util - a.util)[0];
   if (gpu) out.push(meter("gpu", "GPU", gpu.util, `${gpu.name} ${percentWords(gpu.util)}${gpu.vramTotal > 0 ? ` · ${usedWords(gpu.vramUsed, gpu.vramTotal)}` : ""}`));
   return out;
@@ -3513,6 +3500,17 @@ export function bytesWords(n: number): string {
 export function percentWords(n: number): string {
   const v = Math.max(0, n);
   return v > 0 && v < 10 ? `${v.toFixed(1)}%` : `${Math.round(v)}%`;
+}
+
+/** Memory used of total, short enough for the rail: whole gigabytes, to one place on a machine of under 4 GB. */
+export function memoryWords(used: number, total: number): string {
+  const gb = (n: number) => (total >= 4 * 1024 ** 3 ? String(Math.round(n / 1024 ** 3)) : (n / 1024 ** 3).toFixed(1));
+  return `${gb(used)}/${gb(total)} GB`;
+}
+
+/** Today's cost as the rail's column has room for: cents under a hundred dollars, whole dollars from there. */
+export function shortCost(usd: number): string {
+  return usd >= 100 ? `$${Math.round(usd)}` : costWords(usd);
 }
 
 /** A cost in dollars: cents when there are some, a fraction of a cent when that is all. */

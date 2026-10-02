@@ -7,8 +7,9 @@
 // folder they work in, a workspace inside another's indented under it, a folded heading
 // saying how many tabs it holds, the bare terminals under Terminals, each named by the folder it works
 // in, then Status, a glance: a line per machine (its dot and name, what it is, its readings as
-// meters, its desktop's mark while shared, what wants the user, and Connect and Beside where
-// this app can open its desktop), each login's limits as meters with what it spent today, a
+// meters, memory as used of total, its desktop's mark while shared, what wants the user, and
+// Connect and Beside where this app can open its desktop), a row per login (its harness's mark,
+// its name, its session and weekly limits used and what it spent today), a
 // line per phone, and at its foot the way into Devices. While an
 // agent's tab is selected that lower half has two tabs: Status, which holds all of it, and
 // Files, the default, an explorer of the folder the agent works in, its folders folding open
@@ -51,10 +52,10 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
-import { desktopWords, devicesWords, HARNESS_NAMES, machineFacts, selectStatusMachines, selectStatusPhones, usageMeters, viewerRows } from "./model.ts";
+import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
@@ -1703,12 +1704,12 @@ function createStatus(): HTMLElement {
   const machines = el("section", "status-section status-machines");
   machines.setAttribute("aria-label", "Computers");
   machines.append(el("h3", "status-heading", "Computers"), el("div", "status-machine-rows"));
-  const usage = el("section", "status-section status-usage");
+  const usage = el("section", "status-section spend");
   usage.setAttribute("aria-label", "Usage");
-  const usageHead = el("div", "status-heading-row");
+  const usageHead = el("div", "spend-row spend-head");
   usageHead.title = "Each login's share of its session (five-hour) and weekly limits, and what its sessions spent today";
-  usageHead.append(el("h3", "status-heading", "Usage"), el("span", "status-heading status-heading-aside", "Today"));
-  usage.append(usageHead, el("div", "status-login-rows"));
+  usageHead.append(el("h3", "status-heading spend-title", "Usage"), el("span", "spend-limit", "Session"), el("span", "spend-limit", "Week"), el("span", "spend-cost", "Today"));
+  usage.append(usageHead, el("div", "spend-rows"));
   const phones = el("section", "status-section status-phones");
   phones.setAttribute("aria-label", "Phones");
   phones.append(el("h3", "status-heading", "Phones"), el("div", "status-phone-rows"));
@@ -1725,9 +1726,9 @@ function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
   setHidden(machineSection, machines.length === 0);
   reconcile(machineSection.querySelector<HTMLElement>(".status-machine-rows")!, machines, (m) => m.node, createStatusMachine, (node, m) => updateStatusMachine(node, m, state, ui));
   const logins = state.scopes.includes("metrics:read") ? selectSpend(state) : [];
-  const usage = cards.querySelector<HTMLElement>(".status-usage")!;
+  const usage = cards.querySelector<HTMLElement>(".spend")!;
   setHidden(usage, logins.length === 0);
-  reconcile(usage.querySelector<HTMLElement>(".status-login-rows")!, logins, (r) => r.profile, createStatusLogin, updateStatusLogin);
+  reconcile(usage.querySelector<HTMLElement>(".spend-rows")!, logins, (r) => r.profile, createSpend, updateSpend);
   const phones = state.scopes.includes("controllers") ? selectStatusPhones(state) : [];
   const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
   setHidden(phoneSection, phones.length === 0);
@@ -1799,30 +1800,36 @@ function updateMeter(node: HTMLElement, m: StatusMeter): void {
   if (fill.style.width !== width) fill.style.width = width;
 }
 
-/** A login's line: its harness's mark, its name and what its sessions spent today, then its session and weekly limits as meters. */
-function createStatusLogin(): HTMLElement {
-  const row = el("div", "status-login");
-  const head = el("div", "status-login-head");
-  const icon = el("span", "agent-icon login-mark");
+/** One login's row: its harness's mark and its name, its session and weekly limits as a share used, and what its sessions spent today. */
+function createSpend(): HTMLElement {
+  const row = el("div", "spend-row");
+  const name = el("span", "spend-name");
+  const icon = el("span", "agent-icon spend-mark");
   icon.dataset["tone"] = "active";
   icon.setAttribute("role", "img");
   icon.append(el("span", "agent-mark"));
-  head.append(icon, el("span", "status-login-name"), el("span", "status-login-cost"));
-  row.append(head, el("div", "status-meters"));
+  name.append(icon, el("span", "spend-label"));
+  row.append(name, el("span", "spend-limit spend-session"), el("span", "spend-limit spend-weekly"), el("span", "spend-cost"));
   return row;
 }
 
-function updateStatusLogin(row: HTMLElement, r: SpendRow): void {
-  const now = Date.now();
-  setData(row, "profile", r.profile);
-  row.title = spendTitle(r, now);
-  const icon = row.querySelector<HTMLElement>(".login-mark")!;
-  setData(icon, "harness", r.harness ?? "");
-  setHidden(icon, r.harness === undefined);
-  icon.setAttribute("aria-label", r.harness ? HARNESS_NAMES[r.harness] : "");
-  setText(row.querySelector(".status-login-name")!, r.label);
-  setText(row.querySelector(".status-login-cost")!, costWords(r.spend.cost));
-  reconcile(row.querySelector<HTMLElement>(".status-meters")!, usageMeters(r, now), (m) => m.key, createMeter, updateMeter);
+function updateSpend(node: HTMLElement, row: SpendRow): void {
+  setData(node, "profile", row.profile);
+  node.title = spendTitle(row, Date.now());
+  const icon = node.querySelector<HTMLElement>(".spend-mark")!;
+  setData(icon, "harness", row.harness ?? "");
+  setHidden(icon, row.harness === undefined);
+  icon.setAttribute("aria-label", row.harness ? HARNESS_NAMES[row.harness] : "");
+  setText(node.querySelector(".spend-label")!, row.label);
+  for (const [cls, w] of [
+    [".spend-session", row.limits?.session],
+    [".spend-weekly", row.limits?.weekly],
+  ] as const) {
+    const cell = node.querySelector<HTMLElement>(cls)!;
+    setText(cell, limitWords(w));
+    setData(cell, "level", limitLevel(w));
+  }
+  setText(node.querySelector(".spend-cost")!, shortCost(row.spend.cost));
 }
 
 /** A machine's bar as a meter on its card: CPU and Memory by name, a GPU by its own. */

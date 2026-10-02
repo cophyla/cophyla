@@ -1,13 +1,13 @@
 // The default view's Status and Devices, pure: a line per machine in the rail (what it is, its
 // readings, its shared desktop, what wants the user, and the ways onto its desktop), a line per
-// phone, each login's limits as meters and its name told from a twin's; and in Devices, who can
+// phone, each login's name told from a twin's, memory and cost short enough for it; and in Devices, who can
 // view a desktop a device a line, the user's machines by name whatever they were paired under,
 // what each machine is and its facts, and a desktop's state in words.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Controller, Grant, HarnessProfile, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, desktopWords, devicesWords, ERRORS_KEEP, initialState, machineFacts, selectNodes, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, statusMeters, usageMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import { apply, desktopWords, devicesWords, ERRORS_KEEP, initialState, machineFacts, selectNodes, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -74,9 +74,11 @@ describe("the rail's Status: a line per machine", () => {
     const [desk, laptop, mac, build] = selectStatusMachines(state, NOW);
     expect(desk!.meters.map((m) => [m.label, m.words, m.level])).toEqual([
       ["CPU", "9%", "normal"],
-      ["RAM", "54%", "normal"],
+      ["RAM", "34/64 GB", "normal"],
       ["GPU", "14%", "normal"],
     ]);
+    // memory says used of total; its track is still the share
+    expect(Math.round(desk!.meters[1]!.percent)).toBe(54);
     expect(desk!.meters[2]!.title).toBe("NVIDIA GeForce RTX 4080 14% · 7.6/16.0 GB");
     expect(desk!.meters[1]!.title).toBe("Memory 34.3/63.7 GB");
     expect(laptop!.meters.map((m) => [m.label, m.level])).toEqual([
@@ -136,7 +138,7 @@ describe("the rail's Status: a line per machine", () => {
 describe("the rail's Status: each login's usage", () => {
   const profile = (id: string, nodeId: string, harness: HarnessProfile["harness"], name: string): HarnessProfile => ({ id: id as HarnessProfile["id"], node: nodeId as HarnessProfile["node"], harness, name, configDir: "x", env: {}, origin: "discovered", status: "ok" });
 
-  test("two logins of one name are told apart by their harness, then by their machine; each has its harness's mark", () => {
+  test("two logins of one name are told apart by their harness's mark, and of one harness too by their machine", () => {
     const state = cluster();
     apply(state, { type: "profiles", profiles: [profile("prof_A", DESK, "claude", "default"), profile("prof_B", DESK, "codex", "default"), profile("prof_C", DESK, "claude", "gmail"), profile("prof_D", LAPTOP, "codex", "default")] });
     const limits = { at: NOW, weekly: { percent: 10 } };
@@ -144,17 +146,18 @@ describe("the rail's Status: each login's usage", () => {
     apply(state, { type: "metrics.sample", params: { ...sample(LAPTOP, 1, 1, 2), limits: { prof_D: limits } } });
     const rows = selectSpend(state);
     expect(Object.fromEntries(rows.map((r) => [r.profile, [r.label, r.harness]]))).toEqual({
-      prof_A: ["default · Claude", "claude"],
-      prof_B: ["default · Codex · Desk", "codex"],
+      prof_A: ["default", "claude"],
+      prof_B: ["default · Desk", "codex"],
       prof_C: ["gmail", "claude"],
-      prof_D: ["default · Codex · Laptop", "codex"],
+      prof_D: ["default · Laptop", "codex"],
     });
   });
 
-  test("its session and weekly limits as meters, each saying when it starts over; a dash while one is not known", () => {
-    const [session, week] = usageMeters({ profile: "p", name: "gmail", label: "gmail", spend: { in: 0, out: 0, cached: 0, cost: 0 }, limits: { at: NOW, session: { percent: 96.4, resetsAt: NOW + 2 * H + 40 * 60_000 } } }, NOW);
-    expect(session).toEqual({ key: "session", label: "Session", percent: 96.4, words: "96%", level: "critical", title: "Session limit (five hours): 96% used, starts over in 2 h 40 min" });
-    expect(week).toEqual({ key: "weekly", label: "Week", percent: 0, words: "—", level: "none", title: "Weekly limit: not known" });
+  test("memory as used of total and today's cost, short enough for the rail", () => {
+    expect(memoryWords(34.3 * GB, 63.7 * GB)).toBe("34/64 GB");
+    expect(memoryWords(14.6 * GB, 15.7 * GB)).toBe("15/16 GB");
+    expect(memoryWords(1.2 * GB, 3.8 * GB)).toBe("1.2/3.8 GB");
+    expect([shortCost(0), shortCost(0.004), shortCost(69.84), shortCost(312.31), shortCost(7026.97)]).toEqual(["$0", "<$0.01", "$69.84", "$312", "$7027"]);
   });
 });
 
