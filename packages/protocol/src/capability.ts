@@ -294,6 +294,13 @@ export const LlmComplete = z.object({
   thinking: z.enum(["minimal", "low", "medium", "high"]).optional(),
   /** The text may be the reply the user reads: cophylad streams it as a provisional message; absent, nothing streams. */
   reply: z.boolean().optional(),
+  /**
+   * A step of the caller's turn `key`, whose system prompt, tools and earlier messages are the
+   * same from step to step: a provider that can caches them once for the turn. `eager` makes
+   * the cache before the first step (nobody waits on the turn); otherwise beside it, for the
+   * steps after.
+   */
+  cache: z.object({ key: z.string().min(1).max(200), eager: z.boolean().optional() }).optional(),
 });
 export type LlmComplete = z.infer<typeof LlmComplete>;
 

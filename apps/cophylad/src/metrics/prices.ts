@@ -23,11 +23,12 @@ export interface Tokens {
 
 /** USD per million tokens, at each provider's list prices. */
 export const BUILTIN_PRICES: Record<string, Price> = {
-  "gemini/gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cache_read: 0.025 },
-  "gemini/gemini-3.8-flash": { input: 0.75, output: 3.75, cache_read: 0.075 },
-  "gemini/gemini-3.7-flash": { input: 0.75, output: 3.75, cache_read: 0.075 },
-  "gemini/gemini-3.6-flash": { input: 0.75, output: 3.75, cache_read: 0.075 },
-  "gemini/gemini-3.1-pro-preview": { input: 2, output: 12, cache_read: 0.2 },
+  // Gemini bills the tokens an explicit cache is made with at the input price (its storage, cents per hour for a turn's seconds, is not counted).
+  "gemini/gemini-3.1-flash-lite": { input: 0.25, output: 1.5, cache_read: 0.025, cache_write: 0.25 },
+  "gemini/gemini-3.8-flash": { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0.75 },
+  "gemini/gemini-3.7-flash": { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0.75 },
+  "gemini/gemini-3.6-flash": { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0.75 },
+  "gemini/gemini-3.1-pro-preview": { input: 2, output: 12, cache_read: 0.2, cache_write: 2 },
   "anthropic/claude-sonnet-5": { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
   "anthropic/claude-opus-5": { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
   "anthropic/claude-haiku-4-5": { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },

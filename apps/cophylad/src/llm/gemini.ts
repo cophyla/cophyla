@@ -3,11 +3,15 @@
 // images as parts, a `tool_use` as a `functionCall`, a `tool_result` as a `functionResponse`
 // whose `name` is recovered from the matching call; the model's `thoughtSignature` rides on
 // the block as `signature` and goes back unchanged. Deltas stream to the brain as text and
-// whole tool calls; the return value is the coalesced completion.
+// whole tool calls; the return value is the coalesced completion. A request that names its
+// turn (`cache`) goes through the turn's explicit cache (gemini-cache.ts): the system prompt,
+// tools and earlier contents cached once, each step sending only what follows them.
 
 import { RpcError } from "@cophyla/protocol";
 import type { LlmContent, LlmResult, LlmTool } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
+import { TurnCaches } from "./gemini-cache.ts";
+import type { CacheParts } from "./gemini-cache.ts";
 import type { Provider, ProviderRequest } from "./index.ts";
 
 export interface GeminiOptions {
@@ -166,24 +170,56 @@ async function* sse(body: ReadableStream<Uint8Array>): AsyncGenerator<string> {
 export class GeminiProvider implements Provider {
   readonly vendor = "gemini";
   private opts: GeminiOptions;
+  private caches: TurnCaches;
 
   constructor(opts: GeminiOptions) {
     this.opts = opts;
+    this.caches = new TurnCaches({ baseUrl: opts.baseUrl, apiKey: opts.apiKey, log: opts.log, ...(opts.fetch ? { fetch: opts.fetch } : {}) });
   }
 
   async complete(req: ProviderRequest): Promise<LlmResult> {
     const key = this.opts.apiKey();
     if (!key) throw new RpcError("unavailable", "no Gemini API key: set [providers.gemini] api_key or GEMINI_API_KEY", { provider: "gemini" });
-    const body: Record<string, unknown> = { contents: toContents(req.params.messages) };
-    if (req.params.system) body["systemInstruction"] = { parts: [{ text: req.params.system }] };
+    const contents = toContents(req.params.messages);
+    const system = req.params.system ? { parts: [{ text: req.params.system }] } : undefined;
     const tools = toTools(req.params.tools);
-    if (tools) body["tools"] = tools;
     const generationConfig: Record<string, unknown> = {};
     if (req.params.maxTokens !== undefined) generationConfig["maxOutputTokens"] = req.params.maxTokens;
     if (req.params.temperature !== undefined) generationConfig["temperature"] = req.params.temperature;
     if (req.thinking) generationConfig["thinkingConfig"] = { thinkingLevel: req.thinking.toUpperCase() };
-    if (Object.keys(generationConfig).length > 0) body["generationConfig"] = generationConfig;
+    const whole = (): Record<string, unknown> => {
+      const body: Record<string, unknown> = { contents };
+      if (system) body["systemInstruction"] = system;
+      if (tools) body["tools"] = tools;
+      if (Object.keys(generationConfig).length > 0) body["generationConfig"] = generationConfig;
+      return body;
+    };
+    const turn = req.params.cache;
+    if (!turn) return this.send(key, whole(), req);
+    // A step of a turn: against the turn's cache once there is one (gemini-cache.ts).
+    const parts: CacheParts = { model: req.model, ...(system ? { system } : {}), ...(tools ? { tools } : {}), contents };
+    const use = await this.caches.before(turn.key, parts, turn.eager === true);
+    let result: LlmResult;
+    if (use) {
+      const body: Record<string, unknown> = { cachedContent: use.name, contents: use.contents };
+      if (Object.keys(generationConfig).length > 0) body["generationConfig"] = generationConfig;
+      try {
+        result = await this.send(key, body, req);
+      } catch (e) {
+        // A cache gone before its TTL said (deleted, expired on a long turn): the step goes whole, the turn starts a new one.
+        if (!(e instanceof RpcError) || (e.code !== "not_found" && e.code !== "invalid" && e.code !== "denied")) throw e;
+        this.opts.log.info("turn cache refused; the step goes whole", { code: e.code, message: e.message });
+        this.caches.forget(turn.key);
+        result = await this.send(key, whole(), req);
+      }
+      if (use.written > 0) result.usage.cacheWrite = (result.usage.cacheWrite ?? 0) + use.written;
+    } else result = await this.send(key, whole(), req);
+    this.caches.after(turn.key, result);
+    return result;
+  }
 
+  /** One `streamGenerateContent`: deltas as they come, the completion coalesced. */
+  private async send(key: string, body: Record<string, unknown>, req: ProviderRequest): Promise<LlmResult> {
     const url = `${this.opts.baseUrl.replace(/\/$/, "")}/v1beta/models/${encodeURIComponent(req.model)}:streamGenerateContent?alt=sse`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.opts.timeoutMs);
