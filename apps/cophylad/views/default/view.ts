@@ -8,10 +8,11 @@
 // timeline a click away, and a bare terminal (New terminal, in a recent workspace the user picks)
 // has a tab and a pane of its own; one terminal shows at a time (terminal.ts). Notifications from the host become actions on the
 // model; clicks and inputs become requests on the host's connection; every change renders,
-// and the terminal screen moves to the pane that shows it. Under the tabs, one card
-// per node of the user shows what its machine is doing, from the metrics it is subscribed
-// to, and its desktop: Connect opens a viewer (a window from the desktop app, a stream page
-// the host shows on a phone), and a PIN or a phone code pairs one. At a phone's width the
+// and the terminal screen moves to the pane that shows it. Under the tabs, Status gives a
+// line per node of the user, what its machine is doing from the metrics it is subscribed
+// to, with Connect onto its desktop (a window from the desktop app, a stream page the host
+// shows on a phone); Devices, laid over the panes from there, holds every machine and phone
+// with all they can do, where a PIN or a phone code pairs a viewer. At a phone's width the
 // rail is put away and slides in over the pane, from the menu button on the host's bar
 // (`host.menu`) or, on a host with none, the view's own. The ⋮ beside the chat's tab has
 // Change view, which opens the host's view picker over the frame (`host.chooseView`), and
@@ -101,6 +102,7 @@ const roots: Roots = {
   sessions: document.getElementById("sessions")!,
   terminal: document.getElementById("terminal")!,
   composer: document.getElementById("composer")!,
+  devices: document.getElementById("devices")!,
 };
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
 const viewer = new FileViewer(
@@ -434,6 +436,7 @@ async function loadContextOn(): Promise<void> {
 /** Lays what the brain sees on its next turn over the pane, asked for afresh, or takes it away on a second press; on a phone the rail goes, so it shows. */
 function toggleContext(): void {
   if (ui.contextOpen) return closeContext();
+  ui.devices = undefined;
   ui.contextOpen = true;
   putRailAway();
   contextView.show(document.getElementById("panes")!);
@@ -446,6 +449,42 @@ function closeContext(): void {
   ui.contextOpen = false;
   contextView.hide();
   draw();
+}
+
+/**
+ * Lays Devices over the panes, the context put away; on a phone the rail goes, so it shows.
+ * Opened from a machine's or a phone's line (`focus`, `node:<id>` or `phone:<id>`), it scrolls
+ * to that card and marks it a moment; from its link, it opens at its top.
+ */
+function openDevices(focus?: string): void {
+  if (ui.contextOpen) {
+    ui.contextOpen = false;
+    contextView.hide();
+  }
+  ui.devices ??= { errorsAt: state.errorsSeen };
+  putRailAway();
+  draw();
+  const body = roots.devices.querySelector<HTMLElement>(".devices-body");
+  const [kind, id] = focus?.split(/:(.*)/) ?? [];
+  const target = kind === "node" && id ? roots.devices.querySelector<HTMLElement>(`.node-card[data-node="${id}"]`) : kind === "phone" && id ? roots.devices.querySelector<HTMLElement>(`.controller[data-controller="${id}"]`) : null;
+  if (!target) {
+    if (body) body.scrollTop = 0;
+    body?.focus({ preventScroll: true });
+    return;
+  }
+  target.scrollIntoView({ block: "start" });
+  target.tabIndex = -1;
+  target.focus({ preventScroll: true });
+  target.dataset["flash"] = "1";
+  setTimeout(() => delete target.dataset["flash"], 1200);
+}
+
+/** Takes Devices away; the focus goes back to its link in the rail when the rail shows. */
+function closeDevices(refocus = false): void {
+  if (!ui.devices) return;
+  ui.devices = undefined;
+  draw();
+  if (refocus && railShown()) roots.tabs.querySelector<HTMLButtonElement>(".status-devices:not([hidden])")?.focus();
 }
 
 /**
@@ -839,7 +878,7 @@ function stopGrantClock(): void {
 function openGrantForm(kind: "node" | "join" | "phone", from: HTMLElement): void {
   ui.grantForm = kind;
   draw();
-  const form = from.closest(".node-tools, .rail-foot")?.querySelector(kind === "phone" ? ".phone-invite-form" : kind === "node" ? ".node-invite-form" : ".node-join-form");
+  const form = from.closest(".node-tools, .phone-tools")?.querySelector(kind === "phone" ? ".phone-invite-form" : kind === "node" ? ".node-invite-form" : ".node-join-form");
   form?.querySelector<HTMLElement>("input, textarea")?.focus();
 }
 
@@ -1086,12 +1125,15 @@ async function restartNode(force: boolean): Promise<void> {
   draw();
 }
 
-/** Ends a browser's session on a node, or unpairs an app from its host; the node's next `remote.state` shows it. */
-async function revokeViewer(node: string, viewer: string): Promise<void> {
-  try {
-    await rpc.request("remote.revoke", { node, viewer });
-  } catch (e) {
-    fail("forget", e);
+/** Ends a browser's session on a node, or unpairs apps from its host, one after another; the node's next `remote.state` shows it. */
+async function revokeViewers(node: string, viewers: string[]): Promise<void> {
+  for (const viewer of viewers) {
+    try {
+      await rpc.request("remote.revoke", { node, viewer });
+    } catch (e) {
+      fail("forget", e);
+      return;
+    }
   }
 }
 
@@ -1911,7 +1953,7 @@ function syncRemote(): void {
   const dock = remoteDock();
   const here = remoteShown();
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: !here || (dock === "over" && (viewer.shown !== undefined || contextView.shown)) });
+  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: !here || (dock === "over" && (viewer.shown !== undefined || contextView.shown || ui.devices !== undefined)) });
   syncPinned(here && dock === "beside");
 }
 
@@ -2349,6 +2391,8 @@ function select(session: string | undefined): boolean {
   const changed = session !== ui.selected || ui.terminal !== undefined;
   ui.selected = session;
   ui.terminal = undefined;
+  // A tab picked is what the pane is to show: Devices goes from over it.
+  ui.devices = undefined;
   putRailAway();
   if (changed) openTab();
   draw();
@@ -2362,6 +2406,7 @@ function selectTerminal(id: string): void {
   const changed = ui.terminal !== id || ui.selected !== undefined;
   ui.selected = undefined;
   ui.terminal = id;
+  ui.devices = undefined;
   putRailAway();
   if (changed) openTab();
   draw();
@@ -2466,6 +2511,12 @@ document.addEventListener("click", (ev) => {
       return;
     case "context-open":
       toggleContext();
+      return;
+    case "devices-open":
+      openDevices(target.dataset["focus"]);
+      return;
+    case "devices-close":
+      closeDevices(true);
       return;
     case "context-refresh":
       void contextView.refresh();
@@ -2756,9 +2807,13 @@ document.addEventListener("click", (ev) => {
       stopInviteClock();
       dispatch({ type: "remote.invite" });
       return;
-    case "remote-revoke":
-      if (target.dataset["node"] && target.dataset["viewer"]) void revokeViewer(target.dataset["node"], target.dataset["viewer"]);
+    case "remote-revoke": {
+      // A device's line stands for each viewer it paired: its Moonlight and its web viewer go together.
+      const node = target.dataset["node"];
+      const viewers = (target.dataset["viewers"] ?? target.dataset["viewer"] ?? "").split(",").filter(Boolean);
+      if (node && viewers.length > 0) void revokeViewers(node, viewers);
       return;
+    }
     case "node-restart":
       void restartNode(false);
       return;
@@ -2877,8 +2932,9 @@ document.addEventListener("mousedown", (ev) => {
 // it shrinks an invite's QR code shown large, puts away a machine's name field or its Make
 // primary question, closes the Files panel's menu, New terminal's menu
 // or the ⋮ menu, and the focus goes back to its row or its button; with none open, it puts away
-// the rail lying over a phone's pane, then closes the brain's context, and then the file open in
-// the viewer. A terminal keeps its own Escape: xterm stops the key before it gets here.
+// the rail lying over a phone's pane, then a form open in Devices, then Devices, then the brain's
+// context, and then the file open in the viewer. A terminal keeps its own Escape: xterm stops the
+// key before it gets here.
 document.addEventListener("keydown", (ev) => {
   if (ev.key !== "Escape") return;
   if (voiceCancellable(state)) {
@@ -2910,6 +2966,14 @@ document.addEventListener("keydown", (ev) => {
   } else if (phone.matches && ui.rail === "open") {
     putRailAway();
     draw();
+  } else if (ui.grantForm !== undefined && ui.devices) {
+    ui.grantForm = undefined;
+    draw();
+  } else if (state.remotePin !== undefined && ui.devices) {
+    dispatch({ type: "remote.pin" });
+  } else if (ui.devices) {
+    ev.preventDefault();
+    closeDevices(true);
   } else if (ui.contextOpen) {
     ev.preventDefault();
     closeContext();

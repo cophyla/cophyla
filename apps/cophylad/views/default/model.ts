@@ -267,6 +267,8 @@ export interface ViewState {
   threadsExhausted: boolean;
   chatLoading: boolean;
   errors: string[];
+  /** How many errors came in all, the ones dropped past `ERRORS_KEEP` too: what came since a moment is told by the count. */
+  errorsSeen: number;
 }
 
 export type Action =
@@ -379,6 +381,7 @@ export function initialState(): ViewState {
     threadsExhausted: false,
     chatLoading: false,
     errors: [],
+    errorsSeen: 0,
   };
 }
 
@@ -877,6 +880,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       return state;
     case "error":
       state.errors.push(action.message);
+      state.errorsSeen++;
       if (state.errors.length > ERRORS_KEEP) state.errors.splice(0, state.errors.length - ERRORS_KEEP);
       return state;
   }
@@ -2315,6 +2319,8 @@ export interface AccountCard {
   /** Signed out, a login open, or signed in. */
   kind: "out" | "login" | "in";
   title: string;
+  /** The account's id, once signed in: what support knows it by, small beside the title. */
+  id?: string;
   /** The plan and what it grants, in a line. */
   sub: string;
   /** The link, when signed in. */
@@ -2343,7 +2349,7 @@ export interface DirectRow {
   lines: DirectLine[];
 }
 
-const METRIC_LABELS: Record<string, string> = { llm_tokens_in: "tokens in", llm_tokens_out: "tokens out", stt_seconds: "speech in", tts_chars: "speech out", embed_tokens: "embeddings", relay_messages: "relay", push_count: "pushes", relayed_nodes: "relayed nodes", backup_bytes: "backup" };
+const METRIC_LABELS: Record<string, string> = { llm_tokens_in: "tokens in", llm_tokens_out: "tokens out", stt_seconds: "speech in", tts_chars: "speech out", embed_tokens: "embeddings", relay_messages: "relay", push_count: "pushes", relayed_nodes: "relayed nodes", backup_bytes: "backup", turn_credentials: "TURN credentials" };
 
 function compact(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n % 1_000_000 === 0 ? 0 : 1)}M`;
@@ -2410,7 +2416,7 @@ export function selectAccount(state: ViewState, now = Date.now()): AccountCard {
   }
   const backup = selectBackup(a, now);
   const direct = selectDirect(state);
-  return { kind: "in", title: a.subject, sub, connected: a.connected ?? false, bars, ...(backup ? { backup } : {}), ...(direct ? { direct } : {}) };
+  return { kind: "in", title: "Signed in", id: a.subject, sub, connected: a.connected ?? false, bars, ...(backup ? { backup } : {}), ...(direct ? { direct } : {}) };
 }
 
 const MAPPING_NAMES: Record<string, string> = { upnp: "UPnP", pcp: "PCP", "nat-pmp": "NAT-PMP" };
@@ -2830,14 +2836,21 @@ export function linkWords(state: ViewState): { status: "connected" | "gone"; tit
 
 /**
  * One card per node: the computer the app runs on first (the one it talks to, from a phone),
- * then the primary, then by name; its bars from the latest sample and its processes summed by
- * owner. The line beside the name says which is this computer (a desktop app's own, never a
- * phone's) and each one's role.
+ * then the primary, then the others by name, the offline ones last; its bars from the latest
+ * sample and its processes summed by owner. The line beside the name says which is this
+ * computer (a desktop app's own, never a phone's) and each one's role.
  */
 export function selectNodes(state: ViewState): NodeCard[] {
   const first = hereNode(state);
   const own = state.client?.node;
-  const nodes = [...state.nodes.values()].sort((a, b) => Number(b.id === first) - Number(a.id === first) || Number(b.role === "primary") - Number(a.role === "primary") || a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  const nodes = [...state.nodes.values()].sort(
+    (a, b) =>
+      Number(b.id === first) - Number(a.id === first) ||
+      Number(b.role === "primary") - Number(a.role === "primary") ||
+      Number(a.status === "offline") - Number(b.status === "offline") ||
+      a.name.localeCompare(b.name) ||
+      (a.id < b.id ? -1 : 1),
+  );
   return nodes.map((node) => {
     const sample = state.metrics.get(node.id);
     const sub = [node.id === own ? "this computer" : "", node.role, node.via === "relay" ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
@@ -2905,6 +2918,10 @@ function ownerLabel(state: ViewState, owner: ProcessOwner): string {
 export interface SpendRow {
   profile: string;
   name: string;
+  /** The harness the login is for, once `profile.list` said: its mark goes beside the name. */
+  harness?: HarnessProfile["harness"];
+  /** The name, with what tells it from another row of the same name: the harness, then the machine. */
+  label: string;
   spend: Spend;
   /** The login's plan limits, from its node's latest sample. */
   limits?: ProfileLimits;
@@ -2934,10 +2951,159 @@ export function selectSpend(state: ViewState): SpendRow[] {
     const spend = total.get(profile) ?? { in: 0, out: 0, cached: 0, cost: 0 };
     const l = limits.get(profile);
     if (spend.in + spend.out + spend.cached + spend.cost === 0 && !l?.session && !l?.weekly) continue;
-    rows.push({ profile, name: state.profiles.get(profile)?.name ?? profile.replace(/^prof_/, "").slice(0, 6), spend, ...(l ? { limits: l } : {}) });
+    const p = state.profiles.get(profile);
+    const name = p?.name ?? profile.replace(/^prof_/, "").slice(0, 6);
+    rows.push({ profile, name, ...(p ? { harness: p.harness } : {}), label: name, spend, ...(l ? { limits: l } : {}) });
   }
-  return rows.sort((a, b) => b.spend.cost - a.spend.cost || b.spend.in + b.spend.out - (a.spend.in + a.spend.out) || a.name.localeCompare(b.name));
+  // Two logins of one name (each harness's "default") are told apart by their harness, then by their machine.
+  for (const row of rows) {
+    const twins = rows.filter((r) => r.name === row.name);
+    if (twins.length === 1) continue;
+    const p = state.profiles.get(row.profile);
+    const harness = row.harness ? HARNESS_NAMES[row.harness] : undefined;
+    const sameHarness = twins.filter((r) => r.harness === row.harness).length > 1;
+    const machine = sameHarness && p && state.nodes.size > 1 ? state.nodes.get(p.node)?.name : undefined;
+    row.label = [row.name, harness, machine].filter(Boolean).join(" · ");
+  }
+  return rows.sort((a, b) => b.spend.cost - a.spend.cost || b.spend.in + b.spend.out - (a.spend.in + a.spend.out) || a.label.localeCompare(b.label));
 }
+
+/** Each harness as the user knows it. */
+export const HARNESS_NAMES: Record<HarnessProfile["harness"], string> = { claude: "Claude", codex: "Codex", acp: "ACP", muse: "Muse" };
+
+// --- the rail's Status: a line per machine, the usage, a line per phone ------------------------
+
+/** One reading as a share, a value over a track: a machine's cpu, memory or busiest GPU; a login's session or weekly limit; a metered part of the plan. */
+export interface StatusMeter {
+  /** What it reads: cpu, memory, gpu, session, weekly, or the plan's metric. */
+  key: string;
+  label: string;
+  percent: number;
+  words: string;
+  /** `none` while the reading is not known: a dash over an empty track. */
+  level: "none" | "normal" | "warn" | "critical";
+  /** The reading in full, on hover: the GPU's name, memory used of total, when a limit starts over. */
+  title: string;
+}
+
+/** A login's two limits as meters: its session (five-hour) window and its week, each with when it starts over. */
+export function usageMeters(row: SpendRow, now: number): StatusMeter[] {
+  const meter = (key: "session" | "weekly", label: string, long: string, w: LimitWindow | undefined): StatusMeter => {
+    if (!w) return { key, label, percent: 0, words: "—", level: "none", title: `${long}: not known` };
+    const p = clamp(w.percent);
+    const left = w.resetsAt !== undefined && w.resetsAt > now ? `, starts over in ${durationWords(w.resetsAt - now)}` : "";
+    return { key, label, percent: p, words: `${Math.round(w.percent)}%`, level: meterLevel(p), title: `${long}: ${Math.round(w.percent)}% used${left}` };
+  };
+  return [meter("session", "Session", "Session limit (five hours)", row.limits?.session), meter("weekly", "Week", "Weekly limit", row.limits?.weekly)];
+}
+
+/** A machine's line in the rail's Status: a glance, all it can do waits in Devices but its desktop. */
+export interface StatusMachine {
+  node: NodeId;
+  name: string;
+  online: boolean;
+  /** At the line's right: this computer, the primary, how it is reached, or since when it is offline. */
+  sub: string;
+  title: string;
+  /** Online, once a sample came: cpu, memory, and the busiest GPU. */
+  meters: StatusMeter[];
+  /** Its desktop while it is shared: whether someone is watching it, and who. */
+  desktop?: { watched: boolean; title: string };
+  /** What wants the user in Devices: invite it again, its desktop host failed. */
+  alert?: string;
+  /** This client can open its desktop: in Moonlight, or beside the view. */
+  connect: boolean;
+  beside: boolean;
+}
+
+/** A phone's line in the rail's Status: here now, or when it was last. */
+export interface StatusPhone {
+  id: string;
+  name: string;
+  connected: boolean;
+  words: string;
+  title: string;
+}
+
+function meterLevel(percent: number): "normal" | "warn" | "critical" {
+  return percent >= 95 ? "critical" : percent >= 80 ? "warn" : "normal";
+}
+
+/** A machine's three readings from its latest sample: cpu, memory, and the busiest of its GPUs. */
+export function statusMeters(sample: MetricsSample): StatusMeter[] {
+  const meter = (key: StatusMeter["key"], label: string, percent: number, title: string): StatusMeter => {
+    const p = clamp(percent);
+    return { key, label, percent: p, words: `${Math.round(p)}%`, level: meterLevel(p), title };
+  };
+  const out = [meter("cpu", "CPU", sample.cpu, `CPU ${percentWords(sample.cpu)}`)];
+  const total = sample.memory.total;
+  out.push(meter("memory", "RAM", total > 0 ? (sample.memory.used / total) * 100 : 0, `Memory ${usedWords(sample.memory.used, total)}`));
+  const gpu = [...(sample.gpu ?? [])].sort((a, b) => b.util - a.util)[0];
+  if (gpu) out.push(meter("gpu", "GPU", gpu.util, `${gpu.name} ${percentWords(gpu.util)}${gpu.vramTotal > 0 ? ` · ${usedWords(gpu.vramUsed, gpu.vramTotal)}` : ""}`));
+  return out;
+}
+
+/** The user's machines that watch a desktop now, by name; a browser's session by its own; "someone" for a client no name says. */
+function watchers(state: ViewState, viewers: RemoteViewer[]): string[] {
+  const names = new Set<string>();
+  for (const v of viewers) {
+    if (v.connected !== true) continue;
+    const owner = viewerOwner(state, v);
+    names.add(owner ? (state.nodes.get(owner.node)?.name ?? "another computer") : (v.name ?? "someone"));
+  }
+  return [...names];
+}
+
+/**
+ * A line per machine, in the cards' order: this computer first, then the primary, then by
+ * name. What it is (this computer, the primary), how it is reached, its readings, its desktop
+ * while shared, and what wants the user in Devices.
+ */
+export function selectStatusMachines(state: ViewState, now = Date.now()): StatusMachine[] {
+  const own = state.client?.node;
+  return selectNodes(state).map(({ node, sample }) => {
+    const online = node.status === "online";
+    const grant = nodeGrant(state, node.id);
+    const remote = state.scopes.includes("remote") && online ? state.remote.get(node.id) : undefined;
+    const card = selectRemote(state, node);
+    // offline, since when is on hover and in Devices: beside a long name the line keeps the word
+    const sub = online ? [node.id === own ? "this computer" : "", node.role === "primary" ? "primary" : "", node.hands ? "hands" : "", node.via === "relay" ? "via relay" : ""].filter(Boolean).join(" · ") : node.status;
+    const row: StatusMachine = {
+      node: node.id,
+      name: node.name,
+      online,
+      sub,
+      title: `${node.name} · ${PLATFORM_NAMES[node.platform]} · ${online ? "online" : node.status === "offline" ? `last seen ${ago(node.lastSeen, now)}` : node.status}`,
+      meters: online && sample ? statusMeters(sample) : [],
+      connect: card?.connect ?? false,
+      beside: card?.beside ?? false,
+    };
+    if (remote && remote.host.status !== "off") {
+      const who = watchers(state, remote.viewers);
+      row.desktop = { watched: remote.streaming, title: remote.streaming ? (who.length > 0 ? `Its desktop: ${who.join(", ")} watching` : "Its desktop: being watched") : "Its desktop is shared" };
+    }
+    if (grant?.status === "reinvite") row.alert = "invite it again";
+    else if (remote?.host.status === "unavailable") row.alert = "its desktop could not start";
+    return row;
+  });
+}
+
+/** A line per phone, the connected first: here now, or when it was last. */
+export function selectStatusPhones(state: ViewState, now = Date.now()): StatusPhone[] {
+  return selectControllers(state).map((c) => {
+    const words = c.connected ? "connected" : c.lastSeen === undefined ? "never connected" : ago(c.lastSeen, now);
+    return { id: c.id, name: c.name, connected: c.connected, words, title: `${c.name} · ${controllerWords(c, now)}` };
+  });
+}
+
+/** Devices' count in words, as the rail's link and the page's head say it: 2 computers · 1 phone. */
+export function devicesWords(state: ViewState): string {
+  const computers = state.nodes.size;
+  const phones = state.controllers.size;
+  return [computers > 0 ? `${computers} computer${computers === 1 ? "" : "s"}` : "", phones > 0 ? `${phones} phone${phones === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+}
+
+export const PLATFORM_NAMES: Record<Platform, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
 
 // --- remote desktop ------------------------------------------------------------------------
 
@@ -3024,6 +3190,13 @@ export function remoteWords(host: RemoteHost, streaming: boolean): string {
     case "unavailable":
       return host.reason ? `unavailable: ${host.reason}` : "unavailable";
   }
+}
+
+/** Whether a desktop is shared, as its block in Devices says it: shared, watched now, coming up or failing, or not shared. */
+export function desktopWords(remote: Pick<RemoteCard, "host" | "streaming">): string {
+  if (remote.host.status === "off") return "Not shared";
+  if (remote.host.status === "ready") return remote.streaming ? "Shared · being watched" : "Shared";
+  return `Shared · ${remoteWords(remote.host, remote.streaming)}`;
 }
 
 /**
@@ -3196,17 +3369,115 @@ export function samePlace(a: RemotePlace | null | undefined, b: RemotePlace | nu
  * a desktop only with Direct connections on; the node's own words otherwise.
  */
 export function connectWords(code: string | undefined, message: string): string {
-  if (code === "unsupported" && message.includes("over the relay")) return "a desktop opens on the node's Wi-Fi, or from anywhere once Direct connections is on in the account card";
-  if (code === "unavailable" && /direct connections/i.test(message)) return `${message}: turn Direct connections on in the host's account card`;
+  if (code === "unsupported" && message.includes("over the relay")) return "a desktop opens on the node's Wi-Fi, or from anywhere once Direct connections is on, under Account in Devices";
+  if (code === "unavailable" && /direct connections/i.test(message)) return `${message}: turn Direct connections on for it, under Account in Devices`;
   // a shell from before streams went through its own window
   if (code === "unsupported" && message.includes("has no host.open")) return "this app cannot show a desktop it has no route to: update the app";
   return message;
+}
+
+/**
+ * Whose viewer a client paired with a host is: the machine its node says paired it, or, from a
+ * node older than that, the machine whose name it carries, as cophylad pairs a machine's
+ * Moonlight under its name and its web viewer under the name and " web". A web session, or a
+ * client paired by hand or by another app, is nobody's.
+ */
+export function viewerOwner(state: Pick<ViewState, "nodes">, viewer: RemoteViewer): { node: NodeId; browser: boolean } | undefined {
+  if (viewer.kind !== "native") return undefined;
+  if (viewer.pairedBy !== undefined) return { node: viewer.pairedBy, browser: viewer.browser === true };
+  const name = viewer.name;
+  if (!name) return undefined;
+  for (const n of state.nodes.values()) {
+    if (n.name === name) return { node: n.id, browser: false };
+    if (`${n.name} web` === name) return { node: n.id, browser: true };
+  }
+  return undefined;
+}
+
+/**
+ * One line under a desktop's "Who can view it": a machine of the user's, its Moonlight and its
+ * web viewer as one; the host's own web viewer, which its phones and browsers watch through; a
+ * browser watching now; or a client paired by hand or by another app. Forget lets go of every
+ * viewer the line stands for.
+ */
+export interface ViewerRow {
+  key: string;
+  kind: "machine" | "browsers" | "session" | "app";
+  /** The viewers' ids, which Forget revokes. */
+  ids: string[];
+  name: string;
+  words: string;
+  title: string;
+  watching: boolean;
+  /** End for a browser's session; Revoke for a pairing while sharing is off, which it can still use; Forget otherwise. */
+  forget: "End" | "Revoke" | "Forget";
+}
+
+/**
+ * Who can view a desktop, a line per device: the user's machines by name (Moonlight, and the
+ * web viewer that shows it beside their view), the host's own web viewer as its phones and
+ * browsers, each browser watching now, then whatever else is paired. Watching first.
+ */
+export function viewerRows(state: Pick<ViewState, "nodes" | "client">, remote: RemoteCard, now: number): ViewerRow[] {
+  const forget = remote.share ? "Revoke" : "Forget";
+  const machines = new Map<string, { node: NodeId; moonlight: RemoteViewer[]; web: RemoteViewer[] }>();
+  const rows: ViewerRow[] = [];
+  for (const v of remote.viewers) {
+    const owner = viewerOwner(state, v);
+    if (v.kind === "web") {
+      const name = v.name ?? "A browser";
+      rows.push({ key: `session:${v.id}`, kind: "session", ids: [v.id], name, words: v.connected ? "watching now in a browser" : `in a browser, opened ${ago(v.since, now)}`, title: `${name}'s browser session on this desktop`, watching: v.connected === true, forget: "End" });
+      continue;
+    }
+    if (!owner) {
+      const name = v.name ?? v.id.slice(0, 8);
+      rows.push({ key: `app:${v.id}`, kind: "app", ids: [v.id], name, words: v.connected ? "watching now" : "paired by hand or by another app", title: `${name}: a viewer paired outside Cophyla, or by an older version`, watching: v.connected === true, forget });
+      continue;
+    }
+    const key = owner.node === remote.node && owner.browser ? `browsers:${owner.node}` : `machine:${owner.node}`;
+    const m = machines.get(key) ?? { node: owner.node, moonlight: [], web: [] };
+    (owner.browser ? m.web : m.moonlight).push(v);
+    machines.set(key, m);
+  }
+  for (const [key, m] of machines) {
+    const all = [...m.moonlight, ...m.web];
+    const watching = all.some((v) => v.connected === true);
+    const name = state.nodes.get(m.node)?.name ?? "Another computer";
+    if (key.startsWith("browsers:")) {
+      const through = m.node === state.client?.node ? "this computer's" : `${name}'s`;
+      rows.push({ key, kind: "browsers", ids: all.map((v) => v.id), name: "Phones and browsers", words: watching ? "watching now" : `through ${through} web viewer`, title: "Phones and browsers watch this desktop through the web viewer on this machine; forgotten, it pairs again the next time one opens it", watching, forget });
+      continue;
+    }
+    const ways = [m.moonlight.length > 0 ? "Moonlight" : "", m.web.length > 0 ? "Beside" : ""].filter(Boolean).join(" and ");
+    rows.push({ key, kind: "machine", ids: all.map((v) => v.id), name, words: watching ? `watching now · ${ways}` : ways, title: `${name} views this desktop with ${ways === "Beside" ? "Beside, in its app" : ways === "Moonlight" ? "Moonlight" : "Moonlight, and Beside in its app"}`, watching, forget });
+  }
+  const order: Record<ViewerRow["kind"], number> = { machine: 0, browsers: 1, session: 2, app: 3 };
+  return rows.sort((a, b) => Number(b.watching) - Number(a.watching) || order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
 }
 
 /** A viewer's second line: watching now, or since when it has been paired or open. */
 export function viewerWords(viewer: RemoteViewer, now: number): string {
   if (viewer.kind === "web") return viewer.connected ? "watching in a browser" : `browser, opened ${ago(viewer.since, now)}`;
   return viewer.connected ? "watching" : `paired ${ago(viewer.since, now)}`;
+}
+
+/** A machine's head in Devices: what it is, as tags beside its name, and a line of facts under it. */
+export interface MachineFacts {
+  tags: { key: "self" | "primary" | "hands" | "reinvite"; label: string; title: string }[];
+  /** Its platform, Cophyla's version there, how it is reached or when it was last seen, and when its grant ends. */
+  line: string;
+}
+
+export function machineFacts(state: ViewState, node: Node, now: number): MachineFacts {
+  const grant = nodeGrantWords(state, node, now);
+  const tags: MachineFacts["tags"] = [];
+  if (node.id === state.client?.node) tags.push({ key: "self", label: "This computer", title: "The computer this app runs on" });
+  if (node.role === "primary") tags.push({ key: "primary", label: "Primary", title: "It runs the brain, the chat and the tasks; the others follow it" });
+  if (grant.badge === "hands") tags.push({ key: "hands", label: "Hands", title: "It runs what the primary asks, and reaches no other machine" });
+  if (grant.reinvite) tags.push({ key: "reinvite", label: "Invite it again", title: "Its key went with a removed machine: invite it again" });
+  const status = node.status === "online" ? (node.via === "relay" ? "online through the relay" : "online") : node.status === "offline" ? `offline, last seen ${ago(node.lastSeen, now)}` : node.status;
+  const line = [PLATFORM_NAMES[node.platform], `Cophyla ${node.versions.platform}`, status, grant.end ?? ""].filter(Boolean).join(" · ");
+  return { tags, line };
 }
 
 /** The phone code in words: the code, the passphrase to type beside it, and the time left. */

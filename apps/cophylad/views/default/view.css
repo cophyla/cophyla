@@ -2177,110 +2177,1156 @@ button:disabled {
   font-size: 12.5px;
 }
 
-/* --- the rail's machines: one card per node, then the spend ----------------------------- */
+/* --- the rail's Status: a glance at the machines, the usage and the phones -------------------- */
 
-.rail-nodes {
-  flex: 0 0 auto;
-  padding: 8px 4px 6px;
+/* Sections a step apart under small capitals, their text in line with the tabs' above; a
+   machine's line is its dot and name with what it is at the right, then its readings, each a
+   value over a hairline track. The link to Devices stands at the foot. */
+.rail-cards {
+  gap: 16px;
+  padding: 10px 0 10px;
+}
+
+.status-section {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  min-width: 0;
+  padding: 0 10px;
 }
 
-.node-cards {
+.status-heading {
+  margin: 0 0 6px;
+  color: var(--faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.status-machine-rows {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 10px;
 }
 
-.node-card {
-  padding: 5px 6px 6px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--paper);
-  font-size: 12px;
+.status-machine {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
 }
 
-.node-card[data-status="offline"] {
-  opacity: 0.6;
-}
-
-.node-head {
+/* A line that opens the machine's card in Devices: the whole row takes the press, a step
+   lighter under the pointer, its text in line with the section's. */
+.status-machine-head,
+.status-phone {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
+  width: calc(100% + 12px);
   min-width: 0;
-  margin-bottom: 4px;
+  margin: 0 -6px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
 }
 
-.node-name {
+.status-machine-head:hover,
+.status-phone:hover {
+  background: var(--raised);
+}
+
+.status-machine-name,
+.status-phone-name {
   flex: 0 1 auto;
-  min-width: 4ch;
+  min-width: 3ch;
+  max-width: 62%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-machine-name {
   font-weight: 600;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
-.node-sub {
-  margin-left: auto;
+.status-phone-name {
+  max-width: none;
+}
+
+.status-machine[data-online="0"] .status-machine-name {
+  color: var(--muted);
+}
+
+.status-machine-sub,
+.status-phone-sub {
+  flex: 1 1 0;
   min-width: 0;
+  margin-left: auto;
+  padding-left: 6px;
   color: var(--muted);
-  white-space: nowrap;
+  font-size: 11.5px;
   overflow: hidden;
+  white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-/* A machine's grant: hands or a full member, beside its name. */
-.node-badge {
-  flex: none;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  padding: 0 4px;
-  color: var(--muted);
-  font-size: 11px;
+/* What the machine is gives way to its name; when a phone was last never does. */
+.status-machine-sub {
+  text-align: right;
 }
 
-.node-badge[data-role="hands"] {
+.status-phone-sub {
+  flex: none;
+}
+
+/* Its desktop, while shared: a screen, green while someone watches it. */
+.desktop-mark {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  background-color: var(--faint);
+  -webkit-mask: var(--screen-glyph) center / contain no-repeat;
+  mask: var(--screen-glyph) center / contain no-repeat;
+}
+
+.desktop-mark[data-watched="1"] {
+  background-color: var(--moss);
+}
+
+:root {
+  --screen-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round' stroke-linecap='round'%3E%3Crect x='1.5' y='2.5' width='13' height='9' rx='1.2'/%3E%3Cpath d='M5.5 14h5M8 11.5V14'/%3E%3C/svg%3E");
+}
+
+/* The readings, three columns that line up from machine to machine: a label and a value
+   over a track of a hairline's weight. */
+.status-meters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  padding-left: 15px;
+}
+
+.status-meter {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 3px 4px;
+  min-width: 0;
+}
+
+.status-meter-label {
+  min-width: 0;
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-meter-value {
+  justify-self: end;
+  color: var(--ink);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.status-meter-track {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.status-meter-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--moss);
+}
+
+.status-meter[data-level="warn"] .status-meter-fill {
+  background: var(--amber);
+}
+
+.status-meter[data-level="warn"] .status-meter-value {
+  color: var(--amber);
+}
+
+.status-meter[data-level="critical"] .status-meter-fill {
+  background: var(--rust);
+}
+
+.status-meter[data-level="critical"] .status-meter-value {
+  color: var(--rust);
+  font-weight: 600;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .status-meter-fill {
+    transition: width 0.4s ease;
+  }
+}
+
+.status-alert {
+  margin: 0;
+  padding-left: 15px;
+  color: var(--amber);
+  font-size: 11.5px;
+}
+
+.status-machine-actions {
+  display: flex;
+  gap: 6px;
+  padding-left: 15px;
+}
+
+.status-connect,
+.status-beside {
+  padding: 1px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.status-connect:hover:not(:disabled),
+.status-beside:hover:not(:disabled) {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+}
+
+.status-connect:disabled,
+.status-beside:disabled {
+  color: var(--muted);
+}
+
+.status-phone-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Usage: each login a line, its harness's mark, its name and what it spent today, over its
+   session and weekly limits as meters; "Today" names the column the costs stand in. */
+.status-heading-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.status-heading-aside {
+  margin: 0;
+}
+
+.status-login-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.status-login {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.status-login-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.agent-icon.login-mark {
+  flex: 0 0 13px;
+  width: 13px;
+  height: 13px;
+  margin-left: -2px;
+}
+
+.login-mark .agent-mark {
+  width: 12px;
+  height: 12px;
+}
+
+.status-login-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-login-cost {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Two limits, not three readings: each takes half. */
+.status-login .status-meters {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.status-meter[data-level="none"] .status-meter-value {
+  color: var(--faint);
+}
+
+
+/* The way into Devices, at the foot: what it holds over how many there are, and an arrow. */
+.status-devices {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 8px;
+  margin: auto 10px 0;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  text-align: left;
+}
+
+.status-devices:hover {
+  border-color: var(--line-strong);
+  background: var(--raised);
+}
+
+.status-devices[aria-pressed="true"] {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+}
+
+.status-devices-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.status-devices-count {
+  grid-row: 2;
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.status-devices-count:empty {
+  display: none;
+}
+
+.chevron-mark {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  width: 7px;
+  height: 7px;
+  margin-right: 3px;
+  border-top: 1.5px solid var(--muted);
+  border-right: 1.5px solid var(--muted);
+  transform: rotate(45deg);
+}
+
+/* --- Devices: every machine and phone with all it can do, and the account ---------------------- */
+
+/* A page over the panes, not a card floating on them: a head with its count and Close, then
+   a column of reading width with Computers, Phones and Account, each a heading over a line
+   that says what it holds. Cards and rows are a step lighter than the page; buttons are quiet
+   until they are the one thing to do. */
+.devices-view {
+  --card-indent: 18px;
+  position: absolute;
+  inset: 0;
+  z-index: 13;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--paper);
+}
+
+
+.devices-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px 10px 20px;
+  border-bottom: 1px solid var(--line);
+}
+
+.devices-mark {
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  background-color: var(--cophyla-ink);
+  -webkit-mask: var(--devices-glyph) center / contain no-repeat;
+  mask: var(--devices-glyph) center / contain no-repeat;
+}
+
+:root {
+  --devices-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='%23000' stroke-width='1.4' stroke-linejoin='round' stroke-linecap='round'%3E%3Cpath d='M10.5 11.5H2.7a1.2 1.2 0 0 1-1.2-1.2V4.2A1.2 1.2 0 0 1 2.7 3h10.6a1.2 1.2 0 0 1 1.2 1.2V6'/%3E%3Cpath d='M5 15h5.5M7.5 11.5V15'/%3E%3Crect x='12' y='7.5' width='4.5' height='8' rx='1'/%3E%3C/svg%3E");
+}
+
+.devices-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.devices-meta {
+  min-width: 0;
+  color: var(--faint);
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.devices-head .devices-close {
+  margin-left: auto;
+}
+
+/* What went wrong since it opened, in the place the input would have said it. */
+.devices-note {
+  flex: 0 0 auto;
+  margin: 0;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(239, 114, 89, 0.1);
+  color: var(--rust);
+  font-size: 12.5px;
+}
+
+.devices-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 24px 20px 56px;
+}
+
+.devices-body:focus {
+  outline: none;
+}
+
+.devices-column {
+  display: flex;
+  flex-direction: column;
+  gap: 36px;
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.devices-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+
+.devices-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.devices-heading {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.devices-lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.devices-empty {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* The page's buttons, one size: quiet outlines, lit under the pointer; the one thing to do is
+   in the cophyla outline, a confirm that cannot be undone filled in rust. */
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 4px 11px;
+}
+
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
+  border-color: var(--muted);
+  background: var(--raised);
+}
+
+.devices-view button:disabled {
+  opacity: 0.55;
+}
+
+.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login) {
   border-color: var(--cophyla);
   color: var(--cophyla-ink);
 }
 
-.node-grant {
+.devices-view button:is(.remote-connect, .remote-beside, .remote-share-on, .remote-pin-submit, .remote-invite-open, .grant-submit, .node-add, .phone-invite, .node-promote-confirm, .node-rename-save, .node-restart-force, .backup-on, .backup-restore, .backup-submit, .account-login):hover:not(:disabled) {
+  border-color: var(--cophyla-ink);
+  background: var(--cophyla-wash);
+}
+
+.devices-view button:is(.node-promote-confirm, .node-rename-save) {
+  background: var(--cophyla);
+  color: #fff;
+}
+
+.devices-view button:is(.node-promote-confirm, .node-rename-save):hover:not(:disabled) {
+  background: var(--cophyla);
+  filter: brightness(1.12);
+}
+
+/* Forgetting and removing are quiet until pointed at; their confirm is filled. */
+.devices-view button:is(.remote-viewer-forget, .controller-revoke, .node-remove, .node-leave, .remote-share-off):hover:not(:disabled) {
+  border-color: var(--rust);
+  background: rgba(239, 114, 89, 0.1);
+  color: var(--rust);
+}
+
+.devices-view button:is(.node-remove-confirm, .node-leave-confirm),
+.devices-view button:is(.node-remove-confirm, .node-leave-confirm):hover:not(:disabled) {
+  border-color: var(--rust-fill);
+  background: var(--rust-fill);
+  color: #fff;
+}
+
+.devices-view input:not([type="checkbox"]),
+.devices-view select,
+.devices-view textarea {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--well);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 5px 8px;
+}
+
+.devices-view input:focus-visible,
+.devices-view select:focus-visible,
+.devices-view textarea:focus-visible {
+  outline: none;
+  border-color: var(--cophyla);
+  box-shadow: 0 0 0 2px var(--cophyla-wash);
+}
+
+/* --- a machine's card ---- */
+
+.node-cards {
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  margin-top: 4px;
+  gap: 12px;
 }
 
-.node-grant-ask {
-  margin: 0;
-  color: var(--ink);
+.node-card {
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  font-size: 13px;
+  scroll-margin-top: 16px;
 }
 
-.node-grant-line {
+@media (prefers-reduced-motion: no-preference) {
+  .node-card,
+  .controller {
+    transition: border-color 0.5s, box-shadow 0.5s, background-color 0.5s;
+  }
+}
+
+/* Opened from its line in the rail, the card is marked a moment. */
+.node-card[data-flash="1"] {
+  border-color: var(--cophyla);
+  box-shadow: 0 0 0 3px var(--cophyla-wash);
+}
+
+.node-card:focus {
+  outline: none;
+}
+
+.node-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.node-head > .dot {
+  margin-top: 7px;
+}
+
+.node-title {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.node-name-line {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+
+.node-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.node-card[data-status="offline"] .node-name {
+  color: var(--muted);
+}
+
+.node-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.node-tag {
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 17px;
+  white-space: nowrap;
+}
+
+.node-tag[data-tag="primary"] {
+  border-color: transparent;
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.node-tag[data-tag="hands"] {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.node-tag[data-tag="reinvite"] {
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.node-facts {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.node-head .node-rename {
+  flex: 0 0 auto;
+}
+
+.node-rename-form {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 420px;
+}
+
+
+.node-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-weight: 600;
+}
+
+/* Its readings side by side where the card is wide, under each other where it is not. */
+.node-card .node-bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 6px 22px;
+  margin: 12px 0 0 var(--card-indent);
+}
+
+
+/* The rail's meters, a size up: the label in words, the reading in full. */
+.devices-view .status-meter {
+  gap: 5px 8px;
+}
+
+.devices-view .status-meter-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.devices-view .status-meter-value {
+  font-size: 12px;
+}
+
+.devices-view .status-meter-track {
+  height: 4px;
+}
+
+.node-card .node-processes {
+  margin: 10px 0 0 var(--card-indent);
+}
+
+.node-card .node-sessions {
+  max-width: 520px;
+  margin: 6px 0 0 var(--card-indent);
+  font-size: 12px;
+}
+
+/* At its foot: Make primary, Restart and Remove or Leave, each asked in place, a question
+   taking the whole width. */
+.node-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 14px 0 0 var(--card-indent);
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+
+.node-foot > div {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+
+.node-foot > .node-grant {
+  margin-left: auto;
+}
+
+.node-foot > div[data-asking="1"] {
+  flex-basis: 100%;
+  margin-left: 0;
+}
+
+.node-foot p {
+  flex-basis: 100%;
+  margin: 0 0 2px;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.node-foot :is(.node-choose-buttons, .node-restart-buttons, .node-grant-buttons) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* --- a machine's desktop ---- */
+
+.node-card .node-remote {
+  gap: 10px;
+  margin: 14px 0 0 var(--card-indent);
+  padding-top: 12px;
+}
+
+.node-remote .remote-head {
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
+.node-remote .remote-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.node-remote .remote-words {
+  flex: 1 1 auto;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.node-remote[data-status="off"] .remote-words {
+  color: var(--muted);
+}
+
+.node-remote .remote-share {
+  margin-left: auto;
+  gap: 6px;
+}
+
+.node-remote .remote-viewing,
+.node-remote .remote-actions {
+  gap: 6px;
+}
+
+
+.remote-who {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remote-who-head {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* Who can view it: a device a row, in one box, hairlines between. */
+.node-remote .remote-viewers {
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--paper);
+  overflow: hidden;
+}
+
+.node-remote .remote-viewer {
+  gap: 10px;
+  padding: 7px 8px 7px 10px;
+  border-top: 1px solid var(--line);
+  border-left: 0;
+}
+
+.node-remote .remote-viewer:first-child {
+  border-top: 0;
+}
+
+.who-mark {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  background-color: var(--faint);
+  -webkit-mask: var(--viewer-glyph, var(--screen-glyph)) center / contain no-repeat;
+  mask: var(--viewer-glyph, var(--screen-glyph)) center / contain no-repeat;
+}
+
+.remote-viewer[data-kind="browsers"] .who-mark,
+.remote-viewer[data-kind="session"] .who-mark {
+  --viewer-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6.2'/%3E%3Cpath d='M1.9 8h12.2M8 1.8c1.9 1.7 2.8 3.8 2.8 6.2S9.9 12.5 8 14.2M8 1.8C6.1 3.5 5.2 5.6 5.2 8s.9 4.5 2.8 6.2'/%3E%3C/svg%3E");
+}
+
+.remote-viewer[data-kind="app"] .who-mark {
+  --viewer-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'%3E%3Crect x='2.5' y='2.5' width='4.5' height='4.5' rx='1'/%3E%3Crect x='9' y='2.5' width='4.5' height='4.5' rx='1'/%3E%3Crect x='2.5' y='9' width='4.5' height='4.5' rx='1'/%3E%3Crect x='9' y='9' width='4.5' height='4.5' rx='1'/%3E%3C/svg%3E");
+}
+
+.remote-viewer[data-connected="1"] .who-mark {
+  background-color: var(--moss);
+}
+
+.node-remote .remote-viewer-name {
+  font-size: 13px;
+}
+
+.remote-viewer[data-kind="app"] .remote-viewer-name {
+  color: var(--muted);
+}
+
+.node-remote .remote-viewer-sub {
+  font-size: 11.5px;
+}
+
+.remote-viewer[data-connected="1"] .remote-viewer-sub {
+  color: var(--moss);
+}
+
+.devices-view .remote-viewer .remote-viewer-forget {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  font-size: 12px;
+}
+
+.node-remote .remote-pin-form {
+  grid-template-columns: 72px minmax(0, 220px) auto auto;
   align-items: center;
   gap: 6px;
 }
 
-.node-grant-words {
-  color: var(--muted);
-  min-width: 0;
+.node-remote .remote-invite {
+  max-width: 420px;
+  padding: 10px 12px;
+  border-radius: 8px;
 }
 
-.node-grant-words:empty {
+/* --- computers' and phones' tools: add one, the forms, the invite on show, the ones still open ---- */
+
+.devices-view .node-tools,
+.phone-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+}
+
+.phone-tools-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.devices-view .grant-form,
+.devices-view .invite-panel,
+.devices-view .pair-panel {
+  max-width: 480px;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 10px;
+}
+
+.devices-view .grant-form {
+  background: var(--card);
+}
+
+/* Start over instead stays a link beside the form's buttons. */
+.devices-view .account-card .backup-replace,
+.devices-view .account-card .backup-replace:hover:not(:disabled) {
+  border: 0;
+  padding: 0 2px;
+  background: none;
+  color: var(--muted);
+  text-decoration: underline;
+}
+
+/* A form in Devices: its head and each field a line, its buttons side by side under them. */
+.devices-view :is(.grant-form, .backup-form) {
+  flex-flow: row wrap;
+  align-items: center;
+}
+
+.devices-view :is(.grant-form, .backup-form) > :not(button) {
+  flex: 1 0 100%;
+}
+
+.devices-view :is(.grant-form, .backup-form) > button {
+  flex: 0 0 auto;
+}
+
+.devices-view .grant-form > .grant-submit,
+.devices-view .backup-form > .backup-submit {
+  margin-top: 2px;
+}
+
+.devices-view .grant-form-head,
+.devices-view .invite-head {
+  font-size: 13px;
+}
+
+.devices-view .invites-pending {
+  max-width: 480px;
+  gap: 4px;
+}
+
+.devices-view .invite-pending {
+  align-items: center;
+  padding: 6px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+}
+
+/* --- the phones ---- */
+
+.devices-view .controllers {
+  gap: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+  overflow: hidden;
+}
+
+.devices-view .controllers:empty {
   display: none;
 }
 
-.node-grant-line .node-grant-buttons {
+.devices-view .controller {
+  gap: 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+  border-radius: 0;
+  scroll-margin-top: 16px;
+}
+
+.devices-view .controller:first-child {
+  border-top: 0;
+}
+
+.devices-view .controller:focus {
+  outline: none;
+}
+
+.devices-view .controller[data-flash="1"] {
+  background: var(--cophyla-wash);
+}
+
+.devices-view .controller-name {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.devices-view .controller-sub {
+  font-size: 12px;
+}
+
+/* --- the account ---- */
+
+.devices-view .account-card {
+  gap: 12px;
+  margin: 0;
+  padding: 14px 16px;
+  border-radius: 10px;
+  background: var(--card);
+  font-size: 13px;
+}
+
+.devices-view .account-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.devices-view .account-title {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.account-id {
+  min-width: 0;
   margin-left: auto;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.devices-view .account-details {
+  gap: 12px;
+}
+
+/* Sign in and Sign out are buttons, not bars across the card. */
+.devices-view :is(.account-details > button, .account-card > .account-login, .account-login-panel button) {
+  align-self: flex-start;
+}
+
+.devices-view .account-bars {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 6px 22px;
+}
+
+.devices-view .backup-row,
+.devices-view .direct-row {
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.devices-view .backup-buttons {
+  gap: 6px;
+}
+
+.devices-view .backup-form {
+  max-width: 420px;
+  gap: 6px;
+}
+
+.devices-view .direct-line {
+  align-items: center;
+}
+
+@media (max-width: 640px) {
+  .devices-head {
+    padding-left: 14px;
+  }
+
+  .devices-body {
+    padding: 18px 12px 40px;
+  }
+
+  .devices-column {
+    gap: 28px;
+  }
+
+  .devices-view {
+    --card-indent: 0px;
+  }
+
+  .node-card {
+    padding: 12px;
+  }
+
+  .node-head > .dot {
+    margin-top: 6px;
+  }
+
+  .node-foot > .node-grant {
+    margin-left: 0;
+  }
+
+  .node-remote .remote-pin-form {
+    grid-template-columns: 64px minmax(0, 1fr);
+  }
+
+  /* The view's own bar over the pane says "Devices" already: the head keeps the count and Close. */
+  #app[data-menu="view"] :is(.devices-mark, .devices-title) {
+    display: none;
+  }
 }
 
 .node-grant-buttons,
 .node-tools-buttons,
-.rail-foot-buttons,
 .invite-buttons {
   display: flex;
   flex-wrap: wrap;
@@ -2289,7 +3335,6 @@ button:disabled {
 
 .node-grant button,
 .node-tools button,
-.rail-foot-buttons button,
 .grant-form button,
 .invite-panel button,
 .invite-pending-cancel {
@@ -2304,7 +3349,6 @@ button:disabled {
 
 .node-grant button:hover:not(:disabled),
 .node-tools button:hover:not(:disabled),
-.rail-foot-buttons button:hover:not(:disabled),
 .grant-form button:hover:not(:disabled),
 .invite-panel button:hover:not(:disabled),
 .invite-pending-cancel:hover:not(:disabled) {
@@ -2557,59 +3601,6 @@ button:disabled {
 
 .invite-pending-cancel {
   flex: none;
-}
-
-.node-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-/* The track gives way before the value spills out of the card, as it would where a font is wider. */
-.bar {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  color: var(--muted);
-}
-
-.bar-label {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.bar-track {
-  display: block;
-  height: 5px;
-  border-radius: 3px;
-  background: var(--line);
-  overflow: hidden;
-}
-
-.bar-fill {
-  display: block;
-  height: 100%;
-  width: 0;
-  border-radius: 3px;
-  background: var(--moss);
-}
-
-.bar[data-level="warn"] .bar-fill {
-  background: var(--amber);
-}
-
-.bar[data-level="critical"] .bar-fill {
-  background: var(--rust);
-}
-
-.bar-value {
-  color: var(--ink);
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  font-size: 11.5px;
 }
 
 /* A fold's switch in the rail: an arrow, then what it holds. */
@@ -2939,61 +3930,7 @@ button:disabled {
   word-break: break-all;
 }
 
-.spend {
-  padding: 2px 6px 0;
-  font-size: 12px;
-}
-
-/* Each login's row: its session and weekly limits as a share used, then what it spent
-   today; the head names the columns. */
-
-.spend-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-}
-
-.spend-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 46px 36px 44px;
-  gap: 6px;
-  font-variant-numeric: tabular-nums;
-}
-
-.spend-head {
-  margin-bottom: 2px;
-  color: var(--muted);
-}
-
-.spend-title,
-.spend-name {
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-
-.spend-limit,
-.spend-cost {
-  text-align: right;
-  white-space: nowrap;
-}
-
-.spend-row:not(.spend-head) .spend-limit[data-level="none"] {
-  color: var(--faint);
-}
-
-.spend-limit[data-level="warn"] {
-  color: var(--amber);
-}
-
-.spend-limit[data-level="critical"] {
-  color: var(--rust);
-  font-weight: 600;
-}
-
-/* --- the rail's foot: the phones this node talks to --------------------------------------- */
-
-/* --- the account card, between the nodes and the phones ----------------------------------- */
+/* --- the account card, in Devices --------------------------------------------------------- */
 
 .account-card {
   margin: 6px 10px 0;
@@ -3037,11 +3974,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   gap: 2px;
-}
-
-/* "tokens out" needs more room than the node card's "memory" */
-.account-bars .bar {
-  grid-template-columns: 66px minmax(24px, 1fr) auto;
 }
 
 .account-login-panel p {
@@ -3242,15 +4174,6 @@ button:disabled {
   height: 100%;
   background: var(--cophyla);
   transition: width 200ms;
-}
-
-.rail-foot {
-  margin-top: auto;
-  padding: 10px 10px 4px;
-  border-top: 1px solid var(--line);
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
 }
 
 .controllers {
@@ -5114,10 +6037,6 @@ button:disabled {
 }
 
 @media (prefers-reduced-motion: no-preference) {
-  .bar-fill {
-    transition: width 400ms ease;
-  }
-
   .option,
   .ask-choice,
   .ask-answer,

@@ -373,7 +373,7 @@ re-made when those change. A phone cannot read the shared token, so it pairs: `p
 on the desktop opens one six-digit code for five minutes and one use, `pair.claim` before
 `hello` spends it for a token of that controller's own, and `controller.revoke` (or
 `grant.revoke`) drops the row and closes the socket. Or the desktop makes it an invite
-(`grant.invite {kind: controller}`, Invite a phone in the default view, `cophylad invite
+(`grant.invite {kind: controller}`, Add a phone in Devices in the default view, `cophylad invite
 --phone`) with the access the phone gets, no wider than the minter's own, and the phone
 redeems it with `invite.redeem` before `hello`, on this listener pinned to its key or through
 the invite's own relay peer (`grants/phones.ts`). A phone is held to its grant's access: its
@@ -654,7 +654,7 @@ Credential-shaped keys in `args` and the result are redacted before they are wri
 ## Nodes
 
 A secondary is this daemon that joined the primary's cluster with an invite: `cophylad invite`
-on the primary (or Add a machine in the default view) prints it, `cophylad join` on the new
+on the primary (or Add a computer in Devices in the default view) prints it, `cophylad join` on the new
 machine redeems it, over the primary's LAN listener or through the server relay as the
 invite's own throwaway peer, and `data/link.json` keeps the grant and its key from then on.
 A node in no cluster runs alone: `[node] role = "primary"` starts a cluster of its own, a

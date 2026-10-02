@@ -6,9 +6,10 @@
 // and under it one tab per open session, the agent's mark and its name, grouped under the
 // folder they work in, a workspace inside another's indented under it, a folded heading
 // saying how many tabs it holds, the bare terminals under Terminals, each named by the folder it works
-// in, then a card per node with its machine's bars, its processes folded
-// away, and its desktop (the host's state, its viewers, and Connect, a PIN or a phone code),
-// each login's plan limits and spend, and the account, its details folded away. While an
+// in, then Status, a glance: a line per machine (its dot and name, what it is, its readings as
+// meters, its desktop's mark while shared, what wants the user, and Connect and Beside where
+// this app can open its desktop), each login's limits as meters with what it spent today, a
+// line per phone, and at its foot the way into Devices. While an
 // agent's tab is selected that lower half has two tabs: Status, which holds all of it, and
 // Files, the default, an explorer of the folder the agent works in, its folders folding open
 // a level at a time, a file opening in the viewer at a click (fileview.ts, the file it shows
@@ -37,23 +38,27 @@
 // `textContent` only: nothing from a session, a message, an ask or an audit row is ever
 // parsed as HTML. What a model wrote, Cophyla's messages and a session's replies, is drawn as
 // markdown by building its elements (markdown.ts); what the user typed shows as typed.
-// Under the machines and the phones, the grants: Add a machine and Invite a phone mint an
-// invite and show it (its text to copy, its QR code, how long it holds) until Done or until it
-// is used; the invites still open, each with Cancel; each machine's role (hands or a full
-// member) and its end, and Remove, asked in place; and on the desktop, for this node itself,
-// Join another computer while it is alone and Leave once it joined one.
+// Devices lies over the panes, from Status's foot or a machine's or phone's line there: a card
+// per machine (its name the user sets, what it is, its facts, its readings and processes, its
+// desktop with who can view it a device a line, and Make primary, Restart and Remove or Leave,
+// each asked in place), a row per phone with Forget, and the account. Under the machines and
+// the phones, the grants: Add a computer and Add a phone mint an invite and show it (its text
+// to copy, its QR code, how long it holds) until Done or until it is used; the invites still
+// open, each with Cancel; and on the desktop, for this node itself, Join another computer
+// while it is alone and Leave once it joined one.
 
-import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, RemoteViewer, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, limitLevel, limitWords, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, viewerWords, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, costWords, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
+import { desktopWords, devicesWords, HARNESS_NAMES, machineFacts, selectStatusMachines, selectStatusPhones, usageMeters, viewerRows } from "./model.ts";
+import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
-/** The rail's folds the user opened, in `expanded`: a node's processes, and the account's details. */
+/** The folds the user opened, in `expanded`: a machine's processes in Devices. */
 export const processesKey = (node: string): string => `node:${node}/processes`;
-export const ACCOUNT_KEY = "account/details";
 
 /** The sessions' share of the rail under the chat's row, in percent: the usual, and the least and most the divider goes to. */
 export const RAIL_SPLIT = { usual: 45, min: 12, max: 88 } as const;
@@ -159,6 +164,12 @@ export interface UiState {
   copied?: { grant: string; ok: boolean };
   /** The invite's QR code shows large, over the view, for a camera across the desk. */
   qrZoom?: boolean;
+  /**
+   * Devices lies over the pane: every machine and phone with all they can do, and the account.
+   * Once more errors came than `errorsAt`, the count as it opened, it says the last of them,
+   * since it covers the input that says them otherwise.
+   */
+  devices?: { errorsAt: number };
 }
 
 export type RailTab = "files" | "status";
@@ -202,6 +213,8 @@ export interface Roots {
   /** The pane a bare terminal shows in. */
   terminal: HTMLElement;
   composer: HTMLElement;
+  /** Devices, over the panes while it is open. */
+  devices: HTMLElement;
 }
 
 // --- helpers ---------------------------------------------------------------------------------
@@ -694,23 +707,6 @@ function updateController(node: HTMLElement, controller: Controller, state: View
 
 // --- nodes: one card per machine, and the spend ---------------------------------------------
 
-function createBar(): HTMLElement {
-  const bar = el("div", "bar");
-  const track = el("span", "bar-track");
-  track.append(el("span", "bar-fill"));
-  bar.append(el("span", "bar-label"), track, el("span", "bar-value"));
-  return bar;
-}
-
-function updateBar(node: HTMLElement, bar: NodeBar): void {
-  setText(node.querySelector(".bar-label")!, bar.label);
-  setText(node.querySelector(".bar-value")!, bar.words);
-  const fill = node.querySelector<HTMLElement>(".bar-fill")!;
-  const width = bar.percent === undefined ? "0%" : `${bar.percent}%`;
-  if (fill.style.width !== width) fill.style.width = width;
-  setData(node, "level", bar.percent === undefined ? "none" : bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal");
-}
-
 function createOwner(): HTMLElement {
   const row = el("div", "node-session");
   row.append(el("span", "node-session-name"), el("span", "node-session-cpu"), el("span", "node-session-mem"));
@@ -737,18 +733,28 @@ function updateFold(b: HTMLElement, key: string, label: string, open: boolean): 
   b.setAttribute("aria-expanded", open ? "true" : "false");
 }
 
-/** A machine's card: its role and name the user sets, its bars, its processes folded under a switch until the user opens them, its desktop, and Restart. */
+/**
+ * A machine's card in Devices: its name the user sets, with what it is beside it (this
+ * computer, the primary, hands) and Rename; a line of facts; its readings, and its processes
+ * folded until the user opens them; its desktop; and at its foot Make primary, Restart and
+ * Remove or Leave, each asked in place.
+ */
 function createNodeCard(): HTMLElement {
-  const card = el("div", "node-card");
-  const head = el("div", "node-head");
-  head.append(el("span", "dot"), el("span", "node-name"), el("span", "node-badge"), el("span", "node-sub"));
-  card.append(head, createNodeChoose(), el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createRestart(), createNodeGrant());
+  const card = el("article", "node-card");
+  const head = el("header", "node-head");
+  const title = el("div", "node-title");
+  const line = el("div", "node-name-line");
+  line.append(el("h3", "node-name"), el("span", "node-tags"));
+  title.append(line, createRenameForm(), el("p", "node-facts"));
+  head.append(el("span", "dot"), title, actionButton("node-rename", "Rename", "node-rename"));
+  const foot = el("footer", "node-foot");
+  foot.append(createNodePromote(), createRestart(), createNodeGrant());
+  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), foot);
   return card;
 }
 
-/** The role and the name, the user's to set: Make primary, asked in place, and Rename, a field in place of the buttons. */
-function createNodeChoose(): HTMLElement {
-  const block = el("div", "node-choose");
+/** The name, the user's to set: a field in place of it, with Save and Cancel. */
+function createRenameForm(): HTMLFormElement {
   const form = el("form", "node-rename-form");
   const input = el("input", "node-rename-input");
   input.type = "text";
@@ -759,25 +765,38 @@ function createNodeChoose(): HTMLElement {
   const save = el("button", "node-rename-save", "Save");
   save.type = "submit";
   form.append(input, save, actionButton("node-rename-cancel", "Cancel", "node-rename-cancel"));
+  return form;
+}
+
+/** The role, the user's to choose: Make primary, asked in place. */
+function createNodePromote(): HTMLElement {
+  const block = el("div", "node-choose");
   const buttons = el("div", "node-choose-buttons");
-  buttons.append(
-    actionButton("node-promote", "Make primary", "node-promote"),
-    actionButton("node-promote-confirm", "Make primary", "node-promote-confirm"),
-    actionButton("node-promote-cancel", "Cancel", "node-promote-cancel"),
-    actionButton("node-rename", "Rename", "node-rename"),
-  );
-  block.append(form, el("p", "node-choose-ask"), buttons);
+  buttons.append(actionButton("node-promote", "Make primary", "node-promote"), actionButton("node-promote-confirm", "Make primary", "node-promote-confirm"), actionButton("node-promote-cancel", "Cancel", "node-promote-cancel"));
+  block.append(el("p", "node-choose-ask"), buttons);
   return block;
 }
 
-function updateNodeChoose(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
-  const offer = promoteOffer(state, card.node);
-  const canRename = renamable(state, card.node);
-  const promoting = ui.promoting?.node === card.node.id ? ui.promoting : undefined;
+/** The card's head: the name, or the field renaming it; what the machine is; its facts; and Rename. */
+function updateNodeHead(node: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
   const renaming = ui.renaming?.node === card.node.id ? ui.renaming : undefined;
-  setHidden(block, !offer && !canRename && !promoting && !renaming);
-  if (block.hidden) return;
-  const form = block.querySelector<HTMLFormElement>(".node-rename-form")!;
+  const name = node.querySelector<HTMLElement>(".node-name")!;
+  setText(name, card.node.name);
+  setHidden(node.querySelector<HTMLElement>(".node-name-line")!, renaming !== undefined);
+  const facts = machineFacts(state, card.node, Date.now());
+  reconcile(
+    node.querySelector<HTMLElement>(".node-tags")!,
+    facts.tags,
+    (t) => t.key,
+    () => el("span", "node-tag"),
+    (tag, t) => {
+      setData(tag, "tag", t.key);
+      setText(tag, t.label);
+      tag.title = t.title;
+    },
+  );
+  setText(node.querySelector(".node-facts")!, facts.line);
+  const form = node.querySelector<HTMLFormElement>(".node-rename-form")!;
   setHidden(form, !renaming);
   form.dataset["node"] = card.node.id;
   const input = form.querySelector<HTMLInputElement>(".node-rename-input")!;
@@ -791,11 +810,24 @@ function updateNodeChoose(block: HTMLElement, card: NodeCard, state: ViewState, 
   const save = form.querySelector<HTMLButtonElement>(".node-rename-save")!;
   setText(save, renaming?.busy ? "Saving…" : "Save");
   save.disabled = !state.connected || renaming?.busy === true;
+  const rename = node.querySelector<HTMLButtonElement>(".node-rename")!;
+  setHidden(rename, !renamable(state, card.node) || renaming !== undefined);
+  rename.dataset["node"] = card.node.id;
+  rename.title = `Name ${card.node.name} as you call it`;
+  rename.disabled = !state.connected;
+}
+
+function updateNodePromote(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState): void {
+  const offer = promoteOffer(state, card.node);
+  const promoting = ui.promoting?.node === card.node.id ? ui.promoting : undefined;
+  setHidden(block, !offer && !promoting);
+  setData(block, "asking", promoting ? "1" : "0");
+  if (block.hidden) return;
   const ask = block.querySelector<HTMLElement>(".node-choose-ask")!;
   setText(ask, promoting?.phase === "asking" && offer ? offer.ask : "");
   setHidden(ask, promoting?.phase !== "asking");
   const start = block.querySelector<HTMLButtonElement>(".node-promote")!;
-  setHidden(start, !offer || promoting !== undefined || renaming !== undefined);
+  setHidden(start, !offer || promoting !== undefined);
   start.dataset["node"] = card.node.id;
   start.title = offer?.title ?? "";
   start.disabled = !state.connected;
@@ -805,14 +837,9 @@ function updateNodeChoose(block: HTMLElement, card: NodeCard, state: ViewState, 
   setText(confirm, promoting?.phase === "promoting" ? "Making it the primary…" : "Make primary");
   confirm.disabled = !state.connected || promoting?.phase === "promoting";
   setHidden(block.querySelector<HTMLElement>(".node-promote-cancel")!, promoting?.phase !== "asking");
-  const rename = block.querySelector<HTMLButtonElement>(".node-rename")!;
-  setHidden(rename, !canRename || renaming !== undefined || promoting !== undefined);
-  rename.dataset["node"] = card.node.id;
-  rename.title = `Name ${card.node.name} as you call it`;
-  rename.disabled = !state.connected;
 }
 
-/** A machine's grant on its card: Remove, asked in place; on this node, once it joined another, Leave. */
+/** A machine's grant at its card's foot: Remove, asked in place; on this node, once it joined another, Leave. When it ends and whether to invite it again are in its head. */
 function createNodeGrant(): HTMLElement {
   const block = el("div", "node-grant");
   const buttons = el("div", "node-grant-buttons");
@@ -823,9 +850,7 @@ function createNodeGrant(): HTMLElement {
     actionButton("node-leave-confirm", "Leave", "node-leave-confirm"),
     actionButton("node-grant-cancel", "Cancel", "node-grant-cancel"),
   );
-  const line = el("div", "node-grant-line");
-  line.append(el("span", "node-grant-words"), buttons);
-  block.append(el("p", "node-grant-ask"), line);
+  block.append(el("p", "node-grant-ask"), buttons);
   return block;
 }
 
@@ -833,10 +858,9 @@ function updateNodeGrant(block: HTMLElement, card: NodeCard, state: ViewState, u
   const self = card.node.id === state.node;
   const leaving = self && membershipOffer(state) === "leave";
   const removing = ui.removing?.node === card.node.id ? ui.removing : undefined;
-  const said = [words.end ?? "", words.reinvite ? "its key went with a removed machine: invite it again" : ""].filter(Boolean).join(" · ");
-  setHidden(block, !(words.removable || leaving || said));
+  setHidden(block, !(words.removable || leaving));
+  setData(block, "asking", removing !== undefined || (leaving && ui.leaving !== undefined) ? "1" : "0");
   if (block.hidden) return;
-  setText(block.querySelector(".node-grant-words")!, said);
   const asking = removing?.phase === "asking" || (leaving && ui.leaving === "asking");
   const ask = block.querySelector<HTMLElement>(".node-grant-ask")!;
   const primary = [...state.nodes.values()].find((n) => n.role === "primary")?.name ?? "the primary";
@@ -866,28 +890,27 @@ function updateNodeCard(node: HTMLElement, card: NodeCard, state: ViewState, ui:
   setData(node, "node", card.node.id);
   setData(node, "status", card.node.status);
   setData(node.querySelector<HTMLElement>(".dot")!, "status", card.node.status === "online" ? "connected" : "gone");
-  setText(node.querySelector(".node-name")!, card.node.name);
+  updateNodeHead(node, card, state, ui);
   const grant = nodeGrantWords(state, card.node, Date.now());
-  const badge = node.querySelector<HTMLElement>(".node-badge")!;
-  setText(badge, grant.badge ?? "");
-  setData(badge, "role", grant.badge ?? "");
-  setHidden(badge, grant.badge === undefined);
-  badge.title = grant.badge === "hands" ? "Hands: this node runs what the primary asks, and reaches no other machine" : grant.badge === "full" ? "A full member: you can make it the primary" : "";
-  setText(node.querySelector(".node-sub")!, card.sub);
-  updateNodeChoose(node.querySelector<HTMLElement>(".node-choose")!, card, state, ui);
-  node.title = `${card.node.name} (${card.node.platform}) · ${[card.sub, grant.end ?? ""].filter(Boolean).join(" · ") || "online"}`;
-  reconcile(node.querySelector<HTMLElement>(".node-bars")!, card.bars, (b) => b.label, createBar, updateBar);
+  // An offline machine has no readings: its bars would only say so.
+  const online = card.node.status === "online";
+  const bars = node.querySelector<HTMLElement>(".node-bars")!;
+  setHidden(bars, !online);
+  reconcile(bars, online ? card.bars : [], (b) => b.label, createMeter, (meter, b) => updateMeter(meter, barMeter(b)));
   const key = processesKey(card.node.id);
   const open = ui.expanded.has(key);
   const fold = node.querySelector<HTMLElement>(".node-processes")!;
-  updateFold(fold, key, `Processes (${card.owners.length})`, open);
+  updateFold(fold, key, `Running (${card.owners.length})`, open);
   setHidden(fold, card.owners.length === 0);
   const owners = node.querySelector<HTMLElement>(".node-sessions")!;
   setHidden(owners, !open);
   reconcile(owners, open ? card.owners : [], (o) => o.key, createOwner, updateOwner);
   updateRemote(node.querySelector<HTMLElement>(".node-remote")!, selectRemote(state, card.node), state, ui);
-  updateRestart(node.querySelector<HTMLElement>(".node-restart")!, card, state, ui);
-  updateNodeGrant(node.querySelector<HTMLElement>(".node-grant")!, card, state, ui, grant);
+  const foot = node.querySelector<HTMLElement>(".node-foot")!;
+  updateNodePromote(foot.querySelector<HTMLElement>(".node-choose")!, card, state, ui);
+  updateRestart(foot.querySelector<HTMLElement>(".node-restart")!, card, state, ui);
+  updateNodeGrant(foot.querySelector<HTMLElement>(".node-grant")!, card, state, ui, grant);
+  setHidden(foot, [...foot.children].every((c) => (c as HTMLElement).hidden));
 }
 
 // --- restarting cophylad on this node ---------------------------------------------------------
@@ -907,6 +930,7 @@ function updateRestart(block: HTMLElement, card: NodeCard, state: ViewState, ui:
   if (!shown) return;
   const r = ui.restart;
   const refused = r?.phase === "busy";
+  setData(block, "asking", refused ? "1" : "0");
   const start = block.querySelector<HTMLButtonElement>(".node-restart-start")!;
   setHidden(start, refused);
   setText(start, r === undefined ? "Restart cophylad" : "Restarting…");
@@ -930,24 +954,35 @@ function actionButton(className: string, text: string, action: string): HTMLButt
   return b;
 }
 
+/**
+ * A machine's desktop in Devices: its state with the switch that shares it, then the ways in
+ * from here (Connect, Beside, Moonlight's settings), who can view it, a device a line, and the
+ * ways to pair one more: a viewer's PIN, or a code for Artemis on a phone.
+ */
 function createRemote(): HTMLElement {
-  const block = el("div", "node-remote");
+  const block = el("section", "node-remote");
   const head = el("div", "remote-head");
+  // Sharing this desktop: on, tried again, or off; the note says who can still connect, or who may have to approve the installer.
+  const share = el("div", "remote-share");
+  share.append(actionButton("remote-share-on", "Share this desktop", "remote-share"), actionButton("remote-retry", "Retry", "remote-share"), actionButton("remote-share-off", "Stop sharing", "remote-unshare"));
+  head.append(el("h4", "remote-label", "Desktop"), el("span", "remote-words"), share);
   const connect = actionButton("remote-connect", "Connect", "remote-open");
   connect.title = "Open this desktop in Moonlight, in a window of its own";
   const beside = actionButton("remote-beside", "Beside", "remote-beside");
   beside.title = "Show this desktop beside the pane";
-  head.append(el("span", "remote-label", "Desktop"), el("span", "remote-words"), connect, beside);
   // Moonlight's own window, where its settings are: once saved there, Connect follows them.
   const moonlight = actionButton("remote-moonlight", "Moonlight settings", "remote-moonlight");
   moonlight.title = "Moonlight's own window: once you save its settings, Connect uses them instead of Cophyla's picks";
   const viewing = el("div", "remote-viewing");
-  viewing.append(moonlight);
-  // Sharing this desktop: on, tried again, or off; the note says who can still connect, or who may have to approve the installer.
-  const share = el("div", "remote-share");
-  share.append(actionButton("remote-share-on", "Share this desktop", "remote-share"), actionButton("remote-retry", "Retry", "remote-share"), actionButton("remote-share-off", "Stop sharing", "remote-unshare"));
+  viewing.append(connect, beside, moonlight);
+  const who = el("div", "remote-who");
+  who.append(el("p", "remote-who-head", "Who can view it"), el("div", "remote-viewers"));
   const actions = el("div", "remote-actions");
-  actions.append(actionButton("remote-pin-start", "Pair by PIN", "remote-pin"), actionButton("remote-invite-start", "Invite a phone", "remote-invite"));
+  const pinStart = actionButton("remote-pin-start", "Pair a viewer by PIN", "remote-pin");
+  pinStart.title = "Moonlight on another device shows a PIN as it is added: type it here";
+  const inviteStart = actionButton("remote-invite-start", "Pair Artemis on a phone", "remote-invite");
+  inviteStart.title = "A code for the Artemis app on a phone, to view this desktop there";
+  actions.append(pinStart, inviteStart);
   // The PIN a viewer shows when it is added: Moonlight on another machine, or Artemis without an invite.
   const form = el("form", "remote-pin-form");
   const pin = el("input", "remote-pin-code");
@@ -972,36 +1007,57 @@ function createRemote(): HTMLElement {
   const buttons = el("div", "remote-invite-buttons");
   buttons.append(actionButton("remote-invite-open", "Open in Artemis", "remote-invite-open"), actionButton("remote-invite-done", "Done", "remote-invite-close"));
   invite.append(el("p", "remote-invite-hint", "In Artemis on the phone, add this PC and pair with:"), el("p", "remote-invite-code"), el("p", "remote-invite-pass"), el("p", "remote-invite-left"), buttons);
-  block.append(head, viewing, el("p", "remote-note"), el("div", "remote-viewers"), actions, form, invite, share);
+  block.append(head, el("p", "remote-note"), viewing, who, actions, form, invite);
   return block;
 }
 
+/** One device that can view a desktop: what it is, how it views it or that it watches now, and Forget. */
 function createViewer(): HTMLElement {
   const row = el("div", "remote-viewer");
   const main = el("div", "remote-viewer-main");
   main.append(el("span", "remote-viewer-name"), el("span", "remote-viewer-sub"));
-  row.append(main, actionButton("remote-viewer-forget", "Forget", "remote-revoke"));
+  row.append(el("span", "who-mark"), main, actionButton("remote-viewer-forget", "Forget", "remote-revoke"));
   return row;
 }
 
-function updateViewer(node: HTMLElement, viewer: RemoteViewer, remote: RemoteCard, state: ViewState): void {
-  setData(node, "kind", viewer.kind);
-  setData(node, "connected", viewer.connected ? "1" : "0");
-  setText(node.querySelector(".remote-viewer-name")!, viewer.name ?? viewer.id.slice(0, 8));
-  setText(node.querySelector(".remote-viewer-sub")!, viewerWords(viewer, Date.now()));
+function updateViewer(node: HTMLElement, row: ViewerRow, remote: RemoteCard, state: ViewState): void {
+  setData(node, "kind", row.kind);
+  setData(node, "connected", row.watching ? "1" : "0");
+  node.title = row.title;
+  setText(node.querySelector(".remote-viewer-name")!, row.name);
+  setText(node.querySelector(".remote-viewer-sub")!, row.words);
   const forget = node.querySelector<HTMLButtonElement>(".remote-viewer-forget")!;
   // A browser's session ends; a paired app is unpaired and has to pair again; off, a pairing is revoked.
-  setText(forget, viewer.kind === "web" ? "End" : remote.share ? "Revoke" : "Forget");
+  setText(forget, row.forget);
+  forget.title = row.forget === "End" ? `End ${row.name}'s session` : `${row.name} can no longer view this desktop until it pairs again`;
   forget.dataset["node"] = remote.node;
-  forget.dataset["viewer"] = viewer.id;
+  forget.dataset["viewers"] = row.ids.join(",");
   forget.disabled = !state.connected;
+}
+
+/**
+ * Connect and Beside onto a node's desktop, on its card and on its line in the rail: shown
+ * where this client can, Connect waiting while a viewer pairs, Beside while the desktop opens
+ * or shows on this tab already; on another tab, Beside shows it here too.
+ */
+function updateViewButtons(connect: HTMLButtonElement, beside: HTMLButtonElement, node: NodeId, canConnect: boolean, canBeside: boolean, state: ViewState, ui: UiState): void {
+  const opening = ui.opening.has(node);
+  setHidden(connect, !canConnect);
+  setText(connect, opening ? "Connecting…" : "Connect");
+  connect.dataset["node"] = node;
+  connect.disabled = !state.connected || opening;
+  const view = ui.remoteView?.node === node ? ui.remoteView : undefined;
+  const shownHere = view !== undefined && remoteHere(view, viewerTab(ui.selected, ui.terminal) ?? "chat", tabNode(state, ui.selected, ui.terminal));
+  setHidden(beside, !canBeside);
+  setText(beside, view?.phase === "opening" ? "Opening…" : "Beside");
+  beside.dataset["node"] = node;
+  beside.disabled = !state.connected || (shownHere && view.phase !== "failed");
 }
 
 /**
  * The desktop block: hidden when the node has no host to show; Share while it is off, Stop
  * sharing (and Retry) while it is on; Connect, Beside, Moonlight's settings, the PIN form and
- * the phone code while it serves, opening in place. Beside waits only while the desktop shows
- * on this tab: on another, it shows it here too.
+ * the phone code while it serves, opening in place; who can view it, a device a line.
  */
 function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state: ViewState, ui: UiState): void {
   setHidden(block, remote === undefined);
@@ -1009,28 +1065,17 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
   setData(block, "status", remote.host.status);
   setData(block, "streaming", remote.streaming ? "1" : "0");
   const words = block.querySelector<HTMLElement>(".remote-words")!;
-  setText(words, remote.words);
+  setText(words, desktopWords(remote));
   words.title = `${remote.host.kind === "none" ? "no host" : remote.host.kind} · ${remote.words}`;
   const note = block.querySelector<HTMLElement>(".remote-note")!;
   setText(note, remote.note ?? "");
   setHidden(note, remote.note === undefined);
-  const opening = ui.opening.has(remote.node);
-  const connect = block.querySelector<HTMLButtonElement>(".remote-connect")!;
-  setHidden(connect, !remote.connect);
-  setText(connect, opening ? "Connecting…" : "Connect");
-  connect.dataset["node"] = remote.node;
-  connect.disabled = !state.connected || opening;
-  const view = ui.remoteView?.node === remote.node ? ui.remoteView : undefined;
-  const shownHere = view !== undefined && remoteHere(view, viewerTab(ui.selected, ui.terminal) ?? "chat", tabNode(state, ui.selected, ui.terminal));
-  const beside = block.querySelector<HTMLButtonElement>(".remote-beside")!;
-  setHidden(beside, !remote.beside);
-  setText(beside, view?.phase === "opening" ? "Opening…" : "Beside");
-  beside.dataset["node"] = remote.node;
-  beside.disabled = !state.connected || (shownHere && view.phase !== "failed");
+  updateViewButtons(block.querySelector<HTMLButtonElement>(".remote-connect")!, block.querySelector<HTMLButtonElement>(".remote-beside")!, remote.node, remote.connect, remote.beside, state, ui);
   const moonlight = block.querySelector<HTMLButtonElement>(".remote-moonlight")!;
-  setHidden(block.querySelector<HTMLElement>(".remote-viewing")!, !remote.settings);
+  setHidden(moonlight, !remote.settings);
   moonlight.dataset["node"] = remote.node;
   moonlight.disabled = !state.connected;
+  setHidden(block.querySelector<HTMLElement>(".remote-viewing")!, !remote.connect && !remote.beside && !remote.settings);
   const busy = ui.sharing.get(remote.node);
   const shareOn = block.querySelector<HTMLButtonElement>(".remote-share-on")!;
   const retry = block.querySelector<HTMLButtonElement>(".remote-retry")!;
@@ -1045,7 +1090,9 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
     b.dataset["node"] = remote.node;
     b.disabled = !state.connected || busy !== undefined;
   }
-  reconcile(block.querySelector<HTMLElement>(".remote-viewers")!, remote.viewers, (v) => v.id, createViewer, (node, v) => updateViewer(node, v, remote, state));
+  const rows = viewerRows(state, remote, Date.now());
+  setHidden(block.querySelector<HTMLElement>(".remote-who")!, rows.length === 0);
+  reconcile(block.querySelector<HTMLElement>(".remote-viewers")!, rows, (r) => r.key, createViewer, (node, r) => updateViewer(node, r, remote, state));
 
   const pinOpen = state.remotePin === remote.node && remote.pair;
   const invite = state.remoteInvite?.node === remote.node ? state.remoteInvite : undefined;
@@ -1080,55 +1127,18 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
   setHidden(panel.querySelector<HTMLElement>(".remote-invite-open")!, state.client?.kind !== "controller" || !invite.link || w.expired);
 }
 
-/** One login's row: its session and weekly limits, as a share used, and what its sessions spent today. */
-function createSpend(): HTMLElement {
-  const row = el("div", "spend-row");
-  row.append(el("span", "spend-name"), el("span", "spend-limit spend-session"), el("span", "spend-limit spend-weekly"), el("span", "spend-cost"));
-  return row;
+/** Devices' computers: a card per machine, then Add a computer, Join another computer, and the invites still open. */
+function renderComputers(section: HTMLElement, state: ViewState, ui: UiState): void {
+  setHidden(section, state.nodes.size === 0);
+  if (section.hidden) return;
+  reconcile(section.querySelector<HTMLElement>(".node-cards")!, selectNodes(state), (c) => c.node.id, createNodeCard, (node, c) => updateNodeCard(node, c, state, ui));
+  renderNodeTools(section.querySelector<HTMLElement>(".node-tools")!, state, ui);
 }
 
-function updateSpend(node: HTMLElement, row: SpendRow): void {
-  setData(node, "profile", row.profile);
-  setText(node.querySelector(".spend-name")!, row.name);
-  for (const [cls, w] of [
-    [".spend-session", row.limits?.session],
-    [".spend-weekly", row.limits?.weekly],
-  ] as const) {
-    const cell = node.querySelector<HTMLElement>(cls)!;
-    setText(cell, limitWords(w));
-    setData(cell, "level", limitLevel(w));
-  }
-  setText(node.querySelector(".spend-cost")!, costWords(row.spend.cost));
-  node.title = spendTitle(row, Date.now());
-}
-
-/** The nodes block: hidden without `metrics:read`; each card's bars, owners and desktop, then each login's limits and spend today. */
-function renderNodes(root: HTMLElement, state: ViewState, ui: UiState): void {
-  setHidden(root, !state.scopes.includes("metrics:read"));
-  if (root.hidden) return;
-  reconcile(root.querySelector<HTMLElement>(".node-cards")!, selectNodes(state), (c) => c.node.id, createNodeCard, (node, c) => updateNodeCard(node, c, state, ui));
-  renderNodeTools(root.querySelector<HTMLElement>(".node-tools")!, state, ui);
-  const spend = selectSpend(state);
-  const list = root.querySelector<HTMLElement>(".spend")!;
-  reconcile(list.querySelector<HTMLElement>(".spend-rows")!, spend, (r) => r.profile, createSpend, updateSpend);
-  setHidden(list, spend.length === 0);
-}
-
-function createAccountBar(): HTMLElement {
-  const bar = el("div", "bar");
-  const track = el("span", "bar-track");
-  track.append(el("span", "bar-fill"));
-  bar.append(el("span", "bar-label"), track, el("span", "bar-value"));
-  return bar;
-}
-
-function updateAccountBar(node: HTMLElement, bar: AccountBar): void {
-  setText(node.querySelector(".bar-label")!, bar.label);
-  setText(node.querySelector(".bar-value")!, bar.words);
-  const fill = node.querySelector<HTMLElement>(".bar-fill")!;
-  const width = `${bar.percent}%`;
-  if (fill.style.width !== width) fill.style.width = width;
-  setData(node, "level", bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal");
+/** A metered part of the plan as a meter: its name, used of its cap. */
+function accountMeter(bar: AccountBar): StatusMeter {
+  const label = bar.label.charAt(0).toUpperCase() + bar.label.slice(1);
+  return { key: bar.label, label, percent: bar.percent, words: bar.words, level: bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal", title: `${label}: ${bar.words} this period` };
 }
 
 /** The backup row's passphrase form: the passphrase, typed twice when it is being set, and what the submit does. */
@@ -1155,15 +1165,14 @@ function createBackupForm(): HTMLFormElement {
 }
 
 /**
- * The account card in the rail: signed out with a Sign in button; a login open with the
- * address, the code and a countdown; signed in with the subject and the link's dot. Its
- * head is a switch: the plan, the usage bars, the backup row and Sign out stay folded until
- * the user opens them. Direct connections sit under the backup, a line and a switch per node.
+ * The account card in Devices: signed out with a Sign in button; a login open with the
+ * address, the code and a countdown; signed in with the link's dot, the plan, the usage bars,
+ * the backup row, direct connections (a line and a switch per node) and Sign out.
  */
 function renderAccount(root: HTMLElement, state: ViewState, ui: UiState): void {
   if (!root.querySelector(".account-head")) {
-    const head = actionButton("fold account-head", "", "toggle");
-    head.append(el("span", "dot"), el("span", "fold-label account-title"));
+    const head = el("div", "account-head");
+    head.append(el("span", "dot"), el("span", "account-title"), el("span", "account-id"));
     const signIn = actionButton("account-login", "Sign in", "account-login");
     const signOut = actionButton("account-logout", "Sign out", "account-logout");
     const open = actionButton("account-open", "Open the page", "account-open");
@@ -1188,23 +1197,27 @@ function renderAccount(root: HTMLElement, state: ViewState, ui: UiState): void {
     directHead.append(el("span", "direct-label", "Direct"), el("span", "direct-words"));
     direct.append(directHead, el("div", "direct-lines"));
     const details = el("div", "account-details");
-    details.append(el("p", "account-sub"), el("div", "account-bars"), backup, direct, signOut);
-    root.append(head, details, panel, signIn);
+    details.append(el("div", "account-bars"), backup, direct, signOut);
+    // the plan in a line, or what signing in would change, under the head whatever the kind
+    root.append(head, el("p", "account-sub"), details, panel, signIn);
   }
   setHidden(root, !state.scopes.includes("account"));
   const card = selectAccount(state);
   renderBackup(root.querySelector<HTMLElement>(".backup-row")!, card.backup, state, ui);
   renderDirect(root.querySelector<HTMLElement>(".direct-row")!, card.direct, state, ui);
   setData(root, "kind", card.kind);
-  const open = ui.expanded.has(ACCOUNT_KEY);
-  updateFold(root.querySelector<HTMLElement>(".account-head")!, ACCOUNT_KEY, card.title, open);
-  setHidden(root.querySelector<HTMLElement>(".account-details")!, !open);
+  setText(root.querySelector(".account-title")!, card.title);
+  const id = root.querySelector<HTMLElement>(".account-id")!;
+  setText(id, card.id ?? "");
+  setHidden(id, card.id === undefined);
+  id.title = "Your account's id, as support knows it";
+  setHidden(root.querySelector<HTMLElement>(".account-details")!, card.kind !== "in");
   const dot = root.querySelector<HTMLElement>(".dot")!;
   setHidden(dot, card.kind !== "in");
   setData(dot, "status", card.connected ? "connected" : "gone");
   dot.title = card.connected ? "linked to the server" : "the server link is down";
   setText(root.querySelector(".account-sub")!, card.sub);
-  reconcile(root.querySelector<HTMLElement>(".account-bars")!, card.bars, (b) => b.label, createAccountBar, updateAccountBar);
+  reconcile(root.querySelector<HTMLElement>(".account-bars")!, card.bars, (b) => b.label, createMeter, (meter, b) => updateMeter(meter, accountMeter(b)));
   const panel = root.querySelector<HTMLElement>(".account-login-panel")!;
   setHidden(panel, card.kind !== "login");
   if (state.login) {
@@ -1352,7 +1365,7 @@ function nameInput(placeholder: string, label: string): HTMLInputElement {
   return name;
 }
 
-/** Add a machine: its name, hands or a full member, how long it lasts. */
+/** Add a computer: its name, hands or a full member, how long it lasts. */
 function createNodeInviteForm(): HTMLFormElement {
   const form = el("form", "grant-form node-invite-form");
   const role = el("select", "grant-role");
@@ -1361,7 +1374,7 @@ function createNodeInviteForm(): HTMLFormElement {
   role.append(option("hands", "Hands: it runs what this computer asks, and reaches no other machine"), option("full", "Full member: you can make it the primary, with the chat and the tasks"));
   const submit = el("button", "grant-submit", "Make the invite");
   submit.type = "submit";
-  form.append(el("p", "grant-form-head", "Add a machine"), nameInput("what to call it", "What to call the machine"), role, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
+  form.append(el("p", "grant-form-head", "Add a computer"), nameInput("what to call it", "What to call the machine"), role, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
   return form;
 }
 
@@ -1412,7 +1425,7 @@ function createPhoneInviteForm(): HTMLFormElement {
   limit.setAttribute("aria-label", "Where it may do it");
   const submit = el("button", "grant-submit", "Make the invite");
   submit.type = "submit";
-  form.append(el("p", "grant-form-head", "Invite a phone"), nameInput("what to call the phone", "What to call the phone"), preset, limit, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
+  form.append(el("p", "grant-form-head", "Add a phone"), nameInput("what to call the phone", "What to call the phone"), preset, limit, endSelect(), submit, actionButton("grant-form-cancel", "Cancel", "grant-form-close"));
   return form;
 }
 
@@ -1500,11 +1513,11 @@ function setFormBusy(form: HTMLFormElement, state: ViewState, ui: UiState): void
   for (const b of form.querySelectorAll<HTMLButtonElement>("button")) b.disabled = !state.connected || ui.grantBusy === true;
 }
 
-/** Under the machines' cards: Add a machine and its invite, the invites still open, and Join another computer. */
+/** Under the machines' cards: Add a computer and its invite, the invites still open, and Join another computer. */
 function renderNodeTools(tools: HTMLElement, state: ViewState, ui: UiState): void {
   if (!tools.firstChild) {
     const buttons = el("div", "node-tools-buttons");
-    buttons.append(actionButton("node-add", "Add a machine", "grant-form-node"), actionButton("node-join", "Join another computer", "grant-form-join"));
+    buttons.append(actionButton("node-add", "Add a computer", "grant-form-node"), actionButton("node-join", "Join another computer", "grant-form-join"));
     tools.append(buttons, createNodeInviteForm(), createJoinForm(), el("div", "invite-slot"), el("div", "invites-pending"));
   }
   // a hands node reaches no other machine, and lets none in
@@ -1614,28 +1627,8 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     terminalsName.title = "Terminals no agent session runs in";
     terminals.append(terminalsName, el("div", "tab-terminals"), el("div", "tab-subgroups terminal-machines"));
     list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, newTerminal, menu);
-    // Under the sessions: the machines, what they are doing, and each login's limits and spend.
-    const nodes = el("div", "rail-nodes");
-    const spend = el("div", "spend");
-    const spendHead = el("div", "spend-row spend-head");
-    spendHead.append(el("span", "spend-title", "Usage"), el("span", "spend-limit", "session"), el("span", "spend-limit", "week"), el("span", "spend-cost", "today"));
-    spendHead.title = "Each login's share of its session (five-hour) and weekly limits, and what its sessions spent today";
-    spend.append(spendHead, el("div", "spend-rows"));
-    nodes.append(el("div", "node-cards"), el("div", "node-tools"), spend);
-    // Then the account, then the phones this node talks to.
-    const account = el("div", "account-card");
-    const foot = el("div", "rail-foot");
-    const pair = el("button", "pair-start", "Pair a phone");
-    pair.type = "button";
-    pair.dataset["action"] = "pair";
-    const invitePhone = actionButton("phone-invite", "Invite a phone", "grant-form-phone");
-    invitePhone.title = "An invite the phone scans or pastes, with what it may do and for how long";
-    const buttons = el("div", "rail-foot-buttons");
-    buttons.append(pair, invitePhone);
-    foot.append(el("div", "controllers"), buttons, createPhoneInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
-    // They share one scroll under the sessions.
-    const cards = el("div", "rail-cards");
-    cards.append(nodes, account, foot);
+    // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
+    const cards = createStatus();
     // While an agent's tab is selected they are the Status tab, beside its folder's files.
     const panel = el("div", "rail-panel");
     const strip = el("div", "rail-panel-tabs");
@@ -1695,26 +1688,251 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   renderNewTerminal(root.querySelector<HTMLElement>(".new-terminal-menu")!, newTerminal, state, ui, canTerminal);
 
   renderPanel(root, state, ui);
-  renderNodes(root.querySelector<HTMLElement>(".rail-nodes")!, state, ui);
-  renderAccount(root.querySelector<HTMLElement>(".account-card")!, state, ui);
+  renderStatus(root.querySelector<HTMLElement>(".rail-cards")!, state, ui);
+}
 
-  const foot = root.querySelector<HTMLElement>(".rail-foot")!;
+// --- the rail's Status: a glance at the machines, the usage and the phones ----------------------
+
+/**
+ * The Status tab: a line per machine with its readings and its desktop's way in, each login's
+ * limits and spend, a line per phone, and at its foot Devices, where everything else is. A
+ * machine's or a phone's name opens Devices at its card.
+ */
+function createStatus(): HTMLElement {
+  const cards = el("div", "rail-cards");
+  const machines = el("section", "status-section status-machines");
+  machines.setAttribute("aria-label", "Computers");
+  machines.append(el("h3", "status-heading", "Computers"), el("div", "status-machine-rows"));
+  const usage = el("section", "status-section status-usage");
+  usage.setAttribute("aria-label", "Usage");
+  const usageHead = el("div", "status-heading-row");
+  usageHead.title = "Each login's share of its session (five-hour) and weekly limits, and what its sessions spent today";
+  usageHead.append(el("h3", "status-heading", "Usage"), el("span", "status-heading status-heading-aside", "Today"));
+  usage.append(usageHead, el("div", "status-login-rows"));
+  const phones = el("section", "status-section status-phones");
+  phones.setAttribute("aria-label", "Phones");
+  phones.append(el("h3", "status-heading", "Phones"), el("div", "status-phone-rows"));
+  const devices = actionButton("status-devices", "", "devices-open");
+  devices.title = "Every computer and phone, what each can do, and the account";
+  devices.append(el("span", "status-devices-label", "Devices and account"), el("span", "status-devices-count"), el("span", "chevron-mark"));
+  cards.append(machines, usage, phones, devices);
+  return cards;
+}
+
+function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
+  const machines = selectStatusMachines(state);
+  const machineSection = cards.querySelector<HTMLElement>(".status-machines")!;
+  setHidden(machineSection, machines.length === 0);
+  reconcile(machineSection.querySelector<HTMLElement>(".status-machine-rows")!, machines, (m) => m.node, createStatusMachine, (node, m) => updateStatusMachine(node, m, state, ui));
+  const logins = state.scopes.includes("metrics:read") ? selectSpend(state) : [];
+  const usage = cards.querySelector<HTMLElement>(".status-usage")!;
+  setHidden(usage, logins.length === 0);
+  reconcile(usage.querySelector<HTMLElement>(".status-login-rows")!, logins, (r) => r.profile, createStatusLogin, updateStatusLogin);
+  const phones = state.scopes.includes("controllers") ? selectStatusPhones(state) : [];
+  const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
+  setHidden(phoneSection, phones.length === 0);
+  reconcile(phoneSection.querySelector<HTMLElement>(".status-phone-rows")!, phones, (p) => p.id, createStatusPhone, updateStatusPhone);
+  const devices = cards.querySelector<HTMLButtonElement>(".status-devices")!;
+  setHidden(devices, !devicesShown(state));
+  devices.setAttribute("aria-pressed", ui.devices ? "true" : "false");
+  setText(devices.querySelector(".status-devices-count")!, devicesWords(state));
+}
+
+/** A machine's line: its dot and name, which open its card in Devices; its desktop's mark while shared; its readings; what wants the user; and Connect and Beside. */
+function createStatusMachine(): HTMLElement {
+  const row = el("div", "status-machine");
+  const head = actionButton("status-machine-head", "", "devices-open");
+  head.append(el("span", "dot"), el("span", "status-machine-name"), el("span", "desktop-mark"), el("span", "status-machine-sub"));
+  const actions = el("div", "status-machine-actions");
+  const connect = actionButton("status-connect", "Connect", "remote-open");
+  connect.title = "Open its desktop in Moonlight, in a window of its own";
+  const beside = actionButton("status-beside", "Beside", "remote-beside");
+  beside.title = "Show its desktop beside the pane";
+  actions.append(connect, beside);
+  row.append(head, el("div", "status-meters"), el("p", "status-alert"), actions);
+  return row;
+}
+
+function updateStatusMachine(row: HTMLElement, m: StatusMachine, state: ViewState, ui: UiState): void {
+  setData(row, "node", m.node);
+  setData(row, "online", m.online ? "1" : "0");
+  const head = row.querySelector<HTMLButtonElement>(".status-machine-head")!;
+  head.dataset["focus"] = `node:${m.node}`;
+  head.title = `${m.title}\nOpen it in Devices`;
+  setData(head.querySelector<HTMLElement>(".dot")!, "status", m.online ? "connected" : "gone");
+  setText(head.querySelector(".status-machine-name")!, m.name);
+  setText(head.querySelector(".status-machine-sub")!, m.sub);
+  const desktop = head.querySelector<HTMLElement>(".desktop-mark")!;
+  setHidden(desktop, m.desktop === undefined);
+  setData(desktop, "watched", m.desktop?.watched ? "1" : "0");
+  desktop.title = m.desktop?.title ?? "";
+  desktop.setAttribute("aria-label", m.desktop?.title ?? "");
+  desktop.setAttribute("role", "img");
+  const meters = row.querySelector<HTMLElement>(".status-meters")!;
+  setHidden(meters, m.meters.length === 0);
+  reconcile(meters, m.meters, (x) => x.key, createMeter, updateMeter);
+  const alert = row.querySelector<HTMLElement>(".status-alert")!;
+  setText(alert, m.alert ?? "");
+  setHidden(alert, m.alert === undefined);
+  const connect = row.querySelector<HTMLButtonElement>(".status-connect")!;
+  const beside = row.querySelector<HTMLButtonElement>(".status-beside")!;
+  updateViewButtons(connect, beside, m.node, m.connect, m.beside, state, ui);
+  setHidden(row.querySelector<HTMLElement>(".status-machine-actions")!, !m.connect && !m.beside);
+}
+
+/** One reading: its label and value over a thin track. */
+function createMeter(): HTMLElement {
+  const meter = el("span", "status-meter");
+  const track = el("span", "status-meter-track");
+  track.append(el("span", "status-meter-fill"));
+  meter.append(el("span", "status-meter-label"), el("span", "status-meter-value"), track);
+  return meter;
+}
+
+function updateMeter(node: HTMLElement, m: StatusMeter): void {
+  setData(node, "level", m.level);
+  node.title = m.title;
+  setText(node.querySelector(".status-meter-label")!, m.label);
+  setText(node.querySelector(".status-meter-value")!, m.words);
+  const fill = node.querySelector<HTMLElement>(".status-meter-fill")!;
+  const width = `${m.percent}%`;
+  if (fill.style.width !== width) fill.style.width = width;
+}
+
+/** A login's line: its harness's mark, its name and what its sessions spent today, then its session and weekly limits as meters. */
+function createStatusLogin(): HTMLElement {
+  const row = el("div", "status-login");
+  const head = el("div", "status-login-head");
+  const icon = el("span", "agent-icon login-mark");
+  icon.dataset["tone"] = "active";
+  icon.setAttribute("role", "img");
+  icon.append(el("span", "agent-mark"));
+  head.append(icon, el("span", "status-login-name"), el("span", "status-login-cost"));
+  row.append(head, el("div", "status-meters"));
+  return row;
+}
+
+function updateStatusLogin(row: HTMLElement, r: SpendRow): void {
+  const now = Date.now();
+  setData(row, "profile", r.profile);
+  row.title = spendTitle(r, now);
+  const icon = row.querySelector<HTMLElement>(".login-mark")!;
+  setData(icon, "harness", r.harness ?? "");
+  setHidden(icon, r.harness === undefined);
+  icon.setAttribute("aria-label", r.harness ? HARNESS_NAMES[r.harness] : "");
+  setText(row.querySelector(".status-login-name")!, r.label);
+  setText(row.querySelector(".status-login-cost")!, costWords(r.spend.cost));
+  reconcile(row.querySelector<HTMLElement>(".status-meters")!, usageMeters(r, now), (m) => m.key, createMeter, updateMeter);
+}
+
+/** A machine's bar as a meter on its card: CPU and Memory by name, a GPU by its own. */
+function barMeter(bar: NodeBar): StatusMeter {
+  const label = bar.label === "cpu" ? "CPU" : bar.label === "memory" ? "Memory" : bar.label;
+  const level = bar.percent === undefined ? "none" : bar.percent >= 95 ? "critical" : bar.percent >= 80 ? "warn" : "normal";
+  return { key: bar.label, label, percent: bar.percent ?? 0, words: bar.words, level, title: `${label} ${bar.words}` };
+}
+
+/** A phone's line, which opens its row in Devices: its dot, its name, and here now or when it was last. */
+function createStatusPhone(): HTMLElement {
+  const row = actionButton("status-phone", "", "devices-open");
+  row.append(el("span", "dot"), el("span", "status-phone-name"), el("span", "status-phone-sub"));
+  return row;
+}
+
+function updateStatusPhone(row: HTMLElement, p: StatusPhone): void {
+  row.dataset["focus"] = `phone:${p.id}`;
+  row.title = `${p.title}\nOpen it in Devices`;
+  setData(row.querySelector<HTMLElement>(".dot")!, "status", p.connected ? "connected" : "gone");
+  setText(row.querySelector(".status-phone-name")!, p.name);
+  setText(row.querySelector(".status-phone-sub")!, p.words);
+}
+
+// --- Devices: every machine and phone with all they can do, and the account --------------------
+
+/** Whether Devices has anything to show this client: machines, phones it may manage, or the account. */
+export function devicesShown(state: ViewState): boolean {
+  return state.nodes.size > 0 || state.scopes.includes("controllers") || state.scopes.includes("account");
+}
+
+/**
+ * Devices, laid over the panes while it is open: its head with the count and Close; the last
+ * error since it opened, as it covers the input that says them otherwise; then Computers (a
+ * card per machine, Add a computer, Join another computer), Phones (a row per phone, Add a
+ * phone, Pair with a code) and the account.
+ */
+function createDevices(root: HTMLElement): void {
+  const head = el("header", "devices-head");
+  const close = actionButton("devices-close viewer-tool viewer-close", "", "devices-close");
+  close.title = "Close (Esc)";
+  close.setAttribute("aria-label", "Close Devices");
+  head.append(el("span", "devices-mark"), el("h2", "devices-title", "Devices"), el("span", "devices-meta"), close);
+  const note = el("p", "devices-note");
+  note.setAttribute("role", "alert");
+  const body = el("div", "devices-body");
+  body.tabIndex = -1;
+  const column = el("div", "devices-column");
+  const computers = el("section", "devices-section devices-computers");
+  computers.append(sectionHead("Computers", "This computer and the ones that joined it: which is the primary, what they run, and who can view their desktops."), el("div", "node-cards"), el("div", "node-tools"));
+  const phones = el("section", "devices-section devices-phones");
+  const tools = el("div", "phone-tools");
+  const buttons = el("div", "phone-tools-buttons");
+  const add = actionButton("phone-invite", "Add a phone", "grant-form-phone");
+  add.title = "An invite the phone scans or pastes, with what it may do and for how long";
+  const pair = actionButton("pair-start", "Pair with a code", "pair");
+  pair.title = "On this network: open an address on the phone and type the code shown here";
+  buttons.append(add, pair);
+  tools.append(buttons, createPhoneInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
+  phones.append(sectionHead("Phones", "The phones that use Cophyla, what each may do, and until when."), el("div", "controllers"), el("p", "devices-empty", "No phone uses Cophyla yet."), tools);
+  const account = el("section", "devices-section devices-account");
+  account.append(sectionHead("Account", "Your plan, its usage, the backup and direct connections."), el("div", "account-card"));
+  column.append(computers, phones, account);
+  body.append(column);
+  root.append(head, note, body);
+}
+
+function sectionHead(title: string, lede: string): HTMLElement {
+  const head = el("div", "devices-section-head");
+  head.append(el("h3", "devices-heading", title), el("p", "devices-lede", lede));
+  return head;
+}
+
+function renderDevices(root: HTMLElement, state: ViewState, ui: UiState): void {
+  setHidden(root, ui.devices === undefined);
+  if (!ui.devices) return;
+  if (!root.firstChild) createDevices(root);
+  setText(root.querySelector(".devices-meta")!, devicesWords(state));
+  const error = state.errorsSeen > ui.devices.errorsAt ? state.errors.at(-1) : undefined;
+  const note = root.querySelector<HTMLElement>(".devices-note")!;
+  setText(note, error ?? "");
+  setHidden(note, error === undefined);
+  renderComputers(root.querySelector<HTMLElement>(".devices-computers")!, state, ui);
+  renderPhones(root.querySelector<HTMLElement>(".devices-phones")!, state, ui);
+  const account = root.querySelector<HTMLElement>(".devices-account")!;
+  setHidden(account, !state.scopes.includes("account"));
+  renderAccount(account.querySelector<HTMLElement>(".account-card")!, state, ui);
+}
+
+/** Devices' phones: a row per phone with Forget, then Add a phone, Pair with a code, the invite on show and the ones still open. */
+function renderPhones(section: HTMLElement, state: ViewState, ui: UiState): void {
+  setHidden(section, !state.scopes.includes("controllers"));
+  if (section.hidden) return;
   const controllers = selectControllers(state);
-  reconcile(foot.querySelector<HTMLElement>(".controllers")!, controllers, (c) => c.id, createController, (node, c) => updateController(node, c, state));
-  const pair = foot.querySelector<HTMLButtonElement>(".pair-start")!;
-  pair.disabled = !state.connected || !state.scopes.includes("controllers");
-  setHidden(pair, state.pairing !== undefined);
-  setHidden(foot, !state.scopes.includes("controllers"));
-  renderPairing(foot, state);
-  const invitePhone = foot.querySelector<HTMLButtonElement>(".phone-invite")!;
+  reconcile(section.querySelector<HTMLElement>(".controllers")!, controllers, (c) => c.id, createController, (node, c) => updateController(node, c, state));
+  setHidden(section.querySelector<HTMLElement>(".devices-empty")!, controllers.length > 0);
+  const tools = section.querySelector<HTMLElement>(".phone-tools")!;
+  const pair = tools.querySelector<HTMLButtonElement>(".pair-start")!;
+  pair.disabled = !state.connected;
+  setHidden(pair, state.pairing !== undefined || ui.grantForm === "phone");
+  renderPairing(tools, state);
+  const invitePhone = tools.querySelector<HTMLButtonElement>(".phone-invite")!;
   setHidden(invitePhone, ui.grantForm === "phone");
   invitePhone.disabled = !state.connected;
-  const phoneForm = foot.querySelector<HTMLFormElement>(".phone-invite-form")!;
+  const phoneForm = tools.querySelector<HTMLFormElement>(".phone-invite-form")!;
   setHidden(phoneForm, ui.grantForm !== "phone");
   updateLimits(phoneForm.querySelector<HTMLSelectElement>(".grant-limit")!, state);
   setFormBusy(phoneForm, state, ui);
-  renderInvitePanel(foot.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui, "controller");
-  renderPending(foot.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller");
+  renderInvitePanel(tools.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui, "controller");
+  renderPending(tools.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller");
 }
 
 /** The session whose files the rail can show: the agent whose tab is selected, where the view may read sessions. */
@@ -1909,7 +2127,7 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   toggle.setAttribute("aria-expanded", shown ? "true" : "false");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
-  setText(root.querySelector(".railbar-title")!, card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
+  setText(root.querySelector(".railbar-title")!, ui.devices ? "Devices" : card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
 }
 
 /** A row of New terminal's menu: a workspace, a machine's home folder, or Other folder…, which opens the picker on that machine. */
@@ -2865,6 +3083,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   reconcile(holder, items, keyOf, createItem, (node, item) => updateItem(node, item, state, ui));
   reconcile(roots.sessions, [...state.sessions.values()], (c) => c.session.id, createPane, (node, c) => updatePane(node, c, state, ui));
   renderComposer(roots.composer, state, ui);
+  renderDevices(roots.devices, state, ui);
 
   // A pane just switched to opens at its newest; one that stayed keeps the user's place.
   const after = activePane(roots);

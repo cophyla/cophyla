@@ -1707,7 +1707,7 @@ describe("default view: remote desktop", () => {
 
   test("Connect's refusals in words to act on", () => {
     expect(connectWords("unsupported", "remote.open is not served over the relay")).toContain("from anywhere once Direct connections is on");
-    expect(connectWords("unavailable", "the host has no direct connections")).toBe("the host has no direct connections: turn Direct connections on in the host's account card");
+    expect(connectWords("unavailable", "the host has no direct connections")).toBe("the host has no direct connections: turn Direct connections on for it, under Account in Devices");
     expect(connectWords("unsupported", "this host has no host.open")).toBe("this app cannot show a desktop it has no route to: update the app");
     expect(connectWords("unsupported", "this node serves no web viewer: [remote] web is off")).toBe("this node serves no web viewer: [remote] web is off");
     expect(connectWords(undefined, "timed out")).toBe("timed out");
@@ -1787,7 +1787,7 @@ describe("the account card", () => {
     const state = initialState();
     apply(state, { type: "account.state", params: PRO });
     const card = selectAccount(state);
-    expect(card).toMatchObject({ kind: "in", title: "usr_1", sub: "pro · hosted model, hosted voice · 8 agents · memory full", connected: true });
+    expect(card).toMatchObject({ kind: "in", title: "Signed in", id: "usr_1", sub: "pro · hosted model, hosted voice · 8 agents · memory full", connected: true });
     expect(card.bars).toEqual([
       { label: "tokens in", percent: 1, words: "12.5k / 2M" },
       { label: "tokens out", percent: 0, words: "0 / 500k" },
@@ -1797,7 +1797,7 @@ describe("the account card", () => {
     expect(selectAccount(state)).toMatchObject({ kind: "in", connected: false, bars: [] });
     // a forged or stale row: the node says free, with the subject still named
     apply(state, { type: "account.state", params: { ...FREE, subject: "usr_1", connected: true } });
-    expect(selectAccount(state)).toMatchObject({ kind: "in", title: "usr_1", sub: "free · 2 agents · memory recent" });
+    expect(selectAccount(state)).toMatchObject({ kind: "in", title: "Signed in", id: "usr_1", sub: "free · 2 agents · memory recent" });
   });
 
   test("the backup row: absent until the node reports one; the plan without it; off; a backup to restore; on in each of its states; restoring", () => {
