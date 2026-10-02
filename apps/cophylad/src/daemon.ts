@@ -745,6 +745,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     get nodeName() {
       return identity.name;
     },
+    nodeNamed: (name) => (name === identity.name ? identity.id : nodes?.registry.list().find((n) => n.name === name)?.id),
     dir: join(p.data, "remote"),
     sidecarsDir: p.sidecars,
     bus,

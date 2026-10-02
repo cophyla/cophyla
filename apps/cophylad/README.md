@@ -538,7 +538,12 @@ welcome endpoint into `data/remote/host.json` unless `host_user` and `host_passw
 set, writes the node's name into its config, and polls `/api/clients/list` every `poll_ms`
 for the viewers and whether one streams, reading its primary display's size with each poll
 (`display.ts`: `EnumDisplaySettingsW` on Windows, CoreGraphics on macOS, none on Linux) into
-`remote.state.host.display`. Each step is `remote.state.host`; the node's
+`remote.state.host.display`. Each viewer says which of the user's machines it is
+(`pairedBy`, and `browser` for that machine's moonlight-web): cophylad pairs a machine's
+moonlight-qt under the machine's name and its moonlight-web under the name and " web", so a
+client the store does not know yet is matched to the machine that goes by its name then, and
+the match is kept in the store (`remote_paired_by`), so a machine renamed later keeps its
+pairings; a client paired by hand, or by another app, is nobody's. Each step is `remote.state.host`; the node's
 `capabilities.remote` is true while the host is `ready`. Switched on again while it is
 `unavailable`, it tries again; switched off while it comes up, the bring-up gives way. Off, the
 host's connected clients are disconnected and the web sessions showing this desktop end, and

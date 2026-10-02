@@ -4,7 +4,9 @@
 // or Sunshine) is located or installed, health-checked (on Windows it is a service;
 // elsewhere a sidecar), given credentials cophylad keeps under `data/remote`, named after
 // this node and told to serve its web UI to this machine only; its client list is polled, so
-// `remote.state` says who is paired and whether someone is watching. `remote.disable` ends
+// `remote.state` says who is paired and whether someone is watching, and which of the user's
+// machines each client is (`pairedBy`: matched by the name it was paired under, as cophylad
+// pairs a machine's viewers under its name, and kept so a rename keeps it). `remote.disable` ends
 // the streams and keeps the pairings: elsewhere the sidecar stops, while a Windows service
 // keeps running, so its list is still read and its viewers can still be revoked, since they
 // can still connect to it directly until they are. Viewing needs no flag: a desktop client's
@@ -73,6 +75,8 @@ export interface RemoteDeps {
   nodeId: string;
   /** This node's name, read each time (the user may rename the machine): the host is called by it, and so is this node's viewer in other hosts' lists. */
   readonly nodeName: string;
+  /** The user's machine that goes by `name` now, this one included: whose viewer a client paired under that name is. */
+  nodeNamed?: (name: string) => string | undefined;
   /** `<home>/data/remote`: the host credentials and the capture script. */
   dir: string;
   /** `<home>/data/sidecars`: the web viewer's releases. */
@@ -124,6 +128,14 @@ interface Away {
 const CREDENTIALS_FILE = "host.json";
 /** The store's key for the sharing switch: "1" or "0", over `[remote] enabled` once set. */
 export const ENABLED_KEY = "remote_enabled";
+/** The store's key for whose viewer each client of the host is, by the name the host lists it under (`Owner`s, as JSON). */
+export const PAIRED_BY_KEY = "remote_paired_by";
+
+/** Whose viewer a paired client is: a machine's Moonlight, or (`browser`) the web viewer it runs. */
+interface Owner {
+  node: string;
+  browser?: true;
+}
 /** How long a viewer has to show it kept a pairing the host accepted. */
 const PAIR_CONFIRM_MS = 15_000;
 /** Polls the host may miss before it is called unavailable. */
@@ -522,11 +534,20 @@ export class Remote {
     const clients = await api.clients();
     const now = this.now();
     const seen = new Set<string>();
+    const owners = this.owners(clients);
     this.native = clients.map((c) => {
       seen.add(c.uuid);
       const since = this.firstSeen.get(c.uuid) ?? now;
       this.firstSeen.set(c.uuid, since);
-      return { id: c.uuid, kind: "native", since, ...(c.name ? { name: c.name } : {}), ...(c.connected !== undefined ? { connected: c.connected } : {}) };
+      const owner = c.name ? owners.get(c.name) : undefined;
+      return {
+        id: c.uuid,
+        kind: "native",
+        since,
+        ...(c.name ? { name: c.name } : {}),
+        ...(c.connected !== undefined ? { connected: c.connected } : {}),
+        ...(owner ? { pairedBy: owner.node, ...(owner.browser ? { browser: true } : {}) } : {}),
+      };
     });
     for (const id of [...this.firstSeen.keys()]) if (!seen.has(id)) this.firstSeen.delete(id);
     // read with the list, so a change of resolution reaches the viewers at the next poll
@@ -538,6 +559,57 @@ export class Remote {
     }
     this.hostStreaming = streaming;
     this.publish();
+  }
+
+  /**
+   * Whose viewer each listed client is, by its name. cophylad pairs a machine's Moonlight under
+   * that machine's name and its web viewer under the name and " web", so a client the store
+   * does not know yet is matched to the machine that goes by its name now: moments after it
+   * paired, the name it paired under. The match is kept, so a machine renamed later keeps its
+   * pairings; a name the host no longer lists is dropped.
+   */
+  private owners(clients: HostClient[]): Map<string, Owner> {
+    const kept = this.keptOwners();
+    const listed = new Set(clients.map((c) => c.name).filter(Boolean));
+    let changed = false;
+    for (const name of [...kept.keys()]) {
+      if (listed.has(name)) continue;
+      kept.delete(name);
+      changed = true;
+    }
+    for (const name of listed) {
+      if (kept.has(name)) continue;
+      const owner = this.ownerNamed(name);
+      if (!owner) continue;
+      kept.set(name, owner);
+      changed = true;
+    }
+    if (changed) this.deps.store.meta.set(PAIRED_BY_KEY, JSON.stringify(Object.fromEntries(kept)));
+    return kept;
+  }
+
+  private keptOwners(): Map<string, Owner> {
+    const text = this.deps.store.meta.get(PAIRED_BY_KEY);
+    const out = new Map<string, Owner>();
+    if (!text) return out;
+    try {
+      for (const [name, o] of Object.entries(JSON.parse(text) as Record<string, Partial<Owner>>)) {
+        if (typeof o?.node === "string") out.set(name, { node: o.node, ...(o.browser === true ? { browser: true } : {}) });
+      }
+    } catch {
+      this.log.warn("the viewers' owners in the store are unreadable: matched again by name");
+    }
+    return out;
+  }
+
+  /** The machine a client of this name was paired for: one that goes by the name, or whose web viewer does. */
+  private ownerNamed(name: string): Owner | undefined {
+    const named = this.deps.nodeNamed;
+    if (!named) return undefined;
+    const node = named(name);
+    if (node) return { node };
+    const web = name.endsWith(" web") ? named(name.slice(0, -" web".length)) : undefined;
+    return web ? { node: web, browser: true } : undefined;
   }
 
   private requireHost(): HostApi {

@@ -175,6 +175,38 @@ describe("remote desktop", () => {
     expect(streaming.viewers[0]!.connected).toBe(true);
   });
 
+  test("a client paired under a machine's name is that machine's viewer, its web viewer under the name and \" web\"; the match outlives a rename and a restart, and goes with the client", async () => {
+    let s = await start();
+    const { fake } = s;
+    fake.clients.push(hostClient("UUID-M", "study"), hostClient("UUID-W", "study web"), hostClient("UUID-O", "Artemis on a phone"));
+    await waitFor(() => s.d.remote.state().viewers.length === 3);
+    const byId = () => new Map(s.d.remote.state().viewers.map((v) => [v.id, v]));
+    expect(byId().get("UUID-M")).toMatchObject({ name: "study", pairedBy: s.d.identity.id });
+    expect(byId().get("UUID-M")!.browser).toBeUndefined();
+    expect(byId().get("UUID-W")).toMatchObject({ name: "study web", pairedBy: s.d.identity.id, browser: true });
+    // paired by hand, or by another app: nobody's
+    expect(byId().get("UUID-O")!.pairedBy).toBeUndefined();
+
+    // renamed, the machine keeps the clients it paired under its old name
+    const c = await ui(s.d);
+    await c.request("node.rename", { id: s.d.identity.id, name: "Den" });
+    fake.clients.push(hostClient("UUID-N", "laptop"));
+    await waitFor(() => s.d.remote.state().viewers.length === 4);
+    expect(byId().get("UUID-M")!.pairedBy).toBe(s.d.identity.id);
+    expect(byId().get("UUID-W")!.browser).toBe(true);
+    expect(byId().get("UUID-N")!.pairedBy).toBeUndefined();
+
+    s = await restart(s);
+    await waitFor(() => s.d.remote.state().viewers.length === 4);
+    expect(byId().get("UUID-M")!.pairedBy).toBe(s.d.identity.id);
+    expect(byId().get("UUID-W")).toMatchObject({ pairedBy: s.d.identity.id, browser: true });
+
+    // a client the host no longer lists takes its match with it: one paired again under the name is matched afresh
+    fake.clients.splice(fake.clients.findIndex((x) => x.uuid === "UUID-W"), 1);
+    await waitFor(() => s.d.remote.state().viewers.length === 3);
+    expect(Object.keys(JSON.parse(s.d.store.meta.get("remote_paired_by") ?? "{}"))).toEqual(["study"]);
+  });
+
   test("a stopped service is started; a silent host with no service leaves the host unavailable with the reason", async () => {
     // the host answers nothing until `sc start` runs
     const scratchA = tempHome();

@@ -955,7 +955,12 @@ export const clientSignals = {
 
 export type ClientSignalName = keyof typeof clientSignals;
 
-/** A viewer a node knows: a client its host has paired (`native`) or a web session it serves (`web`). */
+/**
+ * A viewer a node knows: a client its host has paired (`native`) or a web session it serves
+ * (`web`). A paired client cophylad paired for one of the user's machines says which
+ * (`pairedBy`): that machine's Moonlight, or (`browser`) the web viewer it runs, which shows a
+ * desktop beside its app's view and to its phones. One paired by hand, or by another app, says neither.
+ */
 export const RemoteViewer = z.object({
   id: z.string(),
   name: z.string().optional(),
@@ -963,6 +968,8 @@ export const RemoteViewer = z.object({
   since: Timestamp,
   /** Streaming right now, when the node can tell. */
   connected: z.boolean().optional(),
+  pairedBy: NodeId.optional(),
+  browser: z.boolean().optional(),
 });
 export type RemoteViewer = z.infer<typeof RemoteViewer>;
 
