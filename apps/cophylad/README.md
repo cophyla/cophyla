@@ -265,9 +265,11 @@ paging unless its thread is live. A thread the shared app-server daemon runs
 (`--managed-daemon`) has its hooks run below the daemon, whose pid is no session's. The daemon
 is told by its command line, read once per process (natively on Windows); a read that fails
 says nothing, and a later hook reads it again. The thread's process is the CLI marked in a
-terminal that fits it (its folder, or a title of its folder's name); of several, the one whose
-CLI started just before the thread (its id says when it was made), and none when two started
-too close together to tell. A CLI that goes on to another thread (`/new`, `/resume`) hands it
+terminal that fits it: its title (Codex's `<thread name> | <project>`) naming the thread, then
+its folder or one above, then the shell's folder; a terminal titled for another folder never,
+and a thread holding one lets it go. Of several that fit as well, the one whose CLI started
+just before the thread (its id says when it was made), and none when two started too close
+together to tell. A CLI that goes on to another thread (`/new`, `/resume`) hands it
 the terminal at its first hook, or, with another CLI's terminal held in the folder too, when
 Codex ends the thread it left, about a minute on; a thread resumed, a terminal freed by a
 session that ended, and a restart look again. A thread a Codex desktop app started takes none. Until one fits, a thread

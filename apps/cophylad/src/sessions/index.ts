@@ -26,7 +26,7 @@
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { realpathSync } from "node:fs";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import type { Ask, AskAnswer, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
@@ -348,6 +348,44 @@ function sameTerminal(a: TerminalRef | undefined, b: TerminalRef | undefined): b
 /** A terminal title or a folder name as the two are compared: any spinner or bar a CLI puts before it off, and case aside. */
 function titleWord(text: string): string {
   return text.replace(/^[^\p{L}\p{N}]+/u, "").trim().toLowerCase();
+}
+
+/**
+ * The items of a terminal's title as Codex draws them, after any spinner: its thread's name and
+ * its project (`Respond to greeting | work`), or the project alone before the thread has one.
+ */
+function titleItems(title: string | undefined): string[] {
+  return title === undefined ? [] : titleWord(title).split(" | ").flatMap((p) => (p.trim() ? [p.trim()] : []));
+}
+
+/** The names a title may give a folder by: its own and each one's above it, the git repository's root being the project Codex names. */
+function folderNames(path: string): Set<string> {
+  return new Set(path.split(/[\\/]/).flatMap((p) => (titleWord(p) && !p.endsWith(":") ? [titleWord(p)] : [])));
+}
+
+/** Whether a title has a thread's name before a project that is none of `cwd`'s folders: the Codex CLI that drew it works elsewhere. */
+function worksElsewhere(title: string | undefined, cwd: string): boolean {
+  const items = titleItems(title);
+  if (items.length < 2) return false;
+  const names = folderNames(cwd);
+  return !items.some((i) => names.has(i));
+}
+
+/**
+ * How well a terminal whose Codex CLI no session holds fits a thread the daemon runs: its title
+ * carrying the thread's name, then naming its folder (or one above), then its shell's folder
+ * being the thread's. None when the title has a thread's name before a project that is none of
+ * the thread's folders: that CLI works elsewhere (`cd`, `-C`), wherever its shell started.
+ */
+function terminalFit(entry: TerminalEntry, session: Session): number {
+  if (worksElsewhere(entry.info.title, session.cwd)) return 0;
+  const items = titleItems(entry.info.title);
+  const names = folderNames(session.cwd);
+  const named = items.some((i) => names.has(i));
+  const inFolder = pathKey(entry.info.cwdReported || entry.info.cwd) === pathKey(session.cwd);
+  if (!named && !inFolder) return 0;
+  const thread = session.title !== undefined && items.length > 1 && items.slice(0, -1).join(" | ") === titleWord(session.title);
+  return (thread ? 4 : 0) + (named ? 2 : 0) + (inFolder ? 1 : 0);
 }
 
 /** The error for a raise the OS's permission stopped: refused, or still being asked (macOS's Automation). */
@@ -930,19 +968,44 @@ export class Sessions implements SessionHost {
     this.relinkHosted();
   }
 
-  /** Every live record the daemon hosts with no terminal yet looks for its CLI's, the one active last first. */
+  /**
+   * Every live record the daemon hosts lets go a terminal titled for another folder, and each
+   * with no terminal then looks for its CLI's, the one active last first.
+   */
   private relinkHosted(): void {
-    const waiting = [...this.byId.values()].filter((r) => r.hostedBy === "daemon" && r.session.status !== "ended" && !r.session.native.terminal);
+    const hosted = [...this.byId.values()].filter((r) => r.hostedBy === "daemon" && r.session.status !== "ended");
+    for (const rec of hosted) this.letGoElsewhere(rec);
+    const waiting = hosted.filter((r) => !r.session.native.terminal);
     for (const rec of waiting.sort((a, b) => b.session.lastActivity - a.session.lastActivity)) this.linkMarked(rec);
+  }
+
+  /**
+   * A thread the daemon runs gives back the terminal it holds once that terminal's title says
+   * its CLI works in another folder (`worksElsewhere`): taken before the title said so, by the
+   * first CLI a restart marked, say, or left for a thread elsewhere (`/resume`). It lets the
+   * CLI go with it and lives on by its rollout's recency, as a thread handed over does. The
+   * terminal is looked at again: one held since the daemon started was never marked.
+   */
+  private letGoElsewhere(rec: SessionRecord): boolean {
+    const term = rec.session.native.terminal;
+    const entry = term ? this.deps.tether?.get(term) : undefined;
+    if (!term || !entry || rec.hostedBy !== "daemon" || rec.session.status === "ended" || !worksElsewhere(entry.info.title, rec.session.cwd)) return false;
+    const { terminal: _terminal, pid: _pid, ...native } = rec.session.native;
+    this.patch(rec, { native });
+    this.log.info("a daemon-hosted session's terminal is titled for another folder; let go", { id: rec.session.id, terminal: term.id, project: titleItems(entry.info.title).at(-1) });
+    this.clis?.reconsider(term);
+    return true;
   }
 
   /**
    * A Codex thread the app-server daemon runs: its hooks come from under the daemon, which says
    * nothing of the CLI the user typed in. That CLI is the one marked in a terminal no session
-   * holds, in the thread's folder or titled with its name (Codex titles its terminal so): the
-   * record takes it, and the CLI as its process, which it then ends with. Of several that fit,
-   * the CLI that started just before the thread (its id says when) is taken, and none when two
-   * started too close together to tell. A thread a desktop app started takes none.
+   * holds whose title or shell's folder fits the thread (`terminalFit`; Codex titles its
+   * terminal with the thread's name and its project): the record takes it, and the CLI as its
+   * process, which it then ends with. Of several, the one that fits best is taken; of several
+   * that fit as well, the CLI that started just before the thread (its id says when), and none
+   * when two started too close together to tell. A terminal titled for another folder is never
+   * taken, and one held is let go (`letGoElsewhere`). A thread a desktop app started takes none.
    *
    * A CLI goes on to another thread (`/new`, `/resume`) with no word to the one it leaves until
    * the daemon ends that one about a minute later: at the new thread's first hook (`handOver`),
@@ -953,26 +1016,31 @@ export class Sessions implements SessionHost {
   linkMarked(rec: SessionRecord, opts: { handOver?: boolean } = {}): void {
     const tether = this.deps.tether;
     const clis = this.clis;
-    if (!tether || !clis || rec.session.status === "ended" || rec.session.native.terminal || desktopOriginated(rec.originator)) return;
-    const folder = pathKey(rec.session.cwd);
-    const name = titleWord(basename(rec.session.cwd));
-    const fitting = tether.list().filter((e) => {
-      if (e.info.status !== "running" || clis.markOf(e.ref)?.harness !== rec.session.harness) return false;
-      return pathKey(e.info.cwdReported || e.info.cwd) === folder || (name !== "" && e.info.title !== undefined && titleWord(e.info.title) === name);
-    });
-    const fits = fitting.filter((e) => !this.sessionOfTerminal(e.ref));
-    if (fits.length === 0) {
-      if (opts.handOver) this.handOver(rec as LiveRecord, fitting);
+    if (!tether || !clis || rec.session.status === "ended" || desktopOriginated(rec.originator)) return;
+    if (rec.session.native.terminal) {
+      if (this.letGoElsewhere(rec)) this.relinkHosted();
       return;
     }
+    const ranked = tether.list().flatMap((e) => {
+      if (e.info.status !== "running" || clis.markOf(e.ref)?.harness !== rec.session.harness) return [];
+      const fit = terminalFit(e, rec.session);
+      return fit > 0 ? [{ e, fit }] : [];
+    });
+    const free = ranked.filter((r) => !this.sessionOfTerminal(r.e.ref));
+    if (free.length === 0) {
+      if (opts.handOver) this.handOver(rec as LiveRecord, ranked.map((r) => r.e));
+      return;
+    }
+    const best = Math.max(...free.map((r) => r.fit));
+    const fits = free.filter((r) => r.fit === best).map((r) => r.e);
     const entry = fits.length === 1 ? fits[0] : this.startedJustBefore(rec, fits);
     if (!entry) {
-      this.log.info("more than one terminal fits a daemon-hosted session, and its time tells none; none is taken", { id: rec.session.id, terminals: fits.map((e) => e.ref.id) });
+      this.log.info("more than one terminal fits a daemon-hosted session as well, and its time tells none; none is taken", { id: rec.session.id, terminals: fits.map((e) => e.ref.id) });
       return;
     }
     const pid = clis.markOf(entry.ref)!.pid;
     this.patch(rec, { native: { ...rec.session.native, terminal: entry.ref, pid } });
-    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid, of: fits.length });
+    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid, of: free.length, by: best >= 4 ? "name" : best >= 2 ? "title" : "folder" });
   }
 
   /** Of several terminals that fit a thread, the one whose CLI started just before it, by the thread's id; none when that cannot be told. */
@@ -1137,6 +1205,9 @@ export class Sessions implements SessionHost {
         this.log.info("a job's terminal went to the agents screen", { id: rec.session.id, terminal: ref.id });
       }
     }
+    // A CLI gone on to a thread in another folder retitles its terminal: the thread it left lets it go.
+    const holder = this.recordOfTerminal(ref);
+    if (holder && this.letGoElsewhere(holder)) this.relinkHosted();
     const pid = change.entry.info.pid;
     if (pid === undefined) return;
     for (const rec of this.byId.values()) {

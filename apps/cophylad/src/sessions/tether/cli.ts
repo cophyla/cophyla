@@ -10,10 +10,12 @@
 // run -- codex`) is marked by its name, with no look. Every terminal waiting to be looked at is
 // looked at in one read of the process table, 300 ms after the first of them came and never
 // sooner than 2 s after the read before: a terminal that retitles itself all the time costs a
-// read every 2 s at most, and one at rest none. A terminal a session held is looked at again
-// when the session ends. A mark stays while its process lives, which a signal-0 kill tells at
-// each tick without a read. A mark carries when its CLI started, where the table says: it
-// tells which of two CLIs in one folder a new Codex thread came from.
+// read every 2 s at most, and one at rest none. The CLIs one read finds are all marked before
+// any is told of, so a thread looking for its CLI's terminal (a restart meets several) sees
+// every one. A terminal a session held is looked at again when the session ends. A mark stays
+// while its process lives, which a signal-0 kill tells at each tick without a read. A mark
+// carries when its CLI started, where the table says: it tells which of two CLIs in one folder
+// a new Codex thread came from.
 
 import type { HarnessKind, TerminalRef } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
@@ -206,13 +208,16 @@ export class TerminalClis {
     }
     this.deps.log.debug("process table read for terminal CLIs", { terminals: waiting.length, processes: table?.length ?? 0, ms: Math.round(performance.now() - started) });
     if (table && table.length > 0 && !this.stopped) {
+      const found: TerminalRef[] = [];
       for (const ref of waiting) {
         const entry = this.deps.get(ref);
         const key = keyOf(ref);
         if (!entry || entry.info.status !== "running" || entry.info.pid === undefined || this.marked(key) || this.deps.held(ref)) continue;
-        const found = findCli(entry.info.pid, table);
-        if (found) this.mark(key, ref, found);
+        const cli = findCli(entry.info.pid, table);
+        if (cli && this.set(key, ref, cli)) found.push(ref);
       }
+      // Every CLI the read found is marked before any is told of: a thread that looks then sees them all.
+      for (const ref of found) this.deps.changed(ref);
     }
     // What came while the read ran waits its turn.
     if (this.pending.size > 0 && !this.timer) {
@@ -226,11 +231,16 @@ export class TerminalClis {
   }
 
   private mark(key: string, ref: TerminalRef, mark: CliMark): void {
+    if (this.set(key, ref, mark)) this.deps.changed(ref);
+  }
+
+  /** A terminal's mark, untold: whether it is new. */
+  private set(key: string, ref: TerminalRef, mark: CliMark): boolean {
     const was = this.marks.get(key)?.mark;
-    if (was && was.pid === mark.pid && was.harness === mark.harness) return;
+    if (was && was.pid === mark.pid && was.harness === mark.harness) return false;
     this.marks.set(key, { ref, mark });
     this.deps.log.info("agent CLI in a terminal", { terminal: ref.id, harness: mark.harness, pid: mark.pid });
-    this.deps.changed(ref);
+    return true;
   }
 
   private clear(key: string): void {

@@ -12,10 +12,12 @@
 // or a resume the thread list shows; never the daemon's pid, which a record from before lets
 // go and a stop never ends; not for a `codex exec` under the daemon; a terminal freed by a
 // session that ended goes to one waiting, and its CLI started again is marked again; of two
-// CLIs, the one started just before the thread, or none when that cannot be told; a CLI's
-// `/new` and `/resume` hand its terminal over; and a desktop app's thread takes none. A thread
-// met again after a restart is judged by its CLI while that runs, however long it sat idle; a
-// pid another program or a later process holds by then is let go, and recency judges it.
+// CLIs, the one whose title names the thread or its folder, else the one started just before
+// the thread, or none when that cannot be told; a CLI titled for another folder never, and one
+// held is given back; a CLI's `/new` and `/resume` hand its terminal over; and a desktop app's
+// thread takes none. A thread met again after a restart is judged by its CLI while that runs,
+// however long it sat idle; a pid another program or a later process holds by then is let go,
+// and recency judges it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -866,6 +868,106 @@ describe("a codex thread the app-server daemon runs", () => {
     expect(untold.session.native.terminal).toBeUndefined();
     mini.sessions.end(untold, "exit");
     for (const t of [...c, ...s, ...u]) t.shell.exit(0);
+  });
+
+  test("a CLI working in another folder than its shell's is found by its title, time telling nothing: that folder's thread takes it, its shell's folder's never", async () => {
+    const engine = folder("engine");
+    const anims = folder("anims");
+    const sub = folder(join("engine", "sub"));
+    const T0 = Date.now() - 600_000;
+    // Both shells started in `engine`; one CLI went on to `anims` (`cd`, `-C`). Their threads came by `/new`, long after either started.
+    const here = await cli(9860, 9861, "first | engine", engine, T0);
+    const away = await cli(9862, 9863, "⠹ second | anims", engine, T0 + 5000);
+    const there = hostedRecord(uuidv7(T0 + 400_000), anims);
+    mini.sessions.linkMarked(there);
+    expect(there.session.native.terminal).toEqual(away.ref);
+    expect(there.session.native.pid).toBe(9863);
+    const home = hostedRecord(uuidv7(T0 + 300_000), engine);
+    mini.sessions.linkMarked(home);
+    expect(home.session.native.terminal).toEqual(here.ref);
+    for (const r of [there, home]) mini.sessions.end(r, "exit");
+    // Alone, the CLI titled for `anims` is still no CLI of a thread in `engine`.
+    alive.delete(9861);
+    await mini.sessions.tick();
+    const lone = hostedRecord(uuidv7(T0 + 500_000), engine);
+    mini.sessions.linkMarked(lone);
+    expect(lone.session.native.terminal).toBeUndefined();
+    mini.sessions.end(lone, "exit");
+    // A project named above the thread's folder is its repository's root, which Codex names.
+    const nested = await cli(9864, 9865, "third | engine", engine, T0 + 6000);
+    const below = hostedRecord(uuidv7(T0 + 600_000), sub);
+    mini.sessions.linkMarked(below);
+    expect(below.session.native.terminal).toEqual(nested.ref);
+    mini.sessions.end(below, "exit");
+    for (const t of [here, away, nested]) t.shell.exit(0);
+  });
+
+  test("of two CLIs in one folder whose time tells nothing, a thread takes the one whose title carries its name", async () => {
+    const at = folder("duo");
+    const T0 = Date.now() - 600_000;
+    const a = await cli(9870, 9871, "Alpha work | duo", at, T0);
+    const b = await cli(9872, 9873, "Beta work | duo", at, T0 + 5000);
+    const beta = hostedRecord(uuidv7(T0 + 300_000), at);
+    mini.sessions.patch(beta, { title: "Beta work" });
+    mini.sessions.linkMarked(beta);
+    expect(beta.session.native.terminal).toEqual(b.ref);
+    const alpha = hostedRecord(uuidv7(T0 + 310_000), at);
+    mini.sessions.patch(alpha, { title: "Alpha work" });
+    mini.sessions.linkMarked(alpha);
+    expect(alpha.session.native.terminal).toEqual(a.ref);
+    for (const r of [alpha, beta]) mini.sessions.end(r, "exit");
+    for (const t of [a, b]) t.shell.exit(0);
+  });
+
+  test("a thread holding a terminal whose title says its CLI works in another folder lets it go: to the thread there, and takes its own CLI's", async () => {
+    const engine = folder("engine2");
+    const anims = folder("anims2");
+    const T0 = Date.now() - 600_000;
+    const own = await cli(9890, 9891, "Acknowledge greeting | engine2", engine, T0);
+    const other = await cli(9892, 9893, "video creator | anims2", engine, T0 + 5000);
+    // Taken before its title said so (a restart's first mark, say).
+    const ack = hostedRecord(uuidv7(T0 + 300_000), engine);
+    mini.sessions.patch(ack, { title: "Acknowledge greeting", native: { ...ack.session.native, terminal: other.ref, pid: 9893 } });
+    const video = hostedRecord(uuidv7(T0 + 400_000), anims);
+    mini.sessions.patch(video, { title: "video creator" });
+    // Its next hook looks again.
+    mini.sessions.linkMarked(ack);
+    expect(ack.session.native.terminal).toEqual(own.ref);
+    expect(ack.session.native.pid).toBe(9891);
+    expect(video.session.native.terminal).toEqual(other.ref);
+    expect(video.session.native.pid).toBe(9893);
+    // A CLI that goes on to a thread elsewhere (`/resume`) retitles its terminal: the one it left lets it go at once.
+    fake.emit({ ev: "title", session: own.shell.id, title: "gamma | anims2" });
+    await waitFor(() => !ack.session.native.terminal, 3000);
+    expect(ack.session.native.pid).toBeUndefined();
+    expect(ack.session.status).not.toBe("ended");
+    for (const r of [ack, video]) mini.sessions.end(r, "exit");
+    for (const t of [own, other]) t.shell.exit(0);
+  });
+
+  test("a terminal held since the daemon started, so never marked, is marked once let go, and the thread its CLI is on takes it", async () => {
+    const engine = folder("engine3");
+    const anims = folder("anims3");
+    const own = await cli(9894, 9895, "engine3", engine);
+    const shell = fake.add({ argv: ["pwsh.exe"], cwd: engine }, 9896);
+    table.push({ pid: 9896, parent: 1, name: "pwsh.exe" }, { pid: 9897, parent: 9896, name: "codex.exe" });
+    for (const pid of [9896, 9897]) alive.add(pid);
+    await waitFor(() => tether.byPid(9896));
+    const ref = { host: fake.host.host, id: shell.id };
+    // The store's link from before the restart: held, so never looked at.
+    const ack = hostedRecord(uuidv7(Date.now() - 1000), engine);
+    mini.sessions.patch(ack, { native: { ...ack.session.native, terminal: ref, pid: 9897 } });
+    const video = hostedRecord(uuidv7(Date.now()), anims);
+    mini.sessions.linkMarked(video);
+    expect(video.session.native.terminal).toBeUndefined();
+    fake.emit({ ev: "title", session: shell.id, title: "video creator | anims3" });
+    await waitFor(() => video.session.native.terminal, 3000);
+    expect(video.session.native.terminal).toEqual(ref);
+    expect(video.session.native.pid).toBe(9897);
+    expect(ack.session.native.terminal).toEqual(own.ref);
+    expect(ack.session.native.pid).toBe(9895);
+    for (const r of [ack, video]) mini.sessions.end(r, "exit");
+    for (const s of [own.shell, shell]) s.exit(0);
   });
 
   test("a CLI that goes on to a new thread (/new) hands it its terminal; one it resumes (/resume) takes it back; the one left lives on with neither", async () => {

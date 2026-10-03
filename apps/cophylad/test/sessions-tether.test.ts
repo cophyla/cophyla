@@ -9,7 +9,7 @@
 // window of the user's own its process ends and the shell's terminal stays.
 // An agent CLI in a terminal no session holds is marked from one read of the process table
 // when the terminal retitles itself, reads coalesced and spaced, never for a held terminal,
-// with when the CLI started; a Codex thread the app-server daemon runs takes the one terminal
+// with when the CLI started, every CLI a read finds marked before any is told of; a Codex thread the app-server daemon runs takes the one terminal
 // whose CLI fits it, never when a desktop app started it, and of threads waiting, the one active
 // last takes a terminal freed.
 
@@ -543,6 +543,38 @@ describe("which process is a terminal's CLI", () => {
     const info = { session: "t1", pid: 77, argv: ["codex"], cwd: "C:/w", cols: 80, rows: 24, labels: {}, status: "running" as const, startedAt: 5678, seq: 0, clients: [] };
     clis.onTerminal({ entry: { ref, info } });
     expect(clis.markOf(ref)).toEqual({ harness: "codex", pid: 77, startedAt: 5678 });
+  });
+
+  test("the CLIs one read finds are all marked before any is told of", async () => {
+    const info = (session: string, pid: number) => ({ session, pid, argv: ["pwsh.exe"], cwd: "C:/w", cols: 80, rows: 24, labels: {}, status: "running" as const, startedAt: 1, seq: 0, clients: [] });
+    const entries = [
+      { ref: { host: "h", id: "a" }, info: info("a", 10) },
+      { ref: { host: "h", id: "b" }, info: info("b", 20) },
+    ];
+    const table: ProcessRow[] = [
+      { pid: 10, parent: 1, name: "pwsh.exe" },
+      { pid: 11, parent: 10, name: "codex.exe" },
+      { pid: 20, parent: 1, name: "pwsh.exe" },
+      { pid: 21, parent: 20, name: "codex.exe" },
+    ];
+    const seen: string[][] = [];
+    const clis: TerminalClis = new TerminalClis({
+      list: () => entries,
+      get: (ref) => entries.find((e) => e.ref.id === ref.id),
+      processes: () => table,
+      held: () => false,
+      isAlive: () => true,
+      changed: () => seen.push(entries.filter((e) => clis.markOf(e.ref)).map((e) => e.ref.id)),
+      log: silentLogger,
+      debounceMs: 1,
+    });
+    clis.start();
+    await waitFor(() => seen.length === 2);
+    expect(seen).toEqual([
+      ["a", "b"],
+      ["a", "b"],
+    ]);
+    clis.stop();
   });
 });
 
