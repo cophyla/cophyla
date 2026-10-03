@@ -17,7 +17,8 @@
 // held is given back; a CLI's `/new` and `/resume` hand its terminal over; and a desktop app's
 // thread takes none. A thread met again after a restart is judged by its CLI while that runs,
 // however long it sat idle; a pid another program or a later process holds by then is let go,
-// and recency judges it.
+// and recency judges it; before a hook tells it apart, it takes only a terminal titled with its
+// name.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
@@ -968,6 +969,31 @@ describe("a codex thread the app-server daemon runs", () => {
     expect(ack.session.native.pid).toBe(9895);
     for (const r of [ack, video]) mini.sessions.end(r, "exit");
     for (const s of [own.shell, shell]) s.exit(0);
+  });
+
+  test("threads met again after a restart, before any hook tells them apart, give back a terminal titled for another folder and take only one whose title carries their name", async () => {
+    const engine = folder("engine4");
+    const anims = folder("anims4");
+    const own = await cli(9900, 9901, "Acknowledge greeting | engine4", engine);
+    const other = await cli(9902, 9903, "video creator | anims4", engine);
+    const bare = await cli(9904, 9905, "engine4", engine);
+    const met = (title: string, at: string, ago: number) => mini.sessions.ensure({ harness: "codex", nativeId: uuidv7(Date.now() - ago), profile, cwd: at, transport: "app-server", title });
+    // The store's link from before: the CLI's pid and terminal kept, no hook since.
+    const ack = met("Acknowledge greeting", engine, 3000);
+    mini.sessions.patch(ack, { native: { ...ack.session.native, terminal: other.ref, pid: 9903 } });
+    const video = met("video creator", anims, 2000);
+    const plain = met("something else", engine, 1000);
+    mini.sessions.linkMarked(ack);
+    expect(ack.session.native.terminal).toEqual(own.ref);
+    expect(ack.session.native.pid).toBe(9901);
+    expect(ack.liveness).toBe("hook");
+    expect(video.session.native.terminal).toEqual(other.ref);
+    expect(video.session.native.pid).toBe(9903);
+    // A name no title carries takes nothing, though a terminal in its folder is free.
+    expect(plain.session.native.terminal).toBeUndefined();
+    expect(mini.sessions.sessionOfTerminal(bare.ref)).toBeUndefined();
+    for (const r of [ack, video, plain]) mini.sessions.end(r, "exit");
+    for (const t of [own, other, bare]) t.shell.exit(0);
   });
 
   test("a CLI that goes on to a new thread (/new) hands it its terminal; one it resumes (/resume) takes it back; the one left lives on with neither", async () => {

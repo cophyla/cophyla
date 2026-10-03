@@ -371,6 +371,9 @@ function worksElsewhere(title: string | undefined, cwd: string): boolean {
   return !items.some((i) => names.has(i));
 }
 
+/** What each thing a terminal has that fits a thread counts for: they add up (`terminalFit`). */
+const FIT = { name: 4, title: 2, folder: 1 } as const;
+
 /**
  * How well a terminal whose Codex CLI no session holds fits a thread the daemon runs: its title
  * carrying the thread's name, then naming its folder (or one above), then its shell's folder
@@ -385,7 +388,7 @@ function terminalFit(entry: TerminalEntry, session: Session): number {
   const inFolder = pathKey(entry.info.cwdReported || entry.info.cwd) === pathKey(session.cwd);
   if (!named && !inFolder) return 0;
   const thread = session.title !== undefined && items.length > 1 && items.slice(0, -1).join(" | ") === titleWord(session.title);
-  return (thread ? 4 : 0) + (named ? 2 : 0) + (inFolder ? 1 : 0);
+  return (thread ? FIT.name : 0) + (named ? FIT.title : 0) + (inFolder ? FIT.folder : 0);
 }
 
 /** The error for a raise the OS's permission stopped: refused, or still being asked (macOS's Automation). */
@@ -969,32 +972,45 @@ export class Sessions implements SessionHost {
   }
 
   /**
-   * Every live record the daemon hosts lets go a terminal titled for another folder, and each
-   * with no terminal then looks for its CLI's, the one active last first.
+   * Every live Codex record lets go a terminal titled for another folder, and each with no
+   * terminal then looks for its CLI's, the one active last first: one the daemon hosts, and one
+   * with no process that no hook has told apart since the daemon started (`linkMarked`).
    */
   private relinkHosted(): void {
-    const hosted = [...this.byId.values()].filter((r) => r.hostedBy === "daemon" && r.session.status !== "ended");
-    for (const rec of hosted) this.letGoElsewhere(rec);
-    const waiting = hosted.filter((r) => !r.session.native.terminal);
+    this.letGoAllElsewhere();
+    const waiting = [...this.byId.values()].filter((r) => r.session.harness === "codex" && r.session.status !== "ended" && !r.session.native.terminal && (r.hostedBy === "daemon" || this.untold(r)));
     for (const rec of waiting.sort((a, b) => b.session.lastActivity - a.session.lastActivity)) this.linkMarked(rec);
   }
 
+  /** A Codex thread with no process that no hook has told apart yet: the daemon may host it, and only its name in a CLI's title says which CLI shows it. */
+  private untold(rec: SessionRecord): boolean {
+    return rec.session.harness === "codex" && rec.hostedBy === undefined && rec.session.native.pid === undefined && rec.session.native.transport === "app-server";
+  }
+
   /**
-   * A thread the daemon runs gives back the terminal it holds once that terminal's title says
-   * its CLI works in another folder (`worksElsewhere`): taken before the title said so, by the
-   * first CLI a restart marked, say, or left for a thread elsewhere (`/resume`). It lets the
-   * CLI go with it and lives on by its rollout's recency, as a thread handed over does. The
-   * terminal is looked at again: one held since the daemon started was never marked.
+   * A Codex thread gives back the terminal it holds once that terminal's title says its CLI
+   * works in another folder (`worksElsewhere`): taken before the title said so, by the first
+   * CLI a restart marked, say, and kept by the record from before it, or left for a thread
+   * elsewhere (`/resume`). It lets the CLI go with it and lives on by its rollout's recency, as
+   * a thread handed over does. The terminal is looked at again: one held since the daemon
+   * started was never marked.
    */
   private letGoElsewhere(rec: SessionRecord): boolean {
     const term = rec.session.native.terminal;
     const entry = term ? this.deps.tether?.get(term) : undefined;
-    if (!term || !entry || rec.hostedBy !== "daemon" || rec.session.status === "ended" || !worksElsewhere(entry.info.title, rec.session.cwd)) return false;
+    if (!term || !entry || rec.session.harness !== "codex" || rec.session.status === "ended" || !worksElsewhere(entry.info.title, rec.session.cwd)) return false;
     const { terminal: _terminal, pid: _pid, ...native } = rec.session.native;
     this.patch(rec, { native });
-    this.log.info("a daemon-hosted session's terminal is titled for another folder; let go", { id: rec.session.id, terminal: term.id, project: titleItems(entry.info.title).at(-1) });
+    this.log.info("a codex session's terminal is titled for another folder; let go", { id: rec.session.id, terminal: term.id, project: titleItems(entry.info.title).at(-1) });
     this.clis?.reconsider(term);
     return true;
+  }
+
+  /** Every live record that holds a terminal titled for another folder lets it go (`letGoElsewhere`); whether any did. */
+  private letGoAllElsewhere(): boolean {
+    let any = false;
+    for (const rec of this.byId.values()) if (this.letGoElsewhere(rec)) any = true;
+    return any;
   }
 
   /**
@@ -1006,6 +1022,8 @@ export class Sessions implements SessionHost {
    * that fit as well, the CLI that started just before the thread (its id says when), and none
    * when two started too close together to tell. A terminal titled for another folder is never
    * taken, and one held is let go (`letGoElsewhere`). A thread a desktop app started takes none.
+   * One no hook has told apart since the daemon started (`untold`) takes only a terminal whose
+   * title carries its name, and lives with the CLI as one a hook told of does.
    *
    * A CLI goes on to another thread (`/new`, `/resume`) with no word to the one it leaves until
    * the daemon ends that one about a minute later: at the new thread's first hook (`handOver`),
@@ -1021,6 +1039,11 @@ export class Sessions implements SessionHost {
       if (this.letGoElsewhere(rec)) this.relinkHosted();
       return;
     }
+    // A terminal it fits may be held by a thread its CLI left for this folder.
+    if (this.letGoAllElsewhere()) {
+      this.relinkHosted();
+      return;
+    }
     const ranked = tether.list().flatMap((e) => {
       if (e.info.status !== "running" || clis.markOf(e.ref)?.harness !== rec.session.harness) return [];
       const fit = terminalFit(e, rec.session);
@@ -1032,6 +1055,7 @@ export class Sessions implements SessionHost {
       return;
     }
     const best = Math.max(...free.map((r) => r.fit));
+    if (rec.hostedBy !== "daemon" && best < FIT.name) return;
     const fits = free.filter((r) => r.fit === best).map((r) => r.e);
     const entry = fits.length === 1 ? fits[0] : this.startedJustBefore(rec, fits);
     if (!entry) {
@@ -1039,8 +1063,9 @@ export class Sessions implements SessionHost {
       return;
     }
     const pid = clis.markOf(entry.ref)!.pid;
+    rec.liveness = "hook";
     this.patch(rec, { native: { ...rec.session.native, terminal: entry.ref, pid } });
-    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid, of: free.length, by: best >= 4 ? "name" : best >= 2 ? "title" : "folder" });
+    this.log.info("session met in the terminal its CLI runs in", { id: rec.session.id, terminal: entry.ref.id, pid, of: free.length, by: best >= FIT.name ? "name" : best >= FIT.title ? "title" : "folder", hosted: rec.hostedBy === "daemon" });
   }
 
   /** Of several terminals that fit a thread, the one whose CLI started just before it, by the thread's id; none when that cannot be told. */
