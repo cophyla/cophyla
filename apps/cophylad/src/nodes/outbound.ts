@@ -109,6 +109,8 @@ export interface OutboundDeps {
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself. */
   answerHere?: () => boolean;
+  /** The owner let the primary work here without asking; never a workspace node's. */
+  trusted?: () => boolean;
   /** This node's own sessions, workspaces and asks, for what is checked and sent up. */
   local?: NonNullable<ServeDeps["local"]>;
   /** Where a tool comes from and its risk. */
@@ -400,6 +402,7 @@ export class Outbound {
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
         ...(this.deps.confine ? { confine: this.deps.confine } : {}),
         ...(this.deps.answerHere ? { answerHere: this.deps.answerHere } : {}),
+        ...(this.deps.trusted ? { trusted: this.deps.trusted } : {}),
         hands: this.deps.hands,
         ...(this.deps.local ? { local: this.deps.local } : {}),
         ...(this.deps.tools ? { tools: this.deps.tools } : {}),

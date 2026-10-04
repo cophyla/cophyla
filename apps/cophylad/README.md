@@ -7,7 +7,7 @@ on when the node is the primary.
 bun run apps/cophylad/src/main.ts [--home <dir>] [--port <n>]
 bun run apps/cophylad/src/main.ts invite [--name N] [--role hands|full] [--expires 1d] [--invite-expires 1h]
 bun run apps/cophylad/src/main.ts invite --phone [--name N] [--access full|sessions|view] [--expires 1d] [--invite-expires 15m]
-bun run apps/cophylad/src/main.ts join [--file F|-] [--workspace P]... [--answer-here]
+bun run apps/cophylad/src/main.ts join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust]
 bun run apps/cophylad/src/main.ts leave
 ```
 
@@ -21,7 +21,11 @@ itself, `--invite-expires` the invite (an hour for a node's, fifteen minutes for
 durations are `90s`, `30m`, `12h`, `1d`, `2w`. `join` reads the invite from a file or stdin,
 never the command line, so it stays out of the process list and the shell's history; each
 `--workspace` is a folder the primary may use here, and none shares the machine; `--answer-here`
-keeps the asks raised here to this machine's own clients. `leave` leaves the cluster, and the
+keeps the asks raised here to this machine's own clients. At a terminal `join` asks whether the
+primary may start sessions and terminals, run commands and edit files here without asking each
+time, yes unless answered no; `--trust` and `--ask` answer it beforehand, and with no terminal
+the answer is yes. A no is kept in `data/link.json`, and then `[gate.policy.node]` decides for
+the primary's requests as for any other node's. `leave` leaves the cluster, and the
 machine runs alone.
 
 `--home` defaults to `$COPHYLA_HOME`, then `~/.cophyla`. On first start the daemon writes a
@@ -673,6 +677,8 @@ frames in the clear name the grant and trade ephemeral keys, and every record af
 sealed, so TLS is only the transport. A node joined as hands (`cophylad invite --role hands`,
 the default) is driven and drives nothing: never a backup, its clients never relayed, no
 custom events, no viewer pairing, and it hears of no node but the primary and the backups.
+Unless it joined with `--ask`, what `[gate.policy.node]` would ask of its primary is
+allowed (`nodes/served.ts`), a deny and `[gate.rules]` still deciding; a workspace node never.
 One joined with `--workspace` folders keeps what the primary sees and does here to them
 (`nodes/confine.ts`), which is not a sandbox. A grant revoked or run out closes its link with
 a sealed `node.leave {reason: revoked}`, and the node forgets the cluster. After the join the

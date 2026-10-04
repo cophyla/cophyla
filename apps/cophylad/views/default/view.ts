@@ -987,16 +987,17 @@ async function removeNode(node: string): Promise<void> {
   void loadNodes();
 }
 
-/** Joins the computer that made the invite, sharing the folders named and keeping the prompts here when asked. */
+/** Joins the computer that made the invite, sharing the folders named, asking first and keeping the prompts here when asked. */
 async function submitJoin(form: HTMLFormElement): Promise<void> {
   const invite = field(form, "invite").trim();
   if (!invite) return;
   const paths = joinPaths(field(form, "paths"));
   const answerHere = (form.elements.namedItem("answerHere") as HTMLInputElement | null)?.checked === true;
+  const askPrimary = (form.elements.namedItem("trustPrimary") as HTMLInputElement | null)?.checked === false;
   ui.grantBusy = true;
   draw();
   try {
-    await rpc.request("node.join", { invite, ...(paths.length > 0 ? { paths } : {}), ...(answerHere ? { answerHere: true } : {}) });
+    await rpc.request("node.join", { invite, ...(paths.length > 0 ? { paths } : {}), ...(answerHere ? { answerHere: true } : {}), ...(askPrimary ? { askPrimary: true } : {}) });
     ui.grantForm = undefined;
     form.reset();
   } catch (e) {

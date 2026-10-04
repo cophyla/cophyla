@@ -3,7 +3,9 @@
 // always allowed; an answer remembered for this session; an answer remembered always; a
 // config rule; a built-in rule (what the brain may do without asking: speak, keep its own
 // books, call the model the user configured, start a session of its own and message the
-// ones it started); the config default for the principal kind and risk class.
+// ones it started); the config default for the principal kind and risk class, where an ask
+// is an allow for this node's own primary when the owner let it work here unasked at the
+// join (`trusted`).
 
 import type { Decision, Principal, PrincipalKind, RiskClass } from "@cophyla/protocol";
 import type { GateConfig } from "../config/schema.ts";
@@ -25,9 +27,15 @@ export interface PolicyQuery {
    * bypass permissions mode. No built-in rule allows it; the user's own rules still decide.
    */
   loosens?: boolean;
+  /**
+   * The principal is this node's own primary, which the owner let work here without asking
+   * when the node joined: what the class default would ask is allowed. A deny stays a deny,
+   * and the rules above it still decide.
+   */
+  trusted?: boolean;
 }
 
-export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "config.class";
+export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "membership" | "config.class";
 
 /**
  * The brain's own conversation and bookkeeping, allowed without a prompt: a brain that had
@@ -139,6 +147,7 @@ export class Policy {
       }
     }
     const klass = this.config.policy[q.principal as Exclude<PrincipalKind, "system">];
+    if (q.trusted && klass[q.risk] === "ask") return { decision: "allow", source: "membership" };
     return { decision: klass[q.risk], source: "config.class" };
   }
 

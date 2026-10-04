@@ -32,6 +32,8 @@ export interface GateRequest {
   own?: boolean;
   /** The request lets a session do more unasked than asking before each edit; no built-in rule allows it. */
   loosens?: boolean;
+  /** The principal is this node's own primary, let work here unasked at the join: an ask by class default is an allow. */
+  trusted?: boolean;
   /** The result as the audit row keeps it, when it carries a secret the generic redaction would miss. */
   redactResult?: (result: unknown) => unknown;
 }
@@ -96,6 +98,7 @@ export class Gate {
       ...(req.sessionKey !== undefined ? { sessionKey: req.sessionKey } : {}),
       ...(req.own ? { own: true } : {}),
       ...(req.loosens ? { loosens: true } : {}),
+      ...(req.trusted ? { trusted: true } : {}),
     };
     const verdict = policy.decide(query);
     const startedAt = Date.now();

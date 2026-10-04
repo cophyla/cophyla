@@ -14,7 +14,7 @@ export interface GrantMethodDeps {
   grants: Grants;
   nodes: {
     invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number }): Promise<{ grant: Grant; invite: InviteOffer }>;
-    join(invite: string, opts: { paths?: string[]; answerHere?: boolean }): Promise<{ primary: { id: string; name: string }; role: GrantRole }>;
+    join(invite: string, opts: { paths?: string[]; answerHere?: boolean; askPrimary?: boolean }): Promise<{ primary: { id: string; name: string }; role: GrantRole }>;
     leave(): Promise<void>;
     revoke(id: string): Promise<void>;
   };
@@ -76,7 +76,7 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
       redact: (p) => ({ ...p, invite: "[redacted]" }),
       handler: async (p, ctx) => {
         onThisMachine(ctx, "joining a primary");
-        return deps.nodes.join(p.invite, { ...(p.paths ? { paths: p.paths } : {}), ...(p.answerHere ? { answerHere: true } : {}) });
+        return deps.nodes.join(p.invite, { ...(p.paths ? { paths: p.paths } : {}), ...(p.answerHere ? { answerHere: true } : {}), ...(p.askPrimary ? { askPrimary: true } : {}) });
       },
     },
     "node.leave": {

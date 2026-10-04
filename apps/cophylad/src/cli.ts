@@ -5,18 +5,21 @@
 //   cophylad invite --phone [--name N] [--access full|sessions|view] [--expires 1d] [--invite-expires 15m]
 //       prints the invite text for a new node or phone on stdout, and on a terminal its QR
 //       code beside it, on stderr, for a phone's camera
-//   cophylad join [--file F|-] [--workspace P]... [--answer-here]
+//   cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust]
 //       redeems an invite read from a file or stdin, never from the command line, so it
-//       stays out of the process list and the shell's history
+//       stays out of the process list and the shell's history; at a terminal it asks whether
+//       the primary may work here without asking each time (yes unless answered no), which
+//       --trust and --ask answer beforehand
 //   cophylad leave
 //
 // Each takes --home and --port as the daemon does.
 
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { createInterface } from "node:readline";
 import { parseArgs } from "node:util";
 import { encode } from "uqr";
-import { ACCESS_PRESETS, request, UNNAMED_NODE } from "@cophyla/protocol";
+import { ACCESS_PRESETS, parseInvite, request, UNNAMED_NODE } from "@cophyla/protocol";
 import type { AccessPreset } from "@cophyla/protocol";
 import type { ClientRequestName, ClientResult, RpcMessage } from "@cophyla/protocol";
 import { loadConfig, paths, resolveHome } from "./config/load.ts";
@@ -98,9 +101,22 @@ export async function call<N extends ClientRequestName>(opts: { home?: string; p
   }
 }
 
-export async function readInvite(file: string | undefined): Promise<string> {
+/** Questions answered at this terminal, a line each, asked on stderr so stdout stays the command's. */
+export interface Questions {
+  ask(question: string): Promise<string>;
+  close(): void;
+}
+
+export function terminalQuestions(): Questions {
+  const rl = createInterface({ input: process.stdin, output: process.stderr, terminal: true });
+  return { ask: (q) => new Promise((ok) => rl.question(q, ok)), close: () => rl.close() };
+}
+
+/** The invite from a file, or from stdin: through `questions` when stdin is a terminal. */
+export async function readInvite(file: string | undefined, questions?: Questions): Promise<string> {
   let text = "";
   if (file !== undefined && file !== "-") text = readFileSync(file, "utf8");
+  else if (questions) text = await questions.ask("Paste the invite, then press Enter:\n");
   else {
     if (process.stdin.isTTY) process.stderr.write("Paste the invite, then press Enter:\n");
     for await (const chunk of process.stdin) {
@@ -111,6 +127,26 @@ export async function readInvite(file: string | undefined): Promise<string> {
   }
   if (!text.trim()) throw new Error(`no invite ${file !== undefined && file !== "-" ? `in ${file}` : "on stdin"}: give it the line \`cophylad invite\` printed on the primary`);
   return text;
+}
+
+/**
+ * Whether the primary that minted `invite` works here without asking each time: `--trust` or
+ * `--ask` say so beforehand; at a terminal the question is asked, and anything but a no is a
+ * yes; with no terminal to ask at, yes.
+ */
+export async function trustsPrimary(invite: string, flags: { ask?: boolean; trust?: boolean }, questions?: Questions): Promise<boolean> {
+  if (flags.ask && flags.trust) throw new Error("--ask and --trust answer the same question: give one");
+  if (flags.ask) return false;
+  if (flags.trust || !questions) return true;
+  let name: string;
+  try {
+    name = parseInvite(invite).node.name;
+  } catch {
+    // a damaged invite is the daemon's to refuse, in its own words
+    return true;
+  }
+  const answer = await questions.ask(`Let ${name} start sessions and terminals, run commands and edit files on this machine without asking each time? [Y/n] `);
+  return !/^\s*n/i.test(answer);
 }
 
 /** One of the commands; `prog` names the program in what it prints, `local` keeps it on this machine. */
@@ -131,6 +167,8 @@ export async function runCommand(command: Command, argv: string[], how: { local?
       file: { type: "string" },
       workspace: { type: "string", multiple: true },
       "answer-here": { type: "boolean" },
+      ask: { type: "boolean" },
+      trust: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
@@ -163,10 +201,20 @@ export async function runCommand(command: Command, argv: string[], how: { local?
         return 0;
       }
       case "join": {
-        const invite = await readInvite(values.file);
+        const flags = { ...(values.ask ? { ask: true } : {}), ...(values.trust ? { trust: true } : {}) };
+        if (flags.ask && flags.trust) throw new Error("--ask and --trust answer the same question: give one");
+        const questions = process.stdin.isTTY ? terminalQuestions() : undefined;
+        let invite: string;
+        let trusted: boolean;
+        try {
+          invite = await readInvite(values.file, questions);
+          trusted = await trustsPrimary(invite, flags, questions);
+        } finally {
+          questions?.close();
+        }
         const paths = (values.workspace ?? []).map((w) => resolve(w));
-        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}) }, as);
-        process.stdout.write(`Joined ${r.primary.name} as ${r.role === "hands" ? "hands" : "a full member"}.\n`);
+        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}), ...(trusted ? {} : { askPrimary: true }) }, as);
+        process.stdout.write(`Joined ${r.primary.name} as ${r.role === "hands" ? "hands" : "a full member"}${trusted ? "" : ", asking here before what it does"}.\n`);
         return 0;
       }
       case "leave": {

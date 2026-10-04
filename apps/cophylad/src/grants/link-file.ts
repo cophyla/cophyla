@@ -2,9 +2,9 @@
 // The cluster's first primary writes it for itself when it mints the cluster (`via: self`,
 // its self-grant); a machine that redeemed an invite writes it from the enrollment (`via:
 // join`): its grant and key, the cluster, its role, the primary it joined and how to reach
-// it, and what that primary may reach here. The file is this machine's alone: never
-// replicated, never backed up, written readable by its owner only. A link closed as
-// `revoked`, a grant that ended and `cophylad leave` remove it.
+// it, what that primary may reach here and whether it asks first. The file is this
+// machine's alone: never replicated, never backed up, written readable by its owner only. A
+// link closed as `revoked`, a grant that ended and `cophylad leave` remove it.
 
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { z } from "zod";
@@ -30,6 +30,11 @@ export const LinkFile = z.object({
   paths: z.array(z.string().min(1)).optional(),
   /** Asks raised here are answered here only, never from the primary's clients. */
   answerHere: z.boolean().optional(),
+  /**
+   * The primary's requests are asked here as `[gate.policy.node]` says. Absent, the owner let
+   * the primary work here without asking at the join, which is the default.
+   */
+  askPrimary: z.boolean().optional(),
 });
 export type LinkFile = z.infer<typeof LinkFile>;
 

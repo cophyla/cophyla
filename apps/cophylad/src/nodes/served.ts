@@ -21,7 +21,9 @@
 // this node's profiles and its terminals are refused, and so is a start in a mode looser than
 // asking before each edit, a profile's launch being the owner's. An ask this node does not
 // hold, or one about something outside, is `not_found`. On a node that answers its asks
-// itself (`--answer-here`), the primary answers none of them.
+// itself (`--answer-here`), the primary answers none of them. On a machine whose owner let
+// its primary work there unasked at the join (the default; `--ask` keeps the asks), what
+// `[gate.policy.node]` would ask is allowed; a workspace node never lets its primary in so.
 
 import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
 import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
@@ -29,7 +31,7 @@ import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
 import { brainMethods, sendOptions, spawnLoosens } from "../brain-link/methods.ts";
 import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "../brain-link/methods.ts";
-import type { Gate } from "../gate/index.ts";
+import type { Gate, GateContext, GateRequest, RunOptions } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
 import type { Remote } from "../remote/index.ts";
@@ -162,6 +164,8 @@ export interface ServeDeps {
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
   answerHere?: () => boolean;
+  /** The owner let the primary work here without asking, at the join: what the class default would ask is allowed. */
+  trusted?: () => boolean;
   /** This node joined as hands: a guest, whose desktop the primary does not switch. */
   hands?: () => boolean;
   /** This node's own sessions, workspaces and asks, for the checks. */
@@ -202,6 +206,11 @@ export class NodeServer {
       this.inflight.delete(id);
       f.controller.abort();
     }
+  }
+
+  /** Through this node's gate, the primary trusted where the owner let it work here unasked. */
+  private gated<T>(req: GateRequest, handler: (ctx: GateContext) => Promise<T> | T, opts?: RunOptions): Promise<T> {
+    return this.deps.gate.run(this.deps.trusted?.() ? { ...req, trusted: true } : req, handler, opts);
   }
 
   /** The folders this node shares, when its owner named some; undefined when the primary sees the machine. */
@@ -356,7 +365,7 @@ export class NodeServer {
       throw new RpcError("not_found", `no tool ${(p as { name: string }).name}`);
     }
     try {
-      const result = await this.deps.gate.run(
+      const result = await this.gated(
         {
           principal: this.deps.principal,
           action: method,
@@ -394,7 +403,7 @@ export class NodeServer {
     const parsed = capabilityRequests.cancel.params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", "bad params for cancel", parsed.error.issues);
     const target = String(parsed.data.id);
-    return this.deps.gate.run({ principal: this.deps.principal, action: "cancel", args: parsed.data, target, sessionKey: this.deps.sessionKey }, () => {
+    return this.gated({ principal: this.deps.principal, action: "cancel", args: parsed.data, target, sessionKey: this.deps.sessionKey }, () => {
       const f = this.inflight.get(target);
       if (f) f.controller.abort();
       return { cancelled: f !== undefined };
@@ -408,7 +417,7 @@ export class NodeServer {
     const parsed = clientRequests["profile.update"].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", "bad params for profile.update", parsed.error.issues);
     const p = parsed.data;
-    return this.deps.gate.run({ principal: this.deps.principal, action: "profile.update", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => ({ profile: profiles.update(p.id, updatePatch(p.patch)) }));
+    return this.gated({ principal: this.deps.principal, action: "profile.update", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => ({ profile: profiles.update(p.id, updatePatch(p.patch)) }));
   }
 
   /** This machine's name, given from an app on the primary: gated here, as the owner's policy says. */
@@ -418,7 +427,7 @@ export class NodeServer {
     const parsed = clientRequests["node.rename"].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", "bad params for node.rename", parsed.error.issues);
     const p = parsed.data;
-    return this.deps.gate.run({ principal: this.deps.principal, action: "node.rename", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => {
+    return this.gated({ principal: this.deps.principal, action: "node.rename", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => {
       rename(p.name);
       return {};
     });
@@ -436,7 +445,7 @@ export class NodeServer {
     // the viewer by the name the host lists it under, as the user knows it
     const viewer = p.viewer !== undefined ? remote.state().viewers.find((v) => v.id === p.viewer) : undefined;
     const ask = method === "remote.enable" || method === "remote.disable" ? shareAsk(method === "remote.enable") : method === "remote.revoke" ? revokeAsk(viewer?.name ?? p.viewer!) : undefined;
-    return this.deps.gate.run(
+    return this.gated(
       { principal: this.deps.principal, action: method, args: p, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey },
       async (): Promise<unknown> => {
         if (method === "remote.invite") return remote.invite();
@@ -455,7 +464,7 @@ export class NodeServer {
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
     const p = parsed.data;
-    return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, async () => {
+    return this.gated({ principal: this.deps.principal, action: method, args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, async () => {
       if (method === "direct.enable") await direct.enable();
       else await direct.disable();
       return {};
@@ -482,7 +491,7 @@ export class NodeServer {
       if (repo && !c.contains(repo.root, true)) throw new RpcError("denied", "that session's repository reaches above the folders this node shares");
     }
     const redactResult = method === "session.files" ? (r: unknown) => listingSummary(r as FilesResult) : method === "session.file" ? (r: unknown) => fileSummary(r as FileText) : undefined;
-    return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
+    return this.gated({ principal: this.deps.principal, action: method, args: p, target: p.id, sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) }, async () => {
       if (method === "session.files") return files.list(p.id, p.dirs);
       if (method === "session.file") return files.read(p.id, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
       const git = await files.git(p.id, p.log);
@@ -512,7 +521,7 @@ export class NodeServer {
     const target = p.terminal ?? (method === "terminal.spawn" ? p.argv?.[0] : method === "terminal.folders" ? p.path : undefined);
     const ask = method === "terminal.spawn" ? terminalSpawnAsk(parsed.data as { argv?: string[] }) : undefined;
     const redactResult = method === "terminal.file" ? (r: unknown) => fileSummary(r as FileText) : method === "terminal.folders" ? (r: unknown) => folderSummary(r as FolderPick) : undefined;
-    return this.deps.gate.run(
+    return this.gated(
       { principal: this.deps.principal, action: method, args: p, risk, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey, ...(redactResult ? { redactResult } : {}) },
       async () => {
         switch (method) {
@@ -545,7 +554,7 @@ export class NodeServer {
     const parsed = def.params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
     const p = parsed.data as { node?: string; intervalMs?: number; processes?: "all" | "owners"; spend?: { from?: number; to?: number }; range?: { from?: number; to?: number } };
-    return this.deps.gate.run({ principal: this.deps.principal, action: method, args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, () => {
+    return this.gated({ principal: this.deps.principal, action: method, args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, () => {
       if (method === "metrics.subscribe") {
         const spend = metrics.subscribe(this.deps.metricsSubscriber, p.intervalMs!, p.processes, p.spend);
         return spend ? { spend } : {};

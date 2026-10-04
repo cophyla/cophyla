@@ -316,6 +316,8 @@ export class Nodes {
       onRekey: (key) => this.onRekey(key),
       confine: () => this.confinement(),
       answerHere: () => this.membership?.answerHere === true,
+      // a membership from before the question was asked trusts its primary, as the default answer does
+      trusted: () => this.membership !== undefined && this.membership.askPrimary !== true,
       local: {
         session: (id) => deps.sessions.get(id),
         workspace: (id) => deps.workspaces.get(id),
@@ -1460,10 +1462,10 @@ export class Nodes {
 
   /**
    * Redeems a node invite and joins the primary that minted it. A node alone in a cluster of
-   * its own gives that cluster up first (the role, if it held it); `paths` and `answerHere`
-   * are kept for what the primary may reach here.
+   * its own gives that cluster up first (the role, if it held it); `paths`, `answerHere` and
+   * `askPrimary` are kept for what the primary may reach here and whether it asks first.
    */
-  async join(text: string, opts: { paths?: string[]; answerHere?: boolean } = {}): Promise<{ primary: { id: string; name: string }; role: GrantRole }> {
+  async join(text: string, opts: { paths?: string[]; answerHere?: boolean; askPrimary?: boolean } = {}): Promise<{ primary: { id: string; name: string }; role: GrantRole }> {
     let body: InviteBody;
     try {
       body = parseInvite(text);
@@ -1499,6 +1501,7 @@ export class Nodes {
         ...(answer.expiresAt !== undefined ? { expiresAt: answer.expiresAt } : {}),
         ...(paths.length > 0 ? { paths } : {}),
         ...(opts.answerHere ? { answerHere: true } : {}),
+        ...(opts.askPrimary ? { askPrimary: true } : {}),
       };
       writeLinkFile(this.deps.paths.linkFile, file);
       this.membership = file;

@@ -156,7 +156,7 @@ describe("remote desktop across nodes", () => {
     await waitFor(() => !primary!.d.remote.states().some((s) => s.node === gone), 10_000);
   }, 60_000);
 
-  test("the desktop app on the primary shares the secondary's desktop, asked there, and shows it beside its view on a loopback page seeded for low latency", async () => {
+  test("the desktop app on the primary shares the desktop of a secondary that joined asking first, asked there, and shows it beside its view on a loopback page seeded for low latency", async () => {
     const hostB = await startFakeApollo();
     hostB.acceptAny = true;
     fakes.push(hostB);
@@ -164,7 +164,7 @@ describe("remote desktop across nodes", () => {
     const seamsS = remoteSeams();
     seamsS.screen = { width: 2560, height: 1440 };
     primary = await startPrimary({ toml: `[node]\nname = "study"\n\n${remoteToml(false, seamsP)}`, daemon: { remote: seamsFor(seamsP) } });
-    secondary = await startSecondary(primary, { gateRules: { "node:remote.pair": "allow" }, toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS, hostB) } });
+    secondary = await startSecondary(primary, { askPrimary: true, gateRules: { "node:remote.pair": "allow" }, toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS, hostB) } });
     await linked(secondary);
     const desk = await client(primary.d, "desk-a");
     clients.push(desk);

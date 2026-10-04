@@ -112,6 +112,8 @@ export interface SecondaryOptions {
   /** What the join passes on. */
   paths?: string[];
   answerHere?: boolean;
+  /** The join's no to "may the primary work here without asking". */
+  askPrimary?: boolean;
   home?: string;
   /** An ACP agent on this node, so the primary can spawn here. */
   agent?: boolean;
@@ -166,7 +168,7 @@ export async function startSecondary(primary: Pick<Primary, "d" | "endpoint">, o
   if (opts.unjoined) return started;
   try {
     const invite = await inviteOn(primary, { role: opts.hands ? "hands" : "full", ...(opts.relayOnly ? { relayOnly: true } : {}) });
-    await started.nodes.join(invite, { ...(opts.paths ? { paths: opts.paths } : {}), ...(opts.answerHere ? { answerHere: true } : {}) });
+    await started.nodes.join(invite, { ...(opts.paths ? { paths: opts.paths } : {}), ...(opts.answerHere ? { answerHere: true } : {}), ...(opts.askPrimary ? { askPrimary: true } : {}) });
   } catch (e) {
     await stopAll(started);
     throw e;

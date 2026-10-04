@@ -11,11 +11,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { newId, parseInvite, PROTOCOL_VERSION } from "@cophyla/protocol";
+import { inviteText, newId, parseInvite, PROTOCOL_VERSION } from "@cophyla/protocol";
 import type { InviteBody, Node } from "@cophyla/protocol";
 import { derive, ephemeral, pskFromHex, pskFromSecret } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
-import { parseDuration } from "../src/cli.ts";
+import { parseDuration, trustsPrimary } from "../src/cli.ts";
+import type { Questions } from "../src/cli.ts";
 import { paths } from "../src/config/load.ts";
 import { readLinkFile } from "../src/grants/link-file.ts";
 import { grantMethods } from "../src/grants/methods.ts";
@@ -348,5 +349,23 @@ describe("from before grants", () => {
     expect(parseDuration("2500")).toBe(2500);
     expect(() => parseDuration("soon")).toThrow(/not a duration/);
     expect(() => parseDuration("0h")).toThrow(/more than nothing/);
+  });
+
+  test("join asks whether the primary works here unasked: a no keeps the asks, anything else and no terminal are a yes", async () => {
+    const invite = inviteText({ v: 1, kind: "node", grant: newId("grant"), secret: "ab".repeat(32), expiresAt: Date.now() + 60_000, node: { id: newId("node"), name: "study" } });
+    const asked: string[] = [];
+    const answering = (answer: string): Questions => ({ ask: async (q) => (asked.push(q), answer), close: () => {} });
+    expect(await trustsPrimary(invite, {}, answering("n"))).toBe(false);
+    expect(await trustsPrimary(invite, {}, answering(" No"))).toBe(false);
+    expect(await trustsPrimary(invite, {}, answering(""))).toBe(true);
+    expect(await trustsPrimary(invite, {}, answering("yes"))).toBe(true);
+    expect(asked[0]).toMatch(/^Let study start sessions and terminals, .* without asking each time\? \[Y\/n\] $/);
+    asked.length = 0;
+    expect(await trustsPrimary(invite, {})).toBe(true);
+    expect(await trustsPrimary(invite, { ask: true }, answering("y"))).toBe(false);
+    expect(await trustsPrimary(invite, { trust: true }, answering("n"))).toBe(true);
+    expect(await trustsPrimary("cophyla-invite:damaged", {}, answering("n"))).toBe(true);
+    expect(asked).toEqual([]);
+    expect(await trustsPrimary(invite, { ask: true, trust: true }).then(String, (e: unknown) => (e as Error).message)).toMatch(/give one/);
   });
 });

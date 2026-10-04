@@ -1383,7 +1383,7 @@ function createNodeInviteForm(): HTMLFormElement {
   return form;
 }
 
-/** Join another computer: the invite it made for this one, the folders it may use here, and whose prompts are whose. */
+/** Join another computer: the invite it made for this one, the folders it may use here, whether it asks first, and whose prompts are whose. */
 function createJoinForm(): HTMLFormElement {
   const form = el("form", "grant-form node-join-form");
   const invite = el("textarea", "join-invite");
@@ -1404,6 +1404,12 @@ function createJoinForm(): HTMLFormElement {
   box.type = "checkbox";
   box.name = "answerHere";
   here.append(box, el("span", undefined, "Prompts raised here are answered here only"));
+  const trust = el("label", "join-here join-trust");
+  const trusted = el("input");
+  trusted.type = "checkbox";
+  trusted.name = "trustPrimary";
+  trusted.defaultChecked = true;
+  trust.append(trusted, el("span", undefined, "It starts sessions and terminals, runs commands and edits files here without asking each time"));
   const submit = el("button", "grant-submit", "Join");
   submit.type = "submit";
   form.append(
@@ -1411,6 +1417,7 @@ function createJoinForm(): HTMLFormElement {
     el("p", "grant-form-hint", "Paste the invite that computer made for this one. It sees and uses the folders you name here, or all of this computer if you name none."),
     invite,
     paths,
+    trust,
     here,
     submit,
     actionButton("grant-form-cancel", "Cancel", "grant-form-close"),

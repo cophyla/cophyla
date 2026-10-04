@@ -652,6 +652,8 @@ write = "ask"
 exec = "ask"
 network = "ask"
 
+# Another machine's requests. The primary's are allowed where this says ask, unless this
+# machine answered no at the join (cophylad join --ask); a lent folder always goes by this.
 [gate.policy.node]
 read = "allow"
 write = "ask"

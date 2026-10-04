@@ -76,6 +76,17 @@ describe("policy precedence", () => {
     expect(open.policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", target: "ws_1", loosens: true })).toMatchObject({ decision: "allow", source: "config.class" });
   });
 
+  test("the primary a machine let in unasked: an ask by class default is an allow; a deny, a rule and a remembered answer still decide", () => {
+    const { policy } = harness('[gate.policy.node]\nnetwork = "deny"\n\n[gate.rules]\n"node:session.stop" = "ask"\n');
+    expect(policy.decide({ principal: "node", action: "session.spawn", risk: "exec", trusted: true })).toMatchObject({ decision: "allow", source: "membership" });
+    expect(policy.decide({ principal: "node", action: "workspace.put", risk: "write", trusted: true })).toMatchObject({ decision: "allow", source: "membership" });
+    expect(policy.decide({ principal: "node", action: "session.spawn", risk: "exec" })).toMatchObject({ decision: "ask", source: "config.class" });
+    expect(policy.decide({ principal: "node", action: "tool.run", risk: "network", trusted: true })).toMatchObject({ decision: "deny", source: "config.class" });
+    expect(policy.decide({ principal: "node", action: "session.stop", risk: "exec", trusted: true })).toMatchObject({ decision: "ask", source: "config.rule" });
+    policy.remember({ principal: "node", action: "terminal.spawn", target: "pwsh" }, "deny", "always", user);
+    expect(policy.decide({ principal: "node", action: "terminal.spawn", risk: "exec", target: "pwsh", trusted: true })).toMatchObject({ decision: "deny", source: "remembered" });
+  });
+
   test("the brain messages a session it started without asking; any other session still asks, and config beats both", () => {
     const { policy } = harness();
     expect(policy.decide({ principal: "brain", action: "session.send", risk: "write", target: "sess_1", own: true })).toMatchObject({ decision: "allow", source: "builtin.rule", rule: "brain:session.send" });

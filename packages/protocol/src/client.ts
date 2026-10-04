@@ -752,10 +752,12 @@ export const clientRequests = {
   /**
    * This node joins the primary that minted `invite`, on the desktop of this machine alone.
    * `paths` confine what that primary may see and do here to those folders; `answerHere`
-   * keeps the asks raised here to this machine's own clients.
+   * keeps the asks raised here to this machine's own clients; `askPrimary` has this machine
+   * ask before what its gate's defaults would ask of the primary, which otherwise works here
+   * without asking.
    */
   "node.join": {
-    params: z.object({ invite: z.string().min(1), paths: z.array(z.string().min(1)).max(64).optional(), answerHere: z.boolean().optional() }),
+    params: z.object({ invite: z.string().min(1), paths: z.array(z.string().min(1)).max(64).optional(), answerHere: z.boolean().optional(), askPrimary: z.boolean().optional() }),
     result: z.object({ primary: z.object({ id: NodeId, name: z.string() }), role: GrantRole }),
   },
   /** This node leaves the primary it joined: the link closes and the grant is forgotten here. */
