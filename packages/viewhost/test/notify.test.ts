@@ -1,11 +1,12 @@
 // Asks on OS notifications: one toast per open ask a person may answer, `multiple` passed
 // along, a button's activation answered on the connection, a refused answer showing the
 // window instead, and a toast taken down when its ask settles, live or while the link was
-// down.
+// down. On a machine that can tell, an ask is toasted only while someone is at it: held
+// otherwise, and toasted when someone comes back if it is still open.
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, RpcNotification } from "@cophyla/protocol";
-import { AskNotifier } from "../src/notify.ts";
+import { AskNotifier, AWAY_MS } from "../src/notify.ts";
 import type { NotifyAsk } from "../src/notify.ts";
 
 const n = (method: string, params: unknown): RpcNotification => ({ jsonrpc: "2.0", method, params });
@@ -124,5 +125,108 @@ describe("ask notifier", () => {
     expect(h.answers).toHaveLength(1);
     expect(h.shown()).toBe(1);
     expect(h.errors[0]).toContain("ask_1");
+  });
+});
+
+/** A notifier on a machine whose idle time the test sets, with the looks it schedules run by hand. */
+function attended(idle: number | undefined) {
+  const toasts: string[] = [];
+  const dismissed: string[] = [];
+  const state = { idle, looks: [] as (() => void)[], cancelled: 0 };
+  const node = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
+  const notifier = new AskNotifier({
+    notify: async (t) => {
+      toasts.push(t.id);
+    },
+    dismiss: async (id) => {
+      dismissed.push(id);
+    },
+    answer: async () => ({}),
+    showWindow: () => {},
+    idleMs: async () => state.idle,
+    node: () => node,
+    schedule: (fn) => {
+      state.looks.push(fn);
+      return () => (state.cancelled += 1);
+    },
+  });
+  /** Runs the look scheduled last, as its timer would, and lets it finish. */
+  const look = async () => {
+    state.looks.pop()?.();
+    await settle();
+  };
+  const remote = (streaming: boolean) => n("remote.state", { node, host: { kind: "apollo", status: "ready" }, viewers: [], streaming });
+  return { notifier, toasts, dismissed, state, look, remote };
+}
+
+const settle = () => new Promise((ok) => setTimeout(ok, 0));
+
+describe("toasts where someone is", () => {
+  test("someone at the machine: toasted at once", async () => {
+    const h = attended(5_000);
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    await settle();
+    expect(h.toasts).toEqual(["ask_1"]);
+    expect(h.state.looks).toHaveLength(0);
+  });
+
+  test("a machine that cannot tell its idle time toasts at once", async () => {
+    const h = attended(undefined);
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    await settle();
+    expect(h.toasts).toEqual(["ask_1"]);
+  });
+
+  test("no one at the machine: held, and toasted when someone comes back, in the order they opened", async () => {
+    const h = attended(AWAY_MS + 1);
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    await settle();
+    h.notifier.onNotification(n("ask.state", ask("ask_2")));
+    await settle();
+    // a held ask heard again is not held twice
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    await settle();
+    expect(h.toasts).toEqual([]);
+    await h.look();
+    expect(h.toasts).toEqual([]);
+    expect(h.state.looks.length).toBeGreaterThan(0);
+    h.state.idle = 800;
+    await h.look();
+    expect(h.toasts).toEqual(["ask_1", "ask_2"]);
+    // nothing held: no more looking, and an ask heard again is not toasted twice
+    await h.look();
+    expect(h.state.looks).toHaveLength(0);
+    h.notifier.onNotification(n("ask.state", ask("ask_2")));
+    await settle();
+    expect(h.toasts).toEqual(["ask_1", "ask_2"]);
+  });
+
+  test("an ask that settles while held is never toasted, nor dismissed; one missing from a replay neither", async () => {
+    const h = attended(AWAY_MS * 10);
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    h.notifier.onNotification(n("ask.state", ask("ask_2")));
+    await settle();
+    h.notifier.onNotification(n("ask.state", ask("ask_1", { status: "answered" })));
+    h.notifier.onConnected();
+    h.notifier.onNotification(n("session.state", { id: "sess_1" }));
+    h.state.idle = 0;
+    await h.look();
+    expect(h.toasts).toEqual([]);
+    expect(h.dismissed).toEqual([]);
+  });
+
+  test("a desktop streamed to another machine holds its asks, whatever its input says, until the viewer leaves", async () => {
+    const h = attended(0);
+    h.notifier.onNotification(h.remote(true));
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    await settle();
+    expect(h.toasts).toEqual([]);
+    // another node's desktop streamed is not this one's
+    h.notifier.onNotification(n("remote.state", { node: "node_01ARZ3NDEKTSV4RRFFQ69G5FB0", host: { kind: "apollo", status: "ready" }, viewers: [], streaming: false }));
+    await settle();
+    expect(h.toasts).toEqual([]);
+    h.notifier.onNotification(h.remote(false));
+    await settle();
+    expect(h.toasts).toEqual(["ask_1"]);
   });
 });

@@ -86,6 +86,10 @@ const notifier = new AskNotifier({
   answer: (id, option) => conn.request("ask.answer", { id, option }),
   showWindow: () => void showWindow(),
   onError: (m) => note(m),
+  // an ask is toasted where someone is: this machine's input, and its desktop not streamed elsewhere
+  idleMs: async () => (await io.invoke<number | null>("user_idle_ms")) ?? undefined,
+  // the machine this app is on, which a relayed hello's `node` (the primary) is not
+  node: () => conn.state.hello?.client.node ?? conn.state.hello?.node,
 });
 
 let lastNote = "";

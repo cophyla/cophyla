@@ -7,6 +7,7 @@ cophylad_send
 view_stage
 notify_ask
 dismiss_ask
+user_idle_ms
 dropped_paths
 stream_open
 stream_embed

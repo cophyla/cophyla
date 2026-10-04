@@ -37,7 +37,7 @@ base64 = "0.22"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.56"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Foundation", "Data_Xml_Dom", "UI_Notifications"] }
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_SystemInformation", "Foundation", "Data_Xml_Dom", "UI_Notifications"] }
 # The host page's microphone granted without WebView2's prompt: the versions wry is built on.
 webview2-com = "0.38"
 windows-core-wv2 = { package = "windows-core", version = "0.61" }

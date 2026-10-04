@@ -64,3 +64,10 @@ pub fn notify_ask<R: Runtime>(app: AppHandle<R>, ask: NotifyAsk) -> Result<(), S
 pub fn dismiss_ask(ask: String) {
     notify::dismiss(&ask);
 }
+
+/// How long since the last keyboard or mouse input on this machine, for whether anyone is
+/// at it to see an ask's notification; none where the system cannot tell.
+#[tauri::command]
+pub fn user_idle_ms() -> Option<u64> {
+    crate::idle::idle_ms()
+}

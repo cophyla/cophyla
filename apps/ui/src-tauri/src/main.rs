@@ -14,6 +14,7 @@
 mod commands;
 mod docframe;
 mod dropped;
+mod idle;
 mod install;
 mod links;
 mod notify;
@@ -152,7 +153,7 @@ fn main() {
         .manage(views::Staged::default())
         .register_uri_scheme_protocol(views::SCHEME, views::handle)
         .register_uri_scheme_protocol(docframe::SCHEME, docframe::handle)
-        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, links::open_link, voice::ptt_shortcut])
+        .invoke_handler(tauri::generate_handler![commands::cophylad_attach, commands::cophylad_send, commands::view_stage, commands::notify_ask, commands::dismiss_ask, commands::user_idle_ms, dropped::dropped_paths, stream::stream_open, stream::stream_embed, stream::stream_place, stream::stream_close, links::open_link, voice::ptt_shortcut])
         .setup(move |app| {
             notify::register(app.handle(), install.as_ref());
             let dev_origin = views::dev_origin(app.handle());
