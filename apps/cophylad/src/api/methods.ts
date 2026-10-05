@@ -6,10 +6,11 @@
 // the account methods; milestone 12 `relay.info` and the push registration; the explorer
 // `session.files` and `session.git`; the brain's listeners as the settings show them; the
 // speaker button's `voice.hush` and the `voice.presence` a client says where the user is with;
-// `session.mode`; `brain.context`, what the brain sees on its next turn and what its conversation has cost, behind `[brain] show_context`.
+// `session.mode`; `brain.context`, what the chat's own session is told and what the platform's own calls in its conversation have cost, behind `[brain] show_context`;
+// the chat's own session as the settings show and set it (`assistant.state`, `assistant.configure`, `assistant.restart`).
 
-import { BrainContext, RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
+import { AssistantPreview, RpcError, sessionModeRisk } from "@cophyla/protocol";
+import type { AssistantState, BrainContext, Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
 import { DOC_FRAME_PATH } from "@cophyla/protocol";
@@ -340,35 +341,73 @@ export function listenerMethods(deps: ListenerDeps): MethodTable {
   };
 }
 
-/** How long the brain has to build its context for the Context button. */
+/** How long the brain has to say what the session is told, for the Context button. */
 const PREVIEW_TIMEOUT_MS = 10_000;
 
 export interface BrainContextDeps {
-  /** `[brain] show_context`: off, no client sees the brain's context. */
+  /** `[brain] show_context`: off, no client sees what the session is told. */
   show: boolean;
   /** The link to the brain, when this node runs one. */
   brain: () => Pick<BrainLink, "request"> | undefined;
-  /** What the brain's model calls have cost a thread so far. */
+  /** The chat thread the conversation is in. */
+  thread?: () => string | undefined;
+  /** Where the chat's own session stands: the context it holds, and the size it compacts at. */
+  assistant?: () => AssistantState | undefined;
+  /** What the platform's own model calls have cost a thread so far. */
   spend?: (thread: string) => ConversationSpend;
+  now?: () => number;
 }
 
-/** What the brain sees on its next turn, for the chat's Context button: its `context.preview`, asked for now, and what its conversation has cost. */
+/** What the chat's own session is told, for the chat's Context button: the brain's preview of it, asked for now, with the session's own size and what the conversation has cost. */
 export function brainContextMethods(deps: BrainContextDeps): MethodTable {
   return {
     "brain.context": {
-      // The answer is the brain's whole prompt: the audit row keeps its thread and sizes, not another copy.
+      // The answer is the session's whole rules and situation: the audit row keeps its thread and sizes, not another copy.
       redactResult: (r) => (r.context ? { context: { thread: r.context.thread, at: r.context.at, tokens: r.context.tokens } } : r),
       handler: async (p) => {
-        if (!deps.show) throw new RpcError("unsupported", "the brain's context is not shown on this node: turn on [brain] show_context in config.toml and restart it");
+        if (!deps.show) throw new RpcError("unsupported", "what the chat's session is told is not shown on this node: turn on [brain] show_context in config.toml and restart it");
         if (p.check) return {};
         const brain = deps.brain();
         if (!brain) throw new RpcError("unavailable", "no brain runs on this node");
-        const parsed = BrainContext.safeParse(await brain.request("context.preview", {}, PREVIEW_TIMEOUT_MS));
-        if (!parsed.success) throw new RpcError("unavailable", `the brain answered context.preview with something else: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 300)}`);
-        const thread = parsed.data.thread;
-        return { context: parsed.data, ...(thread !== undefined && deps.spend ? { spend: deps.spend(thread) } : {}) };
+        const answer = (await brain.request("assistant.context", { kind: "preview" }, PREVIEW_TIMEOUT_MS)) as { preview?: unknown } | undefined;
+        const parsed = AssistantPreview.safeParse(answer?.preview);
+        if (!parsed.success) throw new RpcError("unavailable", `the brain answered the preview with something else: ${parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ").slice(0, 300)}`);
+        const thread = deps.thread?.();
+        const held = deps.assistant?.()?.context;
+        const context: BrainContext = {
+          ...(thread !== undefined ? { thread } : {}),
+          at: (deps.now ?? Date.now)(),
+          tokens: { ...parsed.data.tokens, ...(held ? { used: held.used, window: held.limit } : {}) },
+          rules: parsed.data.rules,
+          situation: parsed.data.situation,
+          notes: parsed.data.notes,
+          tools: parsed.data.tools,
+        };
+        return { context, ...(thread !== undefined && deps.spend ? { spend: deps.spend(thread) } : {}) };
       },
     },
+  };
+}
+
+export interface AssistantMethodDeps {
+  /** The assistant module, while this node runs the chat's session. */
+  assistant: () => { state(): AssistantState; configure(patch: ClientParams<"assistant.configure">): Promise<AssistantState>; restart(): Promise<AssistantState> } | undefined;
+}
+
+/** The chat's own session as the settings show and set it: where it stands, which harness and account it runs on, and starting it again. */
+export function assistantMethods(deps: AssistantMethodDeps): MethodTable {
+  const need = () => {
+    const a = deps.assistant();
+    if (!a) throw new RpcError("unavailable", "the chat's session runs on the primary, while its brain runs");
+    return a;
+  };
+  return {
+    "assistant.state": { handler: () => ({ state: deps.assistant()?.state() ?? { status: "off" } }) },
+    "assistant.configure": {
+      target: (p) => p.profile ?? p.harness ?? undefined,
+      handler: async (p) => ({ state: await need().configure(p) }),
+    },
+    "assistant.restart": { handler: async () => ({ state: await need().restart() }) },
   };
 }
 

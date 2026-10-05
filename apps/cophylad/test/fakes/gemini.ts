@@ -1,7 +1,7 @@
 // A stand-in for the Gemini API: `POST /v1beta/models/<model>:streamGenerateContent?alt=sse`
 // answered from a script chosen by the last user text, streamed as SSE chunks the way the
 // real API shapes them. Records every request body so a test can check the mapping. Usable
-// as the daemon's provider base_url and by the brain's ttft script.
+// as the daemon's provider base_url.
 
 export interface GeminiFakeOptions {
   /** Answers per trigger word found in the last user text (or a function of that text and the request body); `default` when none matches. */

@@ -61,6 +61,7 @@ again.
 | `cloud/` | 11, 12 | the account: the device-code login (`login.ts`) with the browser opened by `opener.ts`, the token file (`account.ts`), the outbound server link with `auth` first and backoff (`link.ts`), the entitlement verified against `keys.ts` (`entitlement.ts`), local usage counters (`usage.ts`), the hosted `server` route for the model and for speech (`hosted-llm.ts`, `hosted-stt.ts`, `hosted-tts.ts`), the beta feed with its bearer, the relay tunnels this daemon ends (`tunnels.ts`, over `@cophyla/relay`'s `SealedSocket`: a phone's served by `api`, a node's or a node invite's by `nodes`, a phone invite's by `api` for `invite.redeem` alone), the registry client the role machine asks (`registry.ts`), and `account.login`/`account.logout`/`account.state`, `relay.grant`/`relay.revoke` for any grant, with its kind and end, and the push requests (`index.ts`) |
 | `push/` | 12 | an ask that opens with no connection from a controller that registered a push device goes to the server as `push.send` once, trimmed to a title, a detail and three options, and is dismissed when the ask leaves `open`; `push.register` forwarded or kept until the link is up |
 | `brain-link/` | 3 | spawns the brain, the `hello` handshake, every brain request through the gate with the brain as principal (`methods.ts`, `listener.add`, `listener.remove` and `listener.list` among them), the event feed, the outbox while the brain is down, restart with backoff, quote expansion from the audit body, a `reply` completion's `llm.delta` as `chat.delta` with `chat.retract` for a placeholder nothing takes (`stream.ts`), the brain's `ui.progress` signal as `chat.progress`, kept for a client that connects mid-turn and cleared when the brain exits |
+| `assistant/` | 21 | the session the chat runs in, on the user's own Claude Code or Codex account (`index.ts`): which harness and account, started and met again through a host, a user's message and the brain's wakes typed in one at a time, a user's message joining whatever turn runs, the turn told to the brain as it goes, what the brain says the session is told cut into parts a harness carries whole (`context.ts`); `claude.ts` is the CLI's command line and its three files, `codex.ts` a thread on an app-server of cophylad's own, `mcp-main.ts` the `cophyla` MCP server the CLI runs, which only forwards to the daemon |
 | `update/` | 4, 8 | the public release feed read on a schedule (`feed.ts`: signed, this OS/arch/channel, inside our protocol version), downloads checked by size and hash (`download.ts`), platform versions staged behind the `staged` pointer (`platform.ts`), brain releases under `data/brain/` verified before every spawn (`brain.ts`), voice models unpacked under `data/models/<name>/<version>/` and checked against their own manifest (`models.ts`), and `update.check`/`update.apply`/`update.state` (`index.ts`); the release keys' public halves in `keys.ts` |
 | `voice/` | 8, 14 | the three stages behind engine interfaces (`engines.ts`) with the local ones beside them — `openwakeword.ts` (the sessions; the streaming pipeline is `@cophyla/wake`'s, which the phone runs too), `silero.ts` (on onnxruntime-node, which ships), `nemotron.ts`, `sherpa-stt.ts` (Moonshine and Whisper, read whole), `sherpa-tts.ts` (Piper, Kokoro and Supertonic, with `pieces.ts` cutting a reply into what each makes whole), `chatterbox.ts` — assembled by `local.ts` and `fake.ts`, the transcription and speech engines running in the speech process (`speech-process.ts` starts it for a turn and kills it after; `speech-worker.ts` is the process), and the online ones over the `stt` and `tts` routes (`online.ts`, with `wav-stream.ts`; `live.ts` streams an utterance as it is said, `gemini-live.ts` over the user's own key); `catalog.ts` names what each local engine needs, where it comes from and its licences, and `install.ts` installs one when asked; `prefs.ts` keeps the engines and voice the app picked; `runtime.ts` fixes the ONNX load order, `affinity.ts` finds the performance cores, `models.ts` and `manifest.ts` resolve and check a model directory, `conversation.ts` is the per-controller state machine, `compose.ts` turns blocks into speakable text with a lead-in for each quote, and `index.ts` is the module the daemon holds |
 | `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a rotated log under `data/sidecars/`, the daemon's own CPU mask (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
@@ -69,7 +70,7 @@ again.
 | `nodes/` | 0, 9, 12, 17 | this node's identity (`self.ts`); the sealed sockets every link runs in (`sealed-link.ts`) and redeeming an invite (`enroll.ts`); confinement to the folders a join shares (`confine.ts`); the registry in the `nodes` table (`registry.ts`), the mirrors of remote sessions, asks, workspaces and terminals (`mirror.ts`), the terminals across the links (`terminals.ts`), the link's peer (`peer.ts`), the primary's side of the link with the relay host and the fan-out (`inbound.ts`), the secondary's side with reconnect, heartbeat and the upward stream over a direct socket or a relay tunnel (`outbound.ts`), the requests a secondary serves as principal `node` (`served.ts`), forwarding over both method tables (`forward.ts`), UDP discovery (`discovery.ts`), replication to a backup (`replication.ts`), the role machine with its epoch (`role.ts`), and the module with the server registry's grants folded into the role (`index.ts`) |
 
 `bus.ts` carries `ask.state`, `audit.entry`, `session.state`, `session.event`,
-`workspace.state`, `chat.message`, `chat.delta`, `chat.retract`, `chat.progress`, `task.state`, `task.ready`, `thread.state`,
+`workspace.state`, `chat.message`, `chat.delta`, `chat.retract`, `chat.progress`, `assistant.state`, `task.state`, `task.ready`, `thread.state`,
 `user.message`, `user.activity`, `voice.state`, `voice.transcript`, `voice.setup` and
 `update.state`, `node.state`, `node.joined`, `node.left`, `node.pressure`, `remote.state`, `account.state`, `entitlement.updated`, `listener.fired` and `listener.removed` from the modules
 that raise them to the api and brain-link in-process; on a secondary the same bus feeds the
@@ -83,7 +84,8 @@ brain's, and sends no row again whose only change is to those);
 `thread.state` reaches clients with `chat` as the notification of the same name, and a
 `session.state` whose row alone changed reaches the brain as a `session.updated` without an
 `event`. `daemon.ts` composes the modules and is what
-the tests start against a temporary home; the brain is started last and stopped first; the
+the tests start against a temporary home; the brain is started last and stopped first, the
+assistant with it (under test it runs no session unless a test asks for one); the
 index starts after the sessions and never holds startup up (recall is full-text only until
 the model is loaded), and stops before the store closes. `restart.ts` serves `node.restart`:
 refused while busy unless forced, then the stop, and a successor started by the daemon itself
@@ -340,13 +342,81 @@ asked about without that rule: the built-in one does not cover it (`loosens` on 
 query), so the class default decides unless `[gate.rules]` or a remembered answer does. A
 workspace node refuses one from the other cluster outright.
 
-`[brain] show_context = true` puts a Context button beside the chat's ⋮: `brain.context` asks
-the brain for `context.preview` (`BrainLink.request`, the one request the daemon makes of the
-brain besides `hello`) and hands back what its next turn would send the model, built without a
-model call. Off, the default, the request is `unsupported` and the button is not drawn; `check`
-answers `{}` without asking the brain. It is a global request, so a limited or phone grant never
-reaches it, and its audit row keeps the thread and the token counts, not the prompt. A
-request's own `thinking` in `llm.complete` beats its tier's.
+`[brain] show_context = true` puts a Context button in the chat's composer: `brain.context` asks
+the brain what the chat's session would be told now (`assistant.context {kind: "preview"}`,
+built with nothing taken or moved) and hands it back with the conversation's thread, the
+context the session holds and the size it is folded at. Off, the default, the request is
+`unsupported` and the button is not drawn; `check` answers `{}` without asking the brain. It
+is a global request, so a limited or phone grant never reaches it, and its audit row keeps the
+thread and the token counts, not the text. A request's own `thinking` in `llm.complete` beats
+its tier's.
+
+## The chat's session
+
+The chat runs in an agent session of its own, on the user's own Claude Code or Codex account:
+the brain makes no model call for it. `assistant/` keeps that session. It comes up and goes
+down with the brain, so it runs on the primary alone; a daemon that stops leaves a Claude
+session running for the next to meet again, and a node that gives the role away ends it.
+
+```toml
+[assistant]
+# enabled = true
+# harness = "claude"          # claude | codex; the usual account's when absent, Claude Code first
+# profile = "work"            # by name or id; the harness's usual account when absent
+# claude_model = "sonnet"
+# claude_effort = "low"
+# codex_model = "gpt-6.1-sol"
+# codex_effort = "low"
+# autocompact_tokens = 300000 # where its context is folded; a Codex thread folds at 230000 at most
+# tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]   # Claude Code's own tools it keeps
+```
+
+What the user picks in Settings (`assistant.configure`, kept in the `kv` namespace
+`assistant`) wins over the file; `assistant.restart` ends the session and starts it again
+where it was; `assistant.state` says where it stands (off, unavailable, starting, idle, busy,
+down) with the harness, the model, the context it holds against the size it is folded at, and
+its terminal. With no account signed in it is `unavailable`, and a message to the chat is
+answered with a line that says so.
+
+**On Claude Code** it is the CLI itself in a tether terminal with no window, under the
+profile: `--session-id` (or `--resume`), `--name Cophyla`, the model and effort,
+`--autocompact`, `--tools` (read and web tools only: no shell, no writes),
+`--strict-mcp-config --mcp-config` (the one server, `cophyla`), `--append-system-prompt-file`
+(the brain's rules), `--setting-sources project,local` (none of the user's settings, memory
+file, skills or plugins), `--settings` (cophylad's hooks and the allow rules) and
+`--permission-mode dontAsk`. Its files are under `data/assistant/`: `system.md`, `mcp.json`,
+`settings.json`, the folder it runs in (`work/`, whose first-run trust dialog cophylad
+answers itself, since the folder is its own and no window shows it) and `session.json`, what
+the next daemon needs to go on with it. **On Codex** it is a thread on an app-server of
+cophylad's own under the profile: read-only sandbox, approvals never asked, the brain's rules
+as developer instructions, Cophyla's tools as the thread's dynamic tools.
+
+A turn: the user's message (`user.message`) is typed into the session as their words. The
+session's hooks, or the app-server's notifications, tell the module as it goes, and the module
+tells the brain: `assistant.prompted` when a prompt is taken, `assistant.step` for a tool of
+the harness's own, `assistant.replied` with the turn's last message, which the brain parses
+and says (`ui.say`, then `voice.speak` for a spoken turn). Beside each prompt, and at each
+start, the brain is asked what the session is to be told (`assistant.context`); the answer is
+cut into parts a harness carries whole (9,000 characters a hook on Claude Code, up to four
+hooks; 3,400 an entry on Codex) and the last telling that arrived is named in the next ask,
+so one that went astray is made up for. The session's tool calls reach the brain as
+`tool.call`: through `GET /mcp/tools` and `POST /mcp/call` on the loopback listener, behind
+the token of this spawn, on Claude Code; over the app-server's own connection on Codex. The
+brain wakes the session with `assistant.wake` (a listener's fire, due work, a notification,
+the outcome of a held request).
+
+Prompts go one at a time, with one exception: a user's message does not wait. It is typed
+into whatever turn runs, the user's own or a wake's, the harness folds it in, and the one
+reply serves both. A running turn is never cut short for it. A wake that could not be handed
+over, or whose turn went with the session's program, goes back to the brain, which owes it
+again. A new chat thread clears the session's context once it is idle. A program that went is
+started again where it was; a brain that comes back with other rules has the session started
+again under them once it is idle.
+
+The session is in no list: its record is in a partition of its own (`role: assistant`), its
+events are neither stored nor sent, and its terminal carries a label that keeps it out of
+`terminal.list`. It can still be opened by id, which is how the view's Chat | Terminal shows
+it; words typed straight into it are stored as the user's chat message.
 
 ## Updates
 

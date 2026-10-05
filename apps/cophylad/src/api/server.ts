@@ -65,7 +65,7 @@ import {
   success,
   validateAccess,
 } from "@cophyla/protocol";
-import type { Access, Ask, AudioCodec, Client, ClientNotificationName, ClientNotificationParams, ClientRequestName, ClientResult, ClientSignalName, Controller, Node, NodeRecord, PairedLan, RelayAccess, RiskClass, RpcRequest, Session, Task, Terminal, TurnProgress, Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AssistantState, AudioCodec, Client, ClientNotificationName, ClientNotificationParams, ClientRequestName, ClientResult, ClientSignalName, Controller, Node, NodeRecord, PairedLan, RelayAccess, RiskClass, RpcRequest, Session, Task, Terminal, TurnProgress, Workspace } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Config } from "../config/schema.ts";
 import type { Asks } from "../gate/asks.ts";
@@ -77,6 +77,8 @@ import { clientResult, clientRow, ClientRegistry, forAccess } from "./clients.ts
 import type { ClientSocket, ListenerKind, SendOptions } from "./clients.ts";
 import type { Redeemed } from "../grants/phones.ts";
 import type { Grants } from "../grants/store.ts";
+import { assistantRoute, handleAssistant } from "./assistant.ts";
+import type { AssistantIngress } from "./assistant.ts";
 import { handleHook } from "./hooks.ts";
 import type { HookHarness, HookIngress } from "./hooks.ts";
 import type { MethodContext, MethodTable, SignalTable } from "./methods.ts";
@@ -109,6 +111,8 @@ export interface InitialState {
   voice?: { states?: VoiceStateParams[]; setup?: VoiceSetupParams[]; next?: VoiceNextParams };
   /** The brain's turn in progress, if one is running: a client that connects mid-turn sees what it is doing. */
   progress?: TurnProgress;
+  /** Where the chat's own session stands. */
+  assistant?: AssistantState;
   /** Open asks held on other nodes, sent after this node's own. */
   asks?: Ask[];
   /** Every node of the user, sent as `node.state` after the workspaces. */
@@ -199,6 +203,8 @@ export interface ApiDeps {
   audio?: { codecs: AudioCodec[] };
   /** The hook ingress behind `/hooks/<harness>`; absent in a daemon without the sessions module. */
   hooks?: HookIngress;
+  /** The chat's own session's endpoints (`/mcp/*`, `/hooks/assistant-part-N`); absent in a daemon with no assistant module. */
+  assistant?: AssistantIngress;
   /** What a new client is told right after `hello`, beside the open asks. */
   initial?: () => InitialState;
   /** A client went away. */
@@ -360,6 +366,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("chat.delta", (delta) => broadcast("chat.delta", delta)),
           deps.bus.on("chat.retract", (retract) => broadcast("chat.retract", retract)),
           deps.bus.on("chat.progress", (progress) => broadcast("chat.progress", progress)),
+          deps.bus.on("assistant.state", (state) => broadcast("assistant.state", state)),
           deps.bus.on("task.state", (task) => broadcast("task.state", task)),
           deps.bus.on("thread.state", (thread) => registry.broadcastThread(thread)),
           deps.bus.on("update.state", (state) => broadcast("update.state", state)),
@@ -416,6 +423,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     if (client.scopes.includes("account") && initial.account) tell("account.state", initial.account);
     if (client.scopes.includes("account")) for (const state of initial.direct ?? []) tell("direct.state", state);
     if (initial.progress) tell("chat.progress", { turn: initial.progress });
+    if (initial.assistant) tell("assistant.state", initial.assistant);
   };
 
   /** The phone's first frame: a code for a token of its own, before it can say `hello`. */
@@ -879,6 +887,9 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       // The harness hooks are loopback's alone: nothing on the LAN answers them.
       const hook = listener === "loopback" && deps.hooks ? /^\/hooks\/(claude|codex|muse)$/.exec(url.pathname) : null;
       if (hook) return handleHook(req, srv, hook[1] as HookHarness, deps.hooks!, log.child("hooks"));
+      // So are the chat's own session's endpoints: its tools, and the further parts of what it is told.
+      const own = listener === "loopback" && deps.assistant ? assistantRoute(url.pathname) : undefined;
+      if (own) return handleAssistant(req, srv, own, deps.assistant!, log.child("assistant"));
       if (deps.tickets) {
         // The document frame a view runs an HTML file's scripts in, under a policy of its own.
         if (url.pathname === DOC_FRAME_PATH) return new Response(DOC_FRAME_HTML, { headers: docFrameHeaders() });

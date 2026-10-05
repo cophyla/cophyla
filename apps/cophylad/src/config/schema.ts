@@ -150,10 +150,33 @@ export const BrainConfig = z.object({
   restart_backoff_max_ms: z.number().int().positive().default(30000),
   /** How long the brain may take to answer `hello`. */
   hello_timeout_ms: z.number().int().positive().default(10000),
-  /** A Context button in the chat shows what the brain sends the model on its next turn (`brain.context`). Off, no client sees it. */
+  /** A Context button in the chat shows what the chat's own session is told (`brain.context`). Off, no client sees it. */
   show_context: z.boolean().default(false),
 });
 export type BrainConfig = z.infer<typeof BrainConfig>;
+
+/**
+ * The chat's own session: an agent session on the user's own Claude Code or Codex account,
+ * which cophylad starts, types into and gives Cophyla's tools. What the user picks in the
+ * app's settings (the harness, the account) is kept in the store, over these.
+ */
+export const AssistantConfig = z.object({
+  /** Run the chat in a session of its own while the brain runs. Off, nothing answers the chat. */
+  enabled: z.boolean().default(true),
+  /** The harness it runs on; the usual account's when absent, Claude Code first. */
+  harness: z.enum(["claude", "codex"]).optional(),
+  /** The profile it runs under, by its name or id; the harness's usual account when absent. */
+  profile: z.string().min(1).optional(),
+  claude_model: z.string().regex(/^[A-Za-z0-9._\-[\]]+$/).default("sonnet"),
+  claude_effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
+  codex_model: z.string().regex(/^[A-Za-z0-9._\-]+$/).default("gpt-6.1-sol"),
+  codex_effort: z.string().regex(/^[a-z]+$/).default("low"),
+  /** The context it compacts at, in tokens; a model whose window is smaller compacts below it. */
+  autocompact_tokens: z.number().int().min(100000).max(1000000).default(300000),
+  /** Claude Code: the tools of its own the session keeps beside Cophyla's. None of them writes or runs anything. */
+  tools: z.array(z.string().regex(/^[A-Za-z]+$/)).default(["Read", "Grep", "Glob", "WebSearch", "WebFetch"]),
+});
+export type AssistantConfig = z.infer<typeof AssistantConfig>;
 
 const MODEL_NAME = /^[^/]+\/.+$/;
 
@@ -592,6 +615,7 @@ export const Config = z.object({
   tether: TetherConfig.prefault({}),
   profiles: z.array(ProfileConfig).default([]),
   brain: BrainConfig.prefault({}),
+  assistant: AssistantConfig.prefault({}),
   providers: ProvidersConfig.prefault({}),
   acp: AcpConfig.prefault({}),
   tools: ToolsConfig.prefault({}),
@@ -734,7 +758,21 @@ on_path = true             # an installed platform keeps a tether command on the
 restart_backoff_ms = 1000
 restart_backoff_max_ms = 30000
 hello_timeout_ms = 10000
-show_context = false          # a Context button beside the chat's ⋮ shows what the brain sees on its next turn
+show_context = false          # a Context button beside the chat's ⋮ shows what the chat's own session is told
+
+# The chat's own session: an agent session on your own Claude Code or Codex account, which
+# cophylad starts, types into and gives Cophyla's tools. It runs while the brain does. The
+# harness and the account picked in the app's settings win over these.
+[assistant]
+# enabled = true
+# harness = "claude"          # "claude" or "codex"; the usual account's when absent, Claude Code first
+# profile = "work"            # the account it runs under, by name; the harness's usual one when absent
+claude_model = "sonnet"
+claude_effort = "low"
+codex_model = "gpt-6.1-sol"
+codex_effort = "low"
+autocompact_tokens = 300000   # the context it compacts at; a model with a smaller window compacts below it
+tools = ["Read", "Grep", "Glob", "WebSearch", "WebFetch"]   # Claude Code's own tools the session keeps
 
 # Provider routing: the routes llm.complete tries in order. server is the account's hosted
 # model (signed in, on a plan that has one); byok:<vendor> your own key; local:<engine> is

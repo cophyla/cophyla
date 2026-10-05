@@ -99,6 +99,52 @@ describe("store", () => {
     s.close();
   });
 
+  test("a session's role is kept with its row: assistant on the chat's own, absent on any other, and an update sets or drops it", () => {
+    const s = open();
+    const other: Session = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", harness: "claude", profile: "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", native: { id: "3f0c1b2a", transport: "pipe" }, origin: "user", cwd: "C:\\D\\orchestrator", tags: [], status: "idle", startedAt: 1, lastActivity: 2 };
+    const own: Session = { ...other, id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", native: { id: "9a1e", transport: "pipe" }, origin: "orchestrator", cwd: "C:\\data\\assistant\\work", lastActivity: 3, role: "assistant" };
+    s.sessions.insert(other);
+    s.sessions.insert(own);
+    expect(s.sessions.get(own.id)).toEqual(own);
+    expect(SessionSchema.safeParse(s.sessions.get(own.id)).success).toBe(true);
+    expect(s.sessions.getByNative("claude", "9a1e")?.role).toBe("assistant");
+    expect(Object.keys(s.sessions.get(other.id)!)).not.toContain("role");
+    // the store hands back every row with what it is; leaving the chat's own out of a list is the sessions module's
+    expect(s.sessions.listLive().map((x) => [x.id, x.role])).toEqual([[own.id, "assistant"], [other.id, undefined]]);
+    expect(s.sessions.list({ harness: "claude" }).map((x) => x.role)).toEqual(["assistant", undefined]);
+    // it is no session of the user's: the profiles their own sessions ran under do not count it
+    expect(s.sessions.recentProfiles(own.node, "claude")).toEqual([other.profile]);
+    // a record met before it was the chat's is marked by an update, and one no longer it loses the mark
+    s.sessions.update({ ...other, role: "assistant" });
+    expect(s.sessions.get(other.id)?.role).toBe("assistant");
+    delete own.role;
+    s.sessions.update(own);
+    expect(s.sessions.get(own.id)).toEqual(own);
+    expect(Object.keys(s.sessions.get(own.id)!)).not.toContain("role");
+    s.close();
+  });
+
+  test("migration 13 adds the role to a v12 database in place: the sessions it held have none", () => {
+    const s = new Store(":memory:");
+    s.db.transaction(() => {
+      for (const m of MIGRATIONS.slice(0, 12)) s.db.exec(m);
+      s.db.exec("PRAGMA user_version = 12");
+    })();
+    const columns = () => (s.db.query("PRAGMA table_info(harness_sessions)").all() as { name: string }[]).map((c) => c.name);
+    expect(columns()).not.toContain("role");
+    s.db.exec("INSERT INTO harness_sessions (id, node, harness, profile, native_id, native_transport, origin, cwd, status, started_at, last_activity) VALUES ('sess_01ARZ3NDEKTSV4RRFFQ69G5FB1', 'n', 'claude', 'prof_01ARZ3NDEKTSV4RRFFQ69G5FB8', 'x', 'pipe', 'user', '.', 'idle', 1, 1)");
+    expect(s.version).toBe(12);
+    expect(s.migrate()).toBe(MIGRATIONS.length);
+    expect(columns()).toContain("role");
+    const kept = s.sessions.get("sess_01ARZ3NDEKTSV4RRFFQ69G5FB1")!;
+    expect(kept).toMatchObject({ harness: "claude", native: { id: "x" }, status: "idle" });
+    expect(Object.keys(kept)).not.toContain("role");
+    // and from here a row may carry one
+    s.sessions.update({ ...kept, role: "assistant" });
+    expect(s.sessions.get(kept.id)?.role).toBe("assistant");
+    s.close();
+  });
+
   test("session events get distinct increasing seqs and a newest-first history window", () => {
     const s = open();
     const session = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1";

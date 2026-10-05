@@ -62,6 +62,8 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:memory.write": "allow",
   "brain:prompt.write": "allow",
   "brain:session.spawn": "allow",
+  // Its own words to the chat's own session, which runs with no tool that writes or runs anything.
+  "brain:assistant.wake": "allow",
 };
 
 /**

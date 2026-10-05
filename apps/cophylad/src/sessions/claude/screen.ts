@@ -124,6 +124,21 @@ export function clearContextRow(s: ScreenLike): DialogRow | undefined {
 }
 
 /**
+ * The folder trust dialog, when it is on the screen: whether its pointer is on the row that
+ * trusts the folder, and the key that moves it there when it is not. 2.1.289 draws the rows
+ * with no numbers and starts on "No, exit"; an earlier one numbered them and started on yes.
+ */
+export function trustDialog(s: ScreenLike): { selected: boolean; move: "Up" | "Down" } | undefined {
+  const rows = rowsOf(s).map((r) => r.replace(/\u00a0/g, " "));
+  const yes = rows.findIndex((r) => /^\s*[❯>]?\s*(\d\.\s+)?Yes, I trust\b/.test(r));
+  if (yes < 0) return undefined;
+  const pointed = (r: string | undefined) => r !== undefined && /^\s*[❯>]\s/.test(r);
+  // The other rows of the dialog sit within a few lines of it.
+  const at = rows.findIndex((r, i) => i !== yes && Math.abs(i - yes) <= 3 && pointed(r));
+  return { selected: pointed(rows[yes]), move: at > yes ? "Up" : "Down" };
+}
+
+/**
  * What a session that has not registered is waiting on, in words for the one who started
  * it; `undefined` when the screen shows nothing recognisable.
  */

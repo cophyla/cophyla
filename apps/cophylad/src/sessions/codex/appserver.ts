@@ -2,8 +2,10 @@
 // stdio, stderr drained to the log, restarted with backoff when it exits, and on a new login.
 // It is how cophylad lists threads and queues messages, over the thread store every app-server of
 // the profile shares. The daemon a CLI starts to run its own threads (`--managed-daemon`) is
-// the CLI's, and left alone. Server→client requests (approvals) only fire for threads this
-// app-server hosts, which is never; any that arrive are declined.
+// the CLI's, and left alone. Server→client requests (approvals, tool calls) only fire for threads
+// this app-server hosts: the adapter's hosts none, and declines any that arrive; the one the
+// chat's own session runs on (`assistant/codex.ts`) answers its thread's tool calls through
+// `onRequest`, and declines the rest the same way.
 
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -18,6 +20,10 @@ export interface CodexAppServerOptions {
   log: Logger;
   version: string;
   onNotification?: (method: string, params: unknown) => void;
+  /** A request of the server's for a thread hosted here: answered with what the promise gives; declined when it returns none. */
+  onRequest?: (method: string, params: unknown) => Promise<unknown> | undefined;
+  /** The child went, for whatever reason but a stop asked for here. */
+  onExit?: () => void;
   callTimeoutMs?: number;
 }
 
@@ -143,6 +149,8 @@ export class CodexAppServer {
       }, this.backoffMs);
       if (typeof this.restartTimer === "object" && "unref" in this.restartTimer) this.restartTimer.unref();
       this.backoffMs = Math.min(this.backoffMs * 2, BACKOFF_MAX_MS);
+      // Told last: one that stops the server on hearing it takes the restart back.
+      this.opts.onExit?.();
     });
 
     const result = (await this.request("initialize", {
@@ -167,10 +175,21 @@ export class CodexAppServer {
     const id = m["id"];
     if (typeof m["method"] === "string") {
       if (id !== undefined && id !== null) {
-        // A server→client request: decline, cophylad hosts no threads.
-        const answer = declineFor(m["method"]);
-        this.write({ jsonrpc: "2.0", id, ...answer });
-        this.log.debug("app-server request declined", { method: m["method"] });
+        const method = m["method"];
+        // A server→client request: served for a thread hosted here, declined otherwise.
+        const served = this.opts.onRequest?.(method, m["params"]);
+        if (served) {
+          served.then(
+            (result) => this.write({ jsonrpc: "2.0", id, result }),
+            (e: unknown) => {
+              this.log.warn("app-server request failed", { method, error: e instanceof Error ? e.message : String(e) });
+              this.write({ jsonrpc: "2.0", id, ...declineFor(method) });
+            },
+          );
+          return;
+        }
+        this.write({ jsonrpc: "2.0", id, ...declineFor(method) });
+        this.log.debug("app-server request declined", { method });
         return;
       }
       this.opts.onNotification?.(m["method"], m["params"]);

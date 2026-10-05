@@ -37,9 +37,22 @@ export interface InjectionsOptions {
   onTimeout: (p: PendingSend) => void;
 }
 
-/** A prompt as typed and as the harness records it: line breaks alike, ends trimmed. */
+/**
+ * What was pasted into Claude Code's prompt comes back, in a hook and in the transcript,
+ * inside tags of the harness's own (2.1.289: `<pasted_content id="…">` … `</pasted_content
+ * id="…">`), and a message of more than a line is pasted. The words as they were sent are
+ * what is between the tags.
+ */
+const PASTED = /<pasted_content id="([0-9A-Za-z_-]+)">\n?([\s\S]*?)\n?<\/pasted_content(?: id="\1")?>/g;
+
+/** A prompt without the tags Claude Code puts round what was pasted into it. */
+export function unpasted(text: string): string {
+  return text.includes("<pasted_content") ? text.replace(PASTED, "$2") : text;
+}
+
+/** A prompt as typed and as the harness records it: line breaks alike, what was pasted out of its tags, ends trimmed. */
 function normal(text: string): string {
-  return text.replace(/\r\n?/g, "\n").trim();
+  return unpasted(text.replace(/\r\n?/g, "\n")).trim();
 }
 
 function typedMatch(p: PendingSend, text: string, promptId: string | undefined): boolean {

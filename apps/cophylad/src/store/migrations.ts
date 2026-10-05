@@ -354,4 +354,9 @@ export const MIGRATIONS: string[] = [
   WHERE model IS NOT NULL
   GROUP BY thread, model;
   `,
+  // 13: a session's role: `assistant` on the one the chat itself runs in, which no list shows;
+  // none on any other.
+  `
+  ALTER TABLE harness_sessions ADD COLUMN role TEXT;
+  `,
 ];

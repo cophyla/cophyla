@@ -116,7 +116,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "llm.cache"] });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "llm.cache", "assistant"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);
@@ -725,7 +725,7 @@ describe("brain-link", () => {
     expect(brainAudit(d).filter((e) => e.action === "recall").at(-1)!.outcome).toBe("error");
   });
 
-  test("brain.context: off without show_context; on, check asks the brain nothing and a request is its context.preview, kept out of the audit row", async () => {
+  test("brain.context: off without show_context; on, check asks the brain nothing and a request is the brain's preview of what the session is told, kept out of the audit row", async () => {
     const off = await start({ on: [] });
     await waitFor(() => off.d.brain?.state === "up");
     const refused = await off.c.call("brain.context", { check: true });
@@ -736,38 +736,30 @@ describe("brain-link", () => {
     removeHome(off.scratch);
     current = undefined;
 
-    const preview = {
-      thread: "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
-      at: 1758196800000,
-      tokens: { situation: 12, working: 8, loaded: 0, log: 5, total: 25 },
-      rules: "You are Cophyla.",
-      situation: "Now: Tuesday",
-      log: "Instructions:\nL1 11:02 the series, one section at a time",
-      messages: [{ role: "user", content: [{ type: "text", text: "what is open?" }] }],
-      tools: ["agents", "tasks"],
-    };
+    const preview = { rules: "You are Cophyla.", situation: "Now: Tuesday", notes: ["sess_a went idle"], tools: ["agents", "tasks"], tokens: { rules: 4, situation: 3, tools: 9 } };
     const { d, c, log, scratch } = await start({ on: [], preview }, { brain: "show_context = true\n" });
     await waitFor(() => d.brain?.state === "up");
     expect(await c.request<object>("brain.context", { check: true })).toEqual({});
-    expect(brainFrames(log).some((f) => f.frame["method"] === "context.preview")).toBe(false);
-    // The thread has no model calls here: its spend is empty, with the next turn's model.
-    expect(await c.request<object>("brain.context", {})).toEqual({ context: preview, spend: { thread: preview.thread, models: [], next: { model: "gemini/gemini-3.8-flash", price: expect.objectContaining({ input: 0.75 }) } } });
-    const asked = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "context.preview")!;
-    expect(asked.frame["params"]).toEqual({});
+    expect(brainFrames(log).some((f) => f.frame["method"] === "assistant.context")).toBe(false);
+    // No thread is open and no session runs the chat here: the context comes alone, with no size of the session's.
+    const context = { at: expect.any(Number), tokens: preview.tokens, rules: preview.rules, situation: preview.situation, notes: preview.notes, tools: preview.tools };
+    expect(await c.request<object>("brain.context", {})).toEqual({ context });
+    const asked = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "assistant.context")!;
+    expect(asked.frame["params"]).toEqual({ kind: "preview" });
     const rows = d.store.audit.list({ limit: 50 }).filter((e) => e.action === "brain.context" && e.outcome === "ok");
-    expect(rows.map((e) => e.result?.body)).toContainEqual({ context: { thread: preview.thread, at: preview.at, tokens: preview.tokens } });
+    expect(rows.map((e) => e.result?.body)).toContainEqual({ context: { at: expect.any(Number), tokens: preview.tokens } });
     expect(JSON.stringify(rows)).not.toContain("You are Cophyla.");
 
-    // A brain from before the request, and one whose answer is not a context.
+    // A brain from before the request, and one whose answer is not a preview.
     writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [] }));
     const old = await c.call("brain.context", {});
     expect("error" in old && old.error.data?.code).toBe("unsupported");
-    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { thread: 7 } }));
+    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { rules: 7 } }));
     const bad = await c.call("brain.context", {});
     expect("error" in bad && bad.error.data?.code).toBe("unavailable");
   });
 
-  test("brain.context: a model call counts to the thread it was made in, and the context comes with that thread's spend, priced, and the next turn's model", async () => {
+  test("brain.context: a model call counts to the thread it was made in, and the context comes with the conversation's thread and its spend, priced", async () => {
     const { d, c, scratch } = await start(
       { on: [{ event: "user.message", requests: [{ method: "llm.complete", params: { model: { tier: "fast" }, messages: [{ role: "user", content: [{ type: "text", text: "$event.text" }] }] } }] }] },
       // The fake model has a price of its own here, the cache's rate a tenth of the input's.
@@ -780,21 +772,18 @@ describe("brain-link", () => {
     expect(brainAudit(d).find((e) => e.action === "llm.complete")!.thread).toBe(thread);
     expect(d.store.threadSpend.of(thread)).toEqual([{ model: "gemini-fake-001", calls: 1, in: 1200, out: 40, cacheRead: 800, cacheWrite: 0, since: expect.any(Number), last: expect.any(Number) }]);
 
-    const preview = { thread, at: 1758196800000, tokens: { situation: 12, working: 8, loaded: 0, log: 5, total: 25 }, rules: "You are Cophyla.", situation: "Now", messages: [], tools: [] };
+    const preview = { rules: "You are Cophyla.", situation: "Now", notes: [], tools: [], tokens: { rules: 4, situation: 1, tools: 0 } };
     writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview }));
     const fake = { input: 1, output: 4, cacheRead: 0.1, cacheWrite: 1 };
     const r = await c.request<{ context: object; spend: ConversationSpend }>("brain.context", {});
-    expect(r.context).toEqual(preview);
+    // The thread is the chat's own, as the platform has it.
+    expect(r.context).toEqual({ thread, at: expect.any(Number), tokens: preview.tokens, rules: preview.rules, situation: preview.situation, notes: [], tools: [] });
     expect(r.spend).toEqual({
       thread,
       models: [{ model: "gemini-fake-001", calls: 1, since: expect.any(Number), last: expect.any(Number), tokens: { in: 1200, out: 40, cacheRead: 800, cacheWrite: 0 }, price: fake, cost: expect.closeTo((400 * 1 + 800 * 0.1 + 40 * 4) / 1e6, 12) }],
       next: { model: "gemini/gemini-3.8-flash", price: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 } },
     });
     expect(ConversationSpend.safeParse(r.spend).success).toBe(true);
-
-    // A context for no thread comes alone.
-    writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [], preview: { ...preview, thread: undefined } }));
-    expect(await c.request<object>("brain.context", {})).toEqual({ context: { ...preview, thread: undefined } });
   });
 
   test("a session annotated by the daemon reaches the brain as one session.updated without an event", async () => {

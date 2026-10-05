@@ -10,8 +10,9 @@
 // in an outbox and are flushed after the next handshake. The brain is located again before
 // every spawn, after the update module has promoted a staged release, and an installed or
 // bundled brain is verified against its signed release entry first: one that fails is
-// refused and the previous one put back. The daemon's own requests to the brain
-// (`context.preview`) go through `request`, and only while it is up.
+// refused and the previous one put back. The daemon's own requests to the brain (what the
+// chat's own session is started with, its tools, each call it makes, what it is told: the
+// protocol's `brainRequests`) go through `request`, and only while it is up.
 
 import { CapabilityHello, capabilityRequests, capabilitySignals, PROTOCOL_VERSION, RpcError, ulid } from "@cophyla/protocol";
 import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId, TurnProgress } from "@cophyla/protocol";
@@ -36,7 +37,7 @@ import { ReplyStream } from "./stream.ts";
  * What this platform does beyond the protocol version, named in its hello: a brain relies on
  * one only when it is named (`CapabilityHello.features`).
  */
-export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "llm.cache"] as const;
+export const PLATFORM_FEATURES = ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "llm.cache", "assistant"] as const;
 
 export type BrainState = "down" | "starting" | "up" | "refused" | "stopped";
 
@@ -72,6 +73,8 @@ export interface BrainLinkDeps {
   env: Record<string, string | undefined>;
   /** The account's entitlement token now, sent as one `entitlement.updated` right after the handshake so a fresh brain has it. */
   entitlement?: () => string | undefined;
+  /** The brain answered its handshake: called once what was queued for it has gone, at every start of it. */
+  onUp?: () => void;
   now?: () => number;
 }
 
@@ -257,6 +260,7 @@ export class BrainLink {
     const queued = this.outbox;
     this.outbox = [];
     for (const e of queued) this.send(e);
+    this.deps.onUp?.();
   }
 
   private onExit(rpc: StdioRpc, code: number | null, signal: NodeJS.Signals | null): void {

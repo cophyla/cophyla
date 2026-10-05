@@ -3,8 +3,9 @@
 // the editable layer, the llm router, the update module, the sidecars, the voice pipeline,
 // the metrics sampler, the remote desktop and the cloud account, the api and, when the
 // controller is on or other nodes may link here, a second listener on the LAN, the nodes
-// module that settles the role, and, on the primary, the brain-link last. `main.ts` runs it
-// for real; the tests run it against a temporary home.
+// module that settles the role, and, on the primary, the brain-link last, with the assistant
+// (the session the chat runs in) beside it. `main.ts` runs it for real; the tests run it
+// against a temporary home.
 
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -12,7 +13,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { Node, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
-import { accountMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
+import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
 import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
@@ -22,6 +23,8 @@ import { PhoneInvites } from "./grants/phones.ts";
 import { Grants } from "./grants/store.ts";
 import { Pairing } from "./api/pairing.ts";
 import { startApi } from "./api/server.ts";
+import { CodexHost } from "./assistant/codex.ts";
+import { Assistant } from "./assistant/index.ts";
 import type { AccountPaired, ApiServer } from "./api/server.ts";
 import { ViewTickets } from "./api/tickets.ts";
 import { ensureCertificate, lanAddress, lanEndpoints, spkiHash } from "./api/tls.ts";
@@ -80,6 +83,7 @@ import { checkSuccessor, Restart, spawnSuccessor } from "./restart.ts";
 import { ClaudeAdapter } from "./sessions/claude/adapter.ts";
 import { isAlive } from "./sessions/claude/registry.ts";
 import { CodexAdapter } from "./sessions/codex/adapter.ts";
+import { CodexAppServer } from "./sessions/codex/appserver.ts";
 import { MuseAdapter } from "./sessions/muse/adapter.ts";
 import { EditorTerminalOpener, withEditorWindows } from "./sessions/editors.ts";
 import { scrub } from "./sessions/env.ts";
@@ -177,6 +181,8 @@ export interface DaemonOptions {
   loginEnv?: LoginEnvNote;
   /** Overrides `[brain].enabled`, for tests that want no brain. */
   brain?: boolean;
+  /** Overrides `[assistant].enabled`. Under test the chat runs in no session unless a test asks for one: a suite never starts an agent on someone's account. */
+  assistant?: boolean;
   /** Replaces the embedding model behind recall: a fake for tests, `null` for full-text only. */
   embedder?: Embedder | null;
   /** The voice module's seams: the engines and the CPU mask, both faked in the tests. */
@@ -278,6 +284,8 @@ export interface Daemon {
   update: Update;
   /** Present while this node is the primary and a brain is located; absent otherwise. */
   readonly brain: BrainLink | undefined;
+  /** The keeper of the session the chat runs in: up while the brain is. */
+  assistant: Assistant;
   api: ApiServer;
   /** Every client of the node, on either listener. */
   clients: ClientRegistry;
@@ -530,6 +538,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   // The update module before the api, whose methods call it; its checks start after the brain.
   let api: ApiServer | undefined;
+  let assistant: Assistant | undefined;
   let stopper: (() => Promise<void>) | undefined;
   const locate = () => locateBrain({ config: config.brain, env, home: p.home, ...(install ? { installDir: install.dir } : {}) });
   const plural = (n: number, what: string) => `${n} ${what}${n === 1 ? "" : "s"}`;
@@ -545,6 +554,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     if (brain?.state === "starting") reasons.push("brain starting");
     const inflight = brain?.inflightCount ?? 0;
     if (inflight > 0) reasons.push(`${plural(inflight, "brain request")} in flight`);
+    if (assistant?.busy) reasons.push("the chat mid-turn");
     return reasons;
   };
   const update = new Update({
@@ -847,7 +857,50 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The nodes module: the role, the links, the mirrors. The brain is started and stopped
   // through it, since a promotion or a step-down moves the brain with the role.
   const speech = { target: (p: Parameters<Delivery["target"]>[0]) => (delivery ? delivery.target(p) : ("legacy" as const)) };
-  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, terminals: { list: () => nodeTerminals?.rows.list() ?? [] }, ...(limits ? { limits } : {}) };
+  // The assistant: the session the chat runs in, on the user's own Claude Code or Codex. It
+  // comes up and goes down with the brain, so it runs on the primary alone. Its Codex host is
+  // a thread on an app-server of its own under the profile, apart from the adapter's.
+  const assistantLog = log.child("assistant");
+  const chatAgent = new Assistant({
+    config: { ...config.assistant, enabled: opts.assistant ?? (env["NODE_ENV"] === "test" ? false : config.assistant.enabled) },
+    dataDir: p.data,
+    nodeId: identity.id,
+    kv: store.kv,
+    bus,
+    log: assistantLog,
+    sessions,
+    profiles,
+    chat,
+    brain: () => {
+      const b = brain;
+      return b ? { up: b.state === "up", request: (method, params, timeoutMs) => b.request(method, params, timeoutMs), send: (event) => b.send(event) } : undefined;
+    },
+    port: () => api!.port,
+    hookToken,
+    codex: (profile, hostEvents, o) =>
+      new CodexHost({
+        profile,
+        events: hostEvents,
+        config: o.config,
+        system: o.system,
+        cwd: o.cwd,
+        server: (handlers) =>
+          new CodexAppServer({
+            command: profile.exec?.command ?? "codex",
+            args: profile.exec?.args ?? [],
+            env: { ...env, ...profile.env, CODEX_HOME: profile.configDir },
+            log: assistantLog.child("codex"),
+            version: PLATFORM_VERSION,
+            ...handlers,
+          }),
+        claim: (thread) => sessions.claimAssistant("codex", thread),
+        log: assistantLog,
+      }),
+  });
+  assistant = chatAgent;
+  /** The daemon is stopping: the chat's session is left running for the next one to meet again. */
+  let stopping = false;
+  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, assistant: () => chatAgent, terminals: { list: () => nodeTerminals?.rows.list() ?? [] }, ...(limits ? { limits } : {}) };
   // The link is built before anything can raise an event, so a hook's first emit or a
   // trigger missed while the daemon was down waits in its outbox for the handshake; the
   // brain itself is spawned once everything it can ask for is there.
@@ -879,6 +932,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       methods: capDeps,
       wrapMethods: (table) => withForwarding(table, nodes!.forwardHost),
       entitlement: () => cloud.entitlementToken(),
+      onUp: () => chatAgent.onBrainUp(),
     } satisfies BrainLinkDeps);
     return brain;
   };
@@ -888,10 +942,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     if (!b || brainSpawned) return;
     brainSpawned = true;
     events.prime(sessions.list());
+    chatAgent.start();
     await b.start();
   };
   const stopBrain = async () => {
     const b = brain;
+    // Before the brain goes, so it hears the session's last state; a role given away ends the session's program.
+    await chatAgent.stop({ keep: stopping });
     brain = undefined;
     brainSpawned = false;
     if (b) await b.stop();
@@ -1161,9 +1218,12 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...brainContextMethods({
       show: config.brain.show_context,
       brain: () => brain,
-      // The brain's turns go to the fast tier: its model is the next turn's, when one is configured.
+      thread: () => chat.peek()?.id,
+      assistant: () => (brainSpawned ? chatAgent.state() : undefined),
+      // What the node's own model calls cost a thread, with the fast tier's model beside it; the chat's turns are no part of it.
       spend: (thread) => conversationSpend(thread, store.threadSpend.of(thread), prices, nextModel()),
     }),
+    ...assistantMethods({ assistant: () => (brainSpawned ? chatAgent : undefined) }),
     ...updateMethods({ update }),
     ...pairingMethods({
       pairing,
@@ -1215,6 +1275,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       account: cloud.state(),
       direct: direct.states(),
       ...(brain?.progress ? { progress: brain.progress } : {}),
+      ...(brainSpawned ? { assistant: chatAgent.state() } : {}),
     };
   };
   const onDisconnect = (client: Node extends never ? never : { id: string }) => {
@@ -1247,6 +1308,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       platformVersion: PLATFORM_VERSION,
       audio: { codecs: AUDIO_CODECS },
       hooks: { token: hookToken, onHook: (harness, event, meta) => sessions.onHook(harness, event, meta) },
+      assistant: { mcpToken: () => chatAgent.mcpToken, hookToken, tools: () => chatAgent.tools(), call: (tool, input) => chatAgent.call(tool, input), part: (body, n) => chatAgent.part(body, n) },
       initial,
       onDisconnect,
       onRequest: (client, method) => deliver.request(client, method),
@@ -1445,6 +1507,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     get brain() {
       return brain;
     },
+    assistant: chatAgent,
     api,
     clients,
     grants,
@@ -1462,6 +1525,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     push,
     ...(controller ? { controller } : {}),
     stop: async () => {
+      stopping = true;
       grantClock?.dispose();
       push.dispose();
       await cloud.stop();

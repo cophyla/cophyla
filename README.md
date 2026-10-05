@@ -9,9 +9,10 @@ front of you: on the desktop, on your phone, or spoken aloud. It starts new sess
 answers from the phone, and hands you a terminal or the whole screen of any of your machines.
 
 A brain talks to you about the work: what each session is doing, what finished, what needs you.
-It acts only through this platform, and every action it asks for crosses a gate and lands in an
-audit you can read. The platform is open (Apache-2.0) and runs without the brain; the brain is a
-separate, closed package.
+The chat with it runs in an agent session of your own, on your Claude Code or Codex plan, with
+no shell and no way to write files. It acts only through this platform, and every action it asks
+for crosses a gate and lands in an audit you can read. The platform is open (Apache-2.0) and runs
+without the brain; the brain is a separate, closed package.
 
 ## Building
 

@@ -322,9 +322,9 @@ export class Store {
       this.db
         .query(
           `INSERT INTO harness_sessions (id, node, harness, profile, native_id, native_pid, native_transport, origin, workspace, task,
-             cwd, title, intent, summary, tags, status, ask, started_at, last_activity, ended_at, stats, transcript_path)
+             cwd, title, intent, summary, tags, status, ask, started_at, last_activity, ended_at, stats, transcript_path, role)
            VALUES ($id, $node, $harness, $profile, $native_id, $native_pid, $native_transport, $origin, $workspace, $task,
-             $cwd, $title, $intent, $summary, $tags, $status, $ask, $started_at, $last_activity, $ended_at, $stats, $transcript_path)`,
+             $cwd, $title, $intent, $summary, $tags, $status, $ask, $started_at, $last_activity, $ended_at, $stats, $transcript_path, $role)`,
         )
         .run(sessionParams(s));
     },
@@ -335,7 +335,7 @@ export class Store {
              native_pid = $native_pid, native_transport = $native_transport, origin = $origin, workspace = $workspace,
              task = $task, cwd = $cwd, title = $title, intent = $intent, summary = $summary, tags = $tags, status = $status,
              ask = $ask, started_at = $started_at, last_activity = $last_activity, ended_at = $ended_at, stats = $stats,
-             transcript_path = $transcript_path
+             transcript_path = $transcript_path, role = $role
            WHERE id = $id`,
         )
         .run(sessionParams(s));
@@ -1252,6 +1252,7 @@ interface SessionRow {
   ended_at: number | null;
   stats: string | null;
   transcript_path: string | null;
+  role: string | null;
 }
 
 function sessionParams(s: Session) {
@@ -1278,6 +1279,7 @@ function sessionParams(s: Session) {
     ended_at: s.endedAt ?? null,
     stats: s.stats ? json(s.stats) : null,
     transcript_path: s.transcript?.path ?? null,
+    role: s.role ?? null,
   };
 }
 
@@ -1306,6 +1308,7 @@ function sessionFromRow(r: SessionRow): Session {
   const stats = parse<Session["stats"]>(r.stats);
   if (stats) s.stats = stats;
   if (r.transcript_path !== null) s.transcript = { path: r.transcript_path };
+  if (r.role === "assistant") s.role = "assistant";
   return s;
 }
 

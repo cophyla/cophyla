@@ -96,6 +96,13 @@ export interface TerminalRowsDeps {
   rowMs?: number;
 }
 
+/** The label on the terminal the chat's own session runs in: no list holds it, and only its own pane opens it. */
+export const ASSISTANT_LABEL = "cophylad.assistant";
+
+function isAssistant(entry: TerminalEntry): boolean {
+  return entry.info.labels?.[ASSISTANT_LABEL] !== undefined;
+}
+
 /** Each terminal's row, told on the bus as `terminal.state` once per change of what it shows. */
 export class TerminalRows {
   private deps: TerminalRowsDeps;
@@ -138,8 +145,13 @@ export class TerminalRows {
     return owner;
   }
 
-  /** Whether a terminal is the machine's, which its clients may see and open. */
+  /** Whether a terminal is the machine's, which its clients may see, open and end: never the one the chat's own session runs in. */
   visible(entry: TerminalEntry): boolean {
+    return this.ownerOf(entry) === undefined && !isAssistant(entry);
+  }
+
+  /** Whether a client may open a terminal: one it sees, or the chat's own, which its pane opens by id. */
+  opens(entry: TerminalEntry): boolean {
     return this.ownerOf(entry) === undefined;
   }
 
@@ -192,6 +204,7 @@ export class TerminalRows {
 
   private onChange(c: TerminalChange): void {
     const key = keyOf(c.entry.ref);
+    if (isAssistant(c.entry)) return;
     if (!c.gone) return this.schedule(key);
     // Gone with its host, or removed: told once more, as ended, and forgotten.
     clearTimeout(this.timers.get(key));
@@ -224,7 +237,7 @@ export class TerminalRows {
 
   private tell(key: string): void {
     const entry = this.deps.tether.get(refOf(key));
-    if (!entry) return;
+    if (!entry || isAssistant(entry)) return;
     const row = this.row(entry);
     const line = JSON.stringify(row);
     if (this.told.get(key) === line) return;
@@ -279,7 +292,7 @@ export interface ViewerSink {
 export interface TerminalStreamsDeps {
   tether: Tether;
   registry: ViewerSink;
-  rows: Pick<TerminalRows, "row" | "visible">;
+  rows: Pick<TerminalRows, "row" | "visible" | "opens">;
   log: Logger;
 }
 
@@ -304,7 +317,7 @@ export class TerminalStreams {
   /** Opens a terminal for a client, replacing the view it had of it. */
   async open(client: string, id: string, opts: { input?: boolean; drive?: TerminalSize }): Promise<ClientResult<"terminal.open">> {
     const entry = this.deps.tether.byId(id);
-    if (!entry || !this.deps.rows.visible(entry)) throw new RpcError("not_found", `no terminal ${id}`);
+    if (!entry || !this.deps.rows.opens(entry)) throw new RpcError("not_found", `no terminal ${id}`);
     await this.close(client, id);
     const feed = this.feed(entry.ref);
     const v: Viewer = { client, feed, input: opts.input === true || opts.drive !== undefined, decoder: new TextDecoder(), at: 0, cols: 0, rows: 0, held: [], text: [], bytes: 0, live: false, closed: false };

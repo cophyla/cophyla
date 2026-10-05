@@ -31,7 +31,7 @@ export interface HookIngress {
 
 const EMPTY = "{}";
 
-function tokenMatches(header: string | null, token: string): boolean {
+export function tokenMatches(header: string | null, token: string): boolean {
   if (!header) return false;
   const m = /^Bearer\s+(.+)$/i.exec(header.trim());
   if (!m) return false;
@@ -40,7 +40,7 @@ function tokenMatches(header: string | null, token: string): boolean {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-function isLoopback(address: string | undefined): boolean {
+export function isLoopback(address: string | undefined): boolean {
   if (!address) return true;
   return address === "127.0.0.1" || address === "::1" || address === "::ffff:127.0.0.1" || address.startsWith("127.");
 }

@@ -2,7 +2,7 @@
 // `audit.entry`; `sessions` raises `session.state` and `session.event`; `workspaces` raises
 // `workspace.state`; `chat` raises `chat.message`, `thread.state`, `user.message` and
 // `user.activity`, brain-link's reply stream `chat.delta` and `chat.retract`, and the
-// brain's `chat.progress`; `tasks`
+// brain's `chat.progress`; the assistant module raises `assistant.state`; `tasks`
 // raises `task.state` and `task.ready`; `update` raises `update.state`; `editable` raises
 // `tools.changed`, `prompts.changed`, `memory.changed`, `events.changed` and
 // `view.changed`; `voice` raises `voice.state`, `voice.transcript` and
@@ -14,7 +14,7 @@
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
 
-import type { Ask, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
+import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
 
 export interface UserMessageEvent {
@@ -77,6 +77,8 @@ export interface BusEvents {
   "chat.retract": ClientNotificationParams<"chat.retract">;
   /** The brain's turn in progress, relayed from its `ui.progress` signal; `turn` absent once it is over. */
   "chat.progress": ClientNotificationParams<"chat.progress">;
+  /** Where the chat's own session stands, from the assistant module, whenever it changes. */
+  "assistant.state": AssistantState;
   "task.state": Task;
   "task.ready": TaskReadyEvent;
   "thread.state": Thread;

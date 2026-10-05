@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { clearContextRow, dialogRows, promptInput, tail, waitingOn } from "../src/sessions/claude/screen.ts";
+import { clearContextRow, dialogRows, promptInput, tail, trustDialog, waitingOn } from "../src/sessions/claude/screen.ts";
 import type { ScreenLike } from "../src/sessions/claude/screen.ts";
 
 const screens = JSON.parse(readFileSync(join(import.meta.dir, "fixtures", "claude-screens.json"), "utf8")) as Record<string, ScreenLike>;
@@ -43,6 +43,20 @@ describe("claude screen", () => {
     expect(waitingOn(screens["empty"]!)).toBeUndefined();
     expect(waitingOn({ lines: ["Select login method:", "❯ 1. Claude account"] })).toBe("signing in");
     expect(tail(screens["trust"]!, 2)).toBe("   Yes, I trust this folder\n Enter to confirm · Esc to cancel");
+  });
+
+  test("the folder trust dialog: where its pointer is, and the key that moves it onto the row that trusts", () => {
+    // As 2.1.289 draws it: no numbers, the pointer on "No, exit", the trusting row under it.
+    expect(trustDialog(screens["trust"]!)).toEqual({ selected: false, move: "Down" });
+    expect(trustDialog({ lines: [" Accessing workspace:", "   No, exit", " ❯ Yes, I trust this folder", " Enter to confirm · Esc to cancel"] })).toEqual({ selected: true, move: "Down" });
+    // The ASCII pointer, where the terminal names nothing Claude trusts with Unicode.
+    expect(trustDialog({ lines: [" > No, exit", "   Yes, I trust this folder"] })).toEqual({ selected: false, move: "Down" });
+    // An earlier layout: numbered, the trusting row first and selected; and the pointer under it.
+    expect(trustDialog({ lines: [" ❯ 1. Yes, I trust this folder", "   2. No, exit"] })).toEqual({ selected: true, move: "Down" });
+    expect(trustDialog({ lines: ["   1. Yes, I trust this folder", " ❯ 2. No, exit"] })).toEqual({ selected: false, move: "Up" });
+    // No dialog: a prompt, or the words quoted in a transcript's middle.
+    expect(trustDialog(screens["empty"]!)).toBeUndefined();
+    expect(trustDialog({ lines: ["● I pressed Yes, I trust this folder for you."] })).toBeUndefined();
   });
 
   test("text screens work where cells are not given", () => {

@@ -91,6 +91,8 @@ export interface BrainMethodDeps {
   files?: Pick<SessionFiles, "git">;
   /** This node's terminal rows, for `terminal.list`; absent, there are none. */
   terminals?: { list(): Terminal[] };
+  /** The chat's own session, which a wake is handed to; absent while none runs here, and `assistant.wake` then answers that nothing took it. */
+  assistant?: () => { wake(p: { id: string; text: string }): { queued: boolean } } | undefined;
 }
 
 /** What `profile.limits` reads: `PlanLimits.fresh`. */
@@ -449,6 +451,11 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
         if (!deps.remote) throw new RpcError("unsupported", "this node has no remote module");
         return deps.remote.screenshot(p.display);
       },
+    },
+    // Typed into the chat's own session as the user's words are; taken only while it is up.
+    "assistant.wake": {
+      target: (p) => p.kind,
+      handler: (p) => deps.assistant?.()?.wake({ id: p.id, text: p.text }) ?? { queued: false },
     },
     // `cancel` is served by the link itself, before the table.
   };

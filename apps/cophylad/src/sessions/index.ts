@@ -22,6 +22,12 @@
 // of the folder it runs in. What reads or acts on a session by id sees the machine's alone,
 // and a workspace node's through `view`; a session of another partition is "no session" to
 // it. A workspace node's sessions are started headless.
+//
+// One session is nobody's agent: the one the chat itself runs in (`role: assistant`), which
+// the assistant module starts here (`spawnAssistant`) and types into as the user. It is in a
+// partition of its own (`ASSISTANT_PART`), so no list holds it and no request by id finds it
+// but the module's; nothing of it goes on the bus, none of its events are stored, and its
+// hooks are answered by the module, which is told of its row's changes directly.
 
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
@@ -42,7 +48,9 @@ import { AcpAdapter, CODEX_ACP_FULL_ACCESS } from "./acp/adapter.ts";
 import { looserOnTheWay, MODE_WORDS, permissionModeOf, readLaunch } from "./claude/launch.ts";
 import { isAlive as processAlive } from "./claude/registry.ts";
 import type { ClaudeLaunch, PermissionMode } from "./claude/launch.ts";
-import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, tail, waitingOn } from "./claude/screen.ts";
+import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, tail, trustDialog, waitingOn } from "./claude/screen.ts";
+import { contextUsed } from "./claude/transcript.ts";
+import type { ClaudeTranscriptState } from "./claude/transcript.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
@@ -71,6 +79,7 @@ import type { TerminalOpener } from "./terminals.ts";
 import { cliOfName, TerminalClis } from "./tether/cli.ts";
 import type { ProcessRow } from "./tether/cli.ts";
 import type { TerminalChange, TerminalEntry, Tether } from "./tether/index.ts";
+import { ASSISTANT_LABEL } from "./tether/streams.ts";
 import { uuidv7Time } from "./uuidv7.ts";
 
 export interface SessionsDeps {
@@ -118,6 +127,35 @@ export interface SessionsDeps {
   cliTiming?: { debounceMs?: number; gapMs?: number };
   /** Which workspace node owns a folder, and whose items the machine's own apps never see; absent, every session is the machine's. */
   owners?: SessionOwners;
+}
+
+/** The partition the chat's own session is in: the machine's lists and a workspace node's alike leave it out. */
+export const ASSISTANT_PART = "assistant";
+
+/** What the assistant module hears of the session the chat runs in. */
+export interface AssistantHooks {
+  /**
+   * A hook of the session's: its start, a prompt it took, a tool it ran, its turn's end. `ref`
+   * names the message cophylad typed, on a prompt that is one. What it answers is the hook's
+   * answer.
+   */
+  hook(hook: NormalisedHook, info: { ref?: string }): Promise<unknown> | unknown;
+  /** The session's row changed, or it ended. */
+  changed(session: Session): void;
+}
+
+/** What the chat's own session is started with. */
+export interface AssistantSpawn {
+  profile: HarnessProfile;
+  /** The folder it runs in: cophylad's own, so a clear resolves to this session alone. */
+  cwd: string;
+  /** The command line after the program and its session id: the model, the tools, the settings. */
+  args: string[];
+  /** Added to the environment the profile's sessions start in. */
+  env?: Record<string, string>;
+  /** The conversation to go on with, by the id it last had; a fresh one when absent. */
+  resume?: string;
+  timeoutMs?: number;
 }
 
 /** Which node owns what on this machine: the folders lent to workspace nodes, and the ids kept private. */
@@ -300,6 +338,8 @@ const RESULT_HOLD_MS = 1500;
 /** Tool call ids a record remembers, so a result whose call is in already does not wait. */
 const RECENT_CALLS = 256;
 /** Between screen checks while a message waits to be typed. */
+/** The most rows the folder trust dialog's pointer is moved before it is left alone. */
+const TRUST_MOVES = 4;
 const TYPE_POLL_MS = 400;
 /** How long a message typed and sent waits for the harness to show it before Enter is pressed once more. */
 const TYPE_VERIFY_MS = 6000;
@@ -438,6 +478,10 @@ export class Sessions implements SessionHost {
   private syncing: Promise<void> = Promise.resolve();
   private stopped = false;
   private started = false;
+  /** The assistant module, once it is up: what the chat's own session's hooks and changes go to. */
+  private assistant?: AssistantHooks;
+  /** The native ids the chat's own session was started or resumed under: a record met under one is its. */
+  private assistantIds = new Set<string>();
 
   constructor(deps: SessionsDeps) {
     this.deps = deps;
@@ -758,18 +802,20 @@ export class Sessions implements SessionHost {
     return out;
   }
 
-  /** Every partition's: what the metrics tree walk claims from. */
+  /** Every partition's: what the metrics tree walk claims from. The chat's own session is no one's to show: its processes count to the machine alone. */
   pidsAll(): Map<number, string> {
     const out = new Map<number, string>();
     for (const rec of this.byId.values()) {
       const pid = rec.session.native.pid;
+      if (rec.session.role === "assistant") continue;
       if (rec.session.status !== "ended" && pid !== undefined) out.set(pid, rec.session.id);
     }
     return out;
   }
 
-  /** Whether a session is in a partition: a workspace node's own (`part`), or, unset, the machine's. */
-  private inPart(s: Pick<Session, "node">, part?: string): boolean {
+  /** Whether a session is in a partition: a workspace node's own (`part`), or, unset, the machine's. The chat's own session is in neither. */
+  private inPart(s: Pick<Session, "node" | "role">, part?: string): boolean {
+    if (s.role === "assistant" || part === ASSISTANT_PART) return s.role === "assistant" && part === ASSISTANT_PART;
     return part === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) : s.node === part;
   }
 
@@ -1272,14 +1318,16 @@ export class Sessions implements SessionHost {
           revived = true;
         }
       } else {
-        const node = this.ownerFor(seed);
+        // The chat's own session, met under the id it was started with: stamped before anything is told of it.
+        const assistant = this.assistantIds.has(seed.nativeId);
+        const node = assistant ? this.nodeId : this.ownerFor(seed);
         const session: Session = {
           id: newId("session", now),
           node,
           harness: seed.harness,
           profile: seed.profile,
           native: { id: seed.nativeId, transport: seed.transport },
-          origin: seed.origin ?? "user",
+          origin: assistant ? "orchestrator" : (seed.origin ?? "user"),
           cwd: seed.cwd,
           tags: [],
           status: seed.status ?? "idle",
@@ -1294,8 +1342,10 @@ export class Sessions implements SessionHost {
         if (seed.intent !== undefined) session.intent = seed.intent;
         if (seed.task !== undefined) session.task = seed.task;
         if (seed.transcriptPath !== undefined) session.transcript = { path: seed.transcriptPath };
+        if (assistant) session.role = "assistant";
         if (seed.workspace !== undefined) session.workspace = seed.workspace;
-        else {
+        // Its folder is cophylad's own, and no workspace of the user's.
+        else if (!assistant) {
           try {
             session.workspace = this.deps.workspaces.fromSession(seed.cwd, node).id;
           } catch (e) {
@@ -1512,6 +1562,13 @@ export class Sessions implements SessionHost {
   }
 
   event(rec: SessionRecord, kind: SessionEventKind, payload: unknown, raw?: unknown, at = this.now()): SessionEvent {
+    // The chat's own session's turns are the chat's messages already: its events are neither stored, recalled nor told.
+    if (rec.session.role === "assistant") {
+      if (at > rec.session.lastActivity) rec.session.lastActivity = at;
+      this.broadcast(rec);
+      if (kind === "tool_call") this.called(rec as LiveRecord, payload);
+      return { session: rec.session.id, seq: -1, at, kind, payload };
+    }
     const e = this.deps.store.sessionEvents.append({ session: rec.session.id, at, kind, payload, ...(raw !== undefined ? { raw } : {}) });
     if (at > rec.session.lastActivity) {
       rec.session.lastActivity = at;
@@ -1637,17 +1694,23 @@ export class Sessions implements SessionHost {
         clearTimeout(pending);
         this.broadcasts.delete(id);
       }
-      this.deps.bus.emit("session.state", { ...rec.session });
+      this.tell(rec.session);
       return;
     }
     if (this.broadcasts.has(id)) return;
     const t = setTimeout(() => {
       this.broadcasts.delete(id);
       const current = this.byId.get(id);
-      if (current) this.deps.bus.emit("session.state", { ...current.session });
+      if (current) this.tell(current.session);
     }, BROADCAST_MS);
     unref(t);
     this.broadcasts.set(id, t);
+  }
+
+  /** A session's row as it stands: on the bus, or, the chat's own, to the assistant module alone. */
+  private tell(session: Session): void {
+    if (session.role === "assistant") this.assistant?.changed({ ...session });
+    else this.deps.bus.emit("session.state", { ...session });
   }
 
   // --- queries ------------------------------------------------------------------------
@@ -1748,6 +1811,139 @@ export class Sessions implements SessionHost {
       if (rec.session.node !== node || rec.session.status !== "ended") continue;
       this.byId.delete(id);
       for (const [key, value] of [...this.byNative]) if (value === id) this.byNative.delete(key);
+    }
+  }
+
+  // --- the chat's own session ---------------------------------------------------------------
+
+  /** The assistant module comes up, or goes: the hooks and the changes of the chat's own session go to it. */
+  setAssistant(hooks: AssistantHooks | undefined): void {
+    this.assistant = hooks;
+  }
+
+  /** The chat's own session in its terminal, live, when there is one. A Codex thread of the chat's is no terminal's, and is not it. */
+  assistantSession(): Session | undefined {
+    for (const rec of this.byId.values()) if (rec.session.role === "assistant" && rec.session.harness === "claude" && rec.session.status !== "ended") return { ...rec.session };
+    return undefined;
+  }
+
+  /** The context the chat's own session holds, in tokens, as its transcript's last turn counted it; none before its first. */
+  assistantContext(): number | undefined {
+    for (const rec of this.byId.values()) {
+      if (rec.session.role !== "assistant" || rec.session.harness !== "claude" || rec.session.status === "ended") continue;
+      // Between a cleared context and its transcript's first row the record holds no parser of its own.
+      const parser = rec.parser as Partial<ClaudeTranscriptState> | undefined;
+      return parser?.stats ? contextUsed(parser as ClaudeTranscriptState) : undefined;
+    }
+    return undefined;
+  }
+
+  /**
+   * A native id the chat's own session runs under on a host that is not a terminal (a Codex
+   * thread on cophylad's own app-server): a record met under it is the chat's, and one an
+   * adapter met a moment too soon leaves the lists.
+   */
+  claimAssistant(harness: AttachedHarness, nativeId: string): void {
+    this.assistantIds.add(nativeId);
+    const rec = this.find(harness, nativeId) as LiveRecord | undefined;
+    if (!rec || rec.session.role === "assistant") return;
+    const was = { ...rec.session };
+    rec.session.role = "assistant";
+    rec.session.origin = "orchestrator";
+    delete rec.session.workspace;
+    this.deps.store.sessions.update(rec.session);
+    if (!this.stopped) this.deps.bus.emit("session.state", { ...was, status: "ended", endedAt: this.now() });
+  }
+
+  /**
+   * Starts the chat's own session: the Claude Code CLI itself in a tether terminal, under a
+   * profile of the user's, with the command line the assistant module built and no window. Its
+   * id is decided here, so the record is the chat's from the moment it is met; `resume` goes
+   * on with a conversation by the id it last had. Nothing is typed: the module does that.
+   */
+  async spawnAssistant(p: AssistantSpawn): Promise<Session> {
+    const tether = this.deps.tether;
+    if (!tether?.available) throw new RpcError("unavailable", "tether is not on this node, and the chat's session runs in a terminal");
+    const adapter = this.adapters.get("claude");
+    const sessionId = p.resume ?? newSessionId();
+    this.assistantIds.add(sessionId);
+    const argv = [this.claudeBinary(p.profile), ...(p.resume ? ["--resume", sessionId] : ["--session-id", sessionId]), ...p.args];
+    const env = { ...this.claudeSpawnEnv(p.profile), ...(p.env ?? {}) };
+    const term = (await tether.spawn({ argv, cwd: p.cwd, env, labels: { app: "cophylad", [ASSISTANT_LABEL]: "1", "cophylad.session": sessionId } })).ref;
+    adapter?.expect?.(sessionId, { intent: "Cophyla", terminal: term, expiresAt: this.now() + TERMINAL_EXPECT_MS });
+    const timeoutMs = p.timeoutMs ?? this.deps.acp?.config.spawn_timeout_ms ?? 60000;
+    const deadline = this.now() + timeoutMs;
+    let met = false;
+    const trusting = this.trustOwnFolder(term, () => met || this.now() >= deadline || tether.get(term)?.info.status === "exited");
+    const rec = await this.awaitTerminalSession("claude", () => {
+      const found = this.find("claude", sessionId);
+      return found && found.session.status !== "ended" ? found : undefined;
+    }, timeoutMs, term);
+    met = true;
+    await trusting;
+    if (!rec) {
+      adapter?.unexpect?.(sessionId);
+      const screen = await tether.screen(term, "text").catch(() => undefined);
+      const on = screen ? waitingOn(screen) : undefined;
+      const why = on ? `it is waiting on ${on}` : screen ? `its screen ends:\n${tail(screen)}` : "its terminal cannot be read";
+      await tether.kill(term).catch(() => undefined);
+      throw new RpcError("unavailable", `the chat's session did not start within ${Math.round(timeoutMs / 1000)}s: ${why}`);
+    }
+    // A record kept from before it had a role: marked now.
+    if (rec.session.role !== "assistant") {
+      rec.session.role = "assistant";
+      rec.session.origin = "orchestrator";
+      delete rec.session.workspace;
+      this.deps.store.sessions.update(rec.session);
+    }
+    this.log.info("the chat's session started in tether", { session: rec.session.id, terminal: term.id, resumed: p.resume !== undefined, profile: p.profile.id });
+    return { ...rec.session };
+  }
+
+  /**
+   * Answers the folder trust dialog of the chat's own session while it starts. The folder is
+   * cophylad's own, made by it and holding nothing it did not write, and the terminal has no
+   * window for the user to answer in, so an account that meets the folder for the first time
+   * is answered here. Only that row is ever pressed: any other question is left as it is, and
+   * the start fails saying what it waits on.
+   */
+  private async trustOwnFolder(term: TerminalRef, done: () => boolean): Promise<void> {
+    const tether = this.deps.tether!;
+    // The pointer is moved a row at a time and read again; Enter is pressed only once it is seen on the row that trusts.
+    let moves = 0;
+    while (!done()) {
+      const screen = await tether.screen(term).catch(() => undefined);
+      const dialog = screen ? trustDialog(screen) : undefined;
+      if (!dialog || (!dialog.selected && moves >= TRUST_MOVES)) {
+        await sleep(400);
+        continue;
+      }
+      try {
+        if (dialog.selected) {
+          await tether.keys(term, ["Enter"]);
+          this.log.info("the chat's own folder was trusted for its session", { terminal: term.id });
+          // Read afresh before anything more is pressed: a dialog that has gone was answered.
+          await sleep(600);
+        } else {
+          moves++;
+          await tether.keys(term, [dialog.move]);
+          await sleep(200);
+        }
+      } catch (e) {
+        this.log.debug("the folder trust dialog was not answered", { terminal: term.id, error: e instanceof Error ? e.message : String(e) });
+        await sleep(400);
+      }
+    }
+  }
+
+  /** A hook of the chat's own session, handed to the assistant module; what it answers, or nothing when it fails. */
+  private async assistantHook(hook: NormalisedHook, info: { ref?: string } = {}): Promise<unknown> {
+    if (!this.assistant) return {};
+    try {
+      return (await this.assistant.hook(hook, info)) ?? {};
+    } catch (e) {
+      this.log.warn("the assistant did not answer its session's hook", { event: hook.name, error: e instanceof Error ? e.message : String(e) });
+      return {};
     }
   }
 
@@ -2868,6 +3064,7 @@ export class Sessions implements SessionHost {
 
     // Any event past an Elicitation means the terminal answered it.
     if (rec.inputAsk && hook.name !== "Elicitation") this.closeInput(rec, "stopped");
+    const own = rec.session.role === "assistant";
 
     switch (hook.name) {
       case "SessionStart": {
@@ -2879,10 +3076,13 @@ export class Sessions implements SessionHost {
         const status = rec.session.status === "busy" ? "busy" : "idle";
         this.event(rec, "status", { status, source: hook.source }, raw, now);
         this.setStatus(rec, status, now);
-        return {};
+        // The chat's own session is told the situation as it starts.
+        return own ? this.assistantHook(hook) : {};
       }
       case "UserPromptSubmit": {
         const prompt = hook.prompt ?? "";
+        // Which message of cophylad's own the prompt is, read before its receipt settles it.
+        const sent = own ? this.injections.matchText(rec.session.id, prompt, hook.promptId) : undefined;
         if (!this.receiptByText(rec, prompt, hook.promptId)) {
           if (this.isOwnText(rec, prompt, hook.promptId)) {
             this.event(rec, "notification", { type: "message", state: "delivered", text: capText(prompt) }, raw, now);
@@ -2892,7 +3092,7 @@ export class Sessions implements SessionHost {
           }
         }
         this.setStatus(rec, "busy", now);
-        return {};
+        return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : {};
       }
       case "PermissionRequest":
         return this.holdPermission(rec, hook, meta, raw, now);
@@ -2923,6 +3123,7 @@ export class Sessions implements SessionHost {
         if (waits) this.holdResult(rec, hook.toolUseId!, payload, raw, now);
         else this.event(rec, "tool_result", payload, raw, now);
         if (rec.session.status !== "needs_permission" && rec.session.status !== "needs_input") this.setStatus(rec, "busy", now);
+        if (own) void this.assistantHook(hook);
         return {};
       }
       case "Notification": {
@@ -2948,6 +3149,8 @@ export class Sessions implements SessionHost {
         };
         // Idle, or waiting on its own shells or on a dialog: the harness says which about as
         // the hook fires, and a session still said to be busy is waited for, the hook answered meanwhile.
+        // The chat's own session ended its turn: its last words are the reply.
+        if (own) void this.assistantHook(hook);
         const waiting = adapter.afterStop?.(rec);
         if (waiting instanceof Promise) {
           void waiting.then(settle, (e: unknown) => {
