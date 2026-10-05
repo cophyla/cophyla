@@ -4800,6 +4800,75 @@ button:disabled {
   font-weight: 600;
 }
 
+/* The chat's head, over its conversation: what runs the chat, where it stands, how full its
+   context is, and Chat | Terminal where its session's own terminal can be shown. */
+.chat-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  padding: 6px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.chat-agent {
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-agent-note {
+  white-space: nowrap;
+}
+
+.chat-head[data-status="unavailable"] .chat-agent-note,
+.chat-head[data-status="down"] .chat-agent-note {
+  color: var(--amber);
+}
+
+.chat-context {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.chat-context .context-meter {
+  width: 72px;
+}
+
+.chat-mode {
+  flex: 0 0 auto;
+}
+
+.chat-context[hidden] + .chat-mode {
+  margin-left: auto;
+}
+
+/* The chat showing its session's terminal: the head stays, the screen takes the conversation's place. */
+.chat-pane[data-mode="terminal"] #stream {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .chat-head {
+    padding: 6px 12px;
+  }
+
+  .chat-context .context-meter {
+    display: none;
+  }
+}
+
 /* A session showing its terminal: the header stays, the screen takes the rest. */
 .session[data-mode="terminal"] {
   display: flex;

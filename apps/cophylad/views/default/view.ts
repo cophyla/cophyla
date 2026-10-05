@@ -37,8 +37,12 @@
 // (`voice.hush`); for where replies are read out, the view tells the node whether it is in front
 // and shown, and that the user acts in it (`voice.presence`). At the start of the chat's
 // composer, while the node shows it (`[brain] show_context`, asked with `brain.context {check}`
-// on every connect), Context lays what the brain sees on its next turn, and what the
-// conversation has cost, over the conversation alone (contextview.ts). Runs in a
+// on every connect), Context lays what the chat's session is told, and how full its context
+// is, over the conversation alone (contextview.ts). The chat runs in an agent session of the
+// user's own, and the node says where it stands (`assistant.state`): the chat's head names
+// the harness, its model and effort, shows its context against the size it is folded at, and
+// has Chat | Terminal, which puts that session's own terminal in the conversation's place;
+// Restart chat agent in the ⋮ menu ends it and starts it again (`assistant.restart`). Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
 // it asks the shell past the host (dropped.ts).
@@ -52,10 +56,10 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { AssistantState, ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, chatDraw, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, ChatDraw, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
+import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
@@ -116,7 +120,7 @@ const viewer = new FileViewer(
     if (tab !== undefined) openFile(tab, t.from, rel, { focus: true });
   },
 );
-/** What the brain sees on its next turn, and what the conversation has cost, over the conversation while the user has it open. */
+/** What the chat's session is told, and how full its context is, over the conversation while the user has it open. */
 const contextView = new ContextView(rpc);
 /** Another node's desktop beside the pane, or over it, which the host lays over the view where the panel says. */
 const remotePanel = new RemotePanel({
@@ -184,6 +188,13 @@ function syncTerminal(): void {
     if (card && own && pane && paneMode(ui.modes.get(card.session.id), true) === "terminal") {
       terminal.show(own.id, pane, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(own, false, ui.fit);
+      return;
+    }
+    // The chat's own session, on its terminal: no row of the node's lists it, so the bar names nothing.
+    const chats = chatTerminal(state, ui);
+    if (chats !== undefined) {
+      terminal.show(chats, roots.chat, { drive: ui.fit, scale: ui.scale, input: true });
+      terminal.update(undefined, false, ui.fit);
       return;
     }
   }
@@ -335,6 +346,9 @@ rpc.onNotification((n) => {
     case "chat.progress":
       dispatch({ type: "chat.progress", params: n.params as { turn?: TurnProgress } });
       return;
+    case "assistant.state":
+      dispatch({ type: "assistant.state", params: n.params as AssistantState });
+      return;
     case "task.state":
       dispatch({ type: "task.state", params: n.params as Task });
       return;
@@ -438,7 +452,7 @@ async function loadContextOn(): Promise<void> {
   draw();
 }
 
-/** Lays what the brain sees on its next turn over the conversation, asked for afresh, or takes it away on a second press. */
+/** Lays what the chat's session is told over the conversation, asked for afresh, or takes it away on a second press. */
 function toggleContext(): void {
   if (ui.contextOpen) return closeContext();
   ui.devices = undefined;
@@ -464,7 +478,7 @@ function chatShown(): boolean {
  * brain's window will have moved on.
  */
 function syncContext(): void {
-  const shown = ui.contextOpen === true && ui.contextOn === true && chatShown();
+  const shown = ui.contextOpen === true && ui.contextOn === true && chatShown() && chatTerminal(state, ui) === undefined;
   if (shown && !contextView.shown) contextView.show(roots.chat);
   else if (!shown && contextView.shown) contextView.hide();
 }
@@ -546,6 +560,29 @@ async function changeView(): Promise<void> {
   } catch (e) {
     const unsupported = e instanceof ViewRpcError && e.code === "unsupported";
     ui.railMenu = { note: unsupported ? "This app cannot change views yet: update it." : `Change view: ${e instanceof Error ? e.message : String(e)}` };
+    draw();
+  }
+}
+
+/**
+ * Restart chat agent, from the ⋮ menu: the node ends the agent session the chat runs in and
+ * starts it again where it was. The menu stays open until it answers, and says why when it
+ * could not.
+ */
+async function restartChat(): Promise<void> {
+  if (ui.chatRestarting) return;
+  ui.chatRestarting = true;
+  ui.railMenu = {};
+  draw();
+  try {
+    const r = await rpc.request<{ state?: AssistantState }>("assistant.restart", {});
+    if (r.state) dispatch({ type: "assistant.state", params: r.state });
+    ui.railMenu = undefined;
+  } catch (e) {
+    const unsupported = e instanceof ViewRpcError && e.code === "unsupported";
+    ui.railMenu = { note: unsupported ? "The chat agent cannot be restarted from here yet: update the app and the node." : `Restart chat agent: ${e instanceof Error ? e.message : String(e)}` };
+  } finally {
+    ui.chatRestarting = false;
     draw();
   }
 }
@@ -2526,6 +2563,19 @@ document.addEventListener("click", (ev) => {
     case "change-view":
       void changeView();
       return;
+    case "chat-restart":
+      void restartChat();
+      return;
+    case "chat-mode": {
+      const mode = target.dataset["mode"];
+      if (mode !== "chat" && mode !== "terminal") return;
+      ui.chatMode = mode;
+      // The context lies over the conversation, not over a terminal.
+      if (mode === "terminal") ui.contextOpen = false;
+      draw();
+      if (mode === "terminal") terminal.focus();
+      return;
+    }
     case "context-open":
       toggleContext();
       return;

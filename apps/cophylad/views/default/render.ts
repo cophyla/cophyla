@@ -52,7 +52,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, chatButton, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
@@ -79,6 +79,10 @@ export interface UiState {
   terminal?: string;
   /** What the user chose a session's pane to show, when it runs in a terminal; the terminal until they choose (`paneMode`). */
   modes: Map<string, "timeline" | "terminal">;
+  /** What the user chose the chat's pane to show: the conversation until they choose its session's terminal (`chatMode`). */
+  chatMode?: "chat" | "terminal";
+  /** The chat's session is being started again from the menu. */
+  chatRestarting?: boolean;
   /** Terminals shown here are sized to the pane ("Fit to this window") rather than followed. */
   fit: boolean;
   /** The font they are sized at, in percent of the default: − and + step it, and drive them. */
@@ -1616,7 +1620,11 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     const settings = actionButton("rail-menu-item", "Settings", "settings");
     settings.setAttribute("role", "menuitem");
     settings.title = "Which account agents start under, and with what";
-    moreMenu.append(change, settings, el("p", "rail-menu-note"));
+    // The chat runs in an agent session of the user's own: ended and started again where it was.
+    const restart = actionButton("rail-menu-item chat-restart", "Restart chat agent", "chat-restart");
+    restart.setAttribute("role", "menuitem");
+    restart.title = "End the agent session the chat runs in and start it again, with the conversation it had";
+    moreMenu.append(change, settings, restart, el("p", "rail-menu-note"));
     top.append(chat, speaker, more, moreMenu);
     const list = el("div", "tab-sessions");
     const newTerminal = el("button", "tab-new-terminal", "New terminal");
@@ -2110,13 +2118,18 @@ function renderFileMenu(app: HTMLElement, state: ViewState, ui: UiState): void {
   menu.style.top = `${y}px`;
 }
 
-/** The ⋮ menu beside the chat's tab: Change view and Settings, and why one did not open when it could not. */
+/** The ⋮ menu beside the chat's tab: Change view, Settings and Restart chat agent, and why one did not do as asked when it could not. */
 function renderRailMenu(root: HTMLElement, state: ViewState, ui: UiState): void {
   const more = root.querySelector<HTMLButtonElement>(".rail-more")!;
   more.setAttribute("aria-expanded", ui.railMenu ? "true" : "false");
   const menu = root.querySelector<HTMLElement>(".rail-menu")!;
   setHidden(menu, !ui.railMenu);
   for (const item of menu.querySelectorAll<HTMLButtonElement>(".rail-menu-item")) item.disabled = !state.connected;
+  const restart = menu.querySelector<HTMLButtonElement>(".chat-restart")!;
+  // Only where the node runs the chat in a session and this view may start it again.
+  setHidden(restart, !canRestartChat(state));
+  restart.disabled = !state.connected || ui.chatRestarting === true;
+  setText(restart, ui.chatRestarting ? "Restarting chat agent…" : "Restart chat agent");
   const note = menu.querySelector<HTMLElement>(".rail-menu-note")!;
   setText(note, ui.railMenu?.note ?? "");
   setHidden(note, !ui.railMenu?.note);
@@ -3001,9 +3014,72 @@ function terminalSession(state: ViewState, ui: UiState): string | undefined {
   return card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined) === "terminal" ? card.session.id : undefined;
 }
 
-/** A terminal fills the pane: a bare one's tab, or a session's shown on its terminal. */
+/** The chat's pane shows its session's own terminal: the chat's tab, and the user chose it. */
+export function chatTerminal(state: ViewState, ui: UiState): string | undefined {
+  if (ui.selected !== undefined || ui.terminal !== undefined) return undefined;
+  return chatMode(ui.chatMode, state) === "terminal" ? chatHead(state)?.terminal : undefined;
+}
+
+/** A terminal fills the pane: a bare one's tab, a session's shown on its terminal, or the chat's on its own. */
 function terminalShown(state: ViewState, ui: UiState): boolean {
-  return ui.terminal !== undefined || terminalSession(state, ui) !== undefined;
+  return ui.terminal !== undefined || terminalSession(state, ui) !== undefined || chatTerminal(state, ui) !== undefined;
+}
+
+/**
+ * Over the conversation: what runs the chat (the harness, its model and effort), where it
+ * stands, how full its context is against the size it is folded at, and Chat | Terminal where
+ * its own terminal can be shown. Nothing from a node that says nothing of such a session.
+ */
+function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void {
+  let head = root.querySelector<HTMLElement>(":scope > .chat-head");
+  if (!head) {
+    head = el("header", "chat-head");
+    const dot = el("span", "dot");
+    dot.setAttribute("role", "img");
+    const held = el("span", "chat-context");
+    const bar = el("span", "context-meter");
+    bar.setAttribute("role", "img");
+    bar.append(el("span", "context-meter-fill"));
+    held.append(bar, el("span", "chat-context-count"));
+    const modes = el("div", "pane-mode chat-mode");
+    modes.setAttribute("role", "group");
+    modes.setAttribute("aria-label", "Show");
+    for (const [mode, label] of [["chat", "Chat"], ["terminal", "Terminal"]] as const) {
+      const b = actionButton(`pane-mode-${mode}`, label, "chat-mode");
+      b.dataset["mode"] = mode;
+      modes.append(b);
+    }
+    head.append(dot, el("span", "chat-agent"), el("span", "chat-agent-note"), held, modes);
+    root.prepend(head);
+  }
+  const h = chatHead(state);
+  setHidden(head, h === undefined);
+  const mode = chatMode(ui.chatMode, state);
+  setData(root, "mode", mode);
+  if (!h) return;
+  setData(head, "status", h.status);
+  head.title = h.title;
+  const dot = head.querySelector<HTMLElement>(".dot")!;
+  setData(dot, "status", h.status === "busy" ? "busy" : h.status === "idle" ? "connected" : h.status === "starting" || h.status === "down" ? "setup" : h.status === "unavailable" ? "trouble" : "ended");
+  dot.setAttribute("aria-label", h.note ?? "ready");
+  setText(head.querySelector(".chat-agent")!, h.words);
+  const note = head.querySelector<HTMLElement>(".chat-agent-note")!;
+  setText(note, h.note ?? "");
+  setHidden(note, h.note === undefined);
+  const held = head.querySelector<HTMLElement>(".chat-context")!;
+  setHidden(held, h.context === undefined);
+  if (h.context) {
+    const words = `${tokenWords(h.context.used)} of ${tokenWords(h.context.limit)} tokens of context, where it is folded`;
+    const bar = held.querySelector<HTMLElement>(".context-meter")!;
+    setData(bar, "level", h.context.share > 1 ? "over" : h.context.share >= 0.8 ? "high" : "normal");
+    bar.setAttribute("aria-label", words);
+    held.title = words;
+    bar.querySelector<HTMLElement>(".context-meter-fill")!.style.width = `${Math.min(100, Math.max(0, h.context.share * 100)).toFixed(1)}%`;
+    setText(held.querySelector(".chat-context-count")!, `${countWords(h.context.used)} / ${countWords(h.context.limit)}`);
+  }
+  const modes = head.querySelector<HTMLElement>(".chat-mode")!;
+  setHidden(modes, h.terminal === undefined);
+  for (const b of Array.from(modes.querySelectorAll<HTMLButtonElement>("button"))) b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
 }
 
 /**
@@ -3050,7 +3126,7 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
     talk.append(micIcon());
     // First, when the node shows the brain's context: the button that lays it over the conversation.
     const context = actionButton("context-open", "", "context-open");
-    context.title = "Context: what the brain sees on its next turn, and what this conversation has cost";
+    context.title = "Context: what the chat's session is told, and how full its context is";
     context.setAttribute("aria-label", context.title);
     context.hidden = true;
     form.append(context, quick, field, talk, button);
@@ -3147,6 +3223,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   renderTabs(roots.tabs, state, ui);
   renderFileMenu(roots.app, state, ui);
   setHidden(roots.chat, ui.selected !== undefined || ui.terminal !== undefined);
+  renderChatHead(roots.chat, state, ui);
   setHidden(roots.terminal, ui.terminal === undefined);
   ensureEmpty(roots.stream, state);
   ensureEarlier(roots.stream, state);

@@ -1,6 +1,11 @@
 // The host's settings: a layer over the frame that is the host's own, like the view picker,
 // so any view opens the same one by asking `host.settings` and none has to draw it. It is
-// made of sections, and more will join. Listening for comes first: what wakes Cophyla
+// made of sections, and more will join. Chat comes first: the chat runs in an agent session
+// of the user's own, and the section says where it stands (`assistant.state`), which harness
+// and which account it runs on, each left to cophylad or picked (`assistant.configure`, which
+// starts it afresh), and has a button that ends it and starts it again where it was
+// (`assistant.restart`); a node from before the chat ran so leaves the section out. Then
+// Listening for: what wakes Cophyla
 // besides the user's messages, the listeners it set with its tools (`listener.list`), each
 // with why it listens, on what, how it tells, the fires left and made, and a Remove
 // (`listener.remove`); a node from before there were listeners leaves the section out.
@@ -31,11 +36,11 @@
 // where the launch in use came from (set here, config.toml, or the user's own last session
 // there) and a Reset. It reads with the host's own connection and writes with
 // `profile.update`. It closes on its ✕, on Escape and on a click outside its card, and says
-// what failed beside what failed. `settingsRows`, `speechRow`, `wakeRow`, `listenerLine` and
+// what failed beside what failed. `settingsRows`, `chatRow`, `speechRow`, `wakeRow`, `listenerLine` and
 // `SettingsModel` are DOM-free; the panel draws them. Its look is `settings.css`, which each
 // host page links.
 
-import type { HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -605,6 +610,74 @@ export function wakeRow(s: SpeechSettings, busy = false, note?: string): WakeRow
   };
 }
 
+/** The harnesses the chat can run on, as the settings name them. */
+const CHAT_HARNESS: Record<AssistantHarness, string> = { claude: "Claude Code", codex: "Codex" };
+
+const CHAT_STATUS: Record<AssistantState["status"], string> = {
+  off: "Off",
+  unavailable: "No account is signed in",
+  starting: "Starting…",
+  idle: "Ready",
+  busy: "Working",
+  down: "Starting again…",
+};
+
+/** A count of tokens, short: 41k, 1.2k. */
+function shortCount(n: number): string {
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
+  return String(n);
+}
+
+/** The chat's section: where its session stands, what it runs with, and the two choices. */
+export interface ChatRow {
+  status: string;
+  /** It is not running, for a reason the user can act on. */
+  trouble: boolean;
+  /** Why, in the node's words. */
+  detail?: string;
+  /** What it runs with, while a harness is picked: the model, the effort and its context. */
+  runs?: string;
+  harness: { value: "" | AssistantHarness; options: { value: "" | AssistantHarness; label: string }[] };
+  account: { value: string; options: { value: string; label: string }[] };
+  /** Whether it can be started again from here. */
+  restartable: boolean;
+  busy: boolean;
+  note?: string;
+}
+
+/**
+ * The chat's row, from what the node says of its session and the accounts signed in on the
+ * machine it runs on: the primary, or the machine of the account in use. Automatic names
+ * what cophylad picked; the accounts offered are those of the harness picked, or of both.
+ */
+export function chatRow(input: { state: AssistantState; profiles: HarnessProfile[]; nodes: Node[]; busy: boolean; note?: string }): ChatRow {
+  const { state, profiles } = input;
+  const running = profiles.find((p) => p.id === state.profile);
+  const home = running?.node ?? input.nodes.find((n) => n.role === "primary")?.id;
+  const chosen = state.chosen ?? {};
+  const offered = profiles.filter((p) => (p.harness === "claude" || p.harness === "codex") && p.status === "ok" && (home === undefined || p.node === home) && (chosen.harness === undefined || p.harness === chosen.harness));
+  const label = (p: HarnessProfile) => `${CHAT_HARNESS[p.harness as AssistantHarness]} · ${p.name}`;
+  const picked = profiles.find((p) => p.id === chosen.profile);
+  const accounts = offered.map((p) => ({ value: p.id, label: label(p) }));
+  // One picked that is no longer among them stays listed, so the choice still shows.
+  if (chosen.profile !== undefined && !accounts.some((a) => a.value === chosen.profile)) accounts.push({ value: chosen.profile, label: picked ? `${label(picked)} (not signed in)` : "An account that is gone" });
+  const autoHarness = chosen.harness === undefined && state.harness ? `Automatic (${CHAT_HARNESS[state.harness]})` : "Automatic";
+  const autoAccount = chosen.profile === undefined && running ? `Automatic (${running.name})` : "Automatic";
+  const parts = state.harness ? [state.model, state.effort !== undefined ? `${state.effort} effort` : undefined, state.context ? `${shortCount(state.context.used)} of ${shortCount(state.context.limit)} tokens of context` : undefined].filter((w) => w !== undefined) : [];
+  return {
+    status: CHAT_STATUS[state.status],
+    trouble: state.status === "unavailable" || state.status === "down",
+    ...(state.detail !== undefined ? { detail: state.detail } : {}),
+    ...(parts.length > 0 ? { runs: parts.join(" · ") } : {}),
+    harness: { value: chosen.harness ?? "", options: [{ value: "", label: autoHarness }, { value: "claude", label: CHAT_HARNESS.claude }, { value: "codex", label: CHAT_HARNESS.codex }] },
+    account: { value: chosen.profile ?? "", options: [{ value: "", label: autoAccount }, ...accounts] },
+    restartable: state.status !== "off",
+    busy: input.busy,
+    ...(input.note ? { note: input.note } : {}),
+  };
+}
+
 /** How often the panel asks again while an engine loads. */
 export const SPEECH_POLL_MS = 1000;
 
@@ -636,6 +709,10 @@ export class SettingsModel {
   listeners?: Listener[];
   /** Why a listener could not be removed, by id. */
   readonly listenerNotes = new Map<string, string>();
+  /** The session the chat runs in, once read; absent while reading and on a node from before the chat ran in one. */
+  chat?: AssistantState;
+  chatBusy = false;
+  chatNote = "";
   readonly removing = new Set<string>();
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
@@ -670,6 +747,58 @@ export class SettingsModel {
       this.limits = (await this.request<{ limits: Record<string, ProfileLimits> }>("profile.limits", {})).limits;
     } catch {
       this.limits = {};
+    }
+    this.changed();
+  }
+
+  /** The chat's row; none until the node has said where its session stands. */
+  chatRow(): ChatRow | undefined {
+    return this.chat ? chatRow({ state: this.chat, profiles: this.profiles, nodes: this.nodes, busy: this.chatBusy, note: this.chatNote }) : undefined;
+  }
+
+  /** Where the chat's session stands. A node from before the chat ran in one leaves the section out. */
+  async loadChat(): Promise<void> {
+    try {
+      this.chat = (await this.request<{ state: AssistantState }>("assistant.state", {})).state;
+    } catch {
+      this.chat = undefined;
+    }
+    this.changed();
+  }
+
+  /** The harness the chat runs on, or `""` to leave it to cophylad. An account picked for another harness goes with it. */
+  async setChatHarness(value: "" | AssistantHarness): Promise<void> {
+    if (!this.chat || value === (this.chat.chosen?.harness ?? "")) return;
+    const pinned = this.profiles.find((p) => p.id === this.chat?.chosen?.profile);
+    const keeps = value === "" || pinned === undefined || pinned.harness === value;
+    await this.chatWrite("assistant.configure", { harness: value === "" ? null : value, ...(keeps ? {} : { profile: null }) });
+  }
+
+  /** The account the chat runs on, or `""` to leave it to cophylad. A harness picked that is not the account's goes to the account's. */
+  async setChatAccount(value: string): Promise<void> {
+    if (!this.chat || value === (this.chat.chosen?.profile ?? "")) return;
+    const account = this.profiles.find((p) => p.id === value);
+    const harness = this.chat.chosen?.harness;
+    const moves = account !== undefined && harness !== undefined && account.harness !== harness;
+    await this.chatWrite("assistant.configure", { profile: value === "" ? null : value, ...(moves ? { harness: account.harness as AssistantHarness } : {}) });
+  }
+
+  /** Ends the chat's session and starts it again where it was. */
+  async restartChat(): Promise<void> {
+    await this.chatWrite("assistant.restart", {});
+  }
+
+  private async chatWrite(method: "assistant.configure" | "assistant.restart", params: unknown): Promise<void> {
+    if (this.chatBusy) return;
+    this.chatBusy = true;
+    this.chatNote = "";
+    this.changed();
+    try {
+      this.chat = (await this.request<{ state: AssistantState }>(method, params)).state;
+    } catch (e) {
+      this.chatNote = `${method === "assistant.restart" ? "Not restarted" : "Not changed"}: ${message(e)}`;
+    } finally {
+      this.chatBusy = false;
     }
     this.changed();
   }
@@ -1071,6 +1200,7 @@ export class SettingsPanel {
     void model.load();
     void model.loadSpeech();
     void model.loadListeners();
+    void model.loadChat();
   }
 
   close(): void {
@@ -1109,12 +1239,54 @@ export class SettingsPanel {
         ? this.speechOnly(speech, model)
         : undefined;
     const listening = model.listeners ? this.listeningSection(model.listeners, model) : undefined;
-    body.replaceChildren(...(listening ? [listening] : []), ...(voice ? [voice] : []), agents);
+    const chatRow = model.chatRow();
+    const chat = chatRow ? this.chatSection(chatRow, model) : undefined;
+    body.replaceChildren(...(chat ? [chat] : []), ...(listening ? [listening] : []), ...(voice ? [voice] : []), agents);
     if (focusKey) {
       const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
       again?.focus();
       if (again instanceof HTMLInputElement && caret && caret[0] !== null && caret[1] !== null) again.setSelectionRange(caret[0], caret[1]);
     }
+  }
+
+  private chatSection(row: ChatRow, model: SettingsModel): HTMLElement {
+    const box = section("Chat", "The chat runs in an agent session of your own, on your Claude Code or Codex plan: Cophyla starts it, gives it its tools and wakes it. Changing where it runs starts it with a fresh context.");
+    box.dataset["section"] = "chat";
+    const card = document.createElement("div");
+    card.className = "host-settings-profile";
+    const top = document.createElement("div");
+    top.className = "host-settings-profile-top";
+    const restart = document.createElement("button");
+    restart.type = "button";
+    restart.className = "host-settings-reset";
+    restart.dataset["focus"] = "chat:restart";
+    restart.textContent = row.busy ? "Working…" : "Restart chat agent";
+    restart.title = "End the agent session the chat runs in and start it again, with the conversation it had";
+    restart.disabled = row.busy || !row.restartable;
+    restart.addEventListener("click", () => void model.restartChat());
+    top.append(span(`host-settings-state state-${row.trouble ? "unauthenticated" : "ok"}`, row.status), restart);
+    card.append(top);
+    if (row.runs) card.append(paragraph("host-settings-usage", row.runs));
+    if (row.detail) card.append(paragraph(row.trouble ? "host-settings-error" : "host-settings-note", row.detail));
+    const pick = (focus: string, label: string, value: string, options: { value: string; label: string }[], set: (value: string) => void): HTMLElement => {
+      const line = document.createElement("label");
+      line.className = "host-settings-usual";
+      const select = document.createElement("select");
+      select.dataset["focus"] = focus;
+      for (const o of options) select.append(option(o.value, o.label));
+      select.value = value;
+      select.disabled = row.busy;
+      select.addEventListener("change", () => set(select.value));
+      line.append(span("host-settings-label", label), select);
+      return line;
+    };
+    card.append(
+      pick("chat:harness", "Runs on", row.harness.value, row.harness.options, (v) => void model.setChatHarness(v as "" | AssistantHarness)),
+      pick("chat:account", "Account", row.account.value, row.account.options, (v) => void model.setChatAccount(v)),
+    );
+    if (row.note) card.append(paragraph("host-settings-error", row.note));
+    box.append(card);
+    return box;
   }
 
   private listeningSection(listeners: Listener[], model: SettingsModel): HTMLElement {

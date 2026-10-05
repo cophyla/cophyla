@@ -180,4 +180,19 @@ describe("snapshot cache", () => {
     c.clear();
     expect(c.progress).toBeUndefined();
   });
+
+  test("keeps where the chat's session stands, the latest alone, replayed after the brain's turn", () => {
+    const c = new SnapshotCache();
+    c.upsert(n("assistant.state", { status: "starting", harness: "claude" }));
+    c.upsert(n("chat.progress", { turn: { steps: [], thinking: true } }));
+    c.upsert(n("assistant.state", { status: "idle", harness: "claude", model: "sonnet", context: { used: 41_000, limit: 300_000 } }));
+    // Something that is no state of it changes nothing.
+    c.upsert(n("assistant.state", { harness: "codex" }));
+    const replay = c.replay();
+    expect(replay.map((x) => x.method)).toEqual(["chat.progress", "assistant.state"]);
+    expect(replay[1]!.params).toEqual({ status: "idle", harness: "claude", model: "sonnet", context: { used: 41_000, limit: 300_000 } });
+    c.clear();
+    expect(c.assistant).toBeUndefined();
+    expect(c.replay()).toEqual([]);
+  });
 });

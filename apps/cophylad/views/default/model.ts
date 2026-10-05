@@ -21,10 +21,10 @@
 // of the message it becomes, until that message lands; near its limit the voice row counts
 // down, and one the node stopped before the user did says so until the next. The speaker
 // beside the chat's tab says whether the next reply is read out (`voice.next`), and where.
-// What the brain sees on its next turn (`brain.context`) is shown a block at a time, in words.
+// What the chat's session is told (`brain.context`) is shown part by part, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -221,6 +221,8 @@ export interface ViewState {
   streaming: Map<string, Streaming>;
   /** The orchestrator's turn while it runs: what it has done so far and whether it is thinking. */
   progress?: TurnProgress;
+  /** The session the chat runs in, as the node says it stands; none from a node that says nothing of one. */
+  assistant?: AssistantState;
   tasks: Map<string, Task>;
   /** What voice is doing now; absent when nothing is. */
   voice?: VoiceRow;
@@ -301,6 +303,8 @@ export type Action =
   | { type: "chat.retract"; params: { message: string } }
   /** The orchestrator's turn as it goes; `turn` absent once it is over. */
   | { type: "chat.progress"; params: { turn?: TurnProgress } }
+  /** Where the session the chat runs in stands. */
+  | { type: "assistant.state"; params: AssistantState }
   | { type: "chat.loading" }
   /** A load that failed: nothing is marked loaded, so the button that asked for it asks again. */
   | { type: "chat.failed" }
@@ -548,6 +552,7 @@ export function apply(state: ViewState, action: Action): ViewState {
         for (const c of state.sessions.values()) c.loading = false;
         state.streaming.clear();
         delete state.progress;
+        delete state.assistant;
         state.chatLoading = false;
         state.chatLoaded = false;
         // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
@@ -711,6 +716,9 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "chat.progress":
       if (action.params.turn) state.progress = action.params.turn;
       else delete state.progress;
+      return state;
+    case "assistant.state":
+      state.assistant = action.params;
       return state;
     case "chat.loading":
       state.chatLoading = true;
@@ -916,6 +924,7 @@ export function chatDraw(action: Action): ChatDraw {
     case "history":
     case "draft":
     case "send.result":
+    case "assistant.state":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -2230,89 +2239,91 @@ export function spendSummary(spend: ConversationSpend | undefined): SpendSummary
   return out;
 }
 
-/** One row of the next turn's tokens: a tier with its budget where the brain caps it, or a part every call sends. */
-export interface TierRow {
-  key: "situation" | "log" | "working" | "loaded" | "window" | "rules" | "tools";
+/** One part of what the chat's session is told: its size, and when it is said. */
+export interface ContextRow {
+  key: "rules" | "tools" | "situation";
   label: string;
   tokens: number;
-  budget?: number;
-  /** The share of the budget used, 0 to 1 and past it when over. */
-  share?: number;
-  note?: string;
+  note: string;
 }
 
-/** The next turn's tokens, tier by tier against the brain's budgets, then the window against its own, then what goes with every call on top. */
-export function tierRows(c: BrainContext): TierRow[] {
-  const b = c.budgets;
-  const row = (key: TierRow["key"], label: string, tokens: number, budget?: number, note?: string): TierRow => ({
-    key,
-    label,
-    tokens,
-    ...(budget !== undefined && budget > 0 ? { budget, share: tokens / budget } : {}),
-    ...(note !== undefined ? { note } : {}),
-  });
-  const rows = [
-    row("situation", "Situation", c.tokens.situation, b?.situation),
-    row("log", "Log", c.tokens.log, undefined, "cut to fit the window"),
-    row("working", "Working", c.tokens.working, b?.working),
-    row("loaded", "Loaded", c.tokens.loaded, b?.loaded),
-    row("window", "Window", c.tokens.total, b?.total),
+/** What the session is told, part by part: its rules and its tools at each start, the situation whole then and, beside a prompt, only what changed. */
+export function contextRows(c: BrainContext): ContextRow[] {
+  return [
+    { key: "rules", label: "Rules", tokens: c.tokens.rules, note: "at each start" },
+    { key: "tools", label: "Tools", tokens: c.tokens.tools, note: "at each start" },
+    { key: "situation", label: "Situation", tokens: c.tokens.situation, note: "whole at a start, then what changed" },
   ];
-  if (c.tokens.rules !== undefined) rows.push(row("rules", "Rules", c.tokens.rules, undefined, "with every call"));
-  if (c.tokens.tools !== undefined) rows.push(row("tools", "Tools", c.tokens.tools, undefined, "with every call"));
-  return rows;
 }
 
-/** The next turn as the overlay's tile says it: its input tokens in all, the window against its budget, and that input's cost at the next model's rate before any cache. */
-export interface NextTurn {
-  tokens: number;
-  window: number;
-  budget?: number;
-  rate?: number;
-  cost?: number;
+/** The context a session holds against the size it is folded at. */
+export interface HeldContext {
+  used: number;
+  limit: number;
+  /** 0 to 1, and past it when over. */
+  share: number;
 }
 
-export function nextTurn(c: BrainContext, spend: ConversationSpend | undefined): NextTurn {
-  const tokens = c.tokens.total + (c.tokens.rules ?? 0) + (c.tokens.tools ?? 0);
-  const rate = spend?.next?.price?.input;
+/** What the session holds of its limit; none until its harness has said. */
+export function heldContext(used: number | undefined, limit: number | undefined): HeldContext | undefined {
+  return used !== undefined && limit !== undefined && limit > 0 ? { used, limit, share: used / limit } : undefined;
+}
+
+// --- the session the chat runs in ----------------------------------------------------------------
+
+const HARNESS_WORDS: Record<AssistantHarness, string> = { claude: "Claude Code", codex: "Codex" };
+
+/** The chat's head: what runs the chat, where it stands, how full its context is, and its terminal where the view may show it. */
+export interface ChatHead {
+  status: AssistantState["status"];
+  /** The harness, its model and its effort; what is missing when nothing runs it. */
+  words: string;
+  /** Where it stands, when that is not simply ready. */
+  note?: string;
+  title: string;
+  context?: HeldContext;
+  /** Its terminal's id. */
+  terminal?: string;
+}
+
+const STATUS_NOTE: Record<AssistantState["status"], string | undefined> = {
+  off: "off",
+  unavailable: "no account signed in",
+  starting: "starting",
+  idle: undefined,
+  busy: "working",
+  down: "starting again",
+};
+
+/** The chat's head, from what the node says of the session the chat runs in; none from a node that says nothing of one. */
+export function chatHead(state: ViewState): ChatHead | undefined {
+  const a = state.assistant;
+  if (!a || !state.connected) return undefined;
+  const account = a.profile !== undefined ? state.profiles.get(a.profile)?.name : undefined;
+  const words = a.harness ? [HARNESS_WORDS[a.harness], a.model, a.effort !== undefined ? `${a.effort} effort` : undefined].filter((w) => w !== undefined).join(" · ") : "No agent";
+  const note = STATUS_NOTE[a.status];
+  const context = heldContext(a.context?.used, a.context?.limit);
+  const terminal = a.terminal && state.scopes.includes("terminal") && (a.status === "idle" || a.status === "busy") ? a.terminal.id : undefined;
+  const runs = a.harness ? `The chat runs in a ${HARNESS_WORDS[a.harness]} session of your own${account ? `, on the account ${account}` : ""}.` : "The chat runs in a Claude Code or Codex session of your own.";
   return {
-    tokens,
-    window: c.tokens.total,
-    ...(c.budgets ? { budget: c.budgets.total } : {}),
-    ...(rate !== undefined ? { rate, cost: (tokens * rate) / PER_MILLION } : {}),
+    status: a.status,
+    words,
+    ...(note !== undefined ? { note } : {}),
+    title: a.detail !== undefined ? `${runs} ${a.detail}` : runs,
+    ...(context ? { context } : {}),
+    ...(terminal !== undefined ? { terminal } : {}),
   };
 }
 
-/** One block of what the brain sends, as the Context overlay shows it: whose, what kind, and its text. */
-export interface ContextBlock {
-  role: "user" | "assistant";
-  label: string;
-  text: string;
+/** What the chat's pane shows: the conversation, or the session's own terminal once the user chose it and the view may open it. */
+export function chatMode(chosen: "chat" | "terminal" | undefined, state: ViewState): "chat" | "terminal" {
+  return chosen === "terminal" && chatHead(state)?.terminal !== undefined ? "terminal" : "chat";
 }
 
-/** The brain's messages a block at a time: text as it is, a tool call by name with its input, a result as the model reads it (a collapsed one its stub), a picture by kind. */
-export function contextBlocks(messages: BrainContext["messages"]): ContextBlock[] {
-  const out: ContextBlock[] = [];
-  for (const m of messages) {
-    for (const b of m.content) {
-      switch (b.type) {
-        case "text":
-          // The empty text a model sends beside its tool calls says nothing.
-          if (b.text.trim()) out.push({ role: m.role, label: m.role, text: b.text });
-          break;
-        case "tool_use":
-          out.push({ role: m.role, label: `${m.role} · calls ${b.name}`, text: JSON.stringify(b.input ?? {}, null, 2) });
-          break;
-        case "tool_result":
-          out.push({ role: m.role, label: `${m.role} · result${b.isError ? ", an error" : ""}`, text: b.content });
-          break;
-        case "image":
-          out.push({ role: m.role, label: `${m.role} · picture`, text: `[${b.mime}]` });
-          break;
-      }
-    }
-  }
-  return out;
+/** Whether the chat's session can be started again from here: the node runs one, and this view may. */
+export function canRestartChat(state: ViewState): boolean {
+  const a = state.assistant;
+  return state.connected && a !== undefined && a.status !== "off" && state.scopes.includes("nodes");
 }
 
 // --- voice and controllers ---------------------------------------------------------------------

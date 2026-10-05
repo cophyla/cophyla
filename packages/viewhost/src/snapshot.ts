@@ -3,7 +3,8 @@
 // `task.state` per open task, every open `ask.state`, the latest `voice.state`, the words heard
 // so far of this client's utterance (`voice.partial`, whole), the voice engine still being set
 // up (`voice.setup`), whether the next reply is read out (`voice.next`), the account
-// (`account.state`) and the brain's turn while it runs (`chat.progress`). cophylad sends
+// (`account.state`), where the session the chat runs in stands (`assistant.state`) and the
+// brain's turn while it runs (`chat.progress`). cophylad sends
 // them right after `hello` and never again, and there is no `ask.list`, so a view mounted or
 // reloaded later is given this replay instead. Upserts are idempotent; a replay after a live
 // notification changes nothing.
@@ -17,6 +18,7 @@ type VoicePartialParams = ClientNotificationParams<"voice.partial">;
 type VoiceNextParams = ClientNotificationParams<"voice.next">;
 type AccountStateParams = ClientNotificationParams<"account.state">;
 type ProgressParams = ClientNotificationParams<"chat.progress">;
+type AssistantParams = ClientNotificationParams<"assistant.state">;
 
 export class SnapshotCache {
   readonly sessions = new Map<string, Session>();
@@ -44,6 +46,8 @@ export class SnapshotCache {
   account?: AccountStateParams;
   /** The brain's turn while it runs; a turn that ended leaves nothing to show. */
   progress?: ProgressParams;
+  /** Where the session the chat runs in stands: a view that mounts late shows the chat's head as it is. */
+  assistant?: AssistantParams;
 
   upsert(n: RpcNotification): void {
     if (n.method === "voice.state") {
@@ -78,6 +82,11 @@ export class SnapshotCache {
     if (n.method === "chat.progress") {
       const p = n.params as ProgressParams | undefined;
       this.progress = p && typeof p === "object" && p.turn && typeof p.turn === "object" ? p : undefined;
+      return;
+    }
+    if (n.method === "assistant.state") {
+      const a = n.params as AssistantParams | undefined;
+      if (a && typeof a === "object" && typeof a.status === "string") this.assistant = a;
       return;
     }
     if (n.method === "account.state") {
@@ -127,7 +136,7 @@ export class SnapshotCache {
     }
   }
 
-  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard, the setup and the speaker, the account and the nodes' direct connections, then the brain's turn. */
+  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard, the setup and the speaker, the account and the nodes' direct connections, then the brain's turn and the chat's session. */
   replay(): RpcNotification[] {
     const out: RpcNotification[] = [];
     for (const ask of this.asks.values()) out.push({ jsonrpc: "2.0", method: "ask.state", params: ask });
@@ -143,6 +152,7 @@ export class SnapshotCache {
     if (this.account) out.push({ jsonrpc: "2.0", method: "account.state", params: this.account });
     for (const state of this.direct.values()) out.push({ jsonrpc: "2.0", method: "direct.state", params: state });
     if (this.progress) out.push({ jsonrpc: "2.0", method: "chat.progress", params: this.progress });
+    if (this.assistant) out.push({ jsonrpc: "2.0", method: "assistant.state", params: this.assistant });
     return out;
   }
 
@@ -160,5 +170,6 @@ export class SnapshotCache {
     this.voiceNext = undefined;
     this.account = undefined;
     this.progress = undefined;
+    this.assistant = undefined;
   }
 }

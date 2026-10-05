@@ -6,12 +6,14 @@
 // Where an online engine goes first and the node's own keys: the choice under an online engine
 // only, the key rows in words with only the last four, and what a route, a key and a clear send.
 // The node's wake words: a box per phrase with how it is said, what listens in words, and the
-// list a tick, an untick and a reset send. Last, what Cophyla listens for: each listener's
-// line, a Remove, and a node with none.
+// list a tick, an untick and a reset send. Then what Cophyla listens for: each listener's
+// line, a Remove, and a node with none. Last, the chat: where the session it runs in stands,
+// the harness and the account it runs on with what Automatic picked, what a pick and a
+// restart send, and a node from before the chat ran in a session.
 
 import { describe, expect, test } from "bun:test";
-import type { HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
+import { chatRow, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -620,6 +622,109 @@ describe("listening for", () => {
     const old = new SettingsModel(fakeConnection({}).request, () => {});
     await old.loadListeners();
     expect(old.listeners).toBeUndefined();
+  });
+});
+
+describe("the chat", () => {
+  const running: AssistantState = { status: "idle", harness: "claude", profile: "prof_home", model: "sonnet", effort: "low", context: { used: 41_200, limit: 300_000 } };
+  const nodes = [node(DESK, "desk"), { ...node(LAPTOP, "laptop"), role: "secondary" as const }];
+
+  test("the row: where it stands, what it runs with, Automatic naming what was picked, and the accounts signed in on its machine", () => {
+    expect(chatRow({ state: running, profiles: PROFILES, nodes, busy: false })).toEqual({
+      status: "Ready",
+      trouble: false,
+      runs: "sonnet · low effort · 41k of 300k tokens of context",
+      harness: { value: "", options: [{ value: "", label: "Automatic (Claude Code)" }, { value: "claude", label: "Claude Code" }, { value: "codex", label: "Codex" }] },
+      // The laptop's account is not offered, nor one that is not signed in.
+      account: { value: "", options: [{ value: "", label: "Automatic (home)" }, { value: "prof_home", label: "Claude Code · home" }, { value: "prof_work", label: "Claude Code · work" }, { value: "prof_codex", label: "Codex · default" }] },
+      restartable: true,
+      busy: false,
+    });
+  });
+
+  test("a harness picked narrows the accounts to its own; an account picked that has gone stays listed", () => {
+    const codex = chatRow({ state: { ...running, harness: "codex", profile: "prof_codex", model: "gpt-6.1-sol", chosen: { harness: "codex" } }, profiles: PROFILES, nodes, busy: false });
+    expect(codex.harness.value).toBe("codex");
+    expect(codex.harness.options[0]).toEqual({ value: "", label: "Automatic" });
+    expect(codex.account.options).toEqual([{ value: "", label: "Automatic (default)" }, { value: "prof_codex", label: "Codex · default" }]);
+    const gone = chatRow({ state: { ...running, chosen: { profile: "prof_gone" } }, profiles: PROFILES, nodes, busy: false });
+    expect(gone.account.value).toBe("prof_gone");
+    expect(gone.account.options.at(-1)).toEqual({ value: "prof_gone", label: "An account that is gone" });
+    expect(gone.account.options[0]).toEqual({ value: "", label: "Automatic" });
+  });
+
+  test("no account signed in is trouble, with the node's own words; off cannot be restarted", () => {
+    const none = chatRow({ state: { status: "unavailable", detail: "Sign in to one." }, profiles: PROFILES, nodes, busy: false, note: "Not changed: no" });
+    expect(none).toMatchObject({ status: "No account is signed in", trouble: true, detail: "Sign in to one.", restartable: true, note: "Not changed: no" });
+    expect(none.runs).toBeUndefined();
+    expect(none.harness.options[0]).toEqual({ value: "", label: "Automatic" });
+    expect(chatRow({ state: { status: "off" }, profiles: [], nodes: [], busy: false })).toMatchObject({ status: "Off", trouble: false, restartable: false });
+  });
+
+  test("a harness goes out as assistant.configure, taking an account of another harness with it; an account moves the harness to its own; the choice in place sends nothing", async () => {
+    let state: AssistantState = { ...running, chosen: { profile: "prof_work" } };
+    const { request, asked } = fakeConnection({
+      "profile.list": () => ({ profiles: PROFILES }),
+      "node.list": () => ({ nodes }),
+      "profile.limits": () => ({ limits: {} }),
+      "assistant.state": () => ({ state }),
+      "assistant.configure": (p) => {
+        const chosen = { ...state.chosen } as Record<string, unknown>;
+        for (const k of ["harness", "profile"]) {
+          if (p[k] === null) delete chosen[k];
+          else if (p[k] !== undefined) chosen[k] = p[k];
+        }
+        state = { ...state, chosen };
+        return { state };
+      },
+      "assistant.restart": () => ({ state }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.load();
+    await m.loadChat();
+    expect(m.chatRow()?.account.value).toBe("prof_work");
+    const sent = () => asked.filter((a) => a.method.startsWith("assistant.") && a.method !== "assistant.state");
+    // The same harness as the account's: the account stays.
+    await m.setChatHarness("claude");
+    expect(sent().at(-1)).toEqual({ method: "assistant.configure", params: { harness: "claude" } });
+    // Another harness: the Claude account picked goes with it.
+    await m.setChatHarness("codex");
+    expect(sent().at(-1)).toEqual({ method: "assistant.configure", params: { harness: "codex", profile: null } });
+    await m.setChatHarness("codex");
+    expect(sent()).toHaveLength(2);
+    // An account of the other harness moves the harness to its own.
+    await m.setChatAccount("prof_home");
+    expect(sent().at(-1)).toEqual({ method: "assistant.configure", params: { profile: "prof_home", harness: "claude" } });
+    await m.setChatAccount("");
+    expect(sent().at(-1)).toEqual({ method: "assistant.configure", params: { profile: null } });
+    await m.setChatHarness("");
+    expect(sent().at(-1)).toEqual({ method: "assistant.configure", params: { harness: null } });
+    expect(m.chat?.chosen).toEqual({});
+    await m.restartChat();
+    expect(sent().at(-1)).toEqual({ method: "assistant.restart", params: {} });
+    expect(m.chatBusy).toBe(false);
+  });
+
+  test("a refusal says so beside it and keeps what was shown; a node from before the chat ran in a session leaves the section out", async () => {
+    const { request } = fakeConnection({
+      "assistant.state": () => ({ state: running }),
+      "assistant.restart": () => {
+        throw new Error("unavailable: the chat's session runs on the primary, while its brain runs");
+      },
+      "assistant.configure": () => {
+        throw new Error("no");
+      },
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadChat();
+    await m.restartChat();
+    expect(m.chatRow()).toMatchObject({ status: "Ready", note: "Not restarted: unavailable: the chat's session runs on the primary, while its brain runs", busy: false });
+    await m.setChatHarness("codex");
+    expect(m.chatNote).toBe("Not changed: no");
+    const old = new SettingsModel(fakeConnection({}).request, () => {});
+    await old.loadChat();
+    expect(old.chat).toBeUndefined();
+    expect(old.chatRow()).toBeUndefined();
   });
 });
 

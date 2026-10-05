@@ -1,17 +1,17 @@
-// What the brain sees on its next turn (`brain.context`), behind the Context button in the chat's
+// What the chat's own session is told (`brain.context`), behind the Context button in the chat's
 // composer, which shows only while the node turned it on (`[brain] show_context`): laid over the
 // chat's conversation and nothing else, so it goes when another tab is shown and comes back with
 // the chat, asked for afresh. Its head says when it was read, with Refresh and Close. Under it,
-// three tiles: what the conversation's model calls have cost, its input tokens with the share read
-// from the provider's cache, and the next turn's tokens against the window's budget. Then sections
-// that fold: the spend by model, line by line with the rate each kind of token is charged at; the
-// next turn's tokens tier by tier against their budgets; the log, the messages after it, the
-// situation, then the fixed rules and the tools' names, folded. The model's text is in a `pre`,
-// set with `textContent`: nothing the model is sent is ever parsed as HTML. What the user folded
-// stays folded across a refresh.
+// three tiles: the context the session holds against the size it is folded at, what it is told
+// at each start (its rules and its tools), and what goes beside a prompt (the situation). Then
+// sections that fold: those parts' sizes; what goes with the next prompt alone; the situation;
+// the rules and the tools' names, folded; and, for a conversation from before the chat ran in a
+// session of the user's own, what the node's own model calls cost it. The text is in a `pre`,
+// set with `textContent`: nothing the session is sent is ever parsed as HTML. What the user
+// folded stays folded across a refresh.
 
 import type { BrainContext, ConversationSpend } from "@cophyla/protocol";
-import { contextBlocks, countWords, nextTurn, percentWords, rateWords, spendSummary, tierRows, tokenWords, usdWords } from "./model.ts";
+import { contextRows, countWords, heldContext, percentWords, rateWords, spendSummary, tokenWords, usdWords } from "./model.ts";
 import type { SpendSummary } from "./model.ts";
 import { ViewRpcError } from "./rpc.ts";
 import type { HostRpc } from "./rpc.ts";
@@ -34,13 +34,12 @@ function button(className: string, title: string): HTMLButtonElement {
 
 /** The sections, in order, and whether each shows open until the user folds it. */
 const SECTIONS = [
-  ["spend", "Spend by model", true],
-  ["tokens", "Next turn's tokens", true],
-  ["log", "Log", true],
-  ["messages", "Messages", true],
+  ["tokens", "What it is told, in tokens", true],
+  ["notes", "With the next prompt", true],
   ["situation", "Situation", true],
   ["rules", "Rules", false],
   ["tools", "Tools", false],
+  ["spend", "The node's own model calls", false],
 ] as const;
 
 type Section = (typeof SECTIONS)[number][0];
@@ -76,9 +75,9 @@ export class ContextView {
     this.rpc = rpc;
     this.el = el("aside", "context-view");
     this.el.hidden = true;
-    this.el.setAttribute("aria-label", "What the brain sees on its next turn, and what the conversation has cost");
+    this.el.setAttribute("aria-label", "What the chat's session is told, and how full its context is");
     const head = el("header", "context-head");
-    const title = el("span", "context-title", "Context for the next turn");
+    const title = el("span", "context-title", "What the chat is told");
     this.meta = el("span", "context-meta");
     const tools = el("span", "context-tools");
     this.refreshButton = button("context-refresh viewer-tool viewer-refresh", "Ask the brain again");
@@ -101,7 +100,7 @@ export class ContextView {
     return !this.el.hidden;
   }
 
-  /** Lays it over `parent` and asks the brain what it sees now. */
+  /** Lays it over `parent` and asks the brain what the session is told now. */
   show(parent: HTMLElement): void {
     if (this.el.parentElement !== parent) parent.append(this.el);
     this.el.hidden = false;
@@ -145,11 +144,13 @@ export class ContextView {
 
   private draw(c: BrainContext, spend: ConversationSpend | undefined): void {
     this.meta.textContent = `as of ${new Date(c.at).toLocaleTimeString()}`;
-    this.meta.title = `${c.thread ? `Thread ${c.thread}. ` : ""}Tokens to come are estimated at four characters each; the spend is what the model reported.`;
+    this.meta.title = `${c.thread ? `Thread ${c.thread}. ` : ""}What it is told is estimated at four characters a token; what it holds is its harness's own count.`;
     const sum = spendSummary(spend);
     const top = this.body.scrollTop;
-    const sections: HTMLElement[] = [this.tiles(c, spend, sum)];
+    const sections: HTMLElement[] = [this.tiles(c)];
     for (const [key, label, open] of SECTIONS) {
+      // The chat's turns cost the node nothing now: only a conversation from before has any.
+      if (key === "spend" && sum.calls === 0) continue;
       const d = el("details", "context-section");
       d.dataset["section"] = key;
       d.open = this.open.get(key) ?? open;
@@ -157,27 +158,16 @@ export class ContextView {
       d.append(summary);
       switch (key) {
         case "spend":
-          if (sum.calls > 0) summary.append(el("span", "context-count", usdWords(sum.cost)));
+          summary.append(el("span", "context-count", usdWords(sum.cost)));
           d.append(this.spendTable(sum));
           break;
         case "tokens":
-          d.append(this.tierTable(c));
+          d.append(this.partsTable(c));
           break;
-        case "log":
-          d.append(this.pre(c.log ?? "(no log yet)"));
+        case "notes":
+          summary.append(el("span", "context-count", String(c.notes.length)));
+          d.append(this.pre(c.notes.length ? c.notes.join("\n\n") : "(nothing but the situation)"));
           break;
-        case "messages": {
-          const blocks = contextBlocks(c.messages);
-          summary.append(el("span", "context-count", String(blocks.length)));
-          if (blocks.length === 0) d.append(this.pre("(none: the log covers every turn so far)"));
-          for (const b of blocks) {
-            const block = el("div", "context-block");
-            block.dataset["role"] = b.role;
-            block.append(el("div", "context-label", b.label), this.pre(b.text));
-            d.append(block);
-          }
-          break;
-        }
         case "situation":
           d.append(this.pre(c.situation || "(nothing yet)"));
           break;
@@ -195,10 +185,10 @@ export class ContextView {
     this.body.scrollTop = top;
   }
 
-  /** The three tiles at the top: the conversation's cost, its input with the cached share, and the next turn. */
-  private tiles(c: BrainContext, spend: ConversationSpend | undefined, sum: SpendSummary): HTMLElement {
+  /** The three tiles at the top: the context the session holds, what it is told at each start, and what goes beside a prompt. */
+  private tiles(c: BrainContext): HTMLElement {
     const grid = el("section", "context-tiles");
-    grid.setAttribute("aria-label", "The conversation's spend and the next turn");
+    grid.setAttribute("aria-label", "The session's context and what it is told");
     const tile = (kind: string, label: string, value: string, ...rest: HTMLElement[]): HTMLElement => {
       const t = el("div", "context-tile");
       t.dataset["kind"] = kind;
@@ -207,42 +197,19 @@ export class ContextView {
     };
     const sub = (text: string) => el("span", "context-tile-sub", text);
 
-    // What the conversation's model calls have cost.
-    const since = sum.since !== undefined ? ` since ${DAY.format(sum.since)}` : "";
-    const costSub = sum.calls === 0 ? "No model calls in this conversation yet" : `${tokenWords(sum.calls)} model call${sum.calls === 1 ? "" : "s"}${since}${sum.calls > 0 && sum.cost > 0 ? ` · ${usdWords(sum.cost / Math.max(1, sum.calls - sum.unpriced))} a call` : ""}`;
-    const costTile = tile("spend", "This conversation", usdWords(sum.cost), sub(costSub));
-    if (sum.unpriced > 0) costTile.append(sub(`${tokenWords(sum.unpriced)} call${sum.unpriced === 1 ? "" : "s"} to a model with no price not counted`));
+    // What the session holds, against the size its harness folds it at.
+    const held = heldContext(c.tokens.used, c.tokens.window);
+    const heldTile = held
+      ? tile("held", "The session's context", `${countWords(held.used)} tokens`, meter(held.share, `${tokenWords(held.used)} of ${tokenWords(held.limit)} tokens`), sub(`${percentWords(held.share * 100)} of ${countWords(held.limit)}, where it is folded`))
+      : tile("held", "The session's context", "—", sub("Its harness has not said yet"));
 
-    // Its input, the cached part highlighted: what the provider read from its cache, at the cached rate.
-    const cachedShare = sum.input > 0 ? sum.cached / sum.input : 0;
-    const split = el("span", "context-split");
-    split.setAttribute("role", "img");
-    const splitWords = `${percentWords(cachedShare * 100)} of input tokens read from cache`;
-    split.setAttribute("aria-label", splitWords);
-    split.title = `${tokenWords(sum.cached)} cached, ${tokenWords(sum.input - sum.cached)} not`;
-    const cachedPart = el("span", "context-split-cached");
-    cachedPart.style.width = `${(cachedShare * 100).toFixed(1)}%`;
-    split.append(cachedPart);
-    const legend = el("span", "context-tile-sub context-legend");
-    const cachedKey = el("span", "context-key", `${countWords(sum.cached)} cached`);
-    cachedKey.dataset["kind"] = "cached";
-    const plainKey = el("span", "context-key", `${countWords(sum.input - sum.cached)} not`);
-    plainKey.dataset["kind"] = "input";
-    legend.append(cachedKey, plainKey);
-    const fromCache = `${percentWords(cachedShare * 100)} from cache${sum.saved > 0 ? `, saving ${usdWords(sum.saved)}` : ""}`;
-    const inputTile = tile("tokens", "Input tokens", countWords(sum.input), split, legend, sub(sum.input === 0 ? "None yet" : `${fromCache} · ${countWords(sum.output)} output tokens`));
-    inputTile.title = `${tokenWords(sum.input)} input tokens, ${tokenWords(sum.cached)} of them read from cache; ${tokenWords(sum.output)} output tokens`;
+    const start = c.tokens.rules + c.tokens.tools;
+    const startTile = tile("start", "At each start", `~${countWords(start)} tokens`, sub(`Rules ${tokenWords(c.tokens.rules)} · tools ${tokenWords(c.tokens.tools)}`), sub("Once, then kept in its context"));
 
-    // The next turn: what it sends in all, the window against its budget, and that input's cost before any cache.
-    const next = nextTurn(c, spend);
-    const nextTile = tile("next", "Next turn", `~${countWords(next.tokens)} tokens`);
-    if (next.budget !== undefined) nextTile.append(meter(next.window / next.budget, `The window: ${tokenWords(next.window)} of its ${tokenWords(next.budget)}-token budget`));
-    const windowWords = next.budget !== undefined ? `Window ${tokenWords(next.window)} of ${tokenWords(next.budget)}` : `Window ${tokenWords(next.window)}`;
-    nextTile.append(sub(next.tokens > next.window ? `${windowWords}, + ${tokenWords(next.tokens - next.window)} rules and tools` : windowWords));
-    if (next.cost !== undefined && next.rate !== undefined) nextTile.append(sub(`≈ ${usdWords(next.cost)} in at ${rateWords(next.rate)} / M, before any cache`));
-    if (spend?.next) nextTile.title = `The next turn goes to ${spend.next.model}`;
+    const promptTile = tile("prompt", "Beside a prompt", `≤ ~${countWords(c.tokens.situation)} tokens`, sub("The situation: whole at a start, then only what changed"));
+    if (c.notes.length > 0) promptTile.append(sub(`${tokenWords(c.notes.length)} note${c.notes.length === 1 ? "" : "s"} with the next one`));
 
-    grid.append(costTile, inputTile, nextTile);
+    grid.append(heldTile, startTile, promptTile);
     return grid;
   }
 
@@ -295,22 +262,19 @@ export class ContextView {
     foot.append(total);
     table.append(foot);
     wrap.append(table);
-    const note = el("p", "context-footnote", "List prices in USD per million tokens. Input counts each whole prompt; the part the provider read from its cache is charged at the cached rate. Output counts the model's thinking too. Every model call made while this was the current conversation is counted: its turns, its log, and the housekeeping between them.");
+    const note = el("p", "context-footnote", "List prices in USD per million tokens. Input counts each whole prompt; the part the provider read from its cache is charged at the cached rate. Output counts the model's thinking too. These are calls the node made to a model of its own while this was the current conversation. The chat's turns now run in your own agent session, on your plan, and are not counted here.");
     const out = el("div");
     out.append(wrap, note);
     return out;
   }
 
-  /** The next turn's tokens, tier by tier, each against its budget where the brain caps it. */
-  private tierTable(c: BrainContext): HTMLElement {
+  /** What the session is told, part by part, each with when it is said. */
+  private partsTable(c: BrainContext): HTMLElement {
     const list = el("div", "context-tiers");
-    for (const r of tierRows(c)) {
+    for (const r of contextRows(c)) {
       const row = el("div", "context-tier");
       row.dataset["tier"] = r.key;
-      row.append(el("span", "context-tier-label", r.label));
-      if (r.share !== undefined && r.budget !== undefined) row.append(meter(r.share, `${r.label}: ${tokenWords(r.tokens)} of a ${tokenWords(r.budget)}-token budget`));
-      else row.append(el("span", "context-tier-note", r.note ?? ""));
-      row.append(el("span", "context-tier-count", r.budget !== undefined ? `${tokenWords(r.tokens)} / ${tokenWords(r.budget)}` : tokenWords(r.tokens)));
+      row.append(el("span", "context-tier-label", r.label), el("span", "context-tier-note", r.note), el("span", "context-tier-count", tokenWords(r.tokens)));
       list.append(row);
     }
     return list;
