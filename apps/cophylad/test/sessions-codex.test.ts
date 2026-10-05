@@ -1105,7 +1105,8 @@ describe("codex sessions end and resume on evidence", () => {
     await mini.sessions.tick();
     expect(record().status).toBe("ended");
     expect(events().at(-1)?.payload).toEqual({ reason: "inactive" });
-  });
+    // The wait alone is the window's length, some five seconds: past a test's usual time.
+  }, 15_000);
 
   test("an ended thread listed again with nothing new since stays ended across ticks", async () => {
     listed(Date.now());

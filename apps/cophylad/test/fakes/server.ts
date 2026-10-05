@@ -710,7 +710,7 @@ export class FakeServer {
         for (const [k, cap] of Object.entries(caps)) metrics[k] = { used: this.used[k] ?? 0, cap };
         if (this.plan === "pro") metrics["relayed_nodes"] = { used: this.relayedNodes, cap: PRO.limits.nodes };
         if (this.plan === "pro") metrics["backup_bytes"] = { used: this.backupBytes, cap: this.backupBytesCap };
-        return { token: this.entitlement(), usage: { period: "2026-09", metrics } };
+        return { token: this.entitlement(), usage: { period: new Date().toISOString().slice(0, 7), metrics } };
       }
       case "relay.grant": {
         if (this.grantDelayMs > 0) await new Promise((r) => setTimeout(r, this.grantDelayMs));

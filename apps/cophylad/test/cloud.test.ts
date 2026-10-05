@@ -146,7 +146,7 @@ describe("cloud", () => {
     await waitFor(() => lastAccount(c)?.plan === "pro");
     const state = lastAccount(c)!;
     expect(state).toMatchObject({ plan: "pro", subject: fake.subject, connected: true, limits: { sessions: 8, nodes: 5, memoryTier: "full" } });
-    expect(state.usage).toMatchObject({ period: "2026-09", metrics: { llm_tokens_in: { used: 0, cap: 2_000_000 } } });
+    expect(state.usage).toMatchObject({ period: new Date().toISOString().slice(0, 7), metrics: { llm_tokens_in: { used: 0, cap: 2_000_000 } } });
     // a later client's welcome carries it
     const later = await TestClient.connect(d.api.url);
     await later.hello(d.token, { name: "later" });
