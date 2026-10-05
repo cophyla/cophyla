@@ -1,7 +1,9 @@
 // The clock behind task triggers. One timer, armed to the nearest due `at` or cron task
-// among the pending ones and capped at a minute so a machine back from sleep catches up
+// among the ones it watches and capped at a minute so a machine back from sleep catches up
 // within one; `tick` fires every task due by now, so a firing missed while the daemon was
-// down fires at the first tick after start. Event triggers listen on the event stream and
+// down fires at the first tick after start. It watches the pending tasks, and the recurring
+// cron tasks still `ready`: one whose last run nobody marked done fires again at its next
+// time, once however many times went by. Event triggers listen on the event stream and
 // fire on a matching name and payload. The timer is re-armed on every task change, so a
 // task created, paused or resumed moves the clock at once.
 
@@ -51,7 +53,7 @@ export class TaskScheduler {
     );
   }
 
-  /** Fires every pending time or cron task due by now, then arms the timer for the next. */
+  /** Fires every watched time or cron task due by now, then arms the timer for the next. */
   tick(): void {
     const now = this.now();
     for (const t of this.deps.tasks.scheduled()) {

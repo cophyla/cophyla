@@ -3,7 +3,8 @@
 // trigger fires at its time and not before, a paused or active task never fires, one
 // `task.ready` per fire and a second tick is a no-op; a recurring cron task marked done goes
 // back to pending with its result kept and the next due after now, a recurring `at` stays
-// done, a recurring event task fires again; event matching by name, by nested payload and
+// done, a recurring event task fires again; a recurring cron task nobody marked done fires
+// again from ready at its next time, and only that kind; event matching by name, by nested payload and
 // by capability name; `event` carried on `task.ready`; a time missed while down fires at
 // `start()`; dropping the trigger makes a pending task ready.
 
@@ -17,7 +18,7 @@ import { silentLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
 import { Tasks } from "../src/tasks/index.ts";
 import { MAX_DELAY_MS, TaskScheduler } from "../src/tasks/scheduler.ts";
-import { dueAt, matchesEvent, nodeTz, rearms, validateTrigger, validTz } from "../src/tasks/triggers.ts";
+import { dueAt, matchesEvent, nodeTz, rearms, refires, validateTrigger, validTz } from "../src/tasks/triggers.ts";
 
 const BRAIN = { kind: "brain" } as const;
 const T0 = Date.parse("2026-03-10T08:00:00Z");
@@ -155,6 +156,62 @@ describe("triggers: the scheduler", () => {
     const once = tasks.create({ title: "once", trigger: { kind: "at", at: T0 }, recurring: true }, BRAIN);
     scheduler.tick();
     expect(tasks.update(once.id, { status: "done" }, BRAIN).status).toBe("done");
+    scheduler.stop();
+  });
+
+  test("a recurring cron task nobody marked done fires again from ready at its next time, once for the times that went by; one being worked on, blocked, paused or not recurring does not", () => {
+    const { clock, tasks, scheduler, ready, states, tz } = setup();
+    const t = tasks.create({ title: "half-hourly", detail: "say where it stands", trigger: { kind: "cron", expr: "*/30 * * * *" }, recurring: true }, BRAIN);
+    clock.now = Date.parse("2026-03-10T08:30:00Z");
+    scheduler.tick();
+    expect(ready).toEqual([{ at: clock.now, id: t.id, cause: "trigger" }]);
+    expect(tasks.scheduled().map((s) => s.id)).toEqual([t.id]);
+    // The run was never closed: nothing before the next time, then the same task again.
+    clock.now = Date.parse("2026-03-10T08:59:59Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(1);
+    clock.now = Date.parse("2026-03-10T09:00:00Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(2);
+    expect(ready[1]).toEqual({ at: clock.now, id: t.id, cause: "trigger" });
+    expect(tasks.get(t.id)!.status).toBe("ready");
+    expect(tasks.get(t.id)!.updatedAt).toBe(clock.now);
+    expect(states.filter((s) => s.id === t.id).map((s) => s.status)).toEqual(["pending", "ready", "ready"]);
+    scheduler.tick();
+    expect(ready).toHaveLength(2);
+    // Three hours on, six times went by: one firing, and the next is due after now.
+    clock.now = Date.parse("2026-03-10T12:10:00Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(3);
+    expect(dueAt(tasks.get(t.id)!, tz)).toBe(Date.parse("2026-03-10T12:30:00Z"));
+    // Marked done at last: pending, and the next time fires it as ever.
+    expect(tasks.update(t.id, { status: "done", result: { summary: "step 4" } }, BRAIN).status).toBe("pending");
+    clock.now = Date.parse("2026-03-10T12:30:00Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(4);
+
+    // Handed to an agent, waiting on a person or paused: the next time passes it by.
+    for (const patch of [{ status: "active" }, { blocker: { kind: "user" } }, { status: "paused" }] as const) {
+      tasks.update(t.id, patch, BRAIN);
+      expect(refires(tasks.get(t.id)!)).toBe(false);
+      expect(tasks.scheduled()).toEqual([]);
+      expect(tasks.fire(t.id)).toBe(false);
+    }
+    clock.now = Date.parse("2026-03-10T13:00:00Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(4);
+    tasks.update(t.id, { status: "cancelled" }, BRAIN);
+
+    // A cron task that runs once stays ready, and so does a time's.
+    const once = tasks.create({ title: "once", trigger: { kind: "cron", expr: "*/30 * * * *" } }, BRAIN);
+    const at = tasks.create({ title: "at", trigger: { kind: "at", at: clock.now }, recurring: true }, BRAIN);
+    clock.now = Date.parse("2026-03-10T13:30:00Z");
+    scheduler.tick();
+    expect(ready.slice(4).map((r) => r.id).sort()).toEqual([once.id, at.id].sort());
+    clock.now = Date.parse("2026-03-10T14:30:00Z");
+    scheduler.tick();
+    expect(ready).toHaveLength(6);
+    expect(tasks.scheduled()).toEqual([]);
     scheduler.stop();
   });
 

@@ -9,7 +9,9 @@
 // handed it). A task with a trigger (a time, a cron expression, an event) waits `pending`
 // until the scheduler fires it through `fire`, which makes it `ready` with
 // `task.ready {cause: trigger}`; a recurring cron or event task marked done goes back to
-// `pending` with its result kept, so it fires again. Every change is streamed as `task.state`.
+// `pending` with its result kept, so it fires again. A recurring cron task nobody marked done
+// fires again from `ready` when its time comes round, so a run that was never closed costs
+// that run and not the schedule. Every change is streamed as `task.state`.
 
 import { newId, RpcError } from "@cophyla/protocol";
 import type { Ask, Principal, Session, Task, TaskBlocker, TaskStatus } from "@cophyla/protocol";
@@ -18,7 +20,7 @@ import type { TaskCreate, TaskPatch } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Store } from "../store/index.ts";
 import type { TaskListFilter } from "../store/index.ts";
-import { rearms, validateTrigger } from "./triggers.ts";
+import { rearms, refires, validateTrigger } from "./triggers.ts";
 
 export type TaskCreateInput = z.infer<typeof TaskCreate>;
 export type TaskPatchInput = z.infer<typeof TaskPatch>;
@@ -169,12 +171,14 @@ export class Tasks {
 
   /**
    * A trigger fired: the task goes `ready` and the brain hears `task.ready {cause: trigger}`,
-   * with the event that fired an event trigger. Only a `pending` task fires; false otherwise,
-   * so a task paused, already ready or being worked on is left alone.
+   * with the event that fired an event trigger. A `pending` task fires, and by its clock a
+   * recurring cron task still `ready` from a run nobody marked done; false otherwise, so a
+   * task paused, blocked or being worked on is left alone, and so is one an event would fire
+   * while it is ready.
    */
   fire(id: string, event?: { name: string; payload: unknown }): boolean {
     const t = this.deps.store.tasks.get(id);
-    if (!t || t.status !== "pending") return false;
+    if (!t || (t.status !== "pending" && !(event === undefined && refires(t)))) return false;
     const now = this.now();
     t.status = "ready";
     t.updatedAt = now;
@@ -184,9 +188,9 @@ export class Tasks {
     return true;
   }
 
-  /** The pending tasks with a trigger: what the scheduler watches. */
+  /** What the scheduler watches: the pending tasks with a trigger, and the recurring cron tasks a run left `ready`. */
   scheduled(): Task[] {
-    return this.deps.store.tasks.list({ status: ["pending"] }).filter((t) => t.trigger !== undefined);
+    return this.deps.store.tasks.list({ status: ["pending", "ready"] }).filter((t) => t.trigger !== undefined && (t.status === "pending" || refires(t)));
   }
 
   /** Whether the session was last seen as a blocker would already have cleared on. */

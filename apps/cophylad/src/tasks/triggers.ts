@@ -3,7 +3,8 @@
 // runs in the platform's zone; a cron expression is checked by asking croner for its next
 // run, so an expression that can never match is refused with the rest. An event trigger
 // matches by name and, key by key, by equality of `match` with the payload's field: ranges
-// and patterns belong in the hook that raises the event, where the event is defined.
+// and patterns belong in the hook that raises the event, where the event is defined. `rearms`
+// and `refires` say which tasks run again: after a run marked done, and after one that never was.
 
 import { Cron } from "croner";
 import { RpcError } from "@cophyla/protocol";
@@ -50,7 +51,7 @@ export function validateTrigger(t: TaskTrigger, tz: string): void {
   }
 }
 
-/** When a pending `at` or `cron` task is next due, in epoch ms; undefined for an event trigger or none. */
+/** When an `at` or `cron` task is next due, in epoch ms: a cron's next run after the task last changed, which its firing is. Undefined for an event trigger or none. */
 export function dueAt(task: Task, tz: string): number | undefined {
   const t = task.trigger;
   if (!t) return undefined;
@@ -78,4 +79,13 @@ export function matchesEvent(trigger: TaskTrigger | undefined, event: { name: st
 /** A recurring cron or event task goes back to `pending` when done; a recurring `at` task behaves as once. */
 export function rearms(task: Task): boolean {
   return task.recurring === true && (task.trigger?.kind === "cron" || task.trigger?.kind === "event");
+}
+
+/**
+ * A recurring cron task still `ready` fires again when its time comes round: nobody marked
+ * its last run done, and the schedule goes on all the same. An event task that is ready waits
+ * for that run to end, since each of its fires is one event's.
+ */
+export function refires(task: Task): boolean {
+  return task.status === "ready" && task.recurring === true && task.trigger?.kind === "cron";
 }
