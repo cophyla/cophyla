@@ -272,8 +272,45 @@ export const Session = z.object({
   endedAt: Timestamp.optional(),
   stats: SessionStats.optional(),
   transcript: z.object({ path: z.string() }).optional(),
+  /**
+   * `assistant`: the session the chat itself runs in, started and typed into by cophylad. It is
+   * no agent of the user's: no list shows it, no event of it reaches a client or the brain.
+   */
+  role: z.literal("assistant").optional(),
 });
 export type Session = z.infer<typeof Session>;
+
+/** The harnesses the chat's own session runs on. */
+export const AssistantHarness = z.enum(["claude", "codex"]);
+export type AssistantHarness = z.infer<typeof AssistantHarness>;
+
+/**
+ * Where the chat's own session stands: `off` on a node that runs no brain, `unavailable` with
+ * no signed-in profile to run it under, `starting` until its harness is up, `idle` or `busy`
+ * while it runs, `down` when its program went and is being started again.
+ */
+export const AssistantStatus = z.enum(["off", "unavailable", "starting", "idle", "busy", "down"]);
+export type AssistantStatus = z.infer<typeof AssistantStatus>;
+
+/**
+ * The chat's own session as a view shows it: the harness and the account it runs under, the
+ * model and effort it was started with, the context it has used against the size it compacts
+ * at, and the terminal it runs in when it has one. `chosen` is what the user picked in the
+ * app, each part absent while cophylad picks it.
+ */
+export const AssistantState = z.object({
+  status: AssistantStatus,
+  harness: AssistantHarness.optional(),
+  profile: ProfileId.optional(),
+  model: z.string().optional(),
+  effort: z.string().optional(),
+  context: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }).optional(),
+  terminal: TerminalRef.optional(),
+  chosen: z.object({ harness: AssistantHarness.optional(), profile: ProfileId.optional() }).optional(),
+  /** Why it is unavailable or down, in a line for the user. */
+  detail: z.string().optional(),
+});
+export type AssistantState = z.infer<typeof AssistantState>;
 
 export const TerminalStatus = z.enum(["running", "exited"]);
 export type TerminalStatus = z.infer<typeof TerminalStatus>;
@@ -1266,5 +1303,8 @@ export const entities = {
   ReleaseFeed,
   Error: ProtocolErrorEntity,
   ModelRef,
+  AssistantHarness,
+  AssistantStatus,
+  AssistantState,
   VoiceState,
 } as const;

@@ -38,6 +38,7 @@ const cap = read("capability.json") as {
   requests: Record<string, { params: unknown; results: unknown }>;
   notices: Record<string, unknown>;
   signals: Record<string, unknown>;
+  brain: Record<string, { params: unknown; results: unknown }>;
 };
 add("capability.hello", registry.capability.hello, cap.hello);
 for (const [name, schema] of Object.entries(registry.capability.events)) add(`capability.events.${name}`, schema, cap.events[name]);
@@ -47,6 +48,10 @@ for (const [name, def] of Object.entries(registry.capability.requests)) {
 }
 for (const [name, schema] of Object.entries(registry.capability.notices)) add(`capability.notices.${name}`, schema, cap.notices[name]);
 for (const [name, schema] of Object.entries(registry.capability.signals)) add(`capability.signals.${name}`, schema, cap.signals[name]);
+for (const [name, def] of Object.entries(registry.capability.brain)) {
+  add(`capability.brain.${name}.params`, def.params, cap.brain[name]?.params);
+  add(`capability.brain.${name}.result`, def.result, cap.brain[name]?.results);
+}
 
 const cli = read("client.json") as {
   requests: Record<string, { params: unknown; results: unknown }>;
@@ -118,6 +123,7 @@ for (const name of Object.keys(entities)) check(`entities.${name}`);
 for (const name of Object.keys(cap.events)) check(`capability.events.${name}`);
 for (const name of Object.keys(cap.requests)) check(`capability.requests.${name}.params`);
 for (const name of Object.keys(cap.notices)) check(`capability.notices.${name}`);
+for (const name of Object.keys(cap.brain)) check(`capability.brain.${name}.params`);
 for (const name of Object.keys(cli.requests)) check(`client.requests.${name}.params`);
 for (const name of Object.keys(cli.signals)) check(`client.signals.${name}`);
 for (const name of Object.keys(cli.notifications)) check(`client.notifications.${name}`);

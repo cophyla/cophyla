@@ -6,6 +6,8 @@ import { z } from "zod";
 import {
   Access,
   Ask,
+  AssistantHarness,
+  AssistantState,
   AudioCapabilities,
   AudioCodec,
   AuditEntry,
@@ -68,30 +70,35 @@ export type ViewContent = z.infer<typeof ViewContent>;
 export const UpdateComponent = z.enum(["platform", "brain", "model"]);
 
 /**
- * What the brain would send the model on its next turn, built without a model call: the fixed
- * rules before the situation, the situation, the log as the window shows it, the window's
- * messages after the log, the tools it declares by name, and the estimated tokens of each tier.
- * `total` is the window's (situation, log, working, loaded); the rules and the tools'
- * declarations go with every call on top of it. `budgets` are the brain's caps on the tiers
- * and on the window, past which it cuts; a brain from before either sends neither.
+ * What the chat's own session is told, as the brain would tell it now and with nothing taken:
+ * the rules it was started with, the situation whole, the notes waiting for its next prompt,
+ * the tools it may call by name, and the estimated tokens of each. `used` and `window` are the
+ * session's own: the context it holds now, and the size it compacts at.
+ *
+ * `working`, `loaded`, `log`, `total`, `budgets`, `log` and `messages` are a brain's own
+ * window, tier by tier, from when it ran the chat's model itself: a node whose chat runs in
+ * a session sends none of them.
  */
 export const BrainContext = z.object({
   thread: ThreadId.optional(),
   at: Timestamp,
   tokens: z.object({
+    rules: z.number(),
     situation: z.number(),
-    working: z.number(),
-    loaded: z.number(),
-    log: z.number(),
-    total: z.number(),
-    rules: z.number().optional(),
-    tools: z.number().optional(),
+    tools: z.number(),
+    used: z.number().optional(),
+    window: z.number().optional(),
+    working: z.number().optional(),
+    loaded: z.number().optional(),
+    log: z.number().optional(),
+    total: z.number().optional(),
   }),
   budgets: z.object({ situation: z.number(), working: z.number(), loaded: z.number(), total: z.number() }).optional(),
   rules: z.string(),
   situation: z.string(),
+  notes: z.array(z.string()),
   log: z.string().optional(),
-  messages: z.array(LlmMessage),
+  messages: z.array(LlmMessage).optional(),
   tools: z.array(z.string()),
 });
 export type BrainContext = z.infer<typeof BrainContext>;
@@ -128,9 +135,9 @@ export const ModelSpend = z.object({
 export type ModelSpend = z.infer<typeof ModelSpend>;
 
 /**
- * What the brain's model calls have cost one conversation: every call made while it was the
- * current thread (its turns, its log keeper's, and the housekeeping in between), by model; and
- * the model the next turn goes to, with its price.
+ * What the node's own model calls have cost one conversation: every call made while it was
+ * the current thread, by model, and the fast tier's model with its price. The chat's turns run
+ * in the user's agent session and are none of them.
  */
 export const ConversationSpend = z.object({
   thread: ThreadId,
@@ -799,12 +806,26 @@ export const clientRequests = {
   "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
   "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
   /**
-   * What the brain sees on its next turn, for the Context button: on only with `[brain]
+   * What the chat's own session is told, for the Context button: on only with `[brain]
    * show_context`, `unsupported` otherwise. `check` answers `{}` without asking the brain, so
    * a view can tell whether to show the button; the answer is kept in no audit row. With the
-   * context comes what the conversation it is for has cost so far, when it has a thread.
+   * context comes what the platform's own model calls in the conversation have cost, when any
+   * were made in its thread.
    */
   "brain.context": { params: z.object({ check: z.boolean().optional() }), result: z.object({ context: BrainContext.optional(), spend: ConversationSpend.optional() }) },
+  /** Where the chat's own session stands; `off` from a node that runs no brain. */
+  "assistant.state": { params: Empty, result: z.object({ state: AssistantState }) },
+  /**
+   * Which harness the chat runs on and under which of its signed-in accounts; `null` hands
+   * either back to cophylad (the usual account's harness, Claude Code first). The session is
+   * started again under the choice, with a context of its own.
+   */
+  "assistant.configure": {
+    params: z.object({ harness: AssistantHarness.nullable().optional(), profile: ProfileId.nullable().optional() }),
+    result: z.object({ state: AssistantState }),
+  },
+  /** Ends the chat's own session and starts it again where it was, its conversation kept. */
+  "assistant.restart": { params: Empty, result: z.object({ state: AssistantState }) },
   "profile.list": { params: z.object({ node: NodeId.optional() }), result: z.object({ profiles: z.array(HarnessProfile) }) },
   /** Each profile's plan limits, read now when the last reading is old; a node's alone when one is named. */
   "profile.limits": { params: z.object({ node: NodeId.optional() }), result: z.object({ limits: z.record(ProfileId, ProfileLimits) }) },
@@ -1064,6 +1085,8 @@ export const clientNotifications = {
   "chat.retract": z.object({ message: MessageId }),
   /** What the orchestrator is doing in the turn it is running, whole each time; `turn` absent once it is over. */
   "chat.progress": z.object({ turn: TurnProgress.optional() }),
+  /** The chat's own session, when it starts, stops, changes account or its context grows. */
+  "assistant.state": AssistantState,
   /**
    * A session's row, debounced, to every client when it starts, ends or changes what it is
    * doing (its status, ask, title, intent); a change of `lastActivity` or `stats` alone

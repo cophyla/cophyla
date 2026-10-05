@@ -828,5 +828,13 @@
     { "code": "quota_exceeded", "message": "llm tokens", "data": { "metric": "llm_tokens_in", "resets_at": 1758283200000 }, "retryable": true }
   ],
   "ModelRef": [{ "tier": "tiny" }, { "tier": "fast" }, { "tier": "local" }, { "model": "anthropic/claude-sonnet-5" }],
+  "AssistantHarness": ["claude", "codex"],
+  "AssistantStatus": ["off", "unavailable", "starting", "idle", "busy", "down"],
+  "AssistantState": [
+    { "status": "idle", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet", "effort": "low", "context": { "used": 41000, "limit": 300000 }, "terminal": { "host": "h_9f2c", "id": "440e1cb4601e" } },
+    { "status": "busy", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low", "chosen": { "harness": "codex" } },
+    { "status": "down", "harness": "claude", "detail": "the chat's session ended and is being started again" },
+    { "status": "off" }
+  ],
   "VoiceState": ["idle", "listening", "transcribing", "thinking", "speaking"]
 }

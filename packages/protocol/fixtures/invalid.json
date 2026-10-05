@@ -93,5 +93,10 @@
   { "schema": "capability.requests.listener.add.params", "why": "a listener that hears nothing", "value": { "on": [], "deliver": "wake", "why": "x" } },
   { "schema": "capability.requests.listener.add.params", "why": "a delivery that is not one", "value": { "on": ["session.idle"], "deliver": "shout", "why": "x" } },
   { "schema": "capability.requests.listener.add.params", "why": "a metric held for no time", "value": { "on": ["metric"], "metric": { "resource": "cpu", "above": 90, "forS": 0 }, "deliver": "wake", "why": "x" } },
-  { "schema": "client.requests.listener.remove.params", "why": "an id that is not a listener's", "value": { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" } }
+  { "schema": "client.requests.listener.remove.params", "why": "an id that is not a listener's", "value": { "id": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" } },
+  { "schema": "entities.AssistantState", "why": "a status that is not one", "value": { "status": "asleep" } },
+  { "schema": "capability.requests.assistant.wake.params", "why": "a wake with nothing to say", "value": { "id": "w1", "text": "", "kind": "wake" } },
+  { "schema": "capability.events.assistant.prompted", "why": "a prompt of no kind", "value": { "at": 1758196800000, "prompt": { "kind": "hook" } } },
+  { "schema": "capability.brain.assistant.context.params", "why": "a kind that is not one", "value": { "kind": "later" } },
+  { "schema": "client.requests.assistant.configure.params", "why": "a harness the chat cannot run on", "value": { "harness": "muse" } }
 ]

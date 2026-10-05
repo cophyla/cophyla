@@ -171,7 +171,24 @@
       { "at": 1758196800000, "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "on": ["metric"], "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "metric": { "resource": "cpu", "above": 90, "forS": 10 }, "deliver": "notify", "times": 1, "cooldownS": 60, "why": "the user wants to hear when the CPU is busy", "createdAt": 1758196000000, "fired": 1, "lastFiredAt": 1758196800000 }, "event": { "name": "metric", "params": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "resource": "cpu", "value": 94, "forS": 10 } }, "last": true },
       { "at": 1758196800000, "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["session.idle"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the tests the user asked for", "asked": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5", "createdAt": 1758196000000, "fired": 1, "lastFiredAt": 1758196800000 }, "event": { "name": "session.updated", "params": { "at": 1758196800000, "session": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" } } }, "last": false, "speak": true }
     ],
-    "listener.removed": [{ "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "why": "until" }, { "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "why": "spent" }]
+    "listener.removed": [{ "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "why": "until" }, { "at": 1758196800000, "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC2", "why": "spent" }],
+    "assistant.prompted": [
+      { "at": 1758196800000, "prompt": { "kind": "user", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" } },
+      { "at": 1758196800000, "prompt": { "kind": "wake", "wake": "w12" } },
+      { "at": 1758196800000, "prompt": { "kind": "terminal" } }
+    ],
+    "assistant.step": [{ "at": 1758196800000, "tool": "Read", "input": { "file_path": "C:/work/api/plan.md" } }, { "at": 1758196800000, "tool": "web_search", "input": { "query": "bun test timeout" } }],
+    "assistant.replied": [
+      { "at": 1758196800000, "text": "Two sessions are running: <ref session=\"sess_01ARZ3NDEKTSV4RRFFQ69G5FB2\"/> and one more.", "prompt": { "kind": "user", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" } },
+      { "at": 1758196800000, "text": "<silent/>", "prompt": { "kind": "wake", "wake": "w12" } },
+      { "at": 1758196800000, "text": "", "prompt": { "kind": "wake", "wake": "w13" }, "interrupted": true },
+      { "at": 1758196800000, "text": "From before the restart." }
+    ],
+    "assistant.state": [
+      { "at": 1758196800000, "status": "idle", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet" },
+      { "at": 1758196800000, "status": "unavailable" },
+      { "at": 1758196800000, "status": "down", "harness": "codex" }
+    ]
   },
   "requests": {
     "node.list": { "params": [{}], "results": [{ "nodes": [] }] },
@@ -389,6 +406,14 @@
     "listener.add": { "params": [{ "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build" }, { "on": ["metric"], "metric": { "resource": "cpu", "below": 100, "forS": 5 }, "deliver": "wake", "times": 2, "why": "the user asked to hear when the CPU is under 100%" }, { "on": ["session.tool"], "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0", "harness": "claude", "origin": "user", "tool": "Bash", "deliver": "note", "cooldownS": 30, "why": "shell use in the site" }, { "on": ["session.idle"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the tests the user asked for", "asked": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" }], "results": [{ "listener": { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 } }] },
     "listener.remove": { "params": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
     "listener.list": { "params": [{}], "results": [{ "listeners": [] }, { "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },
+    "assistant.wake": {
+      "params": [
+        { "id": "w12", "text": "[cophyla wake] [listener lst_01ARZ3NDEKTSV4RRFFQ69G5FC1 \"the build\"] [session sess_01ARZ3NDEKTSV4RRFFQ69G5FB2 is idle]", "kind": "wake", "about": "Following up: the build" },
+        { "id": "w13", "text": "[cophyla notify] CPU above 90% for 10 s on desk", "kind": "notify" },
+        { "id": "w14", "text": "[cophyla result] session.spawn r7: started sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "kind": "result" }
+      ],
+      "results": [{ "queued": true }, { "queued": false }]
+    },
     "cancel": { "params": [{ "id": 7 }, { "id": "req-9" }], "results": [{}] }
   },
   "notices": {
@@ -421,5 +446,38 @@
       { "turn": { "about": "Scheduled: morning summary", "steps": [{ "text": "Couldn't read notes.md", "status": "failed" }], "thinking": true } },
       {}
     ]
+  },
+  "brain": {
+    "assistant.setup": {
+      "params": [{ "harness": "claude" }, { "harness": "codex" }],
+      "results": [{ "system": "You are Cophyla, the user's eyes over their coding agents.", "instructions": "Cophyla's tools: every action is a JSON object with an action." }]
+    },
+    "tools.list": {
+      "params": [{}],
+      "results": [{ "tools": [{ "name": "agents", "description": "The agent sessions: list them, read one's history, start one, prompt one, answer its ask.", "schema": { "type": "object", "properties": { "action": { "type": "string" } }, "required": ["action"] } }] }, { "tools": [] }]
+    },
+    "tool.call": {
+      "params": [{ "tool": "agents", "input": { "action": "List" } }, { "tool": "ask", "input": { "question": "Tea or coffee?", "options": ["Tea", "Coffee"] } }],
+      "results": [
+        { "content": "[r12] agents List\n1\tsess_01ARZ3NDEKTSV4RRFFQ69G5FB2 claude idle in api" },
+        { "content": "held on ask_01ARZ3NDEKTSV4RRFFQ69G5FB5: the user must approve it" },
+        { "content": "agents was not run: the brain is not running.", "isError": true },
+        { "content": "The desktop of desk.", "image": { "mime": "image/png", "base64": "iVBORw0KGgo=" } }
+      ]
+    },
+    "assistant.context": {
+      "params": [
+        { "kind": "start", "source": "startup" },
+        { "kind": "start", "source": "clear", "have": 4 },
+        { "kind": "prompt", "prompt": { "kind": "user", "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" }, "have": 4 },
+        { "kind": "prompt", "prompt": { "kind": "wake", "wake": "w12" }, "source": "fresh" },
+        { "kind": "preview" }
+      ],
+      "results": [
+        { "text": "[cophyla: the situation now]\nNow: Tuesday 2025-09-18T12:00+03:00 (Europe/Istanbul)", "seq": 5 },
+        { "text": "[cophyla: the situation is as you last saw it]\nNow: Tuesday 2025-09-18T12:01+03:00 (Europe/Istanbul)\n\n[cophyla: this turn]\nSpoken turn: your reply is read out to the user.", "seq": 6 },
+        { "text": "", "preview": { "rules": "You are Cophyla.", "situation": "Now: Tuesday", "notes": ["sess_a went idle"], "tools": ["agents", "tasks"], "tokens": { "rules": 2300, "situation": 420, "tools": 4500 } } }
+      ]
+    }
   }
 }

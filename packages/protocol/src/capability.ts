@@ -6,6 +6,8 @@ import { z } from "zod";
 import {
   Ask,
   AskAnswer,
+  AssistantHarness,
+  AssistantStatus,
   ContentBlock,
   EventDefinition,
   HarnessProfile,
@@ -69,7 +71,10 @@ export const CapabilityHello = z.object({
    * modes, one looser than asking before each edit under the user's ask; `codex.bypass`: it
    * takes `bypassPermissions` for a Codex session too; `terminal.prompt`: the brain sees the
    * agent CLIs waiting at their first prompt (`terminal.list`, `terminal.waiting`) and gives
-   * one its first prompt (`terminal.prompt`).
+   * one its first prompt (`terminal.prompt`); `assistant`: the chat runs in an agent session
+   * of its own, which the platform starts and types into: the brain wakes it
+   * (`assistant.wake`), serves it its rules, tools and context (`brainRequests`) and hears its
+   * turns (`assistant.prompted`, `assistant.step`, `assistant.replied`, `assistant.state`).
    */
   features: z.array(z.string()).optional(),
 });
@@ -86,6 +91,18 @@ export type EditableProblem = z.infer<typeof EditableProblem>;
 
 export const UserMessageSource = z.enum(["ui", "voice", "controller"]);
 export const ActivityState = z.enum(["typing", "speaking", "idle"]);
+
+/**
+ * What the chat's own session was given as a prompt: the user's message, by the id it was
+ * stored under; a wake of the brain's, by the id the brain gave it; or words typed straight
+ * into its terminal, which no message stands for.
+ */
+export const AssistantPrompt = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("user"), message: MessageId }),
+  z.object({ kind: z.literal("wake"), wake: z.string() }),
+  z.object({ kind: z.literal("terminal") }),
+]);
+export type AssistantPrompt = z.infer<typeof AssistantPrompt>;
 
 export const capabilityEvents = {
   "session.discovered": event({ session: Session }),
@@ -142,6 +159,21 @@ export const capabilityEvents = {
   "listener.fired": event({ listener: Listener, event: z.object({ name: z.string(), params: z.record(z.string(), z.unknown()) }), last: z.boolean(), speak: z.boolean().optional() }),
   /** A listener is gone: spent, its `until` settled or ended, or removed by the user or the brain. */
   "listener.removed": event({ id: ListenerId, why: z.enum(["spent", "until", "user", "brain"]) }),
+  /**
+   * The chat's own session took a prompt: its turn begins, and the tool calls that follow
+   * (`tool.call`) are that turn's. A user's message typed while a turn of theirs runs joins it.
+   */
+  "assistant.prompted": event({ prompt: AssistantPrompt }),
+  /** It ran one of its harness's own tools (a read, a search of the web): a step of the turn, for the chat's progress. */
+  "assistant.step": event({ tool: z.string(), input: z.unknown() }),
+  /**
+   * Its turn ended with these words, in the reply syntax: the brain says them. `prompt` is the
+   * one the turn answered. `interrupted`: nothing was said, because the session could not be
+   * handed the prompt or its program went under the turn; a wake is owed again.
+   */
+  "assistant.replied": event({ text: z.string(), prompt: AssistantPrompt.optional(), interrupted: z.boolean().optional() }),
+  /** Where it stands: the brain wakes it only while it is `idle` or `busy`. */
+  "assistant.state": event({ status: AssistantStatus, harness: AssistantHarness.optional(), profile: ProfileId.optional(), model: z.string().optional() }),
 } as const;
 
 export type CapabilityEventName = keyof typeof capabilityEvents;
@@ -554,12 +586,76 @@ export const capabilityRequests = {
   "listener.add": { params: ListenerSpec, result: z.object({ listener: Listener }) },
   "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
   "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
+  /**
+   * Hands the chat's own session a prompt of the brain's, typed into it as the user's are: a
+   * `wake` (something it listens for, a task that is due), a `notify` (to tell the user, with
+   * no tools), or the `result` of a request of its own that was held on a person. `about` is
+   * why the turn runs, for the chat's progress line. One at a time: `queued` is false while
+   * the session is not up, and the brain keeps the wake.
+   */
+  "assistant.wake": {
+    params: z.object({ id: z.string().min(1).max(64), text: z.string().min(1), kind: z.enum(["wake", "notify", "result"]), about: z.string().max(200).optional() }),
+    result: z.object({ queued: z.boolean() }),
+  },
   cancel: { params: z.object({ id: RpcId }), result: Empty },
 } as const;
 
 export type CapabilityRequestName = keyof typeof capabilityRequests;
 export type CapabilityParams<N extends CapabilityRequestName> = z.infer<(typeof capabilityRequests)[N]["params"]>;
 export type CapabilityResult<N extends CapabilityRequestName> = z.infer<(typeof capabilityRequests)[N]["result"]>;
+
+// ---------------------------------------------------------------------------------------
+// Requests → brain. The platform asks these of the brain for the chat's own session: what it
+// is started with, the tools it may call, each call it makes, and what it is told at a
+// session's start and with every prompt. They cross no gate themselves; the capability
+// requests a tool makes while it runs do.
+
+/** A picture a tool hands the model beside its text. */
+export const ToolImage = z.object({ mime: z.string(), base64: z.string() });
+export type ToolImage = z.infer<typeof ToolImage>;
+
+/** A tool's result as the session's harness is handed it. */
+export const ToolCallResult = z.object({ content: z.string(), isError: z.boolean().optional(), image: ToolImage.optional() });
+export type ToolCallResult = z.infer<typeof ToolCallResult>;
+
+/**
+ * What the session would be told now, for the Context overlay, with nothing taken or moved:
+ * its rules, the situation whole, the notes waiting for its next prompt, its tools by name,
+ * and the estimated tokens of each.
+ */
+export const AssistantPreview = z.object({
+  rules: z.string(),
+  situation: z.string(),
+  notes: z.array(z.string()),
+  tools: z.array(z.string()),
+  tokens: z.object({ rules: z.number(), situation: z.number(), tools: z.number() }),
+});
+export type AssistantPreview = z.infer<typeof AssistantPreview>;
+
+export const brainRequests = {
+  /** What the session is started with on a harness: its system prompt, and the short form its tool server states as instructions. */
+  "assistant.setup": { params: z.object({ harness: AssistantHarness }), result: z.object({ system: z.string(), instructions: z.string() }) },
+  /** The tools the session may call, as the brain declares them. */
+  "tools.list": { params: Empty, result: z.object({ tools: z.array(LlmTool) }) },
+  /** One call of the session's, run by the brain in the turn the last `assistant.prompted` began. */
+  "tool.call": { params: z.object({ tool: z.string(), input: z.unknown() }), result: ToolCallResult },
+  /**
+   * What the session is told beside a prompt. `start`: at a session's start, after a clear, a
+   * compaction or a resume (`source` says which), the situation whole. `prompt`: with a prompt,
+   * what changed in the situation since `have`, the last answer's `seq` that reached the
+   * session, or the whole of it again when that is not the brain's last. Both carry the notes
+   * held for the session and what the turn's kind asks of the reply. `preview` takes nothing
+   * and answers `preview` instead of `text`.
+   */
+  "assistant.context": {
+    params: z.object({ kind: z.enum(["start", "prompt", "preview"]), source: z.string().optional(), prompt: AssistantPrompt.optional(), have: z.number().int().nonnegative().optional() }),
+    result: z.object({ text: z.string(), seq: z.number().int().nonnegative().optional(), preview: AssistantPreview.optional() }),
+  },
+} as const;
+
+export type BrainRequestName = keyof typeof brainRequests;
+export type BrainRequestParams<N extends BrainRequestName> = z.infer<(typeof brainRequests)[N]["params"]>;
+export type BrainRequestResult<N extends BrainRequestName> = z.infer<(typeof brainRequests)[N]["result"]>;
 
 // ---------------------------------------------------------------------------------------
 // Notices → brain, about a request in flight

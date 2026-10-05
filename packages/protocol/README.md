@@ -8,7 +8,7 @@ process. They are the public contract; the design notes behind them are kept pri
 | `src/ids.ts` | prefixed ULIDs, `newId`, one id schema per entity, `Timestamp` |
 | `src/rpc.ts` | the JSON-RPC 2.0 envelope, the `Error` codes and their numeric forms, `RpcError` |
 | `src/entities.ts` | every entity, and `entities` keyed by the name entities.md uses |
-| `src/capability.ts` | `hello`, the events into the brain, the requests out of it with their results, the notices |
+| `src/capability.ts` | `hello`, the events into the brain, the requests out of it with their results, the notices, and the requests the platform makes of the brain for the session the chat runs in (`brainRequests`) |
 | `src/client.ts` | the client protocol: requests with results, signals, notifications |
 | `src/hooks.ts` | what Claude Code, Codex and Muse post to `/hooks/*` and what cophylad answers (all Claude-shaped) |
 | `src/server-link.ts` | the multiplexed frames on the daemon's link to the server: the requests it makes (`serverLinkRequests`), the one the server makes of it (`serverLinkInbound`: `relay.open`), and the notifications either way |
@@ -74,6 +74,19 @@ process. They are the public contract; the design notes behind them are kept pri
   capability request too, and `log` (up to 20) adds `GitCommit`s on both protocols. The
   brain's `hello` gains `features`, naming what the platform does, since an older one ignores
   what it does not know. All additive.
+- **The chat runs in a session.** The chat's model runs in an agent session on the user's own
+  harness, which the platform starts and types into, so the capability protocol goes both ways
+  for it. The brain hears the session's turn as events (`assistant.prompted`, `assistant.step`,
+  `assistant.replied`, `assistant.state`) and wakes it with one request (`assistant.wake`).
+  The platform asks the brain four things (`brainRequests`): what the session is started with
+  (`assistant.setup`), the tools it may call (`tools.list`), each call it makes (`tool.call`)
+  and what it is told at a start and beside a prompt (`assistant.context`). The hello names it
+  `assistant`. Clients get `assistant.state` (a request and a notification),
+  `assistant.configure` and `assistant.restart`; `Session` gains `role`, and `AssistantState`
+  is new. `BrainContext` gains `notes` and the session's own `used` and `window`; its tiers of
+  a brain's own window (`working`, `loaded`, `log`, `total`, `budgets`, `messages`) stay in
+  the schema, optional, and are no longer sent. `rules` and `tools` in its `tokens` and
+  `notes` are required now, which only cophylad produces.
 - **`Session.profile` is required.** This is the one non-additive change the package has made:
   a `Session` now names the `HarnessProfile` it was found under. It is allowed because only
   cophylad produces `Session` values and nothing has shipped; every other schema change stays

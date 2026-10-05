@@ -20,7 +20,7 @@ export * from "./audio.ts";
 export * from "./docframe.ts";
 
 import { entities } from "./entities.ts";
-import { CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";
+import { brainRequests, CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";
 import { clientNotifications, clientRequests, clientSignals } from "./client.ts";
 import { hooks } from "./hooks.ts";
 import { serverAuthHttp, serverLinkFrames, serverLinkInbound, serverLinkRequests } from "./server-link.ts";
@@ -39,6 +39,8 @@ export const registry = {
     requests: capabilityRequests,
     notices: capabilityNotices,
     signals: capabilitySignals,
+    /** What the platform asks of the brain, for the session the chat runs in. */
+    brain: brainRequests,
   },
   client: {
     requests: clientRequests,

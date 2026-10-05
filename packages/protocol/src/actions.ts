@@ -87,6 +87,11 @@ export const actions = {
   "listener.remove": { risk: "write" },
   "listener.list": { risk: "read" },
   "brain.context": { risk: "read" },
+  "assistant.state": { risk: "read" },
+  "assistant.configure": { risk: "write" },
+  "assistant.restart": { risk: "write" },
+  // The brain's own words to the chat's own session: typed where the user's are.
+  "assistant.wake": { risk: "write" },
   "metrics.subscribe": { risk: "read" },
   "metrics.unsubscribe": { risk: "read" },
   "metrics.history": { risk: "read" },

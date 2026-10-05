@@ -322,24 +322,32 @@
     "node.restart": { "params": [{}, { "force": true }], "results": [{}] },
     "listener.list": { "params": [{}], "results": [{ "listeners": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC1", "on": ["session.idle", "session.ask"], "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "deliver": "wake", "until": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2", "why": "the agent I started to fix the build", "createdAt": 1758196000000, "fired": 0 }, { "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3", "on": ["custom"], "name": "my.ci_failed", "match": { "branch": "main" }, "deliver": "note", "why": "CI on main, for the next talk", "createdAt": 1758196000000, "fired": 3, "lastFiredAt": 1758196800000 }] }] },
     "listener.remove": { "params": [{ "id": "lst_01ARZ3NDEKTSV4RRFFQ69G5FC3" }], "results": [{}] },
+    "assistant.state": {
+      "params": [{}],
+      "results": [
+        { "state": { "status": "idle", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet", "effort": "low", "context": { "used": 41000, "limit": 300000 }, "terminal": { "host": "h_9f2c", "id": "440e1cb4601e" } } },
+        { "state": { "status": "off" } }
+      ]
+    },
+    "assistant.configure": {
+      "params": [{ "harness": "codex" }, { "harness": null, "profile": null }, { "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, {}],
+      "results": [{ "state": { "status": "idle", "harness": "codex", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "gpt-6.1-sol", "effort": "low", "chosen": { "harness": "codex" } } }]
+    },
+    "assistant.restart": {
+      "params": [{}],
+      "results": [{ "state": { "status": "starting", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet", "effort": "low" } }, { "state": { "status": "unavailable", "detail": "The chat runs on your own Claude Code or Codex account, and none is signed in on this machine." } }]
+    },
     "brain.context": {
       "params": [{}, { "check": true }],
       "results": [
         {},
         {
           "context": {
-            "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
             "at": 1758196800000,
-            "tokens": { "situation": 420, "working": 310, "loaded": 0, "log": 60, "total": 790 },
+            "tokens": { "rules": 2300, "situation": 420, "tools": 4500 },
             "rules": "You are Cophyla.",
             "situation": "Now: Tuesday 2025-09-18T12:00+03:00 (Europe/Istanbul)",
-            "log": "Instructions:\nL1 11:02 User asked for the series, one section at a time",
-            "messages": [
-              { "role": "user", "content": [{ "type": "text", "text": "what is open?" }] },
-              { "role": "assistant", "content": [{ "type": "tool_use", "id": "tu_1", "name": "tasks", "input": { "action": "List" } }] },
-              { "role": "user", "content": [{ "type": "tool_result", "toolUseId": "tu_1", "content": "[r4 collapsed: tasks List. Say context expand r4 to see it again.]" }] },
-              { "role": "assistant", "content": [{ "type": "text", "text": "Nothing is open." }] }
-            ],
+            "notes": [],
             "tools": ["agents", "tasks", "files"]
           }
         },
@@ -347,11 +355,10 @@
           "context": {
             "thread": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3",
             "at": 1758196800000,
-            "tokens": { "situation": 420, "working": 310, "loaded": 0, "log": 60, "total": 790, "rules": 2300, "tools": 3800 },
-            "budgets": { "situation": 2000, "working": 8000, "loaded": 12000, "total": 24000 },
+            "tokens": { "rules": 2300, "situation": 420, "tools": 4500, "used": 41000, "window": 300000 },
             "rules": "You are Cophyla.",
             "situation": "Now: Tuesday 2025-09-18T12:00+03:00 (Europe/Istanbul)",
-            "messages": [],
+            "notes": ["sess_a went idle"],
             "tools": ["agents"]
           },
           "spend": {
@@ -518,6 +525,11 @@
     ],
     "chat.retract": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB4" }],
     "chat.progress": [{ "turn": { "steps": [{ "text": "Checked agent sessions", "status": "done" }], "thinking": true } }, { "turn": { "about": "Heard: the build agent finished", "steps": [], "thinking": false } }, {}],
+    "assistant.state": [
+      { "status": "busy", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet", "effort": "low", "context": { "used": 41000, "limit": 300000 }, "terminal": { "host": "h_9f2c", "id": "440e1cb4601e" } },
+      { "status": "idle", "harness": "codex", "model": "gpt-6.1-sol", "effort": "low", "context": { "used": 19600, "limit": 230000 }, "chosen": { "harness": "codex" } },
+      { "status": "unavailable", "detail": "The chat runs on your own Claude Code or Codex account, and none is signed in on this machine." }
+    ],
     "session.state": [
       {
         "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1",
