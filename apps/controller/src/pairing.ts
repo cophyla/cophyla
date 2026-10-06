@@ -4,7 +4,9 @@
 // In the browser it lives in the page's own storage — the one place in the system where a
 // client-protocol credential lives in web content, and deliberate: a browser has no native
 // side to hold it, the token is this controller's alone, and the desktop can revoke it. The
-// native app keeps the same shape in its preferences, behind the same store interface.
+// native app keeps the same shape in its preferences, behind the same store interface. A
+// browser's credential ends by itself (the node fixed when, at pairing), and on a shared
+// computer it is never written anywhere: it lives in the page's memory, and goes with the tab.
 
 import { InviteError, parseInvite } from "@cophyla/protocol";
 import type { InviteBody, PairedLan, RelayAccess } from "@cophyla/protocol";
@@ -28,6 +30,10 @@ export interface Credential {
   /** What the server relay needs, when the node could mint it: tried when the LAN is out of reach. */
   relay?: RelayAccess;
   node?: NodeAddress;
+  /** When the node ends this credential's access by itself, as it said at pairing. */
+  expiresAt?: number;
+  /** A shared computer's: kept in the page's memory alone, on the node as here. */
+  session?: boolean;
 }
 
 export interface Storage {
@@ -56,6 +62,7 @@ function parse(raw: string | null): Credential | undefined {
     if (value.node && typeof value.node === "object" && typeof value.node.host === "string" && typeof value.node.port === "number") {
       out.node = { host: value.node.host, port: value.node.port, ...(typeof value.node.spki === "string" ? { spki: value.node.spki } : {}) };
     }
+    if (typeof value.expiresAt === "number") out.expiresAt = value.expiresAt;
     return out;
   } catch {
     return undefined;
@@ -82,6 +89,48 @@ export function syncStore(storage: Storage): CredentialStore {
     forget: async () => forgetCredential(storage),
   };
 }
+
+/** A store in the page's memory alone: a shared computer's credential, gone with the tab. */
+export function memoryStore(): CredentialStore {
+  let kept: Credential | undefined;
+  return {
+    read: async () => kept,
+    write: async (c) => {
+      kept = c;
+    },
+    forget: async () => {
+      kept = undefined;
+    },
+  };
+}
+
+/**
+ * A browser's store: the page's storage, but for a shared computer's credential, which is held
+ * in memory and never written. Either pairing takes the other's place.
+ */
+export function browserStore(storage: Storage): CredentialStore {
+  const kept = syncStore(storage);
+  const held = memoryStore();
+  return {
+    read: async () => (await held.read()) ?? (await kept.read()),
+    write: async (c) => {
+      if (c.session) {
+        await kept.forget();
+        await held.write(c);
+      } else {
+        await held.forget();
+        await kept.write(c);
+      }
+    },
+    forget: async () => {
+      await held.forget();
+      await kept.forget();
+    },
+  };
+}
+
+/** Where a tab remembers that a shared computer's session was open in it: a mark, never the token. */
+export const SESSION_MARK = "cophyla.controller.session";
 
 /** A store over an async key-value seam: the native app's preferences. */
 export function asyncStore(kv: { get(key: string): Promise<string | null>; set(key: string, value: string): Promise<void>; remove(key: string): Promise<void> }): CredentialStore {
@@ -225,6 +274,14 @@ export interface PendingSignIn {
 
 /** How long a started sign-in waits for its grant: the server's own window for the browser. */
 export const SIGN_IN_TTL_MS = 10 * 60_000;
+
+/** A browser on a computer, as the list of devices should name it: the browser and what it runs on ("Firefox on Linux"). */
+export function guessBrowser(userAgent: string): string {
+  const ua = userAgent || "";
+  const browser = /Edg\//.test(ua) ? "Edge" : /OPR\//.test(ua) ? "Opera" : /Firefox\//.test(ua) ? "Firefox" : /Chrome\//.test(ua) ? "Chrome" : /Safari\//.test(ua) ? "Safari" : "A browser";
+  const system = /Windows/.test(ua) ? "Windows" : /Macintosh|Mac OS X/.test(ua) ? "a Mac" : /CrOS/.test(ua) ? "a Chromebook" : /Android/.test(ua) ? "Android" : /Linux|X11/.test(ua) ? "Linux" : undefined;
+  return system ? `${browser} on ${system}` : browser;
+}
 
 /** A name the user will recognise in the desktop's list, guessed from the browser. */
 export function guessName(userAgent: string): string {

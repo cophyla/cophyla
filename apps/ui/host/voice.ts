@@ -8,8 +8,11 @@
 // in the page's storage and shown in the Voice section of the host's settings.
 
 import type { LinkSnapshot, VoiceSettings, VoiceSettingsState } from "@cophyla/viewhost";
-import { VoiceHost } from "@cophyla/voicehost";
-import type { MicChoice, VoiceLink, VoiceView } from "@cophyla/voicehost";
+import { readMic, statusWords, VoiceHost } from "@cophyla/voicehost";
+import type { MicChoice, VoiceLink } from "@cophyla/voicehost";
+
+// What the section says, and the microphone kept, are voicehost's: the page a browser shows has the same section.
+export { readMic, statusWords };
 
 export const LISTEN_KEY = "cophyla.voice.listen";
 export const SPEAK_KEY = "cophyla.voice.speak";
@@ -62,18 +65,6 @@ export interface HelloAudio {
   out: boolean;
   codecs: string[];
   played: boolean;
-}
-
-/** What the Voice section says voice is doing, in words. */
-export function statusWords(v: VoiceView, connected: boolean): string {
-  if (!connected) return "Not connected to cophylad.";
-  if (!v.audioReady) return "Starting the microphone…";
-  if (v.refused) return `Cophyla cannot listen: ${v.refused}`;
-  if (v.voice && v.voice !== "idle") return v.voice === "listening" ? "Listening to you…" : `${v.voice[0]!.toUpperCase()}${v.voice.slice(1)}…`;
-  if (v.wake === "off") return "The wake words are off on this node; the talk key still works.";
-  if (!v.listening) return "Not listening for the wake words; the talk key still works.";
-  if (v.wake === "node") return "Listening: this computer streams to the node, which hears the wake words.";
-  return "Listening for the wake words, here on this computer.";
 }
 
 export class DesktopVoice implements VoiceSettings {
@@ -240,15 +231,4 @@ export class DesktopVoice implements VoiceSettings {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
-}
-
-/** The microphone kept in storage, when what is kept reads as one. */
-export function readMic(raw: string | null): MicChoice | undefined {
-  if (!raw) return undefined;
-  try {
-    const v = JSON.parse(raw) as { id?: unknown; label?: unknown };
-    return typeof v.id === "string" && v.id !== "" && typeof v.label === "string" ? { id: v.id, label: v.label } : undefined;
-  } catch {
-    return undefined;
-  }
 }

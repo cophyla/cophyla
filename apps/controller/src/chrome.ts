@@ -42,6 +42,8 @@ export interface ChromeInput {
   path?: "direct" | "turn";
   /** A remote desktop covers the app: nothing listens meanwhile. */
   watching?: boolean;
+  /** A wide window with a pointer: no Start screen, since the audio starts at the first click anywhere, and no bar. */
+  desk?: boolean;
 }
 
 export interface Chrome {
@@ -74,7 +76,7 @@ const VOICE_WORD: Record<VoiceState, string> = {
 
 export function deriveChrome(input: ChromeInput): Chrome {
   const connected = input.link === "connected";
-  const screen: Screen = !input.paired ? "pair" : !input.audioReady && !input.autoStart ? "gate" : "main";
+  const screen: Screen = !input.paired ? "pair" : !input.audioReady && !input.autoStart && !input.desk ? "gate" : "main";
   const dot = connected ? (input.voice ? (input.voice === "idle" ? "idle" : input.voice) : "idle") : "offline";
   const status = statusOf(input, connected);
   const live = connected && input.audioReady && input.watching !== true;

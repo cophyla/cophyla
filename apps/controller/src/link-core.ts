@@ -19,7 +19,9 @@
 // desktop minted (`redeem`): the LAN addresses the invite names, pinned to its key, with
 // their head start, and the invite's own relay peer beside them; `invite.redeem` on the first
 // to open, then hello on the same LAN socket, or back through the relay on the access the
-// node minted for this phone.
+// node minted for this phone. A browser on another computer pairs with a key someone typed
+// (`pairKey`, `browser.pair`), on the page's own socket. Any of them may say this is a shared
+// computer (`keep: false`): the node then holds the grant in memory alone, and so does the page.
 //
 // A third carries it when the node has direct connections on: a data channel (`p2p`),
 // signalled over the relay connection with the core's own `d<n>` requests, which never reach
@@ -70,7 +72,7 @@ const PROMOTE_ID = "p4";
 /** The relay's close code for a token it no longer knows. */
 const RELAY_UNAUTHORIZED = 4401;
 /** What only this module sends: the handshakes, the relay access, a data channel's signalling. */
-const OWN_METHODS = new Set(["hello", "pair.claim", "pair.account", "invite.redeem", "relay.info", "direct.info", "direct.offer", "direct.candidate"]);
+const OWN_METHODS = new Set(["hello", "pair.claim", "pair.account", "invite.redeem", "browser.pair", "relay.info", "direct.info", "direct.offer", "direct.candidate"]);
 
 export interface Timers {
   setTimeout(handler: () => void, ms: number): unknown;
@@ -132,7 +134,11 @@ type Handler = (payload: never) => void;
 
 interface Pairing {
   code?: string;
+  /** A browser's key, as it was typed. */
+  key?: string;
   invite?: { grant: string; secret: string };
+  /** `false`: a shared computer, said to the node with the code, the key or the invite. */
+  keep?: boolean;
   name: string;
   transport?: Transport;
   lans?: Transport[];
@@ -460,13 +466,19 @@ export class LinkCore implements TauriIo {
     this.upgrade.blocked = false;
     this.upgrade.backoff = 0;
     if (this.pairing) {
-      const p = this.pairing;
-      if (p.invite) this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "invite.redeem", params: { grant: p.invite.grant, secret: p.invite.secret, name: p.name } });
-      else if (p.code !== undefined) this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.claim", params: { code: p.code, name: p.name } });
-      else this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.account", params: { name: p.name } });
+      this.claim(this.pairing);
       return;
     }
     this.sayHello();
+  }
+
+  /** The pairing's own request, on the connection that is open: the invite, the key, the code, or the account's. */
+  private claim(p: Pairing): void {
+    const keep = p.keep === false ? { keep: false } : {};
+    if (p.invite) this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "invite.redeem", params: { grant: p.invite.grant, secret: p.invite.secret, name: p.name, ...keep } });
+    else if (p.key !== undefined) this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "browser.pair", params: { key: p.key, name: p.name, ...keep } });
+    else if (p.code !== undefined) this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.claim", params: { code: p.code, name: p.name, ...keep } });
+    else this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.account", params: { name: p.name } });
   }
 
   private helloParams(credential: Credential): Record<string, unknown> {
@@ -533,14 +545,14 @@ export class LinkCore implements TauriIo {
     this.pairing = undefined;
     if (!pairing) return;
     if (frame.error || !frame.result) {
-      const message = frame.error?.data?.message ?? frame.error?.message ?? (pairing.invite ? "that invite is not open" : "that code is not open");
+      const message = frame.error?.data?.message ?? frame.error?.message ?? (pairing.invite ? "that invite is not open" : pairing.key !== undefined ? "that key is not open" : "that code is not open");
       pairing.reject(new Error(message));
       this.setState("unauthorized", { error: message });
       active.duplex.close();
       return;
     }
     const result = frame.result as { token: string; client: Controller; relay?: RelayAccess; lan?: PairedLan };
-    if (pairing.invite ? active.transport.kind === "relay" : pairing.code === undefined) {
+    if (pairing.invite ? active.transport.kind === "relay" : pairing.code === undefined && pairing.key === undefined) {
       // Through the account, or an invite through its relay peer: that tunnel has done its one job. The
       // credential names the LAN listener the node reported, and the link comes back through the relay with the token.
       const credential: Credential = { ...(result.lan ? (this.opts.credentialForLan?.(result.lan) ?? {}) : {}), token: result.token, controller: result.client.id, name: pairing.name };
@@ -560,6 +572,9 @@ export class LinkCore implements TauriIo {
     const extra = pairing.credentialFor?.(active.transport) ?? this.opts.credentialFor?.(active.transport) ?? { lan: [active.transport.label] };
     const credential: Credential = { ...extra, token: result.token, controller: result.client.id, name: pairing.name };
     if (result.relay) credential.relay = result.relay;
+    // what the node said of the grant: when it ends, and whether it is a shared computer's
+    if (result.client.expiresAt !== undefined) credential.expiresAt = result.client.expiresAt;
+    if (result.client.session) credential.session = true;
     await this.saveCredential(credential);
     pairing.resolve(result.client);
     // Paired: the same connection carries the hello.
@@ -628,9 +643,11 @@ export class LinkCore implements TauriIo {
       this.pairing = undefined;
       const message = pairing.invite
         ? "the connection closed before the node answered: open the invite again"
-        : pairing.code === undefined
-          ? "the sign-in was cut off before the node answered: sign in again"
-          : "the connection closed before the node answered: pair again";
+        : pairing.key !== undefined
+          ? "the connection closed before the node answered: type the key again"
+          : pairing.code === undefined
+            ? "the sign-in was cut off before the node answered: sign in again"
+            : "the connection closed before the node answered: pair again";
       pairing.reject(new Error(message));
       if (!this.cred) {
         this.setState("unauthorized", { error: message });
@@ -954,28 +971,53 @@ export class LinkCore implements TauriIo {
 
   // --- what the page drives ---------------------------------------------------------------------
 
-  /** Spends a pairing code over the LAN: opens a connection, claims, and says hello on the same one. */
-  pair(code: string, name: string, transport?: Transport): Promise<Controller> {
+  /** Spends a pairing code over the LAN: opens a connection, claims, and says hello on the same one. `keep: false` on a shared computer. */
+  pair(code: string, name: string, transport?: Transport, opts: { keep?: boolean } = {}): Promise<Controller> {
+    return this.pairWith({ code, name, ...(opts.keep === false ? { keep: false } : {}) }, transport);
+  }
+
+  /** Spends a browser's key, as it was typed, on the page's own socket: `browser.pair`, then hello on the same one. */
+  pairKey(key: string, name: string, opts: { keep?: boolean } = {}, transport?: Transport): Promise<Controller> {
+    return this.pairWith({ key, name, ...(opts.keep === false ? { keep: false } : {}) }, transport);
+  }
+
+  private pairWith(what: Pick<Pairing, "code" | "key" | "keep" | "name">, transport?: Transport): Promise<Controller> {
     return new Promise<Controller>((resolve, reject) => {
       const t = transport ?? this.opts.lan(undefined)[0];
       if (!t) {
         reject(new Error("no node address to pair with"));
         return;
       }
+      if (this.pairing) {
+        reject(new Error("a pairing is already under way"));
+        return;
+      }
+      const pairing: Pairing = { ...what, transport: t, resolve, reject };
       if (this.active) {
         if (this.helloDone) {
           reject(new Error("already paired"));
           return;
         }
         // A connection that is open but unauthenticated: claim on it.
-        this.pairing = { code, name, transport: t, resolve, reject };
-        this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.claim", params: { code, name } });
+        this.pairing = pairing;
+        this.claim(pairing);
         return;
       }
-      this.pairing = { code, name, transport: t, resolve, reject };
+      this.pairing = pairing;
       this.suspended = false;
       this.connect();
     });
+  }
+
+  /**
+   * Asks the node to end this credential's own grant, on the connection that carries the link,
+   * and waits for no answer: what a shared computer's page says as it goes away. The node ends
+   * the session by itself a little later when this never arrives.
+   */
+  revokeSelf(): void {
+    const credential = this.cred;
+    if (!credential || !this.active || !this.helloDone) return;
+    this.active.duplex.send(JSON.stringify({ jsonrpc: "2.0", id: "p5", method: "controller.revoke", params: { id: credential.controller } }));
   }
 
   /**
@@ -1011,7 +1053,7 @@ export class LinkCore implements TauriIo {
    * the node minted for this phone. A redemption cut off is settled once; the node opens the
    * invite again for a phone that never got its answer.
    */
-  redeem(invite: { grant: string; secret: string }, name: string, ways: InviteWays): Promise<Controller> {
+  redeem(invite: { grant: string; secret: string }, name: string, ways: InviteWays, opts: { keep?: boolean } = {}): Promise<Controller> {
     return new Promise<Controller>((resolve, reject) => {
       if (this.active && this.helloDone) {
         reject(new Error("this phone is paired already: forget it first"));
@@ -1031,7 +1073,7 @@ export class LinkCore implements TauriIo {
         stale.duplex.onclose = null;
         stale.duplex.close(1000, "redeeming an invite");
       }
-      this.pairing = { invite, name, lans: ways.lans, ...(ways.relay ? { relay: ways.relay } : {}), ...(ways.credentialFor ? { credentialFor: ways.credentialFor } : {}), resolve, reject };
+      this.pairing = { invite, name, lans: ways.lans, ...(ways.relay ? { relay: ways.relay } : {}), ...(ways.credentialFor ? { credentialFor: ways.credentialFor } : {}), ...(opts.keep === false ? { keep: false } : {}), resolve, reject };
       this.suspended = false;
       this.connect();
     });

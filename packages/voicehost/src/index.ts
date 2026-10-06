@@ -11,6 +11,7 @@ export { CUE_S, cueNotes, LEVELS_PER_FRAME, levelsOf, playCue } from "./cues.ts"
 export type { CueContext, CueKind } from "./cues.ts";
 export { DEVICES_SETTLE_MS, LEAD_FRAMES, recordingOf, route, VoiceHost } from "./voicehost.ts";
 export type { RecordingInput, Route, RouteInput, VoiceHostOptions, VoiceLink, VoiceView } from "./voicehost.ts";
+export { readMic, statusWords } from "./words.ts";
 export { BUNDLED, BUNDLED_FILES, BUNDLED_HEADS, WAKE_DIR } from "./wake/bundled.ts";
 export type { BundledFile } from "./wake/bundled.ts";
 export { indexedDbCache } from "./wake/cache.ts";

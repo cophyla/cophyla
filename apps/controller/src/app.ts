@@ -13,9 +13,17 @@
 // writes them to its own storage.
 // `boot(platform)` is what the two entries call: `main.ts` for the browser the node serves,
 // `native.ts` for the Capacitor app.
+//
+// In a browser the page also pairs with a key someone typed (`browser.pair`), may say it is a
+// shared computer (the credential then lives in the page's memory alone, and the page says so
+// when it has gone), and shows itself in the settings as the device it is. In a wide window on
+// a computer (`desk`) it is the whole panel: no bar and no Start screen, the view draws the
+// talk button, the Voice section is in the settings, the audio starts at the first click, and
+// a remote desktop's page lies beside the view where the view places it.
 
 import { Connection, SnapshotCache, ViewHost, AskNotifier } from "@cophyla/viewhost";
-import type { LinkSnapshot, RpcMessage, Staged } from "@cophyla/viewhost";
+import type { DeviceSettings, LinkSnapshot, RpcMessage, Staged } from "@cophyla/viewhost";
+import { formatKey, parseKey } from "@cophyla/protocol";
 import type { Controller, InviteBody, ViewManifest } from "@cophyla/protocol";
 import type { NotifyAsk } from "@cophyla/viewhost";
 import { VoiceHost } from "@cophyla/voicehost";
@@ -24,11 +32,13 @@ import { deriveChrome } from "./chrome.ts";
 import type { ChromeInput } from "./chrome.ts";
 import { LinkCore } from "./link-core.ts";
 import type { InviteWays, LinkCoreOptions } from "./link-core.ts";
-import { parseCode, parseInviteLink, readListen, writeListen } from "./pairing.ts";
+import { parseCode, parseInviteLink, readListen, SESSION_MARK, writeListen } from "./pairing.ts";
 import type { NodeAddress } from "./pairing.ts";
+import { StreamFrames } from "./remote.ts";
 import type { Transport } from "./transport.ts";
-import { bind, elements, render, showInvite } from "./ui.ts";
-import type { UiElements } from "./ui.ts";
+import { bind, dress, elements, render, showInvite } from "./ui.ts";
+import type { PairWith, UiElements } from "./ui.ts";
+import { BrowserVoice } from "./voice.ts";
 
 /** What the browser and the native app each supply. */
 export interface AppPlatform {
@@ -37,8 +47,22 @@ export interface AppPlatform {
   name: string;
   /** Where a view's files come from, for the frame. */
   stage: (conn: Connection, manifest: ViewManifest) => Promise<Staged>;
-  /** A `host.open` from a view. */
-  hostOpen: (params: unknown) => Promise<unknown>;
+  /** A `host.open` from a view, where the platform shows a stream its own way: the native app's dialog. */
+  hostOpen?: (params: unknown) => Promise<unknown>;
+  /** The page shows a stream in a frame of its own, from the node's stream port: a browser. */
+  frames?: boolean;
+  /** A wide window with a pointer, on a computer: the whole panel, with no bar and no Start screen. */
+  desk?: boolean;
+  /** What the page calls the device it runs on; a phone when not said. */
+  device?: "phone" | "browser";
+  /** The pairing form takes a browser's key: the page is served by the node the key opens. */
+  keyPairing?: boolean;
+  /** A key the page was opened with, in its link's fragment. */
+  keyFromLaunch?: string;
+  /** Where the page reaches the node, as its settings say it. */
+  address?: string;
+  /** Where a tab marks that a shared computer's session was open in it: its session storage. Never the token. */
+  marks?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
   /** A web page a view's user clicked (`host.openLink`), in the browser. */
   openLink?: (url: string) => Promise<void>;
   /** An ask to show while the app has a window; the native app leaves this to the push. */
@@ -87,12 +111,19 @@ export interface App {
   pairNote(text: string, error?: boolean): void;
   /** An invite the app was opened with: the pairing screen names its node and asks to join. */
   offerInvite(text: string): void;
+  /** The credential is a shared computer's: held in memory, ended when the tab goes. */
+  readonly session: boolean;
+  /** The streams the page shows in frames of its own, where it does. */
+  frames?: StreamFrames;
 }
 
 export function boot(platform: AppPlatform, doc: Document = document): App {
   const ui = elements(doc);
+  const desk = platform.desk === true;
+  dress(ui, { device: platform.device ?? "phone", ...(platform.keyPairing ? { key: true } : {}), ...(desk ? { desk: true } : {}) });
   ui.pairName.placeholder = platform.name;
   if (platform.codeFromLaunch) ui.pairCode.value = platform.codeFromLaunch;
+  if (platform.keyFromLaunch && ui.pairKey) ui.pairKey.value = formatKey(platform.keyFromLaunch);
   if (platform.askAddress && ui.pairAddress) ui.pairAddress.hidden = false;
   if (platform.signIn && ui.pairAccount) {
     ui.pairAccount.hidden = false;
@@ -121,34 +152,97 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     talking: false,
     muted: false,
     ...(platform.autoStart ? { autoStart: true } : {}),
+    ...(desk ? { desk: true } : {}),
   };
 
   // The microphone, the wake word and the speaker: what the phone says in its hello follows
-  // what WebCodecs speaks.
-  const voice = new VoiceHost({
+  // what WebCodecs speaks. In a wide window on a computer it is the settings' Voice section too.
+  // Nothing is painted until everything a paint reads has been made.
+  let booted = false;
+  const voiceDeps = {
     link: conn,
     backlog: () => io.backlog(),
     ...(platform.wake ? { wake: platform.wake } : {}),
-    listening: state.listening,
-    onChange: () => paint(),
+    onChange: () => {
+      if (booted) paint();
+    },
     // The view draws the microphone while it records, over its input.
-    onRecording: (on) => viewhost.recording(on),
-    onLevels: (levels) => viewhost.levels(levels),
-    onCodecs: (codecs) => {
+    onRecording: (on: boolean) => viewhost.recording(on),
+    onLevels: (levels: number[]) => viewhost.levels(levels),
+    onCodecs: (codecs: LinkCore["codecs"]) => {
       io.codecs = codecs;
     },
-  });
+  };
+  const deskVoice = desk ? new BrowserVoice({ ...voiceDeps, ...(storage ? { store: storage } : {}), log: (m) => console.info(m) }) : undefined;
+  const voice = deskVoice?.host ?? new VoiceHost({ ...voiceDeps, listening: state.listening });
+  if (deskVoice) state.listening = voice.view.listening;
   const audio = voice.audio;
 
+  // A stream's page in a frame of the page's own: over everything, or beside the view in a wide window.
+  const frames = platform.frames
+    ? new StreamFrames({
+        doc,
+        origin: doc.defaultView?.location.origin ?? "",
+        request: (method, params) => conn.request(method, params),
+        frame: () => ui.view.querySelector("iframe")?.getBoundingClientRect(),
+        embed: desk,
+        onClosed: (stream) => viewhost.streamClosed(stream),
+        log: (m) => console.warn(m),
+      })
+    : undefined;
+  doc.defaultView?.addEventListener("resize", () => frames?.replace());
+
+  /** Drops the credential here and on the node: the device is not paired any more. */
+  const forget = async (): Promise<void> => {
+    const credential = io.credential;
+    if (credential && conn.connected) await conn.request("controller.revoke", { id: credential.controller }).catch(() => {});
+    io.forget();
+    held = false;
+    platform.marks?.removeItem(SESSION_MARK);
+    state.paired = false;
+    paint();
+  };
+
+  // The page as the paired device it is, for the settings: a browser's alone.
+  const deviceWatchers = new Set<() => void>();
+  const device: DeviceSettings | undefined =
+    platform.device === "browser"
+      ? {
+          state: () => {
+            const c = io.credential;
+            return { name: c?.name ?? platform.name, address: platform.address ?? "", connected: conn.connected, ...(c?.expiresAt !== undefined ? { expiresAt: c.expiresAt } : {}), ...(c?.session ? { session: true } : {}) };
+          },
+          subscribe: (changed) => {
+            deviceWatchers.add(changed);
+            return () => deviceWatchers.delete(changed);
+          },
+          forget,
+        }
+      : undefined;
+
+  const hostOpen = platform.hostOpen;
   const viewhost = new ViewHost({
     conn,
     cache,
     container: ui.view,
     stage: (manifest) => platform.stage(conn, manifest),
-    host: (method, params) => (method === "host.open" ? platform.hostOpen(params) : Promise.reject(new Error(`no ${method}`))),
+    host: frames ? frames.host : (method, params) => (method === "host.open" && hostOpen ? hostOpen(params) : Promise.reject(new Error(`no ${method}`))),
     ...(platform.openLink ? { openLink: platform.openLink } : {}),
-    // The bar's menu button shows and hides the view's rail.
-    menu: true,
+    ...(device ? { device } : {}),
+    ...(desk
+      ? {
+          // No bar: the view draws the talk button, and a stream goes beside it, under the page's own layers.
+          talk: true,
+          desk: true,
+          embed: true,
+          ...(deskVoice ? { voice: deskVoice } : {}),
+          onOverlay: (open: boolean) => frames?.overlay(open),
+          onUnmount: () => frames?.unmounted(),
+        }
+      : {
+          // The bar's menu button shows and hides the view's rail.
+          menu: true,
+        }),
     onError: (message) => console.warn(message),
   });
 
@@ -161,6 +255,15 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
   });
 
   let loaded = false;
+  /** A shared computer's credential is held: when it goes without being forgotten, the page says why. */
+  let held = false;
+  /** In a wide window the audio is started once, as soon as the page is paired: at the first click where the browser holds it back. */
+  let deskStarted = false;
+  function deskStart(): void {
+    if (!deskVoice || deskStarted || !state.paired) return;
+    deskStarted = true;
+    void deskVoice.start().then(() => paint());
+  }
 
   /** What voice shows, into the chrome's input. */
   function sync(): void {
@@ -252,6 +355,15 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     if (snapshot.error !== undefined) state.error = snapshot.error;
     else delete state.error;
     state.paired = io.credential !== undefined;
+    if (io.credential?.session) held = true;
+    else if (held) {
+      // the node no longer knows the session: it was restarted, the time ran out, or the tab was away too long
+      held = false;
+      platform.marks?.removeItem(SESSION_MARK);
+      if (snapshot.state === "unauthorized") pairNote("This shared computer's access has ended: the node was restarted, or its time ran out. Pair it again to carry on.");
+    }
+    if (snapshot.state === "disconnected" || snapshot.state === "unauthorized") frames?.linkLost();
+    for (const changed of [...deviceWatchers]) changed();
     state.via = io.via;
     if (io.via === "p2p" && io.snapshot.path) state.path = io.snapshot.path;
     else delete state.path;
@@ -299,6 +411,20 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     }
   };
 
+  /** A pairing went through: the page shows the app, and a shared computer's tab is marked as one. */
+  const paired = (): void => {
+    if (io.credential?.session) {
+      held = true;
+      platform.marks?.setItem(SESSION_MARK, "1");
+    } else platform.marks?.removeItem(SESSION_MARK);
+    pairNote("");
+    state.paired = true;
+    paint();
+    autoStart();
+    deskStart();
+  };
+  const keep = (how: PairWith): { keep?: boolean } => (how.shared ? { keep: false } : {});
+
   /** The invite read last, waiting for Join. */
   let invite: InviteBody | undefined;
   const readInvite = (text: string): string => {
@@ -320,14 +446,12 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
 
   bind(ui, {
     readInvite,
-    redeem: async (chosen) => {
+    redeem: async (how) => {
       const body = invite;
       if (!body || !platform.inviteWays) throw new Error("paste the invite first");
-      await io.redeem({ grant: body.grant, secret: body.secret }, chosen, platform.inviteWays(body));
+      await io.redeem({ grant: body.grant, secret: body.secret }, how.name, platform.inviteWays(body), keep(how));
       invite = undefined;
-      state.paired = true;
-      paint();
-      autoStart();
+      paired();
     },
     cancelInvite: () => {
       invite = undefined;
@@ -337,15 +461,19 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
       await platform.signIn();
       pairNote("Finish signing in with GitHub in the browser; the app pairs as soon as it is back.");
     },
-    pair: async (code, chosen, address) => {
+    pair: async (code, how, address) => {
       const digits = parseCode(code);
       if (!digits) throw new Error("the code is six digits");
       const transport = platform.pairingTransport?.(address);
       if (platform.askAddress && !transport) throw new Error("the node's address is host:port");
-      await io.pair(digits, chosen, transport);
-      state.paired = true;
-      paint();
-      autoStart();
+      await io.pair(digits, how.name, transport, keep(how));
+      paired();
+    },
+    pairKey: async (key, how) => {
+      // read here only to spare a trip: the node reads what was typed its own way
+      if (!parseKey(key)) throw new Error("the key is sixteen letters and digits, in fours");
+      await io.pairKey(key, how.name, keep(how));
+      paired();
     },
     // Inside the gesture.
     start: startAudio,
@@ -356,13 +484,7 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     },
     ptt: (down) => voice.ptt(down),
     mute: (on) => voice.mute(on),
-    forget: async () => {
-      const credential = io.credential;
-      if (credential && conn.connected) await conn.request("controller.revoke", { id: credential.controller }).catch(() => {});
-      io.forget();
-      state.paired = false;
-      paint();
-    },
+    forget,
   });
 
   const app: App = {
@@ -386,16 +508,27 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     pairThroughAccount,
     pairNote,
     offerInvite,
+    get session() {
+      return io.credential?.session === true;
+    },
+    ...(frames ? { frames } : {}),
   };
 
+  booted = true;
   paint();
   void io
     .load()
     .then(() => {
       state.paired = io.credential !== undefined;
+      // a shared computer's tab that was reloaded: its credential went with the page, as it should
+      if (!state.paired && platform.marks?.getItem(SESSION_MARK)) {
+        platform.marks.removeItem(SESSION_MARK);
+        pairNote("This tab was paired as a shared computer, and that ended when the page was reloaded. Pair it again to carry on.");
+      }
       paint();
       platform.ready?.(app);
       autoStart();
+      deskStart();
       return conn.attach();
     })
     .then((snapshot) => {

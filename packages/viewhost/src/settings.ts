@@ -1062,7 +1062,7 @@ export interface VoiceSettingsState {
   listening: boolean;
   /** Replies are spoken aloud. */
   speak: boolean;
-  /** The talk key as the shell reads it; `""` when there is none. */
+  /** The talk key as the shell reads it; `""` when there is none, and on a host that has no such key at all. */
   talkKey: string;
   /** The phrases the node listens for, once it said which; the node detects them itself when empty. */
   phrases: string[];
@@ -1097,15 +1097,15 @@ export function micOptions(v: VoiceSettingsState): { options: { value: string; l
   return { options, value: choice.id };
 }
 
-/** A host's own voice, for the Voice section: the desktop app's. */
+/** A host's own voice, for the Voice section: the desktop app's, and the controller page's in a desktop browser. */
 export interface VoiceSettings {
   state(): VoiceSettingsState;
   /** Calls `changed` whenever the state moves; returns how to stop. */
   subscribe(changed: () => void): () => void;
   setListening(on: boolean): void;
   setSpeak(on: boolean): void;
-  /** The talk key, by name; resolves with it as the shell reads it, rejects with why it could not be had. */
-  setTalkKey(accelerator: string): Promise<string>;
+  /** The talk key, by name; resolves with it as the shell reads it, rejects with why it could not be had. Absent on a host with no key held outside its window: a page in a browser. */
+  setTalkKey?(accelerator: string): Promise<string>;
   /** Asks for the microphone again. */
   retry(): Promise<void>;
   /** Listens on the microphone with this id from `mics`, or on the system's default for `""`. */
@@ -1114,11 +1114,48 @@ export interface VoiceSettings {
   listMics?(): void;
 }
 
+/** What the host shows of itself as a paired device: a browser on another computer. */
+export interface DeviceSettingsState {
+  /** What the device is called on the node. */
+  name: string;
+  /** Where it reaches the node, as the address bar says it, and whether it does now. */
+  address: string;
+  connected: boolean;
+  /** When its access ends by itself. */
+  expiresAt?: number;
+  /** A shared computer's: nothing is kept here, and the access ends when the tab closes. */
+  session?: boolean;
+}
+
+/** The host as the paired device it is: what it says of itself, and how it is forgotten. */
+export interface DeviceSettings {
+  state(): DeviceSettingsState;
+  /** Calls `changed` whenever the state moves; returns how to stop. */
+  subscribe?(changed: () => void): () => void;
+  /** Ends this device's access on the node and drops what it kept here. */
+  forget(): Promise<void>;
+}
+
+/** When a device's access ends, in words. */
+export function deviceEnds(d: DeviceSettingsState, now: number = Date.now(), locale?: string): string {
+  if (d.session) {
+    const by = d.expiresAt !== undefined ? `, and by ${new Date(d.expiresAt).toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" })} at the latest` : "";
+    return `This is a shared computer: nothing is kept here, and its access ends when this tab closes${by}.`;
+  }
+  if (d.expiresAt === undefined) return "Its access has no end: it lasts until it is forgotten here or removed on the node.";
+  const days = Math.ceil((d.expiresAt - now) / 86_400_000);
+  const on = new Date(d.expiresAt).toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" });
+  if (days <= 0) return "Its access has ended.";
+  return `Its access ends on ${on} (${days === 1 ? "tomorrow at the latest" : `in ${days} days`}). Pair it again then, from a device that is already in.`;
+}
+
 export interface SettingsPanelDeps {
   /** The host's own connection. */
   request: SettingsRequest;
   /** The host's own voice, when it has a microphone: the Voice section shows. */
   voice?: VoiceSettings;
+  /** The host as a paired device of its own, when it is one: its section shows last. */
+  device?: DeviceSettings;
   /** Where the layer goes; the page's body when absent. */
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
@@ -1139,7 +1176,11 @@ export class SettingsPanel {
   private keyNote = "";
   /** A vendor's key as typed and not yet saved; dropped the moment it is sent. */
   private apiKeyDrafts = new Map<ProviderKeyName, string>();
+  /** Forget was pressed once: the next press does it. */
+  private forgetAsked = false;
+  private forgetNote = "";
   private unsubscribe?: () => void;
+  private unsubscribeDevice?: () => void;
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape") this.close();
   };
@@ -1193,6 +1234,7 @@ export class SettingsPanel {
     this.model = model;
     document.addEventListener("keydown", this.onKey);
     this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
+    this.unsubscribeDevice = this.deps.device?.subscribe?.(() => this.render());
     this.deps.voice?.listMics?.();
     this.render();
     close.focus();
@@ -1211,6 +1253,10 @@ export class SettingsPanel {
     this.model = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
+    this.unsubscribeDevice?.();
+    this.unsubscribeDevice = undefined;
+    this.forgetAsked = false;
+    this.forgetNote = "";
     this.keyDraft = undefined;
     this.keyNote = "";
     this.apiKeyDrafts.clear();
@@ -1241,7 +1287,8 @@ export class SettingsPanel {
     const listening = model.listeners ? this.listeningSection(model.listeners, model) : undefined;
     const chatRow = model.chatRow();
     const chat = chatRow ? this.chatSection(chatRow, model) : undefined;
-    body.replaceChildren(...(chat ? [chat] : []), ...(listening ? [listening] : []), ...(voice ? [voice] : []), agents);
+    const device = this.deps.device ? this.deviceSection(this.deps.device) : undefined;
+    body.replaceChildren(...(chat ? [chat] : []), ...(listening ? [listening] : []), ...(voice ? [voice] : []), agents, ...(device ? [device] : []));
     if (focusKey) {
       const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
       again?.focus();
@@ -1289,6 +1336,57 @@ export class SettingsPanel {
     return box;
   }
 
+  /** The host as the paired device it is: its name, where it is connected, when its access ends, and Forget, asked twice. */
+  private deviceSection(device: DeviceSettings): HTMLElement {
+    const d = device.state();
+    const box = section("This browser", "This page is paired with the node as a device of its own. What it may do was decided where it was added, and ends by itself.");
+    box.dataset["section"] = "device";
+    const card = document.createElement("div");
+    card.className = "host-settings-profile";
+    const top = document.createElement("div");
+    top.className = "host-settings-profile-top";
+    const forget = document.createElement("button");
+    forget.type = "button";
+    forget.className = "host-settings-reset host-settings-remove";
+    forget.dataset["focus"] = "device:forget";
+    forget.textContent = this.forgetAsked ? "Forget it" : "Forget this browser";
+    forget.title = "End this browser's access on the node and remove what it keeps here";
+    forget.addEventListener("click", () => {
+      if (!this.forgetAsked) {
+        this.forgetAsked = true;
+        this.render();
+        return;
+      }
+      forget.disabled = true;
+      device.forget().then(
+        () => this.close(),
+        (e: unknown) => {
+          this.forgetAsked = false;
+          this.forgetNote = message(e);
+          this.render();
+        },
+      );
+    });
+    top.append(span("host-settings-name", d.name), forget);
+    if (this.forgetAsked) {
+      const keep = document.createElement("button");
+      keep.type = "button";
+      keep.className = "host-settings-reset";
+      keep.dataset["focus"] = "device:keep";
+      keep.textContent = "Keep it";
+      keep.addEventListener("click", () => {
+        this.forgetAsked = false;
+        this.render();
+      });
+      top.append(keep);
+    }
+    card.append(top, paragraph("host-settings-usage", `${d.connected ? "Connected to" : "Not connected to"} ${d.address}`), paragraph("host-settings-source", deviceEnds(d)));
+    if (this.forgetAsked) card.append(paragraph("host-settings-note", "It will have to be paired again, with a new key or code from a device that is already in."));
+    if (this.forgetNote) card.append(paragraph("host-settings-error", this.forgetNote));
+    box.append(card);
+    return box;
+  }
+
   private listeningSection(listeners: Listener[], model: SettingsModel): HTMLElement {
     const box = section("Listening for", "What wakes Cophyla besides your messages: what it set itself to hear when you asked, and the agents it started. Each fire is a model call.");
     box.dataset["section"] = "listening";
@@ -1317,7 +1415,8 @@ export class SettingsPanel {
 
   private voiceSection(voice: VoiceSettings, speech: SpeechRow | undefined, model: SettingsModel): HTMLElement {
     const v = voice.state();
-    const box = section("Voice", "Say a wake word, or hold the talk key, and Cophyla listens; what you say is transcribed and answered as if you had typed it.");
+    const setTalkKey = voice.setTalkKey?.bind(voice);
+    const box = section("Voice", `Say a wake word, or hold the talk ${setTalkKey ? "key" : "button"}, and Cophyla listens; what you say is transcribed and answered as if you had typed it.`);
     box.dataset["section"] = "voice";
     box.append(paragraph(v.micError ? "host-settings-error" : "host-settings-voice-status", v.micError ? `The microphone is off: ${v.micError}` : v.status));
     if (v.micError) {
@@ -1337,6 +1436,20 @@ export class SettingsPanel {
       toggle("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)),
       toggle("voice:speak", "Speak the replies to what I say", v.speak, (on) => voice.setSpeak(on)),
     );
+    // The talk key is held outside the window, which only a host with a shell can arrange.
+    if (setTalkKey) box.append(...this.talkKeyRow(setTalkKey, v));
+    const wake = model.wakeRow();
+    if (wake) box.append(this.wake(wake, model));
+    const stt = model.sttRow();
+    if (stt) box.append(this.speech(stt, model));
+    if (speech) box.append(this.speech(speech, model));
+    const keys = model.keyRows();
+    if (keys.length > 0) box.append(this.keys(keys, model));
+    return box;
+  }
+
+  /** The talk key: what is held, and Set. */
+  private talkKeyRow(setTalkKey: (accelerator: string) => Promise<string>, v: VoiceSettingsState): HTMLElement[] {
     const key = document.createElement("div");
     key.className = "host-settings-controls host-settings-talk";
     const input = document.createElement("input");
@@ -1353,7 +1466,7 @@ export class SettingsPanel {
     save.textContent = "Set";
     save.disabled = this.keyDraft === undefined || this.keyDraft.trim() === v.talkKey;
     const set = (): void => {
-      voice.setTalkKey(input.value).then(
+      setTalkKey(input.value).then(
         () => {
           this.keyDraft = undefined;
           this.keyNote = "";
@@ -1374,16 +1487,9 @@ export class SettingsPanel {
     });
     save.addEventListener("click", set);
     key.append(span("host-settings-label", "Hold to talk"), input, save);
-    box.append(key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Shift+Space or Ctrl+Shift+F9; empty for none."));
-    if (this.keyNote) box.append(paragraph("host-settings-error", this.keyNote));
-    const wake = model.wakeRow();
-    if (wake) box.append(this.wake(wake, model));
-    const stt = model.sttRow();
-    if (stt) box.append(this.speech(stt, model));
-    if (speech) box.append(this.speech(speech, model));
-    const keys = model.keyRows();
-    if (keys.length > 0) box.append(this.keys(keys, model));
-    return box;
+    const rows = [key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Shift+Space or Ctrl+Shift+F9; empty for none.")];
+    if (this.keyNote) rows.push(paragraph("host-settings-error", this.keyNote));
+    return rows;
   }
 
   /** Which microphone the host listens on: the system's default, or one picked. */

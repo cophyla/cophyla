@@ -280,15 +280,16 @@ describe("chrome", () => {
 describe("host.open", () => {
   const origin = "https://192.168.1.44:4818";
 
-  test("a stream page on this origin goes over the view; another page to a window; an invite to its app", () => {
-    expect(openTarget(`${origin}/remote/?t=abc`, origin)).toEqual({ kind: "frame", url: `${origin}/remote/?t=abc` });
+  test("a stream page on this host's stream port goes over the view; another page to a window; an invite to its app", () => {
+    // the node serves a stream's page on a port of its own, so it never runs on this page's origin
+    expect(openTarget("https://192.168.1.44:4820/remote/?t=abc", origin)).toEqual({ kind: "frame", url: "https://192.168.1.44:4820/remote/?t=abc" });
     expect(openTarget("https://example.com/help", origin)).toEqual({ kind: "window", url: "https://example.com/help" });
-    expect(openTarget("https://192.168.1.44:4819/remote/?t=abc", origin).kind).toBe("window");
+    expect(openTarget("https://192.168.1.45:4820/remote/?t=abc", origin).kind).toBe("window");
     expect(openTarget("art://192.168.1.44:47989?pin=1234&passphrase=x&name=study", origin)).toEqual({ kind: "app", url: "art://192.168.1.44:47989?pin=1234&passphrase=x&name=study" });
   });
 
-  test("anything else is refused before it can reach a navigation", () => {
-    for (const bad of ["javascript:alert(1)", "data:text/html,<script>", "file:///C:/Windows", "blob:https://x/1", "not a url", 42, undefined, `${origin}/`, `${origin}/view/abc/index.html`]) {
+  test("anything else is refused before it can reach a navigation, a page of this origin's own included", () => {
+    for (const bad of ["javascript:alert(1)", "data:text/html,<script>", "file:///C:/Windows", "blob:https://x/1", "not a url", 42, undefined, `${origin}/`, `${origin}/view/abc/index.html`, `${origin}/remote/?t=abc`]) {
       expect(() => openTarget(bad, origin)).toThrow();
     }
   });

@@ -10,6 +10,13 @@
 // starts itself. When the shell says a stream's window or page closed, the node ends the
 // session and the view is told.
 
+import { placeOf, STREAM_ID, windowPlace } from "@cophyla/viewhost";
+import type { Box, Place } from "@cophyla/viewhost";
+
+// The view's rectangles and where they land in the window are viewhost's, shared with the page a browser shows.
+export { placeOf, windowPlace };
+export type { Box, Place };
+
 /** What the host needs of the shell and the link. */
 export interface StreamDeps {
   invoke: <T>(cmd: string, args?: Record<string, unknown>) => Promise<T>;
@@ -21,23 +28,6 @@ export interface StreamDeps {
   log?: (message: string) => void;
 }
 
-/** A rectangle, in CSS pixels. */
-export interface Box {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
-
-/** A place as the view gives it: its own frame's coordinates. */
-export interface Place {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
-
-const STREAM_ID = /^[A-Za-z0-9_]{1,64}$/;
 
 /** The stream page and its id from what the view handed `host.open`, or why it does not open. */
 export function streamOf(params: unknown): { url: string; stream: string; embed: boolean } | { refuse: string } {
@@ -55,35 +45,6 @@ export function streamOf(params: unknown): { url: string; stream: string; embed:
   }
   if (typeof p.stream !== "string" || !STREAM_ID.test(p.stream)) return { refuse: "the stream did not say which it is" };
   return { url: url.href, stream: p.stream, embed: p.embed === true };
-}
-
-/** What a `host.place` asks: which stream, and where in the view's frame, or `null` to hide it. */
-export function placeOf(params: unknown): { stream: string; rect: Place | null } | { refuse: string } {
-  const p = (params ?? {}) as { stream?: unknown; rect?: unknown };
-  if (typeof p.stream !== "string" || !STREAM_ID.test(p.stream)) return { refuse: "host.place needs a stream" };
-  if (p.rect === null) return { stream: p.stream, rect: null };
-  const r = (p.rect ?? {}) as Record<string, unknown>;
-  const n = [r["x"], r["y"], r["width"], r["height"]];
-  if (!n.every((v) => typeof v === "number" && Number.isFinite(v))) return { refuse: "host.place needs a rect, or null" };
-  const [x, y, width, height] = n as number[];
-  return { stream: p.stream, rect: { x: x!, y: y!, width: width!, height: height! } };
-}
-
-/**
- * Where a place is in the window: the frame's offset added, cut to the frame, rounded to whole
- * pixels; nothing when too little of it is left to show.
- */
-export function windowPlace(rect: Place, frame: Box): Place | undefined {
-  const left = Math.max(frame.left, frame.left + rect.x);
-  const top = Math.max(frame.top, frame.top + rect.y);
-  const right = Math.min(frame.left + frame.width, frame.left + rect.x + rect.width);
-  const bottom = Math.min(frame.top + frame.height, frame.top + rect.y + rect.height);
-  const x = Math.round(left);
-  const y = Math.round(top);
-  const width = Math.round(right) - x;
-  const height = Math.round(bottom) - y;
-  if (width < 8 || height < 8) return undefined;
-  return { x, y, width, height };
 }
 
 /** The streams the host shows, in their windows or beside the view, and their ends. */

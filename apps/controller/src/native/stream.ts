@@ -46,8 +46,10 @@ export function planOpen(params: unknown, ctx: PlanContext): OpenPlan {
   const stream = typeof p.stream === "string" && p.stream.length > 0 && p.stream.length <= 64 ? { stream: p.stream } : {};
   const path = typeof p.path === "string" ? p.path : typeof p.url === "string" ? streamPathOf(p.url, ctx.origin) : undefined;
   if (path === undefined) {
-    const target = openTarget(p.url, ctx.origin);
     // this origin serves no stream page: only the node's does
+    if (typeof p.url === "string" && ownStream(p.url, ctx.origin)) return { kind: "refuse", reason: "that stream page cannot be opened" };
+    const target = openTarget(p.url, ctx.origin);
+    // the app frames nothing itself: a stream goes through its forwarder, or not at all
     if (target.kind === "frame") return { kind: "refuse", reason: "that stream page cannot be opened" };
     return target;
   }
@@ -64,6 +66,16 @@ export function planOpen(params: unknown, ctx: PlanContext): OpenPlan {
 }
 
 /** An older node's answer: the stream page's URL on its controller origin, of which only the path is taken. */
+/** Whether a URL names a stream page on this app's own origin, which serves none. */
+function ownStream(raw: string, origin: string): boolean {
+  try {
+    const url = new URL(raw);
+    return url.origin === origin && url.pathname.startsWith("/remote/");
+  } catch {
+    return false;
+  }
+}
+
 function streamPathOf(raw: string, origin: string): string | undefined {
   let url: URL;
   try {

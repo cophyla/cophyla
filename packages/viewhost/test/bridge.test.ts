@@ -401,6 +401,16 @@ describe("bridge", () => {
     expect(without.toView).toHaveLength(2);
   });
 
+  test("a wide window with a pointer on a computer says desk in host.ready; any other host leaves it out", () => {
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, desk: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    bridge.ready(HELLO);
+    expect(toView[0]).toMatchObject({ method: "host.ready", params: { desk: true } });
+    const without = make();
+    without.bridge.ready(HELLO);
+    expect((without.toView[0] as { params: object }).params).not.toHaveProperty("desk");
+  });
+
   test("a host with a microphone and no talk button says talk in host.ready", () => {
     const toView: RpcMessage[] = [];
     const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, talk: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });

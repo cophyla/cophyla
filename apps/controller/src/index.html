@@ -15,17 +15,24 @@
   </head>
   <body>
     <main id="app">
-      <section id="pair" aria-label="Pair this phone">
-        <h1>Pair this phone</h1>
+      <section id="pair" aria-label="Pair this device">
+        <h1 id="pair-title">Pair this phone</h1>
         <button type="button" id="pair-account" hidden>Sign in with GitHub</button>
         <p class="hint" id="pair-or" hidden>From anywhere, with the account your computer is signed in to. Or, on the same network:</p>
-        <p class="hint">Open <strong>Pair a phone</strong> on the desktop app and type the six digits it shows.</p>
+        <form id="key-form" hidden>
+          <p class="hint">On a device that is already in, open <strong>Devices</strong>, press <strong>Add a browser</strong>, and type the key it shows.</p>
+          <input id="pair-key" autocapitalize="characters" autocorrect="off" autocomplete="off" spellcheck="false" maxlength="32" placeholder="XXXX-XXXX-XXXX-XXXX" aria-label="Key" />
+          <button type="submit" id="key-submit">Pair with the key</button>
+        </form>
+        <p class="hint" id="code-hint">Open <strong>Pair a phone</strong> on the desktop app and type the six digits it shows.</p>
         <form id="pair-form">
           <input id="pair-address" hidden inputmode="url" autocapitalize="off" autocorrect="off" maxlength="128" placeholder="192.168.1.44:4818" aria-label="The node's address" />
           <input id="pair-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="000000" aria-label="Pairing code" />
-          <input id="pair-name" maxlength="64" placeholder="this phone" aria-label="What to call this phone" />
           <button type="submit" id="pair-submit">Pair</button>
         </form>
+        <input id="pair-name" maxlength="64" placeholder="this phone" aria-label="What to call this phone" />
+        <label class="check" id="pair-shared-line" hidden><input type="checkbox" id="pair-shared" /><span>This is a shared computer</span></label>
+        <p class="hint" id="pair-shared-hint" hidden>Nothing is kept on it: closing or reloading this tab ends the access, and so does half a day.</p>
         <p class="hint" id="invite-or">Or paste an invite the desktop made for this phone:</p>
         <form id="invite-form">
           <input id="invite-text" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" placeholder="cophyla-invite:…" aria-label="An invite from the desktop" />

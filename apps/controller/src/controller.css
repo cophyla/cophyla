@@ -91,6 +91,37 @@ input {
   text-align: center;
 }
 
+/* A browser's key: sixteen characters in fours, read off another screen. */
+#pair-key {
+  font: 22px/1.3 ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, monospace;
+  letter-spacing: 0.12em;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+#pair-key::placeholder {
+  letter-spacing: 0.08em;
+}
+
+#key-form.aside {
+  display: none;
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.check input {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  margin: 0;
+  accent-color: var(--cophyla);
+}
+
 button {
   font: inherit;
   padding: 14px 16px;
@@ -108,6 +139,7 @@ button:disabled {
 button.big,
 #pair-account,
 #pair-submit,
+#key-submit,
 #invite-join {
   background: var(--cophyla);
   border-color: var(--cophyla);
@@ -427,6 +459,57 @@ button.icon svg.dots {
 .ptt[data-down="1"] .mic {
   color: inherit;
   animation: none;
+}
+
+/*
+ * A wide window on a computer: the pairing screen is a column in the middle, there is no bar
+ * (the view draws the talk button, and the settings hold what the menu did), and a remote
+ * desktop's page lies over the view where the view places it.
+ */
+html[data-form="desk"] #pair,
+html[data-form="desk"] #gate {
+  width: min(440px, 100%);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+html[data-form="desk"] #bar {
+  display: none;
+}
+
+.stream-frame {
+  position: fixed;
+  z-index: 40;
+  border: 0;
+  background: #000;
+}
+
+.stream-frame[hidden] {
+  display: none;
+}
+
+/* The stream's address has its own certificate to accept, once: said where the picture would be. */
+.stream-note {
+  position: fixed;
+  z-index: 41;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 16px;
+  box-sizing: border-box;
+  background: #0b0a0e;
+  color: var(--dim);
+  text-align: center;
+}
+
+.stream-note[hidden] {
+  display: none;
+}
+
+.stream-note a {
+  color: var(--cophyla);
 }
 
 /* A remote desktop's stream page over everything, until Close. */

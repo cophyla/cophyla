@@ -40,7 +40,10 @@
 // grants a dropped file to the frame's process alone, so only the frame can hand it on
 // (apps/ui/src-tauri/src/dropped.rs). `docFrame` in `host.ready` is where the host serves the
 // document frame (@cophyla/protocol's docframe.ts), in which a view may run an HTML file's
-// scripts apart from its own; a host that serves none leaves it out. DOM-free.
+// scripts apart from its own; a host that serves none leaves it out. `desk` in `host.ready`
+// says the host is a wide window with a pointer on a computer, whatever kind of client it
+// connected as: the controller page in a desktop browser, which a view lays out and loads as
+// it does in the desktop app. DOM-free.
 
 import { failure, notification, notificationScope, protocolError, requestScope, RpcNotification, RpcRequest, signalScope } from "@cophyla/protocol";
 import type { RpcId, RpcMessage, RpcResponse, Scope, ViewManifest } from "@cophyla/protocol";
@@ -80,6 +83,8 @@ export interface HostReady {
   docFrame?: string;
   /** The host lays a stream page over the view where it says (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
   embed?: true;
+  /** The host is a wide window with a pointer, on a computer: the controller page in a desktop browser. */
+  desk?: true;
 }
 
 /** The host's microphone, for a view that draws the talk button: why it is off, while it is. */
@@ -124,6 +129,8 @@ export interface BridgeConfig {
   docFrame?: string;
   /** The host lays stream pages over the view (`embed` in `host.ready`). */
   embed?: boolean;
+  /** The host is a wide window with a pointer, on a computer (`desk` in `host.ready`). */
+  desk?: boolean;
 }
 
 /** The requests a view may make of the host itself, by method. */
@@ -196,6 +203,7 @@ export class Bridge {
   private filePaths?: HostRequests;
   private docFrame?: string;
   private embed: boolean;
+  private desk: boolean;
   private n = 0;
   /** The host's microphone as last said, so a view that loads while it is off hears it. */
   private micState: HostMic = {};
@@ -245,6 +253,7 @@ export class Bridge {
     if (dropped) this.filePaths = async (_method, params) => ({ paths: await dropped(droppedNames(params)) });
     if (cfg.docFrame) this.docFrame = cfg.docFrame;
     this.embed = cfg.embed === true;
+    this.desk = cfg.desk === true;
     this.io = io;
   }
 
@@ -345,6 +354,7 @@ export class Bridge {
     if (this.filePaths) params.filePaths = true;
     if (this.docFrame) params.docFrame = this.docFrame;
     if (this.embed) params.embed = true;
+    if (this.desk) params.desk = true;
     this.io.toView(notification("host.ready", params));
     this.io.toView(notification("host.state", { connected: true }));
     if (this.hasTalk && this.micState.error !== undefined) this.io.toView(notification("host.mic", this.micState));

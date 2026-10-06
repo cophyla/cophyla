@@ -20,14 +20,17 @@
 // told in its `host.ready`. A host that lays stream pages over the view (`embed`) hears when
 // what it laid there must go under the page's own layers (`onOverlay`, while the picker or
 // the settings are open) and when it must go altogether (`onUnmount`: the view was replaced,
-// or reloaded itself), and tells the view a stream is gone with `streamClosed`.
+// or reloaded itself), and tells the view a stream is gone with `streamClosed`. A host that is
+// a wide window on a computer without being the desktop app says so (`desk`), and the view is
+// told in its `host.ready`; one that is a paired device of its own shows itself in the settings
+// (`device`).
 
 import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
 import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
-import type { VoiceSettings } from "./settings.ts";
+import type { DeviceSettings, VoiceSettings } from "./settings.ts";
 import type { Connection, LinkSnapshot } from "./connection.ts";
 import type { SnapshotCache } from "./snapshot.ts";
 
@@ -68,6 +71,10 @@ export interface ViewHostDeps {
   onUnmount?: () => void;
   /** The picker or the settings opened (`true`) or both are closed again: what the host laid over the view hides meanwhile. */
   onOverlay?: (open: boolean) => void;
+  /** The host is a wide window with a pointer on a computer: the controller page in a desktop browser. */
+  desk?: boolean;
+  /** The host as the paired device it is, for a section of its own in the settings: a browser on another computer. */
+  device?: DeviceSettings;
   onError?: (message: string) => void;
 }
 
@@ -166,6 +173,7 @@ export class ViewHost {
       refocus: () => this.mounted?.frame.focus(),
       onToggle: () => this.overlay(),
       ...(deps.voice ? { voice: deps.voice } : {}),
+      ...(deps.device ? { device: deps.device } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
     // A view that draws the talk button hears when the microphone behind it goes off.
@@ -217,6 +225,7 @@ export class ViewHost {
         ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
         ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
         ...(this.deps.embed ? { embed: true } : {}),
+        ...(this.deps.desk ? { desk: true } : {}),
         prefs: prefsStore(this.deps.store ?? pageStorage(), manifest.id),
       },
       {

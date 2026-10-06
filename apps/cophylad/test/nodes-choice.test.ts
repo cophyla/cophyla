@@ -29,7 +29,7 @@ const script = { on: [{ event: "user.message", requests: [{ method: "ui.say", pa
 /** The old primary's home started again, with the fake brain; its LAN listener on `port` when given, so the secondaries' `[nodes] primary` finds it. */
 async function restart(primary: Primary, home: string, log: string, opts: { port?: number; claimWaitMs?: number } = {}): Promise<Started> {
   let toml = readFileSync(join(home, "config.toml"), "utf8");
-  if (opts.port !== undefined) toml = toml.replace("[controller]\nenabled = false\nport = 0", `[controller]\nenabled = false\nport = ${opts.port}`);
+  if (opts.port !== undefined) toml = toml.replace(/(\[controller\]\nenabled = (?:true|false)\nport = )0/, `$1${opts.port}`);
   if (opts.claimWaitMs !== undefined) toml = toml.replace(/claim_wait_ms = \d+/, `claim_wait_ms = ${opts.claimWaitMs}`);
   writeFileSync(join(home, "config.toml"), toml);
   const { startDaemon } = await import("../src/daemon.ts");

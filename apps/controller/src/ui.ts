@@ -2,22 +2,32 @@
 // that shows or hides the view's rail at the left, the talk button in the middle, the speaker
 // and the ⋯ menu (the status line, Listen, Forget) at the right. It renders a `Chrome` and
 // turns taps into the calls `main.ts` wired it with. Everything else on the screen belongs to
-// the view in the frame.
+// the view in the frame. The pairing screen takes a key first where the page is a browser's
+// (a key is typed at the node's own address), then the six digits, a name, and whether this
+// is a shared computer; in a wide window on a computer (`desk`) there is no bar at all.
 
 import type { Chrome } from "./chrome.ts";
 
 import type { NodeAddress } from "./pairing.ts";
 import { parseAddress } from "./pairing.ts";
 
+/** What the pairing form says beside what was typed: the name, and whether this is a shared computer. */
+export interface PairWith {
+  name: string;
+  shared: boolean;
+}
+
 export interface UiActions {
   /** `address` is what the native app's address field holds; the browser has none. */
-  pair(code: string, name: string, address: NodeAddress | undefined): Promise<void>;
+  pair(code: string, how: PairWith, address: NodeAddress | undefined): Promise<void>;
+  /** A browser's key, as it was typed. */
+  pairKey(key: string, how: PairWith): Promise<void>;
   /** The native app's "Sign in with GitHub": the browser opens; the pairing finishes when the app is back. */
   signIn(): Promise<void>;
   /** Reads a pasted invite: the name of the node it would join, or a word on why it cannot be used. */
   readInvite(text: string): string;
-  /** Redeems the invite read last under `name`. */
-  redeem(name: string): Promise<void>;
+  /** Redeems the invite read last. */
+  redeem(how: PairWith): Promise<void>;
   /** The invite read last is put away unused. */
   cancelInvite(): void;
   start(): Promise<void>;
@@ -50,6 +60,18 @@ export interface UiElements {
   pairForm: HTMLFormElement;
   pairCode: HTMLInputElement;
   pairName: HTMLInputElement;
+  /** The page's heading and the line over the code, which say what kind of device this is. */
+  pairTitle?: HTMLElement;
+  codeHint?: HTMLElement;
+  /** A browser's key: its form, shown where the page is a browser's. */
+  keyForm?: HTMLFormElement;
+  pairKey?: HTMLInputElement;
+  keySubmit?: HTMLButtonElement;
+  /** "This is a shared computer", and what it means. */
+  pairShared?: HTMLInputElement;
+  pairSharedLine?: HTMLElement;
+  pairSharedHint?: HTMLElement;
+  inviteOr?: HTMLElement;
   /** The node's `host:port`, shown by the native app alone. */
   pairAddress?: HTMLInputElement;
   pairError: HTMLElement;
@@ -89,6 +111,11 @@ export function elements(doc: Document): UiElements {
     pairForm: el<HTMLFormElement>("pair-form"),
     pairCode: el<HTMLInputElement>("pair-code"),
     pairName: el<HTMLInputElement>("pair-name"),
+    ...(doc.getElementById("pair-title") ? { pairTitle: el("pair-title") } : {}),
+    ...(doc.getElementById("code-hint") ? { codeHint: el("code-hint") } : {}),
+    ...(doc.getElementById("key-form") ? { keyForm: el<HTMLFormElement>("key-form"), pairKey: el<HTMLInputElement>("pair-key"), keySubmit: el<HTMLButtonElement>("key-submit") } : {}),
+    ...(doc.getElementById("pair-shared") ? { pairShared: el<HTMLInputElement>("pair-shared"), pairSharedLine: el("pair-shared-line"), pairSharedHint: el("pair-shared-hint") } : {}),
+    ...(doc.getElementById("invite-or") ? { inviteOr: el("invite-or") } : {}),
     ...(doc.getElementById("pair-address") ? { pairAddress: el<HTMLInputElement>("pair-address") } : {}),
     pairError: el("pair-error"),
     pairSubmit: el<HTMLButtonElement>("pair-submit"),
@@ -135,6 +162,41 @@ export function render(ui: UiElements, chrome: Chrome, listening: boolean): void
   }
 }
 
+/** What the page calls the device it runs on, and whether it pairs with a key. */
+export interface Wording {
+  device: "phone" | "browser";
+  /** A key is typed here: the page is a browser's, on the node's own address. */
+  key?: boolean;
+  /** A wide window on a computer: the bar is not drawn. */
+  desk?: boolean;
+}
+
+/** The page's own words and form for the device it is: what it is called, the key's form, and no bar in a wide window. */
+export function dress(ui: UiElements, w: Wording): void {
+  const doc = ui.pair.ownerDocument;
+  doc.documentElement.dataset["form"] = w.desk ? "desk" : "phone";
+  if (ui.pairTitle) setText(ui.pairTitle, `Pair this ${w.device}`);
+  ui.pairName.setAttribute("aria-label", `What to call this ${w.device}`);
+  setText(ui.forget, `Forget this ${w.device}`);
+  if (w.key) {
+    if (ui.keyForm) setHidden(ui.keyForm, false);
+    if (ui.pairSharedLine) setHidden(ui.pairSharedLine, false);
+    if (ui.codeHint) ui.codeHint.replaceChildren("Or type the six digits ", strong(doc, w.device === "browser" ? "Pair with a code" : "Pair a phone"), " shows on a device that is already in.");
+    if (ui.inviteOr) setText(ui.inviteOr, `Or paste an invite made for this ${w.device}:`);
+  }
+}
+
+function strong(doc: Document, text: string): HTMLElement {
+  const s = doc.createElement("strong");
+  s.textContent = text;
+  return s;
+}
+
+/** What the form says beside the code, the key or the invite: the name typed, else the one guessed, and the shared-computer box. */
+function pairWith(ui: UiElements): PairWith {
+  return { name: ui.pairName.value.trim() || ui.pairName.placeholder, shared: ui.pairShared?.checked === true && ui.pairSharedLine?.hidden === false };
+}
+
 /**
  * The pairing screen with an invite read: the node it would join and Join or Cancel, the
  * other ways in put aside meanwhile; `undefined` puts the screen back.
@@ -145,6 +207,7 @@ export function showInvite(ui: UiElements, node: string | undefined): void {
   setHidden(ui.inviteConfirm, !confirming);
   setHidden(ui.inviteForm, confirming);
   setHidden(ui.pairForm, confirming);
+  if (ui.keyForm && ui.keyForm.dataset["on"] !== "0") ui.keyForm.classList.toggle("aside", confirming);
   if (!confirming) ui.inviteText.value = "";
 }
 
@@ -159,11 +222,10 @@ export function bind(ui: UiElements, actions: UiActions): void {
     ev.preventDefault();
     setHidden(ui.pairError, true);
     const code = ui.pairCode.value;
-    const name = ui.pairName.value.trim() || ui.pairName.placeholder;
     const address = ui.pairAddress && !ui.pairAddress.hidden ? parseAddress(ui.pairAddress.value) : undefined;
     ui.pairSubmit.disabled = true;
     void actions
-      .pair(code, name, address)
+      .pair(code, pairWith(ui), address)
       .catch((e: unknown) => {
         setText(ui.pairError, e instanceof Error ? e.message : String(e));
         setHidden(ui.pairError, false);
@@ -171,6 +233,30 @@ export function bind(ui: UiElements, actions: UiActions): void {
       .finally(() => {
         ui.pairSubmit.disabled = false;
       });
+  });
+
+  ui.keyForm?.addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    setHidden(ui.pairError, true);
+    const submit = ui.keySubmit!;
+    submit.disabled = true;
+    void actions
+      .pairKey(ui.pairKey!.value, pairWith(ui))
+      .then(() => {
+        ui.pairKey!.value = "";
+      })
+      .catch((e: unknown) => {
+        setText(ui.pairError, e instanceof Error ? e.message : String(e));
+        setHidden(ui.pairError, false);
+      })
+      .finally(() => {
+        submit.disabled = false;
+      });
+  });
+
+  // What ticking the box means is said under it, while it is ticked.
+  ui.pairShared?.addEventListener("change", () => {
+    if (ui.pairSharedHint) setHidden(ui.pairSharedHint, !ui.pairShared!.checked);
   });
 
   ui.pairAccount?.addEventListener("click", () => {
@@ -205,10 +291,9 @@ export function bind(ui: UiElements, actions: UiActions): void {
 
   ui.inviteJoin.addEventListener("click", () => {
     setHidden(ui.pairError, true);
-    const name = ui.pairName.value.trim() || ui.pairName.placeholder;
     ui.inviteJoin.disabled = true;
     void actions
-      .redeem(name)
+      .redeem(pairWith(ui))
       .then(() => showInvite(ui, undefined))
       .catch(showError)
       .finally(() => {

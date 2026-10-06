@@ -9,11 +9,12 @@
 // list a tick, an untick and a reset send. Then what Cophyla listens for: each listener's
 // line, a Remove, and a node with none. Last, the chat: where the session it runs in stands,
 // the harness and the account it runs on with what Automatic picked, what a pick and a
-// restart send, and a node from before the chat ran in a session.
+// restart send, and a node from before the chat ran in a session. And the host itself, where it
+// is a paired device of its own: when its access ends, in words.
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, deviceEnds, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -749,5 +750,24 @@ describe("the microphone row", () => {
     const { options, value } = micOptions({ ...base, mics: [brio], micChoice: usb });
     expect(options.at(-1)).toEqual({ value: "usb-1", label: `${usb.label} (not connected)` });
     expect(value).toBe("usb-1");
+  });
+});
+
+describe("the host as a paired device", () => {
+  const now = Date.UTC(2026, 9, 6, 12, 0, 0);
+  const day = 86_400_000;
+  const at = { address: "https://192.168.1.44:4818", connected: true };
+
+  test("says when its access ends: a date and the days left, tomorrow at the latest, ended, or never", () => {
+    expect(deviceEnds({ ...at, name: "Chrome on Windows", expiresAt: now + 30 * day }, now, "en-GB")).toBe("Its access ends on 5 November 2026 (in 30 days). Pair it again then, from a device that is already in.");
+    expect(deviceEnds({ ...at, name: "Chrome on Windows", expiresAt: now + day / 2 }, now, "en-GB")).toMatch(/^Its access ends on [67] October 2026 \(tomorrow at the latest\)\. Pair it again then, from a device that is already in\.$/);
+    expect(deviceEnds({ ...at, name: "Chrome on Windows", expiresAt: now - 1 }, now, "en-GB")).toBe("Its access has ended.");
+    expect(deviceEnds({ ...at, name: "Pixel" }, now, "en-GB")).toBe("Its access has no end: it lasts until it is forgotten here or removed on the node.");
+  });
+
+  test("a shared computer says nothing is kept, and the hour it ends at the latest", () => {
+    const words = deviceEnds({ ...at, name: "Library PC", session: true, expiresAt: now + 12 * 3_600_000 }, now, "en-GB");
+    expect(words).toMatch(/^This is a shared computer: nothing is kept here, and its access ends when this tab closes, and by \d\d:\d\d at the latest\.$/);
+    expect(deviceEnds({ ...at, name: "Library PC", session: true }, now)).toBe("This is a shared computer: nothing is kept here, and its access ends when this tab closes.");
   });
 });
