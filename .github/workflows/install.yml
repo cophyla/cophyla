@@ -34,8 +34,9 @@ jobs:
       - name: install
         shell: pwsh
         run: |
-          $before = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
-          "PATH_BEFORE=$before" >> $env:GITHUB_ENV
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          "PATH_BEFORE=$($key.GetValue('Path', '', 'DoNotExpandEnvironmentNames'))" >> $env:GITHUB_ENV
+          "PATH_KIND_BEFORE=$($key.GetValueKind('Path'))" >> $env:GITHUB_ENV
           $p = Start-Process -FilePath "pkg\Cophyla_${env:VERSION}_x64-setup.exe" -ArgumentList '/S' -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA 'Cophyla'
@@ -98,7 +99,11 @@ jobs:
           $left = @(Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'uninstall.exe' })
           "left under ${root}: $($left.Count) file(s)"; $left | ForEach-Object { $_.FullName }
           if ($left.Count -gt 0) { throw "the uninstall left files behind" }
-          $path = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
-          if ($path -ne $env:PATH_BEFORE) { throw "the user's PATH is not what it was: $path" }
+          # the entries it had, in their order and still unexpanded; an empty one at the end is no entry
+          $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment')
+          $path = $key.GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          $entries = { param($v) @($v -split ';' | Where-Object { $_ }) -join ';' }
+          if ((& $entries $path) -ne (& $entries $env:PATH_BEFORE)) { throw "the user's PATH is not what it was: $path" }
+          if ("$($key.GetValueKind('Path'))" -ne $env:PATH_KIND_BEFORE) { throw "the user's PATH was $env:PATH_KIND_BEFORE and is $($key.GetValueKind('Path'))" }
           if (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Cophyla.lnk')) { throw "the Start Menu shortcut is still there" }
           "uninstalled: the folder, the shortcut and the PATH entry are gone"

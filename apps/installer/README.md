@@ -200,6 +200,27 @@ speech engine: the runtime 9–14 MB, Moonshine Tiny 30 MB, Moonshine Base 111 M
 208 MB, Piper 82 MB, Supertonic 129 MB, Kokoro 320 MB, Nemotron 475 MB, each a download from
 its makers.
 
+## Clean-machine run (a GitHub runner)
+
+`.github/workflows/install.yml`, started by hand after a platform release
+(`gh workflow run install.yml -f version=<v>`), runs the published package on a Windows
+runner, a machine that never had Bun or a checkout. It downloads the package from the
+release, installs it silently, checks the root, the signatures and the Start Menu shortcut,
+starts the launcher, and reads the daemon's log for `listening`, `brain verified {origin:
+bundled}`, `brain up`, `cophylad started` at that version, `tether command in place` and the
+first read of the public feed with nothing dropped. Then it uninstalls and checks that the
+folder and the shortcut are gone and the user's `Path` has the entries it had. It installs
+the newest release only, so it rehearses no update: that is the run below, against a feed
+that can be held back.
+
+The build machine cannot stand in for it while its own node runs: the installer closes a
+running `cophyla-ui.exe`, and a second desktop app hands over to the first. What it can do
+is unpack the package without running it (7-Zip reads an NSIS installer: `7z x`), start the
+launcher and the daemon from that root on a scratch home with a port of its own and
+`[sessions] discover = false`, `install_hooks = false`, `[tether] profiles = false`,
+`on_path = false` and a `[tether] dir` of its own, and take steps 3 to 7 below from a feed
+on loopback.
+
 ## Clean-machine run (Windows Sandbox)
 
 `Enable-WindowsOptionalFeature -Online -FeatureName Containers-DisposableClientVM -All`
