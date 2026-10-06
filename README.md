@@ -59,8 +59,10 @@ The editable layer under `~/.cophyla` uses erasable syntax only (`erasableSyntax
 
 ## Install and update
 
-No release has been published yet: until the first one, Cophyla runs from a checkout (see
-Building above) and the links to releases below lead to an empty page.
+The first release, [0.13.0](https://github.com/cophyla/cophyla/releases/tag/platform-v0.13.0),
+is a pre-release for Windows on x64. Its installer is signed with a self-signed certificate
+until one Windows trusts exists, so SmartScreen warns about it: More info, then Run anyway.
+macOS and Linux have no package yet; there Cophyla runs from a checkout (see Building above).
 
 Windows: run `Cophyla_<version>_x64-setup.exe` from the
 [releases](https://github.com/cophyla/cophyla/releases). It installs per user into

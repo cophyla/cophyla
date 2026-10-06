@@ -191,10 +191,11 @@ kilobytes). Its Python environment is about 5 GB and its weights about 2 GB, bot
 the node the first time the `chatterbox` stage is turned on, resumable step by step. No
 release and no installer ever carries them.
 
-Sizes seen: a version directory is ~145 MB (6.6k files; the runtime 94 MB, cophylad's hoisted
-dependencies ~54 MB), its archive 48 MB, the brain 95 MB (the runtime is inside), the
-installer 58 MB (NSIS LZMA over the stage; ~2–3 minutes, most of it the compression). The
-platform's voice models beside it: openwakeword 2 MB, silero 2 MB. What a node installs for a
+Sizes seen at 0.13.0: a version directory is 290 MB (8.1k files; the runtime 94 MB, cophylad's
+tree 165 MB with onnxruntime's 65 MB and the embedding model's 33 MB in it, the controller app
+21 MB, the shell 19 MB), its archive 121 MB, the brain 95 MB (the runtime is inside), the
+installer 120 MB (NSIS LZMA over the stage; ~5 minutes, most of it the compression). The
+platform's voice models beside it: openwakeword 5 MB, silero 0.5 MB. What a node installs for a
 speech engine: the runtime 9–14 MB, Moonshine Tiny 30 MB, Moonshine Base 111 MB, Whisper Base
 208 MB, Piper 82 MB, Supertonic 129 MB, Kokoro 320 MB, Nemotron 475 MB, each a download from
 its makers.
