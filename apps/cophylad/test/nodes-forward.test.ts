@@ -175,6 +175,8 @@ describe("forwarding over the node link", () => {
     const c = await client(primary.d);
     clients.push(c);
     const node = secondary.identity.id;
+    // the primary forwards only over a link open on its own side, which the secondary's side being linked does not say
+    await waitFor(() => primary!.d.nodes.linkedTo(node));
     const theirs = secondary.profiles.byHarness("claude")[0]!;
     const { profile } = await c.request<{ profile: { id: string; defaultBy?: string; launch?: { source: string; args: string[] } } }>("profile.update", { node, id: theirs.id, patch: { usual: true, launch: { args: ["--effort", "low"] } } });
     expect(profile).toMatchObject({ id: theirs.id, defaultBy: "you", launch: { source: "you", args: ["--effort", "low"] } });
