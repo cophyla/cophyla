@@ -80,6 +80,25 @@ export function installerAssets(version: string, files: string[]): string[] {
   return files.filter((f) => f.startsWith(`${PRODUCT}_${version}_`) && !f.endsWith(".release.json")).sort();
 }
 
+/**
+ * The page at the feed's own address, for a person who opens it: the feed is read by
+ * daemons at `<channel>/<os>-<arch>.json`, and without a page its root is the host's 404.
+ */
+export function feedIndex(repo: string): string {
+  return `<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>${PRODUCT} release feed</title>
+<style>body{font:16px/1.5 system-ui,sans-serif;max-width:40rem;margin:4rem auto;padding:0 1rem}code{font-size:.95em}</style>
+<h1>${PRODUCT} release feed</h1>
+<p>This address is read by installed copies of ${PRODUCT}, not by people. It serves static, signed release entries per channel, OS and architecture, at <code>/&lt;channel&gt;/&lt;os&gt;-&lt;arch&gt;.json</code>. A daemon checks every entry against the release key shipped in the platform before it downloads anything.</p>
+<p>To install ${PRODUCT}, go to its <a href="https://github.com/${repo}/releases">releases</a>.</p>
+</html>
+`;
+}
+
 if (import.meta.main) {
   const { values } = parseArgs({
     args: Bun.argv.slice(2),
@@ -152,6 +171,8 @@ if (import.meta.main) {
     // Merge, never wipe: the branch may carry targets published from another machine.
     await run(["bun", "run", join(INSTALLER, "scripts", "feed.ts"), "--dir", work, "--add", ...entries]);
     await Bun.write(join(work, "README.md"), `# Cophyla release feed\n\nStatic, signed release entries per channel, OS and architecture: \`<channel>/<os>-<arch>.json\`.\nThe daemon verifies every entry against the release key shipped in the platform before it stages anything.\nThe artifacts are the assets of the \`<component>-v<version>\` releases in this repository.\n`);
+    // What a person who opens the feed's address sees, where the host's 404 would be.
+    await Bun.write(join(work, "index.html"), feedIndex(repo));
     // Pages drops a custom domain the branch doesn't name, so every push carries it; and it
     // serves the files as they are, with no Jekyll pass.
     await Bun.write(join(work, "CNAME"), `${new URL(DEFAULT_FEED).host}\n`);
