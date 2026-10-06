@@ -1,0 +1,27 @@
+{
+  "generatedAt": 1791286049284,
+  "releases": [
+    {
+      "component": "model",
+      "name": "vad-silero",
+      "version": "1.0.0",
+      "channel": "stable",
+      "url": "https://github.com/cophyla/cophyla/releases/download/model-vad-silero-v1.0.0/model-vad-silero-1.0.0.tar.gz",
+      "size": 508470,
+      "sha256": "5563b7a4b12d17e5871fdb3f84185e1477ae19e7504968071c76b996566aae9a",
+      "signature": "ed25519:+VbBMsA05FpGvwCfnH/tqrlXGJ+LqYLafyuQD5dOBe2ES98cVzIoTwcN1Wundh/jqGihG3jaOYs4Fg8baXMaDw==",
+      "publishedAt": 1791285528261
+    },
+    {
+      "component": "model",
+      "name": "wake-openwakeword",
+      "version": "1.3.0",
+      "channel": "stable",
+      "url": "https://github.com/cophyla/cophyla/releases/download/model-wake-openwakeword-v1.3.0/model-wake-openwakeword-1.3.0.tar.gz",
+      "size": 5027928,
+      "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
+      "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
+      "publishedAt": 1791285528651
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+{
+  "generatedAt": 1791286049297,
+  "releases": [
+    {
+      "component": "brain",
+      "name": "brain-0.15.2-windows-x64.exe",
+      "version": "0.15.2",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/brain-v0.15.2/brain-0.15.2-windows-x64.exe",
+      "size": 99388136,
+      "sha256": "9fe1bbfbecd1932b61da5f5120e052fbb627ef59e6e64272fc8a48bb24769f6b",
+      "signature": "ed25519:OxfYzC8LZ2IB4PhulLAJEL497KmQQYxjkvxcR4UMCNtuC70+SeLh1zrjabhEKdojNo72s/VieXOKXyKTD8I+Dg==",
+      "publishedAt": 1791285112249
+    },
+    {
+      "component": "model",
+      "name": "vad-silero",
+      "version": "1.0.0",
+      "channel": "stable",
+      "url": "https://github.com/cophyla/cophyla/releases/download/model-vad-silero-v1.0.0/model-vad-silero-1.0.0.tar.gz",
+      "size": 508470,
+      "sha256": "5563b7a4b12d17e5871fdb3f84185e1477ae19e7504968071c76b996566aae9a",
+      "signature": "ed25519:+VbBMsA05FpGvwCfnH/tqrlXGJ+LqYLafyuQD5dOBe2ES98cVzIoTwcN1Wundh/jqGihG3jaOYs4Fg8baXMaDw==",
+      "publishedAt": 1791285528261
+    },
+    {
+      "component": "model",
+      "name": "wake-openwakeword",
+      "version": "1.3.0",
+      "channel": "stable",
+      "url": "https://github.com/cophyla/cophyla/releases/download/model-wake-openwakeword-v1.3.0/model-wake-openwakeword-1.3.0.tar.gz",
+      "size": 5027928,
+      "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
+      "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
+      "publishedAt": 1791285528651
+    },
+    {
+      "component": "platform",
+      "name": "platform-0.13.0-windows-x64.tar.gz",
+      "version": "0.13.0",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/platform-v0.13.0/platform-0.13.0-windows-x64.tar.gz",
+      "size": 126534428,
+      "sha256": "005f36728f7961573d8e030fbe88930d371e12115efc62827a7e4e26a335114e",
+      "signature": "ed25519:GYY5Lk4JiMx17s5EN245MekK3to+54+TC8wnCtnxLhN1q7ru7lOE3uVhoOSdILZlQgWHGJPKPXJdx8UNDCD1AQ==",
+      "publishedAt": 1791285109450
+    }
+  ]
+}
