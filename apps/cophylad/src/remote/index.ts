@@ -46,6 +46,7 @@ import { install, locateHost, locateMoonlight } from "./install.ts";
 import type { HostKind, Located } from "./install.ts";
 import { hostOfEndpoint, Moonlight, moonlightSaved, randomPin } from "./moonlight.ts";
 import type { Spawner } from "./moonlight.ts";
+import { originOnPort } from "../api/guard.ts";
 import { RemoteProxy, RemoteTickets } from "./proxy.ts";
 import { streamVideo } from "./quality.ts";
 import { screenshotter } from "./screenshot.ts";
@@ -62,7 +63,7 @@ export interface OpenContext {
   listener: ListenerKind;
   /** The client fetches the stream page through a forwarder of its own: it gets the path, not a URL. */
   forward?: boolean;
-  /** The desktop app shows the page beside its view: a loopback URL rather than moonlight-qt's window. */
+  /** The page is shown beside the view: for the desktop app a loopback URL rather than moonlight-qt's window, for a browser the page seeded as that one is. */
   embed?: boolean;
   /** The host's screen as the client last heard it, for a host whose `remote.state` this node has not. */
   display?: DisplaySize;
@@ -114,6 +115,8 @@ export interface RemoteDeps {
   };
   /** The pipes a stream page's connections ride where there is no route to the host. */
   pipes?: PipeHub;
+  /** The stream listener's port, while it is up: where a browser on this network frames a stream page from. */
+  streamPort?: () => number | undefined;
   /** This node's direct connections: the TURN servers a stream's own WebRTC uses, and the router's mapping of its ports. */
   direct?: { readonly ready: boolean; iceServers(): Promise<unknown>; request(method: string, params: unknown): Promise<unknown> };
 }
@@ -716,11 +719,15 @@ export class Remote {
 
   /**
    * Opens `node`'s desktop for the client on this socket: a desktop client gets moonlight-qt
-   * paired (the host's one ask) and a window; a controller gets a ticket to the web viewer
-   * on this node's controller origin. The phone app, which cannot show a page from the
-   * node's self-signed origin, fetches it through a forwarder on its own loopback over its
-   * pinned socket: it gets the ticket's path, its cookie without `Secure`, and the video on
-   * the page's WebSocket.
+   * paired (the host's one ask) and a window; a controller gets a ticket to the web viewer.
+   * A browser's is to a page on this node's stream listener, the app's host on a port of its
+   * own, which the page that asked may frame and no other; asked to show it beside its view
+   * (`embed`), the page is seeded as the desktop app's is: a few frames behind, at the host's
+   * screen size, the user's pointer hidden over it, this node's own desktop included. The
+   * phone app, which cannot show a page from the node's self-signed origin, fetches it
+   * through a forwarder on its own loopback over its pinned socket: it gets the ticket's
+   * path on the controller listener, its cookie without `Secure`, and the video on the
+   * page's WebSocket.
    */
   async open(node: string, ctx: OpenContext): Promise<ClientResult<"remote.open">> {
     // the phone off the LAN: the host's page through its own forwarder and pipes
@@ -736,13 +743,17 @@ export class Remote {
       const ids = await this.web.ensureHost(node, address, ctx.client.id);
       const name = ctx.client.name !== undefined ? { name: ctx.client.name } : {};
       if (ctx.forward) {
-        const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { ...name, transport: "websocket", secureCookie: false });
+        const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { door: "forward", ...name, transport: "websocket", secureCookie: false });
         this.log.info("web viewer ticket minted", { node, client: ctx.client.id, forward: true });
         return { path: `/remote/?t=${ticket}`, transport: "websocket", node, stream };
       }
-      const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, name);
-      this.log.info("web viewer ticket minted", { node, client: ctx.client.id });
-      return { url: `${ctx.origin}/remote/?t=${ticket}`, stream };
+      const port = this.deps.streamPort?.();
+      const at = port !== undefined ? originOnPort(ctx.origin, port) : undefined;
+      if (at === undefined) throw new RpcError("unavailable", "this node's stream port is not open: a desktop cannot be shown in a browser here");
+      const video = ctx.embed ? streamVideo(this.hostDisplay(node, ctx.display)) : undefined;
+      const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { door: "stream", ancestor: ctx.origin, ...name, ...(video ? { lowLatency: true, video, hideCursor: true } : {}) });
+      this.log.info("web viewer ticket minted", { node, client: ctx.client.id, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : {}) });
+      return { url: `${at}/remote/?t=${ticket}`, stream, ...(video ? { video: { width: video.width, height: video.height } } : {}) };
     }
     // A window opens on this machine: only for the desktop app that runs on it.
     if (ctx.client.node !== this.deps.nodeId) throw new RpcError("unsupported", "a viewer window opens only for the desktop app on this machine");
@@ -788,7 +799,7 @@ export class Remote {
     if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
     const ids = await this.web.ensureHost(node, this.hostAddress(node), client.id);
     const video = streamVideo(this.hostDisplay(node, heard));
-    const { ticket, stream } = this.tickets.mint(client.id, { node, ...ids }, { ...(client.name !== undefined ? { name: client.name } : {}), transport: "websocket", secureCookie: false, lowLatency: true, video, hideCursor: true });
+    const { ticket, stream } = this.tickets.mint(client.id, { node, ...ids }, { door: "loopback", ...(client.name !== undefined ? { name: client.name } : {}), transport: "websocket", secureCookie: false, lowLatency: true, video, hideCursor: true });
     this.log.info("web viewer ticket minted beside the view", { node, client: client.id, video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` });
     return { url: `http://127.0.0.1:${this.loopback.port()}/remote/?t=${ticket}`, stream, video: { width: video.width, height: video.height } };
   }
@@ -839,7 +850,7 @@ export class Remote {
     }
     const ids = await this.web.ensureHost(this.deps.nodeId, "127.0.0.1", viewer);
     const video = opts.sized ? streamVideo(this.readDisplay(), { away: true }) : undefined;
-    const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { ...(name !== undefined ? { name } : {}), transport, secureCookie: false, ...(opts.lowLatency ? { lowLatency: true } : {}), ...(video ? { video } : {}), ...(opts.hideCursor ? { hideCursor: true } : {}) });
+    const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { door: "loopback", ...(name !== undefined ? { name } : {}), transport, secureCookie: false, ...(opts.lowLatency ? { lowLatency: true } : {}), ...(video ? { video } : {}), ...(opts.hideCursor ? { hideCursor: true } : {}) });
     this.log.info("web viewer ticket minted for a viewer elsewhere", { viewer, transport, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : {}) });
     return { path: `/remote/?t=${ticket}`, stream, ...(video ? { video: { width: video.width, height: video.height } } : {}) };
   }

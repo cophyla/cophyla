@@ -1,6 +1,8 @@
 // A stream page carried through pipes, with the fake moonlight-web as the sidecar and the
 // phone's forwarder played on loopback: each of the page's connections becomes a pipe from
-// the phone to this node's loopback stream proxy. The ticket buys a cookie without `Secure`
+// the phone to this node's loopback stream proxy. The ticket is the one a viewer with no
+// route here is given, for that door: one minted for the controller listener is not there
+// through a pipe. The ticket buys a cookie without `Secure`
 // (the page is on the phone's loopback), the page, the API and the stream socket come through
 // both ways; a reader that stops acknowledging holds the node to one window of bytes, and the
 // rest comes once it acknowledges; a pipe the page closes, and every pipe of a phone that
@@ -74,6 +76,8 @@ async function start(): Promise<Started> {
   return current;
 }
 
+const ids = new WeakMap<TestClient, string>();
+
 /** The phone app on the controller listener, forwarding its stream pages. */
 async function phone(d: Daemon): Promise<TestClient> {
   const { token } = d.grants.createController("Pixel");
@@ -81,7 +85,13 @@ async function phone(d: Daemon): Promise<TestClient> {
   closers.push(() => c.close());
   const r = await c.call("hello", { token, kind: "controller", audio: { in: false, out: false }, forward: true });
   if ("error" in r) throw new Error(r.error.message);
+  ids.set(c, (r.result as { client: { id: string } }).client.id);
   return c;
+}
+
+/** The ticket a viewer with no route to this node is given, as the phone: to the loopback stream proxy, which its pipes reach. */
+function ticket(d: Daemon, c: TestClient): Promise<{ path: string; stream: string }> {
+  return d.remote.ticket(ids.get(c)!, "Pixel", "websocket");
 }
 
 function linkOf(c: TestClient): PipeLink {
@@ -118,10 +128,13 @@ describe("a stream page through pipes", () => {
   test("the ticket's cookie without Secure, the page, the API and the stream socket; closed pipes and a phone gone leave none", async () => {
     const { d } = await start();
     const c = await phone(d);
-    const opened = await c.request<{ path: string; stream: string }>("remote.open", { node: d.identity.id });
+    const opened = await ticket(d, c);
     const f = forwarder(c, d.identity.id);
     const base = `http://127.0.0.1:${f.port}`;
 
+    // the ticket the phone gets on the LAN is for the controller listener: through a pipe it is not there
+    const lan = await c.request<{ path: string }>("remote.open", { node: d.identity.id });
+    expect((await get(`${base}${lan.path}`)).status).toBe(403);
     const claim = await get(`${base}${opened.path}`);
     expect(claim.status).toBe(200);
     const setCookie = claim.headers.get("set-cookie")!;
@@ -160,7 +173,7 @@ describe("a stream page through pipes", () => {
   test("a reader that stops acknowledging holds the node to one window; the rest comes once it does", async () => {
     const { d } = await start();
     const c = await phone(d);
-    const opened = await c.request<{ path: string }>("remote.open", { node: d.identity.id });
+    const opened = await ticket(d, c);
     const f = forwarder(c, d.identity.id);
     const base = `http://127.0.0.1:${f.port}`;
     const cookie = (await get(`${base}${opened.path}`)).headers.get("set-cookie")!.split(";")[0]!;
@@ -184,7 +197,7 @@ describe("a stream page through pipes", () => {
   test("the web viewer is given its ICE script: the servers file, or an empty list; its seeded STUN servers go", async () => {
     const { d } = await start();
     const c = await phone(d);
-    const opened = await c.request<{ path: string }>("remote.open", { node: d.identity.id });
+    const opened = await ticket(d, c);
     const f = forwarder(c, d.identity.id);
     const base = `http://127.0.0.1:${f.port}`;
     const cookie = (await get(`${base}${opened.path}`)).headers.get("set-cookie")!.split(";")[0]!;

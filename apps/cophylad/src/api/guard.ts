@@ -230,6 +230,17 @@ export function hostName(host: string | null | undefined): string | undefined {
   return (colon >= 0 ? host.slice(0, colon) : host).toLowerCase().replace(/\.$/, "");
 }
 
+/** `origin` on another port: the host a request named, on a second listener of this machine. */
+export function originOnPort(origin: string, port: number): string | undefined {
+  try {
+    const url = new URL(origin);
+    url.port = String(port);
+    return url.origin;
+  } catch {
+    return undefined;
+  }
+}
+
 /** A name on this machine's loopback. */
 export function loopbackName(name: string | undefined): boolean {
   if (name === undefined) return false;

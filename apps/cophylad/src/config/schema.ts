@@ -320,6 +320,12 @@ export const ControllerConfig = z.object({
   host: z.string().default("0.0.0.0"),
   port: z.number().int().min(0).max(65535).default(4818),
   /**
+   * A second port, where a remote desktop's page is served to a browser on this network: a
+   * page's storage and sockets are its origin's, so the viewer's page never shares one with
+   * the app. Two above `port` when not set (the one above is discovery's, over UDP).
+   */
+  stream_port: z.number().int().min(0).max(65535).optional(),
+  /**
    * The address or name other devices reach this machine at, when it is not the one the node
    * would pick (its first private address on a real adapter): the certificate always names it,
    * a link and a key's address show it, and a request under that name is this machine's.
@@ -345,8 +351,15 @@ export const ControllerConfig = z.object({
   key_file: z.string().min(1).optional(),
   /** A phone signed in with this node's account pairs through the relay with no code. Off, only a code on the LAN pairs one. */
   account_pairing: z.boolean().default(true),
-}).refine((c) => (c.cert_file === undefined) === (c.key_file === undefined), { message: "cert_file and key_file go together", path: ["cert_file"] });
+})
+  .refine((c) => (c.cert_file === undefined) === (c.key_file === undefined), { message: "cert_file and key_file go together", path: ["cert_file"] })
+  .refine((c) => streamPortOf(c) <= 65535 && (streamPortOf(c) === 0 || streamPortOf(c) !== c.port), { message: "stream_port must be a port other than the controller's own", path: ["stream_port"] });
 export type ControllerConfig = z.infer<typeof ControllerConfig>;
+
+/** The port the stream page is served on: the configured one, else two above the controller's, and whichever the system gives where the controller's is left to it. */
+export function streamPortOf(c: { port: number; stream_port?: number | undefined }): number {
+  return c.stream_port ?? (c.port === 0 ? 0 : c.port + 2);
+}
 
 /** The phrases the wake word listens for unless the config or the app names others: "Cophyla" and "Hey Phyla", said ko-FILL-uh. */
 export const DEFAULT_WAKE_HEADS = ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] as const;

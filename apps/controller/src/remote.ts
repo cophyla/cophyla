@@ -12,6 +12,7 @@
 // still be waiting for its own. The claim page says when it has loaded; when it never does, the
 // place where the picture would be says to open that address once.
 
+import { STREAM_CLAIMED, STREAM_READY_PATH } from "@cophyla/protocol";
 import { placeOf, STREAM_ID, windowPlace } from "@cophyla/viewhost";
 import type { Box, Place } from "@cophyla/viewhost";
 
@@ -45,8 +46,7 @@ export function openTarget(raw: unknown, origin: string): OpenTarget {
   throw new Error("that link cannot be opened");
 }
 
-/** What the claim page of a stream posts to the page that framed it, once it has loaded. */
-export const STREAM_CLAIMED = "cophyla.stream.claimed";
+export { STREAM_CLAIMED };
 /** How long a stream's frame has to say it loaded before the page says its address may need opening once. */
 export const CLAIM_WAIT_MS = 4000;
 
@@ -216,7 +216,7 @@ export class StreamFrames {
     const doc = this.deps.doc;
     let address: string;
     try {
-      address = `${new URL(s.url).origin}/remote/ready`;
+      address = `${new URL(s.url).origin}${STREAM_READY_PATH}`;
     } catch {
       return;
     }

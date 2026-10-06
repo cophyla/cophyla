@@ -10,6 +10,11 @@
 // the answer reaches a client that asked from one of those devices; nothing is served in
 // between. Nothing here brings back a listener someone stopped: only the switch does.
 //
+// While devices are served a second listener is up beside it, on a port of its own: the stream
+// listener, where a browser frames a remote desktop's page from, so the viewer's page never
+// shares an origin with the app. It has the same certificates and the same rules for peers and
+// names. One that cannot bind leaves the main listener as it is, and `lan.info` says why.
+//
 // What a node link pins, the key's hash, is never withheld while the listener is up. What a
 // phone is told of the listener (the pin it gets at pairing, an invite's LAN part, the address
 // a browser's key is typed at) is told only while devices are served.
@@ -55,6 +60,15 @@ export interface LanListener {
   port?: number;
 }
 
+/** What the stream listener is started with. */
+export interface LanStreamListener {
+  tls: ListenerTls;
+  guard: Guard;
+  serving: () => boolean;
+  /** The port it was on before, when it is started again. Absent, the configured one. */
+  port?: number;
+}
+
 export interface LanDeps {
   config: Pick<Config, "controller" | "nodes" | "node">;
   /** Where the switch is kept once the app has set it. */
@@ -64,6 +78,10 @@ export interface LanDeps {
   log: Logger;
   /** Starts the listener, the daemon's methods behind it; throws when its port cannot be bound. */
   serve: (listener: LanListener) => ApiServer;
+  /** Starts the stream listener; throws when its port cannot be bound. Absent, this node shows no desktop in a browser. */
+  serveStream?: (listener: LanStreamListener) => { port: number; stop(): Promise<void> };
+  /** The stream listener's configured port. */
+  streamPort?: number;
   /** The browser keys minted and not yet typed. */
   openKeys?: () => number;
   /** The switch moved, or the listener came up or went. */
@@ -88,24 +106,32 @@ export class Lan {
   private ownError?: string;
   private ownStamp?: string;
   private ownTimer?: ReturnType<typeof setInterval>;
+  /** The stream listener while it is up, the port it was last on, why it is not up, and the certificates the listeners serve. */
+  private stream?: { port: number; stop(): Promise<void> };
+  private streamWas?: number;
+  private streamFailed?: string;
+  private tls?: ListenerTls;
   readonly guard: Guard;
+  /** The stream listener's: the same peers and names, and no forwarder's page. */
+  readonly streamGuard: Guard;
   readonly limiter: PairLimiter;
 
   constructor(deps: LanDeps) {
     this.deps = deps;
     this.log = deps.log;
     const address = deps.config.controller.address;
-    this.guard = new Guard({
+    const rules = {
       networks: parseNetworks(deps.config.controller.networks),
       // This machine's names: its addresses and hostname now, its certificate's, and the one the config gives it.
       names: () => {
         const named = this.certPem !== undefined ? certificateNames(this.certPem) : undefined;
         return [...machineNames(), ...(named?.dns ?? []), ...(named?.ips ?? []), ...(address !== undefined ? [address] : []), ...(this.own?.names ?? [])];
       },
-      scheme: "https",
-      forwarder: true,
+      scheme: "https" as const,
       log: this.log,
-    });
+    };
+    this.guard = new Guard({ ...rules, forwarder: true });
+    this.streamGuard = new Guard(rules);
     this.limiter = new PairLimiter(deps.limiter);
   }
 
@@ -180,6 +206,7 @@ export class Lan {
     const api = this.api;
     if (!api) return false;
     this.api = undefined;
+    await this.downStream();
     await api.stop();
     this.up(false);
     this.deps.onChange?.();
@@ -210,12 +237,44 @@ export class Lan {
         this.api = this.deps.serve(listener);
       }
       this.port = this.api.port;
+      this.tls = listener.tls;
       this.failed = undefined;
       this.log.info("controller listener up", { origin: this.api.origin, devices: this.enabled ? "served" : "off", nodes: "/ws/node", ...(this.own ? { ownCertificate: this.own.names } : {}) });
     } catch (e) {
       this.failed = e instanceof Error ? e.message : String(e);
       this.log.error("controller listener off", { error: this.failed });
+      return;
     }
+    if (this.enabled) this.upStream();
+  }
+
+  /** Brings the stream listener up beside the main one, where it was last, with the same certificates; one that cannot bind is said and leaves the rest as it is. */
+  private upStream(): void {
+    const serve = this.deps.serveStream;
+    if (this.stream || !this.api || !this.tls || !serve) return;
+    const listener: LanStreamListener = { tls: this.tls, guard: this.streamGuard, serving: () => this.serving };
+    try {
+      try {
+        this.stream = serve(this.streamWas !== undefined ? { ...listener, port: this.streamWas } : listener);
+      } catch (e) {
+        if (this.streamWas === undefined || this.streamWas === this.deps.streamPort) throw e;
+        this.stream = serve(listener);
+      }
+      this.streamWas = this.stream.port;
+      this.streamFailed = undefined;
+    } catch (e) {
+      this.streamFailed = e instanceof Error ? e.message : String(e);
+      this.log.error("stream listener off: a desktop cannot be shown in a browser here", { error: this.streamFailed });
+    }
+  }
+
+  private async downStream(): Promise<void> {
+    const stream = this.stream;
+    this.stream = undefined;
+    this.streamFailed = undefined;
+    if (!stream) return;
+    await stream.stop();
+    this.log.info("stream listener down");
   }
 
   /** Serves devices on this network from now on: the listener comes up where it was down. */
@@ -225,6 +284,7 @@ export class Lan {
     // a listener on its way down has let go of its port by then
     await this.settling;
     if (!this.api) this.up();
+    else this.upStream();
     this.deps.onChange?.();
     return this.state();
   }
@@ -249,6 +309,7 @@ export class Lan {
           if (!down && this.enabled) return;
           const closed = api.closeClients(CLOSE_NOT_SERVING, "access on this network was turned off");
           if (closed > 0) this.log.info("devices on this network disconnected", { count: closed });
+          await this.downStream();
           if (!down) return;
           await api.stop();
           this.log.info("controller listener down");
@@ -264,6 +325,11 @@ export class Lan {
   /** The SHA-256 of the listener's key, whatever address it is on: what a node invite and an enrollment carry. */
   get spki(): string | undefined {
     return this.api && this.certPem !== undefined ? spkiHash(this.certPem) : undefined;
+  }
+
+  /** The stream listener's port, while devices are served and it is up. */
+  get streamPort(): number | undefined {
+    return this.serving ? this.stream?.port : undefined;
   }
 
   /** The address a device on this network reaches the node at: the configured one, else the one the listener is bound to, else the node's own pick among its adapters. */
@@ -321,7 +387,10 @@ export class Lan {
         fingerprints = undefined;
       }
     }
-    const refused = this.guard.last;
+    // the later of what either listener turned away
+    const [main, stream] = [this.guard.last, this.streamGuard.last];
+    const refused = stream && (!main || stream.at > main.at) ? stream : main;
+    const streamPort = this.streamPort;
     return {
       enabled,
       state,
@@ -330,6 +399,7 @@ export class Lan {
       addresses: this.addresses(),
       ...(fingerprints ? { fingerprints } : {}),
       ...(this.ownFiles() ? { certificate: { names: this.own?.names ?? [], ...(this.own ? { validTo: this.own.validTo } : {}), ...(this.ownError !== undefined ? { error: this.ownError } : {}) } } : {}),
+      ...(this.serving && this.deps.serveStream && (streamPort !== undefined || this.streamFailed !== undefined) ? { stream: streamPort !== undefined ? { port: streamPort } : { error: this.streamFailed! } } : {}),
       keys: this.deps.openKeys?.() ?? 0,
       ...(refused ? { refused: { at: refused.at, address: refused.address, why: refused.why, detail: refused.detail } } : {}),
     };
@@ -341,6 +411,7 @@ export class Lan {
     await this.settling;
     const api = this.api;
     this.api = undefined;
+    await this.downStream();
     if (api) await api.stop();
   }
 }

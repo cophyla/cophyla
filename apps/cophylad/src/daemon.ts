@@ -50,6 +50,7 @@ import { ensureReadme } from "./editable/readme.ts";
 import { ensureDirs, loadConfig, loadOrCreateToken, paths, resolveHome } from "./config/load.ts";
 import type { BrainLinkDeps } from "./brain-link/link.ts";
 import type { Paths } from "./config/load.ts";
+import { streamPortOf } from "./config/schema.ts";
 import type { Config } from "./config/schema.ts";
 import { EventCatalogue } from "./events/catalogue.ts";
 import { recordCustomEvents } from "./events/recorder.ts";
@@ -81,6 +82,7 @@ import { Guests } from "./nodes/guests.ts";
 import { Owners } from "./nodes/owners.ts";
 import { nodeServedTable } from "./nodes/served.ts";
 import { Remote } from "./remote/index.ts";
+import { startStreamListener } from "./remote/listener.ts";
 import type { RemoteDeps } from "./remote/index.ts";
 import { checkSuccessor, Restart, spawnSuccessor } from "./restart.ts";
 import { ClaudeAdapter } from "./sessions/claude/adapter.ts";
@@ -798,6 +800,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     onStateChange: () => bus.emit("node.state", node()),
     links: { request: (target, method, params, o) => nodes!.linkRequest(target, method, params, o) },
     pipes,
+    streamPort: () => lan?.streamPort,
     direct: {
       get ready() {
         return direct.ready;
@@ -1354,6 +1357,23 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     onChange: () => bus.emit("node.state", node()),
     ...(opts.lan?.limiter ? { limiter: opts.lan.limiter } : {}),
     ...(opts.lan?.ownCertificatePollMs !== undefined ? { ownCertificatePollMs: opts.lan.ownCertificatePollMs } : {}),
+    // The stream page's own listener, where this node runs a web viewer at all.
+    ...(config.remote.web
+      ? {
+          streamPort: streamPortOf(config.controller),
+          serveStream: (listener) =>
+            startStreamListener({
+              proxy: remoteModule.proxy,
+              guard: listener.guard,
+              tls: listener.tls,
+              host: config.controller.host,
+              port: listener.port ?? streamPortOf(config.controller),
+              serving: listener.serving,
+              log: log.child("stream"),
+              ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}),
+            }),
+        }
+      : {}),
     serve: (listener) =>
       startApi(
         {
@@ -1384,6 +1404,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           guard: listener.guard,
           limiter: listener.limiter,
           serving: listener.serving,
+          streamPort: () => lan?.streamPort,
         },
         { host: config.controller.host, port: listener.port ?? config.controller.port, tls: listener.tls, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
       ),

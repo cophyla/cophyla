@@ -32,7 +32,7 @@ export class LoopbackProxy {
         fetch(req, srv) {
           const url = new URL(req.url);
           if (!RemoteProxy.owns(url.pathname)) return new Response("not found", { status: 404 });
-          return proxy.handle(req, (bridge) => srv.upgrade(req, { data: { bridge } }));
+          return proxy.handle(req, (bridge) => srv.upgrade(req, { data: { bridge } }), "loopback");
         },
         websocket: {
           maxPayloadLength: MAX_PAYLOAD,

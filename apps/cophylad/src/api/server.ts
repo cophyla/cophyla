@@ -86,7 +86,7 @@ import type { Redeemed } from "../grants/phones.ts";
 import type { Grants, RedeemHow } from "../grants/store.ts";
 import { assistantRoute, handleAssistant } from "./assistant.ts";
 import type { AssistantIngress } from "./assistant.ts";
-import { appHeaders, refusalResponse, validHost } from "./guard.ts";
+import { appHeaders, hostName, loopbackName, originOnPort, refusalResponse, validHost } from "./guard.ts";
 import type { Guard, PairLimiter } from "./guard.ts";
 import { handleHook } from "./hooks.ts";
 import type { HookHarness, HookIngress } from "./hooks.ts";
@@ -223,8 +223,10 @@ export interface ApiDeps {
   /** Every request and signal a client sends, by name, once its params parse: where the user acted. */
   onRequest?: (client: Client, method: string) => void;
   nodes?: NodesSeams;
-  /** The remote-desktop proxy under `/remote`, on the controller listener: the phone's stream page and its socket. */
+  /** The remote-desktop proxy under `/remote`, on the controller listener: the stream page and its socket as the phone app's forwarder reads them. */
   remote?: RemoteProxy;
+  /** The stream listener's port, while it is up: the one other origin the app's page may frame. */
+  streamPort?: () => number | undefined;
   /** The relay access a freshly paired phone gets with its token, when the cloud can mint it now; nothing otherwise. */
   relayAccess?: (controller: string, name: string) => Promise<RelayAccess | undefined>;
   /** A phone that signed in with the account, on its pairing tunnel: the controller, its token, its relay access and the LAN listener's pin. */
@@ -270,6 +272,11 @@ export interface ListenerTls {
   key: string;
   cert: string;
   named?: { key: string; cert: string; serverName: string }[];
+}
+
+/** A listener's certificates as `Bun.serve` takes them: the first serves a connection with no name or an unknown one, a named one its own name. */
+export function tlsOption(tls: ListenerTls): { key: string; cert: string } | { key: string; cert: string; serverName?: string }[] {
+  return tls.named?.length ? [{ key: tls.key, cert: tls.cert }, ...tls.named] : { key: tls.key, cert: tls.cert };
 }
 
 export interface ListenerOptions {
@@ -1031,8 +1038,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const server: Server<Connection> = Bun.serve<Connection>({
     hostname: opts.host ?? deps.config.api.host,
     port: opts.port ?? deps.config.api.port,
-    // The first certificate serves a connection with no name or an unknown one; a named one serves its own name.
-    ...(opts.tls ? { tls: opts.tls.named?.length ? [{ key: opts.tls.key, cert: opts.tls.cert }, ...opts.tls.named] : { key: opts.tls.key, cert: opts.tls.cert } } : {}),
+    ...(opts.tls ? { tls: tlsOption(opts.tls) } : {}),
     fetch(req, srv) {
       const url = new URL(req.url);
       const from = srv.requestIP(req)?.address ?? "?";
@@ -1060,9 +1066,12 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         if (srv.upgrade(req, { data: { kind: "node", listener, origin, provisional: newId("client"), failedClaims: 0, remote } satisfies Connection })) return undefined;
         return new Response("expected a websocket", { status: 426 });
       }
-      // The remote-desktop stream page and its socket: the controller listener's alone, behind a ticket.
+      // The remote-desktop stream page and its socket, behind a ticket: here for the phone app's
+      // forwarder alone, which reads them on the phone's own loopback. Under one of this machine's
+      // names a browser would have the viewer's page on the app's origin: its page is on the stream listener.
       if (deps.remote && listener === "controller" && RemoteProxy.owns(url.pathname)) {
-        return deps.remote.handle(req, (bridge) => srv.upgrade(req, { data: { kind: "remote", listener, origin, provisional: newId("client"), failedClaims: 0, remote, bridge } satisfies Connection }));
+        if (!loopbackName(hostName(req.headers.get("host")))) return new Response("not found", { status: 404, headers: { "cache-control": "no-store" } });
+        return deps.remote.handle(req, (bridge) => srv.upgrade(req, { data: { kind: "remote", listener, origin, provisional: newId("client"), failedClaims: 0, remote, bridge } satisfies Connection }), "forward");
       }
       // The harness hooks are loopback's alone: nothing on the LAN answers them.
       const hook = listener === "loopback" && deps.hooks ? /^\/hooks\/(claude|codex|muse)$/.exec(url.pathname) : null;
@@ -1082,8 +1091,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       }
       if (deps.static !== undefined) {
         const file = serveStatic(deps.static, url.pathname);
-        // The page's policy is a header, on the page alone.
-        if (file) return new Response(file.bytes, { headers: appHeaders(file.mime, controllerCsp()) });
+        // The page's policy is a header, on the page alone; it names the stream listener as this request reached the machine.
+        const streamPort = deps.streamPort?.();
+        const stream = streamPort !== undefined ? originOnPort(origin, streamPort) : undefined;
+        if (file) return new Response(file.bytes, { headers: appHeaders(file.mime, controllerCsp(stream !== undefined ? { stream } : {})) });
         // Only the app's own entry falls back to the "not built" page; every other path is a 404.
         if ((url.pathname === "/" || url.pathname === "/index.html") && !isBuilt(deps.static)) {
           return new Response(NOT_BUILT_PAGE, { status: 200, headers: appHeaders("text/html; charset=utf-8") });

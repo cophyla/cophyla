@@ -65,8 +65,10 @@ describe("the LAN listener's guard", () => {
     const { origin } = await start();
     const page = await get(`${origin}/`);
     expect(page.status).toBe(200);
-    // the policy is a header: nothing may frame the page, which a `<meta>` cannot say
-    expect(page.headers.get("content-security-policy")).toBe(controllerCsp());
+    // the policy is a header: nothing may frame the page, which a `<meta>` cannot say; it frames its own origin and the stream listener's
+    expect(page.headers.get("content-security-policy")).toBe(controllerCsp({ stream: `https://127.0.0.1:${d!.lan.streamPort!}` }));
+    // under another of this machine's names the stream listener is named as that one
+    expect((await get(`${origin}/`, { host: "localhost:9443" })).headers.get("content-security-policy")).toContain(`frame-src 'self' https://localhost:${d!.lan.streamPort!};`);
     expect(controllerCsp()).toContain("frame-ancestors 'none'");
     expect(controllerCsp()).toContain("connect-src 'self'");
     expect(page.headers.get("x-content-type-options")).toBe("nosniff");

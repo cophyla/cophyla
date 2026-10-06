@@ -27,5 +27,15 @@ export function controllerCsp(opts: ControllerPolicy = {}): string {
   ].join("; ");
 }
 
+/** What a stream's claim page posts to the page that framed it once it has loaded: `{ cophyla: STREAM_CLAIMED }`. */
+export const STREAM_CLAIMED = "cophyla.stream.claimed";
+
+/**
+ * A page on the stream listener that says its address is open in this browser. A browser keeps
+ * a certificate it was asked to accept per port and a frame cannot ask, so a stream that never
+ * loads is offered this address to open once.
+ */
+export const STREAM_READY_PATH = "/remote/ready";
+
 /** The policy as the page's source carries it in a `<meta>`, which a build takes out: a served page gets the header. */
 export const CONTROLLER_META_CSP = /<meta\s+http-equiv="content-security-policy"[\s\S]*?\/>\s*/i;

@@ -129,7 +129,8 @@ describe("remote desktop across nodes", () => {
     clients.push(phone);
     await phone.call("hello", { token, kind: "controller", audio: { in: false, out: false } });
     const { url } = await phone.request<{ url: string }>("remote.open", { node: secondary.identity.id });
-    expect(url.startsWith(`https://127.0.0.1:${primary.d.controller!.port}/remote/?t=`)).toBe(true);
+    // on the primary's stream listener: the app's host, a port of its own
+    expect(url.startsWith(`https://127.0.0.1:${primary.d.lan.streamPort!}/remote/?t=`)).toBe(true);
     expect(hostB.clients.map((c) => c.name)).toEqual(["study web"]);
     const pairRow = rows(secondary, "remote.pair")[0]!;
     expect(pairRow.principal).toEqual({ kind: "node", id: primary.d.identity.id });

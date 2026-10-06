@@ -14,8 +14,16 @@
 // `remote.close`. A session is a `web` viewer in this node's
 // `remote.state`: revoked by `remote.revoke`, and forgotten with its sockets when the client
 // that opened it disconnects, like a view ticket.
+//
+// A ticket is minted for one door, claimed there and nowhere else, and its session is served
+// through that door alone: the stream listener (a browser's page frames it from a port of its
+// own, and only the page it was minted for may frame it), the controller listener (the phone
+// app's forwarder), or this machine's loopback (the desktop app, and pages that come through
+// pipes). A cookie goes to every port of its host, so the session says which door is its own:
+// the viewer's page never runs on the app's origin.
 
 import { randomBytes } from "node:crypto";
+import { STREAM_CLAIMED } from "@cophyla/protocol";
 import type { RemoteViewer, StreamTransport } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import type { StreamVideo } from "./quality.ts";
@@ -28,12 +36,22 @@ export interface RemoteTarget {
 }
 
 /**
- * How a ticket's page is served: the video's transport (the node's `[remote] web_transport`
+ * The way in a ticket is minted for: `stream`, the stream listener, where a browser's page
+ * frames it; `forward`, the controller listener, for the phone app's forwarder; `loopback`,
+ * this machine's loopback, for the desktop app and for pages that come through pipes.
+ */
+export type Door = "stream" | "forward" | "loopback";
+
+/**
+ * How a ticket's page is served: the door it comes through, the video's transport (the node's `[remote] web_transport`
  * without it), whether its cookie may be `Secure`, and whether the page is seeded with the
  * settings that keep the video a few frames behind: drawn on a canvas, HEVC where the browser
  * decodes it (measured: 67 ms against 167–183 with the viewer's defaults).
  */
 export interface TicketOptions {
+  door: Door;
+  /** For the `stream` door: the origin of the app's page, the only one that may frame the ticket's page and the one told it loaded. */
+  ancestor?: string;
   name?: string;
   transport?: StreamTransport;
   secureCookie?: boolean;
@@ -52,6 +70,9 @@ export interface RemoteSession {
   /** What the client is called, for the viewer list. */
   name?: string;
   target: RemoteTarget;
+  /** The only door it is served through. */
+  door: Door;
+  ancestor?: string;
   transport?: StreamTransport;
   secureCookie?: boolean;
   lowLatency?: boolean;
@@ -92,16 +113,17 @@ export class RemoteTickets {
   }
 
   /** A ticket for `client` to open `target`: 16 random bytes, one use, five minutes; and the stream it opens. */
-  mint(client: string, target: RemoteTarget, opts: TicketOptions = {}): { ticket: string; stream: string } {
+  mint(client: string, target: RemoteTarget, opts: TicketOptions): { ticket: string; stream: string } {
     const ticket = randomBytes(16).toString("hex");
     const stream = `stream_${randomBytes(8).toString("hex")}`;
     this.tickets.set(ticket, { client, stream, target, expiresAt: this.now() + TICKET_TTL_MS, ...definedOf(opts) });
     return { ticket, stream };
   }
 
-  /** Turns a live ticket into a session; the ticket is spent either way. */
-  claim(ticket: string): RemoteSession | undefined {
+  /** Turns a live ticket into a session at the door it was minted for, where it is spent either way; at another door it is not there at all. */
+  claim(ticket: string, door: Door): RemoteSession | undefined {
     const t = this.tickets.get(ticket);
+    if (t && t.door !== door) return undefined;
     this.tickets.delete(ticket);
     if (!t || t.expiresAt < this.now()) return undefined;
     const session: RemoteSession = { id: randomBytes(16).toString("hex"), client: t.client, stream: t.stream, target: t.target, since: this.now(), bridges: new Set(), ...definedOf(t) };
@@ -196,7 +218,9 @@ export interface RemoteProxyDeps {
 
 /** The options that were given, so an absent one stays absent. */
 function definedOf(opts: TicketOptions): TicketOptions {
-  const out: TicketOptions = {};
+  const out: TicketOptions = { door: opts.door };
+  // an origin goes into a policy and a script as it is: one that is not just a scheme, a host and a port is dropped, and then nothing frames the page
+  if (opts.ancestor !== undefined && ORIGIN.test(opts.ancestor)) out.ancestor = opts.ancestor;
   if (opts.name !== undefined) out.name = opts.name;
   if (opts.transport !== undefined) out.transport = opts.transport;
   if (opts.secureCookie !== undefined) out.secureCookie = opts.secureCookie;
@@ -206,16 +230,32 @@ function definedOf(opts: TicketOptions): TicketOptions {
   return out;
 }
 
+const ORIGIN = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+
+/** Where the claim page keeps the names of the settings it seeded, beside the viewer's own storage. */
+export const SEEDED_KEY = "cophylaSeeded";
+
 /**
  * What the claim page sets in the stream page's settings: the ticket's transport, for a
  * low-latency one the canvas renderer and HEVC where the browser decodes it (H.264 where it
  * does not; AV1 shows no picture in moonlight-web 2.10.0), and the stream's size, frame rate
- * and bitrate when the ticket has them (the viewer's own are 1920×1080 at 10 Mbps).
+ * and bitrate when the ticket has them (the viewer's own are 1920×1080 at 10 Mbps). The page's
+ * storage is its origin's and outlives the session, so what an earlier claim seeded and this
+ * one does not is taken out first, back to the viewer's own (it lays what is stored over its
+ * defaults): one session's size and renderer are not the next one's. What the user set in the
+ * viewer themselves, and no claim ever seeded, stays.
  */
 export function seedScript(transport: StreamTransport, lowLatency: boolean, video?: StreamVideo): string {
   const low = lowLatency ? `s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";` : "";
   const sized = video ? `s.videoSize="custom";s.videoSizeCustom=${JSON.stringify({ width: video.width, height: video.height })};s.fps=${video.fps};s.bitrate=${video.bitrate};` : "";
-  return `try{var k="mlSettings",s=JSON.parse(localStorage.getItem(k)||"{}");s.dataTransport=${JSON.stringify(transport)};${low}${sized}localStorage.setItem(k,JSON.stringify(s))}catch(e){}`;
+  const seeded = [...(lowLatency ? ["canvasRenderer", "videoCodec"] : []), ...(video ? ["videoSize", "videoSizeCustom", "fps", "bitrate"] : [])];
+  const before = `var p=[];try{p=JSON.parse(localStorage.getItem(m)||"[]")}catch(e){}(Array.isArray(p)?p:[]).forEach(function(n){delete s[n]});`;
+  return `try{var k="mlSettings",m=${JSON.stringify(SEEDED_KEY)},s=JSON.parse(localStorage.getItem(k)||"{}");${before}s.dataTransport=${JSON.stringify(transport)};${low}${sized}localStorage.setItem(k,JSON.stringify(s));localStorage.setItem(m,${JSON.stringify(JSON.stringify(seeded))})}catch(e){}`;
+}
+
+/** Who may frame a session's pages: for the stream door the app's page it was minted for and no other, elsewhere the page's own origin as before. */
+function ancestors(session: RemoteSession): string {
+  return session.door === "stream" ? (session.ancestor ?? "'none'") : "'self'";
 }
 
 /** The stream page's path, which a sized session, or one that hides the pointer, gets rewritten. */
@@ -274,15 +314,17 @@ export class RemoteProxy {
   }
 
   /**
-   * Answers a request under `/remote`. `upgrade` is called for a WebSocket upgrade with
-   * the bridge to attach to the socket's data; it returns whether the server took it, and
-   * then there is no response to send.
+   * Answers a request under `/remote` that came in through `door`. `upgrade` is called for a
+   * WebSocket upgrade with the bridge to attach to the socket's data; it returns whether the
+   * server took it, and then there is no response to send.
    */
-  async handle(req: Request, upgrade: (bridge: Bridge) => boolean): Promise<Response | undefined> {
+  async handle(req: Request, upgrade: (bridge: Bridge) => boolean, door: Door): Promise<Response | undefined> {
     const url = new URL(req.url);
     const ticket = url.searchParams.get("t");
-    if (ticket !== null) return this.claim(ticket, req.headers.get("host"));
-    const session = this.deps.tickets.session(cookieOf(req));
+    if (ticket !== null) return this.claim(ticket, req.headers.get("host"), door);
+    const held = this.deps.tickets.session(cookieOf(req));
+    // another door's session is no session here, though its cookie comes to every port of the host
+    const session = held?.door === door ? held : undefined;
     if (!session) return new Response("no session", { status: 403, headers: { "cache-control": "no-store" } });
     const base = this.deps.upstream();
     if (!base) return new Response("the web viewer is not running", { status: 503, headers: { "cache-control": "no-store" } });
@@ -328,7 +370,7 @@ export class RemoteProxy {
     const out = new Headers();
     for (const [k, v] of res.headers) if (!HOP.has(k)) out.set(k, v);
     const html = (res.headers.get("content-type") ?? "").includes("text/html");
-    if (html) out.set("content-security-policy", "frame-ancestors 'self'");
+    if (html) out.set("content-security-policy", `frame-ancestors ${ancestors(session)}`);
     out.set("x-content-type-options", "nosniff");
     if (rewrite && html && res.status === 200) {
       const text = streamPageFor(await res.text(), { ...(session.hideCursor ? { hideCursor: true } : {}), ...(session.video ? { video: session.video } : {}) });
@@ -339,24 +381,26 @@ export class RemoteProxy {
     return new Response(res.body, { status: res.status, headers: out });
   }
 
-  /** The ticket page: the cookie, the ticket's settings into the page's storage, then the stream page. */
-  private claim(ticket: string, host: string | null): Response {
-    const session = this.deps.tickets.claim(ticket);
+  /** The ticket page: the cookie, the ticket's settings into the page's storage, a word to the page that framed it, then the stream page. */
+  private claim(ticket: string, host: string | null, door: Door): Response {
+    const session = this.deps.tickets.claim(ticket, door);
     if (!session) return new Response("that ticket is not open", { status: 403, headers: { "cache-control": "no-store" } });
     // Without `Secure` only for a ticket minted for a forwarder, and only as its loopback asks: anywhere else it stays
     const secure = !(session.secureCookie === false && loopbackHost(host));
     const nonce = randomBytes(12).toString("base64");
     const path = `/remote/stream.html?hostId=${session.target.hostId}&appId=${session.target.appId}`;
+    // the app's page hears that its frame loaded: one that never does is waiting on this port's certificate
+    const told = session.door === "stream" && session.ancestor !== undefined ? `try{parent!==window&&parent.postMessage({cophyla:${JSON.stringify(STREAM_CLAIMED)}},${JSON.stringify(session.ancestor)})}catch(e){}` : "";
     const html =
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body>` +
-      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true, session.video)}` +
+      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true, session.video)}${told}` +
       `location.replace(${JSON.stringify(path)})</script></body></html>`;
     return new Response(html, {
       status: 200,
       headers: {
         "content-type": "text/html; charset=utf-8",
         "set-cookie": `${COOKIE}=${session.id}; Path=/remote;${secure ? " Secure;" : ""} HttpOnly; SameSite=Strict`,
-        "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; frame-ancestors 'self'`,
+        "content-security-policy": `default-src 'none'; script-src 'nonce-${nonce}'; frame-ancestors ${ancestors(session)}`,
         "cache-control": "no-store",
         "x-content-type-options": "nosniff",
       },

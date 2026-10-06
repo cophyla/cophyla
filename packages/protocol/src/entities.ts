@@ -1033,8 +1033,10 @@ export type BrowserInvite = z.infer<typeof BrowserInvite>;
  * not be (`reason`). `addresses` are what a person types into a browser, best first.
  * `fingerprints` are the SHA-256 of the node's own certificate as a browser shows it, and of
  * its key (base64), which a new certificate keeps. `certificate` is the user's own, when one
- * is configured, with why it is not in use when it is not. `keys` counts the browser keys
- * minted and not yet typed. `refused` is the last request the listener turned away.
+ * is configured, with why it is not in use when it is not. `stream` is the second port, which
+ * a remote desktop's page is served from to a browser, while devices are served: the port, or
+ * why it is not open. `keys` counts the browser keys minted and not yet typed. `refused` is
+ * the last request either listener turned away.
  */
 export const LanState = z.object({
   enabled: z.boolean(),
@@ -1044,6 +1046,7 @@ export const LanState = z.object({
   addresses: z.array(z.string()),
   fingerprints: z.object({ certificate: z.string(), key: z.string() }).optional(),
   certificate: z.object({ names: z.array(z.string()), validTo: Timestamp.optional(), error: z.string().optional() }).optional(),
+  stream: z.object({ port: z.number().int().min(1).max(65535).optional(), error: z.string().optional() }).optional(),
   keys: z.number().int().nonnegative(),
   refused: z.object({ at: Timestamp, address: z.string(), why: z.enum(["peer", "host", "origin"]), detail: z.string() }).optional(),
 });
