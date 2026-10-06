@@ -705,9 +705,13 @@ export const clientRequests = {
   "view.stage": { params: z.object({ id: z.string() }), result: z.object({ base: z.string(), version: z.string(), docFrame: z.string().optional() }) },
   /** Opens a pairing window: the code and the URL a phone opens, good until `expiresAt`, one use. */
   "pair.start": { params: Empty, result: z.object({ code: PairingCode, url: z.string(), expiresAt: Timestamp }) },
-  /** A phone's first frame, before `hello`: the code for a token of its own, and the relay access when the node could mint it. */
+  /**
+   * A phone's first frame, before `hello`: the code for a token of its own, and the relay
+   * access when the node could mint it. `keep: false` is "this is a shared computer": the
+   * grant is a session's, kept in the node's memory alone.
+   */
   "pair.claim": {
-    params: z.object({ code: PairingCode, name: z.string().min(1).max(64) }),
+    params: z.object({ code: PairingCode, name: z.string().min(1).max(64), keep: z.boolean().optional() }),
     result: z.object({ token: z.string(), client: Controller, relay: RelayAccess.optional() }),
   },
   /**
@@ -723,9 +727,10 @@ export const clientRequests = {
    * A phone's first frame, before `hello`, with the invite it was given: the grant it names
    * and the invite's secret. Answered on the node's LAN listener and on the relay tunnel of
    * the invite's own peer: the phone's token, its row, and a relay access minted fresh for it.
+   * `keep: false` as for `pair.claim`.
    */
   "invite.redeem": {
-    params: z.object({ grant: ControllerId, secret: Secret, name: z.string().min(1).max(64) }),
+    params: z.object({ grant: ControllerId, secret: Secret, name: z.string().min(1).max(64), keep: z.boolean().optional() }),
     result: z.object({ token: z.string(), client: Controller, relay: RelayAccess.optional(), lan: PairedLan.optional() }),
   },
   /**

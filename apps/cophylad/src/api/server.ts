@@ -418,6 +418,9 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }, HELLO_DEADLINE_MS);
   };
 
+  /** How a code, a key or an invite is being spent on this socket: from a page in a browser, and on a shared computer when it says `keep: false`. */
+  const how = (ws: Conn, keep: boolean | undefined): RedeemHow => ({ ...(ws.data.browser ? { browser: true } : {}), ...(keep === false ? { session: true } : {}) });
+
   /** A wrong code, key, invite or token: counted against the address it came from. */
   const missed = (ws: Conn): void => {
     const limiter = deps.limiter;
@@ -506,9 +509,9 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       let secret: { token: string; relay?: RelayAccess } | undefined;
       const client = await deps.gate.run(
         // The code is not audited: the row would be the pairing secret in the log.
-        { principal, action: "pair.claim", args: { name: p.name }, sessionKey: ws.data.provisional },
+        { principal, action: "pair.claim", args: { name: p.name, ...(p.keep !== undefined ? { keep: p.keep } : {}) }, sessionKey: ws.data.provisional },
         async () => {
-          const paired = pairing.claim(p.code, p.name, ws.data.browser ? { browser: true } : {});
+          const paired = pairing.claim(p.code, p.name, how(ws, p.keep));
           if (!paired) throw new RpcError("denied", "that code is not open");
           // the relay access rides along when the node can mint it now; the phone asks `relay.info` later otherwise
           const relay = await deps.relayAccess?.(paired.controller.id, paired.controller.name);
@@ -609,9 +612,9 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       if (ws.data.invite && p.grant !== ws.data.invite.grant) throw new RpcError("denied", "that invite is not open");
       let redeemed: Redeemed | undefined;
       const client = await deps.gate.run(
-        { principal, action: "invite.redeem", args: { grant: p.grant, name: p.name }, sessionKey: ws.data.provisional },
+        { principal, action: "invite.redeem", args: { grant: p.grant, name: p.name, ...(p.keep !== undefined ? { keep: p.keep } : {}) }, sessionKey: ws.data.provisional },
         async () => {
-          redeemed = await deps.redeemInvite!({ grant: p.grant, secret: p.secret }, ws.data.invite ? { peer: ws.data.invite.peer } : {}, ws.data.browser ? { browser: true } : {});
+          redeemed = await deps.redeemInvite!({ grant: p.grant, secret: p.secret }, ws.data.invite ? { peer: ws.data.invite.peer } : {}, how(ws, p.keep));
           return redeemed.answer.client;
         },
       );

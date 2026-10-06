@@ -1006,6 +1006,8 @@ export const Grant = z.object({
   local: z.boolean().optional(),
   /** `browser` for a browser's grant, pending or redeemed. */
   form: GrantForm.optional(),
+  /** A shared computer's session, or a key minted for one: kept in the node's memory alone. */
+  session: z.boolean().optional(),
 });
 export type Grant = z.infer<typeof Grant>;
 

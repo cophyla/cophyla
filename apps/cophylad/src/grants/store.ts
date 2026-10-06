@@ -21,6 +21,11 @@
 // form and its end from the mint; a code or a phone's invite spent from a page in a browser
 // becomes a browser's then, with an end no later than thirty days out and never later than
 // the one it had.
+//
+// A shared computer's grant (`session`) lives in this daemon's memory and nowhere else: never
+// in `kv`, so no restart, no replica and no backup holds it. It is one from its mint when the
+// minter asks, or from its redemption when the browser says it is a shared computer, and then
+// a row that was kept leaves `kv`. It ends half a day after it was paired at the latest.
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { FULL, newId, RpcError } from "@cophyla/protocol";
@@ -36,6 +41,8 @@ const KEY_BYTES = 32;
 /** How long a browser's grant runs unless less is asked, and the most that may be asked. */
 export const BROWSER_GRANT_MS = 30 * 86_400_000;
 export const BROWSER_GRANT_MAX_MS = 90 * 86_400_000;
+/** The longest a shared computer's session runs from when it was paired. */
+export const SESSION_GRANT_MAX_MS = 12 * 3_600_000;
 
 export interface PushDevice {
   platform: PushPlatform;
@@ -79,11 +86,14 @@ export interface GrantRow {
   replica?: boolean;
   /** `browser`: a browser's, whose grant always has an end. */
   form?: GrantForm;
+  /** A shared computer's: held in memory alone. */
+  session?: boolean;
 }
 
-/** How an invite or a code is being spent: from a page in a browser, which makes the grant a browser's. */
+/** How an invite or a code is being spent: from a page in a browser, which makes the grant a browser's; on a shared computer, which makes it a session's. */
 export interface RedeemHow {
   browser?: boolean;
+  session?: boolean;
 }
 
 type Ns = typeof GRANTS_NS | typeof LOCAL_GRANTS_NS;
@@ -121,6 +131,8 @@ export interface GrantsDeps {
 export class Grants {
   private deps: GrantsDeps;
   private changed = new Set<() => void>();
+  /** The session grants: this daemon's alone, gone when it stops. */
+  private memory = new Map<string, GrantRow>();
 
   constructor(deps: GrantsDeps) {
     this.deps = deps;
@@ -150,26 +162,26 @@ export class Grants {
     return row as GrantRow;
   }
 
-  /** Where a row lives: the namespace, or nothing when there is no such grant. */
+  /** Where a kept row lives: the namespace, or nothing when no namespace holds such a grant. */
   private where(id: string): Ns | undefined {
     if (this.read(GRANTS_NS, id)) return GRANTS_NS;
     if (this.read(LOCAL_GRANTS_NS, id)) return LOCAL_GRANTS_NS;
     return undefined;
   }
 
-  /** A grant's row, from either namespace. */
+  /** A grant's row: a session's from memory, any other from either namespace. */
   get(id: string): GrantRow | undefined {
-    return this.read(GRANTS_NS, id) ?? this.read(LOCAL_GRANTS_NS, id);
+    return this.memory.get(id) ?? this.read(GRANTS_NS, id) ?? this.read(LOCAL_GRANTS_NS, id);
   }
 
-  /** Whether the row was minted on this node alone. */
+  /** Whether the row is this node's alone: minted here off the primary, or a session in its memory. */
   isLocal(id: string): boolean {
-    return this.where(id) === LOCAL_GRANTS_NS;
+    return this.memory.has(id) || this.where(id) === LOCAL_GRANTS_NS;
   }
 
-  /** Every row, the primary's and this node's own. */
+  /** Every row: the primary's, this node's own, and the sessions in its memory. */
   rows(): GrantRow[] {
-    const out: GrantRow[] = [];
+    const out: GrantRow[] = [...this.memory.values()];
     for (const ns of [GRANTS_NS, LOCAL_GRANTS_NS] as const) {
       for (const key of this.deps.store.kv.list(ns)) {
         const row = this.read(ns, key);
@@ -179,10 +191,21 @@ export class Grants {
     return out;
   }
 
-  /** Writes a row where it lives, or, for a new one, where `into` or this node's role says. */
+  /**
+   * Writes a row where it lives, or, for a new one, where `into` or this node's role says. A
+   * session's row lives in memory: one that was kept until now leaves its namespace, and one
+   * that is a session no more (its invite opened again) goes back to one.
+   */
   private write(row: GrantRow, at = this.now(), into?: Ns): void {
-    const ns = this.where(row.id) ?? into ?? (this.deps.local?.() ? LOCAL_GRANTS_NS : GRANTS_NS);
-    this.deps.store.kv.put(ns, row.id, row, at);
+    if (row.session) {
+      const kept = this.where(row.id);
+      if (kept) this.deps.store.kv.delete(kept, row.id);
+      this.memory.set(row.id, row);
+    } else {
+      this.memory.delete(row.id);
+      const ns = this.where(row.id) ?? into ?? (this.deps.local?.() ? LOCAL_GRANTS_NS : GRANTS_NS);
+      this.deps.store.kv.put(ns, row.id, row, at);
+    }
     this.emit();
   }
 
@@ -224,6 +247,7 @@ export class Grants {
     if (row.account !== undefined) out.account = row.account;
     if (this.isLocal(row.id)) out.local = true;
     if (row.form !== undefined) out.form = row.form;
+    if (row.session) out.session = true;
     return out;
   }
 
@@ -235,6 +259,12 @@ export class Grants {
 
   /** Forgets a grant; its live connections and its relay access are the caller's to end. */
   revoke(id: string): GrantRow | undefined {
+    const session = this.memory.get(id);
+    if (session) {
+      this.memory.delete(id);
+      this.emit();
+      return session;
+    }
     const ns = this.where(id);
     if (!ns) return undefined;
     const row = this.read(ns, id);
@@ -260,15 +290,16 @@ export class Grants {
     if (row.account !== undefined) out.account = row.account;
     if (row.expiresAt !== undefined) out.expiresAt = row.expiresAt;
     if (row.form !== undefined) out.form = row.form;
+    if (row.session) out.session = true;
     return out;
   }
 
   /**
    * A new phone, with the token it keeps and its relay key; the token is never stored and
    * never shown again. `account` for a phone that paired through the account; `form` for a
-   * browser, whose grant must come with an end.
+   * browser, whose grant must come with an end; `session` for a shared computer's.
    */
-  createController(name: string, opts: { account?: string; access?: Access; expiresAt?: number; form?: GrantForm } = {}): { controller: Controller; token: string; key: string } {
+  createController(name: string, opts: { account?: string; access?: Access; expiresAt?: number; form?: GrantForm; session?: boolean } = {}): { controller: Controller; token: string; key: string } {
     const now = this.now();
     const token = freshSecret(TOKEN_BYTES);
     const key = freshSecret();
@@ -283,8 +314,10 @@ export class Grants {
       ...(opts.account !== undefined ? { account: opts.account } : {}),
       ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
       ...(opts.form !== undefined ? { form: opts.form } : {}),
+      ...(opts.session ? { session: true } : {}),
     };
     if (row.form === "browser" && row.expiresAt === undefined) row.expiresAt = now + BROWSER_GRANT_MS;
+    if (row.session) row.expiresAt = Math.min(row.expiresAt ?? Infinity, now + SESSION_GRANT_MAX_MS);
     this.write(row, now);
     return { controller: this.controllerEntity(row), token, key };
   }
@@ -378,7 +411,7 @@ export class Grants {
    * throwaway relay peer the invite may be redeemed through. `secret` is the invite's when the
    * caller makes it itself (a browser's key, which a person types).
    */
-  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string; form?: GrantForm; secret?: string }): { row: GrantRow; secret: string } {
+  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string; form?: GrantForm; session?: boolean; secret?: string }): { row: GrantRow; secret: string } {
     const now = this.now();
     const secret = opts.secret ?? freshSecret();
     if (opts.form === "browser" && opts.expiresAt === undefined) throw new RpcError("invalid", "a browser's grant has an end");
@@ -392,6 +425,7 @@ export class Grants {
       ...(opts.role !== undefined ? { role: opts.role } : {}),
       ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
       ...(opts.form !== undefined ? { form: opts.form } : {}),
+      ...(opts.session && opts.kind === "controller" ? { session: true } : {}),
     };
     this.write(row, now);
     return { row, secret };
@@ -463,6 +497,8 @@ export class Grants {
    * another invite's peer. Returns the token, shown once, the invite it burnt, and the row as
    * it was, for `reopen`. Spent from a page in a browser, a grant that was not minted for one
    * becomes a browser's, with an end thirty days out at the latest and never later than its own.
+   * Spent on a shared computer, or minted for one, it is a session's from here: in memory
+   * alone, and ended half a day from now at the latest.
    */
   redeemController(id: string, secret: string, peer?: string, how: RedeemHow = {}): { row: GrantRow; token: string; invite: InviteRow; pending: GrantRow } {
     const row = this.pending(id);
@@ -476,6 +512,10 @@ export class Grants {
     if (how.browser && next.form !== "browser") {
       next.form = "browser";
       next.expiresAt = Math.min(next.expiresAt ?? Infinity, now + BROWSER_GRANT_MS);
+    }
+    if (how.session || next.session) {
+      next.session = true;
+      next.expiresAt = Math.min(next.expiresAt ?? Infinity, now + SESSION_GRANT_MAX_MS);
     }
     this.write(next);
     return { row: next, token, invite, pending: row };

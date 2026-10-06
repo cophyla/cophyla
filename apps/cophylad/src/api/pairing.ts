@@ -99,7 +99,7 @@ export class Pairing {
     const expiresAt = ends.length > 0 ? Math.min(...ends) : undefined;
     // the window's own opener ended meanwhile: the code makes nothing
     if (expiresAt !== undefined && expiresAt <= now) return undefined;
-    return this.deps.grants.createController(name, { ...(how.browser ? { form: "browser" as const } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}) });
+    return this.deps.grants.createController(name, { ...(how.browser ? { form: "browser" as const } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), ...(how.session ? { session: true } : {}) });
   }
 
   /** Closes the window by hand: the desktop's Done button, or a daemon stopping. */

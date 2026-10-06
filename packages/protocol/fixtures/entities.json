@@ -676,6 +676,7 @@
     { "key": "0000-0000-0000-0001", "address": "https://desk.home.example", "link": "https://desk.home.example/#k=0000-0000-0000-0001", "expiresAt": 1758197700000 }
   ],
   "Grant": [
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "kind": "controller", "name": "Library computer", "access": { "scopes": ["chat"], "messages": "send" }, "status": "active", "createdAt": 1758196800000, "expiresAt": 1758240000000, "connected": true, "local": true, "form": "browser", "session": true },
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "kind": "controller", "name": "Firefox on the laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "createdAt": 1758196800000, "expiresAt": 1760788800000, "inviteExpiresAt": 1758197700000, "connected": false, "form": "browser" },
     {
       "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1",

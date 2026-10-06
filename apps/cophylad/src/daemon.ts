@@ -10,7 +10,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { RpcError } from "@cophyla/protocol";
-import type { Node, PairedLan, RelayAccess } from "@cophyla/protocol";
+import type { Client, Node, PairedLan, RelayAccess } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
 import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
@@ -18,6 +18,7 @@ import { ClientRegistry } from "./api/clients.ts";
 import { GRANTS_NS, LOCAL_GRANTS_NS } from "./grants/namespaces.ts";
 import { GrantClock } from "./grants/clock.ts";
 import { guestMethods } from "./grants/guest-methods.ts";
+import { SessionLinger } from "./grants/linger.ts";
 import { grantMethods } from "./grants/methods.ts";
 import { PhoneInvites } from "./grants/phones.ts";
 import { Grants } from "./grants/store.ts";
@@ -239,7 +240,7 @@ export interface DaemonOptions {
     exitDelayMs?: number;
   };
   /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
-  lan?: { peer?: (address: string) => string; limiter?: LimiterOptions };
+  lan?: { peer?: (address: string) => string; limiter?: LimiterOptions; sessionLingerMs?: number };
   /** `node.restart`'s seams: the successor's check and start, the exit, the delay before the stop. */
   restart?: {
     preflight?: () => void;
@@ -1192,6 +1193,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("grants"),
   });
   grantClock.start();
+  // A shared computer's session ends a little after its last socket closes, the way a revoke ends it.
+  const sessionGrants = new SessionLinger({
+    grants,
+    connected: (id) => clients.byController(id).length,
+    end: (id) => revokeController(id),
+    log: log.child("grants"),
+    ...(opts.lan?.sessionLingerMs !== undefined ? { lingerMs: opts.lan.sessionLingerMs } : {}),
+  });
+  sessionGrants.start();
   // A phone's invite: the LAN listener it names when the controller app is served there, and the relay when the cloud can grant one.
   const phones = new PhoneInvites({
     grants,
@@ -1280,7 +1290,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       ...(brainSpawned ? { assistant: chatAgent.state() } : {}),
     };
   };
-  const onDisconnect = (client: Node extends never ? never : { id: string }) => {
+  const onDisconnect = (client: Client) => {
+    if (client.controller !== undefined) sessionGrants.closed(client.controller);
     activity.forget(client.id);
     deliver.disconnected(client.id);
     voice?.onDisconnect(client.id);
@@ -1541,6 +1552,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     stop: async () => {
       stopping = true;
       grantClock?.dispose();
+      sessionGrants.dispose();
       push.dispose();
       await cloud.stop();
       metrics.dispose();

@@ -74,7 +74,7 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
       redactResult: (r) => ({ ...r, invite: { ...r.invite, key: "[redacted]", link: "[redacted]" } }),
       handler: (p, ctx) => {
         const own = ctx.client.access ?? FULL;
-        return deps.phones.browser({ name: p.name, access: p.access ?? own, ...(p.expiresIn !== undefined ? { expiresIn: p.expiresIn } : {}) }, own, ctx);
+        return deps.phones.browser({ name: p.name, access: p.access ?? own, ...(p.expiresIn !== undefined ? { expiresIn: p.expiresIn } : {}), ...(p.session ? { session: true } : {}) }, own, ctx);
       },
     },
     "grant.list": {

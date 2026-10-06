@@ -237,7 +237,7 @@
     "view.stage": { "params": [{ "id": "default" }], "results": [{ "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2" }, { "base": "https://192.168.1.44:4818/view/8f3a2c1d9e7b/", "version": "2", "docFrame": "https://192.168.1.44:4818/doc/frame.html" }] },
     "pair.start": { "params": [{}], "results": [{ "code": "482913", "url": "https://192.168.1.44:4818/?code=482913", "expiresAt": 1758197100000 }] },
     "pair.claim": {
-      "params": [{ "code": "482913", "name": "Pixel 8" }],
+      "params": [{ "code": "482913", "name": "Pixel 8" }, { "code": "482913", "name": "Library computer", "keep": false }],
       "results": [
         { "token": "9c2f…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false } },
         {
@@ -297,7 +297,10 @@
       ]
     },
     "invite.redeem": {
-      "params": [{ "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Work phone" }],
+      "params": [
+        { "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Work phone" },
+        { "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Library computer", "keep": false }
+      ],
       "results": [
         { "token": "6f1d0c…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "name": "Work phone", "pairedAt": 1758196800000, "connected": false, "access": { "scopes": ["sessions:read", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" } } },
         {

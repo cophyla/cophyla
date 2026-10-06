@@ -95,7 +95,7 @@ export class PhoneInvites {
    * may carry and `held` how long it may run: thirty days unless less is asked, ninety at the
    * most, and never past the minter's own grant. Neither the key nor the link is logged.
    */
-  browser(opts: { name: string; access: Access; expiresIn?: number }, minter: Access, held: Lifetime = {}): { grant: Grant; invite: BrowserInvite } {
+  browser(opts: { name: string; access: Access; expiresIn?: number; session?: boolean }, minter: Access, held: Lifetime = {}): { grant: Grant; invite: BrowserInvite } {
     const why = validateAccess(opts.access, minter);
     if (why) throw new RpcError("invalid", why);
     if (opts.expiresIn !== undefined && opts.expiresIn > BROWSER_GRANT_MAX_MS) throw new RpcError("invalid", "a browser's access runs ninety days at the most");
@@ -106,17 +106,17 @@ export class PhoneInvites {
     const address = this.deps.browserAddress?.();
     if (!address) throw new RpcError("unavailable", "this node serves no browser on its network: turn on access on this network first");
     const key = newKey();
-    const { row } = this.deps.grants.mint({ kind: "controller", name: opts.name, access: opts.access, expiresAt, inviteExpiresAt, form: "browser", secret: key });
-    this.deps.log.info("browser invited", { grant: row.id, name: opts.name, inviteExpiresAt, expiresAt });
+    const { row } = this.deps.grants.mint({ kind: "controller", name: opts.name, access: opts.access, expiresAt, inviteExpiresAt, form: "browser", secret: key, ...(opts.session ? { session: true } : {}) });
+    this.deps.log.info("browser invited", { grant: row.id, name: opts.name, inviteExpiresAt, expiresAt, ...(opts.session ? { session: true } : {}) });
     return { grant: this.deps.grants.entity(row), invite: { key: formatKey(key), address, link: keyLink(address, key), expiresAt: inviteExpiresAt } };
   }
 
   /** Redeems a browser's key, however it was typed: the grant it opens, down the path every invite takes. Refused alike: no key, a wrong one, one already spent or run out. */
-  async redeemKey(p: { key: string }, how: RedeemHow = {}): Promise<Redeemed> {
+  async redeemKey(p: { key: string; keep?: boolean }, how: RedeemHow = {}): Promise<Redeemed> {
     const key = parseKey(p.key);
     const row = key !== undefined ? this.deps.grants.browserInvite(key) : undefined;
     if (key === undefined || !row) throw new RpcError("denied", "that key is not open");
-    return this.redeem({ grant: row.id, secret: key }, {}, how);
+    return this.redeem({ grant: row.id, secret: key }, {}, { ...how, ...(p.keep === false ? { session: true } : {}) });
   }
 
   /**
