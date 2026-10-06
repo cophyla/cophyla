@@ -52,7 +52,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
@@ -151,8 +151,10 @@ export interface UiState {
   backupBusy?: boolean;
   /** Nodes whose direct connections are being switched: their button waits for the answer. */
   directBusy?: Set<string>;
-  /** The grant form open under the machines or the phones: Add a machine, Join another computer, Invite a phone. */
-  grantForm?: "node" | "join" | "phone";
+  /** The grant form open under the machines, the phones or the browsers: Add a machine, Join another computer, Invite a phone, Add a browser. */
+  grantForm?: "node" | "join" | "phone" | "browser";
+  /** The switch for devices on this network is on its way. */
+  lanBusy?: boolean;
   /** The talk button is held: Cophyla listens until it is let go. */
   talking?: boolean;
   /** A grant request on its way: the forms' buttons wait for its answer. */
@@ -708,7 +710,9 @@ function updateController(node: HTMLElement, controller: Controller, state: View
   setText(node.querySelector(".controller-name")!, controller.name);
   const now = Date.now();
   const access = accessWords(controller.access, state);
-  setText(node.querySelector(".controller-sub")!, [controllerWords(controller, now), access === "everything" ? "" : access, endWords(controller.expiresAt, now) ?? ""].filter(Boolean).join(" · "));
+  // a shared computer's session ends with its tab, and its hour is only the latest that can be
+  const end = endWords(controller.expiresAt, now);
+  setText(node.querySelector(".controller-sub")!, [controllerWords(controller, now, state.client?.controller), access === "everything" ? "" : access, end !== undefined && controller.session ? `${end} at the latest` : (end ?? "")].filter(Boolean).join(" · "));
   const revoke = node.querySelector<HTMLButtonElement>(".controller-revoke")!;
   revoke.dataset["controller"] = controller.id;
   revoke.disabled = !state.connected;
@@ -1053,6 +1057,8 @@ function updateViewButtons(connect: HTMLButtonElement, beside: HTMLButtonElement
   const opening = ui.opening.has(node);
   setHidden(connect, !canConnect);
   setText(connect, opening ? "Connecting…" : "Connect");
+  const title = connectTitle(state);
+  if (connect.title !== title) connect.title = title;
   connect.dataset["node"] = node;
   connect.disabled = !state.connected || opening;
   const view = ui.remoteView?.node === node ? ui.remoteView : undefined;
@@ -1445,6 +1451,78 @@ function createPhoneInviteForm(): HTMLFormElement {
   return form;
 }
 
+/** Add a browser: its name, what it may do, perhaps kept to one machine or workspace, how long it lasts, or one session on a shared computer. */
+function createBrowserInviteForm(): HTMLFormElement {
+  const form = el("form", "grant-form browser-invite-form");
+  const preset = el("select", "grant-preset");
+  preset.name = "preset";
+  preset.setAttribute("aria-label", "What the browser may do");
+  for (const key of Object.keys(PHONE_PRESETS)) preset.append(option(key, key === "full" ? "Everything this app does" : key === "sessions" ? "Its sessions: read, answer and send" : "Look only: read the sessions"));
+  const limit = el("select", "grant-limit");
+  limit.name = "limit";
+  limit.setAttribute("aria-label", "Where it may do it");
+  const end = el("select", "grant-end");
+  end.name = "end";
+  end.setAttribute("aria-label", "How long it lasts");
+  for (const e of BROWSER_ENDS) end.append(option(e.key, `Lasts ${e.label}`));
+  end.value = BROWSER_ENDS[0].key;
+  const shared = el("label", "join-here browser-shared");
+  const box = el("input");
+  box.type = "checkbox";
+  box.name = "session";
+  shared.append(box, el("span", undefined, "A shared computer: one session only, nothing kept in that browser"));
+  const submit = el("button", "grant-submit", "Make the key");
+  submit.type = "submit";
+  form.append(
+    el("p", "grant-form-head", "Add a browser"),
+    el("p", "grant-form-hint", "For Cophyla in a browser on another computer on this network. It gets a key to type once, good for fifteen minutes."),
+    nameInput("what to call it", "What to call the browser"),
+    preset,
+    limit,
+    end,
+    shared,
+    submit,
+    actionButton("grant-form-cancel", "Cancel", "grant-form-close"),
+  );
+  return form;
+}
+
+/** The key just minted, where it was asked for: the address to open, the key to type there, the link's QR code, how long it holds, and Done. */
+function renderKeyPanel(slot: HTMLElement, state: ViewState, ui: UiState): void {
+  const key = state.browserKey;
+  let panel = slot.querySelector<HTMLElement>(".key-panel");
+  if (panel && panel.dataset["grant"] !== key?.grant) {
+    panel.remove();
+    panel = null;
+  }
+  if (!key) return;
+  if (!panel) {
+    panel = el("div", "invite-panel key-panel");
+    panel.dataset["grant"] = key.grant;
+    const qr = actionButton("invite-qr", "", "invite-qr-zoom");
+    qr.append(qrSvg(key.link, `The link for ${key.name}, as a QR code`));
+    const buttons = el("div", "invite-buttons");
+    buttons.append(actionButton("key-copy", "Copy the link", "key-copy"), actionButton("invite-done", "Done", "key-done"));
+    panel.append(el("p", "invite-head"), el("p", "invite-hint key-hint"), el("p", "key-address"), el("p", "key-code"), qr, el("p", "invite-hint key-warn"), el("p", "invite-left"), buttons);
+    slot.append(panel);
+  }
+  setText(panel.querySelector(".invite-head")!, `The key for ${key.name}`);
+  setText(panel.querySelector(".key-hint")!, `On that computer, open this address in a browser and type the key, or scan the code, which carries both. It works once.${key.session ? " Nothing is kept in that browser: its access ends when its tab closes." : ""}`);
+  setText(panel.querySelector(".key-address")!, key.address);
+  setText(panel.querySelector(".key-code")!, key.key);
+  const fingerprint = state.lan?.fingerprints?.certificate;
+  const warn = panel.querySelector<HTMLElement>(".key-warn")!;
+  setText(warn, fingerprint ? `The browser warns the first time: the certificate is one this computer made for itself. Before going on, its SHA-256 fingerprint should read ${fingerprint}` : "");
+  setHidden(warn, !fingerprint);
+  const qr = panel.querySelector<HTMLButtonElement>(".invite-qr")!;
+  setData(qr, "zoom", ui.qrZoom ? "1" : "0");
+  qr.title = ui.qrZoom ? "Show it smaller (Esc)" : "Show it larger";
+  const words = keyWords(key, Date.now());
+  const copied = ui.copied?.grant === key.grant ? ui.copied : undefined;
+  setText(panel.querySelector(".invite-left")!, [words.expired ? "this key has run out" : `good for ${words.left}`, copied ? (copied.ok ? "copied" : "copy the address and type the key by hand") : ""].filter(Boolean).join(" · "));
+  setData(panel, "expired", words.expired ? "1" : "0");
+}
+
 /** The phone form's limits: anywhere, or one machine or one workspace, kept as chosen while the choices stay. */
 function updateLimits(select: HTMLSelectElement, state: ViewState): void {
   const choices = [{ key: "", label: "Anywhere it may" }, ...limitChoices(state)];
@@ -1498,11 +1576,11 @@ function renderInvitePanel(slot: HTMLElement, state: ViewState, ui: UiState, kin
   setData(panel, "expired", words.expired ? "1" : "0");
 }
 
-/** The invites still open for machines or phones, less the one on show, each with how long it holds and Cancel. */
-function renderPending(list: HTMLElement, state: ViewState, kind: GrantKind): void {
+/** The invites still open for machines or phones, or the keys still open for browsers, less the one on show, each with how long it holds and Cancel. */
+function renderPending(list: HTMLElement, state: ViewState, kind: GrantKind, browsers = false): void {
   const now = Date.now();
-  const rows = selectPendingInvites(state, now).filter((p) => p.grant.kind === kind && p.grant.id !== state.invite?.grant);
-  if (!list.firstChild) list.append(el("p", "invites-head", kind === "node" ? "Invited, not joined yet" : "Invited, not paired yet"), el("div", "invites-rows"));
+  const rows = selectPendingInvites(state, now).filter((p) => p.grant.kind === kind && (kind === "node" || (p.grant.form === "browser") === browsers) && p.grant.id !== state.invite?.grant && p.grant.id !== state.browserKey?.grant);
+  if (!list.firstChild) list.append(el("p", "invites-head", kind === "node" ? "Invited, not joined yet" : browsers ? "Keys not typed yet" : "Invited, not paired yet"), el("div", "invites-rows"));
   reconcile(
     list.querySelector<HTMLElement>(".invites-rows")!,
     rows,
@@ -1515,11 +1593,12 @@ function renderPending(list: HTMLElement, state: ViewState, kind: GrantKind): vo
     (row, p) => {
       setText(row.querySelector(".invite-pending-name")!, p.grant.name);
       setText(row.querySelector(".invite-pending-left")!, p.expired ? "ran out" : p.left);
-      row.title = p.expired ? `The invite for ${p.grant.name} ran out` : `The invite for ${p.grant.name} holds for ${p.left} more`;
+      const what = browsers ? "key" : "invite";
+      row.title = p.expired ? `The ${what} for ${p.grant.name} ran out` : `The ${what} for ${p.grant.name} holds for ${p.left} more`;
       const cancel = row.querySelector<HTMLButtonElement>(".invite-pending-cancel")!;
       cancel.dataset["grant"] = p.grant.id;
       cancel.disabled = !state.connected;
-      cancel.title = `Cancel the invite for ${p.grant.name}`;
+      cancel.title = `Cancel the ${what} for ${p.grant.name}`;
     },
   );
   setHidden(list, rows.length === 0);
@@ -1876,7 +1955,8 @@ export function devicesShown(state: ViewState): boolean {
  * Devices, laid over the panes while it is open: its head with the count and Close; the last
  * error since it opened, as it covers the input that says them otherwise; then Computers (a
  * card per machine, Add a computer, Join another computer), Phones (a row per phone, Add a
- * phone, Pair with a code) and the account.
+ * phone, Pair with a code), On this network (whether the node serves its network and at what
+ * addresses, a row per browser on another computer, Add a browser) and the account.
  */
 function createDevices(root: HTMLElement): void {
   const head = el("header", "devices-head");
@@ -1899,11 +1979,31 @@ function createDevices(root: HTMLElement): void {
   const pair = actionButton("pair-start", "Pair with a code", "pair");
   pair.title = "On this network: open an address on the phone and type the code shown here";
   buttons.append(add, pair);
-  tools.append(buttons, createPhoneInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
+  tools.append(buttons, el("p", "devices-minter"), createPhoneInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
   phones.append(sectionHead("Phones", "The phones that use Cophyla, what each may do, and until when."), el("div", "controllers"), el("p", "devices-empty", "No phone uses Cophyla yet."), tools);
+  const network = el("section", "devices-section devices-network");
+  const lan = el("div", "lan-card");
+  const lanButtons = el("div", "lan-buttons");
+  lanButtons.append(actionButton("lan-on", "Turn on", "lan-enable"), actionButton("lan-off", "Turn off", "lan-disable"));
+  const lanHead = el("div", "lan-head");
+  lanHead.append(el("p", "lan-words"), lanButtons);
+  lan.append(lanHead, el("ul", "lan-addresses"), el("div", "lan-notes"));
+  const browserTools = el("div", "phone-tools browser-tools");
+  const browserButtons = el("div", "phone-tools-buttons");
+  const addBrowser = actionButton("browser-invite", "Add a browser", "grant-form-browser");
+  addBrowser.title = "A key typed once into a browser on another computer, with what it may do and for how long";
+  browserButtons.append(addBrowser);
+  browserTools.append(browserButtons, el("p", "devices-minter"), createBrowserInviteForm(), el("div", "invite-slot"), el("div", "invites-pending"));
+  network.append(
+    sectionHead("On this network", "Cophyla in a browser on another computer: open this computer's address there and type a key made here. The phone app pairs here too."),
+    lan,
+    el("div", "controllers browsers"),
+    el("p", "devices-empty", "No browser on another computer is paired yet."),
+    browserTools,
+  );
   const account = el("section", "devices-section devices-account");
   account.append(sectionHead("Account", "Your plan, its usage, the backup and direct connections."), el("div", "account-card"));
-  column.append(computers, phones, account);
+  column.append(computers, phones, network, account);
   body.append(column);
   root.append(head, note, body);
 }
@@ -1925,6 +2025,7 @@ function renderDevices(root: HTMLElement, state: ViewState, ui: UiState): void {
   setHidden(note, error === undefined);
   renderComputers(root.querySelector<HTMLElement>(".devices-computers")!, state, ui);
   renderPhones(root.querySelector<HTMLElement>(".devices-phones")!, state, ui);
+  renderNetwork(root.querySelector<HTMLElement>(".devices-network")!, state, ui);
   const account = root.querySelector<HTMLElement>(".devices-account")!;
   setHidden(account, !state.scopes.includes("account"));
   renderAccount(account.querySelector<HTMLElement>(".account-card")!, state, ui);
@@ -1934,23 +2035,88 @@ function renderDevices(root: HTMLElement, state: ViewState, ui: UiState): void {
 function renderPhones(section: HTMLElement, state: ViewState, ui: UiState): void {
   setHidden(section, !state.scopes.includes("controllers"));
   if (section.hidden) return;
-  const controllers = selectControllers(state);
+  const controllers = selectPhones(state);
   reconcile(section.querySelector<HTMLElement>(".controllers")!, controllers, (c) => c.id, createController, (node, c) => updateController(node, c, state));
   setHidden(section.querySelector<HTMLElement>(".devices-empty")!, controllers.length > 0);
   const tools = section.querySelector<HTMLElement>(".phone-tools")!;
+  const minter = renderMinter(tools, state);
   const pair = tools.querySelector<HTMLButtonElement>(".pair-start")!;
-  pair.disabled = !state.connected;
+  pair.disabled = !state.connected || minter;
   setHidden(pair, state.pairing !== undefined || ui.grantForm === "phone");
   renderPairing(tools, state);
   const invitePhone = tools.querySelector<HTMLButtonElement>(".phone-invite")!;
   setHidden(invitePhone, ui.grantForm === "phone");
-  invitePhone.disabled = !state.connected;
+  invitePhone.disabled = !state.connected || minter;
   const phoneForm = tools.querySelector<HTMLFormElement>(".phone-invite-form")!;
   setHidden(phoneForm, ui.grantForm !== "phone");
   updateLimits(phoneForm.querySelector<HTMLSelectElement>(".grant-limit")!, state);
   setFormBusy(phoneForm, state, ui);
   renderInvitePanel(tools.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui, "controller");
   renderPending(tools.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller");
+}
+
+/** What this client's own access means for what it adds, said over the forms; returns whether it may add nothing. */
+function renderMinter(tools: HTMLElement, state: ViewState): boolean {
+  const minter = minterWords(state, Date.now());
+  const line = tools.querySelector<HTMLElement>(":scope > .devices-minter")!;
+  setText(line, minter?.words ?? "");
+  setHidden(line, minter === undefined);
+  return minter?.blocked === true;
+}
+
+/**
+ * Devices' network: how the node this client is on stands on its network (the switch where the
+ * app is on the machine, the addresses to type, and what else there is to say), a row per
+ * browser on another computer with Forget, then Add a browser, the key on show and the ones
+ * not typed yet. Nothing of it shows for a node that does not say and has no browser paired.
+ */
+function renderNetwork(section: HTMLElement, state: ViewState, ui: UiState): void {
+  const card = selectLan(state, Date.now());
+  const browsers = selectBrowsers(state);
+  setHidden(section, !state.scopes.includes("controllers") || (card === undefined && browsers.length === 0 && state.browserKey === undefined));
+  if (section.hidden) return;
+  const lan = section.querySelector<HTMLElement>(".lan-card")!;
+  setHidden(lan, card === undefined);
+  if (card) {
+    setData(lan, "state", card.state);
+    setText(lan.querySelector(".lan-words")!, card.words);
+    const on = lan.querySelector<HTMLButtonElement>(".lan-on")!;
+    setHidden(on, !card.turnOn);
+    on.disabled = !state.connected || ui.lanBusy === true;
+    on.title = "Phones and browsers on this network may reach Cophyla on this computer, each paired first";
+    const off = lan.querySelector<HTMLButtonElement>(".lan-off")!;
+    setHidden(off, !card.turnOff);
+    off.disabled = !state.connected || ui.lanBusy === true;
+    off.title = "The phones and browsers connected on this network are disconnected; a phone that can goes through the relay";
+    const addresses = lan.querySelector<HTMLElement>(".lan-addresses")!;
+    reconcile(addresses, card.addresses, (a) => a, () => el("li", "lan-address"), (row, a) => setText(row, a));
+    setHidden(addresses, card.addresses.length === 0);
+    reconcile(lan.querySelector<HTMLElement>(".lan-notes")!, card.notes, (n) => n.key, () => el("p", "lan-note"), (row, n) => {
+      setText(row, n.text);
+      setData(row, "note", n.key);
+      setData(row, "trouble", n.trouble ? "1" : "0");
+    });
+  }
+  reconcile(section.querySelector<HTMLElement>(".browsers")!, browsers, (c) => c.id, createController, (node, c) => updateController(node, c, state));
+  const serving = card?.state === "on";
+  setHidden(section.querySelector<HTMLElement>(".devices-empty")!, browsers.length > 0 || !serving);
+  const tools = section.querySelector<HTMLElement>(".browser-tools")!;
+  // a key is typed at the node's address on this network: there is none to give while it serves none
+  setHidden(tools, !serving && state.browserKey === undefined);
+  if (tools.hidden) return;
+  const minter = renderMinter(tools, state);
+  const add = tools.querySelector<HTMLButtonElement>(".browser-invite")!;
+  setHidden(add, ui.grantForm === "browser" || !serving);
+  add.disabled = !state.connected || minter;
+  const form = tools.querySelector<HTMLFormElement>(".browser-invite-form")!;
+  setHidden(form, ui.grantForm !== "browser" || !serving);
+  updateLimits(form.querySelector<HTMLSelectElement>(".grant-limit")!, state);
+  // one session has no length to pick
+  const shared = form.querySelector<HTMLInputElement>('input[name="session"]')!.checked;
+  form.querySelector<HTMLSelectElement>(".grant-end")!.disabled = shared;
+  setFormBusy(form, state, ui);
+  renderKeyPanel(tools.querySelector<HTMLElement>(":scope > .invite-slot")!, state, ui);
+  renderPending(tools.querySelector<HTMLElement>(":scope > .invites-pending")!, state, "controller", true);
 }
 
 /** The session whose files the rail can show: the agent whose tab is selected, where the view may read sessions. */

@@ -4,13 +4,16 @@
 // what removing it says, and what the desktop offers this node itself (Join another
 // computer while it is alone, Leave once it joined one). The QR code the invite panel draws,
 // and the one `cophylad invite --phone` prints on a terminal, read back as the invite's link.
+// A browser's key: the params its form gives (an end always, thirty days first, or one session
+// on a shared computer), the key on show until Done or until it is typed, and what a device
+// whose own access ends is told of what it adds.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS, inviteLink } from "@cophyla/protocol";
-import type { Client, Grant, Node, Scope, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Client, Controller, Grant, Node, Scope, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { encode } from "uqr";
 import { terminalQr } from "../src/cli.ts";
-import { accessWords, apply, endWords, GRANT_ENDS, initialState, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
+import { accessWords, apply, BROWSER_ENDS, browserInviteParams, endWords, GRANT_ENDS, initialState, keyWords, minterWords, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 import { QR_BORDER, qrModules, qrPath } from "../views/default/qr.ts";
 
@@ -102,6 +105,70 @@ describe("default view: the invites", () => {
       ["sooner", "1:05", false],
       ["later", "10:00", false],
     ]);
+  });
+});
+
+describe("default view: a browser's key", () => {
+  test("its form gives a name, an access and an end, thirty days unless another is picked and never none", () => {
+    const full = browserInviteParams({ name: " Laptop ", preset: "full", end: "30d", session: false });
+    expect(full).toEqual({ name: "Laptop", access: { scopes: [...ACCESS_PRESETS.full.scopes], messages: "send" }, expiresIn: 30 * 86_400_000 });
+    expect(BROWSER_ENDS[0].key).toBe("30d");
+    // a browser's access always ends, ninety days at the most
+    for (const e of BROWSER_ENDS) expect(e.ms).toBeLessThanOrEqual(90 * 86_400_000);
+    expect(browserInviteParams({ name: "Laptop", preset: "view", end: "1h", session: false })).toMatchObject({ expiresIn: 3_600_000, access: { messages: "none" } });
+    // an end the form does not know is thirty days, not none
+    expect(browserInviteParams({ name: "Laptop", preset: "full", end: "never" as never, session: false })).toMatchObject({ expiresIn: 30 * 86_400_000 });
+    // kept to one machine or one workspace as a phone is
+    expect(browserInviteParams({ name: "Laptop", preset: "sessions", limit: `node:${OTHER}`, end: "7d", session: false })).toMatchObject({ access: { nodes: [OTHER] }, expiresIn: 7 * 86_400_000 });
+    expect(browserInviteParams({ name: "Laptop", preset: "full", limit: `workspace:${WS}`, end: "7d", session: false })).toEqual({ error: "everything reaches every node: pick its sessions or a look to keep it to one" });
+    expect(browserInviteParams({ name: "  ", preset: "full", end: "30d", session: false })).toEqual({ error: "name the browser" });
+  });
+
+  test("one session on a shared computer has no length: it ends with its tab", () => {
+    const shared = browserInviteParams({ name: "Library PC", preset: "sessions", end: "30d", session: true });
+    expect(shared).toEqual({ name: "Library PC", access: { scopes: [...ACCESS_PRESETS.sessions.scopes], messages: "none" }, session: true });
+  });
+
+  test("the key on show stays until Done, or until the list says it was typed; a cancelled one goes with its row; it counts down", () => {
+    const state = connected();
+    const key = { grant: "ctl_9", name: "Laptop", key: "7K3M-9QXT-R2HV-D4PN", address: "https://192.168.1.44:4818", link: "https://192.168.1.44:4818/#k=7K3M9QXTR2HVD4PN", expiresAt: NOW + 15 * 60_000, session: false };
+    apply(state, { type: "browser.key", key });
+    apply(state, { type: "grants", grants: [grant("ctl_9", { name: "Laptop", form: "browser", status: "pending", inviteExpiresAt: NOW + 15 * 60_000 })] });
+    expect(state.browserKey).toEqual(key);
+    expect(keyWords(key, NOW)).toEqual({ left: "15:00", expired: false });
+    expect(keyWords(key, NOW + 15 * 60_000)).toEqual({ left: "0:00", expired: true });
+    // typed: the row is active, and the panel has done its job
+    apply(state, { type: "grants", grants: [grant("ctl_9", { name: "Laptop", form: "browser" })] });
+    expect(state.browserKey).toBeUndefined();
+    apply(state, { type: "browser.key", key });
+    apply(state, { type: "grant.removed", id: "ctl_9" });
+    expect(state.browserKey).toBeUndefined();
+    apply(state, { type: "browser.key", key });
+    apply(state, { type: "browser.key" });
+    expect(state.browserKey).toBeUndefined();
+    // a phone's invite on show is not a key's business, nor the other way round
+    apply(state, { type: "browser.key", key });
+    apply(state, { type: "invite", invite: { grant: "ctl_1", kind: "controller", name: "Work phone", text: "t", link: "l", expiresAt: NOW + 60_000 } });
+    apply(state, { type: "grants", grants: [grant("ctl_1"), grant("ctl_9", { form: "browser", status: "pending" })] });
+    expect(state.invite).toBeUndefined();
+    expect(state.browserKey).toEqual(key);
+  });
+
+  test("a device whose own access ends is told nothing it adds outlives it; a shared computer's session adds nothing; the desktop app is told neither", () => {
+    const own = "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" as Controller["id"];
+    const as = (over: Partial<Controller>): ViewState => {
+      const state = initialState();
+      const r = ready("controller", [...ACCESS_PRESETS.full.scopes]);
+      apply(state, { type: "host.ready", params: { ...r, client: { ...r.client, controller: own } } });
+      apply(state, { type: "controllers", controllers: [{ id: own, name: "Chrome on Windows", pairedAt: NOW - 1000, connected: true, ...over }] });
+      return state;
+    };
+    expect(minterWords(as({ form: "browser", expiresAt: NOW + 29 * 86_400_000 }), NOW)).toEqual({ blocked: false, words: "A device added from this browser keeps its access no longer than this one's own, which ends in 29d." });
+    expect(minterWords(as({ expiresAt: NOW + 2 * 3_600_000 }), NOW)).toEqual({ blocked: false, words: "A device added from this phone keeps its access no longer than this one's own, which ends in 2h." });
+    expect(minterWords(as({ form: "browser", session: true, expiresAt: NOW + 12 * 3_600_000 }), NOW)).toEqual({ blocked: true, words: "This is a shared computer's session: it adds no device." });
+    // a phone with no end, and the desktop app, add as they always did
+    expect(minterWords(as({}), NOW)).toBeUndefined();
+    expect(minterWords(connected(), NOW)).toBeUndefined();
   });
 });
 

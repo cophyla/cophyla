@@ -53,6 +53,8 @@ export interface RemotePanelOptions {
   /** The window is wide enough for the panel to sit beside the pane. */
   dockable: boolean;
   connected: boolean;
+  /** Moonlight's own window can show this desktop instead: the desktop app, on its machine. */
+  moonlight: boolean;
   /** Something of the view takes the pane the panel lies over (a file, the context): the panel waits under it, the stream hidden. */
   concealed?: boolean;
 }
@@ -125,6 +127,7 @@ export class RemotePanel {
       this.dock.title = dockWords;
       this.dock.setAttribute("aria-label", dockWords);
     }
+    this.moonlight.hidden = !opts.moonlight;
     this.moonlight.disabled = !opts.connected;
     this.moonlight.dataset["node"] = view.node;
     const words = view.phase === "opening" ? `Opening ${view.name}'s desktop… the first time, ${view.name} asks to pair this app.` : view.phase === "failed" ? (view.error ?? "The desktop did not open.") : "";

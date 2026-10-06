@@ -2,12 +2,16 @@
 // readings, its shared desktop, what wants the user, and the ways onto its desktop), a line per
 // phone, each login's name told from a twin's, memory and cost short enough for it; and in Devices, who can
 // view a desktop a device a line, the user's machines by name whatever they were paired under,
-// what each machine is and its facts, and a desktop's state in words.
+// what each machine is and its facts, and a desktop's state in words. The node on its own
+// network: how it stands in a line, the switch where the app is on the machine, its addresses
+// and what else there is to say; the browsers on other computers apart from the phones; and in
+// a desktop browser, a desktop beside the view, the node's own included, with Connect asking
+// for the same page.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
-import type { Client, Controller, Grant, HarnessProfile, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, desktopWords, devicesWords, ERRORS_KEEP, initialState, machineFacts, selectNodes, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import type { Client, Controller, Grant, HarnessProfile, LanState, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
+import { apply, connectEmbeds, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -132,6 +136,113 @@ describe("the rail's Status: a line per machine", () => {
     ]);
     expect(devicesWords(state)).toBe("4 computers · 3 phones");
     expect(devicesWords(initialState())).toBe("");
+  });
+});
+
+describe("Devices: the node on its own network", () => {
+  const FINGERPRINT = "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D";
+  const on: LanState = { enabled: true, state: "on", port: 4818, addresses: ["https://192.168.1.44:4818", "https://10.0.0.5:4818"], fingerprints: { certificate: FINGERPRINT, key: "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, stream: { port: 4820 }, keys: 0 };
+  const lan = (state: ViewState, l: LanState | undefined) => apply(state, { type: "lan", ...(l ? { lan: l } : {}) });
+
+  test("on: its addresses, best first, the firewall's two ports and the certificate's fingerprint; the switch where the app is on the machine", () => {
+    const state = cluster();
+    lan(state, on);
+    const card = selectLan(state, NOW)!;
+    expect(card.state).toBe("on");
+    expect(card.words).toBe("On: phones and browsers on this network reach Cophyla on this computer.");
+    expect(card.addresses).toEqual(["https://192.168.1.44:4818", "https://10.0.0.5:4818"]);
+    expect(card.notes).toEqual([
+      { key: "firewall", text: "If another device cannot open it, allow TCP ports 4818 and 4820 on private networks in the firewall of this computer." },
+      { key: "fingerprint", text: `Opened by address, a browser warns the first time: the certificate is one this computer made for itself. Its SHA-256 fingerprint is ${FINGERPRINT}` },
+    ]);
+    expect([card.turnOn, card.turnOff]).toEqual([false, true]);
+
+    // a browser, or a phone, reads it and has no switch: turning it on is asked on the machine itself
+    const browser = cluster("controller");
+    lan(browser, on);
+    const seen = selectLan(browser, NOW)!;
+    expect(seen.words).toBe("On: phones and browsers on this network reach Cophyla on the computer this page comes from.");
+    expect([seen.turnOn, seen.turnOff]).toEqual([false, false]);
+  });
+
+  test("off, up for the user's other computers alone, or failed, in a line; nothing to type while it serves no device", () => {
+    const state = cluster();
+    lan(state, { enabled: false, state: "off", addresses: [], keys: 0 });
+    expect(selectLan(state, NOW)).toEqual({ state: "off", words: "Off: nothing on this network reaches Cophyla on this computer.", addresses: [], notes: [], turnOn: true, turnOff: false });
+    lan(state, { enabled: false, state: "nodes", port: 4818, addresses: [], fingerprints: on.fingerprints!, keys: 0 });
+    expect(selectLan(state, NOW)).toMatchObject({ state: "nodes", words: "Off for phones and browsers. Your other computers still link to this computer.", notes: [], turnOn: true });
+    lan(state, { enabled: true, state: "failed", reason: "port 4818 is in use", addresses: [], keys: 0 });
+    expect(selectLan(state, NOW)).toMatchObject({ state: "failed", words: "It could not start: port 4818 is in use.", turnOn: false, turnOff: true });
+  });
+
+  test("what else there is to say: the user's own certificate or why it is not in use, a stream port that could not open, the last request turned away", () => {
+    const state = cluster();
+    lan(state, { ...on, addresses: ["https://desk.home.example:4818", "https://192.168.1.44:4818"], certificate: { names: ["desk.home.example"], validTo: Date.UTC(2027, 0, 15) }, stream: { error: "port 4820 is in use" }, refused: { at: NOW - 3 * 60_000, address: "100.101.102.103", why: "peer", detail: 'it is not on a network this machine is on; to serve it, add "100.101.102.0/24" to [controller] networks' } });
+    const notes = Object.fromEntries(selectLan(state, NOW, "en-GB")!.notes.map((n) => [n.key, n]));
+    expect(notes["firewall"]!.text).toContain("allow TCP port 4818 on private networks");
+    expect(notes["certificate"]).toEqual({ key: "certificate", text: "Your own certificate serves desk.home.example, until 15 January 2027: opened under that name, no browser warns." });
+    expect(notes["stream"]).toEqual({ key: "stream", text: "A desktop cannot be shown in a browser: port 4820 is in use.", trouble: true });
+    expect(notes["refused"]!.text).toBe('Turned away 3 min ago: it is not on a network this machine is on; to serve it, add "100.101.102.0/24" to [controller] networks.');
+    // one that does not pass is said, in use before or not
+    lan(state, { ...on, certificate: { names: [], error: "the key does not match the certificate" } });
+    expect(selectLan(state, NOW)!.notes.find((n) => n.key === "certificate")).toEqual({ key: "certificate", text: "Your own certificate is not in use: the key does not match the certificate.", trouble: true });
+    lan(state, { ...on, certificate: { names: ["desk.home.example"], error: "it ran out on 2026-10-01" } });
+    expect(selectLan(state, NOW)!.notes.find((n) => n.key === "certificate")!.text).toBe("The certificate for desk.home.example stays in use; the one on disk now does not pass: it ran out on 2026-10-01.");
+  });
+
+  test("a node that does not say, and a client that may not manage devices, show nothing of it", () => {
+    const state = cluster();
+    expect(selectLan(state, NOW)).toBeUndefined();
+    lan(state, on);
+    lan(state, undefined);
+    expect(selectLan(state, NOW)).toBeUndefined();
+    lan(state, on);
+    state.scopes = state.scopes.filter((s) => s !== "controllers");
+    expect(selectLan(state, NOW)).toBeUndefined();
+  });
+
+  test("the browsers on other computers are told from the phones; a shared computer's session and this browser's own row say so", () => {
+    const state = cluster("controller");
+    const c = (id: string, name: string, over: Partial<Controller> = {}): Controller => ({ id: id as Controller["id"], name, pairedAt: NOW - 30 * H, connected: false, ...over });
+    const own = c("ctl_01D", "Firefox on Linux", { form: "browser", connected: true, expiresAt: NOW + 29 * 24 * H });
+    const shared = c("ctl_01E", "Library PC", { form: "browser", session: true, connected: true, expiresAt: NOW + 12 * H });
+    apply(state, { type: "controllers", controllers: [c("ctl_01A", "iPad", { lastSeen: NOW - 2 * H }), own, shared, c("ctl_01B", "Pixel", { connected: true })] });
+    expect(selectPhones(state).map((x) => x.name)).toEqual(["Pixel", "iPad"]);
+    expect(selectBrowsers(state).map((x) => x.name).sort()).toEqual(["Firefox on Linux", "Library PC"]);
+    expect(devicesWords(state)).toBe("4 computers · 2 phones · 2 browsers");
+    expect(controllerWords(own, NOW, "ctl_01D")).toBe("this browser · connected");
+    expect(controllerWords(own, NOW, "ctl_01B")).toBe("connected");
+    expect(controllerWords(shared, NOW)).toBe("connected · a shared computer's session");
+    expect(controllerWords(c("ctl_01B", "Pixel", { connected: true }), NOW, "ctl_01B")).toBe("this phone · connected");
+  });
+});
+
+describe("a desktop browser", () => {
+  test("shows a shared desktop beside its view, the node's own included, and Connect asks for the same page; a phone's page does neither", () => {
+    const browser = initialState();
+    apply(browser, { type: "host.ready", params: { ...ready("controller", true), desk: true } });
+    apply(browser, { type: "host.state", params: { connected: true } });
+    apply(browser, { type: "nodes", nodes: [node(DESK, "Desk"), node(LAPTOP, "Laptop")] });
+    remote(browser, { node: DESK, host: { kind: "apollo", status: "ready" }, streaming: false, viewers: [] });
+    remote(browser, { node: LAPTOP, host: { kind: "sunshine", status: "off" }, streaming: false, viewers: [] });
+    const desk = selectRemote(browser, browser.nodes.get(DESK)!)!;
+    expect([desk.connect, desk.beside, desk.settings]).toEqual([true, true, false]);
+    expect(selectRemote(browser, browser.nodes.get(LAPTOP)!)!.beside).toBe(false);
+    expect(connectEmbeds(browser)).toBe(true);
+    expect(connectTitle(browser)).toBe("Show this desktop over the whole page");
+    // loaded as the desktop app is: history comes unasked
+    expect(loadsHistory(browser)).toBe(true);
+
+    const phone = cluster("controller");
+    remote(phone, { node: DESK, host: { kind: "apollo", status: "ready" }, streaming: false, viewers: [] });
+    expect(selectRemote(phone, phone.nodes.get(DESK)!)!.beside).toBe(false);
+    expect(connectEmbeds(phone)).toBe(false);
+    expect(loadsHistory(phone)).toBe(false);
+
+    // the desktop app: Moonlight's window, and never the page seeded for a browser
+    const app = cluster();
+    expect(connectEmbeds(app)).toBe(false);
+    expect(connectTitle(app)).toBe("Open this desktop in Moonlight, in a window of its own");
   });
 });
 

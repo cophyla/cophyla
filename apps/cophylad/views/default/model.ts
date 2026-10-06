@@ -24,7 +24,7 @@
 // What the chat's session is told (`brain.context`) is shown part by part, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -175,8 +175,10 @@ export interface HostReady {
   filePaths?: boolean;
   /** Where the host serves the document frame, in which an HTML file's scripts run apart from the view (@cophyla/protocol's docframe.ts). */
   docFrame?: string;
-  /** The host lays a stream page over the view where the view places it (`host.open {embed}`, `host.place`, `host.close`): the desktop app. */
+  /** The host lays a stream page over the view where the view places it (`host.open {embed}`, `host.place`, `host.close`): the desktop app, and the page in a desktop browser. */
   embed?: boolean;
+  /** The host is a wide window with a pointer on a computer without being the desktop app: the page in a desktop browser. */
+  desk?: boolean;
 }
 
 /** A reply still streaming: `chat.delta` blocks under a message id the final `chat.message` reuses, or dropped by a `chat.retract`. */
@@ -202,8 +204,10 @@ export interface ViewState {
   hostFilePaths: boolean;
   /** Where the host serves the document frame; none on a host too old to serve it, which draws an HTML file with no scripts. */
   hostDocFrame?: string;
-  /** The host lays another node's desktop over the view, beside the pane: the desktop app. */
+  /** The host lays a desktop over the view, beside the pane: the desktop app, and the page in a desktop browser. */
   hostEmbed: boolean;
+  /** The host is the page in a desktop browser: laid out and loaded as the desktop app is, though its client is a controller. */
+  hostDesk: boolean;
   connected: boolean;
   scopes: Scope[];
   sessions: Map<string, SessionCard>;
@@ -241,6 +245,10 @@ export interface ViewState {
   grants: Map<string, Grant>;
   /** The invite just minted, while its panel shows. */
   invite?: IssuedInvite;
+  /** A browser's key just minted, while its panel shows. */
+  browserKey?: IssuedKey;
+  /** The node this client's socket is on, on its own network (`lan.info`); none from a node that does not say. */
+  lan?: LanState;
   /** Every node of the user, from `node.list` and `node.state`. */
   nodes: Map<NodeId, Node>;
   /** The latest sample per node, while connected. */
@@ -327,6 +335,10 @@ export type Action =
   | { type: "grant.removed"; id: string }
   /** An invite came back from `grant.invite`, or its panel closed. */
   | { type: "invite"; invite?: IssuedInvite }
+  /** A browser's key came back from `browser.invite`, or its panel closed. */
+  | { type: "browser.key"; key?: IssuedKey }
+  /** How the node stands on its own network, from `lan.info` or the switch's answer; none when it does not say. */
+  | { type: "lan"; lan?: LanState }
   | { type: "quick.toggle"; quick?: boolean }
   | { type: "nodes"; nodes: Node[] }
   | { type: "node.state"; params: Node }
@@ -360,6 +372,7 @@ export function initialState(): ViewState {
     hostTalk: false,
     hostFilePaths: false,
     hostEmbed: false,
+    hostDesk: false,
     connected: false,
     scopes: [],
     sessions: new Map(),
@@ -542,6 +555,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       state.hostTalk = p.talk === true;
       state.hostFilePaths = p.filePaths === true;
       state.hostEmbed = p.embed === true;
+      state.hostDesk = p.desk === true;
       if (typeof p.docFrame === "string" && p.docFrame !== "") state.hostDocFrame = p.docFrame;
       else delete state.hostDocFrame;
       return state;
@@ -818,16 +832,28 @@ export function apply(state: ViewState, action: Action): ViewState {
       // the invite on show was used: its panel has done its job
       const shown = state.invite ? state.grants.get(state.invite.grant) : undefined;
       if (shown && shown.status !== "pending") delete state.invite;
+      // and so has a key that was typed
+      const typed = state.browserKey ? state.grants.get(state.browserKey.grant) : undefined;
+      if (typed && typed.status !== "pending") delete state.browserKey;
       return state;
     }
     case "grant.removed":
       state.grants.delete(action.id);
       state.controllers.delete(action.id);
       if (state.invite?.grant === action.id) delete state.invite;
+      if (state.browserKey?.grant === action.id) delete state.browserKey;
       return state;
     case "invite":
       if (action.invite) state.invite = action.invite;
       else delete state.invite;
+      return state;
+    case "browser.key":
+      if (action.key) state.browserKey = action.key;
+      else delete state.browserKey;
+      return state;
+    case "lan":
+      if (action.lan) state.lan = action.lan;
+      else delete state.lan;
       return state;
     case "quick.toggle":
       state.quick = action.quick ?? !state.quick;
@@ -969,11 +995,13 @@ function countSpend(state: ViewState, node: NodeId, samples: SpendDelta[]): void
 
 /**
  * Whether this client loads history unasked: the desktop app does, a tab's newest page as
- * it opens and the chat's newest thread on connect. A phone or the web app (a controller)
- * shows what streams from the moment it looks, and loads history a page per press.
+ * it opens and the chat's newest thread on connect, and so does the page in a desktop browser,
+ * which says what it is (`desk`; how it reaches the node cannot tell, a browser on a secondary's
+ * network is relayed). A phone shows what streams from the moment it looks, and loads history a
+ * page per press.
  */
 export function loadsHistory(state: ViewState): boolean {
-  return state.client?.kind !== "controller";
+  return state.client?.kind !== "controller" || state.hostDesk;
 }
 
 /** The `session.watch` params for the tab shown, none for the chat; undefined while the view may not send it: offline, or without `sessions:read`. */
@@ -2703,17 +2731,139 @@ export interface PhoneInviteForm {
 export function phoneInviteParams(form: PhoneInviteForm): { kind: "controller"; name: string; access: Access; expiresIn?: number } | { error: string } {
   const name = form.name.trim();
   if (!name) return { error: "name the phone" };
-  const preset = PHONE_PRESETS[form.preset];
-  const access: Access = { scopes: [...preset.scopes], messages: form.preset === "full" ? "send" : "none" };
-  if (form.limit) {
-    if (form.preset === "full") return { error: "everything reaches every node: pick its sessions or a look to keep it to one" };
-    const [kind, id] = [form.limit.slice(0, form.limit.indexOf(":")), form.limit.slice(form.limit.indexOf(":") + 1)];
+  const access = presetAccess(form.preset, form.limit);
+  if ("error" in access) return access;
+  const end = GRANT_ENDS.find((e) => e.key === form.end);
+  return { kind: "controller", name, access, ...(end && "ms" in end ? { expiresIn: end.ms } : {}) };
+}
+
+/** A preset as an access, perhaps kept to one node or one workspace. */
+function presetAccess(key: PhonePreset, limit: string | undefined): Access | { error: string } {
+  const preset = PHONE_PRESETS[key];
+  const access: Access = { scopes: [...preset.scopes], messages: key === "full" ? "send" : "none" };
+  if (limit) {
+    if (key === "full") return { error: "everything reaches every node: pick its sessions or a look to keep it to one" };
+    const [kind, id] = [limit.slice(0, limit.indexOf(":")), limit.slice(limit.indexOf(":") + 1)];
     if (kind === "node") access.nodes = [id as NodeId];
     else if (kind === "workspace") access.workspaces = [id as Workspace["id"]];
     else return { error: "no such limit" };
   }
-  const end = GRANT_ENDS.find((e) => e.key === form.end);
-  return { kind: "controller", name, access, ...(end && "ms" in end ? { expiresIn: end.ms } : {}) };
+  return access;
+}
+
+/** A browser's key just minted, as its panel shows it: whose, the key to type, the address to type it at, the link its QR code holds, until when. */
+export interface IssuedKey {
+  grant: string;
+  name: string;
+  key: string;
+  address: string;
+  link: string;
+  expiresAt: number;
+  /** For a shared computer: nothing is kept in that browser, and its access ends with its tab. */
+  session: boolean;
+}
+
+/** How long a browser's access lasts, thirty days first: a browser's grant always ends, ninety days at the most. */
+export const BROWSER_ENDS = [
+  { key: "30d", label: "30 days", ms: 30 * 86_400_000 },
+  { key: "7d", label: "1 week", ms: 7 * 86_400_000 },
+  { key: "1d", label: "1 day", ms: 86_400_000 },
+  { key: "1h", label: "1 hour", ms: 3_600_000 },
+  { key: "90d", label: "90 days", ms: 90 * 86_400_000 },
+] as const;
+export type BrowserEnd = (typeof BROWSER_ENDS)[number]["key"];
+
+/** What a browser's key asks for: a preset, perhaps kept to one node or one workspace, an end, or one session on a shared computer. */
+export interface BrowserInviteForm {
+  name: string;
+  preset: PhonePreset;
+  limit?: string;
+  end: BrowserEnd;
+  session: boolean;
+}
+
+/** The `browser.invite` params a browser's form gives. One session has no length to pick: it ends with its tab. */
+export function browserInviteParams(form: BrowserInviteForm): { name: string; access: Access; expiresIn?: number; session?: true } | { error: string } {
+  const name = form.name.trim();
+  if (!name) return { error: "name the browser" };
+  const access = presetAccess(form.preset, form.limit);
+  if ("error" in access) return access;
+  if (form.session) return { name, access, session: true };
+  const end = BROWSER_ENDS.find((e) => e.key === form.end) ?? BROWSER_ENDS[0];
+  return { name, access, expiresIn: end.ms };
+}
+
+/** The key panel's words: how long the key can still be typed. */
+export function keyWords(key: IssuedKey, now: number): { left: string; expired: boolean } {
+  return leftWords(key.expiresAt, now);
+}
+
+/**
+ * What this client's own access means for what it adds, when it is a paired device whose
+ * access ends: nothing it adds outlives it, and a shared computer's session adds nothing.
+ */
+export function minterWords(state: ViewState, now: number): { blocked: boolean; words: string } | undefined {
+  const id = state.client?.controller;
+  const own = id !== undefined ? state.controllers.get(id) : undefined;
+  if (!own) return undefined;
+  if (own.session) return { blocked: true, words: "This is a shared computer's session: it adds no device." };
+  const end = endWords(own.expiresAt, now);
+  if (end === undefined) return undefined;
+  return { blocked: false, words: `A device added from this ${own.form === "browser" ? "browser" : "phone"} keeps its access no longer than this one's own, which ${end}.` };
+}
+
+// --- the node on its own network ----------------------------------------------------------------
+
+/** The node this client's socket is on, on its own network, as Devices says it. */
+export interface LanCard {
+  state: LanState["state"];
+  /** How it stands, in a line. */
+  words: string;
+  /** What a person types into a browser on another computer, best first. */
+  addresses: string[];
+  /** What else there is to say, a line each: the firewall's ports, the certificate's fingerprint, the user's own certificate, the stream port's trouble, the last request turned away. */
+  notes: { key: string; text: string; trouble?: boolean }[];
+  /** The switch, offered where the app is on the machine itself. */
+  turnOn: boolean;
+  turnOff: boolean;
+}
+
+export function selectLan(state: ViewState, now: number, locale?: string): LanCard | undefined {
+  const lan = state.lan;
+  if (!lan || !state.scopes.includes("controllers")) return undefined;
+  // turning it on opens the machine to its network, so it is asked on the machine itself: where the desktop app is
+  const here = state.client?.kind === "ui";
+  const where = here ? "this computer" : "the computer this page comes from";
+  let words: string;
+  switch (lan.state) {
+    case "on":
+      words = `On: phones and browsers on this network reach Cophyla on ${where}.`;
+      break;
+    case "nodes":
+      words = `Off for phones and browsers. Your other computers still link to ${where}.`;
+      break;
+    case "off":
+      words = `Off: nothing on this network reaches Cophyla on ${where}.`;
+      break;
+    case "failed":
+      words = `It could not start: ${lan.reason ?? "its port could not be opened"}.`;
+      break;
+  }
+  const notes: LanCard["notes"] = [];
+  if (lan.state === "on") {
+    const ports = [lan.port, lan.stream?.port].filter((n): n is number => n !== undefined);
+    if (ports.length > 0) notes.push({ key: "firewall", text: `If another device cannot open it, allow TCP ${ports.length === 1 ? `port ${ports[0]}` : `ports ${ports.join(" and ")}`} on private networks in the firewall of ${where}.` });
+    if (lan.fingerprints) notes.push({ key: "fingerprint", text: `Opened by address, a browser warns the first time: the certificate is one this computer made for itself. Its SHA-256 fingerprint is ${lan.fingerprints.certificate}` });
+  }
+  const own = lan.certificate;
+  if (own) {
+    const names = own.names.join(", ");
+    if (own.error !== undefined) notes.push({ key: "certificate", text: names ? `The certificate for ${names} stays in use; the one on disk now does not pass: ${own.error}.` : `Your own certificate is not in use: ${own.error}.`, trouble: true });
+    else if (names) notes.push({ key: "certificate", text: `Your own certificate serves ${names}${own.validTo !== undefined ? `, until ${new Date(own.validTo).toLocaleDateString(locale, { day: "numeric", month: "long", year: "numeric" })}` : ""}: opened under that name, no browser warns.` });
+  }
+  if (lan.stream?.error !== undefined) notes.push({ key: "stream", text: `A desktop cannot be shown in a browser: ${lan.stream.error}.`, trouble: true });
+  if (lan.refused) notes.push({ key: "refused", text: `Turned away ${agoWords(lan.refused.at, now)}: ${lan.refused.detail}.` });
+  return { state: lan.state, words, addresses: lan.addresses, notes, turnOn: here && !lan.enabled, turnOff: here && lan.enabled };
 }
 
 /** What a node's invite asks for: a name, whether the node is hands or a full member, and an end. */
@@ -2827,9 +2977,22 @@ export function selectControllers(state: ViewState): Controller[] {
   return [...state.controllers.values()].sort((a, b) => Number(b.connected) - Number(a.connected) || b.pairedAt - a.pairedAt);
 }
 
-/** When a controller was last seen, in words. */
-export function controllerWords(controller: Controller, now: number): string {
-  const seen = controller.connected ? "connected" : controller.lastSeen === undefined ? "never connected" : `last seen ${ago(controller.lastSeen, now)}`;
+/** The phones among them: everything that is not a browser on another computer. */
+export function selectPhones(state: ViewState): Controller[] {
+  return selectControllers(state).filter((c) => c.form !== "browser");
+}
+
+/** The browsers on other computers, paired with a key. */
+export function selectBrowsers(state: ViewState): Controller[] {
+  return selectControllers(state).filter((c) => c.form === "browser");
+}
+
+/** When a controller was last seen, in words; `self` is the controller this client is, which its own row says. */
+export function controllerWords(controller: Controller, now: number, self?: string): string {
+  const mine = self !== undefined && controller.id === self ? (controller.form === "browser" ? "this browser" : "this phone") : "";
+  const last = controller.connected ? "connected" : controller.lastSeen === undefined ? "never connected" : `last seen ${ago(controller.lastSeen, now)}`;
+  // a shared computer's: kept nowhere, gone with its tab
+  const seen = [mine, last, controller.session ? "a shared computer's session" : ""].filter(Boolean).join(" · ");
   // what the phone can do from elsewhere: reach this node through the relay, and be told of an ask by a push
   const can = [controller.relay ? "relay" : "", controller.push ? `push (${controller.push.platform})` : ""].filter(Boolean).join(" · ");
   // and how it came to be paired, when that was the account rather than a code
@@ -3279,8 +3442,10 @@ export function selectStatusPhones(state: ViewState, now = Date.now()): StatusPh
 /** Devices' count in words, as the rail's link and the page's head say it: 2 computers · 1 phone. */
 export function devicesWords(state: ViewState): string {
   const computers = state.nodes.size;
-  const phones = state.controllers.size;
-  return [computers > 0 ? `${computers} computer${computers === 1 ? "" : "s"}` : "", phones > 0 ? `${phones} phone${phones === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+  const browsers = selectBrowsers(state).length;
+  const phones = state.controllers.size - browsers;
+  const count = (n: number, what: string) => (n > 0 ? `${n} ${what}${n === 1 ? "" : "s"}` : "");
+  return [count(computers, "computer"), count(phones, "phone"), count(browsers, "browser")].filter(Boolean).join(" · ");
 }
 
 export const PLATFORM_NAMES: Record<Platform, string> = { windows: "Windows", macos: "macOS", linux: "Linux" };
@@ -3298,7 +3463,7 @@ export interface RemoteCard {
   streaming: boolean;
   /** This client can open a viewer on the node: the host serves, and it is not the desktop the app runs on. */
   connect: boolean;
-  /** This client can show the desktop beside its view: the desktop app, whose host lays it over the view, onto another node's. */
+  /** This client can show the desktop beside its view: its host lays it over the view. The desktop app onto another node's; the page in a desktop browser onto any, the node it is served from included. */
   beside: boolean;
   /** This client can open Moonlight's own window, where its settings are: the desktop app, whose Connect opens Moonlight. */
   settings: boolean;
@@ -3319,8 +3484,9 @@ export interface RemoteCard {
 /**
  * A node's desktop block, or undefined when there is none to show: without the `remote`
  * scope, or for a node that is not online. Off, it offers to share the desktop. A controller
- * opens any node's desktop in a page; the desktop app opens a window, or shows it beside the
- * view, and never onto the desktop it runs on.
+ * opens any node's desktop in a page, and beside its view where its host lays one there (a
+ * desktop browser); the desktop app opens a window, or shows it beside the view, and never
+ * onto the desktop it runs on.
  */
 export function selectRemote(state: ViewState, node: Node): RemoteCard | undefined {
   if (!state.scopes.includes("remote") || node.status !== "online") return undefined;
@@ -3331,7 +3497,8 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
   const off = status === "off";
   const client = state.client;
   const elsewhere = client?.kind === "ui" && client.node !== undefined && client.node !== node.id;
-  const viewer = client?.kind === "controller" || elsewhere;
+  const controller = client?.kind === "controller";
+  const viewer = controller || elsewhere;
   // Off, a host that runs anyway (a Windows service) still lists who it would let in.
   const viewers = off ? remote.viewers.filter((v) => v.kind === "native") : remote.viewers;
   // The installer's prompt comes up on the machine itself: someone there may have to answer it.
@@ -3344,7 +3511,7 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
     ...(note !== undefined ? { note } : {}),
     streaming: remote.streaming,
     connect: ready && viewer,
-    beside: ready && elsewhere && state.hostEmbed,
+    beside: ready && (elsewhere || controller) && state.hostEmbed,
     settings: ready && elsewhere,
     pair: ready,
     invite: ready && remote.host.kind === "apollo",
@@ -3353,6 +3520,20 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
     retry: status === "unavailable",
     viewers: [...viewers].sort((a, b) => Number(b.connected === true) - Number(a.connected === true) || b.since - a.since),
   };
+}
+
+/**
+ * Whether Connect asks for the page seeded as Beside's is (a few frames behind, at the host's
+ * screen size, the pointer hidden): the page in a desktop browser, where Connect shows the same
+ * stream over the whole page. A phone's page is left as the viewer has it.
+ */
+export function connectEmbeds(state: ViewState): boolean {
+  return state.client?.kind === "controller" && state.hostEmbed;
+}
+
+/** What Connect does, for its button: Moonlight's window in the desktop app, the desktop over the whole page elsewhere. */
+export function connectTitle(state: ViewState): string {
+  return state.client?.kind === "controller" ? "Show this desktop over the whole page" : "Open this desktop in Moonlight, in a window of its own";
 }
 
 /** What a desktop host is doing, in words. */

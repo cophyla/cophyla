@@ -2728,7 +2728,7 @@ button:disabled {
 
 /* The page's buttons, one size: quiet outlines, lit under the pointer; the one thing to do is
    in the cophyla outline, a confirm that cannot be undone filled in rust. */
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: transparent;
@@ -2739,7 +2739,7 @@ button:disabled {
   padding: 4px 11px;
 }
 
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
   border-color: var(--muted);
   background: var(--raised);
 }
@@ -3153,6 +3153,98 @@ button:disabled {
   max-width: 420px;
   padding: 10px 12px;
   border-radius: 8px;
+}
+
+/* --- the node on its own network: how it stands, its addresses, what else there is to say -------- */
+
+.lan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--card);
+}
+
+.lan-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.lan-words {
+  flex: 1 1 260px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.lan-card[data-state="failed"] .lan-words {
+  color: var(--rust);
+}
+
+.lan-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.lan-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.lan-address,
+.key-address,
+.key-code {
+  font-family: var(--mono);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+.lan-address {
+  font-size: 12.5px;
+}
+
+.lan-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.lan-notes:empty {
+  display: none;
+}
+
+.lan-note,
+.devices-minter {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.lan-note[data-trouble="1"] {
+  color: var(--rust);
+}
+
+/* A browser's key: the address to open and the key to type, large enough to read across a desk. */
+.invite-panel .key-address {
+  font-size: 13px;
+}
+
+.invite-panel .key-code {
+  font-size: 20px;
+  letter-spacing: 0.06em;
+}
+
+.browser-shared input:disabled + span {
+  opacity: 0.6;
 }
 
 /* --- computers' and phones' tools: add one, the forms, the invite on show, the ones still open ---- */

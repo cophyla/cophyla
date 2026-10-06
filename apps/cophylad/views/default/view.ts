@@ -56,9 +56,9 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, chatDraw, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, ChatDraw, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
+import type { AssistantState, BrowserInvite, ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { answerParams, apply, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -329,6 +329,8 @@ rpc.onNotification((n) => {
       else watched.delete(node.id);
       // a machine that joined used its invite; one that went may have been removed
       if (!nodeGrant(state, node.id)) grantsSoon();
+      // the node's row follows its switch for this network: what Devices says of it, again
+      if (ui.devices) lanSoon();
       return;
     }
     case "metrics.sample":
@@ -493,6 +495,7 @@ function openDevices(focus?: string): void {
   ui.contextOpen = false;
   ui.devices ??= { errorsAt: state.errorsSeen };
   putRailAway();
+  void loadLan();
   draw();
   const body = roots.devices.querySelector<HTMLElement>(".devices-body");
   const [kind, id] = focus?.split(/:(.*)/) ?? [];
@@ -891,7 +894,7 @@ async function loadGrants(): Promise<void> {
     const { grants } = await rpc.request<{ grants: Grant[] }>("grant.list", {});
     dispatch({ type: "grants", grants });
     // an invite on show or still open counts down, and is asked after until it is used
-    if (state.invite || [...state.grants.values()].some((g) => g.status === "pending")) startGrantClock();
+    if (state.invite || state.browserKey || [...state.grants.values()].some((g) => g.status === "pending")) startGrantClock();
     else stopGrantClock();
   } catch (e) {
     fail("grants", e);
@@ -928,10 +931,10 @@ function stopGrantClock(): void {
   grantClock = undefined;
 }
 
-function openGrantForm(kind: "node" | "join" | "phone", from: HTMLElement): void {
+function openGrantForm(kind: "node" | "join" | "phone" | "browser", from: HTMLElement): void {
   ui.grantForm = kind;
   draw();
-  const form = from.closest(".node-tools, .phone-tools")?.querySelector(kind === "phone" ? ".phone-invite-form" : kind === "node" ? ".node-invite-form" : ".node-join-form");
+  const form = from.closest(".node-tools, .phone-tools")?.querySelector(kind === "phone" ? ".phone-invite-form" : kind === "browser" ? ".browser-invite-form" : kind === "node" ? ".node-invite-form" : ".node-join-form");
   form?.querySelector<HTMLElement>("input, textarea")?.focus();
 }
 
@@ -967,6 +970,89 @@ function submitPhoneInvite(form: HTMLFormElement): void {
   const params = phoneInviteParams({ name: field(form, "name"), preset: field(form, "preset") as PhonePreset, ...(limit ? { limit } : {}), end: field(form, "end") as GrantEnd });
   if ("error" in params) fail("invite", new Error(params.error));
   else void mintInvite(params);
+}
+
+/** Mints a browser's key and shows it where it was asked for, until Done or until it is typed. */
+async function mintBrowserKey(params: { name: string; session?: true } & Record<string, unknown>): Promise<void> {
+  ui.grantBusy = true;
+  draw();
+  try {
+    const r = await rpc.request<{ grant: Grant; invite: BrowserInvite }>("browser.invite", params);
+    ui.grantForm = undefined;
+    ui.copied = undefined;
+    dispatch({ type: "browser.key", key: { grant: r.grant.id, name: r.grant.name, key: r.invite.key, address: r.invite.address, link: r.invite.link, expiresAt: r.invite.expiresAt, session: params.session === true } });
+    startGrantClock();
+    void loadGrants();
+    void loadLan();
+  } catch (e) {
+    fail("key", e);
+  } finally {
+    ui.grantBusy = false;
+    draw();
+  }
+}
+
+function submitBrowserInvite(form: HTMLFormElement): void {
+  const limit = field(form, "limit");
+  const session = (form.elements.namedItem("session") as HTMLInputElement | null)?.checked === true;
+  const params = browserInviteParams({ name: field(form, "name"), preset: field(form, "preset") as PhonePreset, ...(limit ? { limit } : {}), end: field(form, "end") as BrowserEnd, session });
+  if ("error" in params) fail("key", new Error(params.error));
+  else void mintBrowserKey(params);
+}
+
+/** Copy puts the key's link on the clipboard where the frame may; where it may not, the panel says to copy by hand. */
+async function copyKey(): Promise<void> {
+  const key = state.browserKey;
+  if (!key) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(key.link);
+    ok = true;
+  } catch {
+    ok = false;
+  }
+  ui.copied = { grant: key.grant, ok };
+  draw();
+}
+
+/**
+ * How the node this client's socket is on stands on its own network, for Devices. A node from
+ * before it said has nothing to say, and Devices shows nothing of it.
+ */
+async function loadLan(): Promise<void> {
+  if (!state.scopes.includes("controllers")) return;
+  try {
+    dispatch({ type: "lan", lan: await rpc.request<LanState>("lan.info", {}) });
+  } catch {
+    dispatch({ type: "lan" });
+  }
+}
+
+let lanTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The same in a moment: several rows of the node at once ask once. */
+function lanSoon(): void {
+  if (lanTimer !== undefined) return;
+  lanTimer = setTimeout(() => {
+    lanTimer = undefined;
+    void loadLan();
+  }, 500);
+}
+
+/** Turns the node's access on this network on or off; its answer is how it stands from then on. */
+async function setLan(on: boolean): Promise<void> {
+  if (ui.lanBusy) return;
+  ui.lanBusy = true;
+  draw();
+  try {
+    dispatch({ type: "lan", lan: await rpc.request<LanState>(on ? "lan.enable" : "lan.disable", {}) });
+    void loadControllers();
+  } catch (e) {
+    fail("this network", e);
+  } finally {
+    ui.lanBusy = false;
+    draw();
+  }
 }
 
 /** Copy puts the invite's text on the clipboard where the frame may, and otherwise selects it for the user to copy. */
@@ -1107,7 +1193,8 @@ async function openRemote(node: string): Promise<void> {
   ui.opening.add(node);
   draw();
   try {
-    const result = await rpc.request<{ url?: string; path?: string; node?: string }>("remote.open", remoteOpenParams(node));
+    // in a desktop browser the page is seeded as Beside's is, and shown over the whole page; its stream goes along, so closing it ends it on the node
+    const result = await rpc.request<{ url?: string; path?: string; node?: string; stream?: string }>("remote.open", remoteOpenParams(node, connectEmbeds(state) ? { embed: true } : {}));
     if (result.url || result.path) await rpc.request("host.open", { node, ...result });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -2007,7 +2094,7 @@ function syncRemote(): void {
   const dock = remoteDock();
   const here = remoteShown();
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
-  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, concealed: !here || (dock === "over" && (viewer.shown !== undefined || contextView.shown || ui.devices !== undefined)) });
+  remotePanel.show(v, parent, { dock, width: ui.remoteWidth, dockable: !narrow.matches, connected: state.connected, moonlight: state.client?.kind === "ui", concealed: !here || (dock === "over" && (viewer.shown !== undefined || contextView.shown || ui.devices !== undefined)) });
   syncPinned(here && dock === "beside");
 }
 
@@ -2756,7 +2843,24 @@ document.addEventListener("click", (ev) => {
     case "grant-form-node":
     case "grant-form-join":
     case "grant-form-phone":
-      openGrantForm(target.dataset["action"].slice("grant-form-".length) as "node" | "join" | "phone", target);
+    case "grant-form-browser":
+      openGrantForm(target.dataset["action"].slice("grant-form-".length) as "node" | "join" | "phone" | "browser", target);
+      return;
+    case "key-copy":
+      void copyKey();
+      return;
+    case "key-done":
+      ui.copied = undefined;
+      ui.qrZoom = false;
+      dispatch({ type: "browser.key" });
+      void loadGrants();
+      void loadControllers();
+      return;
+    case "lan-enable":
+      void setLan(true);
+      return;
+    case "lan-disable":
+      void setLan(false);
       return;
     case "grant-form-close":
       ui.grantForm = undefined;
@@ -2944,6 +3048,11 @@ document.addEventListener("submit", (ev) => {
     submitPhoneInvite(form);
     return;
   }
+  if (form.classList.contains("browser-invite-form")) {
+    ev.preventDefault();
+    submitBrowserInvite(form);
+    return;
+  }
   if (form.classList.contains("node-join-form")) {
     ev.preventDefault();
     void submitJoin(form);
@@ -2996,6 +3105,8 @@ document.addEventListener("input", (ev) => {
 document.addEventListener("change", (ev) => {
   const askForm = (ev.target as HTMLElement | null)?.closest<HTMLFormElement>("form.ask-form");
   if (askForm) refreshAskForm(askForm, state);
+  // one session on a shared computer has no length to pick
+  if ((ev.target as HTMLElement | null)?.closest("form.browser-invite-form")) draw();
 });
 
 // The focus follows a sequence of asks only while the user stays in the pinned prompts.
