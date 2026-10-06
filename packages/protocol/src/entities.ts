@@ -1009,6 +1009,20 @@ export const Grant = z.object({
 });
 export type Grant = z.infer<typeof Grant>;
 
+/**
+ * A key for a browser on another computer, as the node that minted it hands it out, once:
+ * the key to type (in fours), the address to type it at (the node's own listener on this
+ * network), and a link that carries both, for a QR code. Good for one pairing, until
+ * `expiresAt`. The node keeps the key's hash; neither the key nor the link is audited.
+ */
+export const BrowserInvite = z.object({
+  key: z.string(),
+  address: z.string(),
+  link: z.string(),
+  expiresAt: Timestamp,
+});
+export type BrowserInvite = z.infer<typeof BrowserInvite>;
+
 /** A workspace node's membership: in no cluster, seeking its primary, linked, or its daemon stopping. */
 export const GuestState = z.enum(["unlinked", "seeking", "linked", "stopped"]);
 export type GuestState = z.infer<typeof GuestState>;
@@ -1304,6 +1318,7 @@ export const entities = {
   GrantKind,
   GrantRole,
   GrantStatus,
+  BrowserInvite,
   GuestState,
   GuestInfo,
   PushPlatform,

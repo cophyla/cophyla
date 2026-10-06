@@ -2,7 +2,9 @@
 // `controllers` scope a phone with access no wider than its own (`grant.invite`); anyone
 // entitled lists the grants and revokes one, and the desktop of this machine alone joins a
 // primary with an invite or leaves it (`node.join`, `node.leave`). An invite's text is shown
-// to the one who asked and kept in no audit row; so is the invite a join redeems. What a client
+// to the one who asked and kept in no audit row; so is the invite a join redeems. A browser on
+// another computer is invited with a key (`browser.invite`), which is audited no more than an
+// invite's text is. What a client
 // whose own grant ends invites ends no later than it does, and a shared computer's session
 // invites nobody.
 
@@ -23,7 +25,7 @@ export interface GrantMethodDeps {
   };
   /** Ends a phone's grant: its sockets close, its relay and push go. */
   revokeController: (id: string) => void;
-  phones: Pick<PhoneInvites, "invite">;
+  phones: Pick<PhoneInvites, "invite" | "browser">;
 }
 
 /** Joining and leaving are this machine's to decide: asked on its loopback listener, never from a phone or through the primary. */
@@ -64,6 +66,15 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
           ...(p.expiresIn !== undefined ? { expiresIn: p.expiresIn } : {}),
           ...(p.inviteExpiresIn !== undefined ? { inviteExpiresIn: p.inviteExpiresIn } : {}),
         });
+      },
+    },
+    "browser.invite": {
+      target: (p) => p.name,
+      // The key and the link are for the screen that shows them, not for the audit table.
+      redactResult: (r) => ({ ...r, invite: { ...r.invite, key: "[redacted]", link: "[redacted]" } }),
+      handler: (p, ctx) => {
+        const own = ctx.client.access ?? FULL;
+        return deps.phones.browser({ name: p.name, access: p.access ?? own, ...(p.expiresIn !== undefined ? { expiresIn: p.expiresIn } : {}) }, own, ctx);
       },
     },
     "grant.list": {

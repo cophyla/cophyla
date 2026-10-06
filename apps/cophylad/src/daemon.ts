@@ -1204,6 +1204,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       return hosts.length > 0 ? { hosts, port, spki: lanSpki } : undefined;
     },
     lanPin: () => lanPin,
+    // the address a person types into a browser on another computer, while the app is served there
+    browserAddress: () => (config.controller.enabled && controller ? controllerOrigin() : undefined),
     relayGrant: (peer, o) => cloud.relayGrant(peer, o),
     relayAccess,
     revokeRelay: (peer) => void cloud.revokeRelay(peer),
@@ -1366,6 +1368,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           remote: remote.proxy,
           relayAccess,
           redeemInvite: (p, via, how) => phones.redeem(p, via, how),
+          pairBrowser: (p, how) => phones.redeemKey(p, how),
           guard,
           limiter: new PairLimiter(opts.lan?.limiter),
         },

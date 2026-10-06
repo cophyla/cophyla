@@ -6,16 +6,25 @@
 // relay token and key minted fresh for its real id, and the LAN listener's pin. Once the
 // phone has its answer the throwaway peer is let go. A phone that left before its answer
 // never held the token: its invite is opened again, and the relay access minted for it goes.
+//
+// A browser on another computer is invited the same way with a key instead (`browser.invite`):
+// a pending grant of the form `browser`, with its end, and sixteen characters a person types at
+// the node's own address, good once for fifteen minutes. The key is the invite's secret, so
+// `browser.pair` finds the grant by it and redeems it down the same path. No relay part: a
+// browser's page reaches the node on its own origin alone.
 
-import { inviteLink, inviteText, newId, RpcError, validateAccess } from "@cophyla/protocol";
-import type { Access, Controller, Grant, InviteBody, InviteOffer, PairedLan, RelayAccess } from "@cophyla/protocol";
+import { formatKey, inviteLink, inviteText, keyLink, newId, newKey, parseKey, RpcError, validateAccess } from "@cophyla/protocol";
+import type { Access, BrowserInvite, Controller, Grant, InviteBody, InviteOffer, PairedLan, RelayAccess } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import type { Lifetime } from "./lifetime.ts";
 import { boundedBy } from "./lifetime.ts";
+import { BROWSER_GRANT_MAX_MS, BROWSER_GRANT_MS } from "./store.ts";
 import type { Grants, InviteRow, RedeemHow } from "./store.ts";
 
 /** How long a phone's invite may be redeemed when the minter does not say. */
 export const DEFAULT_PHONE_INVITE_MS = 15 * 60_000;
+/** How long a browser's key may be typed. */
+export const BROWSER_KEY_MS = 15 * 60_000;
 
 export interface PhoneInvitesDeps {
   grants: Grants;
@@ -24,6 +33,8 @@ export interface PhoneInvitesDeps {
   lan: () => InviteBody["lan"] | undefined;
   /** The LAN listener as a redeemed phone pins it. */
   lanPin: () => PairedLan | undefined;
+  /** The LAN listener as a person types it into a browser (`https://192.168.1.44:4818`); nothing while it serves no clients. */
+  browserAddress?: () => string | undefined;
   /** A relay token for a peer, when this node is signed in and its plan has the relay. */
   relayGrant?: (peer: string, opts: { kind: "controller"; name: string; expiresAt: number }) => Promise<{ url: string; token: string }>;
   /** The relay access a redeemed phone gets for its real id; nothing when the node cannot mint it now. */
@@ -80,6 +91,35 @@ export class PhoneInvites {
   }
 
   /**
+   * Mints a browser's pending grant and the key that redeems it. `minter` bounds the access it
+   * may carry and `held` how long it may run: thirty days unless less is asked, ninety at the
+   * most, and never past the minter's own grant. Neither the key nor the link is logged.
+   */
+  browser(opts: { name: string; access: Access; expiresIn?: number }, minter: Access, held: Lifetime = {}): { grant: Grant; invite: BrowserInvite } {
+    const why = validateAccess(opts.access, minter);
+    if (why) throw new RpcError("invalid", why);
+    if (opts.expiresIn !== undefined && opts.expiresIn > BROWSER_GRANT_MAX_MS) throw new RpcError("invalid", "a browser's access runs ninety days at the most");
+    const now = this.now();
+    const inviteExpiresAt = now + BROWSER_KEY_MS;
+    const expiresAt = boundedBy(held, now + (opts.expiresIn ?? BROWSER_GRANT_MS), now, "adds no browser")!;
+    if (expiresAt <= inviteExpiresAt) throw new RpcError("invalid", "the access would end before its key does");
+    const address = this.deps.browserAddress?.();
+    if (!address) throw new RpcError("unavailable", "this node serves no browser on its network: turn on access on this network first");
+    const key = newKey();
+    const { row } = this.deps.grants.mint({ kind: "controller", name: opts.name, access: opts.access, expiresAt, inviteExpiresAt, form: "browser", secret: key });
+    this.deps.log.info("browser invited", { grant: row.id, name: opts.name, inviteExpiresAt, expiresAt });
+    return { grant: this.deps.grants.entity(row), invite: { key: formatKey(key), address, link: keyLink(address, key), expiresAt: inviteExpiresAt } };
+  }
+
+  /** Redeems a browser's key, however it was typed: the grant it opens, down the path every invite takes. Refused alike: no key, a wrong one, one already spent or run out. */
+  async redeemKey(p: { key: string }, how: RedeemHow = {}): Promise<Redeemed> {
+    const key = parseKey(p.key);
+    const row = key !== undefined ? this.deps.grants.browserInvite(key) : undefined;
+    if (key === undefined || !row) throw new RpcError("denied", "that key is not open");
+    return this.redeem({ grant: row.id, secret: key }, {}, how);
+  }
+
+  /**
    * Redeems a phone's invite: the grant gets a token and a key of its own and the invite burns.
    * `peer` is the throwaway relay peer the redemption came in on, which must be this invite's.
    */
@@ -97,7 +137,7 @@ export class PhoneInvites {
     }
     const lan = this.deps.lanPin();
     const client = grants.controllerEntity(grants.get(row.id) ?? row);
-    this.deps.log.info("phone invite redeemed", { grant: row.id, name: row.name, via: via.peer !== undefined ? "relay" : "lan", relay: relay !== undefined });
+    this.deps.log.info(row.form === "browser" ? "browser paired" : "phone invite redeemed", { grant: row.id, name: row.name, via: via.peer !== undefined ? "relay" : "lan", relay: relay !== undefined });
     return {
       answer: { token, client: relay ? { ...client, relay: true } : client, ...(relay ? { relay } : {}), ...(lan ? { lan } : {}) },
       settle: () => this.settle(invite),

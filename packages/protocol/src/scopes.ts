@@ -2,7 +2,7 @@
 // checks requests against a client's scopes here, and the view host in the desktop app
 // narrows a view to its manifest's scopes with the same tables. `hello` needs none: it is
 // what establishes the scopes; `pair.claim` and `pair.account` come before `hello` and need
-// none either, and neither does `invite.redeem`; `relay.info` and the push registration are the
+// none either, and neither do `invite.redeem` and `browser.pair`; `relay.info` and the push registration are the
 // host's own, about the phone itself, answered by the pairing node, never a view's;
 // `voice.wakeword` and `voice.wake` are the phone host's own, so no view can move where its
 // phone's wake word is detected or start an utterance on it. A terminal's row is a headline
@@ -62,6 +62,8 @@ export const requestScopes = {
   "pair.claim": null,
   "pair.account": null,
   "invite.redeem": null,
+  "browser.invite": "controllers",
+  "browser.pair": null,
   "relay.info": null,
   "push.register": null,
   "push.unregister": null,

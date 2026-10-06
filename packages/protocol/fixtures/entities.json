@@ -671,6 +671,10 @@
   "MessagesRule": ["none", "reply", "send"],
   "GuestState": ["unlinked", "seeking", "linked", "stopped"],
   "GuestInfo": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" }, { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "notes", "folder": "/home/me/notes", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "state": "unlinked", "expiresAt": 1758196800000 }],
+  "BrowserInvite": [
+    { "key": "7KQ2-M9XF-3ZTA-B6WD", "address": "https://192.168.1.44:4818", "link": "https://192.168.1.44:4818/#k=7KQ2-M9XF-3ZTA-B6WD", "expiresAt": 1758197700000 },
+    { "key": "0000-0000-0000-0001", "address": "https://desk.home.example", "link": "https://desk.home.example/#k=0000-0000-0000-0001", "expiresAt": 1758197700000 }
+  ],
   "Grant": [
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "kind": "controller", "name": "Firefox on the laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "createdAt": 1758196800000, "expiresAt": 1760788800000, "inviteExpiresAt": 1758197700000, "connected": false, "form": "browser" },
     {

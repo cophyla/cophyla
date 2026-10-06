@@ -12,6 +12,7 @@ import {
   AudioCodec,
   AuditEntry,
   BackupState,
+  BrowserInvite,
   Client,
   ClientKind,
   ContentBlock,
@@ -726,6 +727,27 @@ export const clientRequests = {
   "invite.redeem": {
     params: z.object({ grant: ControllerId, secret: Secret, name: z.string().min(1).max(64) }),
     result: z.object({ token: z.string(), client: Controller, relay: RelayAccess.optional(), lan: PairedLan.optional() }),
+  },
+  /**
+   * A key for a browser on another computer on this network: a pending grant of the form
+   * `browser`, with the access given (the minter's own unless less is named) and an end
+   * (`expiresIn`, thirty days when absent and ninety at the most; never later than the
+   * minter's own grant ends), and the key that redeems it once within fifteen minutes.
+   * `session` makes it a shared computer's: kept in the node's memory alone. Answered by the
+   * node the client's socket is on, whose listener the key opens, as `pair.start` is.
+   */
+  "browser.invite": {
+    params: z.object({ name: z.string().min(1).max(64), access: Access.optional(), expiresIn: z.number().int().positive().optional(), session: z.boolean().optional() }),
+    result: z.object({ grant: Grant, invite: BrowserInvite }),
+  },
+  /**
+   * A browser's first frame, before `hello`, with the key it was given, on the node's LAN
+   * listener: a token of its own and its row. `keep: false` is "this is a shared computer":
+   * the grant is then a session's, whatever it was minted as.
+   */
+  "browser.pair": {
+    params: z.object({ key: z.string().min(1).max(64), name: z.string().min(1).max(64), keep: z.boolean().optional() }),
+    result: z.object({ token: z.string(), client: Controller }),
   },
   /** A paired controller asking its pairing node for the relay access it did not get at pairing; `unavailable` while the node cannot grant it. */
   "relay.info": { params: Empty, result: RelayAccess },

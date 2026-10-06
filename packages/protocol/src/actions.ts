@@ -127,6 +127,8 @@ export const actions = {
   "pair.claim": { risk: "write", control: true },
   "pair.account": { risk: "write", control: true },
   "invite.redeem": { risk: "write", control: true },
+  "browser.invite": { risk: "write" },
+  "browser.pair": { risk: "write", control: true },
   "relay.info": { risk: "read", control: true },
   "push.register": { risk: "write" },
   "push.unregister": { risk: "write" },

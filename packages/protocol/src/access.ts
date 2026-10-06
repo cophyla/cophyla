@@ -260,6 +260,8 @@ export const requestFilters = {
   "pair.claim": { names: "open" },
   "pair.account": { names: "open" },
   "invite.redeem": { names: "open" },
+  "browser.invite": { names: "global" },
+  "browser.pair": { names: "open" },
   "relay.info": { names: "open" },
   "push.register": { names: "open" },
   "push.unregister": { names: "open" },

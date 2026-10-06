@@ -262,7 +262,12 @@ describe("joining and leaving", () => {
         revoke: async () => undefined,
       },
       revokeController: () => undefined,
-      phones: { invite: async () => Promise.reject(new Error("unused")) },
+      phones: {
+        invite: async () => Promise.reject(new Error("unused")),
+        browser: () => {
+          throw new Error("unused");
+        },
+      },
     };
     const table = grantMethods(deps);
     const ctx = (listener: "loopback" | "controller" | "cloud") => ({ listener, client: { id: newId("client"), kind: "controller" }, principal: { kind: "client", id: "c" }, origin: "x" }) as never;

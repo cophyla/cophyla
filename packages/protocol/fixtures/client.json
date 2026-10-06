@@ -277,6 +277,25 @@
       ]
     },
     "controller.revoke": { "params": [{ "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
+    "browser.invite": {
+      "params": [
+        { "name": "Firefox on the laptop" },
+        { "name": "Library computer", "access": { "scopes": ["sessions:read", "views"], "workspaces": ["ws_01ARZ3NDEKTSV4RRFFQ69G5FAX"], "messages": "none" }, "expiresIn": 86400000, "session": true }
+      ],
+      "results": [
+        {
+          "grant": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "kind": "controller", "name": "Firefox on the laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "createdAt": 1758196800000, "expiresAt": 1760788800000, "inviteExpiresAt": 1758197700000, "connected": false, "form": "browser" },
+          "invite": { "key": "7KQ2-M9XF-3ZTA-B6WD", "address": "https://192.168.1.44:4818", "link": "https://192.168.1.44:4818/#k=7KQ2-M9XF-3ZTA-B6WD", "expiresAt": 1758197700000 }
+        }
+      ]
+    },
+    "browser.pair": {
+      "params": [{ "key": "7KQ2-M9XF-3ZTA-B6WD", "name": "Firefox on Linux" }, { "key": "7kq2 m9xf 3zta b6wd", "name": "Library computer", "keep": false }],
+      "results": [
+        { "token": "6f1d0c…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "name": "Firefox on the laptop", "pairedAt": 1758196800000, "connected": false, "form": "browser", "expiresAt": 1760788800000 } },
+        { "token": "6f1d0c…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "name": "Library computer", "pairedAt": 1758196800000, "connected": false, "form": "browser", "session": true, "expiresAt": 1758240000000 } }
+      ]
+    },
     "invite.redeem": {
       "params": [{ "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Work phone" }],
       "results": [

@@ -5,6 +5,10 @@
 //   cophylad invite --phone [--name N] [--access full|sessions|view] [--expires 1d] [--invite-expires 15m]
 //       prints the invite text for a new node or phone on stdout, and on a terminal its QR
 //       code beside it, on stderr, for a phone's camera
+//   cophylad invite --browser [--name N] [--access full|sessions|view] [--expires 30d]
+//       a key for a browser on another computer on this network: the address to open and the
+//       key to type there on stderr, with the QR code of a link that carries both on a
+//       terminal, and that link on stdout; good once, for fifteen minutes
 //   cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust]
 //       redeems an invite read from a file or stdin, never from the command line, so it
 //       stays out of the process list and the shell's history; at a terminal it asks whether
@@ -161,6 +165,7 @@ export async function runCommand(command: Command, argv: string[], how: { local?
       name: { type: "string" },
       role: { type: "string" },
       phone: { type: "boolean" },
+      browser: { type: "boolean" },
       access: { type: "string" },
       expires: { type: "string" },
       "invite-expires": { type: "string" },
@@ -181,6 +186,19 @@ export async function runCommand(command: Command, argv: string[], how: { local?
           ...(values.expires !== undefined ? { expiresIn: parseDuration(values.expires) } : {}),
           ...(values["invite-expires"] !== undefined ? { inviteExpiresIn: parseDuration(values["invite-expires"]) } : {}),
         };
+        if (values.phone && values.browser) throw new Error("--phone and --browser are two invites: give one");
+        if (values.browser) {
+          const preset = (values.access ?? "full") as AccessPreset;
+          if (!(preset in ACCESS_PRESETS)) throw new Error("--access is full, sessions or view");
+          if (values.role !== undefined) throw new Error("a browser has --access, not --role");
+          if (values["invite-expires"] !== undefined) throw new Error("a browser's key is good for fifteen minutes: --invite-expires is a phone's or a node's");
+          const r = await call(where, "browser.invite", { name: values.name ?? "browser", access: ACCESS_PRESETS[preset], ...(values.expires !== undefined ? { expiresIn: parseDuration(values.expires) } : {}) }, as);
+          const until = r.grant.expiresAt !== undefined ? `, with access until ${new Date(r.grant.expiresAt).toLocaleString()}` : "";
+          process.stderr.write(`A key for the browser ${r.grant.name} (${preset})${until}.\nOn the other computer, open ${r.invite.address} and type this key, good once until ${new Date(r.invite.expiresAt).toLocaleTimeString()}:\n\n    ${r.invite.key}\n\n`);
+          if (process.stderr.isTTY) process.stderr.write(`Or scan this, which opens that page with the key in it:\n\n${terminalQr(r.invite.link)}\n`);
+          process.stdout.write(r.invite.link + "\n");
+          return 0;
+        }
         if (values.phone) {
           const preset = (values.access ?? "full") as AccessPreset;
           if (!(preset in ACCESS_PRESETS)) throw new Error("--access is full, sessions or view");

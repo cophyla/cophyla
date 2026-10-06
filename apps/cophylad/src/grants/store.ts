@@ -404,6 +404,27 @@ export class Grants {
     return row;
   }
 
+  /**
+   * The pending browser grant a key opens. The key's hash is compared against every browser
+   * invite's, each one, so the time taken says nothing of which matched; a phone's invite is
+   * never found by a key.
+   */
+  browserInvite(key: string, at = this.now()): GrantRow | undefined {
+    const candidate = Buffer.from(hashSecret(key), "hex");
+    let found: GrantRow | undefined;
+    for (const row of this.rows()) {
+      if (row.kind !== "controller" || row.form !== "browser" || !row.invite) continue;
+      let stored: Buffer;
+      try {
+        stored = Buffer.from(row.invite.secretHash, "hex");
+      } catch {
+        continue;
+      }
+      if (stored.length === candidate.length && timingSafeEqual(stored, candidate)) found = row;
+    }
+    return found ? this.pending(found.id, at) : undefined;
+  }
+
   /** A pending grant by the throwaway relay peer its invite is redeemed through. */
   byInvitePeer(peer: string, at = this.now()): GrantRow | undefined {
     const row = this.rows().find((r) => r.invite?.peer === peer);

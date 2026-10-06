@@ -27,7 +27,9 @@
 // also be a pairing one — a phone that signed in with the account and has no token yet —
 // and that socket answers `pair.account` and nothing else, not even `hello`. Since grants a
 // phone may also come with an invite: `invite.redeem` before `hello` on the LAN listener, or
-// on a tunnel of the invite's own throwaway peer, which answers that and nothing else.
+// on a tunnel of the invite's own throwaway peer, which answers that and nothing else. And a
+// browser on another computer with a key someone typed: `browser.pair` before `hello`, on the
+// LAN listener alone.
 //
 // Neither pairing puts its secrets in the audit: the token and the relay access are minted
 // inside the gate, but the row records the controller alone and the phone gets the rest
@@ -225,6 +227,8 @@ export interface ApiDeps {
   accountPairing?: (name: string, login: string) => Promise<AccountPaired>;
   /** A controller whose pairing answer found the tunnel gone: the phone never got its token, so the row and its relay access go. */
   abandonPairing?: (controller: string) => void;
+  /** A browser's key redeemed, the way an invite is; only a listener that has this answers `browser.pair`. */
+  pairBrowser?: (p: { key: string; keep?: boolean }, how: RedeemHow) => Promise<Redeemed>;
   /** A phone's invite redeemed: its token, row, relay access and LAN pin, and what to do once it has them or has gone. */
   redeemInvite?: (p: { grant: string; secret: string }, via: { peer?: string }, how: RedeemHow) => Promise<Redeemed>;
   /** Who this listener serves, under which names, and from which page a socket may come: asked first of every request. */
@@ -634,6 +638,61 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }
   };
 
+  /**
+   * A browser's first frame with the key someone typed into it: on the LAN listener, before
+   * `hello`, which follows on the same socket. The key is not audited, and the answer goes to
+   * the browser outside the gate.
+   */
+  const handleBrowserPair = async (ws: Conn, req: RpcRequest) => {
+    if (ws.data.client) {
+      send(ws, failure(req.id, protocolError("conflict", "already said hello")));
+      return;
+    }
+    if (!deps.pairBrowser || ws.data.listener !== "controller") {
+      send(ws, failure(req.id, protocolError("unsupported", "a key is typed on the node's own network, at its own address")));
+      return;
+    }
+    if (ws.data.claimed) {
+      send(ws, failure(req.id, protocolError("conflict", "already paired on this connection")));
+      return;
+    }
+    if (throttled(ws, req)) return;
+    const parsed = clientRequests["browser.pair"].params.safeParse(req.params ?? {});
+    if (!parsed.success) {
+      send(ws, failure(req.id, protocolError("invalid", "bad browser.pair params", parsed.error.issues)));
+      return;
+    }
+    const p = parsed.data;
+    const principal = { kind: "user", client: ws.data.provisional } as const;
+    try {
+      let redeemed: Redeemed | undefined;
+      const client = await deps.gate.run(
+        { principal, action: "browser.pair", args: { name: p.name, ...(p.keep !== undefined ? { keep: p.keep } : {}) }, sessionKey: ws.data.provisional },
+        async () => {
+          redeemed = await deps.pairBrowser!({ key: p.key, ...(p.keep !== undefined ? { keep: p.keep } : {}) }, ws.data.browser ? { browser: true } : {});
+          return redeemed.answer.client;
+        },
+      );
+      ws.data.claimed = true;
+      ws.data.failedClaims = 0;
+      // The browser left before the answer: it never held the token, so the key is open again.
+      if (ws.data.closed) {
+        redeemed!.abandon();
+        return;
+      }
+      send(ws, success(req.id, { token: redeemed!.answer.token, client }));
+      log.info("browser paired with a key", { controller: client.id, name: client.name, remote: ws.remoteAddress });
+      redeemed!.settle();
+      armHello(ws);
+    } catch (e) {
+      ws.data.failedClaims++;
+      missed(ws);
+      send(ws, failure(req.id, e instanceof RpcError ? e.error : protocolError("denied", "that key is not open")));
+      log.warn("key refused", { remote: ws.remoteAddress, attempts: ws.data.failedClaims });
+      if (ws.data.failedClaims >= MAX_CLAIMS_PER_SOCKET) ws.close(CLOSE_UNAUTHENTICATED, "too many pairing attempts");
+    }
+  };
+
   const handleHello = async (ws: Conn, req: RpcRequest) => {
     const parsed = clientRequests.hello.params.safeParse(req.params ?? {});
     if (!parsed.success) {
@@ -866,7 +925,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }
     const msg = parsed.data;
     if ("method" in msg && "id" in msg) {
-      if (msg.method === "hello" || msg.method === "pair.claim" || msg.method === "pair.account" || msg.method === "invite.redeem") {
+      if (msg.method === "hello" || msg.method === "pair.claim" || msg.method === "pair.account" || msg.method === "invite.redeem" || msg.method === "browser.pair") {
         port.send(JSON.stringify(failure(msg.id, protocolError("conflict", `already said hello`))));
         return;
       }
@@ -1106,6 +1165,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         void handleRedeem(ws, msg);
         return;
       }
+      if (msg.method === "browser.pair") {
+        void handleBrowserPair(ws, msg);
+        return;
+      }
       if (msg.method === "hello") {
         if (ws.data.client) {
           send(ws, failure(msg.id, protocolError("conflict", "already said hello")));
@@ -1224,7 +1287,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 }
 
 /** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
-const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "pair.start", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
+const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "pair.start", "browser.invite", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
 
 /** The signals a relayed client sends this node itself: a data channel's candidates end here, where its helper is, and a stream's pipes where they were opened. */
 const LOCAL_SIGNALS = new Set(["direct.candidate", "remote.pipe.data", "remote.pipe.ack", "remote.pipe.close"]);
