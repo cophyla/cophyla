@@ -10,7 +10,8 @@
 // target each file is for (the Windows build's, and the Mac's and WSL's copied in), and
 // checks each name against the feed's naming; the release is created once and every asset
 // uploaded with `--clobber`, so a second run adds the targets that arrived since.
-// `--installer` uploads the `Cophyla_<v>_*` packages. `--feed` clones the `feed` branch and
+// `--installer` uploads the `Cophyla_<v>_*` packages to the platform's release; a brain
+// release takes the brain repository's `EULA.md` with it. `--feed` clones the `feed` branch and
 // merges every `.release.json` under `stage/out` into it with feed.ts --add, so a target
 // published from another machine is never dropped.
 //   bun run apps/installer/scripts/publish.ts --release platform@0.1.0 --release brain@0.1.1 --installer --feed --yes
@@ -21,7 +22,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { releaseFileName } from "@cophyla/protocol";
 import type { Release } from "@cophyla/protocol";
-import { COMMIT_EMAIL, COMMIT_NAME, DEFAULT_FEED, fail, GITHUB_REPO, INSTALLER, log, OUT, PRODUCT, readJson, releaseTag, run } from "./lib.ts";
+import { BRAIN_REPO, COMMIT_EMAIL, COMMIT_NAME, DEFAULT_FEED, fail, GITHUB_REPO, INSTALLER, log, OUT, PRODUCT, readJson, releaseTag, run } from "./lib.ts";
 
 export interface Asset {
   artifact: string;
@@ -117,13 +118,22 @@ if (import.meta.main) {
       await run(["gh", "release", "upload", plan.tag, a.artifact, a.entry, "--repo", repo, "--clobber"]);
       log(`${plan.tag}: ${a.target} uploaded`);
     }
-    if (values.installer) {
+    // The packages carry the platform's version and go with its release alone.
+    if (values.installer && component === "platform") {
       const packages = installerAssets(version, files);
       if (packages.length === 0) console.warn(`no ${PRODUCT}_${version}_* package in ${OUT}`);
       for (const p of packages) {
         await run(["gh", "release", "upload", plan.tag, join(OUT, p), "--repo", repo, "--clobber"]);
         log(`${plan.tag}: ${p} uploaded`);
       }
+    }
+    // The brain's licence is published with every brain release: the installer's licence page says so.
+    if (component === "brain") {
+      const eula = join(BRAIN_REPO, "EULA.md");
+      if (existsSync(eula)) {
+        await run(["gh", "release", "upload", plan.tag, eula, "--repo", repo, "--clobber"]);
+        log(`${plan.tag}: EULA.md uploaded`);
+      } else console.warn(`no EULA.md in ${BRAIN_REPO}: the brain release goes out without its licence`);
     }
     log(`published ${plan.tag}`);
   }
