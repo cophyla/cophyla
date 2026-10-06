@@ -1,0 +1,104 @@
+# The published installer on a machine that never had a checkout. Run by hand after a release:
+#   gh workflow run install.yml -f version=0.13.0
+# A Windows runner downloads the package of that platform release as a user would, installs
+# it, starts it from the launcher, waits for the daemon and the bundled brain to come up and
+# for the daemon to read the public feed, and uninstalls. Nothing here builds anything: the
+# release scripts run on a machine with the keys, and test.yml tests the tree.
+name: install
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: The platform version whose installer is run
+        required: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: download the package
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "platform-v$env:VERSION" --repo "${{ github.repository }}" --pattern "Cophyla_${env:VERSION}_x64-setup.exe" --dir pkg
+          $pkg = Get-Item "pkg\Cophyla_${env:VERSION}_x64-setup.exe"
+          $sig = Get-AuthenticodeSignature $pkg.FullName
+          "{0}: {1:N1} MB, signed by {2} ({3})" -f $pkg.Name, ($pkg.Length / 1MB), $sig.SignerCertificate.Subject, $sig.Status
+          if (-not $sig.SignerCertificate) { throw "the package is not signed" }
+
+      - name: install
+        shell: pwsh
+        run: |
+          $before = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          "PATH_BEFORE=$before" >> $env:GITHUB_ENV
+          $p = Start-Process -FilePath "pkg\Cophyla_${env:VERSION}_x64-setup.exe" -ArgumentList '/S' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)" }
+          $root = Join-Path $env:LOCALAPPDATA 'Cophyla'
+          $v = Join-Path $root "versions\$env:VERSION"
+          foreach ($f in @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\current", "$root\brain\brain.exe", "$root\brain\release.json", "$v\release.json", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe", "$v\cophylad\apps\cophylad\src\main.ts", "$v\cophylad\apps\controller\dist\index.html")) {
+            if (-not (Test-Path $f)) { throw "missing after the install: $f" }
+          }
+          if ((Get-Content "$root\current" -Raw).Trim() -ne $env:VERSION) { throw "current does not name $env:VERSION" }
+          foreach ($f in @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\brain\brain.exe", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe")) {
+            $s = Get-AuthenticodeSignature $f
+            "{0}: signed by {1} ({2})" -f (Split-Path $f -Leaf), $s.SignerCertificate.Subject, $s.Status
+            if (-not $s.SignerCertificate) { throw "not signed: $f" }
+          }
+          $link = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Cophyla.lnk'
+          if (-not (Test-Path $link)) { throw "no Start Menu shortcut at $link" }
+          "installed into ${root}: {0:N0} MB in {1} files" -f ((Get-ChildItem $root -Recurse -File | Measure-Object Length -Sum).Sum / 1MB), (Get-ChildItem $root -Recurse -File).Count
+
+      - name: start it from the launcher
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'Cophyla'
+          $log = Join-Path $env:USERPROFILE '.cophyla\data\cophylad.log'
+          Start-Process -FilePath "$root\Cophyla.exe"
+          # what must be in the daemon's log before this passes; the first read of the feed comes 30 s after the start
+          $want = [ordered]@{
+            'listening'                      = ' listening \{'
+            'brain verified, bundled'        = 'brain verified \{"origin":"bundled"'
+            'brain up'                       = 'brain up \{'
+            'cophylad started, this version' = ('cophylad started \{.*"platform":"' + [regex]::Escape($env:VERSION) + '"')
+            'the tether command in place'    = 'tether command in place'
+            'the public feed read'           = ('feed read \{"accepted":\[[^\]]*"platform@' + [regex]::Escape($env:VERSION) + '"')
+          }
+          $deadline = (Get-Date).AddSeconds(240)
+          $missing = @($want.Keys)
+          while ((Get-Date) -lt $deadline -and $missing.Count -gt 0) {
+            Start-Sleep -Seconds 3
+            $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
+            $missing = @($want.Keys | Where-Object { $text -notmatch $want[$_] })
+          }
+          "--- launcher.log"; Get-Content "$root\launcher.log" -ErrorAction SilentlyContinue
+          "--- cophylad.log"; if (Test-Path $log) { Get-Content $log | ForEach-Object { if ($_.Length -gt 400) { $_.Substring(0, 400) } else { $_ } } } else { 'no log: the daemon never started' }
+          "--- processes"; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root\*" -or $_.ExecutablePath -like "$env:USERPROFILE\.cophyla\*" } | ForEach-Object { "$($_.ProcessId) $($_.ExecutablePath)" }
+          if ($missing.Count -gt 0) { throw "not seen in the daemon's log: $($missing -join '; ')" }
+          $text = Get-Content $log -Raw
+          if ($text -match 'release dropped') { throw "the daemon dropped an entry of the public feed" }
+          $path = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if ($path -notlike "*$root\bin*") { throw "the tether command's folder is not on the user's PATH: $path" }
+          & "$root\bin\tether.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "tether --version exited $LASTEXITCODE" }
+
+      - name: uninstall
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:LOCALAPPDATA 'Cophyla'
+          Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root\*" -or $_.ExecutablePath -like "$env:USERPROFILE\.cophyla\*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 3
+          # `_?=` keeps the uninstaller where it is, so the wait is for the real one and not for a copy it started
+          $p = Start-Process -FilePath "$root\uninstall.exe" -ArgumentList '/S', "_?=$root" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "the uninstaller exited $($p.ExitCode)" }
+          $left = @(Get-ChildItem $root -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'uninstall.exe' })
+          "left under ${root}: $($left.Count) file(s)"; $left | ForEach-Object { $_.FullName }
+          if ($left.Count -gt 0) { throw "the uninstall left files behind" }
+          $path = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+          if ($path -ne $env:PATH_BEFORE) { throw "the user's PATH is not what it was: $path" }
+          if (Test-Path (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Cophyla.lnk')) { throw "the Start Menu shortcut is still there" }
+          "uninstalled: the folder, the shortcut and the PATH entry are gone"
