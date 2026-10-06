@@ -73,14 +73,15 @@ jobs:
           $missing = @($want.Keys)
           while ((Get-Date) -lt $deadline -and $missing.Count -gt 0) {
             Start-Sleep -Seconds 3
-            $text = if (Test-Path $log) { Get-Content $log -Raw } else { '' }
+            # a string whatever the file holds: an empty log reads as nothing at all, and nothing matches every pattern
+            $text = if (Test-Path $log) { [string](Get-Content $log -Raw) } else { '' }
             $missing = @($want.Keys | Where-Object { $text -notmatch $want[$_] })
           }
           "--- launcher.log"; Get-Content "$root\launcher.log" -ErrorAction SilentlyContinue
           "--- cophylad.log"; if (Test-Path $log) { Get-Content $log | ForEach-Object { if ($_.Length -gt 400) { $_.Substring(0, 400) } else { $_ } } } else { 'no log: the daemon never started' }
           "--- processes"; Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -like "$root\*" -or $_.ExecutablePath -like "$env:USERPROFILE\.cophyla\*" } | ForEach-Object { "$($_.ProcessId) $($_.ExecutablePath)" }
           if ($missing.Count -gt 0) { throw "not seen in the daemon's log: $($missing -join '; ')" }
-          $text = Get-Content $log -Raw
+          $text = [string](Get-Content $log -Raw)
           if ($text -match 'release dropped') { throw "the daemon dropped an entry of the public feed" }
           $path = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment').GetValue('Path', '', 'DoNotExpandEnvironmentNames')
           if ($path -notlike "*$root\bin*") { throw "the tether command's folder is not on the user's PATH: $path" }
