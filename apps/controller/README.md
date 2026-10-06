@@ -1,12 +1,43 @@
 # controller
 
-The phone app, in two forms of one code: a page the node itself serves, over TLS on the
-controller listener, opened in the phone's browser; and the same page inside a native shell
-(Capacitor), which adds what a browser cannot do — a socket that pins the node's key, a
-tunnel through the server relay when the LAN is out of reach, views kept in the app's own
-storage, and asks that arrive as push notifications whose buttons answer them. It is the
-only client with a microphone and a speaker, so every voice conversation runs through one,
-and it hears its own wake word: nothing leaves the phone until it does.
+Cophyla off the machine it runs on, in one code: a page the node itself serves, over TLS on
+its LAN listener, opened in a browser on a phone or on another computer; and the same page
+inside a native shell (Capacitor), which adds what a browser cannot do — a socket that pins
+the node's key, a tunnel through the server relay when the LAN is out of reach, views kept
+in the app's own storage, and asks that arrive as push notifications whose buttons answer
+them. It has a microphone and a speaker, so a voice conversation can run through it, and it
+hears its own wake word: nothing leaves the device until it does.
+
+## In a browser on another computer
+
+In a wide window with a pointer (`(min-width: 900px) and (pointer: fine)` when the page
+loads) the page takes its `desk` form: the whole panel as the desktop app shows it, with no
+bar and no Start screen. The view is told (`desk` in `host.ready`) and lays itself out and
+loads history as it does in the desktop app. The audio starts at the first click, wherever
+it lands; listening for the wake words is off until it is switched on in Settings; the link
+and the microphone stay up while the tab is hidden.
+
+Pairing takes a key first: sixteen characters in fours, made in Devices (Add a browser) or
+by `cophylad invite --browser`, typed once, or carried in the link's fragment (`#k=…`),
+which the page reads and clears from the address bar at load. The six-digit code is the
+second way. **This is a shared computer** keeps nothing: the token stays in the page's
+memory, the tab asks before a reload, a closed tab ends its own access on the node
+(`controller.revoke`, sent as the page goes), and the node ends it anyway two minutes after
+its last socket closes. A kept browser's access ends by itself, after thirty days unless
+less was given; Settings → This browser says when, and forgets it.
+
+A remote desktop shows beside the view (`host.open {embed}`, `host.place`, `host.close`, as
+in the desktop app) or over the whole page, in a frame from the node's stream listener: the
+node's host on a second port, so the viewer's page never runs on this page's origin. The
+page's policy, a response header, names that one origin. A frame cannot ask the user to
+accept a certificate, and some browsers keep that exception per port: when the frame never
+says it loaded, the place where the picture would be offers the stream's address to open
+once.
+
+The node's certificate is its own, so a browser warns the first time; Devices and `cophylad
+lan status` show its SHA-256 fingerprint to check it against. A certificate of your own for
+a name you own (`[controller] cert_file`, `key_file`) is served under that name with no
+warning.
 
 ```
 bun run apps/controller/scripts/build.ts           # dist/: the page the node serves (LAN only)
@@ -53,7 +84,7 @@ with no menu button gets the view's own, in a thin bar at the top.
 | File | Holds |
 |---|---|
 | `src/app.ts` | the app: `boot(platform)` wires pairing, the link, the view host, voice (`@cophyla/voicehost`'s `VoiceHost`: the microphone, the wake word, the speaker) and the screens over what a platform supplies |
-| `src/main.ts` | the browser entry: the page's own socket back to the origin that served it, views staged by the node under a ticket, the credential in the page's storage. LAN only (`connect-src 'self'`) |
+| `src/main.ts` | the browser entry: the page's own socket back to the origin that served it, views staged by the node under a ticket, the credential in the page's storage or, on a shared computer, in its memory; the key read from the link's fragment; the `desk` form picked at load. LAN only (`connect-src 'self'`) |
 | `src/native.ts` | the Capacitor entry: the pinned native socket, the relay transport, views written to the app's storage, push registration and deep links, the phone's background and network signals |
 | `src/link-core.ts` | the link, shaped as the `TauriIo` the shared view host expects: `pair.claim`, `invite.redeem` and `hello` said for itself (`redeem` races an invite's pinned LAN addresses, with their head start, against its relay peer, then says hello on the same LAN socket or comes back through the relay on the phone's own access), backoff while visible, closed while hidden, the transport chooser (LAN first, the relay when the LAN cannot be reached, the LAN tried again every minute and on a network change), `relay.info` asked for on a LAN hello that finds the access missing |
 | `src/transport.ts` | the two transports behind one `Duplex`: a WebSocket to the LAN listener, and a `PeerSession` from `@cophyla/relay` to the server's `/ws/relay` — the E2E tunnel the node's daemon is the other end of; and two used once each, the account sign-in's pairing tunnel and an invite's own relay peer, keyed from the invite's secret |
@@ -62,7 +93,8 @@ with no menu button gets the view's own, in a thin bar at the top.
 | `src/native/push.ts` | the device token sent as `push.register` until the node took it; `cophyla://ask/<id>/<option>` links answered as `ask.answer` once the link is up, dropped after a minute |
 | `src/native/stage.ts` | views written under `Data/views/<id>/<version>/` from `view.get`, a content policy put into the entry page, older versions pruned |
 | `src/native/storage.ts`, `src/native/platform.ts` | the credential store over `@capacitor/preferences`; the platform check and file URLs |
-| `src/remote.ts` | `host.open`: the remote-desktop page in a same-origin frame in the browser, links and invites opened outside |
+| `src/remote.ts` | `host.open`, `host.place`, `host.close`: a remote desktop's page in a frame from the node's stream listener, over the whole page or beside the view where the view places it, ended on the node when it closes (`StreamFrames`); links and invites opened outside |
+| `src/voice.ts` | the Voice section of Settings in a desktop browser (`BrowserVoice`): the microphone picked, listening for the wake words (off until switched on), no talk key |
 | `chooser.css` (built) | the look of the view picker `host.chooseView` opens, which is `@cophyla/viewhost`'s own; the build copies it beside `controller.css`, since the page's policy refuses inline styles |
 | `src/chrome.ts` | what the page shows, as a value: the screen, the status line and the talk button's words, which controls are live, and where frames go — `streaming`, `detecting` (voicehost's `route`), the screen kept awake. Pure |
 | `src/ui.ts` | the elements, rendering a `Chrome` and turning taps into calls; the menu button passed to the view, the ⋯ menu opening and closing |
@@ -73,10 +105,14 @@ with no menu button gets the view's own, in a thin bar at the top.
 
 ## What holds
 
-- **The token lives with the page.** In the browser it is in the page's storage; in the app
-  it is in the app's preferences, outside the web view. Either way it is this one phone's,
-  and the desktop revokes it with `controller.revoke`. A `hello` refused as `denied` drops
-  it, so a revoked phone goes back to the pair screen instead of retrying forever.
+- **The token lives with the page.** In the browser it is in the page's storage, or on a
+  shared computer in its memory alone; in the app it is in the app's preferences, outside
+  the web view. Either way it is this one device's, and the desktop revokes it with
+  `controller.revoke`. A browser's ends by itself as well. A `hello` refused as `denied`
+  drops it, so a revoked device goes back to the pair screen instead of retrying forever.
+- **The viewer's page is never on this page's origin.** A stream page comes from the node's
+  stream listener, in a frame; this origin serves none, and `openTarget` frames nothing
+  else.
 - **The page never says `hello` for a view.** The view host runs exactly as it does in the
   desktop app: the same `Bridge`, the same scope check, the same sandboxed frame. The one
   difference is where the files come from — the browser gets a ticket the node serves them

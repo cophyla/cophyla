@@ -4,7 +4,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConfigError, loadConfig, loadOrCreateToken, parseConfig, paths, readToken, resolveHome } from "../src/config/load.ts";
-import { DEFAULT_CONFIG_TOML } from "../src/config/schema.ts";
+import { DEFAULT_CONFIG_TOML, streamPortOf } from "../src/config/schema.ts";
 import { tempHome } from "./helpers.ts";
 
 describe("config", () => {
@@ -90,6 +90,27 @@ describe("config", () => {
     expect(() => parseConfig('[[profiles]]\nharness = "acp"\nname = "x"\nconfig_dir = "y"\n')).toThrow(/profiles.0.harness/);
     expect(() => parseConfig('[[profiles]]\nharness = "claude"\nname = "x"\n')).toThrow(/profiles.0.config_dir/);
   });
+  test("the controller listener's networks, address, stream port and certificate files are checked as the file is read", () => {
+    const c = parseConfig('[controller]\nenabled = true\nnetworks = ["local", "100.64.0.0/10", "fd00::/8"]\naddress = "desk.home.example"\nstream_port = 4900\ncert_file = "C:\\\\certs\\\\fullchain.pem"\nkey_file = "C:\\\\certs\\\\privkey.pem"\n');
+    expect(c.controller).toEqual({ enabled: true, host: "0.0.0.0", port: 4818, stream_port: 4900, networks: ["local", "100.64.0.0/10", "fd00::/8"], address: "desk.home.example", cert_file: "C:\\certs\\fullchain.pem", key_file: "C:\\certs\\privkey.pem", account_pairing: true });
+    // the stream page's port: two above the controller's unless set, and whatever the system gives where that one is left to it
+    expect(streamPortOf(parseConfig("").controller)).toBe(4820);
+    expect(streamPortOf(parseConfig("[controller]\nport = 5000\n").controller)).toBe(5002);
+    expect(streamPortOf(parseConfig("[controller]\nport = 0\n").controller)).toBe(0);
+    expect(streamPortOf(c.controller)).toBe(4900);
+    expect(() => parseConfig("[controller]\nport = 4818\nstream_port = 4818\n")).toThrow(/stream_port/);
+    expect(() => parseConfig("[controller]\nport = 65535\n")).toThrow(/stream_port/);
+    expect(parseConfig("[controller]\nport = 65535\nstream_port = 65000\n").controller.stream_port).toBe(65000);
+    // a range that is none, a name with a port or a path, one file without the other
+    expect(() => parseConfig('[controller]\nnetworks = ["192.168.1.0/33"]\n')).toThrow(/controller.networks/);
+    expect(() => parseConfig('[controller]\nnetworks = ["lan"]\n')).toThrow(/controller.networks/);
+    expect(parseConfig('[controller]\nnetworks = ["any"]\n').controller.networks).toEqual(["any"]);
+    expect(() => parseConfig('[controller]\naddress = "desk.home.example:4818"\n')).toThrow(/controller.address/);
+    expect(() => parseConfig('[controller]\naddress = "https://desk"\n')).toThrow(/controller.address/);
+    expect(parseConfig('[controller]\naddress = "192.168.1.44"\n').controller.address).toBe("192.168.1.44");
+    expect(() => parseConfig('[controller]\ncert_file = "C:\\\\certs\\\\fullchain.pem"\n')).toThrow(/cert_file and key_file go together/);
+  });
+
   test("the controller listener and the voice stages take partial sections, and refuse nonsense", () => {
     const c = parseConfig('[controller]\nenabled = true\nport = 4897\n[voice]\nenabled = true\ntts = "chatterbox"\nchatterbox_voice = "C:\\\\clips\\\\me.wav"\n');
     expect(c.controller).toEqual({ enabled: true, host: "0.0.0.0", port: 4897, networks: ["local"], account_pairing: true });

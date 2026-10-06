@@ -887,15 +887,35 @@ auto_apply = true              # a staged brain when idle; a staged platform whe
 allow_insecure_feed = false    # http off loopback, for a LAN feed while testing
 
 # The controller: a second listener on the LAN, over TLS with a certificate this node makes
-# for itself, serving the phone's web app, its views and its socket. The loopback [api]
-# listener is unchanged and keeps the harness hooks; nothing but the app is served here.
+# for itself, serving Cophyla as a web app to a browser on another computer and to the phone
+# app, with its views and its socket. The loopback [api] listener is unchanged and keeps the
+# harness hooks; nothing but the app is served here. enabled is where this starts: the app's
+# Devices page and "cophylad lan on|off" turn it on and off from then on, and that is kept.
 # The same listener also comes up, app or not, when [nodes] accept is on or this node is a
-# backup: it is where other nodes link at /ws/node. The phone app can also pair from any
-# network by signing in with the account this node is signed in to, through the relay.
+# backup: it is where other nodes link at /ws/node, and then it answers nothing else. The
+# phone app can also pair from any network by signing in with the account this node is signed
+# in to, through the relay; with this off, that is the only way a phone reaches the node.
+#
+# A device is paired before it is served: a browser with a key made in Devices (Add a browser,
+# or "cophylad invite --browser"), typed once at the node's address; a phone with an invite or
+# a six-digit code. A browser's access ends by itself, after thirty days unless said otherwise.
 [controller]
 enabled = false
-host = "0.0.0.0"               # a phone is not on loopback
+host = "0.0.0.0"               # a phone or another computer is not on loopback
 port = 4818
+# stream_port = 4820           # a remote desktop's page is served to a browser from a second port, so it never shares an origin with the app; two above port when not set (the one above is discovery's)
+# The devices it serves, by the address they come from. "local" is the private networks this
+# machine is directly on; a range is served beside them ("100.64.0.0/10" for a tailnet,
+# "10.8.0.0/24" for a VPN or a routed subnet); "any" is everyone. This machine itself always
+# is. Other nodes linking here are held to it too, so one across a router needs its range.
+networks = ["local"]
+# address = "192.168.1.44"     # the address or name other devices reach this machine at, when it is not the one the node picks (its first private address on a real adapter); the certificate always names it, and it is kept through a change of the others
+# A certificate of your own, as PEM files, for a name you own: a browser that opens the node
+# under that name gets it, and no warning. The node's own certificate still answers every
+# connection by address. The files are read again when they change. The phone app pairs by
+# address whatever is set here: it trusts the node's own key, learned at pairing, not a name.
+# cert_file = "C:\\certs\\desk.home.example\\fullchain.pem"
+# key_file = "C:\\certs\\desk.home.example\\privkey.pem"
 # app_dir = "C:\\path\\to\\controller\\dist"   # the built app; the one beside the daemon by default
 account_pairing = true         # a phone signed in to this node's account pairs through the relay, no code
 

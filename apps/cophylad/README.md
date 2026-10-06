@@ -447,9 +447,86 @@ never staged again.
 ## Voice and the controller
 
 `[controller]` opens a second listener on the LAN over TLS, and `[voice]` turns the pipeline
-on; both are off by default, so a fresh node neither opens a port nor fetches a model. The
-certificate is the node's own, written to `data/tls` with every LAN address in its SAN and
-re-made when those change. A phone cannot read the shared token, so it pairs: `pair.start`
+on; both are off by default, so a fresh node neither opens a port nor fetches a model.
+
+### The node on its network
+
+The LAN listener serves Cophyla as a web app, to a browser on another computer and to the
+phone app, and is where other nodes link. `api/lan.ts` owns it. `[controller] enabled` is
+where it starts; the app's Devices page and `cophylad lan on|off|status` turn it on and off
+from then on (`lan.enable`, asked on the machine itself alone, `lan.disable`, `lan.info`),
+and that is kept in the store over the config. It is also up for `[nodes] accept` and on a
+backup, and then answers `/ws/node` and refuses everything else at HTTP: a phone turned away
+there falls back to the relay with its credential intact. Turning it off closes the devices
+connected on it.
+
+Every request passes the guard first (`api/guard.ts`), `/ws/node` included:
+
+- **Peers.** Served from this machine and from the private networks it is directly on, by its
+  adapters' subnets, and from the ranges in `[controller] networks` (`"any"` turns the check
+  off). Bun has no hook before the TLS handshake, so the refusal is a 403 after it. A cluster
+  across a router, a tailnet or a VPN needs its range there; the refusal is logged with the
+  line to add, and `lan.info` shows the last one.
+- **Host.** The `Host` name (its port ignored, so a port mapping works) is one of this
+  machine's: its addresses and names now, its certificate's, `[controller] address`, a name
+  of the user's own certificate. Anything else is a 421. Under `/remote` a loopback `Host`
+  is the phone app's forwarder.
+- **Origin.** A WebSocket upgrade carries no `Origin` (the phone app, the command line, a
+  node) or exactly this listener's own; a foreign page's is a 403. A socket from the
+  listener's own page is a browser's: it cannot ask for a forwarder's stream page.
+- **Headers.** The page goes out with its content-security policy as a header
+  (`controllerCsp` in `@cophyla/protocol`: its own origin, the stream listener's as the one
+  other frame, framed by nobody), `nosniff`, no referrer, and a same-origin opener policy.
+  No HSTS: it would bind every port of the host.
+- **Pairing limiter.** Per address (IPv6 by /64): ten misses of a code, a key, an invite or
+  a token in ten minutes, and that address's pairing requests are refused for a minute,
+  doubling to fifteen; sixteen sockets that have not said who they are. A blocked address
+  still says `hello`, so a paired device behind a shared address is never locked out.
+
+The certificate is the node's own, self-signed, in `data/tls`. It is re-made only when it no
+longer names the address the node is reached at (`[controller] address`, else its first
+private address on a real adapter: a hypervisor's switch or a VPN moving is no reason), when
+it nears its end or cannot be read; it keeps its key, and up to four addresses of the one
+before. `[controller] cert_file` and `key_file` add a certificate of the user's own, checked
+before it is served (the key is its own, today is inside its dates, it names a host) and
+served by name beside the node's (`Bun.serve` with a list: the first answers a connection
+that names no host or an unknown one). Its files are looked at every thirty seconds and a
+changed pair is put in service by starting the listener again; one that fails leaves what is
+served as it is, and `lan.info` says why. The phone app pins the node's own key and connects
+by address, so what it is told stays an address.
+
+A device is paired before it is served. A browser on another computer is given a key
+(`browser.invite`, Add a browser in Devices, `cophylad invite --browser`): ten random bytes
+as sixteen characters in fours (`@cophyla/protocol`'s `key.ts`), good once for fifteen
+minutes, typed at the node's address or carried there in a link's fragment, which the page
+reads and clears. `browser.pair` before `hello` spends it, compared in constant time against
+every open key, for a token of that browser's own. The grant has the form `browser` and an
+end fixed when it was minted: thirty days unless less is asked, ninety at the most. A code
+or an invite spent from a browser's socket gives the same form and no later an end, so the
+page's origin can only shorten a grant. A grant with an end mints nothing that outlives it
+(`grants/lifetime.ts`): an invite, a key, a pairing code or a node's invite from such a
+client ends when it does. **Shared computer** (`keep: false` from the page, `session` from
+the minter) makes the grant a session's: kept in the node's memory alone, never in the
+store, a replica or a backup, ended two minutes after its last socket closes and after
+twelve hours at the latest, and able to mint nothing. These rules close the protocol's own
+ways around an end. They are not a wall: a full-access grant holds `terminal`, and a shell
+is the machine.
+
+A remote desktop's page is served to a browser from a second listener, `[controller]
+stream_port` (two above `port`), up beside the main one while devices are served: the same
+certificates, the same guard, `/remote` alone (`remote/listener.ts`). The viewer's page so
+never shares an origin with the app. A stream ticket is minted for one door (`stream` for a
+browser, `forward` for the phone app's forwarder on the main listener, `loopback` for the
+desktop app and pages that come through pipes), claimed there and nowhere else, and its
+session is served through that door alone, since a cookie goes to every port of its host.
+On the stream door the pages may be framed by the app's page the ticket was minted for and
+no other, a socket must come from the stream page itself, and the claim page tells its
+frame it loaded; `/remote/ready` is a page a browser opens once where it keeps a
+certificate's exception per port.
+
+### Phones
+
+A phone cannot read the shared token, so it pairs: `pair.start`
 on the desktop opens one six-digit code for five minutes and one use, `pair.claim` before
 `hello` spends it for a token of that controller's own, and `controller.revoke` (or
 `grant.revoke`) drops the row and closes the socket. Or the desktop makes it an invite
