@@ -336,9 +336,16 @@ export const ControllerConfig = z.object({
   })).default(["local"]),
   /** The built controller app; the one beside the daemon by default. */
   app_dir: z.string().min(1).optional(),
+  /**
+   * A certificate of your own and its key, as PEM files, served to a browser that opens the
+   * node under a name the certificate carries (the node's own, self-signed, still answers
+   * every other connection, and every one by address). Both or neither.
+   */
+  cert_file: z.string().min(1).optional(),
+  key_file: z.string().min(1).optional(),
   /** A phone signed in with this node's account pairs through the relay with no code. Off, only a code on the LAN pairs one. */
   account_pairing: z.boolean().default(true),
-});
+}).refine((c) => (c.cert_file === undefined) === (c.key_file === undefined), { message: "cert_file and key_file go together", path: ["cert_file"] });
 export type ControllerConfig = z.infer<typeof ControllerConfig>;
 
 /** The phrases the wake word listens for unless the config or the app names others: "Cophyla" and "Hey Phyla", said ko-FILL-uh. */

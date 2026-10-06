@@ -1,14 +1,21 @@
-// The controller listener's certificate: self-signed, one per node, ECDSA P-256, with every
-// LAN address and the hostname in its subject alternative names, so a phone that accepts it
-// once on `https://192.168.1.44:4818/` is not asked again while the address holds. The DER
-// is written by hand from a few TLV helpers, so no tool outside `node:crypto` is needed.
-// The pair is kept under `data/tls/` and made again when it is missing, unreadable, near
-// its end, or when the node gained an address the names do not cover; a phone then sees
-// one more warning, which the log says.
+// The controller listener's certificate: self-signed, one per node, ECDSA P-256, with the
+// node's addresses and its hostname in its subject alternative names, so a browser that
+// accepts it once on `https://192.168.1.44:4818/` is not asked again while the address holds.
+// The DER is written by hand from a few TLV helpers, so no tool outside `node:crypto` is needed.
+// The pair is kept under `data/tls/` and made again only when it is missing, unreadable, near
+// its end, or no longer names the one address the node is reached at (`[controller] address`,
+// else its first private address on a real adapter): a hypervisor's switch that moved, or a
+// VPN that came up, changes nothing. A browser then sees one more warning, which the log
+// says. A certificate made again carries the addresses it is given and a few the last one
+// had, so a machine that moves between two networks keeps one certificate for both.
+//
+// The user may bring a certificate of their own for a name of their own (`[controller]
+// cert_file`, `key_file`): it is checked here before it is ever served, and served beside the
+// node's own, by name. A connection by address, which names no host, gets the node's own.
 
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, X509Certificate } from "node:crypto";
 import type { KeyObject } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { hostname, networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { Logger } from "../log.ts";
@@ -20,6 +27,11 @@ export interface CertificateSpec {
   days?: number;
   /** The common name of the subject and the issuer. */
   cn?: string;
+  /**
+   * The names a kept certificate must carry to be kept: the address the node is reached at.
+   * Every name in the spec, when absent.
+   */
+  required?: { dnsNames?: string[]; ips?: string[] };
 }
 
 export interface KeyPair {
@@ -217,25 +229,38 @@ export function certificateNames(certPem: string): { dns: string[]; ips: string[
   }
 }
 
-/** Why a stored pair is not good enough for `spec`, or nothing when it is. */
+/** Addresses of the certificate before that a new one still carries: a network the machine was on, and may be on again. */
+export const PAST_ADDRESSES = 4;
+
+/** Why a stored pair is not good enough for `spec`, or nothing when it is: unreadable, near its end, or without a name it must carry. */
 export function certificateStale(certPem: string, spec: CertificateSpec, now = Date.now()): string | undefined {
   const names = certificateNames(certPem);
   if (!names) return "unreadable";
   if (!Number.isFinite(names.validTo) || names.validTo < now + RENEW_BEFORE_MS) return "expiring";
-  const missing = [...spec.dnsNames.filter((d) => !names.dns.includes(d)), ...spec.ips.filter((ip) => !names.ips.includes(ip))];
+  const must = spec.required ?? { dnsNames: spec.dnsNames, ips: spec.ips };
+  const missing = [...(must.dnsNames ?? []).filter((d) => !names.dns.includes(d)), ...(must.ips ?? []).filter((ip) => !names.ips.includes(ip))];
   if (missing.length > 0) return `missing ${missing.join(", ")}`;
   return undefined;
 }
 
+/** The names a certificate made now carries: what it must, what the spec gives, and a few addresses the one before it had. */
+export function certificateNamesFor(spec: CertificateSpec, before?: string): { dnsNames: string[]; ips: string[] } {
+  const dnsNames = [...new Set([...(spec.required?.dnsNames ?? []), ...spec.dnsNames])];
+  const ips = [...new Set([...(spec.required?.ips ?? []), ...spec.ips])];
+  const past = (before !== undefined ? (certificateNames(before)?.ips ?? []) : []).filter((ip) => !ips.includes(ip)).slice(0, PAST_ADDRESSES);
+  return { dnsNames, ips: [...ips, ...past] };
+}
+
 /**
- * The pair under `dir`, reused while it parses, has a month left and names every current
- * address; made again otherwise. Returns the PEMs and whether they are new.
+ * The pair under `dir`, reused while it parses, has a month left and carries the names it
+ * must; made again otherwise, on the same key. Returns the PEMs and whether they are new.
  */
 export function ensureCertificate(dir: string, spec: CertificateSpec, log?: Logger): KeyPair & { fresh: boolean } {
   mkdirSync(dir, { recursive: true });
   const keyPath = join(dir, KEY_FILE);
   const certPath = join(dir, CERT_FILE);
   let key: KeyObject | undefined;
+  let before: string | undefined;
   if (existsSync(keyPath)) {
     const keyPem = readFileSync(keyPath, "utf8");
     try {
@@ -245,18 +270,80 @@ export function ensureCertificate(dir: string, spec: CertificateSpec, log?: Logg
       key = undefined;
     }
     if (key && existsSync(certPath)) {
-      const certPem = readFileSync(certPath, "utf8");
-      const why = certificateStale(certPem, spec);
-      if (!why) return { keyPem, certPem, fresh: false };
+      before = readFileSync(certPath, "utf8");
+      const why = certificateStale(before, spec);
+      if (!why) return { keyPem, certPem: before, fresh: false };
       // the key stays: a phone that pinned it at pairing keeps trusting the node
-      log?.info("controller certificate made again on the same key", { reason: why, names: [...spec.dnsNames, ...spec.ips] });
+      log?.info("controller certificate made again on the same key", { reason: why });
     } else if (!key) log?.warn("controller key unreadable; a new pair is made and a paired phone must pair again", { path: keyPath });
   }
-  const pair = generateSelfSigned(spec, key);
+  const names = certificateNamesFor(spec, before);
+  const pair = generateSelfSigned({ ...spec, ...names }, key);
   writeFileSync(keyPath, pair.keyPem, { encoding: "utf8", mode: 0o600 });
   writeFileSync(certPath, pair.certPem, "utf8");
-  log?.info("controller certificate written", { dir, names: [...spec.dnsNames, ...spec.ips] });
+  log?.info("controller certificate written", { dir, names: [...names.dnsNames, ...names.ips] });
   return { ...pair, fresh: true };
+}
+
+// --- the user's own certificate -----------------------------------------------------------------
+
+/** A certificate the user brought, checked: what is served for the names it carries. */
+export interface OwnCertificate {
+  certPem: string;
+  keyPem: string;
+  /** The host names it is served for: its subject alternative names. */
+  names: string[];
+  validTo: number;
+}
+
+/**
+ * The user's certificate and key, read and checked before anything serves them: both files
+ * read, the certificate parses, the key is the certificate's, today is inside its dates, and
+ * it names a host. Throws with the reason, in words for the user, on anything else.
+ */
+export function loadOwnCertificate(certFile: string, keyFile: string, now = Date.now()): OwnCertificate {
+  let certPem: string;
+  let keyPem: string;
+  try {
+    certPem = readFileSync(certFile, "utf8");
+  } catch (e) {
+    throw new Error(`the certificate cannot be read: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  try {
+    keyPem = readFileSync(keyFile, "utf8");
+  } catch (e) {
+    throw new Error(`the key cannot be read: ${e instanceof Error ? e.message : String(e)}`);
+  }
+  let x: X509Certificate;
+  try {
+    // a file that holds a chain has the host's own certificate first
+    x = new X509Certificate(certPem);
+  } catch {
+    throw new Error("the certificate file holds no certificate");
+  }
+  let key: KeyObject;
+  try {
+    key = createPrivateKey(keyPem);
+  } catch {
+    throw new Error("the key file holds no private key (one protected by a passphrase cannot be used)");
+  }
+  if (!x.checkPrivateKey(key)) throw new Error("the key does not match the certificate");
+  const from = new Date(x.validFrom).getTime();
+  const validTo = new Date(x.validTo).getTime();
+  if (Number.isFinite(from) && now < from) throw new Error(`the certificate is not valid before ${new Date(from).toISOString().slice(0, 10)}`);
+  if (!Number.isFinite(validTo) || now >= validTo) throw new Error(`the certificate ran out on ${Number.isFinite(validTo) ? new Date(validTo).toISOString().slice(0, 10) : "a date that cannot be read"}`);
+  const names = [...new Set((certificateNames(certPem)?.dns ?? []).map((n) => n.toLowerCase()))];
+  if (names.length === 0) throw new Error("the certificate names no host (it has no DNS name among its subject alternative names)");
+  return { certPem, keyPem, names, validTo };
+}
+
+/** What changes when either file is written again: their sizes and times, or nothing while one is missing. */
+export function fileStamp(...files: string[]): string | undefined {
+  try {
+    return files.map((f) => `${statSync(f).mtimeMs}:${statSync(f).size}`).join("|");
+  } catch {
+    return undefined;
+  }
 }
 
 /** SHA-256 of the certificate's SubjectPublicKeyInfo as base64: what a native app pins at pairing. */
@@ -274,10 +361,56 @@ export function lanEndpoints(): { ips: string[]; dnsNames: string[] } {
       ips.add(i.address);
     }
   }
-  const host = hostname();
+  const host = hostname().toLowerCase();
   const dnsNames = new Set<string>(["localhost"]);
-  if (host) dnsNames.add(host.toLowerCase());
+  if (host) {
+    dnsNames.add(host);
+    // the name the local network resolves it under
+    if (!host.includes(".")) dnsNames.add(`${host}.local`);
+  }
   return { ips: [...ips], dnsNames: [...dnsNames] };
+}
+
+/**
+ * An adapter that is no network other devices are on: a hypervisor's switch, a container's
+ * bridge, a VPN's tunnel, a peer-to-peer radio link. Told by its name, which is all the
+ * system says of it here.
+ */
+export function virtualAdapter(name: string): boolean {
+  return /^(vEthernet|vboxnet|vmnet|docker|br-|veth|virbr|lxc|lxd|podman|cni|flannel|utun|tun|tap|wg|tailscale|zt|ham|bridge|awdl|llw|anpi|ap\d)/i.test(name) || /Hyper-V|WSL|VirtualBox|VMware|Virtual|Loopback|Tailscale|ZeroTier|WireGuard|Bluetooth|Local Area Connection\*/i.test(name);
+}
+
+const PRIVATE_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/;
+
+/**
+ * The address other devices on the network reach this machine at: its first private IPv4 on
+ * a real adapter; failing that a private one on any adapter, then any that is not loopback.
+ */
+export function pickAddress(interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string | undefined {
+  const real: string[] = [];
+  const other: string[] = [];
+  for (const [name, list] of Object.entries(interfaces)) {
+    for (const i of list ?? []) {
+      if (i.family !== "IPv4" || i.internal) continue;
+      (virtualAdapter(name) ? other : real).push(i.address);
+    }
+  }
+  return real.find((ip) => PRIVATE_V4.test(ip)) ?? other.find((ip) => PRIVATE_V4.test(ip)) ?? real[0] ?? other[0];
+}
+
+/**
+ * Every address another device might type to reach this machine: its private IPv4 addresses
+ * on real adapters, in the system's order. A hypervisor's switch or a VPN's tunnel is no
+ * network another computer is on, so its address is still this machine's (`machineNames`)
+ * and is not offered to anyone.
+ */
+export function reachableAddresses(interfaces: ReturnType<typeof networkInterfaces> = networkInterfaces()): string[] {
+  const out: string[] = [];
+  for (const [name, list] of Object.entries(interfaces)) {
+    if (virtualAdapter(name)) continue;
+    for (const i of list ?? []) if (i.family === "IPv4" && !i.internal && PRIVATE_V4.test(i.address)) out.push(i.address);
+  }
+  return out;
 }
 
 /**
@@ -300,8 +433,8 @@ export function machineNames(): string[] {
   return [...names];
 }
 
-/** The first LAN IPv4 (a private range, not loopback), for the URL a phone types. */
-export function lanAddress(ips: string[] = lanEndpoints().ips): string | undefined {
-  const isPrivate = (ip: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);
-  return ips.find(isPrivate) ?? ips.find((ip) => ip !== "127.0.0.1");
+/** The LAN IPv4 for the URL a device types: the node's own pick among its adapters, or, from a list of addresses, the first private one. */
+export function lanAddress(ips?: string[]): string | undefined {
+  if (ips === undefined) return pickAddress();
+  return ips.find((ip) => PRIVATE_V4.test(ip)) ?? ips.find((ip) => ip !== "127.0.0.1");
 }

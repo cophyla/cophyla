@@ -265,10 +265,17 @@ export interface TunnelOptions {
   path?: "direct" | "turn";
 }
 
+/** A listener's certificates: its own, which answers a connection that names no host or one it does not know, and any others, each for the host name it is served under. */
+export interface ListenerTls {
+  key: string;
+  cert: string;
+  named?: { key: string; cert: string; serverName: string }[];
+}
+
 export interface ListenerOptions {
   host?: string;
   port?: number;
-  tls?: { key: string; cert: string };
+  tls?: ListenerTls;
   listener?: ListenerKind;
   /** The address a peer is taken to come from, given the one its socket says: a test's way to be someone off this machine. */
   peer?: (address: string) => string;
@@ -1024,7 +1031,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const server: Server<Connection> = Bun.serve<Connection>({
     hostname: opts.host ?? deps.config.api.host,
     port: opts.port ?? deps.config.api.port,
-    ...(opts.tls ? { tls: opts.tls } : {}),
+    // The first certificate serves a connection with no name or an unknown one; a named one serves its own name.
+    ...(opts.tls ? { tls: opts.tls.named?.length ? [{ key: opts.tls.key, cert: opts.tls.cert }, ...opts.tls.named] : { key: opts.tls.key, cert: opts.tls.cert } } : {}),
     fetch(req, srv) {
       const url = new URL(req.url);
       const from = srv.requestIP(req)?.address ?? "?";

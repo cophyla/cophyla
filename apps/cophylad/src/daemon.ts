@@ -240,7 +240,7 @@ export interface DaemonOptions {
     exitDelayMs?: number;
   };
   /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
-  lan?: { peer?: (address: string) => string; limiter?: LimiterOptions; sessionLingerMs?: number };
+  lan?: { peer?: (address: string) => string; limiter?: LimiterOptions; sessionLingerMs?: number; ownCertificatePollMs?: number };
   /** `node.restart`'s seams: the successor's check and start, the exit, the delay before the stop. */
   restart?: {
     preflight?: () => void;
@@ -1353,6 +1353,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     // the node's row and what an invite says of the listener follow the switch
     onChange: () => bus.emit("node.state", node()),
     ...(opts.lan?.limiter ? { limiter: opts.lan.limiter } : {}),
+    ...(opts.lan?.ownCertificatePollMs !== undefined ? { ownCertificatePollMs: opts.lan.ownCertificatePollMs } : {}),
     serve: (listener) =>
       startApi(
         {
@@ -1384,7 +1385,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           limiter: listener.limiter,
           serving: listener.serving,
         },
-        { host: config.controller.host, port: config.controller.port, tls: listener.tls, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
+        { host: config.controller.host, port: listener.port ?? config.controller.port, tls: listener.tls, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
       ),
   });
   lan.start();
