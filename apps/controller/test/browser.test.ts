@@ -13,6 +13,7 @@ import { browserStore, guessBrowser, memoryStore, readCredential, STORAGE_KEY, s
 import type { Credential, Storage } from "../src/pairing.ts";
 import { CLAIM_WAIT_MS, openTarget, STREAM_CLAIMED, StreamFrames } from "../src/remote.ts";
 import type { Duplex, Transport, TransportKind } from "../src/transport.ts";
+import { InstallOffer } from "../src/install.ts";
 import { BrowserVoice, LISTEN_KEY, MIC_KEY, SPEAK_KEY } from "../src/voice.ts";
 
 // --- fakes ---------------------------------------------------------------------------------
@@ -442,6 +443,68 @@ describe("where a stream's page goes", () => {
 });
 
 // --- voice ----------------------------------------------------------------------------------
+
+// --- installing the page as an app -----------------------------------------------------------
+
+describe("the browser's offer to install the page", () => {
+  /** A window as far as the offer goes: what listens, and how an event is raised. */
+  function fakeWindow() {
+    const listeners = new Map<string, ((ev: unknown) => void)[]>();
+    return {
+      addEventListener: (type: string, listener: (ev: unknown) => void) => void listeners.set(type, [...(listeners.get(type) ?? []), listener]),
+      raise: (type: string, ev: unknown = {}) => {
+        for (const l of listeners.get(type) ?? []) l(ev);
+      },
+    };
+  }
+  function prompt(outcome: "accepted" | "dismissed" = "accepted") {
+    const p = { held: 0, asked: 0, preventDefault: () => void p.held++, prompt: async () => void p.asked++, userChoice: Promise.resolve({ outcome }) };
+    return p;
+  }
+
+  test("in a wide window the offer is held back from the browser's banner and kept for the settings; it asks once", async () => {
+    const win = fakeWindow();
+    const offer = new InstallOffer(win, { hold: true });
+    let changes = 0;
+    offer.subscribe(() => changes++);
+    expect(offer.available).toBe(false);
+    expect(await offer.prompt()).toBe("unavailable");
+    const p = prompt();
+    win.raise("beforeinstallprompt", p);
+    expect(p.held).toBe(1);
+    expect(offer.available).toBe(true);
+    expect(changes).toBe(1);
+    expect(await offer.prompt()).toBe("accepted");
+    expect(p.asked).toBe(1);
+    // spent, whatever the answer: a second press asks nothing
+    expect(offer.available).toBe(false);
+    expect(await offer.prompt()).toBe("unavailable");
+    expect(p.asked).toBe(1);
+    // the browser offers again when it will, and a no is a no
+    const again = prompt("dismissed");
+    win.raise("beforeinstallprompt", again);
+    expect(offer.available).toBe(true);
+    expect(await offer.prompt()).toBe("dismissed");
+  });
+
+  test("a phone's browser keeps its own way of offering it; installed, the offer is gone", () => {
+    const win = fakeWindow();
+    const offer = new InstallOffer(win, { hold: false });
+    const p = prompt();
+    win.raise("beforeinstallprompt", p);
+    expect(p.held).toBe(0);
+    expect(offer.available).toBe(true);
+    let changes = 0;
+    const stop = offer.subscribe(() => changes++);
+    win.raise("appinstalled");
+    expect(offer.available).toBe(false);
+    expect(offer.installed).toBe(true);
+    expect(changes).toBe(1);
+    stop();
+    win.raise("beforeinstallprompt", prompt());
+    expect(changes).toBe(1);
+  });
+});
 
 describe("voice in a wide window", () => {
   class MapStore {

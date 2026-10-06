@@ -14,6 +14,7 @@
 import type { NotifyAsk } from "@cophyla/viewhost";
 import { keyFromFragment } from "@cophyla/protocol";
 import { boot } from "./app.ts";
+import { InstallOffer } from "./install.ts";
 import { browserStore, codeFromUrl, guessBrowser, guessName } from "./pairing.ts";
 import { lanTransport } from "./transport.ts";
 import { indexedDbCache } from "@cophyla/voicehost";
@@ -24,6 +25,9 @@ const asksShown = new Map<string, Notification>();
 
 /** A wide window with a pointer, on a computer: decided once, so the page does not change form under the user. */
 const desk = window.matchMedia("(min-width: 900px) and (pointer: fine)").matches;
+
+// The browser's offer to install the page, kept for the settings; a wide window has no bar to say it in.
+const install = new InstallOffer(window, { hold: desk });
 
 // A key in the link that opened the page: taken, and gone from the address bar.
 const keyFromLaunch = keyFromFragment(location.hash);
@@ -59,6 +63,7 @@ const app = boot({
   ...(keyFromLaunch ? { keyFromLaunch } : {}),
   address: location.origin,
   ...(marks ? { marks } : {}),
+  install,
   link: {
     store: browserStore(localStorage),
     // the page's own origin, whatever the credential recorded: this page is served by the node it pairs with

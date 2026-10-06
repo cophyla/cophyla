@@ -38,6 +38,7 @@ import { StreamFrames } from "./remote.ts";
 import type { Transport } from "./transport.ts";
 import { bind, dress, elements, render, showInvite } from "./ui.ts";
 import type { PairWith, UiElements } from "./ui.ts";
+import type { InstallOffer } from "./install.ts";
 import { BrowserVoice } from "./voice.ts";
 
 /** What the browser and the native app each supply. */
@@ -63,6 +64,8 @@ export interface AppPlatform {
   address?: string;
   /** Where a tab marks that a shared computer's session was open in it: its session storage. Never the token. */
   marks?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  /** The browser's offer to install the page as an app of its own, while it makes one. */
+  install?: Pick<InstallOffer, "available" | "prompt" | "subscribe">;
   /** A web page a view's user clicked (`host.openLink`), in the browser. */
   openLink?: (url: string) => Promise<void>;
   /** An ask to show while the app has a window; the native app leaves this to the push. */
@@ -210,15 +213,21 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
       ? {
           state: () => {
             const c = io.credential;
-            return { name: c?.name ?? platform.name, address: platform.address ?? "", connected: conn.connected, ...(c?.expiresAt !== undefined ? { expiresAt: c.expiresAt } : {}), ...(c?.session ? { session: true } : {}) };
+            // a shared computer keeps nothing, an app of its own least of all
+            const installable = platform.install?.available === true && !c?.session;
+            return { name: c?.name ?? platform.name, address: platform.address ?? "", connected: conn.connected, ...(c?.expiresAt !== undefined ? { expiresAt: c.expiresAt } : {}), ...(c?.session ? { session: true } : {}), ...(installable ? { installable: true } : {}) };
           },
           subscribe: (changed) => {
             deviceWatchers.add(changed);
             return () => deviceWatchers.delete(changed);
           },
           forget,
+          ...(platform.install ? { install: async () => void (await platform.install!.prompt()) } : {}),
         }
       : undefined;
+  platform.install?.subscribe(() => {
+    for (const changed of [...deviceWatchers]) changed();
+  });
 
   const hostOpen = platform.hostOpen;
   const viewhost = new ViewHost({

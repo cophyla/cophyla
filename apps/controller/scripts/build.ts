@@ -9,10 +9,12 @@
 // licences. Neither build keeps the policy the page's source carries in a `<meta>`: the node
 // sends the page its policy as a header, which can say more than a `<meta>` can, and the
 // shell serves the native page from an origin of its own, where no `'self'` policy holds.
+// The node's page takes its manifest and its icons along, so a browser can install it as an
+// app; the native page, which is installed as its shell, carries neither nor a word of them.
 
-import { copyFileSync, mkdirSync, rmSync } from "node:fs";
+import { copyFileSync, cpSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { CONTROLLER_META_CSP } from "@cophyla/protocol";
+import { CONTROLLER_INSTALL_TAGS, CONTROLLER_META_CSP } from "@cophyla/protocol";
 import { buildVoiceAssets } from "@cophyla/voicehost/build";
 
 const native = process.argv.includes("--native");
@@ -46,7 +48,12 @@ const build = async (entry: string, naming: string) => {
 
 await build(native ? "native.ts" : "main.ts", "main.js");
 copyFileSync(join(root, "src", "controller.css"), join(dist, "controller.css"));
-await Bun.write(join(dist, "index.html"), (await Bun.file(join(root, "src", "index.html")).text()).replace(CONTROLLER_META_CSP, ""));
+const page = (await Bun.file(join(root, "src", "index.html")).text()).replace(CONTROLLER_META_CSP, "");
+await Bun.write(join(dist, "index.html"), native ? page.replace(CONTROLLER_INSTALL_TAGS, "") : page);
+if (!native) {
+  copyFileSync(join(root, "src", "app.webmanifest"), join(dist, "app.webmanifest"));
+  cpSync(join(root, "src", "icons"), join(dist, "icons"), { recursive: true });
+}
 // The view picker's and the settings' looks are viewhost's, shared with the desktop app.
 copyFileSync(Bun.resolveSync("@cophyla/viewhost/chooser.css", root), join(dist, "chooser.css"));
 copyFileSync(Bun.resolveSync("@cophyla/viewhost/settings.css", root), join(dist, "settings.css"));

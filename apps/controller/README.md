@@ -39,6 +39,30 @@ lan status` show its SHA-256 fingerprint to check it against. A certificate of y
 a name you own (`[controller] cert_file`, `key_file`) is served under that name with no
 warning.
 
+## Installed as an app
+
+The page can be installed as an app of its own: a window with the frog's icon and no address
+bar, opened from the computer's or the phone's own menu. `src/app.webmanifest` says what it
+is (its name, where it starts, `standalone`, the dark ground) and `src/icons/` holds its
+icons: 192 and 512 on a clear ground, a 512 a launcher may mask, the frog inside the circle
+any mask leaves, and the tile a phone's home screen takes. The page's policy lets the
+manifest be read (`manifest-src 'self'`). There is no service worker: the page is nothing
+without its node, and one kept by the browser would outlive the node's own version of it.
+
+A browser offers the install only over a connection it trusts. Measured in Chromium: with the
+node's certificate trusted it finds nothing in the way and offers it; with only the
+exception a person makes at the warning it does not (`not-from-secure-origin`). So the offer
+comes where the node serves a certificate of your own, or where the node's certificate was
+made trusted on that device. That certificate is no authority (`CA:FALSE`): trusting it
+vouches for the node under the names it carries and for nothing else.
+
+In a wide window, which has no bar of the browser's to say so, the offer is kept
+(`src/install.ts`) and shown in Settings → This browser as Install as an app, while the
+browser makes it; it asks once. A phone's browser keeps its own way of offering it. A shared
+computer is never offered it. An installed app belongs to the address it was installed
+from: a node whose address changes is a new app, which `[controller] address` or a name of
+your own avoids. The native app's build carries no manifest and no word of one.
+
 ```
 bun run apps/controller/scripts/build.ts           # dist/: the page the node serves (LAN only)
 bun run apps/controller/scripts/build.ts --native  # dist-native/: the page the shell wraps (relay on)
@@ -94,6 +118,7 @@ with no menu button gets the view's own, in a thin bar at the top.
 | `src/native/stage.ts` | views written under `Data/views/<id>/<version>/` from `view.get`, a content policy put into the entry page, older versions pruned |
 | `src/native/storage.ts`, `src/native/platform.ts` | the credential store over `@capacitor/preferences`; the platform check and file URLs |
 | `src/remote.ts` | `host.open`, `host.place`, `host.close`: a remote desktop's page in a frame from the node's stream listener, over the whole page or beside the view where the view places it, ended on the node when it closes (`StreamFrames`); links and invites opened outside |
+| `src/install.ts`, `src/app.webmanifest`, `src/icons/` | installing the page as an app: the browser's offer kept for the settings (`InstallOffer`), what the page says it is, and its icons |
 | `src/voice.ts` | the Voice section of Settings in a desktop browser (`BrowserVoice`): the microphone picked, listening for the wake words (off until switched on), no talk key |
 | `chooser.css` (built) | the look of the view picker `host.chooseView` opens, which is `@cophyla/viewhost`'s own; the build copies it beside `controller.css`, since the page's policy refuses inline styles |
 | `src/chrome.ts` | what the page shows, as a value: the screen, the status line and the talk button's words, which controls are live, and where frames go — `streaming`, `detecting` (voicehost's `route`), the screen kept awake. Pure |

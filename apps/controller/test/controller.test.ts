@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { deriveChrome } from "../src/chrome.ts";
 import type { ChromeInput } from "../src/chrome.ts";
-import { CONTROLLER_META_CSP, controllerCsp, inviteLink, inviteText } from "@cophyla/protocol";
+import { CONTROLLER_INSTALL_TAGS, CONTROLLER_META_CSP, controllerCsp, inviteLink, inviteText } from "@cophyla/protocol";
 import type { InviteBody } from "@cophyla/protocol";
 import { codeFromUrl, guessName, INVITE_CLOCK_SLACK_MS, inviteLanNodes, isInviteLink, LISTEN_KEY, parseCode, parseInviteLink, parsePairLink, pkcePair, readCredential, readListen, signInUrl, STORAGE_KEY, writeCredential, writeListen } from "../src/pairing.ts";
 import type { Storage } from "../src/pairing.ts";
@@ -39,6 +39,43 @@ describe("the page's policy", () => {
     expect(built).not.toContain("content-security-policy");
     expect(built).toContain('<meta name="theme-color"');
     expect(built).toContain('<script type="module" src="main.js">');
+  });
+
+  test("the page says what a browser needs to install it: a manifest its policy lets it read, a name, where it starts, and icons of the sizes they say", async () => {
+    const src = new URL("../src/", import.meta.url);
+    const html = await Bun.file(new URL("index.html", src)).text();
+    expect(html).toContain('<link rel="manifest" href="app.webmanifest" />');
+    // the manifest is fetched under its own directive, which `default-src 'none'` would refuse
+    expect(controllerCsp()).toContain("manifest-src 'self';");
+    const manifest = (await Bun.file(new URL("app.webmanifest", src)).json()) as { name: string; short_name: string; start_url: string; scope: string; id: string; display: string; theme_color: string; background_color: string; icons: { src: string; sizes: string; type: string; purpose: string }[] };
+    expect(manifest).toMatchObject({ name: "Cophyla", short_name: "Cophyla", start_url: "/", scope: "/", id: "/", display: "standalone", theme_color: "#14121a", background_color: "#14121a" });
+    // a PNG says its size in its header: width and height, big-endian, after the IHDR tag
+    const sizeOf = async (path: string) => {
+      const bytes = new DataView(await Bun.file(new URL(path, src)).arrayBuffer());
+      expect(bytes.getUint32(12)).toBe(0x49484452);
+      return `${bytes.getUint32(16)}x${bytes.getUint32(20)}`;
+    };
+    for (const icon of manifest.icons) {
+      expect(icon.type).toBe("image/png");
+      expect(await sizeOf(icon.src)).toBe(icon.sizes);
+    }
+    // what a browser asks for before it offers: 192 and 512 as they are, and one a launcher may mask
+    const plain = manifest.icons.filter((i) => i.purpose === "any").map((i) => i.sizes);
+    expect(plain).toEqual(["192x192", "512x512"]);
+    expect(manifest.icons.filter((i) => i.purpose === "maskable").map((i) => i.sizes)).toEqual(["512x512"]);
+    // the page's own icon and a phone's home screen tile are files that are there
+    for (const href of [/<link rel="icon"[^>]*href="([^"]+)"/.exec(html)![1]!, /<link rel="apple-touch-icon"[^>]*href="([^"]+)"/.exec(html)![1]!]) expect(await sizeOf(href)).toMatch(/^(192x192|180x180)$/);
+  });
+
+  test("the native app's page says nothing of installing it: its shell is installed already", async () => {
+    const html = await Bun.file(new URL("../src/index.html", import.meta.url)).text();
+    const native = html.replace(CONTROLLER_META_CSP, "").replace(CONTROLLER_INSTALL_TAGS, "");
+    for (const word of ["manifest", "icons/", "apple-", "mobile-web-app-capable"]) expect(native).not.toContain(word);
+    // and nothing else went with them
+    expect(native).toContain('<meta name="theme-color"');
+    expect(native).toContain("<title>Cophyla</title>");
+    expect(native).toContain('<link rel="stylesheet" href="controller.css" />');
+    expect(native.split("\n").length).toBe(html.replace(CONTROLLER_META_CSP, "").split("\n").length - 5);
   });
 
   test("the stream listener's origin is the one other origin the page may frame", () => {

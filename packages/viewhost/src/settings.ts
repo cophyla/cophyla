@@ -1125,6 +1125,8 @@ export interface DeviceSettingsState {
   expiresAt?: number;
   /** A shared computer's: nothing is kept here, and the access ends when the tab closes. */
   session?: boolean;
+  /** The browser offers to install the page as an app of its own, now. */
+  installable?: boolean;
 }
 
 /** The host as the paired device it is: what it says of itself, and how it is forgotten. */
@@ -1134,6 +1136,8 @@ export interface DeviceSettings {
   subscribe?(changed: () => void): () => void;
   /** Ends this device's access on the node and drops what it kept here. */
   forget(): Promise<void>;
+  /** Has the browser ask whether to install the page as an app of its own. */
+  install?(): Promise<void>;
 }
 
 /** When a device's access ends, in words. */
@@ -1381,6 +1385,23 @@ export class SettingsPanel {
       top.append(keep);
     }
     card.append(top, paragraph("host-settings-usage", `${d.connected ? "Connected to" : "Not connected to"} ${d.address}`), paragraph("host-settings-source", deviceEnds(d)));
+    // Offered while the browser offers it: Cophyla in a window of its own, opened like any app.
+    if (d.installable && device.install) {
+      const row = document.createElement("div");
+      row.className = "host-settings-profile-top";
+      const install = document.createElement("button");
+      install.type = "button";
+      install.className = "host-settings-reset";
+      install.dataset["focus"] = "device:install";
+      install.textContent = "Install as an app";
+      install.title = "Cophyla in a window of its own, with its icon, opened from this computer's own menu";
+      install.addEventListener("click", () => {
+        install.disabled = true;
+        void device.install!().catch(() => undefined);
+      });
+      row.append(span("host-settings-name", "Keep Cophyla as an app on this computer"), install);
+      card.append(row);
+    }
     if (this.forgetAsked) card.append(paragraph("host-settings-note", "It will have to be paired again, with a new key or code from a device that is already in."));
     if (this.forgetNote) card.append(paragraph("host-settings-error", this.forgetNote));
     box.append(card);

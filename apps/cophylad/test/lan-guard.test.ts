@@ -31,6 +31,7 @@ function app(): string {
   dirs.push(dir);
   writeFileSync(join(dir, "index.html"), "<!doctype html><title>controller</title>");
   writeFileSync(join(dir, "main.js"), "export const ok = 1;\n");
+  writeFileSync(join(dir, "app.webmanifest"), JSON.stringify({ name: "Cophyla", start_url: "/" }));
   return dir;
 }
 
@@ -75,6 +76,13 @@ describe("the LAN listener's guard", () => {
     expect(page.headers.get("referrer-policy")).toBe("no-referrer");
     expect(page.headers.get("cross-origin-opener-policy")).toBe("same-origin");
     expect(page.headers.get("strict-transport-security")).toBeNull();
+    // the manifest a browser installs the page by: read under the policy's own directive, and served as what it is
+    expect(page.headers.get("content-security-policy")).toContain("manifest-src 'self';");
+    const manifest = await get(`${origin}/app.webmanifest`);
+    expect(manifest.status).toBe(200);
+    expect(manifest.headers.get("content-type")).toBe("application/manifest+json");
+    expect(manifest.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(manifest.headers.get("content-security-policy")).toBeNull();
     const script = await get(`${origin}/main.js`);
     expect(script.headers.get("content-type")).toBe("text/javascript");
     expect(script.headers.get("x-content-type-options")).toBe("nosniff");

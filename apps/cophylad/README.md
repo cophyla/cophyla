@@ -475,8 +475,9 @@ Every request passes the guard first (`api/guard.ts`), `/ws/node` included:
   node) or exactly this listener's own; a foreign page's is a 403. A socket from the
   listener's own page is a browser's: it cannot ask for a forwarder's stream page.
 - **Headers.** The page goes out with its content-security policy as a header
-  (`controllerCsp` in `@cophyla/protocol`: its own origin, the stream listener's as the one
-  other frame, framed by nobody), `nosniff`, no referrer, and a same-origin opener policy.
+  (`controllerCsp` in `@cophyla/protocol`: its own origin, its own manifest, which a browser
+  installs it by and is served as `application/manifest+json`, the stream listener's as the
+  one other frame, framed by nobody), `nosniff`, no referrer, and a same-origin opener policy.
   No HSTS: it would bind every port of the host.
 - **Pairing limiter.** Per address (IPv6 by /64): ten misses of a code, a key, an invite or
   a token in ten minutes, and that address's pairing requests are refused for a minute,

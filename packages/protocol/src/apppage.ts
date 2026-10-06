@@ -3,8 +3,8 @@
 // sent as a response header, on the page alone: a header can say `frame-ancestors`, which a
 // `<meta>` cannot, and can name the one other origin the page frames, the node's stream
 // listener, which is only known when the page is served. The page's scripts, styles, images
-// and sockets are its own origin's; it frames its own origin (a view's files, the document
-// frame) and the stream origin; nothing may frame it. The native app's page carries no policy:
+// and sockets are its own origin's, and so is the manifest a browser installs it by; it frames
+// its own origin (a view's files, the document frame) and the stream origin; nothing may frame it. The native app's page carries no policy:
 // its shell serves it from an origin of its own and its link goes wherever the node is.
 
 export interface ControllerPolicy {
@@ -21,6 +21,7 @@ export function controllerCsp(opts: ControllerPolicy = {}): string {
     "connect-src 'self'",
     `frame-src 'self'${opts.stream !== undefined ? ` ${opts.stream}` : ""}`,
     "worker-src 'self'",
+    "manifest-src 'self'",
     "base-uri 'none'",
     "form-action 'none'",
     "frame-ancestors 'none'",
@@ -36,6 +37,12 @@ export const STREAM_CLAIMED = "cophyla.stream.claimed";
  * loads is offered this address to open once.
  */
 export const STREAM_READY_PATH = "/remote/ready";
+
+/**
+ * What the page's source says of installing it: its manifest, its icon, and what a phone's
+ * home screen reads. The native app's build takes these out: a shell is installed already.
+ */
+export const CONTROLLER_INSTALL_TAGS = /[ \t]*<(?:link\s+rel="(?:manifest|icon|apple-touch-icon)"|meta\s+name="(?:mobile-web-app-capable|apple-mobile-web-app-title)")[^>]*\/>\r?\n?/gi;
 
 /** The policy as the page's source carries it in a `<meta>`, which a build takes out: a served page gets the header. */
 export const CONTROLLER_META_CSP = /<meta\s+http-equiv="content-security-policy"[\s\S]*?\/>\s*/i;

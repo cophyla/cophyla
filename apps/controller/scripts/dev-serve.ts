@@ -26,7 +26,7 @@ const dist = values.dist ?? join(root, "dist");
 const stub = join(root, "test", "fixtures", "stub-view");
 const port = Number(values.port);
 const CODE = "123456";
-const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".map": "application/json" };
+const MIME: Record<string, string> = { ".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".json": "application/json", ".map": "application/json", ".webmanifest": "application/manifest+json", ".png": "image/png" };
 
 if (!existsSync(join(dist, "index.html"))) {
   console.error(`no build at ${dist}: run apps/controller/scripts/build.ts first`);

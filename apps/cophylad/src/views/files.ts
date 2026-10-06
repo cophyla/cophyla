@@ -14,6 +14,7 @@ export const MIME: Record<string, string> = {
   ".html": "text/html",
   ".css": "text/css",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
   ".svg": "image/svg+xml",
   ".png": "image/png",
   ".jpg": "image/jpeg",
