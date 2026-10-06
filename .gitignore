@@ -33,6 +33,8 @@ apps/installer/src-tauri/gen/
 apps/installer/stage/
 # Claude Code worktrees and session files
 .claude/
+# screenshots the Playwright MCP browser leaves where it was run
+.playwright-mcp/
 
 # the embedding model, fetched by apps/cophylad/scripts/fetch-models.ts and staged into the
 # release, and the voice models, which are `model` releases of their own
