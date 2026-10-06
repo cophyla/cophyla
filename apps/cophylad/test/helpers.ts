@@ -221,10 +221,14 @@ export class TestClient {
     });
   }
 
-  /** `insecure` accepts the node's self-signed certificate, as a phone does after the warning. */
-  static connect(url: string, opts: { insecure?: boolean } = {}): Promise<TestClient> {
+  /**
+   * `insecure` accepts the node's self-signed certificate, as a phone does after the warning;
+   * `headers` are sent with the upgrade (an `Origin`, as a page in a browser sends one).
+   */
+  static connect(url: string, opts: { insecure?: boolean; headers?: Record<string, string> } = {}): Promise<TestClient> {
     return new Promise((resolve, reject) => {
-      const ws = opts.insecure ? new WebSocket(url, { tls: { rejectUnauthorized: false } } as never) : new WebSocket(url);
+      const init = { ...(opts.insecure ? { tls: { rejectUnauthorized: false } } : {}), ...(opts.headers ? { headers: opts.headers } : {}) };
+      const ws = opts.insecure || opts.headers ? new WebSocket(url, init as never) : new WebSocket(url);
       ws.addEventListener("open", () => resolve(new TestClient(ws)));
       ws.addEventListener("error", (e) => reject(e));
     });

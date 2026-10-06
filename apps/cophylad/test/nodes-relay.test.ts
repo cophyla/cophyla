@@ -116,4 +116,19 @@ describe("relayed clients", () => {
     expect(closed.code).toBe(4401);
     await waitFor(() => !primary!.d.clients.list().some((cl) => cl.id === hello.result.client.id));
   }, 30_000);
+
+  test("what a relayed client was answered by its own node goes with its socket", async () => {
+    primary = await startPrimary();
+    secondary = await startSecondary(primary);
+    await linked(secondary);
+    const c = await client(secondary);
+    clients.push(c);
+    // `view.stage` is answered here, on the secondary: the ticket is this node's to forget.
+    await c.request<{ base: string }>("view.stage", { id: "default" });
+    expect(secondary.tickets.size).toBe(1);
+    expect(primary.d.tickets.size).toBe(0);
+    c.close();
+    await waitFor(() => secondary!.tickets.size === 0);
+    await waitFor(() => primary!.d.clients.list().length === 0);
+  }, 30_000);
 });

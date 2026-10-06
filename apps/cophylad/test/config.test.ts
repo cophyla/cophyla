@@ -39,7 +39,7 @@ describe("config", () => {
     expect(c.node.tz).toBeUndefined();
     // The phone listener and the microphone are both off until asked for: a fresh node does
     // not open a port on the LAN, and does not fetch a gigabyte of models.
-    expect(c.controller).toEqual({ enabled: false, host: "0.0.0.0", port: 4818, account_pairing: true });
+    expect(c.controller).toEqual({ enabled: false, host: "0.0.0.0", port: 4818, networks: ["local"], account_pairing: true });
     expect(c.voice.enabled).toBe(false);
     expect(c.voice).toMatchObject({
       wake: "openwakeword",
@@ -92,7 +92,7 @@ describe("config", () => {
   });
   test("the controller listener and the voice stages take partial sections, and refuse nonsense", () => {
     const c = parseConfig('[controller]\nenabled = true\nport = 4897\n[voice]\nenabled = true\ntts = "chatterbox"\nchatterbox_voice = "C:\\\\clips\\\\me.wav"\n');
-    expect(c.controller).toEqual({ enabled: true, host: "0.0.0.0", port: 4897, account_pairing: true });
+    expect(c.controller).toEqual({ enabled: true, host: "0.0.0.0", port: 4897, networks: ["local"], account_pairing: true });
     expect(c.voice.tts).toBe("chatterbox");
     expect(c.voice.chatterbox_voice).toBe("C:\\clips\\me.wav");
     // The stages that were not named keep their defaults.

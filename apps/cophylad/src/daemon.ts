@@ -27,7 +27,8 @@ import { CodexHost } from "./assistant/codex.ts";
 import { Assistant } from "./assistant/index.ts";
 import type { AccountPaired, ApiServer } from "./api/server.ts";
 import { ViewTickets } from "./api/tickets.ts";
-import { ensureCertificate, lanAddress, lanEndpoints, spkiHash } from "./api/tls.ts";
+import { Guard, parseNetworks } from "./api/guard.ts";
+import { certificateNames, ensureCertificate, lanAddress, lanEndpoints, machineNames, spkiHash } from "./api/tls.ts";
 import { BrainLink } from "./brain-link/link.ts";
 import { locateBrain, repoRootFromHere } from "./brain-link/locate.ts";
 import { Bus } from "./bus.ts";
@@ -236,6 +237,8 @@ export interface DaemonOptions {
     applyRetryMs?: number;
     exitDelayMs?: number;
   };
+  /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
+  lan?: { peer?: (address: string) => string };
   /** `node.restart`'s seams: the successor's check and start, the exit, the delay before the stop. */
   restart?: {
     preflight?: () => void;
@@ -1228,13 +1231,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...pairingMethods({
       pairing,
       grants,
-      registry: clients,
       url: (code) => `${controllerOrigin()}/?code=${code}`,
       relayAccess: (id, name) => cloud.relayAccess(id, name),
-      onRevoke: (id) => {
-        void cloud.revokeRelay(id);
-        push.unregister(id);
-      },
+      revoke: revokeController,
       push: { register: (id, device) => push.register(id, device), unregister: (id) => push.unregister(id) },
     }),
     ...voiceMethods({ voice, speech: deliver }),
@@ -1332,6 +1331,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     try {
       const endpoints = lanEndpoints();
       const cert = ensureCertificate(p.tls, { dnsNames: endpoints.dnsNames, ips: endpoints.ips }, log.child("controller"));
+      const named = certificateNames(cert.certPem);
+      // Who is served here, under which names, and from which page: this machine's networks, its certificate's names and its own now.
+      const guard = new Guard({
+        networks: parseNetworks(config.controller.networks),
+        names: () => [...machineNames(), ...(named?.dns ?? []), ...(named?.ips ?? []), ...(config.controller.address !== undefined ? [config.controller.address] : [])],
+        scheme: "https",
+        forwarder: true,
+        log: log.child("controller"),
+      });
       controller = startApi(
         {
           config,
@@ -1357,8 +1365,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           remote: remote.proxy,
           relayAccess,
           redeemInvite: (p, via) => phones.redeem(p, via),
+          guard,
         },
-        { host: config.controller.host, port: config.controller.port, tls: { key: cert.keyPem, cert: cert.certPem }, listener: "controller" },
+        { host: config.controller.host, port: config.controller.port, tls: { key: cert.keyPem, cert: cert.certPem }, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
       );
       const lanHost = new URL(controller.origin).hostname;
       lanSpki = spkiHash(cert.certPem);

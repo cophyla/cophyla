@@ -171,6 +171,37 @@ describe("pairing", () => {
     expect(await ui.call("controller.revoke", { id: claimed.client.id })).toMatchObject({ error: { data: { code: "not_found" } } });
   });
 
+  test("a revoke that lands while a hello is being answered leaves no client behind", async () => {
+    const { d, ui, wss } = await start();
+    const offer = await ui.request<{ code: string }>("pair.start", {});
+    const p = await phone(wss);
+    const claimed = await p.request<{ token: string; client: Controller }>("pair.claim", { code: offer.code, name: "Pixel" });
+    // The hello is held once the gate has let it through, as a link coming back or the primary's answer would hold it.
+    const run = d.gate.run.bind(d.gate);
+    let release!: () => void;
+    const held = new Promise<void>((r) => (release = r));
+    let entered!: () => void;
+    const inside = new Promise<void>((r) => (entered = r));
+    d.gate.run = (async (req: Parameters<typeof run>[0], handler: Parameters<typeof run>[1]) => {
+      const result = await run(req, handler);
+      if (req.action === "hello") {
+        entered();
+        await held;
+      }
+      return result;
+    }) as typeof d.gate.run;
+    const hello = p.call("hello", { token: claimed.token, kind: "controller", audio: { in: true, out: true } });
+    await inside;
+    d.gate.run = run;
+    await ui.request("controller.revoke", { id: claimed.client.id });
+    release();
+    // The token authenticated when the hello arrived; the grant is gone by the time it would be registered.
+    expect(await hello).toMatchObject({ error: { data: { code: "denied" } } });
+    expect((await p.closed).code).toBe(4401);
+    expect(d.clients.byController(claimed.client.id)).toEqual([]);
+    expect(d.clients.list().map((c) => c.kind)).toEqual(["ui"]);
+  });
+
   test("every pairing attempt is audited, and the code never reaches the log", async () => {
     const { d, ui, wss } = await start();
     const offer = await ui.request<{ code: string }>("pair.start", {});

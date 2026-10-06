@@ -6,6 +6,7 @@
 
 import { z } from "zod";
 import { BrainChannel, Decision, NodeRole, NodeScope, PrincipalKind, RiskClass, SttEngineId, TtsEngineId } from "@cophyla/protocol";
+import { badNetwork } from "../api/guard.ts";
 
 /** Whether `tz` names a zone Intl knows. */
 function validTz(tz: string): boolean {
@@ -318,6 +319,21 @@ export const ControllerConfig = z.object({
   /** `0.0.0.0` is the point of it: a phone is not on loopback. */
   host: z.string().default("0.0.0.0"),
   port: z.number().int().min(0).max(65535).default(4818),
+  /**
+   * The address or name other devices reach this machine at, when it is not the one the node
+   * would pick (its first private address on a real adapter): the certificate always names it,
+   * a link and a key's address show it, and a request under that name is this machine's.
+   */
+  address: z.string().regex(/^[A-Za-z0-9._-]+$|^[0-9A-Fa-f:.]+$/, "an address or a host name, without a port").optional(),
+  /**
+   * Who the listener serves, by the address they come from: `local` is the private networks
+   * this machine is directly on, a range (`100.64.0.0/10`) is served beside them, `any` is
+   * everyone. This machine itself is always served. Nodes that link here are held to it too.
+   */
+  networks: z.array(z.string().superRefine((entry, ctx) => {
+    const why = badNetwork(entry);
+    if (why) ctx.addIssue({ code: "custom", message: why });
+  })).default(["local"]),
   /** The built controller app; the one beside the daemon by default. */
   app_dir: z.string().min(1).optional(),
   /** A phone signed in with this node's account pairs through the relay with no code. Off, only a code on the LAN pairs one. */

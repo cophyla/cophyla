@@ -79,6 +79,8 @@ import type { Redeemed } from "../grants/phones.ts";
 import type { Grants } from "../grants/store.ts";
 import { assistantRoute, handleAssistant } from "./assistant.ts";
 import type { AssistantIngress } from "./assistant.ts";
+import { appHeaders, refusalResponse, validHost } from "./guard.ts";
+import type { Guard } from "./guard.ts";
 import { handleHook } from "./hooks.ts";
 import type { HookHarness, HookIngress } from "./hooks.ts";
 import type { MethodContext, MethodTable, SignalTable } from "./methods.ts";
@@ -222,6 +224,8 @@ export interface ApiDeps {
   abandonPairing?: (controller: string) => void;
   /** A phone's invite redeemed: its token, row, relay access and LAN pin, and what to do once it has them or has gone. */
   redeemInvite?: (p: { grant: string; secret: string }, via: { peer?: string }) => Promise<Redeemed>;
+  /** Who this listener serves, under which names, and from which page a socket may come: asked first of every request. */
+  guard?: Guard;
 }
 
 /** What `pair.account` answers. */
@@ -251,6 +255,8 @@ export interface ListenerOptions {
   port?: number;
   tls?: { key: string; cert: string };
   listener?: ListenerKind;
+  /** The address a peer is taken to come from, given the one its socket says: a test's way to be someone off this machine. */
+  peer?: (address: string) => string;
 }
 
 interface Connection {
@@ -283,6 +289,8 @@ interface Connection {
   conn?: Conn;
   /** The client shows a stream page through a forwarder of its own (`hello`'s `forward`). */
   forward?: boolean;
+  /** The socket was opened by a page this listener served (its `Origin` is the listener's own): a browser, not an app. */
+  browser?: boolean;
   /** A data channel: the controller it was keyed for, and how it reaches the node. */
   boundController?: string;
   path?: "direct" | "turn";
@@ -293,6 +301,7 @@ export interface Port extends ClientSocket {
   origin: string;
   listener: ListenerKind;
   forward?: boolean;
+  browser?: boolean;
 }
 
 /** One client connection, whatever carries it: Bun's socket on a listener, or a relay tunnel. */
@@ -312,10 +321,6 @@ const MAX_PAYLOAD = 16 * 1024 * 1024;
 /** Wrong codes one socket may try before it is closed. */
 const MAX_CLAIMS_PER_SOCKET = 3;
 
-
-/** A `Host` header safe to put in a URL and a content-security policy. */
-const HOST = /^[A-Za-z0-9._-]+(:\d{1,5})?$/;
-const HOST_IPV6 = /^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
 
 export interface ApiServer {
   port: number;
@@ -344,7 +349,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const send = (ws: Conn, message: unknown) => {
     ws.send(JSON.stringify(message));
   };
-  const portOf = (ws: Conn): Port => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0, origin: ws.data.origin, listener: ws.data.listener, ...(ws.data.forward ? { forward: true } : {}) });
+  const portOf = (ws: Conn): Port => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0, origin: ws.data.origin, listener: ws.data.listener, ...(ws.data.forward ? { forward: true } : {}), ...(ws.data.browser ? { browser: true } : {}) });
 
   const broadcast: ApiServer["broadcast"] = (method, params) => registry.broadcast(method, params);
 
@@ -594,6 +599,12 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       return;
     }
     const p = parsed.data;
+    // A page in a browser reads a stream on the stream port, never through a forwarder: that door's page would sit on the app's own origin.
+    if (p.forward && ws.data.browser) {
+      send(ws, failure(req.id, protocolError("invalid", "a page in a browser has no forwarder")));
+      ws.close(CLOSE_UNAUTHENTICATED, "bad hello");
+      return;
+    }
     // A paired controller's own token first; the shared token is the desktop's, on loopback only.
     const controller = deps.auth.grants?.authenticate(p.token);
     const shared = deps.auth.shared !== undefined && ws.data.listener === "loopback" && tokenMatches(p.token, deps.auth.shared);
@@ -633,6 +644,20 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }
 
     const principal = { kind: "user", client: client.id } as const;
+    /**
+     * The hello was answered over a few awaits (the gate, a link coming back, the primary): the
+     * socket may have closed meanwhile, and the grant it authenticated with may have been
+     * revoked or run out, whose sockets were closed before this one was among them. Checked with
+     * nothing between it and the registration; true when there is nobody to register.
+     */
+    const gone = (): boolean => {
+      if (ws.data.closed) return true;
+      if (!controller || deps.auth.grants!.stands(controller.id)) return false;
+      log.warn("hello refused: the grant ended while it was answered", { controller: controller.id, listener });
+      send(ws, failure(req.id, protocolError("denied", "bad token")));
+      ws.close(CLOSE_UNAUTHENTICATED, "grant ended");
+      return true;
+    };
     try {
       const result = await deps.gate.run(
         { principal, via: client.id, action: "hello", args: { ...p, token: "[redacted]" }, sessionKey: client.id },
@@ -659,6 +684,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         const info: HelloInfo = { kind: p.kind, audio: p.audio, ...(p.name !== undefined ? { name: p.name } : {}), ...(client.node !== undefined ? { node: client.node } : {}) };
         // The phone's grant goes up with it: the primary holds it to its own row, or to this access.
         const relayedResult = await relay.open(peer, info, ws.data.origin, port, controller ? { grant: controller.id, access } : {});
+        if (gone()) {
+          relay.close(peer);
+          return;
+        }
         // The local copy of the client keeps the controller it authenticated as, so a revoke here still closes it.
         const local: Client = { ...relayedResult.client, ...(controller ? { controller: controller.id } : {}) };
         ws.data.client = local;
@@ -669,6 +698,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         holding = false;
         for (const [data, o] of held.splice(0)) direct.send(data, o);
         log.info("client connected, relayed to the primary", { client: relayedResult.client.id, kind: client.kind, name: client.name, node: relayedResult.node });
+        return;
+      }
+      if (gone()) {
+        deps.policy.forgetSession(client.id);
         return;
       }
       ws.data.client = client;
@@ -727,7 +760,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           if (needs !== null && !client.scopes.includes(needs)) throw new RpcError("denied", `${req.method} needs scope ${needs}`);
           const refused = refuseRequest(client.access ?? FULL, name, params as never, registry.look);
           if (refused) throw new RpcError("denied", refused);
-          const mctx: MethodContext = { ...ctx, client, principal, origin: port.origin, listener: port.listener, ...(port.forward ? { forward: true } : {}) };
+          const mctx: MethodContext = { ...ctx, client, principal, origin: port.origin, listener: port.listener, ...(port.forward ? { forward: true } : {}), ...(port.browser ? { browser: true } : {}) };
           return (method as { handler: (p: unknown, c: MethodContext) => unknown }).handler(params, mctx);
         },
       );
@@ -829,10 +862,16 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       if (info.name !== undefined) client.name = info.name;
       if (info.node !== undefined) client.node = info.node;
       const principal = { kind: "user", client: client.id } as const;
+      // Held to this node's own row of its grant: one that goes while the hello is answered takes the client with it.
+      const held = as.grant !== undefined && deps.auth.grants?.get(as.grant) !== undefined;
       const result = await deps.gate.run(
         { principal, via: client.id, action: "hello", args: { ...info, relayedBy }, sessionKey: client.id },
         () => ({ client, node: deps.node().id, protocolVersion: PROTOCOL_VERSION, platformVersion: deps.platformVersion, ...(deps.audio ? { audio: deps.audio } : {}) }),
       );
+      if (held && !deps.auth.grants!.stands(as.grant!)) {
+        deps.policy.forgetSession(client.id);
+        throw new RpcError("denied", `grant ${as.grant} ended`);
+      }
       const full: Port = { ...port, origin, listener: "relay" };
       relayed.set(client.id, { client, port: full });
       registry.add(client, port, "relay");
@@ -858,8 +897,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 
   /** The origin a request came in on, from its `Host`; the listener's own when the header is missing or odd. */
   const originOf = (req: Request, fallback: () => string): string => {
-    const host = req.headers.get("host") ?? "";
-    return HOST.test(host) || HOST_IPV6.test(host) ? `${scheme}://${host}` : fallback();
+    const host = req.headers.get("host");
+    return validHost(host) ? `${scheme}://${host}` : fallback();
   };
 
   const server: Server<Connection> = Bun.serve<Connection>({
@@ -868,10 +907,15 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     ...(opts.tls ? { tls: opts.tls } : {}),
     fetch(req, srv) {
       const url = new URL(req.url);
+      const from = srv.requestIP(req)?.address ?? "?";
+      const remote = opts.peer ? opts.peer(from) : from;
+      // The guard first: a peer off the network, another name that resolves here, or a foreign page's socket gets nothing else.
+      const verdict = deps.guard?.check({ address: remote, host: req.headers.get("host"), origin: req.headers.get("origin"), upgrade: req.headers.get("upgrade")?.toLowerCase() === "websocket", path: url.pathname });
+      if (verdict && !verdict.ok) return refusalResponse(verdict);
+      const browser = verdict?.origin === "own";
       const origin = originOf(req, () => selfOrigin());
-      const remote = srv.requestIP(req)?.address ?? "?";
       if (url.pathname === "/ws/client") {
-        if (srv.upgrade(req, { data: { kind: "client", listener, origin, provisional: newId("client"), failedClaims: 0, remote } satisfies Connection })) return undefined;
+        if (srv.upgrade(req, { data: { kind: "client", listener, origin, provisional: newId("client"), failedClaims: 0, remote, ...(browser ? { browser } : {}) } satisfies Connection })) return undefined;
         return new Response("expected a websocket", { status: 426 });
       }
       // Other nodes link here, on the listener the daemon gave the seam to, while it accepts.
@@ -902,10 +946,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       }
       if (deps.static !== undefined) {
         const file = serveStatic(deps.static, url.pathname);
-        if (file) return new Response(file.bytes, { headers: { "content-type": file.mime, "cache-control": "no-cache" } });
+        if (file) return new Response(file.bytes, { headers: appHeaders(file.mime) });
         // Only the app's own entry falls back to the "not built" page; every other path is a 404.
         if ((url.pathname === "/" || url.pathname === "/index.html") && !isBuilt(deps.static)) {
-          return new Response(NOT_BUILT_PAGE, { status: 200, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-cache" } });
+          return new Response(NOT_BUILT_PAGE, { status: 200, headers: appHeaders("text/html; charset=utf-8") });
         }
       }
       return new Response("not found", { status: 404 });
@@ -1044,14 +1088,12 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     if (client) {
       sockets.delete(client.id);
       registry.remove(client.id);
-      if (ws.data.relayed !== undefined) {
-        deps.nodes?.relay?.close(ws.data.relayed);
-        log.info("relayed client disconnected", { client: client.id, code, reason });
-        return;
-      }
+      if (ws.data.relayed !== undefined) deps.nodes?.relay?.close(ws.data.relayed);
+      // A relayed client too: what this node answered it itself (a staged view, a stream it opened) goes with its socket.
       deps.policy.forgetSession(client.id);
       deps.onDisconnect?.(client);
-      log.info("client disconnected", { client: client.id, code, reason, via: client.via });
+      if (ws.data.relayed !== undefined) log.info("relayed client disconnected", { client: client.id, code, reason });
+      else log.info("client disconnected", { client: client.id, code, reason, via: client.via });
     }
   }
 

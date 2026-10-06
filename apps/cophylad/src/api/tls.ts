@@ -280,6 +280,26 @@ export function lanEndpoints(): { ips: string[]; dnsNames: string[] } {
   return { ips: [...ips], dnsNames: [...dnsNames] };
 }
 
+/**
+ * What a request's `Host` may call this machine: its addresses now, IPv6 ones too, its
+ * hostname, and that name as the local network resolves it (`desk.local`).
+ */
+export function machineNames(): string[] {
+  const names = new Set<string>(["127.0.0.1", "::1", "localhost"]);
+  for (const list of Object.values(networkInterfaces())) {
+    for (const i of list ?? []) {
+      const zone = i.address.indexOf("%");
+      names.add((zone >= 0 ? i.address.slice(0, zone) : i.address).toLowerCase());
+    }
+  }
+  const host = hostname().toLowerCase();
+  if (host) {
+    names.add(host);
+    if (!host.includes(".")) names.add(`${host}.local`);
+  }
+  return [...names];
+}
+
 /** The first LAN IPv4 (a private range, not loopback), for the URL a phone types. */
 export function lanAddress(ips: string[] = lanEndpoints().ips): string | undefined {
   const isPrivate = (ip: string) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ip);

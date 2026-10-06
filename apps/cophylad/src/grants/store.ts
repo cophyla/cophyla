@@ -299,6 +299,12 @@ export class Grants {
     return row?.kind === "controller" ? this.controllerEntity(row) : undefined;
   }
 
+  /** Whether a phone's grant authenticates now: its row is there, redeemed, and not past its end. What a hello checks again once it has been answered. */
+  stands(id: string, at = this.now()): boolean {
+    const row = this.get(id);
+    return row !== undefined && row.kind === "controller" && row.tokenHash !== undefined && !this.expired(row, at);
+  }
+
   /** Records that a grant's holder said `hello`, or linked. */
   touch(id: string, at = this.now()): void {
     this.update(id, (row) => ({ ...row, lastSeen: at }));

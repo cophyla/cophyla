@@ -56,6 +56,8 @@ export interface MethodContext extends GateContext {
   listener: ListenerKind;
   /** The client said it shows a stream page through a forwarder of its own (`hello`'s `forward`). */
   forward?: boolean;
+  /** The client's socket was opened by a page the LAN listener served: a browser, not an app. */
+  browser?: boolean;
 }
 
 export interface Method<N extends ClientRequestName> {
@@ -449,13 +451,12 @@ export function updateMethods(deps: UpdateDeps): MethodTable {
 export interface PairingDeps {
   pairing: Pairing;
   grants: Grants;
-  registry: ClientRegistry;
   /** The URL a phone opens for a code; the controller listener's origin with the code in the query. */
   url: (code: string) => string;
   /** The relay access for one of this node's controllers, minted through the cloud; absent in a daemon without it. */
   relayAccess?: (controller: string, name: string) => Promise<RelayAccess>;
-  /** A controller was revoked: its relay grant and push device are told to the server, best effort. */
-  onRevoke?: (controller: string) => void;
+  /** Ends a controller's grant, the one way every end takes: its sockets close, its relay grant and push device go. */
+  revoke: (controller: string) => void;
   /** The push module: a device registered or forgotten on a controller. */
   push?: { register(controller: string, device: PushDevice): void; unregister(controller: string): void };
   now?: () => number;
@@ -480,10 +481,8 @@ export function pairingMethods(deps: PairingDeps): MethodTable {
       target: (p) => p.id,
       handler: (p) => {
         if (!deps.grants.controller(p.id)) throw new RpcError("not_found", `no controller ${p.id}`);
-        deps.grants.revoke(p.id);
         // Its token is gone; the sockets it authenticated are closed behind it, and the server forgets it.
-        for (const entry of deps.registry.byController(p.id)) deps.registry.close(entry.client.id, 4401, "controller revoked");
-        deps.onRevoke?.(p.id);
+        deps.revoke(p.id);
         return {};
       },
     },
@@ -674,8 +673,11 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
     },
     "remote.open": {
       target: (p) => p.node,
-      handler: (p, ctx) =>
-        p.settings ? deps.remote.settings(ctx.client) : deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}), ...(p.display ? { display: p.display } : {}) }),
+      handler: (p, ctx) => {
+        // The forwarder's door serves its page on the main port: a browser's page there would sit on the app's own origin.
+        if (p.forward && ctx.browser) throw new RpcError("invalid", "a page in a browser has no forwarder: it reads a stream on the stream port");
+        return p.settings ? deps.remote.settings(ctx.client) : deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}), ...(p.display ? { display: p.display } : {}) });
+      },
     },
     "remote.close": {
       target: (p) => p.stream,
