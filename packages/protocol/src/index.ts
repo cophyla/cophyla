@@ -18,6 +18,7 @@ export * from "./quotes.ts";
 export * from "./release.ts";
 export * from "./audio.ts";
 export * from "./docframe.ts";
+export * from "./apppage.ts";
 
 import { entities } from "./entities.ts";
 import { brainRequests, CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";

@@ -27,7 +27,8 @@ import { CodexHost } from "./assistant/codex.ts";
 import { Assistant } from "./assistant/index.ts";
 import type { AccountPaired, ApiServer } from "./api/server.ts";
 import { ViewTickets } from "./api/tickets.ts";
-import { Guard, parseNetworks } from "./api/guard.ts";
+import { Guard, PairLimiter, parseNetworks } from "./api/guard.ts";
+import type { LimiterOptions } from "./api/guard.ts";
 import { certificateNames, ensureCertificate, lanAddress, lanEndpoints, machineNames, spkiHash } from "./api/tls.ts";
 import { BrainLink } from "./brain-link/link.ts";
 import { locateBrain, repoRootFromHere } from "./brain-link/locate.ts";
@@ -238,7 +239,7 @@ export interface DaemonOptions {
     exitDelayMs?: number;
   };
   /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
-  lan?: { peer?: (address: string) => string };
+  lan?: { peer?: (address: string) => string; limiter?: LimiterOptions };
   /** `node.restart`'s seams: the successor's check and start, the exit, the delay before the stop. */
   restart?: {
     preflight?: () => void;
@@ -1366,6 +1367,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           relayAccess,
           redeemInvite: (p, via) => phones.redeem(p, via),
           guard,
+          limiter: new PairLimiter(opts.lan?.limiter),
         },
         { host: config.controller.host, port: config.controller.port, tls: { key: cert.keyPem, cert: cert.certPem }, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
       );

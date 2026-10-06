@@ -1,6 +1,7 @@
 // A fake node for working on the controller page: the built app on `http://127.0.0.1:4819`,
 // a socket that answers `pair.claim`, `hello` and the handful of methods the page uses, and
-// a stub view served under the same frame policy the real listener uses. `localhost` is a
+// a stub view served under the same frame policy the real listener uses, the page itself
+// under the policy the real listener sends it (the one builder makes both). `localhost` is a
 // secure context, so the microphone works with no certificate and no phone. The phone is
 // told to hear the wake word itself; when it says it did, the utterance runs two seconds
 // and the turn ends as a released button's does. The audio frames it sends are counted.
@@ -14,6 +15,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { controllerCsp } from "@cophyla/protocol";
+import { appHeaders } from "../../cophylad/src/api/guard.ts";
 import { viewHeaders } from "../../cophylad/src/api/tickets.ts";
 
 const { values } = parseArgs({ args: Bun.argv.slice(2), options: { port: { type: "string", default: "4819" }, say: { type: "string" }, dist: { type: "string" } }, strict: true });
@@ -119,7 +122,7 @@ const server = Bun.serve<Conn>({
     const rel = url.pathname === "/" ? "index.html" : url.pathname.replace(/^\/+/, "");
     const file = join(dist, rel);
     if (!file.startsWith(dist) || !existsSync(file)) return new Response("not found", { status: 404 });
-    return new Response(readFileSync(file), { headers: { "content-type": MIME[extname(file)] ?? "application/octet-stream", "cache-control": "no-cache" } });
+    return new Response(readFileSync(file), { headers: appHeaders(MIME[extname(file)] ?? "application/octet-stream", controllerCsp()) });
   },
   websocket: {
     open(ws) {

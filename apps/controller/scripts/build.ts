@@ -6,10 +6,13 @@
 // over the shell's plugins, with the relay on. Beside it, voicehost's assets, which the
 // desktop app's host page carries too: the capture worklet, the wake word's worker, and the
 // wake word's files under `wake/`, each checked against its pin, with a NOTICE of their
-// licences.
+// licences. Neither build keeps the policy the page's source carries in a `<meta>`: the node
+// sends the page its policy as a header, which can say more than a `<meta>` can, and the
+// shell serves the native page from an origin of its own, where no `'self'` policy holds.
 
 import { copyFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { CONTROLLER_META_CSP } from "@cophyla/protocol";
 import { buildVoiceAssets } from "@cophyla/voicehost/build";
 
 const native = process.argv.includes("--native");
@@ -42,15 +45,11 @@ const build = async (entry: string, naming: string) => {
 };
 
 await build(native ? "native.ts" : "main.ts", "main.js");
-for (const file of ["index.html", "controller.css"]) copyFileSync(join(root, "src", file), join(dist, file));
+copyFileSync(join(root, "src", "controller.css"), join(dist, "controller.css"));
+await Bun.write(join(dist, "index.html"), (await Bun.file(join(root, "src", "index.html")).text()).replace(CONTROLLER_META_CSP, ""));
 // The view picker's and the settings' looks are viewhost's, shared with the desktop app.
 copyFileSync(Bun.resolveSync("@cophyla/viewhost/chooser.css", root), join(dist, "chooser.css"));
 copyFileSync(Bun.resolveSync("@cophyla/viewhost/settings.css", root), join(dist, "settings.css"));
-if (native) {
-  // the shell serves the page from its own origin and the link goes wherever the node is: no `'self'` policy holds
-  const html = (await Bun.file(join(root, "src", "index.html")).text()).replace(/<meta\s+http-equiv="content-security-policy"[\s\S]*?\/>\s*/i, "");
-  await Bun.write(join(dist, "index.html"), html);
-}
 
 await buildVoiceAssets({ outDir: dist, minify: process.env["NODE_ENV"] === "production" });
 

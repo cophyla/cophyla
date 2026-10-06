@@ -46,6 +46,7 @@ import type { Server, ServerWebSocket } from "bun";
 import {
   clientRequests,
   clientSignals,
+  controllerCsp,
   ControllerId,
   DOC_FRAME_HTML,
   DOC_FRAME_PATH,
@@ -80,7 +81,7 @@ import type { Grants } from "../grants/store.ts";
 import { assistantRoute, handleAssistant } from "./assistant.ts";
 import type { AssistantIngress } from "./assistant.ts";
 import { appHeaders, refusalResponse, validHost } from "./guard.ts";
-import type { Guard } from "./guard.ts";
+import type { Guard, PairLimiter } from "./guard.ts";
 import { handleHook } from "./hooks.ts";
 import type { HookHarness, HookIngress } from "./hooks.ts";
 import type { MethodContext, MethodTable, SignalTable } from "./methods.ts";
@@ -226,6 +227,8 @@ export interface ApiDeps {
   redeemInvite?: (p: { grant: string; secret: string }, via: { peer?: string }) => Promise<Redeemed>;
   /** Who this listener serves, under which names, and from which page a socket may come: asked first of every request. */
   guard?: Guard;
+  /** Counts, per address, the wrong codes, keys, invites and tokens, and the sockets that have not said hello. */
+  limiter?: PairLimiter;
 }
 
 /** What `pair.account` answers. */
@@ -291,6 +294,8 @@ interface Connection {
   forward?: boolean;
   /** The socket was opened by a page this listener served (its `Origin` is the listener's own): a browser, not an app. */
   browser?: boolean;
+  /** The limiter counts this socket among its address's that have not said hello. */
+  counted?: boolean;
   /** A data channel: the controller it was keyed for, and how it reaches the node. */
   boundController?: string;
   path?: "direct" | "turn";
@@ -399,6 +404,30 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     }, HELLO_DEADLINE_MS);
   };
 
+  /** A wrong code, key, invite or token: counted against the address it came from. */
+  const missed = (ws: Conn): void => {
+    const limiter = deps.limiter;
+    if (!limiter) return;
+    const before = limiter.blocked(ws.data.remote);
+    limiter.miss(ws.data.remote);
+    const wait = limiter.blocked(ws.data.remote);
+    if (wait !== undefined && before === undefined) log.warn("too many wrong tries: pairing from this address is refused for a while", { remote: ws.data.remote, seconds: Math.ceil(wait / 1000) });
+  };
+  /** A pairing request from an address whose tries ran out is refused until its wait is over; its hello is still heard. */
+  const throttled = (ws: Conn, req: RpcRequest): boolean => {
+    const wait = deps.limiter?.blocked(ws.data.remote);
+    if (wait === undefined) return false;
+    const seconds = Math.ceil(wait / 1000);
+    send(ws, failure(req.id, protocolError("unavailable", `too many wrong tries from this address: try again in ${seconds < 90 ? `${seconds} s` : `${Math.ceil(seconds / 60)} min`}`, { retryAfterMs: wait })));
+    return true;
+  };
+  /** The socket said hello, or closed: it is no longer one of its address's unauthenticated ones. */
+  const uncount = (ws: Conn): void => {
+    if (!ws.data.counted) return;
+    ws.data.counted = false;
+    deps.limiter?.done(ws.data.remote);
+  };
+
   /** What a client hears right after `hello`: every open prompt, live session, workspace, task and node, as far as its scopes and its access reach. */
   const welcome = (port: Port, client: Client) => {
     const tell = <N extends ClientNotificationName>(method: N, params: ClientNotificationParams<N>) => {
@@ -450,6 +479,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       send(ws, failure(req.id, protocolError("conflict", "already paired on this connection")));
       return;
     }
+    if (throttled(ws, req)) return;
     const parsed = clientRequests["pair.claim"].params.safeParse(req.params ?? {});
     if (!parsed.success) {
       send(ws, failure(req.id, protocolError("invalid", "bad pair.claim params", parsed.error.issues)));
@@ -480,6 +510,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       log.info("controller paired", { controller: result.client.id, name: result.client.name, remote: ws.remoteAddress });
     } catch (e) {
       ws.data.failedClaims++;
+      missed(ws);
       send(ws, failure(req.id, e instanceof RpcError ? e.error : protocolError("denied", "that code is not open")));
       log.warn("pairing code refused", { remote: ws.remoteAddress, attempts: ws.data.failedClaims });
       if (ws.data.failedClaims >= MAX_CLAIMS_PER_SOCKET) ws.close(CLOSE_UNAUTHENTICATED, "too many pairing attempts");
@@ -552,6 +583,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       send(ws, failure(req.id, protocolError("conflict", "already redeemed on this connection")));
       return;
     }
+    if (throttled(ws, req)) return;
     const parsed = clientRequests["invite.redeem"].params.safeParse(req.params ?? {});
     if (!parsed.success) {
       send(ws, failure(req.id, protocolError("invalid", "bad invite.redeem params", parsed.error.issues)));
@@ -585,6 +617,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       }
     } catch (e) {
       ws.data.failedClaims++;
+      missed(ws);
       send(ws, failure(req.id, e instanceof RpcError ? e.error : protocolError("denied", "that invite is not open")));
       log.warn("invite refused", { remote: ws.remoteAddress, attempts: ws.data.failedClaims });
       if (ws.data.failedClaims >= MAX_CLAIMS_PER_SOCKET) ws.close(CLOSE_UNAUTHENTICATED, "too many invite attempts");
@@ -610,6 +643,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     const shared = deps.auth.shared !== undefined && ws.data.listener === "loopback" && tokenMatches(p.token, deps.auth.shared);
     if (!controller && !shared) {
       log.warn("hello refused: bad token", { remote: ws.remoteAddress, listener });
+      missed(ws);
       send(ws, failure(req.id, protocolError("denied", "bad token")));
       ws.close(CLOSE_UNAUTHENTICATED, "bad token");
       return;
@@ -692,6 +726,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         const local: Client = { ...relayedResult.client, ...(controller ? { controller: controller.id } : {}) };
         ws.data.client = local;
         ws.data.relayed = peer;
+        uncount(ws);
         sockets.set(local.id, ws);
         registry.add(local, port, "relayed");
         send(ws, success(req.id, relayedResult));
@@ -705,6 +740,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         return;
       }
       ws.data.client = client;
+      uncount(ws);
       sockets.set(client.id, ws);
       registry.add(client, { send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0 }, ws.data.listener);
       send(ws, success(req.id, result));
@@ -915,7 +951,11 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       const browser = verdict?.origin === "own";
       const origin = originOf(req, () => selfOrigin());
       if (url.pathname === "/ws/client") {
-        if (srv.upgrade(req, { data: { kind: "client", listener, origin, provisional: newId("client"), failedClaims: 0, remote, ...(browser ? { browser } : {}) } satisfies Connection })) return undefined;
+        // One address holds only so many sockets that have not said who they are.
+        const counted = deps.limiter !== undefined;
+        if (counted && !deps.limiter!.open(remote)) return new Response("too many connections from this address", { status: 429, headers: { "cache-control": "no-store" } });
+        if (srv.upgrade(req, { data: { kind: "client", listener, origin, provisional: newId("client"), failedClaims: 0, remote, ...(browser ? { browser } : {}), ...(counted ? { counted } : {}) } satisfies Connection })) return undefined;
+        if (counted) deps.limiter!.done(remote);
         return new Response("expected a websocket", { status: 426 });
       }
       // Other nodes link here, on the listener the daemon gave the seam to, while it accepts.
@@ -946,7 +986,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       }
       if (deps.static !== undefined) {
         const file = serveStatic(deps.static, url.pathname);
-        if (file) return new Response(file.bytes, { headers: appHeaders(file.mime) });
+        // The page's policy is a header, on the page alone.
+        if (file) return new Response(file.bytes, { headers: appHeaders(file.mime, controllerCsp()) });
         // Only the app's own entry falls back to the "not built" page; every other path is a 404.
         if ((url.pathname === "/" || url.pathname === "/index.html") && !isBuilt(deps.static)) {
           return new Response(NOT_BUILT_PAGE, { status: 200, headers: appHeaders("text/html; charset=utf-8") });
@@ -1080,6 +1121,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 
   function closeConn(ws: Conn, code: number, reason: string): void {
     ws.data.closed = true;
+    uncount(ws);
     if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
     // an invite's tunnel the phone closed with its answer: the throwaway peer goes
     ws.data.redeemed?.settle();

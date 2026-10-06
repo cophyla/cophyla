@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { deriveChrome } from "../src/chrome.ts";
 import type { ChromeInput } from "../src/chrome.ts";
-import { inviteLink, inviteText } from "@cophyla/protocol";
+import { CONTROLLER_META_CSP, controllerCsp, inviteLink, inviteText } from "@cophyla/protocol";
 import type { InviteBody } from "@cophyla/protocol";
 import { codeFromUrl, guessName, INVITE_CLOCK_SLACK_MS, inviteLanNodes, isInviteLink, LISTEN_KEY, parseCode, parseInviteLink, parsePairLink, pkcePair, readCredential, readListen, signInUrl, STORAGE_KEY, writeCredential, writeListen } from "../src/pairing.ts";
 import type { Storage } from "../src/pairing.ts";
@@ -26,6 +26,28 @@ class FakeStorage implements Storage {
     this.map.delete(key);
   }
 }
+
+// --- the page's policy -------------------------------------------------------------------------
+
+describe("the page's policy", () => {
+  test("the source's meta holds what the header says, less what only a header can; a build takes it out", async () => {
+    const html = await Bun.file(new URL("../src/index.html", import.meta.url)).text();
+    const meta = /http-equiv="content-security-policy"\s+content="([^"]+)"/i.exec(html)?.[1];
+    expect(meta).toBeDefined();
+    expect(controllerCsp()).toBe(`${meta}; frame-ancestors 'none'`);
+    const built = html.replace(CONTROLLER_META_CSP, "");
+    expect(built).not.toContain("content-security-policy");
+    expect(built).toContain('<meta name="theme-color"');
+    expect(built).toContain('<script type="module" src="main.js">');
+  });
+
+  test("the stream listener's origin is the one other origin the page may frame", () => {
+    const policy = controllerCsp({ stream: "https://192.168.1.44:4820" });
+    expect(policy).toContain("frame-src 'self' https://192.168.1.44:4820;");
+    expect(policy).toContain("script-src 'self';");
+    expect(policy).not.toContain("unsafe");
+  });
+});
 
 // --- pairing ---------------------------------------------------------------------------------
 
