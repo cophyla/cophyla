@@ -92,7 +92,9 @@
     "relay.open": {
       "params": [
         { "peer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", "client": { "kind": "ui", "name": "laptop app", "audio": { "in": false, "out": false } }, "origin": "http://127.0.0.1:4817" },
-        { "peer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "client": { "kind": "controller", "name": "Pixel 8", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }, "origin": "http://127.0.0.1:4817" }
+        { "peer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "client": { "kind": "controller", "name": "Pixel 8", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }, "origin": "http://127.0.0.1:4817" },
+        { "peer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "client": { "kind": "controller", "name": "Firefox on the laptop", "audio": { "in": true, "out": true } }, "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "access": { "scopes": ["chat"], "messages": "send" }, "ends": 1760788800000, "origin": "https://192.168.1.50:4818" },
+        { "peer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FBA", "client": { "kind": "controller", "name": "Library computer", "audio": { "in": false, "out": false } }, "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "access": { "scopes": ["chat"], "messages": "send" }, "ends": 1758240000000, "session": true, "origin": "https://192.168.1.50:4818" }
       ],
       "results": [
         {

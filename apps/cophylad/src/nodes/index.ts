@@ -1362,11 +1362,13 @@ export class Nodes {
    * Mints a node invite: a pending grant and the text that redeems it, naming this node's LAN
    * listener and, when the server can grant one, a throwaway relay peer. The primary alone.
    */
-  async invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number }): Promise<{ grant: Grant; invite: InviteOffer }> {
+  async invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number; endsBy?: number }): Promise<{ grant: Grant; invite: InviteOffer }> {
     if (this.role.role !== "primary" || !this.membership) throw new RpcError("conflict", "only the primary invites a node");
     const now = this.now();
     const inviteExpiresAt = now + (opts.inviteExpiresIn ?? DEFAULT_INVITE_MS);
-    const expiresAt = opts.expiresIn !== undefined ? now + opts.expiresIn : undefined;
+    // `endsBy` is the end of the grant of the client that asked: the node's grant ends no later
+    const asked = opts.expiresIn !== undefined ? now + opts.expiresIn : undefined;
+    const expiresAt = opts.endsBy !== undefined ? Math.min(asked ?? Infinity, opts.endsBy) : asked;
     const port = this.deps.lanPort();
     const spki = this.deps.lanSpki?.();
     const ips = this.deps.lanIps();

@@ -647,6 +647,8 @@
     }
   ],
   "Controller": [
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "name": "Firefox on the laptop", "pairedAt": 1758196800000, "connected": true, "path": "lan", "form": "browser", "expiresAt": 1760788800000 },
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "name": "Library computer", "pairedAt": 1758196800000, "connected": true, "path": "lan", "form": "browser", "session": true, "expiresAt": 1758240000000 },
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "Pixel 8", "pairedAt": 1758196800000, "lastSeen": 1758196900000, "connected": true },
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC2", "name": "iPad", "pairedAt": 1758100000000, "connected": false },
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC3", "name": "Pixel 8", "pairedAt": 1758196800000, "connected": false, "relay": true, "push": { "platform": "android", "registeredAt": 1758196900000 } },
@@ -670,6 +672,7 @@
   "GuestState": ["unlinked", "seeking", "linked", "stopped"],
   "GuestInfo": [{ "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" }, { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC1", "name": "notes", "folder": "/home/me/notes", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "state": "unlinked", "expiresAt": 1758196800000 }],
   "Grant": [
+    { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "kind": "controller", "name": "Firefox on the laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "createdAt": 1758196800000, "expiresAt": 1760788800000, "inviteExpiresAt": 1758197700000, "connected": false, "form": "browser" },
     {
       "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1",
       "kind": "node",

@@ -77,7 +77,7 @@ import type { Logger } from "../log.ts";
 import { clientResult, clientRow, ClientRegistry, forAccess } from "./clients.ts";
 import type { ClientSocket, ListenerKind, SendOptions } from "./clients.ts";
 import type { Redeemed } from "../grants/phones.ts";
-import type { Grants } from "../grants/store.ts";
+import type { Grants, RedeemHow } from "../grants/store.ts";
 import { assistantRoute, handleAssistant } from "./assistant.ts";
 import type { AssistantIngress } from "./assistant.ts";
 import { appHeaders, refusalResponse, validHost } from "./guard.ts";
@@ -153,10 +153,12 @@ export interface NodesSeams {
   relay?: RelayUplink;
 }
 
-/** What a relayed client authenticated as on the node it came to: its grant there, and that grant's access. */
+/** What a relayed client authenticated as on the node it came to: its grant there, that grant's access, when it ends and whether it is a shared computer's session. */
 export interface RelayedAs {
   grant?: string;
   access?: Access;
+  ends?: number;
+  session?: boolean;
 }
 
 /** On a secondary: a client's hello answered by the primary, its frames tunnelled from then on. */
@@ -224,7 +226,7 @@ export interface ApiDeps {
   /** A controller whose pairing answer found the tunnel gone: the phone never got its token, so the row and its relay access go. */
   abandonPairing?: (controller: string) => void;
   /** A phone's invite redeemed: its token, row, relay access and LAN pin, and what to do once it has them or has gone. */
-  redeemInvite?: (p: { grant: string; secret: string }, via: { peer?: string }) => Promise<Redeemed>;
+  redeemInvite?: (p: { grant: string; secret: string }, via: { peer?: string }, how: RedeemHow) => Promise<Redeemed>;
   /** Who this listener serves, under which names, and from which page a socket may come: asked first of every request. */
   guard?: Guard;
   /** Counts, per address, the wrong codes, keys, invites and tokens, and the sockets that have not said hello. */
@@ -296,6 +298,9 @@ interface Connection {
   browser?: boolean;
   /** The limiter counts this socket among its address's that have not said hello. */
   counted?: boolean;
+  /** The end of the grant the client said hello with, and whether it is a shared computer's session. */
+  ends?: number;
+  session?: boolean;
   /** A data channel: the controller it was keyed for, and how it reaches the node. */
   boundController?: string;
   path?: "direct" | "turn";
@@ -307,6 +312,8 @@ export interface Port extends ClientSocket {
   listener: ListenerKind;
   forward?: boolean;
   browser?: boolean;
+  ends?: number;
+  session?: boolean;
 }
 
 /** One client connection, whatever carries it: Bun's socket on a listener, or a relay tunnel. */
@@ -354,7 +361,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const send = (ws: Conn, message: unknown) => {
     ws.send(JSON.stringify(message));
   };
-  const portOf = (ws: Conn): Port => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0, origin: ws.data.origin, listener: ws.data.listener, ...(ws.data.forward ? { forward: true } : {}), ...(ws.data.browser ? { browser: true } : {}) });
+  const portOf = (ws: Conn): Port => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0, origin: ws.data.origin, listener: ws.data.listener, ...(ws.data.forward ? { forward: true } : {}), ...(ws.data.browser ? { browser: true } : {}), ...lifetimeOf(ws.data) });
+
+  /** A grant's end and its kind, as a port and a relayed client carry them: only what is there. */
+  const lifetimeOf = (of: { ends?: number; session?: boolean }): { ends?: number; session?: boolean } => ({ ...(of.ends !== undefined ? { ends: of.ends } : {}), ...(of.session ? { session: true } : {}) });
 
   const broadcast: ApiServer["broadcast"] = (method, params) => registry.broadcast(method, params);
 
@@ -494,7 +504,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         // The code is not audited: the row would be the pairing secret in the log.
         { principal, action: "pair.claim", args: { name: p.name }, sessionKey: ws.data.provisional },
         async () => {
-          const paired = pairing.claim(p.code, p.name);
+          const paired = pairing.claim(p.code, p.name, ws.data.browser ? { browser: true } : {});
           if (!paired) throw new RpcError("denied", "that code is not open");
           // the relay access rides along when the node can mint it now; the phone asks `relay.info` later otherwise
           const relay = await deps.relayAccess?.(paired.controller.id, paired.controller.name);
@@ -597,7 +607,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       const client = await deps.gate.run(
         { principal, action: "invite.redeem", args: { grant: p.grant, name: p.name }, sessionKey: ws.data.provisional },
         async () => {
-          redeemed = await deps.redeemInvite!({ grant: p.grant, secret: p.secret }, ws.data.invite ? { peer: ws.data.invite.peer } : {});
+          redeemed = await deps.redeemInvite!({ grant: p.grant, secret: p.secret }, ws.data.invite ? { peer: ws.data.invite.peer } : {}, ws.data.browser ? { browser: true } : {});
           return redeemed.answer.client;
         },
       );
@@ -675,6 +685,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     if (controller) {
       client.controller = controller.id;
       if (client.name === undefined) client.name = controller.name;
+      if (controller.expiresAt !== undefined) ws.data.ends = controller.expiresAt;
+      if (controller.session) ws.data.session = true;
     }
 
     const principal = { kind: "user", client: client.id } as const;
@@ -717,7 +729,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         const port: Port = { ...direct, send: (data, o) => (holding ? void held.push([data, o]) : direct.send(data, o)) };
         const info: HelloInfo = { kind: p.kind, audio: p.audio, ...(p.name !== undefined ? { name: p.name } : {}), ...(client.node !== undefined ? { node: client.node } : {}) };
         // The phone's grant goes up with it: the primary holds it to its own row, or to this access.
-        const relayedResult = await relay.open(peer, info, ws.data.origin, port, controller ? { grant: controller.id, access } : {});
+        const relayedResult = await relay.open(peer, info, ws.data.origin, port, controller ? { grant: controller.id, access, ...lifetimeOf(ws.data) } : {});
         if (gone()) {
           relay.close(peer);
           return;
@@ -796,7 +808,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           if (needs !== null && !client.scopes.includes(needs)) throw new RpcError("denied", `${req.method} needs scope ${needs}`);
           const refused = refuseRequest(client.access ?? FULL, name, params as never, registry.look);
           if (refused) throw new RpcError("denied", refused);
-          const mctx: MethodContext = { ...ctx, client, principal, origin: port.origin, listener: port.listener, ...(port.forward ? { forward: true } : {}), ...(port.browser ? { browser: true } : {}) };
+          const mctx: MethodContext = { ...ctx, client, principal, origin: port.origin, listener: port.listener, ...(port.forward ? { forward: true } : {}), ...(port.browser ? { browser: true } : {}), ...lifetimeOf(port) };
           return (method as { handler: (p: unknown, c: MethodContext) => unknown }).handler(params, mctx);
         },
       );
@@ -871,28 +883,28 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   /**
    * A relayed client's access: the primary's own row of its grant when it keeps one (a phone
    * paired here, come in through a backup), else what the relaying node holds of it (a phone
-   * paired there), else everything (a desktop on that node).
+   * paired there), else everything (a desktop on that node). Its grant's end comes the same way.
    */
-  const relayedAccess = (as: RelayedAs): Access => {
+  const relayedAccess = (as: RelayedAs): { access: Access; ends?: number; session?: boolean } => {
     if (as.grant !== undefined) {
       const row = deps.auth.grants?.get(as.grant);
       if (row) {
         if (row.kind !== "controller" || deps.auth.grants!.status(row) !== "active" || deps.auth.grants!.expired(row)) throw new RpcError("denied", `grant ${as.grant} is not a phone's that may connect`);
-        return row.access;
+        return { access: row.access, ...lifetimeOf({ ...(row.expiresAt !== undefined ? { ends: row.expiresAt } : {}) }) };
       }
     }
     if (as.access !== undefined) {
       const why = validateAccess(as.access);
       if (why) throw new RpcError("invalid", `the relayed client's access: ${why}`);
-      return as.access;
+      return { access: as.access, ...lifetimeOf(as) };
     }
-    return FULL;
+    return { access: FULL };
   };
 
   const relayHost: RelayHost = {
     open: async (info, origin, port, relayedBy, as = {}) => {
       const now = Date.now();
-      const access = relayedAccess(as);
+      const { access, ...lifetime } = relayedAccess(as);
       const client: Client = { id: newId("client", now), kind: info.kind, scopes: [...access.scopes], access, via: "relay", audio: info.audio, connectedAt: now };
       if (as.grant !== undefined && ControllerId.safeParse(as.grant).success) client.controller = as.grant;
       if (info.name !== undefined) client.name = info.name;
@@ -908,7 +920,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         deps.policy.forgetSession(client.id);
         throw new RpcError("denied", `grant ${as.grant} ended`);
       }
-      const full: Port = { ...port, origin, listener: "relay" };
+      const full: Port = { ...port, origin, listener: "relay", ...lifetime };
       relayed.set(client.id, { client, port: full });
       registry.add(client, port, "relay");
       log.info("relayed client connected", { client: client.id, kind: client.kind, name: client.name, from: relayedBy });

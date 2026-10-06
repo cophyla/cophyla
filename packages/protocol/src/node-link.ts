@@ -167,6 +167,9 @@ export const nodeLinkRequests = {
       grant: GrantRef.optional(),
       /** The client's access as the secondary holds it, for a grant the primary does not keep (a phone paired there). */
       access: Access.optional(),
+      /** When that grant ends, and whether it is a shared computer's session: what the client mints on the primary outlives neither, and a session mints nothing. */
+      ends: Timestamp.optional(),
+      session: z.boolean().optional(),
       /** The origin the client reached the secondary on, for URLs it must be able to fetch. */
       origin: z.string(),
     }),

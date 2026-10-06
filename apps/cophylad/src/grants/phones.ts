@@ -10,7 +10,9 @@
 import { inviteLink, inviteText, newId, RpcError, validateAccess } from "@cophyla/protocol";
 import type { Access, Controller, Grant, InviteBody, InviteOffer, PairedLan, RelayAccess } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
-import type { Grants, InviteRow } from "./store.ts";
+import type { Lifetime } from "./lifetime.ts";
+import { boundedBy } from "./lifetime.ts";
+import type { Grants, InviteRow, RedeemHow } from "./store.ts";
 
 /** How long a phone's invite may be redeemed when the minter does not say. */
 export const DEFAULT_PHONE_INVITE_MS = 15 * 60_000;
@@ -51,13 +53,13 @@ export class PhoneInvites {
     return (this.deps.now ?? Date.now)();
   }
 
-  /** Mints a phone's pending grant and the invite that redeems it; `minter` bounds the access it may carry. */
-  async invite(opts: { name: string; access: Access; expiresIn?: number; inviteExpiresIn?: number }, minter: Access): Promise<{ grant: Grant; invite: InviteOffer }> {
+  /** Mints a phone's pending grant and the invite that redeems it; `minter` bounds the access it may carry, and `held` how long it may run. */
+  async invite(opts: { name: string; access: Access; expiresIn?: number; inviteExpiresIn?: number }, minter: Access, held: Lifetime = {}): Promise<{ grant: Grant; invite: InviteOffer }> {
     const why = validateAccess(opts.access, minter);
     if (why) throw new RpcError("invalid", why);
     const now = this.now();
     const inviteExpiresAt = now + (opts.inviteExpiresIn ?? DEFAULT_PHONE_INVITE_MS);
-    const expiresAt = opts.expiresIn !== undefined ? now + opts.expiresIn : undefined;
+    const expiresAt = boundedBy(held, opts.expiresIn !== undefined ? now + opts.expiresIn : undefined, now, "invites nobody");
     if (expiresAt !== undefined && expiresAt <= inviteExpiresAt) throw new RpcError("invalid", "the grant would end before its invite does");
     const lan = this.deps.lan();
     let relay: InviteBody["relay"];
@@ -81,14 +83,17 @@ export class PhoneInvites {
    * Redeems a phone's invite: the grant gets a token and a key of its own and the invite burns.
    * `peer` is the throwaway relay peer the redemption came in on, which must be this invite's.
    */
-  async redeem(p: { grant: string; secret: string }, via: { peer?: string } = {}): Promise<Redeemed> {
+  async redeem(p: { grant: string; secret: string }, via: { peer?: string } = {}, how: RedeemHow = {}): Promise<Redeemed> {
     const grants = this.deps.grants;
-    const { row, token, invite } = grants.redeemController(p.grant, p.secret, via.peer);
+    const { row, token, invite, pending } = grants.redeemController(p.grant, p.secret, via.peer, how);
     let relay: RelayAccess | undefined;
-    try {
-      relay = await this.deps.relayAccess(row.id, row.name);
-    } catch {
-      relay = undefined;
+    // a browser's page reaches the node on its own origin alone: no relay access is minted for it
+    if (row.form !== "browser") {
+      try {
+        relay = await this.deps.relayAccess(row.id, row.name);
+      } catch {
+        relay = undefined;
+      }
     }
     const lan = this.deps.lanPin();
     const client = grants.controllerEntity(grants.get(row.id) ?? row);
@@ -98,7 +103,7 @@ export class PhoneInvites {
       settle: () => this.settle(invite),
       abandon: () => {
         if (relay) this.deps.revokeRelay(row.id);
-        grants.reopen(row.id, invite);
+        grants.reopen(pending);
         this.deps.log.warn("a phone left before its invite's answer; the invite is open again", { grant: row.id });
       },
     };

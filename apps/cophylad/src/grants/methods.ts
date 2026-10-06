@@ -2,18 +2,21 @@
 // `controllers` scope a phone with access no wider than its own (`grant.invite`); anyone
 // entitled lists the grants and revokes one, and the desktop of this machine alone joins a
 // primary with an invite or leaves it (`node.join`, `node.leave`). An invite's text is shown
-// to the one who asked and kept in no audit row; so is the invite a join redeems.
+// to the one who asked and kept in no audit row; so is the invite a join redeems. What a client
+// whose own grant ends invites ends no later than it does, and a shared computer's session
+// invites nobody.
 
 import { FULL, isFull, RpcError } from "@cophyla/protocol";
 import type { GrantRole, InviteOffer, Grant } from "@cophyla/protocol";
 import type { MethodContext, MethodTable } from "../api/methods.ts";
+import { boundedBy } from "./lifetime.ts";
 import type { PhoneInvites } from "./phones.ts";
 import type { Grants } from "./store.ts";
 
 export interface GrantMethodDeps {
   grants: Grants;
   nodes: {
-    invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number }): Promise<{ grant: Grant; invite: InviteOffer }>;
+    invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number; endsBy?: number }): Promise<{ grant: Grant; invite: InviteOffer }>;
     join(invite: string, opts: { paths?: string[]; answerHere?: boolean; askPrimary?: boolean }): Promise<{ primary: { id: string; name: string }; role: GrantRole }>;
     leave(): Promise<void>;
     revoke(id: string): Promise<void>;
@@ -46,14 +49,18 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
               ...(p.inviteExpiresIn !== undefined ? { inviteExpiresIn: p.inviteExpiresIn } : {}),
             },
             own,
+            ctx,
           );
         }
         // A node's grant is full access: only a client that has it may hand it on.
         if (!isFull(own)) throw new RpcError("denied", "only a client with full access invites a node");
         if (p.access && !isFull(p.access)) throw new RpcError("invalid", "a node's access is full; its role says what it may be");
+        // a session invites nobody, and what a grant with an end invites ends no later
+        boundedBy(ctx, undefined, Date.now(), "invites nobody");
         return deps.nodes.invite({
           name: p.name,
           role: p.role ?? "full",
+          ...(ctx.ends !== undefined ? { endsBy: ctx.ends } : {}),
           ...(p.expiresIn !== undefined ? { expiresIn: p.expiresIn } : {}),
           ...(p.inviteExpiresIn !== undefined ? { inviteExpiresIn: p.inviteExpiresIn } : {}),
         });

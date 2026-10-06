@@ -726,7 +726,7 @@ export class Outbound {
       // does, and the port holds them until the client has its answer.
       this.relayed.set(peerId, port);
       try {
-        const params = { peer: peerId, client: info, origin, ...(as.grant !== undefined ? { grant: as.grant } : {}), ...(as.access !== undefined ? { access: as.access } : {}) };
+        const params = { peer: peerId, client: info, origin, ...(as.grant !== undefined ? { grant: as.grant } : {}), ...(as.access !== undefined ? { access: as.access } : {}), ...(as.ends !== undefined ? { ends: as.ends } : {}), ...(as.session ? { session: true } : {}) };
         return (await peer.request("relay.open", params, { timeoutMs: this.deps.helloTimeoutMs })) as ClientResult<"hello">;
       } catch (e) {
         this.relayed.delete(peerId);

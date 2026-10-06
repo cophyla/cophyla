@@ -44,6 +44,7 @@ import type { Delivery } from "../voice/delivery.ts";
 import type { Voice } from "../voice/index.ts";
 import type { Workspaces } from "../workspaces/index.ts";
 import type { ClientRegistry, ListenerKind } from "./clients.ts";
+import { boundedBy } from "../grants/lifetime.ts";
 import type { Grants, PushDevice } from "../grants/store.ts";
 import type { Pairing } from "./pairing.ts";
 import type { ViewTickets } from "./tickets.ts";
@@ -58,6 +59,10 @@ export interface MethodContext extends GateContext {
   forward?: boolean;
   /** The client's socket was opened by a page the LAN listener served: a browser, not an app. */
   browser?: boolean;
+  /** When the grant the client authenticated with ends, if it does: nothing it mints outlives that. */
+  ends?: number;
+  /** The client's grant is a shared computer's session: it mints nothing. */
+  session?: boolean;
 }
 
 export interface Method<N extends ClientRequestName> {
@@ -472,7 +477,11 @@ export function pairingMethods(deps: PairingDeps): MethodTable {
     "pair.start": {
       // The code is for the screen that shows it, not for the audit table.
       redactResult: (r) => ({ ...r, code: "[redacted]" }),
-      handler: () => deps.pairing.start(deps.url),
+      handler: (_p, ctx) => {
+        // What the code makes ends no later than the grant of the client that opened the window.
+        boundedBy(ctx, undefined, (deps.now ?? Date.now)(), "pairs nothing");
+        return deps.pairing.start(deps.url, ctx.ends !== undefined ? { endsBy: ctx.ends } : {});
+      },
     },
     "controller.list": {
       handler: () => ({ controllers: deps.grants.controllers() }),

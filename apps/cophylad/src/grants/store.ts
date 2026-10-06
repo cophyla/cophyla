@@ -15,10 +15,16 @@
 //
 // Rows from before grants, under `controllers/<id>`, are moved here in place at start with
 // FULL access, since that is what every phone had.
+//
+// A browser's grant (`form: browser`) always has an end, fixed when it is minted: a page keeps
+// its token where any script of its origin can read it. One minted for a browser carries its
+// form and its end from the mint; a code or a phone's invite spent from a page in a browser
+// becomes a browser's then, with an end no later than thirty days out and never later than
+// the one it had.
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { FULL, newId, RpcError } from "@cophyla/protocol";
-import type { Access, Controller, Grant, GrantKind, GrantRole, GrantStatus, PushPlatform } from "@cophyla/protocol";
+import type { Access, Controller, Grant, GrantForm, GrantKind, GrantRole, GrantStatus, PushPlatform } from "@cophyla/protocol";
 import type { ClientRegistry } from "../api/clients.ts";
 import type { Store } from "../store/index.ts";
 import { CLUSTER_NS, GRANTS_NS, LEGACY_CONTROLLERS_NS, LOCAL_GRANTS_NS } from "./namespaces.ts";
@@ -26,6 +32,10 @@ import { CLUSTER_NS, GRANTS_NS, LEGACY_CONTROLLERS_NS, LOCAL_GRANTS_NS } from ".
 /** Bytes of entropy in a phone's token, and in every key and secret. */
 const TOKEN_BYTES = 32;
 const KEY_BYTES = 32;
+
+/** How long a browser's grant runs unless less is asked, and the most that may be asked. */
+export const BROWSER_GRANT_MS = 30 * 86_400_000;
+export const BROWSER_GRANT_MAX_MS = 90 * 86_400_000;
 
 export interface PushDevice {
   platform: PushPlatform;
@@ -67,6 +77,13 @@ export interface GrantRow {
   rekey?: boolean;
   /** This node grant's node took the replica once, and with it every other node's key: removing it re-keys them. */
   replica?: boolean;
+  /** `browser`: a browser's, whose grant always has an end. */
+  form?: GrantForm;
+}
+
+/** How an invite or a code is being spent: from a page in a browser, which makes the grant a browser's. */
+export interface RedeemHow {
+  browser?: boolean;
 }
 
 type Ns = typeof GRANTS_NS | typeof LOCAL_GRANTS_NS;
@@ -206,6 +223,7 @@ export class Grants {
     if (row.push) out.push = { platform: row.push.platform, registeredAt: row.push.registeredAt };
     if (row.account !== undefined) out.account = row.account;
     if (this.isLocal(row.id)) out.local = true;
+    if (row.form !== undefined) out.form = row.form;
     return out;
   }
 
@@ -241,14 +259,16 @@ export class Grants {
     if (row.push) out.push = { platform: row.push.platform, registeredAt: row.push.registeredAt };
     if (row.account !== undefined) out.account = row.account;
     if (row.expiresAt !== undefined) out.expiresAt = row.expiresAt;
+    if (row.form !== undefined) out.form = row.form;
     return out;
   }
 
   /**
    * A new phone, with the token it keeps and its relay key; the token is never stored and
-   * never shown again. `account` for a phone that paired through the account.
+   * never shown again. `account` for a phone that paired through the account; `form` for a
+   * browser, whose grant must come with an end.
    */
-  createController(name: string, opts: { account?: string; access?: Access; expiresAt?: number } = {}): { controller: Controller; token: string; key: string } {
+  createController(name: string, opts: { account?: string; access?: Access; expiresAt?: number; form?: GrantForm } = {}): { controller: Controller; token: string; key: string } {
     const now = this.now();
     const token = freshSecret(TOKEN_BYTES);
     const key = freshSecret();
@@ -262,7 +282,9 @@ export class Grants {
       createdAt: now,
       ...(opts.account !== undefined ? { account: opts.account } : {}),
       ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
+      ...(opts.form !== undefined ? { form: opts.form } : {}),
     };
+    if (row.form === "browser" && row.expiresAt === undefined) row.expiresAt = now + BROWSER_GRANT_MS;
     this.write(row, now);
     return { controller: this.controllerEntity(row), token, key };
   }
@@ -353,11 +375,13 @@ export class Grants {
   /**
    * A pending grant and the one secret its invite carries, returned once and kept only as its
    * hash. A node's grant is a `grt_` id; a phone's is its controller id. `invitePeer` is the
-   * throwaway relay peer the invite may be redeemed through.
+   * throwaway relay peer the invite may be redeemed through. `secret` is the invite's when the
+   * caller makes it itself (a browser's key, which a person types).
    */
-  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string }): { row: GrantRow; secret: string } {
+  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string; form?: GrantForm; secret?: string }): { row: GrantRow; secret: string } {
     const now = this.now();
-    const secret = freshSecret();
+    const secret = opts.secret ?? freshSecret();
+    if (opts.form === "browser" && opts.expiresAt === undefined) throw new RpcError("invalid", "a browser's grant has an end");
     const row: GrantRow = {
       id: newId(opts.kind === "node" ? "grant" : "controller", now),
       kind: opts.kind,
@@ -367,6 +391,7 @@ export class Grants {
       createdAt: now,
       ...(opts.role !== undefined ? { role: opts.role } : {}),
       ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
+      ...(opts.form !== undefined ? { form: opts.form } : {}),
     };
     this.write(row, now);
     return { row, secret };
@@ -414,26 +439,30 @@ export class Grants {
    * burns. The check and the burn happen with nothing in between, so two redemptions racing
    * each other cannot both win. `peer` is the relay peer the redemption came in on, which
    * must be the invite's own. Refused alike: an invite that is not open, the wrong secret,
-   * another invite's peer. Returns the token, shown once, and the invite it burnt.
+   * another invite's peer. Returns the token, shown once, the invite it burnt, and the row as
+   * it was, for `reopen`. Spent from a page in a browser, a grant that was not minted for one
+   * becomes a browser's, with an end thirty days out at the latest and never later than its own.
    */
-  redeemController(id: string, secret: string, peer?: string): { row: GrantRow; token: string; invite: InviteRow } {
+  redeemController(id: string, secret: string, peer?: string, how: RedeemHow = {}): { row: GrantRow; token: string; invite: InviteRow; pending: GrantRow } {
     const row = this.pending(id);
     if (!row?.invite || row.kind !== "controller" || !secretMatches(secret, row.invite.secretHash) || (peer !== undefined && row.invite.peer !== peer)) {
       throw new RpcError("denied", "that invite is not open");
     }
+    const now = this.now();
     const token = freshSecret(TOKEN_BYTES);
     const { invite, ...rest } = row;
-    const next: GrantRow = { ...rest, key: freshSecret(), tokenHash: hashSecret(token), lastSeen: this.now() };
+    const next: GrantRow = { ...rest, key: freshSecret(), tokenHash: hashSecret(token), lastSeen: now };
+    if (how.browser && next.form !== "browser") {
+      next.form = "browser";
+      next.expiresAt = Math.min(next.expiresAt ?? Infinity, now + BROWSER_GRANT_MS);
+    }
     this.write(next);
-    return { row: next, token, invite };
+    return { row: next, token, invite, pending: row };
   }
 
-  /** Opens a phone's invite again: the phone that redeemed it left before its answer, so it never held the token. */
-  reopen(id: string, invite: InviteRow): void {
-    this.update(id, (row) => {
-      const { tokenHash: _token, key: _key, relay: _relay, lastSeen: _seen, ...rest } = row;
-      return { ...rest, invite };
-    });
+  /** Opens a phone's invite again, the row as it was before it was spent: the phone that redeemed it left before its answer, so it never held the token. */
+  reopen(pending: GrantRow): void {
+    this.update(pending.id, () => ({ ...pending }));
   }
 
   /**

@@ -644,7 +644,7 @@ export class Inbound {
             close: () => void peer.notify("relay.close", { peer: p.peer }),
           },
           peer.id,
-          { ...(p.grant !== undefined ? { grant: p.grant } : {}), ...(p.access !== undefined ? { access: p.access } : {}) },
+          { ...(p.grant !== undefined ? { grant: p.grant } : {}), ...(p.access !== undefined ? { access: p.access } : {}), ...(p.ends !== undefined ? { ends: p.ends } : {}), ...(p.session ? { session: true } : {}) },
         );
         this.relayed.set(key, opened.client.id);
         this.relayedBack.set(opened.client.id, { node: peer.id, peer: p.peer });

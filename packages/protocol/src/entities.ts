@@ -926,12 +926,23 @@ export const PushPlatform = z.enum(["android", "ios"]);
 export type PushPlatform = z.infer<typeof PushPlatform>;
 
 /**
+ * What holds a grant's credential, where that changes its rules. A `browser` keeps its token
+ * in page storage, which any script of the page's origin can read: its grant always has an
+ * end, fixed when it is minted.
+ */
+export const GrantForm = z.enum(["browser"]);
+export type GrantForm = z.infer<typeof GrantForm>;
+
+/**
  * A paired controller: a phone or browser that claimed a pairing code once and holds a
  * token of its own from then on. It outlives its connections; `connected` says whether
  * one is open now. `relay` says the server relay was granted to it, so it reaches the
  * node from any network; `push` names the device it registered for push notifications
  * (the device token itself stays in the node's store). `account` is the GitHub login a
  * phone signed in with when it paired through the account rather than with a code.
+ * `form: browser` is one paired from a page in a browser, with a key, a code or an invite:
+ * its grant ends. `session` is one for a shared computer: kept in the node's memory alone,
+ * it ends soon after its last connection closes, with the daemon, and within half a day.
  */
 export const Controller = z.object({
   id: ControllerId,
@@ -948,6 +959,8 @@ export const Controller = z.object({
   expiresAt: Timestamp.optional(),
   /** How its connection reaches the node now, or last did: the LAN, the relay, a data channel direct or through TURN. */
   path: z.enum(["lan", "relay", "direct", "turn"]).optional(),
+  form: GrantForm.optional(),
+  session: z.boolean().optional(),
 });
 export type Controller = z.infer<typeof Controller>;
 
@@ -991,6 +1004,8 @@ export const Grant = z.object({
   push: z.object({ platform: PushPlatform, registeredAt: Timestamp }).optional(),
   account: z.string().optional(),
   local: z.boolean().optional(),
+  /** `browser` for a browser's grant, pending or redeemed. */
+  form: GrantForm.optional(),
 });
 export type Grant = z.infer<typeof Grant>;
 

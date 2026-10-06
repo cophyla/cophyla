@@ -1318,7 +1318,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
         grants.revoke(id);
         void cloud.revokeRelay(id);
       },
-      redeemInvite: (p, via) => phones.redeem(p, via),
+      redeemInvite: (p, via, how) => phones.redeem(p, via, how),
     },
     { listener: "loopback", ...(opts.port !== undefined ? { port: opts.port } : {}) },
   );
@@ -1365,7 +1365,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           nodes: nodes.seams,
           remote: remote.proxy,
           relayAccess,
-          redeemInvite: (p, via) => phones.redeem(p, via),
+          redeemInvite: (p, via, how) => phones.redeem(p, via, how),
           guard,
           limiter: new PairLimiter(opts.lan?.limiter),
         },
