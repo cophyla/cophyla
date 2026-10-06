@@ -5,7 +5,7 @@
 // lending it means, reads the invite from a file and lends it; `list` and `remove` follow.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseInvite } from "@cophyla/protocol";
@@ -31,8 +31,9 @@ afterEach(async () => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
+/** A folder to lend, named as the file system names it: the daemon answers a folder resolved, and macOS's temp folder is a link. */
 function folder(name = "friend"): string {
-  const root = mkdtempSync(join(tmpdir(), "cophyla-lent-"));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cophyla-lent-")));
   dirs.push(root);
   const dir = join(root, name);
   mkdirSync(dir, { recursive: true });

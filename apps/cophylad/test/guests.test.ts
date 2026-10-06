@@ -11,7 +11,7 @@
 // files, and what it held stays out of sight.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Ask, Session, Workspace } from "@cophyla/protocol";
@@ -44,9 +44,12 @@ async function up(opts: Parameters<typeof startPrimary>[0] = {}): Promise<Primar
   return p;
 }
 
-/** A folder of work outside every home, to lend. */
+/**
+ * A folder of work outside every home, to lend, named as the file system names it: the daemon
+ * answers a folder resolved, and macOS's temp folder is a link.
+ */
 function folder(name = "friend"): string {
-  const root = mkdtempSync(join(tmpdir(), "cophyla-lent-"));
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "cophyla-lent-")));
   dirs.push(root);
   const dir = join(root, name);
   mkdirSync(join(dir, "src"), { recursive: true });

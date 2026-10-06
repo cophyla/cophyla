@@ -16,7 +16,7 @@
 // is. What a claim seeded and the next one does not is put back to the viewer's own.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import type { RemoteState } from "@cophyla/protocol";
@@ -55,9 +55,13 @@ async function start(remoteExtra = ""): Promise<Started> {
   const fake = await startFakeApollo();
   fake.acceptAny = true;
   const seams = remoteSeams();
+  // a page of the test's own for the listener to serve, so its policy is there whether or not the controller app was built
+  const app = join(scratch, "app");
+  mkdirSync(app);
+  writeFileSync(join(app, "index.html"), "<!doctype html><title>controller</title>");
   writeFileSync(
     join(scratch, "config.toml"),
-    `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\n\n[update]\nenabled = false\n\n[node]\nname = "study"\n\n[controller]\nenabled = true\nhost = "127.0.0.1"\nport = 0\n\n[remote]\nenabled = true\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n${remoteExtra}`,
+    `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\n\n[update]\nenabled = false\n\n[node]\nname = "study"\n\n[controller]\nenabled = true\nhost = "127.0.0.1"\nport = 0\napp_dir = ${JSON.stringify(app)}\n\n[remote]\nenabled = true\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n${remoteExtra}`,
   );
   const { startDaemon } = await import("../src/daemon.ts");
   const d = Object.assign(
