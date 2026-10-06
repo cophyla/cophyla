@@ -462,6 +462,8 @@ export interface PairingDeps {
   relayAccess?: (controller: string, name: string) => Promise<RelayAccess>;
   /** Ends a controller's grant, the one way every end takes: its sockets close, its relay grant and push device go. */
   revoke: (controller: string) => void;
+  /** Whether this node serves devices on its network: without it a code could be typed nowhere. Absent, it is not asked. */
+  serving?: () => boolean;
   /** The push module: a device registered or forgotten on a controller. */
   push?: { register(controller: string, device: PushDevice): void; unregister(controller: string): void };
   now?: () => number;
@@ -478,6 +480,7 @@ export function pairingMethods(deps: PairingDeps): MethodTable {
       // The code is for the screen that shows it, not for the audit table.
       redactResult: (r) => ({ ...r, code: "[redacted]" }),
       handler: (_p, ctx) => {
+        if (deps.serving && !deps.serving()) throw new RpcError("unavailable", "this node serves no devices on its network: turn on access on this network first");
         // What the code makes ends no later than the grant of the client that opened the window.
         boundedBy(ctx, undefined, (deps.now ?? Date.now)(), "pairs nothing");
         return deps.pairing.start(deps.url, ctx.ends !== undefined ? { endsBy: ctx.ends } : {});

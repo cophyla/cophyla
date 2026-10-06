@@ -1025,6 +1025,30 @@ export const BrowserInvite = z.object({
 });
 export type BrowserInvite = z.infer<typeof BrowserInvite>;
 
+/**
+ * This node on its own network: whether it serves devices there, and what someone needs to
+ * reach it and to check it is the right machine. `enabled` is the switch (the app's, kept over
+ * `[controller] enabled` once set). `state` is the listener itself: `on` serving devices,
+ * `nodes` up for other nodes' links alone, `off`, or `failed` when it should be up and could
+ * not be (`reason`). `addresses` are what a person types into a browser, best first.
+ * `fingerprints` are the SHA-256 of the node's own certificate as a browser shows it, and of
+ * its key (base64), which a new certificate keeps. `certificate` is the user's own, when one
+ * is configured, with why it is not in use when it is not. `keys` counts the browser keys
+ * minted and not yet typed. `refused` is the last request the listener turned away.
+ */
+export const LanState = z.object({
+  enabled: z.boolean(),
+  state: z.enum(["on", "nodes", "off", "failed"]),
+  reason: z.string().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  addresses: z.array(z.string()),
+  fingerprints: z.object({ certificate: z.string(), key: z.string() }).optional(),
+  certificate: z.object({ names: z.array(z.string()), validTo: Timestamp.optional(), error: z.string().optional() }).optional(),
+  keys: z.number().int().nonnegative(),
+  refused: z.object({ at: Timestamp, address: z.string(), why: z.enum(["peer", "host", "origin"]), detail: z.string() }).optional(),
+});
+export type LanState = z.infer<typeof LanState>;
+
 /** A workspace node's membership: in no cluster, seeking its primary, linked, or its daemon stopping. */
 export const GuestState = z.enum(["unlinked", "seeking", "linked", "stopped"]);
 export type GuestState = z.infer<typeof GuestState>;
@@ -1321,6 +1345,7 @@ export const entities = {
   GrantRole,
   GrantStatus,
   BrowserInvite,
+  LanState,
   GuestState,
   GuestInfo,
   PushPlatform,

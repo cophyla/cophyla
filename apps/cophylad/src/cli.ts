@@ -1,5 +1,5 @@
-// `cophylad invite`, `cophylad join` and `cophylad leave`: thin clients of the running daemon on its
-// loopback listener, authenticated with data/client.token like the desktop app.
+// `cophylad invite`, `cophylad join`, `cophylad leave` and `cophylad lan`: thin clients of the running
+// daemon on its loopback listener, authenticated with data/client.token like the desktop app.
 //
 //   cophylad invite [--name N] [--role hands|full] [--expires 1d] [--invite-expires 1h]
 //   cophylad invite --phone [--name N] [--access full|sessions|view] [--expires 1d] [--invite-expires 15m]
@@ -15,6 +15,10 @@
 //       the primary may work here without asking each time (yes unless answered no), which
 //       --trust and --ask answer beforehand
 //   cophylad leave
+//   cophylad lan on|off|status
+//       whether this machine serves devices on its network (a phone, a browser on another
+//       computer): `on` and `off` set it, kept from then on over `[controller] enabled`, and
+//       each prints where the listener stands, with its addresses and its fingerprints
 //
 // Each takes --home and --port as the daemon does.
 
@@ -25,10 +29,10 @@ import { parseArgs } from "node:util";
 import { encode } from "uqr";
 import { ACCESS_PRESETS, parseInvite, request, UNNAMED_NODE } from "@cophyla/protocol";
 import type { AccessPreset } from "@cophyla/protocol";
-import type { ClientRequestName, ClientResult, RpcMessage } from "@cophyla/protocol";
+import type { ClientRequestName, ClientResult, LanState, RpcMessage } from "@cophyla/protocol";
 import { loadConfig, paths, resolveHome } from "./config/load.ts";
 
-export const COMMANDS = ["invite", "join", "leave"] as const;
+export const COMMANDS = ["invite", "join", "leave", "lan"] as const;
 export type Command = (typeof COMMANDS)[number];
 
 /** `90s`, `30m`, `12h`, `1d`, `2w`, or milliseconds. */
@@ -153,12 +157,32 @@ export async function trustsPrimary(invite: string, flags: { ask?: boolean; trus
   return !/^\s*n/i.test(answer);
 }
 
+/** Where the node stands on its network, as lines for a terminal. */
+export function lanLines(s: LanState): string {
+  const head =
+    s.state === "on"
+      ? "Access on this network is on: devices are served."
+      : s.state === "nodes"
+        ? "Access on this network is off. The listener is up for other nodes' links alone."
+        : s.state === "failed"
+          ? `Access on this network is on, but the listener is not up: ${s.reason ?? "it could not be started"}.`
+          : "Access on this network is off.";
+  const lines = [head];
+  if (s.addresses.length > 0) lines.push(`Open in a browser: ${s.addresses.join("  or  ")}`);
+  if (s.fingerprints) lines.push(`Certificate (SHA-256): ${s.fingerprints.certificate}`, `Key (SHA-256, base64): ${s.fingerprints.key}`);
+  if (s.certificate) lines.push(s.certificate.error !== undefined ? `Your own certificate is not in use: ${s.certificate.error}` : `Your own certificate serves ${s.certificate.names.join(", ")}`);
+  if (s.keys > 0) lines.push(`${s.keys} browser key${s.keys === 1 ? "" : "s"} waiting to be typed.`);
+  if (s.refused) lines.push(`Last refused, ${new Date(s.refused.at).toLocaleString()}: ${s.refused.detail}`);
+  return lines.join("\n") + "\n";
+}
+
 /** One of the commands; `prog` names the program in what it prints, `local` keeps it on this machine. */
 export async function runCommand(command: Command, argv: string[], how: { local?: boolean; prog?: string } = {}): Promise<number> {
   const prog = how.prog ?? "cophylad";
   const as = { ...(how.local ? { local: true } : {}), name: `${prog} cli` };
-  const { values } = parseArgs({
+  const { values, positionals } = parseArgs({
     args: argv,
+    allowPositionals: command === "lan",
     options: {
       home: { type: "string" },
       port: { type: "string" },
@@ -239,6 +263,13 @@ export async function runCommand(command: Command, argv: string[], how: { local?
         await call(where, "node.leave", {}, as);
         process.stdout.write("Left the cluster; this machine runs alone now.\n");
         return 0;
+      }
+      case "lan": {
+        const what = positionals[0] ?? "status";
+        if (positionals.length > 1 || !["on", "off", "status"].includes(what)) throw new Error("say on, off or status");
+        const state = await call(where, what === "on" ? "lan.enable" : what === "off" ? "lan.disable" : "lan.info", {}, as);
+        process.stdout.write(lanLines(state));
+        return state.state === "failed" ? 1 : 0;
       }
     }
   } catch (e) {

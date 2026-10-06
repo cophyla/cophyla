@@ -129,6 +129,10 @@ export const actions = {
   "invite.redeem": { risk: "write", control: true },
   "browser.invite": { risk: "write" },
   "browser.pair": { risk: "write", control: true },
+  "lan.info": { risk: "read" },
+  // Opens the node to the devices on its network; turning it off only closes what is connected there.
+  "lan.enable": { risk: "write" },
+  "lan.disable": { risk: "write" },
   "relay.info": { risk: "read", control: true },
   "push.register": { risk: "write" },
   "push.unregister": { risk: "write" },

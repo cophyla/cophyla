@@ -296,6 +296,9 @@
         { "token": "6f1d0c…", "client": { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "name": "Library computer", "pairedAt": 1758196800000, "connected": false, "form": "browser", "session": true, "expiresAt": 1758240000000 } }
       ]
     },
+    "lan.info": { "params": [{}], "results": [{ "enabled": true, "state": "on", "port": 4818, "addresses": ["https://192.168.1.44:4818"], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "keys": 1 }, { "enabled": true, "state": "failed", "reason": "port 4818 is in use", "addresses": [], "certificate": { "names": [], "error": "the key does not match the certificate" }, "keys": 0 }] },
+    "lan.enable": { "params": [{}], "results": [{ "enabled": true, "state": "on", "port": 4818, "addresses": ["https://192.168.1.44:4818"], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "keys": 1 }] },
+    "lan.disable": { "params": [{}], "results": [{ "enabled": false, "state": "off", "addresses": [], "keys": 0 }, { "enabled": false, "state": "nodes", "port": 4818, "addresses": [], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "keys": 0, "refused": { "at": 1758196900000, "address": "100.101.102.103", "why": "peer", "detail": "100.101.102.103 is not on a network this machine is on; to serve it, add \"100.101.102.0/24\" to [controller] networks" } }] },
     "invite.redeem": {
       "params": [
         { "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC5", "secret": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08", "name": "Work phone" },

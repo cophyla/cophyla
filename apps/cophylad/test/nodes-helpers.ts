@@ -35,6 +35,8 @@ export interface PrimaryOptions {
   home?: string;
   /** No LAN listener at all: other nodes reach this primary through the server relay only. */
   noLan?: boolean;
+  /** The LAN listener up for other nodes alone: no device on the network is served there. */
+  nodesOnly?: boolean;
 }
 
 export interface Primary {
@@ -46,7 +48,7 @@ export interface Primary {
   scratch: string;
 }
 
-/** A primary with its LAN listener on a free port and `[nodes] accept` on. */
+/** A primary with its LAN listener on a free port, `[nodes] accept` on, and devices on its network served there unless `nodesOnly`. */
 export async function startPrimary(opts: PrimaryOptions = {}): Promise<Primary> {
   const scratch = tempHome();
   const brainLog = join(scratch, "brain.log");
@@ -63,7 +65,7 @@ export async function startPrimary(opts: PrimaryOptions = {}): Promise<Primary> 
   }
   const toml =
     `[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
-    `[controller]\nenabled = false\nport = 0\n\n[nodes]\naccept = ${opts.noLan ? "false" : "true"}\ndiscovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nclaim_wait_ms = 300\nrelink_grace_ms = ${opts.relinkGraceMs ?? 200}\n${opts.nodes ?? ""}\n` +
+    `[controller]\nenabled = ${opts.noLan || opts.nodesOnly ? "false" : "true"}\nport = 0\n\n[nodes]\naccept = ${opts.noLan ? "false" : "true"}\ndiscovery = ${opts.discovery ? "true" : "false"}\nheartbeat_ms = ${opts.heartbeatMs ?? 200}\nclaim_wait_ms = 300\nrelink_grace_ms = ${opts.relinkGraceMs ?? 200}\n${opts.nodes ?? ""}\n` +
     brainToml +
     (opts.toml ?? "");
   const home = opts.home ?? scratch;

@@ -24,6 +24,7 @@ import {
   GrantRole,
   GuestInfo,
   HarnessProfile,
+  LanState,
   LaunchMode,
   IceServer,
   Listener,
@@ -754,6 +755,16 @@ export const clientRequests = {
     params: z.object({ key: z.string().min(1).max(64), name: z.string().min(1).max(64), keep: z.boolean().optional() }),
     result: z.object({ token: z.string(), client: Controller }),
   },
+  /**
+   * The node the client's socket is on, on its own network: whether it serves devices there,
+   * its addresses and fingerprints. `lan.enable` turns that on, kept on the node over
+   * `[controller] enabled` from then on, and is asked on the machine itself alone;
+   * `lan.disable` turns it off and closes the devices connected there (the listener stays up
+   * for other nodes' links where they need it).
+   */
+  "lan.info": { params: Empty, result: LanState },
+  "lan.enable": { params: Empty, result: LanState },
+  "lan.disable": { params: Empty, result: LanState },
   /** A paired controller asking its pairing node for the relay access it did not get at pairing; `unavailable` while the node cannot grant it. */
   "relay.info": { params: Empty, result: RelayAccess },
   /** A controller registers the device it receives push notifications on; `push.unregister` forgets it. */

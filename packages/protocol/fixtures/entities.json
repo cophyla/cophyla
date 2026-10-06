@@ -675,6 +675,13 @@
     { "key": "7KQ2-M9XF-3ZTA-B6WD", "address": "https://192.168.1.44:4818", "link": "https://192.168.1.44:4818/#k=7KQ2-M9XF-3ZTA-B6WD", "expiresAt": 1758197700000 },
     { "key": "0000-0000-0000-0001", "address": "https://desk.home.example", "link": "https://desk.home.example/#k=0000-0000-0000-0001", "expiresAt": 1758197700000 }
   ],
+  "LanState": [
+    { "enabled": true, "state": "on", "port": 4818, "addresses": ["https://192.168.1.44:4818"], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "keys": 1 },
+    { "enabled": false, "state": "off", "addresses": [], "keys": 0 },
+    { "enabled": false, "state": "nodes", "port": 4818, "addresses": [], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "keys": 0, "refused": { "at": 1758196900000, "address": "100.101.102.103", "why": "peer", "detail": "100.101.102.103 is not on a network this machine is on; to serve it, add \"100.101.102.0/24\" to [controller] networks" } },
+    { "enabled": true, "state": "on", "port": 4818, "addresses": ["https://desk.home.example:4818", "https://192.168.1.44:4818"], "fingerprints": { "certificate": "3A:1F:9C:02:7D:E4:55:B1:08:6E:A2:C9:40:1D:73:F6:8B:2E:91:5A:C4:07:DE:38:6F:B0:12:A7:4C:E9:53:8D", "key": "q2f0y5Hk9u1m3C1vJb0pZ6oQnqQ8yWm3rX4vA1Rk2tE=" }, "certificate": { "names": ["desk.home.example"], "validTo": 1766000000000 }, "keys": 0 },
+    { "enabled": true, "state": "failed", "reason": "port 4818 is in use", "addresses": [], "certificate": { "names": [], "error": "the key does not match the certificate" }, "keys": 0 }
+  ],
   "Grant": [
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC9", "kind": "controller", "name": "Library computer", "access": { "scopes": ["chat"], "messages": "send" }, "status": "active", "createdAt": 1758196800000, "expiresAt": 1758240000000, "connected": true, "local": true, "form": "browser", "session": true },
     { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8", "kind": "controller", "name": "Firefox on the laptop", "access": { "scopes": ["chat"], "messages": "send" }, "status": "pending", "createdAt": 1758196800000, "expiresAt": 1760788800000, "inviteExpiresAt": 1758197700000, "connected": false, "form": "browser" },

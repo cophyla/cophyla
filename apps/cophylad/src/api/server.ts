@@ -18,6 +18,10 @@
 // where the client is). The controller listener also serves the remote-desktop proxy under
 // `/remote`: a stream page and its socket, behind a ticket `remote.open` minted.
 //
+// The LAN listener may be up for other nodes alone, while the node serves no device on its
+// network (`serving`): it then answers `/ws/node` and refuses everything else at HTTP, before
+// any socket, so a phone turned away keeps its credential and takes the relay.
+//
 // A third way in arrived with milestone 12: a paired phone's tunnel through the server
 // relay, decrypted by the cloud module and handed here as `acceptTunnel`. It is served
 // exactly like a socket on this listener (the same `hello` by controller token, the same
@@ -235,6 +239,8 @@ export interface ApiDeps {
   guard?: Guard;
   /** Counts, per address, the wrong codes, keys, invites and tokens, and the sockets that have not said hello. */
   limiter?: PairLimiter;
+  /** Whether this listener serves devices now; when it says no, only `/ws/node` is answered. Absent, it always does. */
+  serving?: () => boolean;
 }
 
 /** What `pair.account` answers. */
@@ -349,6 +355,8 @@ export interface ApiServer {
   relayHost: RelayHost;
   /** A paired phone's tunnel through the server relay, served like a socket here under the `cloud` listener kind; a pairing one answers `pair.account` alone. */
   acceptTunnel(sock: NodeSocket, opts?: TunnelOptions): NodeSocketHandler;
+  /** Closes every client connection of this listener, said hello or not; node links are left. Returns how many. */
+  closeClients(code: number, reason: string): number;
   stop(): Promise<void>;
 }
 
@@ -361,6 +369,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const scheme = opts.tls ? "https" : "http";
   /** Connections of this listener, so stopping one does not close the other's. */
   const sockets = new Map<string, Conn>();
+  /** Every client connection of this listener, before its hello too. */
+  const conns = new Set<Conn>();
 
   const send = (ws: Conn, message: unknown) => {
     ws.send(JSON.stringify(message));
@@ -1022,6 +1032,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       // The guard first: a peer off the network, another name that resolves here, or a foreign page's socket gets nothing else.
       const verdict = deps.guard?.check({ address: remote, host: req.headers.get("host"), origin: req.headers.get("origin"), upgrade: req.headers.get("upgrade")?.toLowerCase() === "websocket", path: url.pathname });
       if (verdict && !verdict.ok) return refusalResponse(verdict);
+      // Up for other nodes alone: nothing but their links is answered, and the refusal comes before any socket.
+      if (deps.serving && !deps.serving() && url.pathname !== "/ws/node") {
+        return new Response("this node serves no devices on its network", { status: 403, headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" } });
+      }
       const browser = verdict?.origin === "own";
       const origin = originOf(req, () => selfOrigin());
       if (url.pathname === "/ws/client") {
@@ -1113,6 +1127,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   // --- one client connection, on a socket here or in a tunnel ------------------------------------
 
   function openConn(ws: Conn): void {
+    conns.add(ws);
     armHello(ws);
   }
 
@@ -1199,6 +1214,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 
   function closeConn(ws: Conn, code: number, reason: string): void {
     ws.data.closed = true;
+    conns.delete(ws);
     uncount(ws);
     if (ws.data.helloTimer) clearTimeout(ws.data.helloTimer);
     // an invite's tunnel the phone closed with its answer: the throwaway peer goes
@@ -1273,6 +1289,11 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     broadcast,
     relayHost,
     acceptTunnel,
+    closeClients: (code, reason) => {
+      const open = [...conns];
+      for (const ws of open) ws.close(code, reason);
+      return open.length;
+    },
     stop: async () => {
       for (const off of unsubscribe) off();
       for (const ws of sockets.values()) {
@@ -1290,7 +1311,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 }
 
 /** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
-const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "pair.start", "browser.invite", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
+const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "pair.start", "browser.invite", "lan.info", "lan.enable", "lan.disable", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
 
 /** The signals a relayed client sends this node itself: a data channel's candidates end here, where its helper is, and a stream's pipes where they were opened. */
 const LOCAL_SIGNALS = new Set(["direct.candidate", "remote.pipe.data", "remote.pipe.ack", "remote.pipe.close"]);

@@ -28,9 +28,9 @@ import { CodexHost } from "./assistant/codex.ts";
 import { Assistant } from "./assistant/index.ts";
 import type { AccountPaired, ApiServer } from "./api/server.ts";
 import { ViewTickets } from "./api/tickets.ts";
-import { Guard, PairLimiter, parseNetworks } from "./api/guard.ts";
 import type { LimiterOptions } from "./api/guard.ts";
-import { certificateNames, ensureCertificate, lanAddress, lanEndpoints, machineNames, spkiHash } from "./api/tls.ts";
+import { Lan, lanMethods } from "./api/lan.ts";
+import { lanEndpoints } from "./api/tls.ts";
 import { BrainLink } from "./brain-link/link.ts";
 import { locateBrain, repoRootFromHere } from "./brain-link/locate.ts";
 import { Bus } from "./bus.ts";
@@ -310,8 +310,10 @@ export interface Daemon {
   /** Which workspace node owns a folder here. */
   owners: Owners;
   push: Push;
-  /** The LAN listener, when `[controller]` is on, other nodes may link here or this node is a backup, and its certificate could be made. */
-  controller?: ApiServer;
+  /** The LAN listener, while it is up: devices on this network are served there when that is switched on, and other nodes link there. */
+  readonly controller: ApiServer | undefined;
+  /** This node on its own network: the listener and its switch. */
+  lan: Lan;
   stop(): Promise<void>;
 }
 
@@ -747,8 +749,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     routes: { stt: config.providers.stt, tts: config.providers.tts },
   });
 
-  let controller: ApiServer | undefined;
-  const controllerOrigin = () => controller?.origin ?? `https://${lanAddress() ?? "127.0.0.1"}:${config.controller.port}`;
+  /** This node on its own network: built once the api is, and asked from here on by what names the LAN listener. */
+  let lan: Lan | undefined;
 
   // The pipes a stream page's connections ride where there is no route to its desktop: from a
   // phone's forwarder or a window's forwarder here, over the links, to the host's loopback proxy.
@@ -997,14 +999,14 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     grants,
     relayGrant: (peer, o) => cloud.relayGrant(peer, o),
     revokeRelay: (peer) => cloud.revokeRelay(peer),
-    lanSpki: () => lanSpki,
+    lanSpki: () => lan?.spki,
     account: () => cloud.account,
     turn: () => direct.turn.get(),
     tools: { source: (name) => tools.source(name), risk: (name) => tools.risk(name) },
     onGrantsChanged: () => sweepGrants(),
     ...(opts.nodes?.discovery ? { discovery: opts.nodes.discovery } : {}),
     relayHost: () => api?.relayHost,
-    lanPort: () => controller?.port,
+    lanPort: () => lan?.server?.port,
     lanIps: () => lanEndpoints().ips,
     arbiter: () => cloud.arbiter,
     signedIn: () => cloud.signedIn,
@@ -1095,8 +1097,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       return undefined;
     }
   };
-  /** The LAN listener as a phone paired through the account pins it, once that listener is up. */
-  let lanPin: PairedLan | undefined;
   let grantClock: GrantClock | undefined;
   /** A grant that went, or ran out, closes what it authenticated here: on a backup the primary's grants change under the replica. */
   const sweepGrants = (): void => {
@@ -1106,8 +1106,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       if (!row || grants.expired(row, at)) clients.close(entry.client.id, 4401, "grant ended");
     }
   };
-  /** The SHA-256 of the LAN listener's key, whatever address it is on: what a node invite and enrollment carry. */
-  let lanSpki: string | undefined;
   /**
    * A phone that signed in with the account, on its pairing tunnel: a controller of its own
    * and the relay access it needs to come back (without it the pairing fails and leaves no
@@ -1124,7 +1122,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       throw new RpcError("unavailable", `the relay could not be granted: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
     }
     grants.setRelay(row.id, true);
-    return { token, client: { ...row, relay: true }, relay, ...(lanPin ? { lan: lanPin } : {}) };
+    const pin = lan?.pin();
+    return { token, client: { ...row, relay: true }, relay, ...(pin ? { lan: pin } : {}) };
   };
   // The node's terminals as clients see them: a row each, and the screens a client opens; a
   // client of the primary's that opened one through the link (`link:<client>`) has its output
@@ -1207,15 +1206,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     grants,
     identity,
     lan: () => {
-      const port = controller?.port;
-      if (!config.controller.enabled || port === undefined || lanSpki === undefined) return undefined;
+      const port = lan?.server?.port;
+      const spki = lan?.spki;
+      if (!lan?.serving || port === undefined || spki === undefined) return undefined;
       const ips = lanEndpoints().ips;
       const hosts = [...ips.filter((ip) => ip !== "127.0.0.1"), ...ips.filter((ip) => ip === "127.0.0.1")];
-      return hosts.length > 0 ? { hosts, port, spki: lanSpki } : undefined;
+      return hosts.length > 0 ? { hosts, port, spki } : undefined;
     },
-    lanPin: () => lanPin,
-    // the address a person types into a browser on another computer, while the app is served there
-    browserAddress: () => (config.controller.enabled && controller ? controllerOrigin() : undefined),
+    lanPin: () => lan?.pin(),
+    // the address a person types into a browser on another computer, while devices are served there
+    browserAddress: () => lan?.address(),
     relayGrant: (peer, o) => cloud.relayGrant(peer, o),
     relayAccess,
     revokeRelay: (peer) => void cloud.revokeRelay(peer),
@@ -1244,9 +1244,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...pairingMethods({
       pairing,
       grants,
-      url: (code) => `${controllerOrigin()}/?code=${code}`,
+      url: (code) => `${lan!.origin()}/?code=${code}`,
       relayAccess: (id, name) => cloud.relayAccess(id, name),
       revoke: revokeController,
+      serving: () => lan?.serving ?? false,
       push: { register: (id, device) => push.register(id, device), unregister: (id) => push.unregister(id) },
     }),
     ...voiceMethods({ voice, speech: deliver }),
@@ -1265,6 +1266,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       revokeController,
       phones,
     }),
+    ...lanMethods({ lan: () => lan! }),
     ...guestMethods({ guests }),
     ...directMethods({ direct, clients: directClients }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
@@ -1337,24 +1339,22 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   );
 
   // The LAN listener: the same methods, a certificate this node made for itself, the
-  // controller app's files, the pairing window as the only way in for a phone, and
-  // `/ws/node` for other nodes. It comes up for the controller, for `[nodes] accept`, and
-  // on a backup, which must be reachable to take the role.
-  if (config.controller.enabled || config.nodes.accept || config.node.backup) {
-    const app = config.controller.app_dir ?? CONTROLLER_DIST;
-    try {
-      const endpoints = lanEndpoints();
-      const cert = ensureCertificate(p.tls, { dnsNames: endpoints.dnsNames, ips: endpoints.ips }, log.child("controller"));
-      const named = certificateNames(cert.certPem);
-      // Who is served here, under which names, and from which page: this machine's networks, its certificate's names and its own now.
-      const guard = new Guard({
-        networks: parseNetworks(config.controller.networks),
-        names: () => [...machineNames(), ...(named?.dns ?? []), ...(named?.ips ?? []), ...(config.controller.address !== undefined ? [config.controller.address] : [])],
-        scheme: "https",
-        forwarder: true,
-        log: log.child("controller"),
-      });
-      controller = startApi(
+  // controller app's files, the pairing window, a key or an invite as the ways in for a
+  // device, and `/ws/node` for other nodes. `Lan` owns it: up while devices on this network
+  // are served (the app's switch, `[controller] enabled` before it is set), for `[nodes]
+  // accept`, and on a backup, which must be reachable to take the role.
+  const nodeSeams = nodes.seams;
+  lan = new Lan({
+    config,
+    store,
+    tlsDir: p.tls,
+    log: log.child("controller"),
+    openKeys: () => grants.rows().filter((r) => r.form === "browser" && grants.pending(r.id) !== undefined).length,
+    // the node's row and what an invite says of the listener follow the switch
+    onChange: () => bus.emit("node.state", node()),
+    ...(opts.lan?.limiter ? { limiter: opts.lan.limiter } : {}),
+    serve: (listener) =>
+      startApi(
         {
           config,
           log,
@@ -1366,7 +1366,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           auth: { grants },
           pairing,
           tickets,
-          static: app,
+          static: config.controller.app_dir ?? CONTROLLER_DIST,
           node,
           methods,
           signals,
@@ -1375,24 +1375,20 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           initial,
           onDisconnect,
           onRequest: (client, method) => deliver.request(client, method),
-          nodes: nodes.seams,
-          remote: remote.proxy,
+          nodes: nodeSeams,
+          remote: remoteModule.proxy,
           relayAccess,
           redeemInvite: (p, via, how) => phones.redeem(p, via, how),
           pairBrowser: (p, how) => phones.redeemKey(p, how),
-          guard,
-          limiter: new PairLimiter(opts.lan?.limiter),
+          guard: listener.guard,
+          limiter: listener.limiter,
+          serving: listener.serving,
         },
-        { host: config.controller.host, port: config.controller.port, tls: { key: cert.keyPem, cert: cert.certPem }, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
-      );
-      const lanHost = new URL(controller.origin).hostname;
-      lanSpki = spkiHash(cert.certPem);
-      if (lanHost !== "127.0.0.1" && lanHost !== "localhost") lanPin = { host: lanHost, port: controller.port, spki: lanSpki };
-      log.info("controller listener up", { origin: controller.origin, app: config.controller.enabled ? app : "off", nodes: "/ws/node" });
-    } catch (e) {
-      log.error("controller listener off", { error: e instanceof Error ? e.message : String(e) });
-    }
-  }
+        { host: config.controller.host, port: config.controller.port, tls: listener.tls, listener: "controller", ...(opts.lan?.peer ? { peer: opts.lan.peer } : {}) },
+      ),
+  });
+  lan.start();
+  const onLan = lan;
 
   // tether's hosts before the first discovery pass, so a session in one is met with its terminal.
   if (tether) {
@@ -1484,7 +1480,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     hooks: hooks.list().length,
     problems: editable.problems().length,
     voice: config.voice.enabled ? voice.stageStates() : "off",
-    controller: controller?.origin ?? "off",
+    controller: onLan.server ? `${onLan.server.origin}${onLan.enabled ? "" : " (nodes only)"}` : "off",
     metrics: config.metrics.enabled ? metrics.snapshot().engine : "off",
     remote: remote.enabled ? remote.state().host.status : "off",
     nodes: nodes.state(),
@@ -1548,7 +1544,10 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     guests,
     owners,
     push,
-    ...(controller ? { controller } : {}),
+    get controller() {
+      return onLan.server;
+    },
+    lan: onLan,
     stop: async () => {
       stopping = true;
       grantClock?.dispose();
@@ -1578,7 +1577,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await terminalStreams?.stop();
       terminalRows?.stop();
       await tether?.stop();
-      if (controller) await controller.stop();
+      await onLan.stop();
       await api.stop();
       activity.dispose();
       tasks.dispose();
