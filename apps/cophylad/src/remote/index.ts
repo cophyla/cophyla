@@ -730,26 +730,27 @@ export class Remote {
    * page's WebSocket.
    */
   async open(node: string, ctx: OpenContext): Promise<ClientResult<"remote.open">> {
-    // the phone off the LAN: the host's page through its own forwarder and pipes
-    if (ctx.client.kind === "controller" && ctx.forward && (ctx.listener === "cloud" || ctx.listener === "p2p")) return this.openAway(node, ctx.client, "phone");
+    // a host this node has no route to: its page is its own node's, read through pipes
+    const away = node !== this.deps.nodeId && !this.routable(node);
+    // the phone off the LAN, or on it with no route from here to the host: the host's page through its own forwarder and pipes
+    if (ctx.client.kind === "controller" && ctx.forward && (ctx.listener === "cloud" || ctx.listener === "p2p" || away)) return this.openAway(node, ctx.client, "phone");
     if (ctx.embed && ctx.client.kind === "ui" && node === this.deps.nodeId) throw new RpcError("invalid", "this is the desktop the app runs on: it is not shown beside the view");
     // the desktop app on a node with no route to the host: the page through a forwarder here, in a window of its own or beside the view
     if (ctx.client.kind === "ui" && node !== this.deps.nodeId && ctx.client.node === this.deps.nodeId && !this.routable(node)) return this.openAway(node, ctx.client, "window");
     if (ctx.embed && ctx.client.kind === "ui") return this.openBeside(node, ctx.client, ctx.display);
-    const address = this.hostAddress(node);
     if (ctx.client.kind === "controller") {
       if (ctx.listener !== "controller") throw new RpcError("unavailable", "a stream page is served on the controller listener only");
       if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
-      const ids = await this.web.ensureHost(node, address, ctx.client.id);
+      // a browser, and a host this node has no route to: the host's own page, through pipes, served from the stream listener
+      if (away) return this.openAway(node, ctx.client, "browser", { at: this.streamOrigin(ctx.origin), origin: ctx.origin, embed: ctx.embed === true });
+      const ids = await this.web.ensureHost(node, this.hostAddress(node), ctx.client.id);
       const name = ctx.client.name !== undefined ? { name: ctx.client.name } : {};
       if (ctx.forward) {
         const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { door: "forward", ...name, transport: "websocket", secureCookie: false });
         this.log.info("web viewer ticket minted", { node, client: ctx.client.id, forward: true });
         return { path: `/remote/?t=${ticket}`, transport: "websocket", node, stream };
       }
-      const port = this.deps.streamPort?.();
-      const at = port !== undefined ? originOnPort(ctx.origin, port) : undefined;
-      if (at === undefined) throw new RpcError("unavailable", "this node's stream port is not open: a desktop cannot be shown in a browser here");
+      const at = this.streamOrigin(ctx.origin);
       const video = ctx.embed ? streamVideo(this.hostDisplay(node, ctx.display)) : undefined;
       const { ticket, stream } = this.tickets.mint(ctx.client.id, { node, ...ids }, { door: "stream", ancestor: ctx.origin, ...name, ...(video ? { lowLatency: true, video, hideCursor: true } : {}) });
       this.log.info("web viewer ticket minted", { node, client: ctx.client.id, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : {}) });
@@ -757,6 +758,7 @@ export class Remote {
     }
     // A window opens on this machine: only for the desktop app that runs on it.
     if (ctx.client.node !== this.deps.nodeId) throw new RpcError("unsupported", "a viewer window opens only for the desktop app on this machine");
+    const address = this.hostAddress(node);
     if (!(await this.moonlight.paired(address))) {
       const pin = randomPin();
       const child = await this.moonlight.pair(address, pin);
@@ -804,19 +806,33 @@ export class Remote {
     return { url: `http://127.0.0.1:${this.loopback.port()}/remote/?t=${ticket}`, stream, video: { width: video.width, height: video.height } };
   }
 
+  /** The stream listener as the client that asked reaches this machine: where a browser frames a stream page from. */
+  private streamOrigin(origin: string): string {
+    const port = this.deps.streamPort?.();
+    const at = port !== undefined ? originOnPort(origin, port) : undefined;
+    if (at === undefined) throw new RpcError("unavailable", "this node's stream port is not open: a desktop cannot be shown in a browser here");
+    return at;
+  }
+
   /**
    * A stream where there is no route to its host: the host's ticket (this node's own for a
-   * phone off its LAN), and for the desktop app on this machine, in a window or beside its
-   * view, a forwarder here to read it through, the page seeded to keep the video a few frames
+   * phone off its LAN), and a forwarder here to read its page through. The desktop app on
+   * this machine, in a window or beside its view, loads the page from the forwarder itself.
+   * A browser is on another computer, to which this machine's loopback is nothing: it gets a
+   * ticket of this node's own for the stream listener, behind which the proxy reads the
+   * host's page through the same forwarder. For the app's window, and for a browser that
+   * shows the desktop beside its view, the page is seeded to keep the video a few frames
    * behind at the host's screen size, with the user's pointer hidden over it.
    */
-  private async openAway(node: string, client: Client, how: "phone" | "window"): Promise<ClientResult<"remote.open">> {
+  private async openAway(node: string, client: Client, how: "phone" | "window" | "browser", page?: { at: string; origin: string; embed: boolean }): Promise<ClientResult<"remote.open">> {
     const self = this.deps.nodeId;
     let opened: { path: string; stream: string; video?: DisplaySize };
     if (node === self) opened = await this.ticket(client.id, client.name, "webrtc");
     else {
       if (!this.deps.links) throw new RpcError("unavailable", `no link to ${node}`);
-      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(how === "window" ? { lowLatency: true, sized: true, hideCursor: true } : {}) };
+      if (how !== "phone" && !this.deps.pipes) throw new RpcError("unavailable", "this node carries no pipes");
+      const seeded = how === "window" || (how === "browser" && page?.embed === true);
+      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(seeded ? { lowLatency: true, sized: true, hideCursor: true } : {}) };
       opened = (await this.deps.links.request(node, "remote.ticket", params, { timeoutMs: 180_000 })) as { path: string; stream: string; video?: DisplaySize };
     }
     const away: Away = { node, client: client.id };
@@ -827,6 +843,11 @@ export class Remote {
     const forwarder = new Forwarder({ hub: this.deps.pipes, node, log: this.log.child("forwarder"), onClose: () => void this.endAway(opened.stream, client.id) });
     away.forwarder = forwarder;
     const port = forwarder.start();
+    if (how === "browser" && page) {
+      // the stream is the host's, and so is its id: closing it here ends both ends
+      const { ticket } = this.tickets.mint(client.id, { node, hostId: 0, appId: 0 }, { door: "stream", ancestor: page.origin, through: { base: `http://127.0.0.1:${port}`, path: opened.path }, ...(client.name !== undefined ? { name: client.name } : {}) }, opened.stream);
+      return { url: `${page.at}/remote/?t=${ticket}`, stream: opened.stream, ...(opened.video ? { video: opened.video } : {}) };
+    }
     return { url: `http://127.0.0.1:${port}${opened.path}`, stream: opened.stream, ...(opened.video ? { video: opened.video } : {}) };
   }
 
@@ -873,8 +894,9 @@ export class Remote {
     if (!away || away.client !== client) return false;
     this.away.delete(stream);
     away.forwarder?.stop();
-    if (away.node === this.deps.nodeId) this.tickets.close(stream, client);
-    else void this.deps.links?.request(away.node, "remote.close", { node: away.node, stream, viewer: client }).catch((e: unknown) => this.log.debug("the host did not hear the stream end", { error: e instanceof Error ? e.message : String(e) }));
+    // this node's own session for it: the host's, when the desktop is this one's, or the one a browser reads another node's page through
+    this.tickets.close(stream, client);
+    if (away.node !== this.deps.nodeId) void this.deps.links?.request(away.node, "remote.close", { node: away.node, stream, viewer: client }).catch((e: unknown) => this.log.debug("the host did not hear the stream end", { error: e instanceof Error ? e.message : String(e) }));
     return true;
   }
 
@@ -887,6 +909,8 @@ export class Remote {
   /** The link to `node` went: the sessions its viewers opened here end (they are filed under it). */
   linkGone(node: string): void {
     this.tickets.forgetWhere((client) => client.startsWith(`${node}:`));
+    // and the streams of its desktop shown from here have nothing behind them
+    for (const [stream, away] of [...this.away]) if (away.node === node) this.endAway(stream, away.client);
   }
 
   /** A client went: the web sessions it opened go with it, here and on hosts elsewhere. */

@@ -523,7 +523,12 @@ session is served through that door alone, since a cookie goes to every port of 
 On the stream door the pages may be framed by the app's page the ticket was minted for and
 no other, a socket must come from the stream page itself, and the claim page tells its
 frame it loaded; `/remote/ready` is a page a browser opens once where it keeps a
-certificate's exception per port.
+certificate's exception per port. For a desktop this node has no route to, the browser's
+ticket is still this node's, on the stream door: claiming it, the proxy claims the host's
+ticket through a forwarder and pipes, keeps the host's cookie to itself, and serves the
+host's pages and stream socket from there under the same rules (`through` on the session,
+`proxy.ts`). The phone app on the LAN gets the path and WebRTC for such a desktop, as it does
+on the relay. No door serves a service worker's script.
 
 ### Phones
 

@@ -7,7 +7,12 @@
 // pipes over the link to the secondary's loopback proxy, the video set for WebRTC;
 // `remote.close` ends the session there. A phone on the relay opening the same desktop gets
 // the path and WebRTC, its own forwarder's pipes run through the primary, and the phone
-// going ends the session on the secondary.
+// going ends the session on the secondary. A browser on the primary's network, to which the
+// primary's loopback is nothing, gets a page on the primary's stream listener: the primary
+// claims the secondary's ticket itself and keeps its cookie, and the page, the API and the
+// stream socket come through the same forwarder and pipes under the stream door's rules; it
+// is the secondary's viewer and not the primary's. The phone app on that network gets the
+// path and WebRTC as it does on the relay.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -23,8 +28,7 @@ import type { PipeLink } from "./fakes/pipe-forwarder.ts";
 import { RelayPhone } from "./fakes/relay-phone.ts";
 import { FAKE_WEB, remoteSeams } from "./fakes/remote.ts";
 import { FakeServer } from "./fakes/server.ts";
-import { tempHome, waitFor } from "./helpers.ts";
-import type { TestClient } from "./helpers.ts";
+import { TestClient, tempHome, waitFor } from "./helpers.ts";
 import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
 import type { Primary, Started } from "./nodes-helpers.ts";
 
@@ -53,7 +57,7 @@ function signedInHome(f: FakeServer): { home: string; toml: string } {
   return { home, toml: `[cloud]\nenabled = true\nurl = "${f.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\nhello_timeout_ms = 3000\n\n[direct]\nrestart_backoff_ms = 50\n\n` };
 }
 
-async function start() {
+async function start(opts: { lan?: boolean } = {}) {
   fake = new FakeServer();
   apollo = await startFakeApollo();
   apollo.acceptAny = true;
@@ -63,7 +67,9 @@ async function start() {
   netP.wire = wire;
   netS.wire = wire;
   const ph = signedInHome(fake);
-  primary = await startPrimary({ noLan: true, heartbeatMs: 1000, home: ph.home, toml: ph.toml, daemon: { cloud: { keys: [fake.publicKey] }, direct: { spawn: netP.spawn, command: () => "cophyla-net" } } });
+  // with `lan`, the primary serves the devices on its network, where the secondary then links too: `lan_route` off has
+  // the primary treat its desktop as one it has no route to, which is what that switch is for on one machine
+  primary = await startPrimary({ ...(opts.lan ? {} : { noLan: true }), heartbeatMs: 1000, home: ph.home, toml: ph.toml + (opts.lan ? `[remote]\nlan_route = false\n\n` : ""), daemon: { cloud: { keys: [fake.publicKey] }, direct: { spawn: netP.spawn, command: () => "cophyla-net" } } });
   await waitFor(() => fake!.primaryOf()?.primary === primary!.d.identity.id, 5000);
   await primary.d.direct.enable();
   await waitFor(() => primary!.d.direct.ready, 5000);
@@ -100,7 +106,7 @@ async function start() {
   await waitFor(() => secondary!.direct.ready, 5000);
   await secondary.remote.ready();
   await linked(secondary, 10_000);
-  expect(secondary.nodes.via()).toBe("relay");
+  if (!opts.lan) expect(secondary.nodes.via()).toBe("relay");
   return { p: primary, s: secondary };
 }
 
@@ -198,6 +204,126 @@ describe("a desktop with no route to it", () => {
     await ui.request("remote.close", { stream: embedded.stream });
     await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
   });
+
+  test("a browser on the primary's network: a page on the stream listener, the secondary's own page behind it through pipes, its cookie kept on the primary; closed by remote.close", async () => {
+    const { p, s } = await start({ lan: true });
+    const app = `https://127.0.0.1:${p.d.controller!.port}`;
+    const origin = `https://127.0.0.1:${p.d.lan.streamPort!}`;
+    const { token } = p.d.grants.createController("Laptop browser", { form: "browser", expiresAt: Date.now() + 3_600_000 });
+    const browser = await TestClient.connect(`wss://127.0.0.1:${p.d.controller!.port}/ws/client`, { insecure: true, headers: { origin: app } });
+    closers.push(() => browser.close());
+    expect("error" in (await browser.call("hello", { token, kind: "controller", name: "Laptop browser", audio: { in: false, out: false } }))).toBe(false);
+
+    // asked to show it beside its view: the secondary's ticket, gated there, seeded as the desktop app's window is
+    const opening = browser.request<{ url: string; stream: string; video?: { width: number; height: number } }>("remote.open", { node: s.identity.id, embed: true });
+    const ask = await allowOn(s);
+    expect(ask.title).toBe("Let Laptop browser view and control this desktop?");
+    const opened = await opening;
+    expect(opened.url).toMatch(new RegExp(`^${origin.replace(/[.]/g, "\\.")}/remote/\\?t=[0-9a-f]{32}$`));
+    expect(opened.video).toEqual({ width: 1920, height: 1200 });
+
+    const insecure = { tls: { rejectUnauthorized: false } };
+    const get = (url: string, headers: Record<string, string> = {}) => fetch(url, { redirect: "manual", headers, ...insecure } as RequestInit);
+    // the ticket is the primary's own, for its stream door: not there on the controller listener
+    expect((await get(`${app}/remote/?t=${opened.url.split("t=")[1]}`)).status).toBe(403);
+    const claim = await get(opened.url);
+    expect(claim.status).toBe(200);
+    const setCookie = claim.headers.get("set-cookie")!;
+    expect(setCookie).toMatch(/^cophyla_remote=[0-9a-f]{32}; Path=\/remote; Secure; HttpOnly; SameSite=Strict$/);
+    expect(claim.headers.get("content-security-policy")).toMatch(new RegExp(`^default-src 'none'; script-src 'nonce-[^']+'; frame-ancestors ${app.replace(/[.]/g, "\\.")}$`));
+    const page = await claim.text();
+    // what the secondary's own claim page seeds, the app's page told it loaded, then the secondary's stream page
+    expect(page).toContain(`s.dataTransport="webrtc"`);
+    expect(page).toContain("s.canvasRenderer=true;");
+    expect(page).toContain(`s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=15000;`);
+    expect(page).toContain(`parent.postMessage({cophyla:"cophyla.stream.claimed"},"${app}")`);
+    const streamPage = /location\.replace\("(\/remote\/stream\.html\?hostId=\d+&appId=\d+)"\)/.exec(page)![1]!;
+    const cookie = setCookie.split(";")[0]!;
+    // the secondary's session is its own: its cookie stays on the primary, and the browser's opens nothing there
+    await waitFor(() => s.remote.tickets.list().length === 1);
+    const their = s.remote.tickets.list()[0]!;
+    expect(cookie).not.toContain(their.id);
+    expect(page).not.toContain(their.id);
+
+    const home = await get(`${origin}/remote/`, { cookie });
+    expect(await home.text()).toContain("Moonlight Web");
+    expect(home.headers.get("content-security-policy")).toBe(`frame-ancestors ${app}`);
+    expect(home.headers.get("set-cookie")).toBeNull();
+    expect(((await (await get(`${origin}/remote/api/user`, { cookie })).json()) as { name: string }).name).toBe("cophyla");
+    // the stream page as the secondary's proxy makes it for its sized session
+    const stream = await (await get(`${origin}${streamPage}`, { cookie })).text();
+    expect(stream).toContain("<style>.video-stream{cursor:none}</style></head>");
+    expect(stream).toContain("codedWidth:1920,codedHeight:1200");
+    // the stream socket: the stream page's own, bridged through the pipes both ways
+    const ws = new WebSocket(`wss://127.0.0.1:${p.d.lan.streamPort!}/remote/api/host/stream/web_socket`, { headers: { cookie, origin }, ...insecure } as never);
+    closers.push(() => ws.close());
+    const frames: string[] = [];
+    ws.addEventListener("message", (ev) => frames.push(String(ev.data)));
+    await new Promise<void>((resolve, reject) => {
+      ws.addEventListener("open", () => resolve());
+      ws.addEventListener("error", () => reject(new Error("socket failed")));
+    });
+    await waitFor(() => frames.length >= 1);
+    expect(frames[0]).toBe(JSON.stringify({ hello: "cophyla" }));
+    ws.send("ping");
+    await waitFor(() => frames.length >= 2);
+    expect(frames[1]).toBe("cophyla:ping");
+    expect(p.d.pipes.count).toBeGreaterThan(0);
+
+    // it watches the secondary's desktop, and is listed there; the primary's own desktop has no such viewer
+    await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web" && v.name === "Laptop browser" && v.connected === true));
+    expect(p.d.remote.state().viewers.filter((v) => v.kind === "web")).toEqual([]);
+    // no other way in: not through the controller listener, without the cookie, or as a worker that would outlast the session
+    expect((await get(`${app}/remote/`, { cookie })).status).toBe(403);
+    expect((await get(`${origin}/remote/`)).status).toBe(403);
+    expect((await get(`${origin}/remote/sw.js`, { cookie, "service-worker": "script" })).status).toBe(403);
+
+    await browser.request("remote.close", { stream: opened.stream });
+    await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
+    await waitFor(() => p.d.pipes.count === 0 && s.pipes.count === 0, 5000);
+    expect((await get(`${origin}/remote/`, { cookie })).status).toBe(403);
+    expect(p.d.remote.tickets.list()).toEqual([]);
+
+    // without embed: the page as the secondary's viewer has it, and the browser going ends it there too
+    const plain = browser.request<{ url: string; stream: string; video?: object }>("remote.open", { node: s.identity.id });
+    await allowOn(s);
+    const second = await plain;
+    expect(second.video).toBeUndefined();
+    const again = await get(second.url);
+    expect(await again.text()).not.toContain("canvasRenderer");
+    await waitFor(() => s.remote.state().viewers.some((v) => v.kind === "web"));
+    browser.close();
+    await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
+    expect(p.d.remote.tickets.list()).toEqual([]);
+  }, 60_000);
+
+  test("the phone app on the primary's network: the path and WebRTC, as on the relay, where the primary has no route to the desktop", async () => {
+    const { p, s } = await start({ lan: true });
+    const { token } = p.d.grants.createController("Pixel");
+    const phone = await TestClient.connect(`wss://127.0.0.1:${p.d.controller!.port}/ws/client`, { insecure: true });
+    closers.push(() => phone.close());
+    expect("error" in (await phone.call("hello", { token, kind: "controller", name: "Pixel", audio: { in: false, out: false }, forward: true }))).toBe(false);
+    const opening = phone.request<{ url?: string; path: string; transport: string; node: string; stream: string }>("remote.open", { node: s.identity.id });
+    await allowOn(s);
+    const opened = await opening;
+    expect(opened.url).toBeUndefined();
+    expect(opened).toMatchObject({ transport: "webrtc", node: s.identity.id });
+    expect(opened.path).toMatch(/^\/remote\/\?t=[0-9a-f]{32}$/);
+    // its own forwarder's pipes run through the primary, as they do from the relay
+    const link: PipeLink = {
+      request: (method, params) => phone.request(method, params),
+      signal: (method, params) => phone.signal(method, params),
+      listen: (handler) => {
+        phone.onNotification = (n) => handler(n.method, n.params);
+      },
+    };
+    const f = new TestForwarder(link, s.identity.id);
+    closers.push(() => f.stop());
+    const watched = await watch(`http://127.0.0.1:${f.port}`, opened.path);
+    expect(watched.page).not.toContain("canvasRenderer");
+    await phone.request("remote.close", { stream: opened.stream });
+    await waitFor(() => !s.remote.state().viewers.some((v) => v.kind === "web"), 5000);
+  }, 60_000);
 
   test("a phone on the relay: the path and WebRTC, its pipes through the primary; the phone gone ends the session there", async () => {
     const { p, s } = await start();

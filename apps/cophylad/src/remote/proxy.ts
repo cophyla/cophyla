@@ -21,6 +21,13 @@
 // app's forwarder), or this machine's loopback (the desktop app, and pages that come through
 // pipes). A cookie goes to every port of its host, so the session says which door is its own:
 // the viewer's page never runs on the app's origin.
+//
+// A session may stand for a desktop this node has no route to. Its page is then the host
+// node's own, read through a forwarder here and pipes behind it: this proxy claims the host's
+// ticket itself, keeps the cookie that bought in the session, where no browser sees it, and
+// answers every request from the host's stream proxy under this door's rules. Such a page
+// comes from another node, so nothing it leaves may outlast it: a request for a service
+// worker's script is refused through every door.
 
 import { randomBytes } from "node:crypto";
 import { STREAM_CLAIMED } from "@cophyla/protocol";
@@ -48,10 +55,19 @@ export type Door = "stream" | "forward" | "loopback";
  * settings that keep the video a few frames behind: drawn on a canvas, HEVC where the browser
  * decodes it (measured: 67 ms against 167–183 with the viewer's defaults).
  */
+/** Where a desktop this node has no route to is read: a forwarder on this machine, the host node's ticket for its own page, and, once that is claimed, the cookie it bought. */
+export interface Through {
+  base: string;
+  path: string;
+  cookie?: string;
+}
+
 export interface TicketOptions {
   door: Door;
   /** For the `stream` door: the origin of the app's page, the only one that may frame the ticket's page and the one told it loaded. */
   ancestor?: string;
+  /** The page is another node's own, read through pipes: a desktop this node has no route to. */
+  through?: Through;
   name?: string;
   transport?: StreamTransport;
   secureCookie?: boolean;
@@ -73,6 +89,8 @@ export interface RemoteSession {
   /** The only door it is served through. */
   door: Door;
   ancestor?: string;
+  /** Its page is the host node's own, read through pipes. */
+  through?: Through;
   transport?: StreamTransport;
   secureCookie?: boolean;
   lowLatency?: boolean;
@@ -112,10 +130,9 @@ export class RemoteTickets {
     for (const h of this.handlers) h();
   }
 
-  /** A ticket for `client` to open `target`: 16 random bytes, one use, five minutes; and the stream it opens. */
-  mint(client: string, target: RemoteTarget, opts: TicketOptions): { ticket: string; stream: string } {
+  /** A ticket for `client` to open `target`: 16 random bytes, one use, five minutes; and the stream it opens, which is `stream` when the ticket stands for one minted on another node. */
+  mint(client: string, target: RemoteTarget, opts: TicketOptions, stream: string = `stream_${randomBytes(8).toString("hex")}`): { ticket: string; stream: string } {
     const ticket = randomBytes(16).toString("hex");
-    const stream = `stream_${randomBytes(8).toString("hex")}`;
     this.tickets.set(ticket, { client, stream, target, expiresAt: this.now() + TICKET_TTL_MS, ...definedOf(opts) });
     return { ticket, stream };
   }
@@ -178,14 +195,14 @@ export class RemoteTickets {
     for (const s of [...this.sessions.values()]) if (which(s.client, s.target)) this.revoke(s.id);
   }
 
-  /** The sessions as viewers: the phone's name, the moment it claimed, streaming while a socket is bridged. */
+  /** The sessions as viewers of this node's desktop: the phone's name, the moment it claimed, streaming while a socket is bridged. One that reads another node's page is that node's viewer, not this one's. */
   viewers(): RemoteViewer[] {
-    return this.list().map((s) => ({ id: `web_${s.id.slice(0, 8)}`, kind: "web", since: s.since, connected: s.bridges.size > 0, ...(s.name !== undefined ? { name: s.name } : {}) }));
+    return this.list().filter((s) => !s.through).map((s) => ({ id: `web_${s.id.slice(0, 8)}`, kind: "web", since: s.since, connected: s.bridges.size > 0, ...(s.name !== undefined ? { name: s.name } : {}) }));
   }
 
   /** The session behind a viewer id from `viewers()`. */
   byViewer(viewer: string): RemoteSession | undefined {
-    return this.list().find((s) => `web_${s.id.slice(0, 8)}` === viewer);
+    return this.list().find((s) => !s.through && `web_${s.id.slice(0, 8)}` === viewer);
   }
 }
 
@@ -221,6 +238,7 @@ function definedOf(opts: TicketOptions): TicketOptions {
   const out: TicketOptions = { door: opts.door };
   // an origin goes into a policy and a script as it is: one that is not just a scheme, a host and a port is dropped, and then nothing frames the page
   if (opts.ancestor !== undefined && ORIGIN.test(opts.ancestor)) out.ancestor = opts.ancestor;
+  if (opts.through !== undefined) out.through = { ...opts.through };
   if (opts.name !== undefined) out.name = opts.name;
   if (opts.transport !== undefined) out.transport = opts.transport;
   if (opts.secureCookie !== undefined) out.secureCookie = opts.secureCookie;
@@ -257,6 +275,9 @@ export function seedScript(transport: StreamTransport, lowLatency: boolean, vide
 function ancestors(session: RemoteSession): string {
   return session.door === "stream" ? (session.ancestor ?? "'none'") : "'self'";
 }
+
+/** Where another node's claim page may send its viewer: its own stream page, under `/remote/`, and nothing a URL could be broken with. */
+const THEIR_PAGE = /^\/remote\/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*$/;
 
 /** The stream page's path, which a sized session, or one that hides the pointer, gets rewritten. */
 export const STREAM_PAGE = "/remote/stream.html";
@@ -320,14 +341,18 @@ export class RemoteProxy {
    */
   async handle(req: Request, upgrade: (bridge: Bridge) => boolean, door: Door): Promise<Response | undefined> {
     const url = new URL(req.url);
+    // A worker a page registered would answer for every session after it on this origin, another desktop's included.
+    if (req.headers.get("service-worker") !== null) return new Response("no service worker is served here", { status: 403, headers: { "cache-control": "no-store" } });
     const ticket = url.searchParams.get("t");
     if (ticket !== null) return this.claim(ticket, req.headers.get("host"), door);
     const held = this.deps.tickets.session(cookieOf(req));
     // another door's session is no session here, though its cookie comes to every port of the host
     const session = held?.door === door ? held : undefined;
     if (!session) return new Response("no session", { status: 403, headers: { "cache-control": "no-store" } });
-    const base = this.deps.upstream();
+    const base = session.through ? session.through.base : this.deps.upstream();
     if (!base) return new Response("the web viewer is not running", { status: 503, headers: { "cache-control": "no-store" } });
+    // Who this proxy is, upstream: to its own viewer the user in the header it trusts; to another node's stream proxy the cookie that node's ticket bought.
+    const login: Record<string, string> = session.through ? { cookie: `${COOKIE}=${session.through.cookie ?? ""}` } : { [WEB_USER_HEADER]: WEB_USER };
 
     if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
       const target = base.replace(/^http/, "ws") + url.pathname + url.search;
@@ -344,7 +369,7 @@ export class RemoteProxy {
       if (!upgrade(bridge)) return new Response("upgrade failed", { status: 500 });
       session.bridges.add(bridge);
       this.deps.tickets.touch();
-      this.openUpstream(bridge, target);
+      this.openUpstream(bridge, target, login);
       return undefined;
     }
 
@@ -352,7 +377,7 @@ export class RemoteProxy {
     const rewrite = (session.hideCursor === true || session.video !== undefined) && url.pathname === STREAM_PAGE && req.method === "GET";
     const headers = new Headers();
     for (const [k, v] of req.headers) if (!HOP.has(k)) headers.set(k, v);
-    headers.set(WEB_USER_HEADER, WEB_USER);
+    for (const [k, v] of Object.entries(login)) headers.set(k, v);
     if (rewrite) for (const k of ["if-none-match", "if-modified-since", "range", "accept-encoding"]) headers.delete(k);
     const doFetch = this.deps.fetch ?? fetch;
     let res: Response;
@@ -369,6 +394,8 @@ export class RemoteProxy {
     }
     const out = new Headers();
     for (const [k, v] of res.headers) if (!HOP.has(k)) out.set(k, v);
+    // the other node's cookie is this proxy's to hold: the browser has this door's own
+    if (session.through) out.delete("set-cookie");
     const html = (res.headers.get("content-type") ?? "").includes("text/html");
     if (html) out.set("content-security-policy", `frame-ancestors ${ancestors(session)}`);
     out.set("x-content-type-options", "nosniff");
@@ -382,18 +409,31 @@ export class RemoteProxy {
   }
 
   /** The ticket page: the cookie, the ticket's settings into the page's storage, a word to the page that framed it, then the stream page. */
-  private claim(ticket: string, host: string | null, door: Door): Response {
+  private async claim(ticket: string, host: string | null, door: Door): Promise<Response> {
     const session = this.deps.tickets.claim(ticket, door);
     if (!session) return new Response("that ticket is not open", { status: 403, headers: { "cache-control": "no-store" } });
     // Without `Secure` only for a ticket minted for a forwarder, and only as its loopback asks: anywhere else it stays
     const secure = !(session.secureCookie === false && loopbackHost(host));
     const nonce = randomBytes(12).toString("base64");
-    const path = `/remote/stream.html?hostId=${session.target.hostId}&appId=${session.target.appId}`;
+    let seed: string;
+    let path: string;
+    if (session.through) {
+      // another node's desktop: its own claim page says what to seed and where its stream page is
+      const theirs = await this.claimThrough(session.through);
+      if (!theirs) {
+        this.deps.tickets.revoke(session.id);
+        return new Response("the desktop's node did not open its page", { status: 502, headers: { "cache-control": "no-store" } });
+      }
+      ({ seed, path } = theirs);
+    } else {
+      seed = seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true, session.video);
+      path = `/remote/stream.html?hostId=${session.target.hostId}&appId=${session.target.appId}`;
+    }
     // the app's page hears that its frame loaded: one that never does is waiting on this port's certificate
     const told = session.door === "stream" && session.ancestor !== undefined ? `try{parent!==window&&parent.postMessage({cophyla:${JSON.stringify(STREAM_CLAIMED)}},${JSON.stringify(session.ancestor)})}catch(e){}` : "";
     const html =
       `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Connecting…</title></head><body>` +
-      `<script nonce="${nonce}">${seedScript(session.transport ?? this.deps.transport(), session.lowLatency === true, session.video)}${told}` +
+      `<script nonce="${nonce}">${seed}${told}` +
       `location.replace(${JSON.stringify(path)})</script></body></html>`;
     return new Response(html, {
       status: 200,
@@ -407,8 +447,31 @@ export class RemoteProxy {
     });
   }
 
-  private openUpstream(bridge: Bridge, target: string): void {
-    const ws = this.deps.connect ? this.deps.connect(target) : new WebSocket(target, { headers: { [WEB_USER_HEADER]: WEB_USER } } as never);
+  /**
+   * Claims the host node's ticket through the forwarder, as its viewer would: the cookie it
+   * buys is kept for the session's requests, and its claim page is read for what it seeds and
+   * for its stream page, which is all this door's own claim page takes from it.
+   */
+  private async claimThrough(through: Through): Promise<{ seed: string; path: string } | undefined> {
+    try {
+      const res = await (this.deps.fetch ?? fetch)(through.base + through.path, { redirect: "manual" });
+      const cookie = new RegExp(`${COOKIE}=([0-9a-f]{32})`).exec(res.headers.get("set-cookie") ?? "")?.[1];
+      const page = /<script nonce="[^"]*">([\s\S]*?)location\.replace\(("(?:[^"\\]|\\.)*")\)<\/script>/.exec(res.status === 200 ? await res.text() : "");
+      const path: unknown = page ? JSON.parse(page[2]!) : undefined;
+      if (cookie === undefined || !page || typeof path !== "string" || !THEIR_PAGE.test(path)) {
+        this.log.warn("the desktop's node did not open its page", { status: res.status });
+        return undefined;
+      }
+      through.cookie = cookie;
+      return { seed: page[1]!, path };
+    } catch (e) {
+      this.log.warn("the desktop's node was not reached through its pipes", { error: e instanceof Error ? e.message : String(e) });
+      return undefined;
+    }
+  }
+
+  private openUpstream(bridge: Bridge, target: string, login: Record<string, string>): void {
+    const ws = this.deps.connect ? this.deps.connect(target) : new WebSocket(target, { headers: login } as never);
     ws.binaryType = "arraybuffer";
     bridge.upstream = ws;
     ws.onopen = () => {
