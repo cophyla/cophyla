@@ -407,6 +407,8 @@ describe("cloud backup", () => {
     const beta = await start({ fake, brain: true, noRelay: true });
     await waitFor(() => beta.d.brain?.state === "up", 10_000);
     await beta.c.request("chat.send", { text: "beta's own message, to be replaced" });
+    // its brain's answer too, before anything is counted
+    await beta.c.next(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "orchestrator"), 10_000);
     beta.d.store.kv.put("wake", "rules", { beta: true });
     beta.d.store.kv.put("profiles", "mine", { keep: true });
     writeFileSync(join(beta.d.paths.prompts, "beta-only.md"), "# beta only\n\nGoes.\n");

@@ -46,22 +46,18 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential curl pkg-config libssl-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libgtk-3-dev patchelf
 
-      # The Windows runner's TEMP is an 8.3 short path (RUNNER~1); the daemon keeps paths in their
-      # long form, so the tests would compare two spellings of one folder.
-      - name: long TEMP path
+      # The Windows runner's TEMP is on C:, which stalls for seconds at a time under the tests'
+      # many small writes (a test that writes four files once took 3.9 s); its stalls outlast
+      # the tests' heartbeats and leases. The runner's D: holds the checkout and RUNNER_TEMP,
+      # and its path is long (TEMP's is an 8.3 short one, RUNNER~1, and the daemon keeps paths
+      # in their long form). Defender needs nothing here: the image turns it off and excludes
+      # both drives.
+      - name: "TEMP on D:"
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $t = Join-Path $env:USERPROFILE 'AppData\Local\Temp'
-          "TEMP=$t" >> $env:GITHUB_ENV
-          "TMP=$t" >> $env:GITHUB_ENV
-
-      # Defender scans every file and process the tests make; its stalls outlast the tests'
-      # 200 ms node heartbeats. The runner is thrown away after the job.
-      - name: no real-time scanning
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Set-MpPreference -DisableRealtimeMonitoring $true
+          "TEMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
+          "TMP=$env:RUNNER_TEMP" >> $env:GITHUB_ENV
 
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
