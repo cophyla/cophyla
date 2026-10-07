@@ -1529,7 +1529,23 @@ export function sessionWho(session: Session): string {
   return `${session.harness}${name ? `: ${name}` : ""}`;
 }
 
-export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean } | { kind: "send"; key: string; send: PendingSend };
+/** `from`: another agent's message, labelled by who sent it (`agentLabel`). */
+export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean; from?: string } | { kind: "send"; key: string; send: PendingSend };
+
+/**
+ * Who another agent's message to a session came from, as its turn is labelled: `@alias ·
+ * harness`, and the machine when it is not the session's own; `cophyla` for a notice of
+ * cophyla's own about a message the session sent.
+ */
+export function agentLabel(payload: unknown, session: Pick<Session, "node">, state: Pick<ViewState, "nodes">): string {
+  const from = (payload as { from?: { alias?: unknown; harness?: unknown; node?: unknown; nodeName?: unknown } } | undefined)?.from;
+  if (!from || typeof from.alias !== "string") return "cophyla";
+  const harness = typeof from.harness === "string" ? (HARNESS_NAMES[from.harness as keyof typeof HARNESS_NAMES] ?? from.harness) : undefined;
+  const machine = typeof from.nodeName === "string" ? from.nodeName : undefined;
+  // a late echo names its machine alone
+  const elsewhere = typeof from.node === "string" ? from.node !== session.node : machine !== undefined && machine !== state.nodes.get(session.node)?.name;
+  return `@${from.alias}${harness ? ` · ${harness}` : ""}${elsewhere && machine ? ` on ${machine}` : ""}`;
+}
 
 /**
  * Events by seq, ask events joined to their ask, message receipts and typed turns joined to the
@@ -1558,7 +1574,8 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
       }
       if (p && p.type === "message" && piped) row.asPeer = true;
     } else if (event.kind === "user_turn") {
-      const p = event.payload as { ref?: string } | undefined;
+      const p = event.payload as { ref?: string; source?: string } | undefined;
+      if (p?.source === "agent") row.from = agentLabel(p, card.session, state);
       const send = p && typeof p.ref === "string" ? card.sends.get(p.ref) : undefined;
       if (send) {
         row.send = send;
@@ -2561,6 +2578,28 @@ export interface DirectLine {
   on: boolean;
   state: DirectState["state"];
   words: string;
+}
+
+/**
+ * A machine's agent messaging in Devices: whether its Claude sessions that run without
+ * permission prompts take other agents' messages at once, and the switch. None for a machine
+ * that runs no agent messaging, one lent to this cluster (its owner's to set), or a view that
+ * may not set it.
+ */
+export interface AgentsCard {
+  node: NodeId;
+  accept: boolean;
+  words: string;
+}
+
+export function selectAgents(state: Pick<ViewState, "scopes">, node: Node): AgentsCard | undefined {
+  const agents = node.capabilities.agents;
+  if (!agents || node.hands === true || !state.scopes.includes("sessions:write")) return undefined;
+  return {
+    node: node.id,
+    accept: agents.acceptInBypass,
+    words: agents.acceptInBypass ? "Sessions that skip permission prompts take other agents' messages at once" : "Sessions that skip permission prompts hold other agents' messages until you allow each",
+  };
 }
 
 /** The direct connections row: `plan` when the plan has none, else a line per node that said where it stands. */

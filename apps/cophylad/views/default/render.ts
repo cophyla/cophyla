@@ -53,8 +53,8 @@ import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
-import type { AccountBar, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
-import { selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
+import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
@@ -151,6 +151,8 @@ export interface UiState {
   backupBusy?: boolean;
   /** Nodes whose direct connections are being switched: their button waits for the answer. */
   directBusy?: Set<string>;
+  /** Machines whose agent messaging switch is being set. */
+  agentsBusy?: Set<string>;
   /** The grant form open under the machines, the phones or the browsers: Add a machine, Join another computer, Invite a phone, Add a browser. */
   grantForm?: "node" | "join" | "phone" | "browser";
   /** The switch for devices on this network is on its way. */
@@ -762,7 +764,7 @@ function createNodeCard(): HTMLElement {
   head.append(el("span", "dot"), title, actionButton("node-rename", "Rename", "node-rename"));
   const foot = el("footer", "node-foot");
   foot.append(createNodePromote(), createRestart(), createNodeGrant());
-  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), foot);
+  card.append(head, el("div", "node-bars"), createFold("node-processes"), el("div", "node-sessions"), createRemote(), createAgents(), foot);
   return card;
 }
 
@@ -919,6 +921,7 @@ function updateNodeCard(node: HTMLElement, card: NodeCard, state: ViewState, ui:
   setHidden(owners, !open);
   reconcile(owners, open ? card.owners : [], (o) => o.key, createOwner, updateOwner);
   updateRemote(node.querySelector<HTMLElement>(".node-remote")!, selectRemote(state, card.node), state, ui);
+  updateAgents(node.querySelector<HTMLElement>(".node-agents")!, selectAgents(state, card.node), state, ui);
   const foot = node.querySelector<HTMLElement>(".node-foot")!;
   updateNodePromote(foot.querySelector<HTMLElement>(".node-choose")!, card, state, ui);
   updateRestart(foot.querySelector<HTMLElement>(".node-restart")!, card, state, ui);
@@ -1067,6 +1070,38 @@ function updateViewButtons(connect: HTMLButtonElement, beside: HTMLButtonElement
   setText(beside, view?.phase === "opening" ? "Opening…" : "Beside");
   beside.dataset["node"] = node;
   beside.disabled = !state.connected || (shownHere && view.phase !== "failed");
+}
+
+/**
+ * A machine's agent messaging: whether its Claude sessions that skip permission prompts hold
+ * other agents' messages, with the switch, and what turning it on means.
+ */
+function createAgents(): HTMLElement {
+  const block = el("section", "node-agents");
+  const head = el("div", "agents-head");
+  head.append(el("h4", "agents-label", "Agents"), el("span", "agents-words"), actionButton("agents-accept", "", "agents-accept"));
+  block.append(head, el("p", "agents-note"));
+  return block;
+}
+
+function updateAgents(block: HTMLElement, agents: AgentsCard | undefined, state: ViewState, ui: UiState): void {
+  setHidden(block, agents === undefined);
+  if (!agents) return;
+  setData(block, "accept", agents.accept ? "1" : "0");
+  setText(block.querySelector(".agents-words")!, agents.words);
+  const busy = ui.agentsBusy?.has(agents.node) === true;
+  const button = block.querySelector<HTMLButtonElement>(".agents-accept")!;
+  button.dataset["node"] = agents.node;
+  button.dataset["on"] = agents.accept ? "1" : "0";
+  setText(button, busy ? "…" : agents.accept ? "Hold them again" : "Let them in");
+  button.title = agents.accept ? "Claude holds a message from another session for your approval again" : "Accept agent messages in bypass sessions";
+  button.disabled = !state.connected || busy;
+  setText(
+    block.querySelector(".agents-note")!,
+    agents.accept
+      ? "Claude Code holds no cross-session message for approval in this machine's sessions that skip permission prompts: any session's gets in, its own SendMessage included."
+      : "Letting them in stops Claude Code holding any cross-session message for approval in this machine's sessions that skip permission prompts, its own SendMessage included.",
+  );
 }
 
 /**
@@ -2654,6 +2689,8 @@ function describe(row: TimelineRow): RowView {
     case "status":
       return { kind: "status", label: "", text: statusWord({ status: (p["status"] as Session["status"]) ?? "idle", waiting: p["waiting"] as Session["waiting"] }), at: e.at };
     case "user_turn": {
+      // another agent's, through cophyla: who sent it, and its text as the model wrote it
+      if (row.from !== undefined) return { kind: "user", label: row.from, text: String(p["text"] ?? ""), md: true, at: e.at };
       const peer = p["source"] === "peer";
       return { kind: "user", label: peer ? "another agent" : "you", text: String(p["text"] ?? ""), md: peer, at: e.at };
     }

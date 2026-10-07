@@ -3833,6 +3833,65 @@ button:disabled {
   text-overflow: ellipsis;
 }
 
+/* the node's agent messaging: whether its bypass sessions hold other agents' messages */
+
+.node-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 6px;
+  padding-top: 5px;
+  border-top: 1px solid var(--line);
+}
+
+.node-card .node-agents {
+  gap: 6px;
+  margin: 14px 0 0 var(--card-indent);
+  padding-top: 12px;
+}
+
+.agents-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  min-width: 0;
+}
+
+.agents-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.agents-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.node-agents[data-accept="0"] .agents-words {
+  color: var(--muted);
+}
+
+.agents-accept {
+  margin-left: auto;
+}
+
+.agents-note {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+.node-agents[data-accept="1"] .agents-note {
+  color: var(--amber);
+}
+
 /* the node's desktop: its host, who views it, and the ways in */
 
 .node-remote {

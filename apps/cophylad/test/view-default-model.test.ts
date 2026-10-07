@@ -371,6 +371,21 @@ describe("default view model", () => {
     expect(s.sessions.has("sess_x")).toBe(false);
   });
 
+  test("another agent's message is labelled by who sent it, with the machine when it is another's; cophyla's notice by cophyla", () => {
+    const s = ready();
+    addLaptop(s, "node_01ARZ3NDEKTSV4RRFFQ69G5FAW");
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    open(s, "sess_a");
+    const from = { session: "sess_b", alias: "api-codex", harness: "codex", node: NODE, nodeName: "desk", folder: "api" };
+    apply(s, { type: "session.event", params: event("sess_a", 1, "user_turn", { source: "agent", from, messageId: "pmsg_1", text: "the **schema** is merged" }) });
+    apply(s, { type: "session.event", params: event("sess_a", 2, "user_turn", { source: "agent", from: { ...from, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "laptop" }, messageId: "pmsg_2", text: "green" }) });
+    apply(s, { type: "session.event", params: event("sess_a", 3, "user_turn", { source: "agent", messageId: "pmsg_3", replyTo: "pmsg_9", text: "not delivered" }) });
+    apply(s, { type: "session.event", params: event("sess_a", 4, "user_turn", { source: "agent", from: { alias: "web-review", harness: "claude", nodeName: "laptop" }, messageId: "pmsg_4", text: "late", late: true }) });
+    apply(s, { type: "session.event", params: event("sess_a", 5, "user_turn", { text: "mine", source: "typed" }) });
+    const rows = selectTimeline(s, s.sessions.get("sess_a")!) as { from?: string }[];
+    expect(rows.map((r) => r.from)).toEqual(["@api-codex · Codex", "@api-codex · Codex on laptop", "cophyla", "@web-review · Claude on laptop", undefined]);
+  });
+
   test("two history pages prepend without duplicates; a short page sets exhausted", () => {
     const s = ready();
     apply(s, { type: "session.state", params: session("sess_a", 100) });

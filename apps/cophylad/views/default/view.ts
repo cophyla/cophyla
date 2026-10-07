@@ -88,6 +88,7 @@ const ui: UiState = {
   scale: 100,
   folded: new Set(),
   directBusy: new Set(),
+  agentsBusy: new Set(),
   railTab: "files",
   railSplit: RAIL_SPLIT.usual,
   openDirs: new Map(),
@@ -855,6 +856,21 @@ async function directSwitch(node: string, on: boolean): Promise<void> {
     fail("direct connections", e);
   } finally {
     ui.directBusy!.delete(node);
+    draw();
+  }
+}
+
+/** A machine's Claude sessions that skip prompts let other agents' messages in, or hold them again; the machine's row says how it went. */
+async function acceptAgents(node: string, on: boolean): Promise<void> {
+  if (!state.scopes.includes("sessions:write") || ui.agentsBusy!.has(node)) return;
+  ui.agentsBusy!.add(node);
+  draw();
+  try {
+    await rpc.request("agents.accept", { node, on });
+  } catch (e) {
+    fail("agent messages", e);
+  } finally {
+    ui.agentsBusy!.delete(node);
     draw();
   }
 }
@@ -2836,6 +2852,9 @@ document.addEventListener("click", (ev) => {
       return;
     case "direct-switch":
       if (target.dataset["node"]) void directSwitch(target.dataset["node"], target.dataset["on"] !== "1");
+      return;
+    case "agents-accept":
+      if (target.dataset["node"]) void acceptAgents(target.dataset["node"], target.dataset["on"] !== "1");
       return;
     case "controller-revoke":
       if (target.dataset["controller"]) void revokeController(target.dataset["controller"]);

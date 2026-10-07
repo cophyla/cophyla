@@ -6,12 +6,14 @@
 // network: how it stands in a line, the switch where the app is on the machine, its addresses
 // and what else there is to say; the browsers on other computers apart from the phones; and in
 // a desktop browser, a desktop beside the view, the node's own included, with Connect asking
-// for the same page.
+// for the same page. A machine's agent messaging, and the switch that lets other agents'
+// messages into its sessions that skip prompts, where this view may set it and the machine is
+// not lent.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Controller, Grant, HarnessProfile, LanState, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, connectEmbeds, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -359,5 +361,21 @@ describe("Devices: a machine's head", () => {
     expect(facts(BUILD)).toEqual({ tags: [expect.objectContaining({ key: "reinvite", label: "Invite it again" })], line: "Linux · Cophyla 0.12.0 · offline, last seen 3h ago" });
     // a full member is the usual: no tag says it
     expect(facts(LAPTOP).tags).toEqual([]);
+  });
+
+  test("a machine's agent messaging: its switch and what it does, none where it runs none, lent or out of this view's reach", () => {
+    const state = initialState();
+    apply(state, { type: "host.ready", params: ready("ui") });
+    const off = selectAgents(state, node(LAPTOP, "laptop", { capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: true, agents: { acceptInBypass: false } } }))!;
+    expect(off).toMatchObject({ node: LAPTOP, accept: false });
+    expect(off.words).toContain("hold other agents' messages");
+    const on = selectAgents(state, node(DESK, "desk", { capabilities: { brain: true, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: true, agents: { acceptInBypass: true } } }))!;
+    expect(on.accept).toBe(true);
+    expect(on.words).toContain("at once");
+    expect(selectAgents(state, node(MAC, "mac"))).toBeUndefined();
+    expect(selectAgents(state, node(BUILD, "build", { hands: true, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false, agents: { acceptInBypass: false } } }))).toBeUndefined();
+    const narrow = initialState();
+    apply(narrow, { type: "host.ready", params: { ...ready("controller"), scopes: ["sessions:read", "chat"] } });
+    expect(selectAgents(narrow, node(LAPTOP, "laptop", { capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: true, agents: { acceptInBypass: false } } }))).toBeUndefined();
   });
 });
