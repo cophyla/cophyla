@@ -165,6 +165,11 @@ export const actions = {
   "direct.offer": { risk: "read", control: true },
   "update.check": { risk: "network" },
   "update.apply": { risk: "exec" },
+  // Agent messaging: one agent session listing and messaging the user's others. A message to a
+  // session that bypasses its prompts from one that does not is also `agent.escalate`.
+  "agent.list": { risk: "read" },
+  "agent.send": { risk: "write" },
+  "agent.escalate": { risk: "exec" },
 } as const satisfies Record<string, ActionDefinition>;
 
 export type ActionName = keyof typeof actions;

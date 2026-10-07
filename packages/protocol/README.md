@@ -18,6 +18,7 @@ process. They are the public contract; the design notes behind them are kept pri
 | `src/actions.ts` | every request name with its risk class: the gate's vocabulary |
 | `src/scopes.ts` | the scope each client request, notification and signal needs |
 | `src/quotes.ts` | the quote projection: `quotable` numbers a result the way the model sees it, `selectLines` picks a cited range and narrows its `Source` |
+| `agent-tools.json`, `src/agent-tools.ts` | the `cophyla-agents` MCP server's name, instructions and two tools, which cophylad serves and the native shim (`apps/mcp`) embeds |
 | `fixtures/*.json` | at least one valid example per schema, and a list of invalid ones |
 | `scripts/emit-json-schema.ts` | writes JSON Schema for every entry under `schema/` (`bun run schema`) |
 
@@ -103,3 +104,12 @@ process. They are the public contract; the design notes behind them are kept pri
 - **Provider signatures.** `LlmContent` text and `tool_use` blocks carry an optional opaque
   `signature` (Gemini's thought signature) that the brain echoes back unchanged. The `pending`
   notice carries `at`, so a held request still advances the brain's clock.
+- **Agent messaging.** One agent session lists the user's others and messages one through the
+  `cophyla-agents` MCP server (`agent-tools.json`: `list_agents`, `send_message`). The ids of
+  its messages are `pmsg_` (`AgentMessageId`); a sender and a directory row are `AgentRef` and
+  `AgentListing`, and a sender's permission class `AgentMode`. `session.send`'s `as` gains
+  `agent`, with `agent {from, messageId, replyTo?}` beside it, which the owner of the session
+  wraps the text in; the receipt is a `user_turn` with `source: "agent"`, `from`, `messageId`
+  and the text. A secondary's sessions reach the primary's directory and router through
+  `agent.list` and `agent.send` on the node link; `agent.send` answers at once, held or not.
+  `actions.ts` gains `agent.list`, `agent.send` and `agent.escalate`. All additive.

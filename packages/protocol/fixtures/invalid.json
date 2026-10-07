@@ -98,5 +98,9 @@
   { "schema": "capability.requests.assistant.wake.params", "why": "a wake with nothing to say", "value": { "id": "w1", "text": "", "kind": "wake" } },
   { "schema": "capability.events.assistant.prompted", "why": "a prompt of no kind", "value": { "at": 1758196800000, "prompt": { "kind": "hook" } } },
   { "schema": "capability.brain.assistant.context.params", "why": "a kind that is not one", "value": { "kind": "later" } },
-  { "schema": "client.requests.assistant.configure.params", "why": "a harness the chat cannot run on", "value": { "harness": "muse" } }
+  { "schema": "client.requests.assistant.configure.params", "why": "a harness the chat cannot run on", "value": { "harness": "muse" } },
+  { "schema": "nodeLink.requests.agent.send.params", "why": "a message with no text", "value": { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "to": "web-review", "text": "" } },
+  { "schema": "nodeLink.requests.agent.send.params", "why": "a mode that is not one", "value": { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "yolo", "to": "web-review", "text": "hi" } },
+  { "schema": "entities.AgentRef", "why": "a sender on no machine", "value": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "alias": "api-codex", "harness": "codex", "nodeName": "Laptop" } },
+  { "schema": "capability.requests.session.send.params", "why": "an agent message whose id is not a message's", "value": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "text": "hi", "as": "agent", "agent": { "from": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "alias": "a", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop" }, "messageId": "msg_01ARZ3NDEKTSV4RRFFQ69G5FD0" } } }
 ]

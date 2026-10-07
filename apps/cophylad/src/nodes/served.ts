@@ -123,7 +123,10 @@ export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: 
   // A message forwarded by the primary says whose it is; the brain's own table never asks.
   const send: BrainMethodTable["session.send"] = {
     target: (p) => p.id,
-    handler: (p) => deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain")),
+    handler: (p) => {
+      if (p.as === "agent") throw new RpcError("unsupported", "this node does not deliver agent messages");
+      return deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain"));
+    },
   };
   out["session.send"] = send;
   // So does a stop: the user's may end a session of their own.

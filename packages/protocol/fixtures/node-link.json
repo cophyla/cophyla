@@ -139,6 +139,28 @@
       "results": [{ "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }, { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e", "video": { "width": 1920, "height": 1200 } }]
     },
     "remote.pipe.open": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "n3" }], "results": [{ "window": 262144 }] },
+    "agent.list": {
+      "params": [{ "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],
+      "results": [
+        { "agents": [] },
+        {
+          "agents": [
+            { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web", "status": "idle", "intent": "Review the login page change" },
+            { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex@Laptop", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "shell" } }
+          ]
+        }
+      ]
+    },
+    "agent.send": {
+      "params": [
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "to": "web-review", "text": "The API is up on :8080; the login test can run against it." },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "to": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "text": "Done: 14 passed.", "replyTo": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD0" }
+      ],
+      "results": [
+        { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web" } },
+        { "status": "pending", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" }
+      ]
+    },
     "remote.close": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "stream_0123456789abcdef", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV:client_01ARZ3NDEKTSV4RRFFQ69G5FAZ" }], "results": [{}] },
     "replicate.snapshot": {
       "params": [{}],

@@ -4,6 +4,7 @@
 
 import { z } from "zod";
 import {
+  AgentRef,
   Ask,
   AskAnswer,
   AssistantHarness,
@@ -42,7 +43,7 @@ import {
   PressureResource,
   Terminal,
 } from "./entities.ts";
-import { AskId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AgentMessageId, AskId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
 /** The protocol version this package describes. Bumped only for incompatible change. */
@@ -403,9 +404,12 @@ export const capabilityRequests = {
       /**
        * Whose words these are, set by a primary forwarding the message to the node that owns
        * the session: a user's are typed into a session in a tether terminal, the brain's go as
-       * the harness says. The brain sending for itself cannot set it.
+       * the harness says, an agent's (with `agent`) go wrapped in a `<cophyla-message>` and are
+       * never typed into a Claude session. The brain sending for itself cannot set it.
        */
-      as: z.enum(["user", "brain"]).optional(),
+      as: z.enum(["user", "brain", "agent"]).optional(),
+      /** With `as: agent`: the session the message is from, its id, and the message it answers. */
+      agent: z.object({ from: AgentRef, messageId: AgentMessageId, replyTo: AgentMessageId.optional() }).optional(),
       /** The task the session works on from this message: it becomes the session's `task`. */
       task: TaskId.optional(),
       /**

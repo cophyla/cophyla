@@ -229,7 +229,19 @@
       "payload": { "tool": "Write", "input": { "file_path": "C:\\D\\orchestrator\\x.txt" } },
       "raw": { "hook_event_name": "PreToolUse", "tool_name": "Write" }
     },
-    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 13, "at": 1758196800100, "kind": "status", "payload": { "status": "busy" } }
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "seq": 13, "at": 1758196800100, "kind": "status", "payload": { "status": "busy" } },
+    {
+      "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2",
+      "seq": 4,
+      "at": 1758196800200,
+      "kind": "user_turn",
+      "payload": {
+        "source": "agent",
+        "from": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "alias": "api-codex", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api" },
+        "messageId": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD0",
+        "text": "The schema is merged; rebase on it."
+      }
+    }
   ],
   "Task": [
     {
@@ -603,6 +615,15 @@
     { "kind": "harness", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" },
     { "kind": "system" }
   ],
+  "AgentRef": [
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "alias": "api-codex", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api" },
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review@Desk", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }
+  ],
+  "AgentListing": [
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web", "status": "busy", "intent": "Review the login page change" },
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex-01A9", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "user", "detail": "a question" } }
+  ],
+  "AgentMode": ["bypass", "prompting"],
   "Client": [
     {
       "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",

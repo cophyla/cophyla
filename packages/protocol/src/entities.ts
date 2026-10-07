@@ -280,6 +280,40 @@ export const Session = z.object({
 });
 export type Session = z.infer<typeof Session>;
 
+/**
+ * An agent session as another agent addresses it (agent messaging): the session, the short
+ * alias the directory gives it, its harness, and the machine and folder it works in. A
+ * message's sender is one, and so is each row `list_agents` answers.
+ */
+export const AgentRef = z.object({
+  session: SessionId,
+  /** Short and stable: a Claude session's own name, else `<folder>-<harness>`, with `@machine` or an id suffix when two would meet. */
+  alias: z.string().min(1).max(120),
+  harness: HarnessKind,
+  node: NodeId,
+  /** The machine's name, as the user knows it. */
+  nodeName: z.string(),
+  /** The folder's name, not its path: a path means nothing on another machine. */
+  folder: z.string().optional(),
+});
+export type AgentRef = z.infer<typeof AgentRef>;
+
+/** A row of the agent directory: who it is, and what it is doing now. */
+export const AgentListing = AgentRef.extend({
+  status: SessionStatus,
+  waiting: SessionWaiting.optional(),
+  /** What the session is for, on one line. */
+  intent: z.string().optional(),
+});
+export type AgentListing = z.infer<typeof AgentListing>;
+
+/**
+ * A sender's permission class, for the parity rule: `bypass` when it runs with no prompts,
+ * `prompting` otherwise, and when cophylad cannot tell.
+ */
+export const AgentMode = z.enum(["bypass", "prompting"]);
+export type AgentMode = z.infer<typeof AgentMode>;
+
 /** The harnesses the chat's own session runs on. */
 export const AssistantHarness = z.enum(["claude", "codex"]);
 export type AssistantHarness = z.infer<typeof AssistantHarness>;
@@ -1339,6 +1373,9 @@ export const entities = {
   Memory,
   ViewManifest,
   Principal,
+  AgentRef,
+  AgentListing,
+  AgentMode,
   Client,
   Controller,
   Access,

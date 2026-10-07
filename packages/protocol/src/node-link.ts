@@ -11,8 +11,8 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
-import { ClientId, GrantId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
+import { AgentMessageId, AskId, ClientId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 
@@ -220,6 +220,23 @@ export const nodeLinkRequests = {
   "remote.pipe.open": { params: z.object({ node: NodeId, pipe: PipeId }), result: z.object({ window: z.number().int().positive() }) },
   /** Either way: a stream `remote.ticket` opened on `node` for `viewer` ended (its window closed, or its client went), and its session goes. */
   "remote.close": { params: z.object({ node: NodeId, stream: z.string().min(1).max(64), viewer: z.string().min(1).max(128) }), result: Empty },
+  /**
+   * Secondary → primary, agent messaging: the agent sessions `caller`, a live session of the
+   * secondary's, may message, every node's, with the aliases the primary gives them. Refused
+   * for a session the primary does not hold as the secondary's.
+   */
+  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing) }) },
+  /**
+   * Secondary → primary, agent messaging: `caller`'s message to the agent `to` names (an
+   * alias, `alias@machine` or a session id), `mode` its permission class as the secondary
+   * read it. Answered at once, never held: `sent`, `held` in the receiving session's own
+   * terminal, or `pending` on the user's approval (`ask`), and delivered once it is given. A
+   * refusal is an error that says why.
+   */
+  "agent.send": {
+    params: z.object({ caller: SessionId, mode: AgentMode, to: z.string().min(1).max(200), text: z.string().min(1), replyTo: AgentMessageId.optional() }),
+    result: z.object({ status: z.enum(["sent", "held", "pending"]), id: AgentMessageId, to: AgentRef, ask: AskId.optional() }),
+  },
 } as const;
 
 export type NodeLinkRequestName = keyof typeof nodeLinkRequests;

@@ -17,6 +17,8 @@ export const ID_PREFIXES = {
   controller: "ctl",
   grant: "grt",
   listener: "lst",
+  /** A message one agent session sent another (agent messaging). */
+  agentMessage: "pmsg",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -101,6 +103,7 @@ export const GrantId = idSchema("grant");
 /** Any grant's id: a phone's `ctl_`, a node's `grt_`. */
 export const GrantRef = z.union([ControllerId, GrantId]);
 export const ListenerId = idSchema("listener");
+export const AgentMessageId = idSchema("agentMessage");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -116,6 +119,7 @@ export type ControllerId = z.infer<typeof ControllerId>;
 export type GrantId = z.infer<typeof GrantId>;
 export type GrantRef = z.infer<typeof GrantRef>;
 export type ListenerId = z.infer<typeof ListenerId>;
+export type AgentMessageId = z.infer<typeof AgentMessageId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");
