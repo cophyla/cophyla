@@ -5,7 +5,7 @@
 // Requests that belong to later milestones answer `unsupported`.
 
 import { RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, ProfileLimits, RiskClass, RpcId, Session, Terminal, WorkMode } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, Principal, ProfileLimits, RiskClass, RpcId, Session, Terminal, WorkMode } from "@cophyla/protocol";
 import { annotate } from "../annotate.ts";
 import type { Chat } from "../chat/index.ts";
 import type { MemoryFiles } from "../editable/memory.ts";
@@ -35,6 +35,8 @@ import type { ReplyStream } from "./stream.ts";
 
 export interface BrainMethodContext extends GateContext {
   id: RpcId;
+  /** Who asked: the brain on its own link, the primary on a node's. Forwarding tells the owner of a session whose a send or a stop is from it. */
+  principal: Principal;
   signal: AbortSignal;
   /** A chunk of a completion in flight: sent to the brain as `llm.delta`, and to the view as `chat.delta` when the request is a reply. */
   delta: (delta: LlmDelta) => void;

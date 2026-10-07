@@ -453,6 +453,7 @@ export class BrainLink {
           const ctx: BrainMethodContext = {
             audit: gctx.audit,
             id,
+            principal: { kind: "brain" },
             signal: controller.signal,
             delta: (delta: LlmDelta) => {
               if (this.rpc !== rpc) return;

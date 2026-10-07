@@ -89,7 +89,11 @@ export function guestServedTable(deps: GuestServeDeps, primaryId: string): Brain
     },
     "session.send": {
       target: (p: { id: string }) => p.id,
-      handler: (p: { id: string; text: string; as?: "user" | "brain"; task?: string; clear?: boolean; mode?: WorkMode }) => deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain")),
+      handler: (p: { id: string; text: string; as?: string; task?: string; clear?: boolean; mode?: WorkMode }) => {
+        // Another person's cluster sends as its user or its brain; an agent's message is never routed into a workspace node.
+        if (p.as !== undefined && p.as !== "user" && p.as !== "brain") throw new RpcError("denied", "this node takes messages from its primary's user and brain alone");
+        return deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain"));
+      },
     },
     "session.spawn": {
       target: (p: { workspace: string }) => p.workspace,

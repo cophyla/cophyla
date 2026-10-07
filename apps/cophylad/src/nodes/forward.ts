@@ -187,6 +187,11 @@ export const merges: Record<string, Merge> = {
   },
 };
 
+function withoutAgent(p: Record<string, unknown>): Record<string, unknown> {
+  const { agent: _agent, ...rest } = p;
+  return rest;
+}
+
 function dedupe<T extends { id: string }>(rows: T[]): T[] {
   const seen = new Set<string>();
   return rows.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
@@ -259,8 +264,9 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
           if (name === "terminal.open" && c.client) return host.remoteTerminals.open(c.client.id, route.node, p as ClientParams<"terminal.open">, opts);
           if (name === "terminal.close" && c.client) return host.remoteTerminals.close(c.client.id, route.node, p as ClientParams<"terminal.close">, opts);
           // The owner types a user's message and pipes the brain's, and ends a session of the
-          // user's only for the user: it learns who asked from here.
-          const params = name === "session.send" || name === "session.stop" ? { ...P(p), as: c.principal?.kind === "brain" ? "brain" : "user" } : p;
+          // user's only for the user: it learns who asked from here, never from the caller. An
+          // agent's message is the router's to forward (agentmsg), so a caller's `agent` is dropped.
+          const params = name === "session.send" || name === "session.stop" ? { ...withoutAgent(P(p)), as: c.principal?.kind === "brain" ? "brain" : "user" } : p;
           const result = await host.forward(route.node, name, params, opts);
           after[name]?.(result, p, host, route.node);
           return result;

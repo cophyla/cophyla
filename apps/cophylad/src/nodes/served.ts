@@ -381,6 +381,7 @@ export class NodeServer {
           const ctx: BrainMethodContext = {
             audit: gctx.audit,
             id,
+            principal: this.deps.principal,
             signal: controller.signal,
             delta: () => undefined,
             onPending: (ask) => this.deps.onPending(id, ask),

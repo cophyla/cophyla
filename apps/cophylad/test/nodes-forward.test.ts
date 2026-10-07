@@ -34,6 +34,8 @@ const script = {
     { event: "user.message", match: { text: "send" }, requests: [{ method: "session.send", params: { id: "$text[1]", text: "again" } }] },
     { event: "user.message", match: { text: "history" }, requests: [{ method: "session.history", params: { id: "$text[1]", limit: 20 } }] },
     { event: "user.message", match: { text: "read" }, requests: [{ method: "tool.run", params: { name: "fs.read", args: { workspace: "$text[1]", path: "config.toml" } } }] },
+    { event: "user.message", match: { text: "stop" }, requests: [{ method: "session.stop", params: { id: "$text[1]" } }] },
+    { event: "user.message", match: { text: "answer" }, requests: [{ method: "ask.answer", params: { id: "$text[1]", option: "allow" } }] },
   ],
 };
 
@@ -107,6 +109,36 @@ describe("forwarding over the node link", () => {
     const stops = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.stop");
     expect(stops.map((e) => [e.principal.kind, e.args, e.outcome])).toEqual([["node", { id: session.id, as: "user" }, "ok"]]);
     expect(primary.d.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "session.stop")?.principal.kind).toBe("user");
+  }, 30_000);
+
+  test("the brain's forwarded send and stop tell the owner the brain asked, and it cannot answer a remote ask that is the user's", async () => {
+    primary = await startPrimary({ brain: { script } });
+    secondary = await startSecondary(primary, { agent: true, gateRules: { "node:session.send": "allow", "node:session.spawn": "allow", "node:session.stop": "allow" } });
+    await linked(secondary);
+    await waitFor(() => primary!.d.brain?.state === "up");
+    const c = await client(primary.d);
+    clients.push(c);
+    const ws = secondary.workspaces.put({ node: secondary.identity.id, path: secondary.home, name: "second" });
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfWorkspace(ws.id) === secondary!.identity.id);
+    await c.request("chat.send", { text: `start ${ws.id}` });
+    const state = await c.next(isMethod("session.state", (p) => (p as Session).node === secondary!.identity.id && (p as Session).native.transport === "acp"), 10_000);
+    const session = state.params as Session;
+    await c.next(isMethod("session.state", (p) => (p as Session).id === session.id && (p as Session).status === "idle"), 10_000);
+    // The brain's message reaches the owner as the brain's, never the user's.
+    await c.request("chat.send", { text: `send ${session.id}` });
+    const sent = await waitFor(() => secondary!.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "session.send" && e.outcome === "ok"), 10_000);
+    expect(sent.args).toMatchObject({ id: session.id, as: "brain" });
+    // An ask only the user may answer is refused to the brain on the primary, before it is forwarded.
+    const ask = secondary.asks.open({ type: "permission", source: { kind: "gate", action: "session.send", principal: { kind: "node", id: primary.d.identity.id } }, title: "Allow?", options: [{ id: "allow", label: "Allow" }], answerableBy: ["user"] }, Date.now());
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfAsk(ask.id) === secondary!.identity.id);
+    await c.request("chat.send", { text: `answer ${ask.id}` });
+    await waitFor(() => brainFrames(primary!.brainLog!).some((f) => f.dir === "in" && (f.frame["error"] as { message?: string } | undefined)?.message?.includes("not answerable by the brain")), 10_000);
+    expect(secondary.asks.get(ask.id)?.status).toBe("open");
+    // Its stop of the session it started ends it as the brain's.
+    await c.request("chat.send", { text: `stop ${session.id}` });
+    await c.next(isMethod("session.state", (p) => (p as Session).id === session.id && (p as Session).status === "ended"), 10_000);
+    const stops = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.stop");
+    expect(stops.map((e) => [e.principal.kind, e.args, e.outcome])).toEqual([["node", { id: session.id, as: "brain" }, "ok"]]);
   }, 30_000);
 
   test("an ask on the owner reaches the primary's client, whose answer settles it; a forwarded write is gated on both sides", async () => {
