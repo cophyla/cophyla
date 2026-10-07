@@ -176,12 +176,18 @@ describe("the directory", () => {
     expect(to("nobody")).toContain("list_agents shows who you can message");
   });
 
-  test("the chat's own session, an ended one and a workspace node's are no one to message", () => {
-    expect(eligible(sess("claude", "/a", { role: "assistant" }), undefined)).toBe(false);
-    expect(eligible(sess("claude", "/a", { status: "ended" }), undefined)).toBe(false);
-    const guest = { hands: true, scope: { kind: "workspaces" as const, paths: ["/x"] } };
+  test("the chat's own session, an ended one, a workspace node's and one on a node with no agent messaging are no one to message", () => {
+    expect(eligible(sess("claude", "/a", { role: "assistant" }), "self")).toBe(false);
+    expect(eligible(sess("claude", "/a", { status: "ended" }), "self")).toBe(false);
+    expect(eligible(sess("claude", "/a"), "self")).toBe(true);
+    const guest = node(LAPTOP, "Lent", { hands: true, scope: { kind: "workspaces", paths: ["/x"] } });
     expect(eligible(sess("claude", "/a"), guest)).toBe(false);
-    expect(eligible(sess("claude", "/a"), { hands: true, scope: { kind: "machine" } })).toBe(true);
+    expect(eligible(sess("claude", "/a"), node(LAPTOP, "Hands", { hands: true }))).toBe(true);
+    // a node turned off, an older version, or one the registry does not have
+    const old = node(LAPTOP, "Laptop");
+    delete old.capabilities.agents;
+    expect(eligible(sess("claude", "/a"), old)).toBe(false);
+    expect(eligible(sess("claude", "/a"), undefined)).toBe(false);
     expect(slug("  Ünïcode Name! ")).toBe("unicode-name");
   });
 });
@@ -285,7 +291,7 @@ function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?
 }
 
 function node(id: string, name: string, extra: Partial<NodeRecord> = {}): NodeRecord {
-  return { id, name, role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false, brain: false }, versions: { platform: "0.14.0" }, lastSeen: 0, endpoints: [], ...extra } as NodeRecord;
+  return { id, name, role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false, brain: false, agents: { acceptInBypass: false } }, versions: { platform: "0.14.0" }, lastSeen: 0, endpoints: [], ...extra } as NodeRecord;
 }
 
 describe("the router", () => {

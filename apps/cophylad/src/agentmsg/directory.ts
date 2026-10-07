@@ -7,7 +7,8 @@
 //
 // The chat's own session is no agent, and nor are the sessions a workspace node runs for this
 // cluster on another person's machine (a hands node that shares folders alone): they take no
-// agent's message.
+// agent's message. Nor does a node whose row does not say it runs agent messaging: one turned
+// off, or an older version, which could not deliver what is sent.
 
 import type { AgentListing, AgentRef, NodeRecord, Session } from "@cophyla/protocol";
 
@@ -57,11 +58,16 @@ function forms(s: Session, nodeName: string): string[] {
   return [b, `${b}@${machine}`, `${b}-${suffix}`, `${b}-${suffix}@${machine}`];
 }
 
-/** Whether a row is one an agent may message: live, the user's own agent, and on a node that takes agents' messages. */
-export function eligible(s: Session, node: Pick<NodeRecord, "hands" | "scope"> | undefined): boolean {
+/**
+ * Whether a row is one an agent may message: live, the user's own agent, and on a node that
+ * takes agents' messages. `node`: the row's node from the registry, or `self` for this node's own.
+ */
+export function eligible(s: Session, node: Pick<NodeRecord, "hands" | "scope" | "capabilities"> | "self" | undefined): boolean {
   if (s.status === "ended" || s.role === "assistant") return false;
+  if (node === "self") return true;
+  if (!node?.capabilities.agents) return false;
   // a workspace node: hands, lending folders of another person's machine
-  if (node?.hands === true && node.scope.kind === "workspaces") return false;
+  if (node.hands === true && node.scope.kind === "workspaces") return false;
   return true;
 }
 

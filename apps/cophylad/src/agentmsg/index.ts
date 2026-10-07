@@ -215,7 +215,7 @@ export class AgentMessages {
     const entries: DirectoryEntry[] = [];
     const seen = new Set<string>();
     for (const s of this.deps.sessions.list()) {
-      if (!eligible(s, undefined)) continue;
+      if (!eligible(s, "self")) continue;
       seen.add(s.id);
       entries.push({ session: s, nodeName: self.name });
     }
