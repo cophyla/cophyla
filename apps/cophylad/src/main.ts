@@ -6,6 +6,7 @@ import { COMMANDS, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
 import { ConfigError } from "./config/load.ts";
 import { startDaemon } from "./daemon.ts";
+import { guardSpawns } from "./inherit.ts";
 import { loginEnv } from "./login-env.ts";
 import { RESTART_ENV, waitForExit } from "./restart.ts";
 
@@ -48,6 +49,10 @@ if (values.help) {
 `);
   process.exit(0);
 }
+
+// Before anything is started: no child may hold the daemon's sockets, or one that outlives it
+// keeps its ports from the next (inherit.ts).
+guardSpawns();
 
 // A successor started by `node.restart` opens the home once its predecessor is gone; the
 // variable is its own, so nothing this daemon starts inherits it.

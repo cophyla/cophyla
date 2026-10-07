@@ -8,6 +8,10 @@
 //   FAKE_SIDECAR_DEAF      never answer /health at all
 //   FAKE_SIDECAR_LOG       a line to write to stdout at start, so the log file can be checked
 //   FAKE_SIDECAR_IGNORE_TERM  keep running when killed politely, so the hard kill is exercised
+//   FAKE_SIDECAR_CHILD     start a long-running child of its own that would outlive it (detached,
+//                          as a native sidecar's stream worker does), and log `child <pid>`
+
+import { spawn } from "node:child_process";
 
 const arg = (name: string): string | undefined => {
   const i = Bun.argv.indexOf(name);
@@ -56,6 +60,12 @@ const server = Bun.serve({
   },
 });
 void server;
+
+if (process.env["FAKE_SIDECAR_CHILD"] === "1") {
+  const child = spawn("ping", ["-n", "60", "127.0.0.1"], { stdio: "ignore", detached: true, windowsHide: true });
+  child.unref();
+  console.log(`child ${child.pid}`);
+}
 
 if (exitMs !== undefined) {
   setTimeout(() => {

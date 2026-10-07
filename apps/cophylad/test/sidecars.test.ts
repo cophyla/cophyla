@@ -174,6 +174,30 @@ describe("sidecars", () => {
     await expect(fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(500) })).rejects.toThrow();
   }, 20_000);
 
+  test.skipIf(process.platform !== "win32")("stop ends what the sidecar started too, which would otherwise outlive it", async () => {
+    const { sidecars: s, dir } = sidecars();
+    const sidecar = s.spawn(spec({ env: { FAKE_SIDECAR_CHILD: "1" } }));
+    await sidecar.start();
+    const log = join(dir, "fake.log");
+    await waitFor(() => existsSync(log) && /child \d+/.test(readFileSync(log, "utf8")));
+    const child = Number(/child (\d+)/.exec(readFileSync(log, "utf8"))![1]);
+    const alive = () => {
+      try {
+        process.kill(child, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    try {
+      expect(alive()).toBe(true);
+      await s.stopAll();
+      await waitFor(() => !alive(), 5000);
+    } finally {
+      if (alive()) process.kill(child);
+    }
+  }, 20_000);
+
   test("spawning the same name twice gives the same sidecar, and freePort gives a bindable one", async () => {
     const { sidecars: s } = sidecars();
     const one = s.spawn(spec());

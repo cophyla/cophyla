@@ -293,7 +293,17 @@ export class Sidecar {
     this.poll(startedAt);
   }
 
+  /**
+   * Ends the process and, on Windows, everything it started, while it can still be told what
+   * that is: a native sidecar's own children (moonlight-web's stream workers) are in no job of
+   * the daemon's and would outlive it, holding what they inherited.
+   */
   private kill(): void {
+    const pid = this.proc?.pid;
+    if (process.platform === "win32" && pid !== undefined) {
+      const r = Bun.spawnSync(["taskkill", "/pid", String(pid), "/t", "/f"], { stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true });
+      if (r.exitCode === 0) return;
+    }
     try {
       this.proc?.kill();
     } catch {

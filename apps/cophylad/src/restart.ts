@@ -6,9 +6,9 @@
 // daemon starts its own successor: the same runtime, script, arguments, working directory
 // and environment, detached, its output appended to `data/cophylad.log`, told the
 // predecessor's pid in `COPHYLAD_RESTART` so it waits for that process to be gone before it
-// opens the home. It is started once the daemon has stopped, never before: a child started
-// while the listeners are open inherits their sockets on Windows, and could then never bind
-// the port itself. What it needs is checked before the answer, so a restart that could not
+// opens the home. It is started once the daemon has stopped, never before: on Windows a child
+// started while the listeners are open would inherit their sockets, were the daemon's spawns
+// not sealed (inherit.ts), and could then never bind the port itself. What it needs is checked before the answer, so a restart that could not
 // bring a successor up is refused while the daemon still runs. The answer goes out, the
 // daemon stops (a stop that hangs is cut short), the successor starts, the daemon exits.
 
