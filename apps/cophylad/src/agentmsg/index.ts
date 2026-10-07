@@ -416,7 +416,7 @@ export function answerText(a: SendAnswer): string {
     case "held":
       return `Held in ${a.to.alias}'s terminal (${a.id}): that session runs without permission prompts, so Claude Code asks its user before it takes a message from a session that does not. It is delivered once they allow it.`;
     case "pending":
-      return `Waiting for the user's approval (${a.id}): ${a.to.alias} runs without permission prompts and you do not. It is delivered once they allow it; if they do not, you will be told.`;
+      return `Waiting for the user's approval (${a.id}) before it reaches ${a.to.alias}. It is delivered once they allow it; if they do not, you will be told.`;
   }
 }
 
