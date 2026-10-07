@@ -16,6 +16,7 @@
 //   weird form an elicitation/create whose field is an object; the response is echoed
 //   Implement this plan:   (a prompt that starts so) a chunk naming the mode the session
 //              was set to, then end_turn; the rest of the text is not read
+//   servers    a chunk holding the MCP servers `session/new` was given, as JSON
 // `initialize` echoes the environment it was given under `_meta.env` and the client's
 // capabilities under `_meta.clientCapabilities`, so a test can check what the adapter
 // passed. `session/new` fails for a cwd with `no-session` in it. Writes synchronously, as
@@ -31,6 +32,8 @@ let nextId = 1;
 const pending = new Map<number, (v: { result?: unknown; error?: unknown }) => void>();
 let cancelWaiter: (() => void) | undefined;
 let sessions = 0;
+/** What each session was given in `session/new`'s `mcpServers`. */
+const servers = new Map<string, unknown>();
 let clientCapabilities: unknown;
 let mode = "unset";
 
@@ -68,6 +71,11 @@ async function prompt(id: unknown, params: { sessionId: string; prompt: { type: 
   }
   if (text.includes("exit")) {
     setTimeout(() => process.exit(0), 10);
+    return;
+  }
+  if (text === "servers") {
+    update(sessionId, { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(servers.get(sessionId) ?? null) }, messageId: "m-servers" });
+    done("end_turn");
     return;
   }
   if (text.includes("slow")) {
@@ -225,6 +233,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
         return;
       }
       const sessionId = `fake-${process.pid}-${++sessions}`;
+      servers.set(sessionId, params["mcpServers"] ?? null);
       send({ jsonrpc: "2.0", id, result: { sessionId, modes: { currentModeId: "auto", availableModes: [{ id: "default", name: "Manual" }, { id: "acceptEdits", name: "Accept Edits" }, { id: "plan", name: "Plan Mode" }, { id: "bypassPermissions", name: "Bypass Permissions" }] }, models: { availableModels: [{ modelId: "gpt-fake[low]" }] } } });
       return;
     }

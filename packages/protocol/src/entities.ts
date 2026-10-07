@@ -84,6 +84,12 @@ export const NodeCapabilities = z.object({
   brain: z.boolean(),
   /** It starts terminals and serves them to the primary's clients: tether is on it, and it shares the whole machine. */
   terminals: z.boolean().optional(),
+  /**
+   * Its agent sessions have the `cophyla-agents` server, to list and message the cluster's;
+   * `acceptInBypass`: its Claude sessions that run without prompts take another agent's
+   * message without Claude's own hold (`agents.accept`).
+   */
+  agents: z.object({ acceptInBypass: z.boolean() }).optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 

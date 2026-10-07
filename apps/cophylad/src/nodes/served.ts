@@ -8,6 +8,8 @@
 // so they can hand out and take back access to this desktop and switch its sharing (not on a
 // hands node's, whose desktop is its owner's), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
+// `agents.accept`, so they can let agents' messages into its bypass sessions (not a lent
+// machine's),
 // `session.files`, `session.git` and `session.file`, so their explorer shows this node's
 // sessions' files and their viewer a file's text, the terminal requests, so they see,
 // open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`,
@@ -84,6 +86,9 @@ export const NODE_SERVED_NAME = ["node.rename"] as const;
 
 /** The direct connections' switch, served for the primary's clients. */
 export const NODE_SERVED_DIRECT = ["direct.enable", "direct.disable"] as const;
+
+/** The switch that lets agents' messages into this node's Claude sessions that run without prompts. */
+export const NODE_SERVED_AGENTS = ["agents.accept"] as const;
 
 /** A session's folders, repository and files, for the explorer and the viewer of a view on the primary. */
 export const NODE_SERVED_FILES = ["session.files", "session.git", "session.file"] as const;
@@ -168,6 +173,8 @@ export interface ServeDeps {
   /** Names this machine, for `node.rename`. */
   rename?: (name: string) => void;
   direct?: Direct;
+  /** Agent messaging's switch here, for `agents.accept`. */
+  agents?: () => Pick<AgentMessages, "setAccept"> | undefined;
   /** This node's sessions' folders, repositories and files, for `session.files`, `session.git` and `session.file`. */
   files?: Pick<SessionFiles, "list" | "git" | "read">;
   /** This node's terminals, once built; none on a workspace node. */
@@ -355,6 +362,10 @@ export class NodeServer {
       return this.serveRename(params);
     }
     if ((NODE_SERVED_DIRECT as readonly string[]).includes(method)) return this.serveDirect(method as (typeof NODE_SERVED_DIRECT)[number], params);
+    if ((NODE_SERVED_AGENTS as readonly string[]).includes(method)) {
+      if (this.confined() || this.deps.hands?.()) throw new RpcError("denied", "this machine is lent to the primary, not given: how its sessions take messages is its owner's");
+      return this.serveAgents(params);
+    }
     if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
     if ((NODE_SERVED_TERMINALS as readonly string[]).includes(method)) return this.serveTerminals(method as (typeof NODE_SERVED_TERMINALS)[number], params);
     const name = method as CapabilityRequestName;
@@ -480,6 +491,19 @@ export class NodeServer {
     return this.gated({ principal: this.deps.principal, action: method, args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, async () => {
       if (method === "direct.enable") await direct.enable();
       else await direct.disable();
+      return {};
+    });
+  }
+
+  /** The bypass switch, from an app on the primary: gated here, as the owner's policy says. */
+  private async serveAgents(params: unknown): Promise<unknown> {
+    const agents = this.deps.agents?.();
+    if (!agents) throw new RpcError("unavailable", "agent messaging is off on this node");
+    const parsed = clientRequests["agents.accept"].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", "bad params for agents.accept", parsed.error.issues);
+    const p = parsed.data;
+    return this.gated({ principal: this.deps.principal, action: "agents.accept", args: p, ...(p.node !== undefined ? { target: p.node } : {}), sessionKey: this.deps.sessionKey }, () => {
+      agents.setAccept(p.on);
       return {};
     });
   }

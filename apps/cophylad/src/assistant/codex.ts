@@ -17,6 +17,7 @@
 // A clear is a thread of its own, the one before left where it is. The app-server going
 // away takes the session with it: the module starts it again and resumes the thread.
 
+import { AGENT_MCP_SERVER } from "@cophyla/protocol";
 import type { AssistantHarness, HarnessProfile, TerminalRef } from "@cophyla/protocol";
 import type { AssistantConfig } from "../config/schema.ts";
 import type { Logger } from "../log.ts";
@@ -83,6 +84,8 @@ export function threadParams(d: Pick<CodexHostDeps, "config" | "system" | "cwd">
       "features.apps": false,
       "features.plugins": false,
       "features.memories": false,
+      // the agents' server the user's own sessions get is no tool of the chat's
+      [`mcp_servers.${AGENT_MCP_SERVER}.enabled`]: false,
     },
   };
 }

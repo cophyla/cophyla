@@ -14,7 +14,7 @@
 // A new login rewrites `auth.json`, which an app-server read at its start: it starts again.
 
 import { basename, dirname, join } from "node:path";
-import { RpcError, ulid } from "@cophyla/protocol";
+import { AGENT_MCP_SERVER, RpcError, ulid } from "@cophyla/protocol";
 import type { HarnessProfile, Session, SessionStatus } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
 import type { Logger } from "../../log.ts";
@@ -26,7 +26,7 @@ import type { ProfileChange } from "../profiles.ts";
 import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
 import { CodexAppServer } from "./appserver.ts";
-import { HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
+import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
 import type { TrustResult } from "./hooks.ts";
 import { applyCodexRow, findRollout, newCodexState, readSessionIndex, statsFor } from "./rollout.ts";
 import type { CodexRolloutState } from "./rollout.ts";
@@ -173,6 +173,7 @@ export class CodexAdapter implements HarnessAdapter {
     } catch (e) {
       this.log.warn("codex app-server did not start; will retry", { profile: profile.id, error: e instanceof Error ? e.message : String(e) });
     }
+    await this.agentServer(entry);
     if (!hooks) return;
     const path = join(entry.codexHome, HOOKS_FILENAME);
     try {
@@ -190,10 +191,41 @@ export class CodexAdapter implements HarnessAdapter {
     if (server.alive) entry.trust = await trustCodexHooks(server, { hooksPath: path, codexHome: entry.codexHome, log: this.log });
   }
 
+  /**
+   * The `cophyla-agents` server in a profile's `config.toml`, as wanted: its command and its
+   * arguments written as two leaves through the app-server (`config/batchWrite`), or the
+   * table taken out. A profile whose file says so already is left alone. No approval rule is
+   * written: Codex's default runs a tool whose annotations say it is read-only or harmless.
+   */
+  private async agentServer(entry: ProfileEntry): Promise<void> {
+    const want = this.host.agentInstall();
+    if (!want || !entry.server.alive) return;
+    const current = codexAgentEntry(join(entry.codexHome, "config.toml"));
+    try {
+      if (want.kind === "install") {
+        const args = want.spec.args("codex", entry.profile.id);
+        if (current && current.command === want.spec.command && current.args.length === args.length && current.args.every((a, i) => a === args[i])) return;
+        await entry.server.call("config/batchWrite", {
+          edits: [
+            { keyPath: `mcp_servers.${AGENT_MCP_SERVER}.command`, value: want.spec.command, mergeStrategy: "upsert" },
+            { keyPath: `mcp_servers.${AGENT_MCP_SERVER}.args`, value: args, mergeStrategy: "replace" },
+          ],
+        });
+        this.log.info("agents' server written in a Codex profile", { profile: entry.profile.id, home: entry.codexHome });
+      } else if (current) {
+        await entry.server.call("config/batchWrite", { edits: [{ keyPath: `mcp_servers.${AGENT_MCP_SERVER}`, value: null, mergeStrategy: "replace" }] });
+        this.log.info("agents' server taken out of a Codex profile", { profile: entry.profile.id, home: entry.codexHome });
+      }
+    } catch (e) {
+      this.log.warn("the agents' server could not be set in a Codex profile", { profile: entry.profile.id, error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
   /** A new login: the app-server starts again, and hooks never trusted for want of one are trusted now. */
   private async relogin(entry: ProfileEntry, hooks: HookInstallSpec | undefined): Promise<void> {
     await entry.server.restart();
     this.log.info("codex app-server restarted for a new login", { profile: entry.profile.id });
+    await this.agentServer(entry);
     if (!hooks || !entry.hooksPath || entry.trust) return;
     try {
       await entry.server.start();

@@ -118,9 +118,10 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "remote.screenshot":
     case "remote.enable":
     case "remote.disable":
-    // Direct connections are each node's own to switch.
+    // Direct connections are each node's own to switch, and so is how its sessions take agents' messages.
     case "direct.enable":
     case "direct.disable":
+    case "agents.accept":
     // The picker lists a folder of the computer a terminal is to start on.
     case "terminal.folders":
       return node(p["node"] as string | undefined);

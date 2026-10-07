@@ -6,10 +6,13 @@
 // or installed again when what Muse has cached differs from what cophylad wrote, and approved:
 // Muse keeps a hook disabled until its definition is trusted, which is cophylad's own to grant,
 // as it trusts its Codex hooks. The plugin stays installed when cophylad stops; a stopped daemon
-// answers nothing and the shim prints `{}`. A plugin the user disabled is left disabled.
+// answers nothing and the shim prints `{}`. A plugin the user disabled is left disabled. The
+// agents' MCP server (`cophyla-agents`) is one of its capabilities, a command array as Muse
+// wants it, and is approved with the hooks.
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { AGENT_MCP_SERVER } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
 import { plainPath, samePath } from "../paths.ts";
 import { SHIM_SOURCE } from "../shim.ts";
@@ -26,8 +29,8 @@ export function hookFile(event: string): string {
   return `hooks/${event.toLowerCase()}.mjs`;
 }
 
-/** The manifest: one hook per event, each running its own copy of the shim. */
-export function museManifest(argv: (shim: string) => string[], timeoutS: number, version: string): Record<string, unknown> {
+/** The manifest: one hook per event, each running its own copy of the shim, and the agents' server when `agents` is its command. */
+export function museManifest(argv: (shim: string) => string[], timeoutS: number, version: string, agents?: string[]): Record<string, unknown> {
   const timeoutMs = Math.min(timeoutS * 1000, MUSE_TIMEOUT_CAP_MS);
   return {
     schemaVersion: 1,
@@ -45,7 +48,7 @@ export function museManifest(argv: (shim: string) => string[], timeoutS: number,
         command: argv(hookFile(event)),
         timeoutMs: event === "SessionEnd" ? Math.min(SESSION_END_TIMEOUT_MS, timeoutMs) : timeoutMs,
       })),
-      mcpServers: [],
+      mcpServers: agents ? [{ id: AGENT_MCP_SERVER, command: agents }] : [],
       reminders: [],
     },
   };

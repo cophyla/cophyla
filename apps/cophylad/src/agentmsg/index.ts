@@ -74,6 +74,8 @@ export interface AgentMessagesDeps {
   gate: Gate;
   log: Logger;
   version: string;
+  /** The bypass switch: lets agents' messages into this node's Claude sessions that run without prompts, or takes that back. */
+  accept?: (on: boolean) => void;
   now?: () => number;
 }
 
@@ -392,6 +394,12 @@ export class AgentMessages {
     const s = this.deps.cluster.ownerOfSession(id) === peer.id ? this.deps.cluster.mirrorSessions().find((x) => x.id === id) : undefined;
     if (!s || s.status === "ended") throw new RpcError("denied", `${id} is not a live session of the asking node`);
     return s;
+  }
+
+  /** The bypass switch, from an app here or on the primary. */
+  setAccept(on: boolean): void {
+    if (!this.deps.accept) throw new RpcError("unsupported", "this node has no Claude profiles to set");
+    this.deps.accept(on);
   }
 
   private nameOf(node: string): string {

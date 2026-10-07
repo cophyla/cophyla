@@ -202,6 +202,23 @@ export interface HookInstallSpec {
   mode(profileId: string): "http" | "command";
 }
 
+/**
+ * The `cophyla-agents` MCP server as a profile is given it: the shim's copy every session runs
+ * (in a folder that never moves), and its arguments for a harness and profile, and a spawn's
+ * nonce.
+ */
+export interface AgentServerSpec {
+  command: string;
+  args(harness: string, profileId: string, nonce?: string): string[];
+}
+
+/**
+ * What a start does about the server in each profile: install it (and, in Claude profiles,
+ * let any session's message into one that bypasses prompts, when `acceptInBypass`), or take
+ * it out. Undefined: leave whatever is there, as when no shim is to be found.
+ */
+export type AgentInstall = { kind: "install"; spec: AgentServerSpec; acceptInBypass: boolean } | { kind: "remove" };
+
 export interface HarnessAdapter {
   readonly harness: AttachedHarness;
   /** Installs hooks when a spec is given, then starts discovery and any children. */
@@ -338,6 +355,10 @@ export interface SessionHost {
   event(rec: SessionRecord, kind: SessionEventKind, payload: unknown, raw?: unknown, at?: number): SessionEvent;
   /** An agent's message with no send waiting for it, recorded from its envelope once; false when the text holds none. */
   agentEcho(rec: SessionRecord, text: string, raw?: unknown, at?: number): boolean;
+  /** What is to become of the `cophyla-agents` server in the profiles; undefined: leave it. */
+  agentInstall(): AgentInstall | undefined;
+  /** Names the session an ACP spawn gave this nonce to its agents' server. */
+  noteNonce(nonce: string, session: string): void;
   end(rec: SessionRecord, reason: string, at?: number): void;
   /** Claude: a delivered prompt that carries one of cophylad's own messages, as the prompt `promptId`. True when it matched a pending send. */
   receiptByText(rec: SessionRecord, text: string, promptId?: string): boolean;

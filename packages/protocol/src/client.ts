@@ -995,6 +995,13 @@ export const clientRequests = {
    * channels to it across networks, through TURN when nothing direct opens. Needs sign-in and
    * a plan with them; the state says which is missing.
    */
+  /**
+   * Lets agents' messages into a node's Claude sessions that run without permission prompts
+   * without Claude's own hold, or takes that back: `crossSessionInbound: "accept"` in each of
+   * its Claude profiles, which lets in any session's message, Claude's own `SendMessage` too.
+   * The node's row says how it stands (`capabilities.agents`).
+   */
+  "agents.accept": { params: z.object({ node: NodeId.optional(), on: z.boolean() }), result: Empty },
   "direct.enable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   "direct.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   /**

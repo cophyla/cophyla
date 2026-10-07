@@ -170,6 +170,8 @@ export const actions = {
   "agent.list": { risk: "read" },
   "agent.send": { risk: "write" },
   "agent.escalate": { risk: "exec" },
+  // A node's Claude sessions that run without prompts taking agents' messages without their hold.
+  "agents.accept": { risk: "exec" },
 } as const satisfies Record<string, ActionDefinition>;
 
 export type ActionName = keyof typeof actions;

@@ -26,6 +26,7 @@
 // goes up to the client that opened it. A confined node, and a workspace node, sends none.
 
 import { nodeLinkFrames, nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
+import type { AgentMessages } from "../agentmsg/index.ts";
 import type { Ask, AuditEntry, ClientNotificationParams, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Terminal, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { ClientSocket } from "../api/clients.ts";
@@ -150,6 +151,8 @@ export interface OutboundDeps {
   rename?: (name: string) => void;
   /** The direct connections, so the primary's clients can switch them here, and their state goes up on link; a relayed link offers a data channel through them. */
   direct?: Direct;
+  /** Agent messaging's switch here, which the primary's clients may set. */
+  agents?: () => Pick<AgentMessages, "setAccept"> | undefined;
   /** `[direct] nodes`: whether a relayed link tries a data channel. */
   directNodes?: () => boolean;
   /** How soon a relayed link tries its data channel, and again; shorter in the tests. */
@@ -400,6 +403,7 @@ export class Outbound {
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),
         ...(this.deps.rename ? { rename: this.deps.rename } : {}),
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
+        ...(this.deps.agents ? { agents: this.deps.agents } : {}),
         ...(this.deps.confine ? { confine: this.deps.confine } : {}),
         ...(this.deps.answerHere ? { answerHere: this.deps.answerHere } : {}),
         ...(this.deps.trusted ? { trusted: this.deps.trusted } : {}),

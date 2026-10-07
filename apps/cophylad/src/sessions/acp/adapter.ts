@@ -6,9 +6,10 @@
 // also fire in it are answered `{}` so a permission prompt falls through to ACP. Spike 08
 // has the shapes.
 
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { RpcError } from "@cophyla/protocol";
+import { AGENT_MCP_SERVER, RpcError } from "@cophyla/protocol";
 import type { Ask, HarnessProfile, RpcId, Session } from "@cophyla/protocol";
 import type { AcpConfig } from "../../config/schema.ts";
 import { scrub } from "../env.ts";
@@ -218,12 +219,17 @@ export class AcpAdapter {
         { protocolVersion: 1, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false, elicitation: { form: {} } }, clientInfo: { name: "cophylad", version: "0.1.0" } },
         { timeoutMs: timeout },
       )) as { authMethods?: { id: string }[]; agentInfo?: { name?: string } } | null;
-      const created = (await rpc.request("session/new", { cwd: input.cwd, mcpServers: [], ...(input.harness === "claude" && input.model ? { _meta: { claudeCode: { options: { model: input.model } } } } : {}) }, { timeoutMs: timeout }).catch(async (e: unknown) => {
+      // The agents' server, which knows the session by the nonce it is started with: an ACP agent's
+      // own processes say nothing else that would tell it from another the same adapter runs.
+      const want = this.deps.host.agentInstall();
+      const nonce = want?.kind === "install" ? randomUUID() : undefined;
+      const mcpServers = want?.kind === "install" ? [{ name: AGENT_MCP_SERVER, command: want.spec.command, args: want.spec.args("acp", input.profile.id, nonce), env: [] }] : [];
+      const created = (await rpc.request("session/new", { cwd: input.cwd, mcpServers, ...(input.harness === "claude" && input.model ? { _meta: { claudeCode: { options: { model: input.model } } } } : {}) }, { timeoutMs: timeout }).catch(async (e: unknown) => {
         // An agent that wants authentication first is given its first method once.
         const first = init?.authMethods?.[0];
         if (first && e instanceof RpcError) {
           await rpc.request("authenticate", { methodId: first.id }, { timeoutMs: timeout });
-          return rpc.request("session/new", { cwd: input.cwd, mcpServers: [] }, { timeoutMs: timeout });
+          return rpc.request("session/new", { cwd: input.cwd, mcpServers }, { timeoutMs: timeout });
         }
         throw e;
       })) as { sessionId: string; modes?: { availableModes?: { id: string }[] }; models?: { availableModels?: { modelId: string }[]; currentModelId?: string } };
@@ -243,6 +249,7 @@ export class AcpAdapter {
         intent: input.intent ?? capText(input.prompt.replace(/\s+/g, " ").trim(), 200),
         startedAt: now,
       });
+      if (nonce !== undefined) this.deps.host.noteNonce(nonce, rec.session.id);
       // The model the counters are priced at: the one asked for, or the agent's current one when it names it.
       const model = input.model ?? created.models?.currentModelId;
       const modes = created.modes?.availableModes?.map((m) => m.id);

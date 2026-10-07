@@ -112,6 +112,7 @@ export const requestScopes = {
   "backup.enable": "account",
   "backup.disable": "account",
   "backup.restore": "account",
+  "agents.accept": "sessions:write",
   "direct.enable": "account",
   "direct.disable": "account",
   "direct.info": null,

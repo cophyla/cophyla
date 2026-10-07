@@ -291,7 +291,9 @@ export class MuseAdapter implements HarnessAdapter {
     const { profile } = entry;
     const dir = join(this.opts.dataDir, "muse", profile.id, "plugin");
     try {
-      const files = museFiles(museManifest((shim) => hooks.argv("muse", profile.id, shim), hooks.timeoutS, this.opts.version.replace(/[^0-9.]/g, "") || "0.1.0"));
+      const want = this.host.agentInstall();
+      const agents = want?.kind === "install" ? [want.spec.command, ...want.spec.args("muse", profile.id)] : undefined;
+      const files = museFiles(museManifest((shim) => hooks.argv("muse", profile.id, shim), hooks.timeoutS, this.opts.version.replace(/[^0-9.]/g, "") || "0.1.0", agents));
       writeMusePlugin(dir, files);
       const bin = this.binaryFor(profile);
       const named = Object.entries(profile.env)

@@ -97,6 +97,10 @@ import { Direct } from "./direct/index.ts";
 import type { DirectDeps } from "./direct/index.ts";
 import { helperEnv } from "./direct/helper.ts";
 import { locateNet, stageNet } from "./direct/locate.ts";
+import { locateMcp, stageMcp } from "./agentmsg/locate.ts";
+import { agentMethods } from "./agentmsg/methods.ts";
+import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
+import type { AgentInstall } from "./sessions/model.ts";
 import { DirectClients } from "./direct/clients.ts";
 import { directMethods, directSignals } from "./direct/methods.ts";
 import { PipeHub } from "./remote/pipes.ts";
@@ -150,6 +154,8 @@ import { storePrefs } from "./voice/prefs.ts";
 import { Workspaces } from "./workspaces/index.ts";
 
 export const PLATFORM_VERSION: string = pkg.version;
+/** Where the node keeps the app's agent messaging switch. */
+const AGENT_SWITCH_NS = "agentmsg";
 
 /** The embedding model the platform ships: `apps/cophylad/models/<name>`, beside `src/` in a checkout and in the staged tree alike. */
 export const DEFAULT_MODEL_DIR: string = resolve(dirname(import.meta.dir), "models", "bge-small-en-v1.5");
@@ -165,6 +171,8 @@ export const LISTENER_SETTLE_MS = 3000;
 
 export interface DaemonOptions {
   home?: string;
+  /** The agents' MCP shim the profiles are given, over the one found; a test sets it to install in its own profiles. */
+  agentShim?: string;
   /** Overrides config.api.port; 0 picks a free one. */
   port?: number;
   log?: Logger;
@@ -381,7 +389,41 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   /** This node's terminals as its link serves them, and whether it starts any for the cluster's clients, once built. */
   let nodeTerminals: NodeTerminals | undefined;
   let servesTerminals: () => boolean = () => false;
-  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals());
+  // Agent messaging's switch: Claude sessions that run without prompts let agents' messages in
+  // without their hold. The app's switch, kept on the node, wins over `[agent_messages]`.
+  const acceptInBypass = (): boolean => {
+    const kept = store.kv.get(AGENT_SWITCH_NS, "accept_in_bypass");
+    return typeof kept === "boolean" ? kept : config.agent_messages.accept_in_bypass;
+  };
+  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined);
+  // The agents' MCP shim every session runs, from a copy in a folder that never moves, found
+  // once; a test run gives the profiles none, unless it names one.
+  let agentShim: string | null | undefined = opts.agentShim;
+  const shimCommand = (): string | undefined => {
+    if (agentShim !== undefined) return agentShim ?? undefined;
+    agentShim = null;
+    if (env["NODE_ENV"] === "test") return undefined;
+    const found = locateMcp({ config: config.agent_messages, env, ...(install ? { versionDir: install.versionDir } : { repoRoot: repoRootFromHere() }) });
+    if (!found) {
+      log.warn("cophyla-mcp was not found: agent sessions get no cophyla-agents server", { version: install?.versionDir });
+      return undefined;
+    }
+    try {
+      agentShim = stageMcp(found.path, install ? join(install.dir, "bin") : join(p.data, "mcp"));
+    } catch (e) {
+      log.warn("cophyla-mcp could not be put in place", { from: found.path, error: e instanceof Error ? e.message : String(e) });
+    }
+    return agentShim ?? undefined;
+  };
+  /** What each profile is to have of the agents' server: taken out when messaging or its install is off; left as it is when there is no shim. */
+  const agentInstall = (): AgentInstall | undefined => {
+    const c = config.agent_messages;
+    if (!c.enabled || !c.install) return env["NODE_ENV"] === "test" && opts.agentShim === undefined ? undefined : { kind: "remove" };
+    const command = shimCommand();
+    if (command === undefined) return undefined;
+    const hookJson = join(p.data, HOOK_JSON_FILENAME);
+    return { kind: "install", spec: { command, args: (harness, profileId, nonce) => [hookJson, harness, profileId, ...(nonce !== undefined ? [nonce] : [])] }, acceptInBypass: acceptInBypass() };
+  };
   const workspaces = new Workspaces({ store, nodeId: identity.id, bus, owners });
   workspaces.fromScope(config.node.scope);
   workspaces.home(p.home);
@@ -516,6 +558,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...(tether ? { tether, env: scrub(env), processes } : {}),
     pricer: (model, tokens) => pricer.cost(model, tokens),
     owners,
+    agents: agentInstall,
   });
   // a harness's ask about a session is on the session's node
   asks.sessionNode = (id) => sessions.getAny(id)?.node;
@@ -1061,6 +1104,12 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     gate,
     log: log.child("agentmsg"),
     version: PLATFORM_VERSION,
+    accept: (on) => {
+      store.kv.put(AGENT_SWITCH_NS, "accept_in_bypass", on);
+      log.info("agents' messages into bypass sessions", { accept: on });
+      void sessions.installAgents();
+      bus.emit("node.state", node());
+    },
   });
   // The workspace nodes: each a hands member of another person's cluster, over one folder.
   guests = new Guests({
@@ -1312,6 +1361,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...lanMethods({ lan: () => lan! }),
     ...guestMethods({ guests }),
     ...directMethods({ direct, clients: directClients }),
+    ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
   }, forwardHost);
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };

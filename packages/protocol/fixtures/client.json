@@ -490,6 +490,7 @@
     "backup.enable": { "params": [{ "passphrase": "correct horse battery staple" }, { "passphrase": "correct horse battery staple", "replace": true }], "results": [{}] },
     "backup.disable": { "params": [{}, { "forget": true }], "results": [{}] },
     "backup.restore": { "params": [{ "passphrase": "correct horse battery staple" }], "results": [{}] },
+    "agents.accept": { "params": [{ "on": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "on": false }], "results": [{}] },
     "direct.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.info": {

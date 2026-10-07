@@ -4,6 +4,7 @@
 // and reads back through `hooks/list`.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { AGENT_MCP_SERVER } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
 import { samePath } from "../paths.ts";
 import type { CodexAppServer } from "./appserver.ts";
@@ -91,6 +92,20 @@ export function installCodexHooks(hooksPath: string, spec: CodexHookSpec): void 
 export function uninstallCodexHooks(hooksPath: string): void {
   if (!existsSync(hooksPath)) return;
   writeHooksFile(hooksPath, withoutCophyladCodexHooks(readHooksFile(hooksPath)));
+}
+
+/** The agents' server's table in a Codex `config.toml`: its command and arguments, or null when there is none (or the file does not parse). */
+export function codexAgentEntry(configToml: string): { command: string; args: string[] } | null {
+  if (!existsSync(configToml)) return null;
+  try {
+    const doc = Bun.TOML.parse(readFileSync(configToml, "utf8")) as Json;
+    const servers = doc["mcp_servers"];
+    const entry = isObject(servers) ? servers[AGENT_MCP_SERVER] : undefined;
+    if (!isObject(entry)) return null;
+    return { command: typeof entry["command"] === "string" ? entry["command"] : "", args: Array.isArray(entry["args"]) ? entry["args"].map(String) : [] };
+  } catch {
+    return null;
+  }
 }
 
 export interface HooksListEntry {

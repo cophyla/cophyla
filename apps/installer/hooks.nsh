@@ -12,6 +12,11 @@
 
 !macro NSIS_HOOK_PREUNINSTALL
   !insertmacro CheckIfAppIsRunning "cophyla-ui.exe" "${PRODUCTNAME}"
+  ; The agents' MCP server out of every profile while its shim is still here: a profile that
+  ; names a shim that is gone has every session report a server that failed to start.
+  IfFileExists "$INSTDIR\bin\cophyla.cmd" 0 +3
+    nsExec::Exec '"$INSTDIR\bin\cophyla.cmd" agents uninstall'
+    Pop $0
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

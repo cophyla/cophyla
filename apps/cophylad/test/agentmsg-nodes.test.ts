@@ -8,7 +8,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import type { AuditEntry, Session } from "@cophyla/protocol";
 import { waitFor } from "./helpers.ts";
-import { linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
+import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
 import type { Primary, Started } from "./nodes-helpers.ts";
 
 let primary: Primary | undefined;
@@ -87,6 +87,29 @@ describe("agent messages across nodes", () => {
     expect(off).toEqual({ text: "Beta is offline; not sent.", isError: true });
     expect(Date.now() - started).toBeLessThan(2000);
   }, 60_000);
+
+  test("the bypass switch is set on the node an app on the primary names, and that node's row says so", async () => {
+    primary = await startPrimary();
+    alpha = await startSecondary(primary, { node: 'name = "Alpha"\n' });
+    await linked(alpha);
+    await waitFor(() => primary!.d.nodes.linkedTo(alpha!.identity.id));
+    const c = await client(primary.d);
+    try {
+      expect(primary.d.nodes.registry.get(alpha.identity.id)?.capabilities.agents).toEqual({ acceptInBypass: false });
+      await c.request("agents.accept", { node: alpha.identity.id, on: true });
+      await waitFor(() => primary!.d.nodes.registry.get(alpha!.identity.id)?.capabilities.agents?.acceptInBypass === true, 5000);
+      // kept on the node, gated there as the primary's node
+      expect(alpha.store.kv.get("agentmsg", "accept_in_bypass")).toBe(true);
+      expect(alpha.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "agents.accept")).toMatchObject({ principal: { kind: "node", id: primary.d.identity.id }, outcome: "ok" });
+      // and on the primary itself, for its own sessions
+      await c.request("agents.accept", { on: true });
+      expect(primary.d.nodes.self().capabilities.agents).toEqual({ acceptInBypass: true });
+      await c.request("agents.accept", { on: false });
+      expect(primary.d.nodes.self().capabilities.agents).toEqual({ acceptInBypass: false });
+    } finally {
+      c.close();
+    }
+  }, 30_000);
 
   test("the ingress answers the hook token on loopback alone, and nothing to a notification", async () => {
     primary = await startPrimary();

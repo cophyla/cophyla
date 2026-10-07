@@ -66,6 +66,7 @@ export function selfNode(
   remote = false,
   via: Via = "direct",
   terminals = false,
+  agents?: { acceptInBypass: boolean },
 ): Node {
   const node: Node = {
     id: identity.id,
@@ -81,6 +82,7 @@ export function selfNode(
       remote,
       brain: role === "primary",
       terminals,
+      ...(agents ? { agents: { ...agents } } : {}),
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

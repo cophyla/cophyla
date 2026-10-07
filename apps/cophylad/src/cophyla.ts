@@ -12,6 +12,9 @@
 //   cophyla node leave <name>                 it leaves its cluster; what it holds stays
 //   cophyla node remove <name>                it leaves, and what it held here goes
 //   cophyla invite | join | leave             as `cophylad invite | join | leave`
+//   cophyla agents uninstall                  takes the agents' MCP server out of every
+//                                             profile, with no daemon running (the
+//                                             uninstaller runs it)
 //
 // Each takes --home and --port as the daemon does.
 
@@ -20,6 +23,19 @@ import { parseArgs } from "node:util";
 import type { ClientResult } from "@cophyla/protocol";
 import { call, COMMANDS, readInvite, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
+import { uninstallAgents } from "./agentmsg/uninstall.ts";
+
+/** `cophyla agents uninstall [--home H]`. */
+async function agentsCommand(argv: string[]): Promise<number> {
+  const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { home: { type: "string" } }, strict: true });
+  if (positionals[0] !== "uninstall" || positionals.length !== 1) {
+    process.stderr.write("usage: cophyla agents uninstall [--home <dir>]\n");
+    return 2;
+  }
+  const r = await uninstallAgents(values.home);
+  for (const line of r.lines) process.stdout.write(line + "\n");
+  return r.ok ? 0 : 1;
+}
 
 const HELP = `cophyla: the Cophyla commands, for the daemon running on this machine
 
@@ -37,6 +53,9 @@ const HELP = `cophyla: the Cophyla commands, for the daemon running on this mach
 
   cophyla invite | join | leave
                  as cophylad invite | join | leave
+  cophyla agents uninstall
+                 take the agents' MCP server (cophyla-agents) out of every Claude and Codex
+                 profile; run with the daemon stopped, as the uninstaller does
 
   --home <dir>   the Cophyla home (default: $COPHYLA_HOME or ~/.cophyla)
   --port <n>     the daemon's loopback port, when config.toml does not say it
@@ -69,6 +88,7 @@ export async function main(argv: string[]): Promise<number> {
     return 0;
   }
   if ((COMMANDS as readonly string[]).includes(group)) return runCommand(group as Command, rest, { local: true, prog: "cophyla" });
+  if (group === "agents") return agentsCommand(rest);
   if (group !== "node") {
     process.stderr.write(`cophyla: no command ${group}\n\n${HELP}`);
     return 2;

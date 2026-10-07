@@ -88,11 +88,25 @@ function hooksList(): unknown {
 function batchWrite(params: { edits?: { keyPath: string; value: unknown }[] }): unknown {
   if (process.env["FAKE_REFUSE_TRUST"]) throw Object.assign(new Error("config writes are disabled"), { code: -32000 });
   const trust = readJson<Record<string, string>>("trust.json", {});
+  const servers = readJson<Record<string, Record<string, unknown>>>("mcp-servers.json", {});
+  let serversChanged = false;
   for (const edit of params.edits ?? []) {
     const m = /^hooks\.state\."((?:[^"\\]|\\.)*)"\.trusted_hash$/.exec(edit.keyPath);
     if (m) trust[m[1]!.replace(/\\(.)/g, "$1")] = String(edit.value);
+    // an MCP server's leaves, or the whole table taken out with null, as the real app-server writes them
+    const s = /^mcp_servers\.([A-Za-z0-9_-]+)(?:\.([a-z_]+))?$/.exec(edit.keyPath);
+    if (s) {
+      serversChanged = true;
+      if (s[2] === undefined && edit.value === null) delete servers[s[1]!];
+      else if (s[2] !== undefined) servers[s[1]!] = { ...servers[s[1]!], [s[2]]: edit.value };
+    }
   }
   writeJson("trust.json", trust);
+  if (serversChanged) {
+    writeJson("mcp-servers.json", servers);
+    // what Codex keeps in config.toml, as far as these tables go
+    writeFileSync(file("config.toml"), Object.entries(servers).map(([name, t]) => `[mcp_servers.${name}]\n${Object.entries(t).map(([k, v]) => `${k} = ${JSON.stringify(v)}`).join("\n")}\n`).join("\n"));
+  }
   return { status: "ok", version: "sha256:" + createHash("sha256").update(JSON.stringify(trust)).digest("hex"), filePath: file("config.toml") };
 }
 

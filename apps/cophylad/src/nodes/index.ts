@@ -167,8 +167,8 @@ export interface NodesDeps {
   onRole?: (primary: boolean) => void;
   /** The workspace nodes here: the machine joins none of their clusters, and takes no invite from a node they know. */
   guests?: () => { clusters(): string[]; knows(node: string): boolean } | undefined;
-  /** The agent router, once built: what a secondary's sessions' `agent.list` and `agent.send` reach. */
-  agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
+  /** The agent router, once built: what a secondary's sessions' `agent.list` and `agent.send` reach, and the switch the primary's clients may set here. */
+  agents?: () => Pick<AgentMessages, "upwardRequest" | "setAccept"> | undefined;
   now?: () => number;
 }
 
@@ -349,6 +349,7 @@ export class Nodes {
       ...(deps.files ? { files: deps.files } : {}),
       ...(deps.terminals ? { terminals: deps.terminals } : {}),
       ...(deps.direct?.() ? { direct: deps.direct()! } : {}),
+      ...(deps.agents ? { agents: deps.agents } : {}),
       directNodes: () => deps.config.direct.nodes,
       ...(deps.directTiming ? { directTiming: deps.directTiming } : {}),
       streams,

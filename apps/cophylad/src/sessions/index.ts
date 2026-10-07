@@ -36,6 +36,7 @@
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Ask, AskAnswer, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { newId, RpcError, ulid } from "@cophyla/protocol";
@@ -64,10 +65,14 @@ import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
 import { codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
+import { scrub } from "./env.ts";
 import { Injections, unpasted } from "./injections.ts";
 import type { PendingSend } from "./injections.ts";
 import { askShown, capText, normaliseHook, oneLine, rawIfSmall, stableStringify, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "./model.ts";
-import type { AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
+import type { AgentInstall, AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
+import { agentEntry, applyAgentSettings, sameEntry, stamp } from "./claude/mcp.ts";
+import { claudeGlobalConfig } from "./profiles.ts";
+import { AGENT_MCP_SERVER } from "@cophyla/protocol";
 import { terminalCommand as museCommand } from "./muse/locate.ts";
 import { promptInput as musePromptInput, waitingOn as museWaitingOn } from "./muse/screen.ts";
 import { isWithin, pathKey } from "./paths.ts";
@@ -133,6 +138,8 @@ export interface SessionsDeps {
   cliTiming?: { debounceMs?: number; gapMs?: number };
   /** Which workspace node owns a folder, and whose items the machine's own apps never see; absent, every session is the machine's. */
   owners?: SessionOwners;
+  /** What is to become of the agents' MCP server in each profile, read at every install; absent or undefined, it is left as it is. */
+  agents?: () => AgentInstall | undefined;
 }
 
 /** The partition the chat's own session is in: the machine's lists and a workspace node's alike leave it out. */
@@ -380,6 +387,10 @@ const DETAIL_CHARS = 2000;
 export const SEND_PREFIX = "[cophylad, relaying the user]";
 /** The agents' messages a session remembers having recorded, so an echo of one is recorded once. */
 const AGENT_SEEN = 200;
+/** How often a Claude profile's global config is looked at for the agents' server a running session wrote over. */
+const AGENTS_CHECK_MS = 60_000;
+/** The kv namespace that remembers which settings files cophylad set `crossSessionInbound` in, so it takes back only its own. */
+export const AGENT_ACCEPT_NS = "agentmsg.accept";
 
 function nativeKey(harness: string, nativeId: string): string {
   return `${harness}:${nativeId}`;
@@ -470,6 +481,11 @@ export class Sessions implements SessionHost {
   private agentMessages = new Map<string, Set<string>>();
   /** The nonce each ACP spawn gave its agents' MCP server, to the session it is. */
   private nonces = new Map<string, string>();
+  /** The agents' server installs, one after another. */
+  private agentsInstalling: Promise<void> = Promise.resolve();
+  private agentsCheckedAt = 0;
+  /** Per Claude global config, how it stood when its entry was last found as wanted. */
+  private agentStamps = new Map<string, string>();
   /** Records waiting for their process's ancestors, read together once the read running ends. */
   private ancestryWanted = new Set<LiveRecord>();
   private ancestryReading = false;
@@ -577,6 +593,7 @@ export class Sessions implements SessionHost {
         this.log.error("adapter failed to start", { harness: adapter.harness, error: e });
       }
     }
+    void this.installAgents();
     this.unsubscribe.push(this.deps.profiles.onChange((change) => this.syncProfiles(change)));
     this.unsubscribe.push(this.deps.workspaces.onSettled((root) => this.workspacesSettled(root)));
     this.clis?.start();
@@ -714,6 +731,11 @@ export class Sessions implements SessionHost {
         this.deps.profiles.check();
       }
       await this.syncing;
+      // A running Claude session writes its global config whole, and may write over the agents' server.
+      if (now - this.agentsCheckedAt >= AGENTS_CHECK_MS) {
+        this.agentsCheckedAt = now;
+        void this.installAgents();
+      }
       this.clis?.tick();
       for (const adapter of this.adapters.values()) {
         try {
@@ -742,7 +764,67 @@ export class Sessions implements SessionHost {
           this.log.error("adapter failed to take the profiles", { harness: adapter.harness, error: e });
         }
       }
+      void this.installAgents();
     });
+  }
+
+  // --- the agents' MCP server in each profile ----------------------------------------------
+
+  agentInstall(): AgentInstall | undefined {
+    return this.deps.agents?.();
+  }
+
+  /**
+   * The `cophyla-agents` server in every Claude profile as wanted, one install after another:
+   * Claude's own CLI adds or removes the user-scope entry when the profile's global config does
+   * not already say so, and the tools' rules and the bypass switch go into its `settings.json`.
+   * Codex and Muse get theirs from their adapters, where their configuration is written.
+   */
+  installAgents(): Promise<void> {
+    this.agentsInstalling = this.agentsInstalling.then(async () => {
+      const want = this.agentInstall();
+      if (!want || this.stopped) return;
+      for (const p of this.deps.profiles.byHarness("claude")) {
+        if (p.status === "missing" || this.stopped) continue;
+        try {
+          await this.claudeAgents(p, want);
+        } catch (e) {
+          this.log.warn("the agents' server could not be set in a Claude profile", { profile: p.id, error: e instanceof Error ? e.message : String(e) });
+        }
+      }
+    });
+    return this.agentsInstalling;
+  }
+
+  private async claudeAgents(p: HarnessProfile, want: AgentInstall): Promise<void> {
+    const home = this.deps.home ?? homedir();
+    const global = claudeGlobalConfig(p.configDir, home);
+    const args = want.kind === "install" ? want.spec.args("claude", p.id) : [];
+    const key = `${global}|${want.kind}|${want.kind === "install" ? [want.spec.command, ...args].join("\u0000") : ""}`;
+    const now = stamp(global);
+    if (this.agentStamps.get(key) !== now) {
+      const entry = agentEntry(global);
+      const run = (argv: string[]) => (this.deps.run ?? runCommand)([this.claudeBinary(p), "mcp", ...argv], this.claudeCliEnv(p), home);
+      if (want.kind === "install" && !sameEntry(entry, want.spec.command, args)) {
+        if (entry) await run(["remove", "-s", "user", AGENT_MCP_SERVER]);
+        const r = await run(["add", "-s", "user", AGENT_MCP_SERVER, "--", want.spec.command, ...args]);
+        if (r.code !== 0) throw new Error(`claude mcp add: ${r.out.trim().split(/\r?\n/).pop() || `exit ${r.code}`}`);
+        this.log.info("agents' server added to a Claude profile", { profile: p.id, config: global, command: want.spec.command });
+      } else if (want.kind === "remove" && entry) {
+        const r = await run(["remove", "-s", "user", AGENT_MCP_SERVER]);
+        if (r.code !== 0) throw new Error(`claude mcp remove: ${r.out.trim().split(/\r?\n/).pop() || `exit ${r.code}`}`);
+        this.log.info("agents' server taken out of a Claude profile", { profile: p.id, config: global });
+      }
+      this.agentStamps.set(key, stamp(global));
+    }
+    // The tools' rules, and the bypass switch: `accept` is taken back only where cophylad set it.
+    const settings = join(p.configDir, "settings.json");
+    const ours = this.deps.store.kv.get(AGENT_ACCEPT_NS, settings) === true;
+    const accept = want.kind === "install" && want.acceptInBypass ? "set" : ours ? "clear" : "keep";
+    const r = applyAgentSettings(settings, { allow: want.kind === "install", accept });
+    if (accept === "set" && !r.acceptedBefore) this.deps.store.kv.put(AGENT_ACCEPT_NS, settings, true);
+    if (accept === "clear") this.deps.store.kv.delete(AGENT_ACCEPT_NS, settings);
+    if (r.changed) this.log.info("agents' settings written in a Claude profile", { profile: p.id, settings, allow: want.kind === "install", accept });
   }
 
   openTail(rec: SessionRecord, path: string): Tail {
@@ -3123,6 +3205,15 @@ export class Sessions implements SessionHost {
     const own = profile.exec?.command;
     if (own && CLAUDE_PROCESS.test(own.split(/[\\/]/).pop() ?? "")) return own;
     return Bun.which("claude") ?? own ?? "claude";
+  }
+
+  /** The environment Claude's own CLI runs under for a profile's settings: the daemon's, scrubbed, under the profile, as a session's is. */
+  private claudeCliEnv(profile: HarnessProfile): Record<string, string> {
+    const dir = claudeEnv(profile.configDir, this.deps.home);
+    const env: Record<string, string> = {};
+    for (const [k, v] of Object.entries({ ...(this.deps.env ?? scrub(process.env)), ...dir.set, ...(profile.env as Record<string, string> | undefined) })) if (v !== undefined) env[k] = v;
+    for (const k of dir.unset) delete env[k];
+    return env;
   }
 
   /** The environment a Claude process cophylad starts in tether gets: the daemon's own, scrubbed, under the profile. */

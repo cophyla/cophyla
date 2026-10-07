@@ -12,7 +12,8 @@
         "harnesses": ["claude", "codex"],
         "voice": { "wake": false, "stt": false, "tts": false },
         "remote": false,
-        "brain": true
+        "brain": true,
+        "agents": { "acceptInBypass": false }
       },
       "versions": { "platform": "0.1.0", "protocol": 1 },
       "lastSeen": 1758196800000
