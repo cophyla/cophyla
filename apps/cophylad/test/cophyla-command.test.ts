@@ -5,7 +5,7 @@
 // when it differs and left when it does not, and linked from ~/.local/bin elsewhere.
 
 import { describe, expect, test } from "bun:test";
-import { linkSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, linkSync, mkdirSync, readFileSync, readlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { commandDir, cophylaLauncher, linkCommand, placeCophyla } from "../src/sessions/tether/command.ts";
 import { tempHome } from "./helpers.ts";
@@ -52,8 +52,14 @@ describe("the launcher", () => {
     const vdir = join(root, "versions", version);
     const src = join(vdir, "cophylad", "apps", "cophylad", "src");
     mkdirSync(src, { recursive: true });
-    // the version's runtime: this one, linked rather than copied
-    linkSync(process.execPath, join(vdir, WIN ? "bun.exe" : "bun"));
+    // the version's runtime: this one, linked rather than copied, unless the temp folder is on another drive
+    const runtime = join(vdir, WIN ? "bun.exe" : "bun");
+    try {
+      linkSync(process.execPath, runtime);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EXDEV") throw e;
+      copyFileSync(process.execPath, runtime);
+    }
     writeFileSync(join(src, "cophyla.ts"), "console.log(JSON.stringify({ argv: Bun.argv.slice(2), home: process.env.COPHYLA_HOME }));\n");
     writeFileSync(join(root, "current"), `${version}\n`);
     placeCophyla(root, join(home, ".cophyla"));
