@@ -15,6 +15,8 @@ spikes/**/.venv/
 spikes/**/target/
 # cophyla-net's cargo output
 apps/net/target/
+# cophyla-mcp's cargo output
+apps/mcp/target/
 # the desktop shell's cargo output and Tauri's generated ACL schemas and permissions
 apps/ui/src-tauri/target/
 apps/ui/src-tauri/gen/

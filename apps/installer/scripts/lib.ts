@@ -5,7 +5,7 @@
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { BUN_NAMES, hostOs, NET_PATHS, SHELL_PATHS, TETHER_PATHS } from "../../cophylad/src/update/platform.ts";
+import { BUN_NAMES, hostOs, MCP_PATHS, NET_PATHS, SHELL_PATHS, TETHER_PATHS } from "../../cophylad/src/update/platform.ts";
 import type { HostOs } from "../../cophylad/src/update/platform.ts";
 
 export const REPO = resolve(import.meta.dir, "..", "..", "..");
@@ -44,6 +44,11 @@ export const NET_REL = NET_PATHS[OS];
 export const NET = join(REPO, "apps", "net");
 export const NET_LICENCES = "THIRD-PARTY-LICENSES.html";
 export const NET_LICENCES_REL = "bin/cophyla-net-THIRD-PARTY-LICENSES.html";
+/** cophyla-mcp, the agent sessions' MCP shim, in a version folder; its crate; its crates' licences, generated there and staged beside it. */
+export const MCP_REL = MCP_PATHS[OS];
+export const MCP = join(REPO, "apps", "mcp");
+export const MCP_LICENCES = "THIRD-PARTY-LICENSES.html";
+export const MCP_LICENCES_REL = "bin/cophyla-mcp-THIRD-PARTY-LICENSES.html";
 
 /** sign.ts's arguments: its flags, the entitlements file after `--entitlements`, and the one path. */
 export function parseSignArgs(args: string[]): { staged: boolean; tree: boolean; entitlements?: string; file?: string } {

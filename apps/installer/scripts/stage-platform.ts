@@ -3,16 +3,17 @@
 // the bundler), the Bun runtime this script runs on, tether (built from `tether/`, under
 // `bin/`, where cophylad finds it and copies it out before running it), cophyla-net (the direct
 // connections' helper, built from `apps/net/`, under `bin/` likewise, with its crates'
-// licences beside it), cophylad's source tree
+// licences beside it), cophyla-mcp (the MCP shim every agent session runs, built from
+// `apps/mcp/`, under `bin/` with its crates' licences beside it too), cophylad's source tree
 // with a hoisted production `node_modules` (no optional dependencies: the harness binaries
 // are never shipped; cophylad finds the user's own) and physical copies of the workspace
 // packages it depends on (tether's TypeScript SDK among them), and the icons, the built
 // controller app cophylad serves on the LAN (with the wake word's models and runtime under its
 // `wake/`), and the speech sidecar's sources (its Python environment is built on the node,
 // never shipped). Signs what needs signing here, so the bundler leaves it alone: the shell,
-// tether and cophyla-net on Windows (Authenticode), the runtime, tether and every Mach-O under
-// cophylad's tree on macOS (hardened runtime with Bun's entitlements) and cophyla-net (hardened
-// runtime with none), nothing on Linux. Writes
+// tether, cophyla-net and cophyla-mcp on Windows (Authenticode), the runtime, tether and every
+// Mach-O under cophylad's tree on macOS (hardened runtime with Bun's entitlements) and
+// cophyla-net and cophyla-mcp (hardened runtime with none), nothing on Linux. Writes
 // `stage/current` for the installer. `release.json` is added by sign-release.ts. The node's
 // voice models are not staged: the wake word's and the VAD's are `model` releases of their
 // own; the controller's copy of the wake word is the one exception, since the phone runs it.
@@ -24,7 +25,7 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { parseArgs } from "node:util";
-import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
+import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -76,6 +77,13 @@ const netSrc = join(NET, "target", "release", basename(NET_REL));
 if (!existsSync(netSrc)) fail(`no cophyla-net at ${netSrc} after the build`);
 if (!existsSync(join(NET, NET_LICENCES))) fail(`no ${NET_LICENCES} in apps/net: run cargo about generate about.hbs > ${NET_LICENCES} there`);
 
+// cophyla-mcp, the MCP shim every agent session runs: a crate of its own, and its crates' licences.
+log("building cophyla-mcp (cargo build --release --locked)…");
+await run(["cargo", "build", "--release", "--locked", "-p", "cophyla-mcp", "-j", BUILD_JOBS], { cwd: MCP, env: { PATH: cargoPath() } });
+const mcpSrc = join(MCP, "target", "release", basename(MCP_REL));
+if (!existsSync(mcpSrc)) fail(`no cophyla-mcp at ${mcpSrc} after the build`);
+if (!existsSync(join(MCP, MCP_LICENCES))) fail(`no ${MCP_LICENCES} in apps/mcp: run cargo about generate about.hbs -o ${MCP_LICENCES} there`);
+
 // 2. The version directory, from scratch.
 rmSync(dir, { recursive: true, force: true });
 rmSync(dir + ".partial", { recursive: true, force: true });
@@ -88,13 +96,16 @@ mkdirSync(join(dir, "bin"), { recursive: true });
 cpSync(tetherSrc, join(dir, TETHER_REL));
 cpSync(netSrc, join(dir, NET_REL));
 cpSync(join(NET, NET_LICENCES), join(dir, NET_LICENCES_REL));
+cpSync(mcpSrc, join(dir, MCP_REL));
+cpSync(join(MCP, MCP_LICENCES), join(dir, MCP_LICENCES_REL));
 if (OS !== "windows") {
   chmodSync(join(dir, BUN_NAME), 0o755);
   chmodSync(join(dir, SHELL_REL), 0o755);
   chmodSync(join(dir, TETHER_REL), 0o755);
   chmodSync(join(dir, NET_REL), 0o755);
+  chmodSync(join(dir, MCP_REL), 0o755);
 }
-log(`shell, runtime, tether and cophyla-net copied (bun ${Bun.version})`);
+log(`shell, runtime, tether, cophyla-net and cophyla-mcp copied (bun ${Bun.version})`);
 
 // 3. cophylad: package.json without the workspace links and the dev dependencies, its sources and views.
 const cophyladDir = join(dir, "cophylad", "apps", "cophylad");
@@ -196,13 +207,16 @@ if (OS === "windows") {
   await sign(join(dir, SHELL_REL));
   await sign(join(dir, TETHER_REL));
   await sign(join(dir, NET_REL));
+  await sign(join(dir, MCP_REL));
 } else if (OS === "macos") {
   // The bundle was signed by the bundler; the runtime, tether and cophylad's native modules get the
   // hardened runtime with Bun's entitlements, so a notarized package carries no unsigned Mach-O;
-  // cophyla-net, which runs no JavaScript, gets the hardened runtime with none.
+  // cophyla-net and cophyla-mcp, which run no JavaScript, get the hardened runtime with none
+  // (entitlements-net.plist is the empty set).
   await sign(join(dir, BUN_NAME));
   await sign(join(dir, TETHER_REL));
   await sign("--entitlements", join(INSTALLER, "entitlements-net.plist"), join(dir, NET_REL));
+  await sign("--entitlements", join(INSTALLER, "entitlements-net.plist"), join(dir, MCP_REL));
   await sign("--tree", join(cophyladDir, "node_modules"));
 } else {
   log("linux: nothing to sign");

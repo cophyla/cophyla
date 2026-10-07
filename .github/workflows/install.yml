@@ -41,11 +41,18 @@ jobs:
           if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)" }
           $root = Join-Path $env:LOCALAPPDATA 'Cophyla'
           $v = Join-Path $root "versions\$env:VERSION"
-          foreach ($f in @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\current", "$root\brain\brain.exe", "$root\brain\release.json", "$v\release.json", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe", "$v\cophylad\apps\cophylad\src\main.ts", "$v\cophylad\apps\controller\dist\index.html")) {
+          $files = @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\current", "$root\brain\brain.exe", "$root\brain\release.json", "$v\release.json", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe", "$v\cophylad\apps\cophylad\src\main.ts", "$v\cophylad\apps\controller\dist\index.html")
+          $signed = @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\brain\brain.exe", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe")
+          # cophyla-mcp ships from 0.14.0 on (a pre-release of it included); an older release is checked without it
+          if ([version]($env:VERSION -replace '-.*$', '') -ge [version]'0.14.0') {
+            $files += "$v\bin\cophyla-mcp.exe", "$v\bin\cophyla-mcp-THIRD-PARTY-LICENSES.html"
+            $signed += "$v\bin\cophyla-mcp.exe"
+          }
+          foreach ($f in $files) {
             if (-not (Test-Path $f)) { throw "missing after the install: $f" }
           }
           if ((Get-Content "$root\current" -Raw).Trim() -ne $env:VERSION) { throw "current does not name $env:VERSION" }
-          foreach ($f in @("$root\Cophyla.exe", "$root\uninstall.exe", "$root\brain\brain.exe", "$v\cophyla-ui.exe", "$v\bun.exe", "$v\bin\tether.exe", "$v\bin\cophyla-net.exe")) {
+          foreach ($f in $signed) {
             $s = Get-AuthenticodeSignature $f
             "{0}: signed by {1} ({2})" -f (Split-Path $f -Leaf), $s.SignerCertificate.Subject, $s.Status
             if (-not $s.SignerCertificate) { throw "not signed: $f" }

@@ -15,7 +15,7 @@
 // Windows retries without one: `COPHYLA_SIGN_UNSTAMPED=1` signs without it, for a build that is
 // never to be notarized. `--tree` signs every Mach-O
 // outside a `.app` (a bundle is signed whole, by the bundler). `--entitlements <plist>`
-// replaces Bun's entitlements, for a binary that needs none of them (cophyla-net).
+// replaces Bun's entitlements, for a binary that needs none of them (cophyla-net, cophyla-mcp).
 //
 // The Tauri bundler calls this as `signCommand` on Windows for the launcher, the installer,
 // the uninstaller and its NSIS plugins, and also for every executable it bundles as a

@@ -7,8 +7,8 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Release } from "@cophyla/protocol";
-import { BUN_NAMES, NET_PATHS, SHELL_PATHS } from "../../cophylad/src/update/platform.ts";
-import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, parseSignArgs, parseTarget, releaseTag, SHELL_REL, TARGETS } from "../scripts/lib.ts";
+import { BUN_NAMES, MCP_PATHS, NET_PATHS, SHELL_PATHS } from "../../cophylad/src/update/platform.ts";
+import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, parseSignArgs, parseTarget, releaseTag, SHELL_REL, TARGETS } from "../scripts/lib.ts";
 import { feedFilesFor, mergeInto, releaseKey } from "../scripts/feed.ts";
 import { LAUNCHER_IDENTIFIER, overlayFor } from "../scripts/overlay.ts";
 import { installerAssets, mergePlan } from "../scripts/publish.ts";
@@ -30,6 +30,16 @@ describe("names", () => {
     expect(licences).toContain("cophyla-net: third-party licences");
     expect(licences).toContain(">rtc 0.21.0<");
     expect(licences).toContain(">portmapper 0.19.3<");
+  });
+
+  test("cophyla-mcp sits in the version folder's bin/, its crates' licences beside it, generated in its crate", () => {
+    expect(MCP_REL).toBe(MCP_PATHS[OS]);
+    expect(MCP_PATHS).toEqual({ windows: "bin/cophyla-mcp.exe", macos: "bin/cophyla-mcp", linux: "bin/cophyla-mcp" });
+    expect(MCP_LICENCES_REL).toBe("bin/cophyla-mcp-THIRD-PARTY-LICENSES.html");
+    const licences = readFileSync(join(MCP, MCP_LICENCES), "utf8");
+    expect(licences).toContain("cophyla-mcp: third-party licences");
+    expect(licences).toMatch(/>serde_json \d+\.\d+\.\d+</);
+    expect(licences).toMatch(/>windows-sys \d+\.\d+\.\d+</);
   });
 
   test("sign.ts takes its flags anywhere, and the entitlements file is never the file to sign", () => {

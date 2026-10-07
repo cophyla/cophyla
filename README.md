@@ -30,8 +30,8 @@ bun run ui              # the desktop app, which starts the daemon itself (needs
 ```
 
 A clone made without `--recursive` gets tether with `git submodule update --init`. Bun 1.3
-and Node 22 run the TypeScript unmodified; the desktop app, the launcher, tether and
-cophyla-net need Rust, and the phone app needs the Android SDK (see
+and Node 22 run the TypeScript unmodified; the desktop app, the launcher, tether,
+cophyla-net and cophyla-mcp need Rust, and the phone app needs the Android SDK (see
 [apps/controller](apps/controller/README.md)).
 
 | Path | What |

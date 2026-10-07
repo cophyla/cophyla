@@ -60,9 +60,17 @@ export const NET_PATHS: Record<HostOs, string> = {
   linux: "bin/cophyla-net",
 };
 
+/** The agent sessions' MCP shim inside `versions/<v>/`, which cophylad copies to `<root>/bin/` and names in every harness's config. */
+export const MCP_PATHS: Record<HostOs, string> = {
+  windows: "bin/cophyla-mcp.exe",
+  macos: "bin/cophyla-mcp",
+  linux: "bin/cophyla-mcp",
+};
+
 export const SHELL_NAME = SHELL_PATHS[hostOs()];
 export const TETHER_PATH = TETHER_PATHS[hostOs()];
 export const NET_PATH = NET_PATHS[hostOs()];
+export const MCP_PATH = MCP_PATHS[hostOs()];
 export const LAUNCHER_NAME = LAUNCHER_NAMES[hostOs()];
 export const BUN_NAME = BUN_NAMES[hostOs()];
 export const BROKEN_MARKER = ".broken";

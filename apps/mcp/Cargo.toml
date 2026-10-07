@@ -1,0 +1,33 @@
+# cophyla-mcp: the stdio MCP server every agent session starts as `cophyla-agents`. It holds no
+# MCP of its own: each JSON-RPC line goes to cophylad's loopback `/mcp/agents` with what the
+# process can tell about the session it runs in, and cophylad's answer comes back as one line.
+# When cophylad is not there it answers from the tool list it was built with, so a session
+# started while the daemon is down keeps its tools. Native, because every session runs a copy:
+# an idle one costs a few MB where an idle Bun costs seventy.
+
+[package]
+name = "cophyla-mcp"
+description = "The stdio MCP server agent sessions start, which hands every message to cophylad"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "Apache-2.0"
+authors = ["feritmelih"]
+publish = false
+
+[[bin]]
+name = "cophyla-mcp"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+# the parent's pid, which std reads only on Unix
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Diagnostics_ToolHelp"] }
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "thin"
+codegen-units = 1

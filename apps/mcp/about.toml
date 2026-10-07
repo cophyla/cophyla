@@ -1,0 +1,6 @@
+# cargo-about: THIRD-PARTY-LICENSES.html, from every crate cophyla-mcp links, kept here and
+# staged beside the binary; generated again whenever Cargo.lock changes (`-o`, not a redirect,
+# which cargo-about refuses when it sees PowerShell in the environment):
+#   cargo about generate about.hbs -o THIRD-PARTY-LICENSES.html
+accepted = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "MPL-2.0"]
+targets = ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"]
