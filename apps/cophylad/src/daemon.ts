@@ -81,6 +81,7 @@ import { readGuests, readRetired } from "./nodes/guest-files.ts";
 import { Guests } from "./nodes/guests.ts";
 import { Owners } from "./nodes/owners.ts";
 import { nodeServedTable } from "./nodes/served.ts";
+import { AgentMessages } from "./agentmsg/index.ts";
 import { Remote } from "./remote/index.ts";
 import { startStreamListener } from "./remote/listener.ts";
 import type { RemoteDeps } from "./remote/index.ts";
@@ -270,6 +271,8 @@ export interface Daemon {
   profiles: Profiles;
   workspaces: Workspaces;
   sessions: Sessions;
+  /** Agent messaging: the `cophyla-agents` MCP server's calls, the directory and the router. */
+  agentMessages: AgentMessages;
   views: Views;
   chat: Chat;
   activity: Activity;
@@ -983,6 +986,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     served: (primaryId) =>
       nodeServedTable({ ...capDeps, quotes: { entry: () => undefined }, stream: { take: () => undefined, push: () => undefined, reset: () => undefined } as never }, primaryId, {
         confine: () => (nodes?.confinement()?.active ? nodes.confinement() : undefined),
+        agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
       }),
     startBrain,
     stopBrain,
@@ -1019,9 +1023,45 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       grantClock?.arm(true);
     },
     guests: () => guests,
+    agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
     ...(opts.nodes?.now ? { now: opts.nodes.now } : {}),
   });
   const forwardHost = nodes.forwardHost;
+  // Agent messaging: every agent session's `cophyla-agents` server, routed by the primary.
+  const cluster = nodes;
+  const agentMessages: AgentMessages = new AgentMessages({
+    config: () => config.agent_messages,
+    self: () => ({ id: identity.id, name: node().name }),
+    sessions: {
+      list: () => sessions.list(),
+      get: (id) => sessions.get(id),
+      send: (id, text, o) => sessions.send(id, text, o),
+      codexThread: (id) => sessions.live("codex", id),
+      claudeSession: (id) => sessions.live("claude", id),
+      byPipe: (pipe) => sessions.byPipe(pipe),
+      byPid: (pid) => sessions.byPid(pid),
+      byNonce: (nonce) => sessions.byNonce(nonce),
+      byTerminal: (id) => sessions.byTerminalId(id),
+      bypasses: (id) => sessions.bypasses(id),
+      acceptsInbound: (id) => sessions.acceptsInbound(id),
+    },
+    cluster: {
+      // the primary routes, and so does a node in no cluster; a secondary's go up its link
+      routes: () => cluster.roleOf() === "primary" || cluster.member() === undefined,
+      primaryName: () => cluster.primaryName(),
+      primaryLinked: () => cluster.linked(),
+      mirrorSessions: () => forwardHost.mirrorSessions(),
+      ownerOfSession: (id) => forwardHost.ownerOfSession(id),
+      nodes: () => forwardHost.registryList(),
+      linked: (n) => forwardHost.linked(n),
+      forward: (n, method, params, o) => forwardHost.forward(n, method, params, o),
+      requestPrimary: (method, params, o) => cluster.requestPrimary(method, params, o),
+      grant: (id) => grants.get(id),
+    },
+    gate,
+    log: log.child("agentmsg"),
+    version: PLATFORM_VERSION,
+  });
   // The workspace nodes: each a hands member of another person's cluster, over one folder.
   guests = new Guests({
     paths: p,
@@ -1327,6 +1367,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       audio: { codecs: AUDIO_CODECS },
       hooks: { token: hookToken, onHook: (harness, event, meta) => sessions.onHook(harness, event, meta) },
       assistant: { mcpToken: () => chatAgent.mcpToken, hookToken, tools: () => chatAgent.tools(), call: (tool, input) => chatAgent.call(tool, input), part: (body, n) => chatAgent.part(body, n) },
+      agents: { token: hookToken, mcp: (evidence, message) => agentMessages.mcp(evidence, message) },
       initial,
       onDisconnect,
       onRequest: (client, method) => deliver.request(client, method),
@@ -1529,6 +1570,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     profiles,
     workspaces,
     sessions,
+    agentMessages,
     views,
     chat,
     activity,

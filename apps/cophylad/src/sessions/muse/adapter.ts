@@ -15,6 +15,8 @@ import { dirname, join, normalize } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { Ask, HarnessProfile, ProfileLimits, RpcId, Session, SessionStatus, TerminalRef } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
+import { agentTurn } from "../../agentmsg/envelope.ts";
+import type { EnvelopeInfo } from "../../agentmsg/envelope.ts";
 import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import { scrub } from "../env.ts";
@@ -191,7 +193,7 @@ export class MuseAdapter implements HarnessAdapter {
     this.headless = {
       owns: (rec) => this.owned.has(rec.session.native.id) && rec.session.harness === "muse",
       spawn: (input) => this.spawnHeadless(input),
-      prompt: (rec, text, ref) => this.prompt(rec, text, ref),
+      prompt: (rec, text, ref, agent) => this.prompt(rec, text, ref, agent),
       cancel: (rec) => this.cancel(rec),
       stop: (rec) => this.stopOwned(rec),
       inFlight: () => [...this.owned.values()].reduce((n, o) => n + o.queued, 0),
@@ -458,7 +460,7 @@ export class MuseAdapter implements HarnessAdapter {
         if (item.commandId && opts.commands?.has(item.commandId)) return undefined;
         if (item.turnId && opts.hookTurns?.has(item.turnId)) return undefined;
         if (this.host.isOwnText(rec, item.text)) {
-          this.host.receiptByText(rec, item.text, item.turnId);
+          if (!this.host.receiptByText(rec, item.text, item.turnId)) this.host.agentEcho(rec, item.text, undefined, item.at);
           return undefined;
         }
         if (rec.session.intent === undefined && patch.intent === undefined) patch.intent = oneLine(item.text);
@@ -666,13 +668,13 @@ export class MuseAdapter implements HarnessAdapter {
   }
 
   /** A turn behind the one in flight; the session is resumed on its host first when the host let it go. */
-  private async prompt(rec: SessionRecord, text: string, ref: string): Promise<void> {
+  private async prompt(rec: SessionRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): Promise<void> {
     const o = this.ownedOf(rec);
     const now = this.host.now();
     const commandId = uuidv7(now);
     o.commands.add(commandId);
     const params = { commandId, sessionId: o.sessionId, input: [{ type: "text", text }], ifBusy: "queue" };
-    this.host.event(rec, "user_turn", { text: capText(text), source: "orchestrator", ref }, undefined, now);
+    this.host.event(rec, "user_turn", agent ? agentTurn(agent.info, agent.text, ref) : { text: capText(text), source: "orchestrator", ref }, undefined, now);
     this.host.setStatus(rec, "busy", now);
     o.queued += 1;
     try {

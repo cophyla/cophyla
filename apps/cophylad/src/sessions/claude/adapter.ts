@@ -236,7 +236,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       pid: live.pid,
       startedAt: live.startedAt,
       status: statusOf(live),
-      ...(live.name ? { title: live.name } : {}),
+      ...(live.name ? { title: live.name, name: live.name } : {}),
       ...(transcriptPath ? { transcriptPath } : {}),
       // A job that was a spare ran since its record ended as one.
       ...(live.jobId !== undefined ? { job: live.jobId, ...(live.statusUpdatedAt !== undefined ? { activeAt: live.statusUpdatedAt } : {}) } : {}),
@@ -393,7 +393,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         switch (item.kind) {
           case "user_turn":
             if (this.host.isOwnText(rec, item.text, item.promptId)) {
-              this.host.receiptByText(rec, item.text, item.promptId);
+              if (!this.host.receiptByText(rec, item.text, item.promptId) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
               break;
             }
             if (rec.session.intent === undefined && patch.intent === undefined) patch.intent = oneLine(item.text);
@@ -401,7 +401,7 @@ export class ClaudeAdapter implements HarnessAdapter {
             break;
           case "peer":
             if (item.from === "cophylad" || this.host.isOwnText(rec, item.text)) {
-              this.host.receiptByText(rec, item.text);
+              if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
               break;
             }
             if (record) this.host.event(rec, "user_turn", { text: capText(item.text), source: "peer", from: item.from }, rawIfSmall(row), item.at);
@@ -475,7 +475,8 @@ export class ClaudeAdapter implements HarnessAdapter {
     return { status: held ? "held" : "queued" };
   }
 
-  private acceptsInbound(rec: SessionRecord): boolean {
+  /** Whether the session's settings let any session's message in at once (`crossSessionInbound: "accept"`), which a bypass session otherwise holds. */
+  acceptsInbound(rec: SessionRecord): boolean {
     const dirs = new Set<string>();
     if (rec.handles.configDir) dirs.add(join(rec.handles.configDir, "settings.json"));
     dirs.add(this.sharedSettings);

@@ -255,6 +255,11 @@ export const Session = z.object({
   task: TaskId.optional(),
   cwd: z.string(),
   title: z.string().optional(),
+  /**
+   * A Claude session's name as its registry first gave it, which its alias in agent messaging
+   * is made from. It is not stored: a restart reads it again from the registry.
+   */
+  name: z.string().optional(),
   intent: z.string().optional(),
   summary: z.string().optional(),
   tags: Tags,

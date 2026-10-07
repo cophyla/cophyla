@@ -45,6 +45,7 @@ import { terminalSpawnAsk } from "../api/methods.ts";
 import { folderSummary } from "../sessions/tether/folders.ts";
 import { linkViewer, terminalsRefused } from "./terminals.ts";
 import type { NodeTerminals } from "./terminals.ts";
+import type { AgentMessages } from "../agentmsg/index.ts";
 
 /** The capability requests a node answers for its primary. */
 export const NODE_SERVED: readonly CapabilityRequestName[] = [
@@ -95,7 +96,7 @@ export const NODE_SERVED_TERMINALS = ["terminal.list", "terminal.spawn", "termin
  * reachable. `ask.answer` answers as the primary node, not as the brain: the primary already
  * checked who may answer, and the answer is recorded as coming through it.
  */
-export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: { confine?: () => ToolConfinement | undefined } = {}): BrainMethodTable {
+export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: { confine?: () => ToolConfinement | undefined; agents?: () => Pick<AgentMessages, "deliverHere"> | undefined } = {}): BrainMethodTable {
   const all = brainMethods(deps) as Record<string, unknown>;
   const out: Record<string, unknown> = {};
   for (const name of NODE_SERVED) if (all[name]) out[name] = all[name];
@@ -120,11 +121,19 @@ export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: 
     },
   };
   out["ask.answer"] = answer;
-  // A message forwarded by the primary says whose it is; the brain's own table never asks.
+  // A message forwarded by the primary says whose it is; the brain's own table never asks. An
+  // agent's is delivered in its envelope, asked about here when it reaches a session that runs
+  // without prompts from one that does not.
   const send: BrainMethodTable["session.send"] = {
     target: (p) => p.id,
-    handler: (p) => {
-      if (p.as === "agent") throw new RpcError("unsupported", "this node does not deliver agent messages");
+    handler: (p, ctx) => {
+      if (p.as === "agent") {
+        const agents = opts.agents?.();
+        if (!agents) throw new RpcError("unavailable", "agent messaging is off on this node");
+        if (!p.agent) throw new RpcError("invalid", "an agent's message says who it is from");
+        const { from, messageId, replyTo, mode } = p.agent;
+        return agents.deliverHere(p.id, p.text, { ...(from ? { from } : {}), messageId, ...(replyTo !== undefined ? { replyTo } : {}), ...(mode ? { mode } : {}) }, ctx.onPending);
+      }
       return deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain"));
     },
   };

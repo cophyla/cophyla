@@ -601,6 +601,36 @@ export const DirectConfig = z.object({
 });
 export type DirectConfig = z.infer<typeof DirectConfig>;
 
+/**
+ * Agent messaging: every agent session is given the `cophyla-agents` MCP server, through which
+ * it lists the user's other agent sessions, on any harness and any node, and messages one.
+ */
+export const AgentMessagesConfig = z.object({
+  /** Off, calls are refused, and the server is taken out of every profile at the next start. */
+  enabled: z.boolean().default(true),
+  /** Write the server into each profile's configuration at start; off takes it out. */
+  install: z.boolean().default(true),
+  /**
+   * Let agents' messages into Claude sessions that run without permission prompts, without
+   * Claude's own hold: writes `crossSessionInbound: "accept"` into each Claude profile, which
+   * lets in any session's message, Claude's own `SendMessage` too. Once the app's switch has
+   * been used, that switch, kept on the node, wins over this.
+   */
+  accept_in_bypass: z.boolean().default(false),
+  /** The most characters a message may have. */
+  max_chars: z.number().int().positive().default(32000),
+  /** Messages a session may send in a minute, in all and to one session. */
+  per_minute: z.number().int().positive().default(20),
+  per_target_per_minute: z.number().int().positive().default(6),
+  /** The same text to the same session again within this many seconds is dropped. */
+  duplicate_window_s: z.number().int().nonnegative().default(300),
+  /** A message and the replies that follow it stop after this many. */
+  max_hops: z.number().int().positive().default(12),
+  /** The shim the sessions run, over the one the platform ships. */
+  command: z.string().min(1).optional(),
+});
+export type AgentMessagesConfig = z.infer<typeof AgentMessagesConfig>;
+
 /** Push: an open ask reaches a paired phone that has nothing open, through the server. */
 export const PushConfig = z.object({
   enabled: z.boolean().default(true),
@@ -666,6 +696,7 @@ export const Config = z.object({
   remote: RemoteConfig.prefault({}),
   cloud: CloudConfig.prefault({}),
   direct: DirectConfig.prefault({}),
+  agent_messages: AgentMessagesConfig.prefault({}),
   push: PushConfig.prefault({}),
   log: z
     .object({
@@ -1050,6 +1081,19 @@ stun = ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]
 # command = "C:\\path\\to\\cophyla-net.exe"   # over the helper the platform ships
 restart_backoff_ms = 1000
 restart_backoff_max_ms = 30000
+
+# Agent messaging: every agent session gets the cophyla-agents MCP server, to list the user's
+# other agent sessions (any harness, any machine) and message one.
+[agent_messages]
+enabled = true                 # off: calls are refused and the server leaves every profile at the next start
+install = true                 # write the server into each profile at start; false takes it out
+accept_in_bypass = false       # let messages into Claude sessions in bypass without Claude's hold (the app's switch wins once used)
+max_chars = 32000              # the most characters a message may have
+per_minute = 20                # messages a session may send in a minute
+per_target_per_minute = 6      # ... and to any one session
+duplicate_window_s = 300       # the same text to the same session again within this is dropped
+max_hops = 12                  # a message and the replies after it stop here
+# command = "C:\\path\\to\\cophyla-mcp.exe"   # over the shim the platform ships
 
 # Push: an ask reaches a paired phone as a notification when it has nothing open, through
 # the server (signed in, a plan with push, the phone's app registered).

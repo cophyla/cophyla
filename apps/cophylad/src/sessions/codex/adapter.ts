@@ -334,6 +334,7 @@ export class CodexAdapter implements HarnessAdapter {
             break;
           case "turn_context":
             if (item.approvalPolicy) rec.permissionMode = item.approvalPolicy;
+            if (item.sandbox) rec.sandbox = item.sandbox;
             break;
           case "task_started":
             status = "busy";
@@ -345,12 +346,16 @@ export class CodexAdapter implements HarnessAdapter {
             break;
           case "user_message":
             if (item.clientId) {
-              if (this.host.receiptByRef(rec, item.clientId) || this.host.isOwnText(rec, item.text)) break;
+              if (this.host.receiptByRef(rec, item.clientId)) break;
+              if (this.host.isOwnText(rec, item.text)) {
+                if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
+                break;
+              }
               if (record) this.host.event(rec, "user_turn", { text: capText(item.text), source: "queued", clientId: item.clientId }, rawIfSmall(row), item.at);
               break;
             }
             if (this.host.isOwnText(rec, item.text)) {
-              this.host.receiptByText(rec, item.text);
+              if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
               break;
             }
             if (rec.session.intent === undefined && patch.intent === undefined && item.text.trim()) patch.intent = oneLine(item.text);

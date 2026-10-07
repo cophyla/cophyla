@@ -125,6 +125,7 @@
       "workspace": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB0",
       "cwd": "C:\\D\\orchestrator",
       "title": "fix the gate tests",
+      "name": "gate-fix",
       "intent": "make the gate test pass on Windows",
       "tags": [],
       "status": "needs_permission",

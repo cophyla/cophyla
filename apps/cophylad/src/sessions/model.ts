@@ -3,6 +3,7 @@
 // that shape event payloads. Status rules and the ask lifecycle live in index.ts.
 
 import type { Ask, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, MuseHookEvent, NodeId, ProfileId, Session, SessionEvent, SessionEventKind, SessionOrigin, SessionStats, SessionStatus, SessionTransport, SessionWaiting, TerminalRef } from "@cophyla/protocol";
+import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import type { HookMeta } from "../api/hooks.ts";
 import type { SessionsConfig } from "../config/schema.ts";
 import { redact } from "../gate/audit.ts";
@@ -69,6 +70,8 @@ export interface SessionRecord {
   hostedBy?: "daemon";
   /** Codex: what started the thread, from its rollout (`codex-tui`, `Codex Desktop`): a desktop app's thread is in no terminal. */
   originator?: string;
+  /** Codex: the sandbox its last turn ran in (`danger-full-access` with approval `never` is no prompts at all). */
+  sandbox?: string;
 }
 
 export interface SessionSeed {
@@ -96,6 +99,8 @@ export interface SessionSeed {
   job?: string;
   /** When the harness last saw the session active: evidence that an ended one ran again, when it has no transcript to judge by. */
   activeAt?: number;
+  /** Claude: the name its registry gives it, which the record keeps from the first time it is met. */
+  name?: string;
 }
 
 /** One shape for every harness's hook bodies. Names are the PascalCase ones on the wire. */
@@ -244,6 +249,8 @@ export interface HarnessAdapter {
    * the Stop hook fires, sometimes just after: a promise while it has not said yet.
    */
   afterStop?(rec: SessionRecord): SessionWaiting | undefined | Promise<SessionWaiting | undefined>;
+  /** Claude: whether the session's settings let any session's message in at once, which one in bypass otherwise holds. */
+  acceptsInbound?(rec: SessionRecord): boolean;
 }
 
 /** A session starting in a tether terminal, before its harness has named it. */
@@ -271,8 +278,8 @@ export interface HeadlessSpawn {
 export interface HeadlessRunner {
   owns(rec: SessionRecord): boolean;
   spawn(input: HeadlessSpawn): Promise<SessionRecord>;
-  /** Queues a message behind the turn in flight; resolves once the harness took it. */
-  prompt(rec: SessionRecord, text: string, ref: string): Promise<void>;
+  /** Queues a message behind the turn in flight; resolves once the harness took it. `agent`: another agent's, recorded as its turn. */
+  prompt(rec: SessionRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): Promise<void>;
   /** Cancels the turn in flight without ending the session. */
   cancel(rec: SessionRecord): boolean;
   stop(rec: SessionRecord): Promise<void>;
@@ -329,6 +336,8 @@ export interface SessionHost {
    */
   setStatus(rec: SessionRecord, status: SessionStatus, at?: number, opts?: { waiting: SessionWaiting | undefined }): void;
   event(rec: SessionRecord, kind: SessionEventKind, payload: unknown, raw?: unknown, at?: number): SessionEvent;
+  /** An agent's message with no send waiting for it, recorded from its envelope once; false when the text holds none. */
+  agentEcho(rec: SessionRecord, text: string, raw?: unknown, at?: number): boolean;
   end(rec: SessionRecord, reason: string, at?: number): void;
   /** Claude: a delivered prompt that carries one of cophylad's own messages, as the prompt `promptId`. True when it matched a pending send. */
   receiptByText(rec: SessionRecord, text: string, promptId?: string): boolean;

@@ -5,6 +5,8 @@
 // `withdrawn` when Codex never picked it up and cophylad took it back, and `unconfirmed` when
 // Claude or Muse gave no sign in time. The clock and timers are injected so tests can drive them.
 
+import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
+
 export type SendState = "queued" | "delivered" | "withdrawn" | "unconfirmed";
 
 export interface PendingSend {
@@ -13,8 +15,10 @@ export interface PendingSend {
   harness: "claude" | "codex" | "muse";
   /** What the user asked to send. */
   text: string;
-  /** What went over the wire: the text behind cophylad's one-line prefix, or, typed, the text itself. */
+  /** What went over the wire: the text behind cophylad's one-line prefix, an agent's in its envelope, or, typed, the text itself. */
   body: string;
+  /** Another agent's message: its delivery is recorded as that agent's turn. */
+  agent?: EnvelopeInfo;
   /** Typed into the session's terminal as the user's own words. */
   typed?: boolean;
   /** Claude: the prompt it landed as, so the transcript's copy of that prompt is known for it. */

@@ -3,7 +3,8 @@
 // always allowed; an answer remembered for this session; an answer remembered always; a
 // config rule; a built-in rule (what the brain may do without asking: speak, keep its own
 // books, call the model the user configured, start a session of its own and message the
-// ones it started); the config default for the principal kind and risk class, where an ask
+// ones it started; let the user's agent sessions message each other, asking about one that
+// reaches a session running without prompts); the config default for the principal kind and risk class, where an ask
 // is an allow for this node's own primary when the owner let it work here unasked at the
 // join (`trusted`).
 
@@ -64,6 +65,12 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:session.spawn": "allow",
   // Its own words to the chat's own session, which runs with no tool that writes or runs anything.
   "brain:assistant.wake": "allow",
+  // One of the user's agent sessions listing and messaging the others: traffic between the
+  // same user's sessions. A rule can still deny one (`harness:agent.send@sess_…`). A message
+  // that reaches a session running without prompts from one that prompts is asked about.
+  "harness:agent.list": "allow",
+  "harness:agent.send": "allow",
+  "harness:agent.escalate": "ask",
 };
 
 /**

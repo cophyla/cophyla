@@ -85,6 +85,8 @@ import type { ClientSocket, ListenerKind, SendOptions } from "./clients.ts";
 import type { Redeemed } from "../grants/phones.ts";
 import type { Grants, RedeemHow } from "../grants/store.ts";
 import { assistantRoute, handleAssistant } from "./assistant.ts";
+import { AGENTS_PATH, handleAgents } from "./agents.ts";
+import type { AgentIngress } from "./agents.ts";
 import type { AssistantIngress } from "./assistant.ts";
 import { appHeaders, hostName, loopbackName, originOnPort, refusalResponse, validHost } from "./guard.ts";
 import type { Guard, PairLimiter } from "./guard.ts";
@@ -216,6 +218,8 @@ export interface ApiDeps {
   hooks?: HookIngress;
   /** The chat's own session's endpoints (`/mcp/*`, `/hooks/assistant-part-N`); absent in a daemon with no assistant module. */
   assistant?: AssistantIngress;
+  /** Every agent session's `cophyla-agents` MCP server, behind `/mcp/agents`; absent in a daemon without agent messaging. */
+  agents?: AgentIngress;
   /** What a new client is told right after `hello`, beside the open asks. */
   initial?: () => InitialState;
   /** A client went away. */
@@ -1076,6 +1080,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
       // The harness hooks are loopback's alone: nothing on the LAN answers them.
       const hook = listener === "loopback" && deps.hooks ? /^\/hooks\/(claude|codex|muse)$/.exec(url.pathname) : null;
       if (hook) return handleHook(req, srv, hook[1] as HookHarness, deps.hooks!, log.child("hooks"));
+      // So is every agent session's MCP server, which the shim each one runs hands its lines to.
+      if (listener === "loopback" && deps.agents && url.pathname === AGENTS_PATH) return handleAgents(req, srv, deps.agents, log.child("agentmsg"));
       // So are the chat's own session's endpoints: its tools, and the further parts of what it is told.
       const own = listener === "loopback" && deps.assistant ? assistantRoute(url.pathname) : undefined;
       if (own) return handleAssistant(req, srv, own, deps.assistant!, log.child("assistant"));

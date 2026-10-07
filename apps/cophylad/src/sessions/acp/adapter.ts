@@ -15,6 +15,8 @@ import { scrub } from "../env.ts";
 import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import { StdioRpc } from "../../rpc/stdio.ts";
+import { agentTurn } from "../../agentmsg/envelope.ts";
+import type { EnvelopeInfo } from "../../agentmsg/envelope.ts";
 import { claudeEnv } from "../claude/start.ts";
 import { askShown, capText, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { AttachedHarness, SessionHost, SessionRecord } from "../model.ts";
@@ -73,7 +75,7 @@ interface AcpChild {
   harness: AcpHarness;
   spawnedAt: number;
   /** Prompts waiting their turn: one `session/prompt` in flight per session. */
-  queue: { text: string; ref: string; resolve: () => void }[];
+  queue: { text: string; ref: string; resolve: () => void; agent?: { info: EnvelopeInfo; text: string } }[];
   inFlight?: { ref: string; started: number };
   /** Chunks of the current assistant message. */
   text: string[];
@@ -278,13 +280,13 @@ export class AcpAdapter {
 
   // --- prompt ----------------------------------------------------------------------------
 
-  /** Queues a prompt behind the turn in flight; `sent` resolves when it goes out. */
-  prompt(sessionId: string, text: string, ref: string): { sent: Promise<void> } {
+  /** Queues a prompt behind the turn in flight; `sent` resolves when it goes out. `agent`: another agent's, recorded as its turn. */
+  prompt(sessionId: string, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): { sent: Promise<void> } {
     const child = this.children.get(sessionId);
     if (!child) throw new RpcError("not_found", `no ACP session ${sessionId}`);
     if (!child.rpc.alive || child.stopping) throw new RpcError("conflict", `ACP session ${sessionId} has ended`);
     const sent = new Promise<void>((resolve) => {
-      child.queue.push({ text, ref, resolve });
+      child.queue.push({ text, ref, resolve, ...(agent ? { agent } : {}) });
     });
     this.pump(child);
     return { sent };
@@ -296,7 +298,7 @@ export class AcpAdapter {
     const now = this.deps.host.now();
     child.inFlight = { ref: next.ref, started: now };
     this.deps.host.setStatus(child.rec, "busy", now);
-    this.deps.host.event(child.rec, "user_turn", { text: capText(next.text), source: "orchestrator", ref: next.ref }, undefined, now);
+    this.deps.host.event(child.rec, "user_turn", next.agent ? agentTurn(next.agent.info, next.agent.text, next.ref) : { text: capText(next.text), source: "orchestrator", ref: next.ref }, undefined, now);
     next.resolve();
     child.rpc
       .request("session/prompt", { sessionId: child.sessionId, prompt: [{ type: "text", text: next.text }] })

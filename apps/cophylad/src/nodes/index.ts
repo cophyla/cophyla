@@ -57,6 +57,7 @@ import type { Editable } from "../editable/index.ts";
 import type { EventStream } from "../events/stream.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
+import type { AgentMessages } from "../agentmsg/index.ts";
 import type { Policy } from "../gate/policy.ts";
 import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
@@ -166,6 +167,8 @@ export interface NodesDeps {
   onRole?: (primary: boolean) => void;
   /** The workspace nodes here: the machine joins none of their clusters, and takes no invite from a node they know. */
   guests?: () => { clusters(): string[]; knows(node: string): boolean } | undefined;
+  /** The agent router, once built: what a secondary's sessions' `agent.list` and `agent.send` reach. */
+  agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
   now?: () => number;
 }
 
@@ -308,6 +311,7 @@ export class Nodes {
       ...(deps.direct ? { direct: deps.direct } : {}),
       directNodes: () => deps.config.direct.nodes,
       streams,
+      ...(deps.agents ? { agents: deps.agents } : {}),
       ...(deps.now ? { now: deps.now } : {}),
     });
     this.outbound = new Outbound({
@@ -642,6 +646,17 @@ export class Nodes {
       return;
     }
     await this.outbound.requestPrimary("remote.pair", { node, pin: p.pin, name: p.name }, { timeoutMs: 120_000, ...(opts.signal ? { signal: opts.signal } : {}) });
+  }
+
+  /** One request up the link to the primary; `unavailable` when this node is not linked to it. */
+  requestPrimary(method: string, params: unknown, opts: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<unknown> {
+    return this.outbound.requestPrimary(method, params, opts);
+  }
+
+  /** The primary's name, as the registry has it, when this node knows which it is. */
+  primaryName(): string | undefined {
+    const id = this.primaryId();
+    return id !== undefined ? this.registry.get(id)?.name : undefined;
   }
 
   /** TURN credentials from the primary, for this node's direct connections when it has no account of its own. */

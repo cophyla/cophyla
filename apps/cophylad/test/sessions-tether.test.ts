@@ -1,6 +1,8 @@
 // Sessions in tether, against a fake host speaking the real protocol: a session cophylad starts
 // runs in a tether terminal with cophylad's settings, gets a window, and has its first prompt
-// typed; the user's messages are typed and land as their turns, the brain's go over the pipe;
+// typed; the user's messages are typed and land as their turns, the brain's go over the pipe,
+// and so do another agent's, in their envelope, never typed, landing as that agent's turn (an
+// echo of one with no send waiting for it as well, once, and never as the user's);
 // nothing is typed while an ask is open or the prompt holds the user's half-typed text; focus
 // raises the window used on it, or opens one; stop ends the terminal; a session the user
 // started in tether is met with its terminal, and loses it when the terminal goes, also when a
@@ -22,6 +24,7 @@ import type { TetherConfig } from "../src/config/schema.ts";
 import { silentLogger } from "../src/log.ts";
 import { ClaudeAdapter } from "../src/sessions/claude/adapter.ts";
 import type { WindowRaiser } from "../src/sessions/focus.ts";
+import { envelope } from "../src/agentmsg/envelope.ts";
 import { SEND_PREFIX } from "../src/sessions/index.ts";
 import { cliOfName, findCli, TerminalClis } from "../src/sessions/tether/cli.ts";
 import type { ProcessRow } from "../src/sessions/tether/cli.ts";
@@ -228,6 +231,35 @@ describe("a session cophylad starts in tether", () => {
     await mini.sessions.send(s.id, "from the brain", { from: "brain" }).catch(() => undefined);
     // The fake registry carries no live pipe; the adapter was asked all the same.
     expect(injected.at(-1)?.text).toBe(`${SEND_PREFIX}\nfrom the brain`);
+  });
+
+  test("an agent's go over the pipe in their envelope, never typed, and land as that agent's turn", async () => {
+    fs.typed.length = 0;
+    const from = { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", alias: "api-codex", harness: "codex" as const, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "Laptop", folder: "api" };
+    const agent = { from, messageId: "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD0" };
+    const intent = mini.sessions.get(s.id)!.intent;
+    await mini.sessions.send(s.id, "the schema is merged", { from: "agent", agent }).catch(() => undefined);
+    const wire = envelope(agent, "the schema is merged");
+    expect(injected.at(-1)?.text).toBe(wire);
+    await sleep(500);
+    expect(fs.typed).toEqual([]);
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: wire, prompt_id: "p-agent" }), { via: "http" });
+    const turn = events(s.id).findLast((e) => e.kind === "user_turn")!;
+    expect(turn.payload).toMatchObject({ source: "agent", from, messageId: agent.messageId, text: "the schema is merged" });
+    expect(mini.sessions.get(s.id)!.intent).toBe(intent);
+  });
+
+  test("an agent's message with no send waiting for it is still that agent's turn, recorded once", async () => {
+    const late = envelope({ from: { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", alias: "web-review", harness: "claude", node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "Laptop" }, messageId: "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD9" }, "sent before the restart");
+    expect(mini.sessions.isOwnText(mini.sessions.find("claude", s.native.id)!, late)).toBe(true);
+    const intent = mini.sessions.get(s.id)!.intent;
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: late, prompt_id: "p-late" }), { via: "http" });
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: late, prompt_id: "p-late-again" }), { via: "http" });
+    const turns = events(s.id).filter((e) => e.kind === "user_turn" && (e.payload as { messageId?: string }).messageId === "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD9");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]!.payload).toMatchObject({ source: "agent", late: true, from: { alias: "web-review", harness: "claude", nodeName: "Laptop" }, text: "sent before the restart" });
+    expect(events(s.id).some((e) => e.kind === "user_turn" && (e.payload as { source?: string }).source === "hook" && (e.payload as { text?: string }).text?.includes("cophyla-message"))).toBe(false);
+    expect(mini.sessions.get(s.id)!.intent).toBe(intent);
   });
 
   test("nothing is typed over what the user has half typed", async () => {

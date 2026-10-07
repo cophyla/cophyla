@@ -10,9 +10,10 @@
 // events into the event stream, `pending` to the forward it belongs to, relayed frames to
 // the relay host, `metrics.sample` to the clients watching that node, `remote.state` to the
 // bus like the rest, `terminal.output` to the one client that opened that terminal there
-// (terminals.ts). Requests go the other way as `forward` and `fanout`, and one comes up:
-// `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN; a backup
-// gets the replication stream. A link that closes
+// (terminals.ts). Requests go the other way as `forward` and `fanout`, and these come up:
+// `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN, and
+// `agent.list` and `agent.send`, a secondary's sessions reaching the agent router here
+// (agentmsg); a backup gets the replication stream. A link that closes
 // marks the node offline, ends its mirrored sessions and terminals and cancels its mirrored
 // asks for every client, and raises `node.left`.
 //
@@ -56,6 +57,7 @@ import { LinkDirect } from "./direct.ts";
 import { SwitchableLink } from "./switch.ts";
 import { PIPE_FRAMES, STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
+import type { AgentMessages } from "../agentmsg/index.ts";
 import { TerminalViews } from "./terminals.ts";
 
 type NodeLinkResult<N extends keyof typeof nodeLinkRequests> = z.infer<(typeof nodeLinkRequests)[N]["result"]>;
@@ -120,6 +122,8 @@ export interface InboundDeps {
   streams?: StreamLinks;
   /** TURN credentials minted on this node's account, for a linked node's direct connections. */
   turn?: () => Promise<{ iceServers: IceServer[]; expiresAt: number }>;
+  /** Agent messaging: a secondary's sessions' `agent.list` and `agent.send`, served by the router here. */
+  agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
   now?: () => number;
 }
 
@@ -679,6 +683,13 @@ export class Inbound {
         const parsed = nodeLinkRequests["direct.offer"].params.safeParse(params ?? {});
         if (!parsed.success) throw new RpcError("invalid", "bad direct.offer", parsed.error.issues);
         return linkDirect.answer(parsed.data);
+      }
+      case "agent.list":
+      case "agent.send": {
+        // Checked and gated as the node's session, never as the node; answered at once, held or not.
+        const agents = this.deps.agents?.();
+        if (!agents) throw new RpcError("unavailable", "agent messaging is off on the primary");
+        return agents.upwardRequest({ id: peer.id, ...(peer.info.grant !== undefined ? { grant: peer.info.grant } : {}) }, method, params);
       }
       case "direct.turn": {
         const turn = this.deps.turn;
