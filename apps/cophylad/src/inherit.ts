@@ -94,6 +94,11 @@ export function sealHandles(): Sealed | undefined {
 
 let guarded = false;
 
+/** Whether this process's spawns are sealed. */
+export function spawnsGuarded(): boolean {
+  return guarded;
+}
+
 /**
  * From now on, every child this process starts is started with no handle of the process's but
  * what the runtime gives it: `Bun.spawn` and `Bun.spawnSync` seal the handles first. Once per

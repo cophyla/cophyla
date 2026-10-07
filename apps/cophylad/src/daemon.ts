@@ -136,6 +136,8 @@ import { Tools } from "./tools/index.ts";
 import { Update } from "./update/index.ts";
 import { RELEASE_KEYS } from "./update/keys.ts";
 import { detectInstall } from "./update/platform.ts";
+import { freeOwnPort, helperPaths } from "./portheld.ts";
+import { spawnsGuarded } from "./inherit.ts";
 import { BUILTIN_VIEWS_DIR, Views } from "./views/index.ts";
 import { resolveAffinity } from "./voice/affinity.ts";
 import type { SpeechNames } from "./voice/compose.ts";
@@ -337,6 +339,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const config = loadConfig(p);
   const log = opts.log ?? createLogger(config.log.level);
   const tz = config.node.tz ?? nodeTz();
+
+  // Before anything is opened: a loopback port a stopped daemon's leftovers still hold is freed
+  // (and with it the LAN and stream ports they hold too), and one something else holds stops the
+  // start with what holds it (portheld.ts).
+  const helpers = helperPaths(p.data, opts.update?.installDir ?? detectInstall(opts.env ?? process.env)?.dir);
+  await freeOwnPort({ host: config.api.host, port: opts.port ?? config.api.port, helpers, log });
+  if (process.platform === "win32") log.info(spawnsGuarded() ? "spawns sealed: no child inherits the daemon's handles" : "spawns not sealed: a child may inherit the daemon's handles");
 
   const store = new Store(p.db);
   const version = store.migrate();

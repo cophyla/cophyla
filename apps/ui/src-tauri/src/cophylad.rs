@@ -37,6 +37,13 @@ const CONNECT_DEADLINE: Duration = Duration::from_secs(5);
 const PING_EVERY: Duration = Duration::from_secs(30);
 const APPLY_RETRY: Duration = Duration::from_secs(60);
 const SPAWN_COOLDOWN: Duration = Duration::from_secs(15);
+/// How long cophylad's port may take connections nothing answers before the shell starts a
+/// daemon anyway. A process a stopped daemon left running can hold its listening socket: the
+/// port then looks taken, never refused, and only a new daemon frees it (it ends what a stopped
+/// daemon left before it listens, or says in its log what holds the port).
+const UNANSWERED_FOR: Duration = Duration::from_secs(20);
+/// How often a daemon is started again while the port goes on taking connections nobody answers.
+const UNANSWERED_RETRY: Duration = Duration::from_secs(60);
 const BACKOFF_MIN: Duration = Duration::from_millis(250);
 const BACKOFF_MAX: Duration = Duration::from_secs(5);
 const OUTBOUND_QUEUE: usize = 256;
@@ -374,6 +381,34 @@ impl Spawner {
     }
 }
 
+/// Whether the port has taken connections that nothing answered for long enough that a daemon
+/// should be started anyway.
+#[derive(Default)]
+struct Unanswered {
+    since: Option<Instant>,
+    tried: Option<Instant>,
+}
+
+impl Unanswered {
+    /// One attempt's outcome: `true` when the connection was taken and never answered. Says
+    /// whether to start a daemon now.
+    fn note(&mut self, unanswered: bool, now: Instant) -> bool {
+        if !unanswered {
+            self.since = None;
+            return false;
+        }
+        let since = *self.since.get_or_insert(now);
+        if now.duration_since(since) < UNANSWERED_FOR {
+            return false;
+        }
+        if self.tried.is_some_and(|t| now.duration_since(t) < UNANSWERED_RETRY) {
+            return false;
+        }
+        self.tried = Some(now);
+        true
+    }
+}
+
 fn is_refused(e: &tungstenite::Error) -> bool {
     match e {
         tungstenite::Error::Io(io) => matches!(io.kind(), std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::ConnectionReset),
@@ -386,6 +421,8 @@ enum Attempt {
     Dropped(String),
     /// Could not connect; `refused` says cophylad is not listening.
     Unreachable { refused: bool, error: String },
+    /// The port took the connection and nothing answered it.
+    Unanswered,
     /// cophylad answered the hello with an error or closed before answering.
     Refused(String),
 }
@@ -414,6 +451,7 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
     log::info!("shell {OWN_VERSION}, {}", crate::install::describe(install.as_ref()));
     let mut rx = link.rx.lock().ok().and_then(|mut r| r.take()).expect("run_link runs once");
     let mut spawner = Spawner { paths: paths.clone(), install: install.clone(), last: None, child: None };
+    let mut unanswered = Unanswered::default();
     let mut backoff = BACKOFF_MIN;
 
     loop {
@@ -436,7 +474,22 @@ pub async fn run_link<R: Runtime>(app: AppHandle<R>) {
         };
         link.set(&app, LinkState::Connecting, None, None, &url);
 
-        match attempt(&app, &link, &url, &token, &mut rx, install.as_ref()).await {
+        let outcome = attempt(&app, &link, &url, &token, &mut rx, install.as_ref()).await;
+        let start_anyway = unanswered.note(matches!(outcome, Attempt::Unanswered), Instant::now());
+        match outcome {
+            Attempt::Unanswered => {
+                let held = "cophylad's port takes connections but nothing answers them";
+                if start_anyway {
+                    log::warn!("{held}: starting cophylad, which frees the port of what a stopped daemon left running");
+                    match spawner.maybe() {
+                        Ok(Some(pid)) => link.set(&app, LinkState::Starting, None, Some(format!("{held}; started cophylad (pid {pid})")), &url),
+                        Ok(None) => link.set(&app, LinkState::Disconnected, None, Some(held.into()), &url),
+                        Err(e) => link.set(&app, LinkState::Disconnected, None, Some(e), &url),
+                    }
+                } else {
+                    link.set(&app, LinkState::Disconnected, None, Some(held.into()), &url);
+                }
+            }
             Attempt::Dropped(reason) => {
                 link.set(&app, LinkState::Disconnected, None, Some(reason), &url);
                 backoff = BACKOFF_MIN;
@@ -516,7 +569,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
     let (mut ws, _) = match connect {
         Ok(Ok(pair)) => pair,
         Ok(Err(e)) => return Attempt::Unreachable { refused: is_refused(&e), error: e.to_string() },
-        Err(_) => return Attempt::Unreachable { refused: false, error: "connect timed out".into() },
+        Err(_) => return Attempt::Unanswered,
     };
 
     let hello = json!({
@@ -611,6 +664,24 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_port_that_takes_connections_nobody_answers_starts_a_daemon_after_a_while_and_then_once_a_minute() {
+        let t0 = Instant::now();
+        let at = |s: u64| t0 + Duration::from_secs(s);
+        let mut u = Unanswered::default();
+        assert!(!u.note(true, at(0)));
+        assert!(!u.note(true, at(10)));
+        assert!(u.note(true, at(20)));
+        assert!(!u.note(true, at(30)));
+        assert!(!u.note(true, at(79)));
+        assert!(u.note(true, at(80)));
+        // any answer, or a refusal, starts the count again
+        assert!(!u.note(false, at(81)));
+        assert!(!u.note(true, at(82)));
+        assert!(!u.note(true, at(101)));
+        assert!(u.note(true, at(142)));
+    }
 
     #[test]
     fn installed_the_daemon_runs_under_the_shipped_runtime_from_the_version_directory() {
