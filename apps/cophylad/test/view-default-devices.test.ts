@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Controller, Grant, HarnessProfile, LanState, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, spendTitle, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -264,6 +264,41 @@ describe("the rail's Status: each login's usage", () => {
       prof_C: ["gmail", "claude"],
       prof_D: ["default · Laptop", "codex"],
     });
+  });
+
+  test("one subscription on two machines is one row: its spend added up, its newest limits, where it is signed in on hover", () => {
+    const state = cluster();
+    apply(state, {
+      type: "profiles",
+      profiles: [
+        { ...profile("prof_A", DESK, "claude", "gmail"), origin: "user", account: "aaaa" },
+        { ...profile("prof_B", LAPTOP, "claude", "default"), account: "aaaa" },
+        { ...profile("prof_C", LAPTOP, "claude", "work"), account: "bbbb" },
+        // signed in with a key: no account, its own row
+        profile("prof_D", DESK, "claude", "default"),
+      ],
+    });
+    apply(state, { type: "metrics.spend", node: DESK, totals: { at: NOW, profiles: { prof_A: { in: 1000, out: 100, cached: 10, cost: 1.5 }, prof_D: { in: 10, out: 1, cached: 0, cost: 0.01 } } } });
+    apply(state, { type: "metrics.spend", node: LAPTOP, totals: { at: NOW, profiles: { prof_B: { in: 500, out: 50, cached: 5, cost: 0.5 } } } });
+    apply(state, { type: "metrics.sample", params: { ...sample(DESK, 1, 1, 2), limits: { prof_A: { at: NOW - 60_000, session: { percent: 10 }, weekly: { percent: 40 } } } } });
+    apply(state, { type: "metrics.sample", params: { ...sample(LAPTOP, 1, 1, 2), limits: { prof_B: { at: NOW, session: { percent: 12 }, weekly: { percent: 41 } }, prof_C: { at: NOW, weekly: { percent: 5 } } } } });
+    const rows = selectSpend(state);
+    // named as the user declared it, not "default"
+    expect(rows.map((r) => [r.label, r.spend, r.limits?.session?.percent, r.where])).toEqual([
+      ["gmail", { in: 1500, out: 150, cached: 15, cost: 2 }, 12, "Signed in on Desk as gmail and Laptop as default"],
+      ["default", { in: 10, out: 1, cached: 0, cost: 0.01 }, undefined, undefined],
+      ["work", { in: 0, out: 0, cached: 0, cost: 0 }, undefined, undefined],
+    ]);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(3);
+    expect(spendTitle(rows[0]!, NOW).split("\n").slice(0, 2)).toEqual(["gmail", "Signed in on Desk as gmail and Laptop as default"]);
+
+    // One name everywhere says the machines alone; a twin of that name elsewhere names them too.
+    apply(state, { type: "profiles", profiles: [{ ...profile("prof_A", DESK, "claude", "default"), account: "aaaa" }, { ...profile("prof_C", LAPTOP, "claude", "default"), account: "bbbb" }] });
+    expect(selectSpend(state).map((r) => [r.label, r.where])).toEqual([
+      ["default · Desk, Laptop", "Signed in on Desk and Laptop"],
+      ["default · Desk", undefined],
+      ["default · Laptop", undefined],
+    ]);
   });
 
   test("memory as used of total and today's cost, short enough for the rail", () => {

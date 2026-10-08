@@ -9,7 +9,9 @@
 // installed or first signed in after the daemon started gets its hooks and its host without a
 // restart.
 // Their ids are stable across restarts because sessions reference them: the `profiles`
-// namespace in `kv` maps `<harness>:<configDir>` to a `prof_` id, minted once.
+// namespace in `kv` maps `<harness>:<configDir>` to a `prof_` id, minted once. An id is one
+// directory on one machine; a signed-in Claude or Codex profile also carries a mark of the
+// account it is signed in as (`accountMark`), which another machine signed in as it shares.
 //
 // Each harness has a usual account on the node, the profile a session cophylad starts runs under
 // when none is named: the one the user picked in the app, else `default = true` in config,
@@ -118,25 +120,43 @@ export function claudeGlobalConfig(configDir: string, home: string): string {
   return isClaudeHome(configDir, home) ? join(home, ".claude.json") : join(configDir, ".claude.json");
 }
 
-/** `hasCompletedOnboarding` in a global config, cached by the file's size and time: the file can run to megabytes. */
-const onboardedCache = new Map<string, { size: number; mtimeMs: number; onboarded: boolean }>();
-function onboarded(path: string): boolean {
+/**
+ * A subscription's account as `HarnessProfile.account` has it: the same for the same ids on any
+ * machine, and no way back to them.
+ */
+export function accountMark(harness: ProfileHarness, ids: string[]): string {
+  return createHash("sha256").update([harness, ...ids].join("\n")).digest("hex").slice(0, 16);
+}
+
+/** What a global config says: whether Claude went through its first run, and the account it is signed in as. */
+interface GlobalConfig {
+  onboarded: boolean;
+  account?: string;
+}
+
+/** A global config's facts, cached by the file's size and time: the file can run to megabytes. */
+const globalCache = new Map<string, { size: number; mtimeMs: number; facts: GlobalConfig }>();
+function globalConfig(path: string): GlobalConfig {
   let st: { size: number; mtimeMs: number };
   try {
     st = statSync(path);
   } catch {
-    return false;
+    return { onboarded: false };
   }
-  const hit = onboardedCache.get(path);
-  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.onboarded;
-  let value = false;
+  const hit = globalCache.get(path);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.facts;
+  const facts: GlobalConfig = { onboarded: false };
   try {
-    value = (JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown }).hasCompletedOnboarding === true;
+    const g = JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown; oauthAccount?: { accountUuid?: unknown; organizationUuid?: unknown } };
+    facts.onboarded = g.hasCompletedOnboarding === true;
+    // A login's limits are its account's in its organisation: the same person in a team is another subscription.
+    const a = g.oauthAccount;
+    if (a && typeof a.accountUuid === "string" && a.accountUuid) facts.account = accountMark("claude", [a.accountUuid, typeof a.organizationUuid === "string" ? a.organizationUuid : ""]);
   } catch {
     // Unreadable or mid-write: not onboarded as far as can be told.
   }
-  onboardedCache.set(path, { size: st.size, mtimeMs: st.mtimeMs, onboarded: value });
-  return value;
+  globalCache.set(path, { size: st.size, mtimeMs: st.mtimeMs, facts });
+  return facts;
 }
 
 /**
@@ -146,13 +166,40 @@ function onboarded(path: string): boolean {
 function claudeStatus(dir: string, home: string, env: Record<string, string | undefined>, keychain: (() => boolean) | undefined): ProfileStatus {
   if (!existsSync(dir)) return "missing";
   const login = existsSync(join(dir, ".credentials.json")) || !!env["ANTHROPIC_API_KEY"] || !!env["CLAUDE_CODE_OAUTH_TOKEN"] || keychain?.() === true;
-  return login && onboarded(claudeGlobalConfig(dir, home)) ? "ok" : "unauthenticated";
+  return login && globalConfig(claudeGlobalConfig(dir, home)).onboarded ? "ok" : "unauthenticated";
 }
 
 function codexStatus(dir: string, env: Record<string, string | undefined>): ProfileStatus {
   if (!existsSync(dir)) return "missing";
   if (existsSync(join(dir, "auth.json")) || env["OPENAI_API_KEY"]) return "ok";
   return "unauthenticated";
+}
+
+/**
+ * A ChatGPT login in Codex's `auth.json`, as an account mark: its account (a workspace) and the
+ * user in it, from the id token's claims. Nothing else of the file is kept; a key has no mark.
+ */
+function codexAccount(dir: string): string | undefined {
+  try {
+    const auth = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")) as { tokens?: { account_id?: unknown; id_token?: unknown } };
+    const account = auth.tokens?.account_id;
+    if (typeof account !== "string" || !account) return undefined;
+    return accountMark("codex", [account, codexUser(auth.tokens?.id_token) ?? ""]);
+  } catch {
+    return undefined;
+  }
+}
+
+function codexUser(idToken: unknown): string | undefined {
+  const payload = typeof idToken === "string" ? idToken.split(".")[1] : undefined;
+  if (!payload) return undefined;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: unknown; "https://api.openai.com/auth"?: { chatgpt_user_id?: unknown } };
+    const user = claims["https://api.openai.com/auth"]?.chatgpt_user_id ?? claims.sub;
+    return typeof user === "string" ? user : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A Meta login in `auth.json`: the provider's entry is looked for, and what it holds is never read. */
@@ -404,6 +451,10 @@ export class Profiles {
       status: harness === "claude" ? claudeStatus(configDir, this.home, env, this.keychain(pc.config_dir, configDir)) : harness === "codex" ? codexStatus(configDir, env) : museStatus(configDir),
     };
     if (pc.command !== undefined) p.exec = { command: pc.command, args: pc.args };
+    if (p.status === "ok") {
+      const account = harness === "claude" ? globalConfig(claudeGlobalConfig(configDir, this.home)).account : harness === "codex" ? codexAccount(configDir) : undefined;
+      if (account) p.account = account;
+    }
     return { profile: p, configDefault: pc.default, configArgs: [...pc.args] };
   }
 

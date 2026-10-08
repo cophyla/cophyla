@@ -193,6 +193,12 @@ export const HarnessProfile = z.object({
   status: ProfileStatus,
   /** Claude: what a session cophylad starts under it is started with; absent when nothing is set. */
   launch: ProfileLaunch.optional(),
+  /**
+   * Signed in with a subscription: a mark of the account, the same on every machine and in
+   * every directory signed in as it, so one subscription shows once. A hash of the vendor's
+   * account ids, never the ids. Absent for a key, Muse, or no login.
+   */
+  account: z.string().optional(),
 });
 export type HarnessProfile = z.infer<typeof HarnessProfile>;
 

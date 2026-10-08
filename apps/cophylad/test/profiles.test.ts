@@ -213,6 +213,45 @@ describe("what Claude will show", () => {
   });
 });
 
+describe("the account a profile is signed in as", () => {
+  // Each reading is another home, as another machine is: the same login there has the same mark.
+  test("Claude: its account in its organisation, from the global config, the same in any home signed in as it; none without a login", () => {
+    const mark = (oauthAccount: object | undefined, signedIn = true) => {
+      const home = tempHome();
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      if (signedIn) writeFileSync(join(home, ".claude", ".credentials.json"), "{}");
+      writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, ...(oauthAccount ? { oauthAccount } : {}) }));
+      return build("", home).p.byHarness("claude")[0]!.account;
+    };
+    const ann = { accountUuid: "acct-1", organizationUuid: "org-1", emailAddress: "ann@example.com", displayName: "Ann" };
+    const first = mark(ann);
+    expect(first).toMatch(/^[0-9a-f]{16}$/);
+    expect(mark({ ...ann, displayName: "Annie", profileFetchedAt: 5 })).toBe(first);
+    // the same person in another organisation is another subscription
+    expect(mark({ ...ann, organizationUuid: "org-2" })).not.toBe(first);
+    expect(mark({ ...ann, accountUuid: "acct-2" })).not.toBe(first);
+    expect(mark(ann, false)).toBeUndefined();
+    expect(mark(undefined)).toBeUndefined();
+  });
+
+  test("Codex: its ChatGPT account and the user in it, from auth.json; a key has none", () => {
+    const jwt = (claims: object) => ["e30", Buffer.from(JSON.stringify(claims)).toString("base64url"), "sig"].join(".");
+    const login = (account: string, user: string) => ({ auth_mode: "chatgpt", tokens: { account_id: account, id_token: jwt({ sub: "auth0|x", "https://api.openai.com/auth": { chatgpt_user_id: user } }), access_token: "a", refresh_token: "r" } });
+    const mark = (auth: object) => {
+      const home = tempHome();
+      mkdirSync(join(home, ".codex"), { recursive: true });
+      writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify(auth));
+      return build("", home).p.byHarness("codex")[0]!.account;
+    };
+    const first = mark(login("ws-1", "user-1"));
+    expect(first).toMatch(/^[0-9a-f]{16}$/);
+    expect(mark(login("ws-1", "user-1"))).toBe(first);
+    // a team's workspace is shared, its limits are each user's
+    expect(mark(login("ws-1", "user-2"))).not.toBe(first);
+    expect(mark({ OPENAI_API_KEY: "sk-x", tokens: null })).toBeUndefined();
+  });
+});
+
 describe("the usual account", () => {
   test("picked in the app, else config, else the profile of the user's latest own session, else the discovered one", () => {
     const { home, toml } = twoAccounts();

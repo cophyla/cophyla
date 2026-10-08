@@ -1853,7 +1853,7 @@ function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
   const logins = state.scopes.includes("metrics:read") ? selectSpend(state) : [];
   const usage = cards.querySelector<HTMLElement>(".spend")!;
   setHidden(usage, logins.length === 0);
-  reconcile(usage.querySelector<HTMLElement>(".spend-rows")!, logins, (r) => r.profile, createSpend, updateSpend);
+  reconcile(usage.querySelector<HTMLElement>(".spend-rows")!, logins, (r) => r.key, createSpend, updateSpend);
   const phones = state.scopes.includes("controllers") ? selectStatusPhones(state) : [];
   const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
   setHidden(phoneSection, phones.length === 0);

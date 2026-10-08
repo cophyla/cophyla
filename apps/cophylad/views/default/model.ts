@@ -3311,21 +3311,28 @@ function ownerLabel(state: ViewState, owner: ProcessOwner): string {
 }
 
 export interface SpendRow {
+  /** What the row is kept by: its account's mark, or its profile's id while the account is not known. */
+  key: string;
+  /** The profile the row is named after. */
   profile: string;
   name: string;
   /** The harness the login is for, once `profile.list` said: its mark goes beside the name. */
   harness?: HarnessProfile["harness"];
   /** The name, with its machine's when another login of the same harness has the same name; the harness's mark tells the rest apart. */
   label: string;
+  /** One account signed in on several machines or in several directories: where, in words. */
+  where?: string;
   spend: Spend;
-  /** The login's plan limits, from its node's latest sample. */
+  /** The login's plan limits, from the latest sample that read them. */
   limits?: ProfileLimits;
 }
 
 /**
- * Spend per profile summed over every node, with each login's plan limits beside it, the
- * costliest first; a profile with limits and nothing spent has a row too. Profiles named as
- * `profile.list` has them.
+ * Spend per login summed over every node, with its plan limits beside it, the costliest first;
+ * a login with limits and nothing spent has a row too. A subscription signed in on several
+ * machines, or in several directories of one, is one row: its profiles share
+ * `HarnessProfile.account`, their spend adds up and the newest reading of its limits stands.
+ * Profiles named as `profile.list` has them.
  */
 export function selectSpend(state: ViewState): SpendRow[] {
   const total = new Map<string, Spend>();
@@ -3341,23 +3348,61 @@ export function selectSpend(state: ViewState): SpendRow[] {
   }
   const limits = new Map<string, ProfileLimits>();
   for (const sample of state.metrics.values()) for (const [profile, l] of Object.entries(sample.limits ?? {})) limits.set(profile, l);
-  const rows: SpendRow[] = [];
+  const logins = new Map<string, string[]>();
   for (const profile of new Set([...total.keys(), ...limits.keys()])) {
-    const spend = total.get(profile) ?? { in: 0, out: 0, cached: 0, cost: 0 };
-    const l = limits.get(profile);
+    const key = state.profiles.get(profile)?.account ?? profile;
+    logins.set(key, [...(logins.get(key) ?? []), profile]);
+  }
+  const rows: SpendRow[] = [];
+  const members = new Map<SpendRow, HarnessProfile[]>();
+  for (const [key, ids] of logins) {
+    const spend: Spend = { in: 0, out: 0, cached: 0, cost: 0 };
+    let l: ProfileLimits | undefined;
+    for (const id of ids) {
+      const s = total.get(id);
+      if (s) {
+        spend.in += s.in;
+        spend.out += s.out;
+        spend.cached += s.cached;
+        spend.cost += s.cost;
+      }
+      const read = limits.get(id);
+      if (read && (!l || read.at > l.at)) l = read;
+    }
     if (spend.in + spend.out + spend.cached + spend.cost === 0 && !l?.session && !l?.weekly) continue;
-    const p = state.profiles.get(profile);
+    // Every profile signed in as the account, those with nothing to count too, so the row says where it is.
+    const account = state.profiles.get(ids[0]!)?.account;
+    const known = account ? [...state.profiles.values()].filter((p) => p.account === account) : ids.flatMap((id) => state.profiles.get(id) ?? []);
+    const p = [...known].sort((a, b) => nameRank(a) - nameRank(b) || a.name.localeCompare(b.name))[0];
+    const profile = p?.id ?? ids[0]!;
     const name = p?.name ?? profile.replace(/^prof_/, "").slice(0, 6);
-    rows.push({ profile, name, ...(p ? { harness: p.harness } : {}), label: name, spend, ...(l ? { limits: l } : {}) });
+    const row: SpendRow = { key, profile, name, ...(p ? { harness: p.harness } : {}), label: name, spend, ...(l ? { limits: l } : {}) };
+    if (known.length > 1) row.where = whereWords(state, known);
+    members.set(row, known);
+    rows.push(row);
   }
   // Two logins of one name are told apart by their harness's mark (each harness's "default"), and of one harness too by their machine.
   for (const row of rows) {
     const twins = rows.filter((r) => r.name === row.name && r.harness === row.harness);
-    const p = state.profiles.get(row.profile);
-    const machine = twins.length > 1 && p && state.nodes.size > 1 ? state.nodes.get(p.node)?.name : undefined;
-    if (machine) row.label = `${row.name} · ${machine}`;
+    if (twins.length < 2 || state.nodes.size < 2) continue;
+    const machines = [...new Set(members.get(row)!.filter((p) => p.name === row.name).flatMap((p) => state.nodes.get(p.node)?.name ?? []))];
+    if (machines.length > 0) row.label = `${row.name} · ${machines.join(", ")}`;
   }
   return rows.sort((a, b) => b.spend.cost - a.spend.cost || b.spend.in + b.spend.out - (a.spend.in + a.spend.out) || a.label.localeCompare(b.label));
+}
+
+/** Which of an account's profiles names its row: one the user declared, then one not called "default". */
+function nameRank(p: HarnessProfile): number {
+  return p.origin === "user" ? 0 : p.name !== "default" ? 1 : 2;
+}
+
+/** Where one account is signed in: "Signed in on Desk and Laptop", or with each profile's name where they differ. */
+function whereWords(state: ViewState, profiles: HarnessProfile[]): string {
+  const machine = (p: HarnessProfile) => state.nodes.get(p.node)?.name ?? "another machine";
+  const sorted = [...profiles].sort((a, b) => machine(a).localeCompare(machine(b)) || a.name.localeCompare(b.name));
+  const sameName = sorted.every((p) => p.name === sorted[0]!.name);
+  const parts = sameName ? [...new Set(sorted.map(machine))] : sorted.map((p) => `${machine(p)} as ${p.name}`);
+  return `Signed in on ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}`;
 }
 
 /** Each harness as the user knows it. */
@@ -3943,6 +3988,7 @@ export function spendTitle(row: SpendRow, now: number): string {
     return `${label}: ${Math.round(w.percent)}% used${left}`;
   };
   const lines = [row.name];
+  if (row.where) lines.push(row.where);
   if (row.limits) lines.push(window("Session limit", row.limits.session), window("Weekly limit", row.limits.weekly));
   lines.push(`Today: ${costWords(row.spend.cost)}, ${countWords(row.spend.in)} in, ${countWords(row.spend.out)} out, ${countWords(row.spend.cached)} cached`);
   return lines.join("\n");
