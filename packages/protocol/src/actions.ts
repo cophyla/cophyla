@@ -32,6 +32,9 @@ export const actions = {
   "session.send": { risk: "write" },
   "session.spawn": { risk: "exec" },
   "session.stop": { risk: "exec" },
+  "session.closed": { risk: "read" },
+  // Starts a program, as a spawn does, though nothing is typed into it.
+  "session.reopen": { risk: "exec" },
   // `exec` at most: `sessionModeRisk` says which a given mode is.
   "session.mode": { risk: "exec" },
   "session.focus": { risk: "write" },

@@ -35,11 +35,11 @@
 
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Ask, AskAnswer, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
-import { newId, RpcError, ulid } from "@cophyla/protocol";
+import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
+import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
 import type { HookHarness, HookMeta } from "../api/hooks.ts";
 import { agentTurn, envelope, ENVELOPE_TAG, NOTICE_FROM, readEnvelope } from "../agentmsg/envelope.ts";
@@ -118,6 +118,8 @@ export interface SessionsDeps {
   env?: Record<string, string | undefined>;
   /** How long a session whose context was cleared waits for its new id; a test shortens it. */
   clearGraceMs?: number;
+  /** How long a reopened Codex or Muse CLI is given to say so with a hook (`REOPEN_HOOK_MS`); a test shortens it. */
+  reopenHookMs?: number;
   /** How long a send that clears a context waits for the new one; a test shortens it. */
   clearWaitMs?: number;
   /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
@@ -379,6 +381,24 @@ const TERMINAL_POLL_MS = 250;
 
 /** How long a session started in a terminal is still recognised as that session, long past the wait for it. */
 const TERMINAL_EXPECT_MS = 1800000;
+/** How far back `closed` looks when no time is given: a day. */
+const CLOSED_SINCE_MS = 86_400_000;
+/** How many sessions `closed` lists when no count is given. */
+const CLOSED_LIMIT = 50;
+/** Rows read past the count asked for, for the ones `closed` leaves out. */
+const CLOSED_SLACK = 50;
+/**
+ * The ends recorded when a session's program went without ending it, or nothing was heard of it
+ * since: killed, crashed, its window closed under it, the machine gone. Every other end is the
+ * user's or the harness's own (an exit, a stop, a `/resume` elsewhere, a cleared context).
+ */
+const INTERRUPTED: ReadonlySet<string> = new Set(["gone", "inactive"]);
+/**
+ * How long a Codex or Muse CLI started to resume a conversation is given to say so with a hook
+ * before its record is brought back by the CLI's own process: one may say nothing until its
+ * first prompt.
+ */
+const REOPEN_HOOK_MS = 5000;
 /** A burst of sessions registering (a daemon start) is mirrored once per profile, this long after the last. */
 const MIRROR_DELAY_MS = 2000;
 const BROADCAST_MS = 250;
@@ -512,6 +532,8 @@ export class Sessions implements SessionHost {
   private assistant?: AssistantHooks;
   /** The native ids the chat's own session was started or resumed under: a record met under one is its. */
   private assistantIds = new Set<string>();
+  /** Sessions being reopened now: a second reopen of one waits for none. */
+  private reopening = new Set<string>();
 
   constructor(deps: SessionsDeps) {
     this.deps = deps;
@@ -2427,10 +2449,10 @@ export class Sessions implements SessionHost {
    * The command line a Claude session cophylad starts runs: its id and name, the profile's launch,
    * the model the brain named, and cophylad's settings file with the launch's own folded in.
    */
-  private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined }): string[] {
+  private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined; resume?: boolean }): string[] {
     const value = launchFlags(o.launch).settings;
     return [
-      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}) }),
+      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}) }),
       "--settings",
       cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined),
     ];
@@ -2723,6 +2745,196 @@ export class Sessions implements SessionHost {
       this.log.debug("the session's process was already gone", { session: id, pid, error: e instanceof Error ? e.message : String(e) });
     }
     this.end(rec, "stopped", this.now());
+  }
+
+  // --- closed sessions ------------------------------------------------------------------
+
+  /**
+   * The machine's sessions that ended since `since` (a day ago unless given), the last to end
+   * first, whose conversation `reopen` can take up again, each with why it ended and whether
+   * that was an interruption. Left out: one that ran headless, one whose conversation runs
+   * again (resumed by hand, under this record or another), one with no conversation saved, and
+   * an older record of a conversation listed already.
+   */
+  closed(opts: { since?: number; limit?: number } = {}): ClosedSession[] {
+    const limit = Math.min(opts.limit ?? CLOSED_LIMIT, CLOSED_MAX);
+    const since = opts.since ?? this.now() - CLOSED_SINCE_MS;
+    const seen = new Set<string>();
+    const out: ClosedSession[] = [];
+    for (const row of this.deps.store.sessions.closed(since, limit + CLOSED_SLACK)) {
+      // In memory, the record is the newest word on the session.
+      const session = this.byId.get(row.session.id)?.session ?? row.session;
+      if (session.status !== "ended" || !this.inPart(session) || this.reopenRefusal(session) !== undefined) continue;
+      const key = nativeKey(session.harness, session.native.id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ session: { ...session }, reason: row.reason, interrupted: INTERRUPTED.has(row.reason) });
+      if (out.length >= limit) break;
+    }
+    return out;
+  }
+
+  /**
+   * Why an ended session cannot be taken up again, or `undefined` when it can: it ran headless
+   * (its conversation was the ACP adapter's), it is no harness that resumes one, its
+   * conversation runs again, or nothing of it was saved to go on with.
+   */
+  private reopenRefusal(s: Session): RpcError | undefined {
+    if (s.native.transport === "acp") return new RpcError("unsupported", `session ${s.id} ran headless: its conversation is not taken up in a terminal`);
+    if (s.harness !== "claude" && s.harness !== "codex" && s.harness !== "muse") return new RpcError("unsupported", `a ${s.harness} session is not reopened`);
+    const live = this.find(s.harness, s.native.id);
+    if (live && live.session.status !== "ended") return new RpcError("conflict", `session ${s.id}'s conversation runs again${live.session.id === s.id ? "" : ` as session ${live.session.id}`}`);
+    // A Claude conversation is saved from its first prompt; one closed before it has nothing to resume.
+    if (s.harness === "claude" && (!s.transcript || !existsSync(s.transcript.path))) return new RpcError("conflict", `session ${s.id} saved no conversation to go on with`);
+    return undefined;
+  }
+
+  /**
+   * Starts an ended session of the machine's again where it left off: its harness resuming the
+   * conversation (`claude --resume`, `codex resume`, `muse resume`) in a tether terminal in its
+   * folder, under its profile and the profile's launch, as `spawn` starts one, with a window
+   * when `[tether].window_on_start` says so. The record comes back as a resume brings it back
+   * (`revive`), keeping its id, name, origin, workspace and task, and holds that terminal.
+   * Nothing is typed into it. Claude's registry names the conversation at once; a Codex or Muse
+   * CLI may say nothing until its first prompt, so after `REOPEN_HOOK_MS` its record comes back
+   * by the CLI marked in the terminal, living while that process does. A Claude session goes in
+   * a terminal window of its own where tether is not; the others need tether. A workspace
+   * node's sessions run headless, and none is reopened.
+   */
+  async reopen(id: string, opts: SpawnOptions, part?: string): Promise<Session> {
+    if (part !== undefined) throw new RpcError("unsupported", "a workspace node's sessions run headless: none is reopened");
+    const session = this.get(id);
+    if (!session) throw new RpcError("not_found", `no session ${id}`);
+    if (session.status !== "ended") throw new RpcError("conflict", `session ${id} is still running`);
+    const refused = this.reopenRefusal(session);
+    if (refused) throw refused;
+    if (this.reopening.has(id)) throw new RpcError("conflict", `session ${id} is being reopened`);
+    const profile = opts.profiles.get(session.profile);
+    if (!profile) throw new RpcError("not_found", `session ${id} ran under profile ${session.profile}, which is gone`);
+    if (profile.status === "missing") throw new RpcError("unavailable", `profile ${profile.name} has no configuration directory`);
+    if (!existsSync(session.cwd)) throw new RpcError("conflict", `session ${id}'s folder ${session.cwd} is gone`);
+    const tether = this.deps.tether?.available ? this.deps.tether : undefined;
+    if (session.harness !== "claude" && !tether) throw new RpcError("unsupported", `a ${session.harness} session is reopened in a tether terminal, and tether is not on this node`);
+    this.reopening.add(id);
+    try {
+      const rec = tether ? await this.reopenInTether(session, profile, opts) : await this.reopenInTerminal(session, profile, opts);
+      this.log.info("session reopened", { id, harness: session.harness, native: session.native.id, terminal: rec.session.native.terminal?.id, pid: rec.session.native.pid });
+      return { ...rec.session };
+    } finally {
+      this.reopening.delete(id);
+    }
+  }
+
+  /** The command line that takes a session's conversation up again in a terminal, under its profile. */
+  private resumeArgv(session: Session, profile: HarnessProfile, opts: SpawnOptions, terminal: boolean): string[] {
+    const native = session.native.id;
+    switch (session.harness) {
+      case "claude": {
+        const launch = opts.profiles.launch?.(profile.id);
+        const command = profile.exec?.command ?? Bun.which("claude") ?? "claude";
+        return this.claudeCommand({ command, sessionId: native, intent: "", profile, cwd: session.cwd, launch: terminal ? this.terminalLaunch(launch) : launch, model: undefined, resume: true });
+      }
+      case "codex":
+        return [profile.exec?.command ?? Bun.which("codex") ?? "codex", ...(profile.exec?.args ?? []), "resume", native];
+      default:
+        return [...museCommand(profile), "resume", native];
+    }
+  }
+
+  /** The environment a harness's CLI cophylad starts in tether gets, under the profile. */
+  private spawnEnv(harness: HarnessKind, profile: HarnessProfile): Record<string, string> {
+    return harness === "claude" ? this.claudeSpawnEnv(profile) : harness === "codex" ? this.codexSpawnEnv(profile) : this.museSpawnEnv(profile);
+  }
+
+  private async reopenInTether(session: Session, profile: HarnessProfile, opts: SpawnOptions): Promise<LiveRecord> {
+    const tether = this.deps.tether!;
+    const title = session.title ?? (sessionName(session.intent ?? "") || "cophylad session");
+    const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
+    let term: TerminalRef;
+    try {
+      term = (await tether.spawn({ argv: this.resumeArgv(session, profile, opts, false), cwd: session.cwd, env: this.spawnEnv(session.harness, profile), labels: { app: "cophylad", "cophylad.reopen": session.id } })).ref;
+    } catch (e) {
+      throw new RpcError("unavailable", `tether could not start session ${session.id} again: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    const window = tether.windowOnStart
+      ? await this.openWindow(term, title, session.cwd).catch((e: unknown) => {
+          this.log.warn("no window opened on the reopened session; it runs with none", { terminal: term.id, error: e instanceof Error ? e.message : String(e) });
+          return undefined;
+        })
+      : undefined;
+    const rec = await this.awaitReopened(session, term, timeoutMs);
+    if (!rec) {
+      const screen = await tether.screen(term, "text").catch(() => undefined);
+      const on = screen ? (session.harness === "claude" ? waitingOn(screen) : session.harness === "codex" ? codexWaitingOn(screen) : museWaitingOn(screen)) : undefined;
+      const exited = tether.get(term)?.info.status === "exited";
+      this.log.warn("a reopened session has not come back", { id: session.id, terminal: term.id, waiting: on, exited });
+      const why = on ? `it is waiting on ${on}` : screen ? `its screen ends:\n${tail(screen)}` : "its terminal cannot be read";
+      throw new RpcError("unavailable", `session ${session.id} was started again in ${session.cwd} but did not come back within ${Math.round(timeoutMs / 1000)}s${exited ? ", and its program exited" : ""}: ${why}`);
+    }
+    this.log.info("session reopened in tether", { id: session.id, terminal: term.id, host: term.host, window });
+    return rec;
+  }
+
+  /** A Claude session reopened where tether is not: in a terminal window of its own, as `spawnInTerminal` opens one. */
+  private async reopenInTerminal(session: Session, profile: HarnessProfile, opts: SpawnOptions): Promise<LiveRecord> {
+    const opener = await pickOpener(this.deps.terminals ?? []);
+    if (!opener) throw new RpcError("unsupported", "no terminal to reopen the session in on this node");
+    const env = claudeEnv(profile.configDir, this.deps.home);
+    const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
+    await opener.open({
+      argv: this.resumeArgv(session, profile, opts, true),
+      cwd: session.cwd,
+      env: { ...env.set, ...(profile.env as Record<string, string> | undefined) },
+      ...(env.unset.length > 0 ? { unset: env.unset } : {}),
+      title: session.title ?? (sessionName(session.intent ?? "") || "cophylad session"),
+    });
+    const rec = await this.awaitReopened(session, undefined, timeoutMs);
+    if (!rec) throw new RpcError("unavailable", `a terminal opened in ${session.cwd} but session ${session.id} did not come back within ${Math.round(timeoutMs / 1000)}s; the window may be waiting to be answered`);
+    return rec;
+  }
+
+  /**
+   * Waits for a reopened session's record to come back, discovering eagerly, and has it hold
+   * the terminal it was reopened in. A Codex or Muse CLI that said nothing by `REOPEN_HOOK_MS`
+   * brings it back by its own process (`reviveByCli`).
+   */
+  private async awaitReopened(session: Session, term: TerminalRef | undefined, timeoutMs: number): Promise<LiveRecord | undefined> {
+    const harness = session.harness as AttachedHarness;
+    const since = this.now();
+    const found = (): SessionRecord | undefined => {
+      const rec = this.byId.get(session.id);
+      if (rec && rec.session.status !== "ended") return rec;
+      if (harness !== "claude" && term && this.now() - since >= (this.deps.reopenHookMs ?? REOPEN_HOOK_MS)) return this.reviveByCli(session, term);
+      return undefined;
+    };
+    const rec = (await this.awaitTerminalSession(harness, found, timeoutMs, term)) as LiveRecord | undefined;
+    if (rec && term && !rec.session.native.terminal) this.patch(rec, { native: { ...rec.session.native, terminal: term } });
+    return rec;
+  }
+
+  /**
+   * A reopened Codex or Muse session's record, brought back by the CLI marked in the terminal
+   * it was reopened in: that CLI shows the conversation now, and the record lives while it runs,
+   * as one a hook gave the process does. `undefined` until the terminal's CLI is known.
+   */
+  private reviveByCli(session: Session, term: TerminalRef): SessionRecord | undefined {
+    const mark = this.clis?.markOf(term);
+    if (!mark || mark.harness !== session.harness) return undefined;
+    const rec = this.ensure({
+      harness: session.harness as AttachedHarness,
+      nativeId: session.native.id,
+      profile: session.profile,
+      cwd: session.cwd,
+      transport: session.native.transport,
+      pid: mark.pid,
+      terminal: term,
+      status: "idle",
+      liveness: "hook",
+      ...(session.transcript ? { transcriptPath: session.transcript.path } : {}),
+    });
+    if (rec.session.status === "ended") return undefined;
+    this.log.info("a reopened session came back by its CLI, before any hook", { id: rec.session.id, pid: mark.pid, terminal: term.id });
+    return rec;
   }
 
   /** Cancels the turn in flight of a spawned session. */

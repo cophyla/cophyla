@@ -15,6 +15,7 @@ import {
   BrowserInvite,
   Client,
   ClientKind,
+  ClosedSession,
   ContentBlock,
   Controller,
   DirectState,
@@ -48,7 +49,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
-import { GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
+import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
 const Empty = z.object({});
@@ -457,6 +458,8 @@ const FileAsk = { path: z.string().min(1).max(4096), image: z.literal(true).opti
  */
 export const ClientSession = Session.omit({ summary: true, tags: true });
 export type ClientSession = z.infer<typeof ClientSession>;
+export const ClientClosedSession = ClosedSession.extend({ session: ClientSession });
+export type ClientClosedSession = z.infer<typeof ClientClosedSession>;
 export const ClientWorkspace = Workspace.omit({ summary: true, tags: true });
 export type ClientWorkspace = z.infer<typeof ClientWorkspace>;
 export const ClientThread = Thread.omit({ summary: true, tags: true });
@@ -529,6 +532,16 @@ export const clientRequests = {
    * whose process the node does not know is `unsupported`, one that already ended a `conflict`.
    */
   "session.stop": { params: z.object({ id: SessionId }), result: Empty },
+  /**
+   * The sessions that ended lately, the last to end first, as the capability request of that
+   * name lists them: on every node, or on the one named.
+   */
+  "session.closed": {
+    params: z.object({ since: Timestamp.optional(), limit: z.number().int().positive().max(CLOSED_MAX).optional(), node: NodeId.optional() }),
+    result: z.object({ closed: z.array(ClientClosedSession) }),
+  },
+  /** Starts an ended session again where it left off, as the capability request of that name does. */
+  "session.reopen": { params: z.object({ id: SessionId, node: NodeId.optional() }), result: z.object({ id: SessionId }) },
   /**
    * Puts a Claude session in a permission mode, as Shift+Tab in its terminal does: pressed in
    * its tether terminal until the footer shows the mode, or set over ACP for a session cophylad

@@ -8,6 +8,7 @@ import {
   AgentRef,
   Ask,
   AskAnswer,
+  ClosedSession,
   AssistantHarness,
   AssistantStatus,
   ContentBlock,
@@ -380,6 +381,9 @@ export type GitState = z.infer<typeof GitState>;
 /** The most commits `session.git` lists. */
 export const GIT_LOG_MAX = 20;
 
+/** The most closed sessions `session.closed` lists. */
+export const CLOSED_MAX = 200;
+
 /** What `session.send` answers: `held` when the harness will hold the message for approval in its own terminal. */
 export const SendResult = z.object({
   status: z.enum(["queued", "held"]),
@@ -459,6 +463,24 @@ export const capabilityRequests = {
     params: z.object({ terminal: z.string(), text: z.string().min(1), task: TaskId.optional() }),
     result: z.object({ id: SessionId }),
   },
+  /**
+   * The sessions that ended lately on a node, the last to end first, with why each ended: the
+   * ones whose conversation can be taken up again (`session.reopen`). Since `since` (a day ago
+   * when absent), at most `limit` (50). Across every node unless one is named.
+   */
+  "session.closed": {
+    params: z.object({ since: Timestamp.optional(), limit: z.number().int().positive().max(CLOSED_MAX).optional(), node: NodeId.optional() }),
+    result: z.object({ closed: z.array(ClosedSession) }),
+  },
+  /**
+   * Starts an ended session again where it left off: its harness resuming the conversation
+   * (`claude --resume`, `codex resume`, `muse resume`) in a terminal in its folder, under its
+   * profile and the profile's launch. The same session comes back, its id, name, workspace and
+   * task kept; nothing is typed into it. `node` says where it is when the caller knows (a row of
+   * `session.closed`). One still running, or with no conversation saved, is a `conflict`; one
+   * that ran headless, or a node with no terminal to start it in, `unsupported`.
+   */
+  "session.reopen": { params: z.object({ id: SessionId, node: NodeId.optional() }), result: z.object({ id: SessionId }) },
   "session.stop": {
     params: z.object({
       id: SessionId,

@@ -186,6 +186,13 @@ export function attachMethods(deps: AttachDeps): MethodTable {
       risk: (p) => sessionModeRisk(p.mode),
       handler: (p) => deps.sessions.setMode(p.id, p.mode),
     },
+    "session.closed": {
+      handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }),
+    },
+    "session.reopen": {
+      target: (p) => p.id,
+      handler: async (p) => ({ id: (await deps.sessions.reopen(p.id, { profiles: deps.profiles })).id }),
+    },
     "session.watch": {
       handler: (p, ctx) => {
         deps.clients.watch(ctx.client.id, p.ids);

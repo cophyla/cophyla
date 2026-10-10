@@ -227,6 +227,16 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
         return {};
       },
     },
+    "session.closed": { handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }) },
+    "session.reopen": {
+      target: (p) => p.id,
+      handler: async (p) => {
+        const session = await deps.sessions.reopen(p.id, { profiles: deps.profiles });
+        const thread = deps.chat.peek();
+        if (thread) deps.chat.touchSession(thread.id, session.id);
+        return { id: session.id };
+      },
+    },
     "terminal.list": { handler: () => ({ terminals: deps.terminals?.list() ?? [] }) },
     // The user's CLI and terminal: typing into them is a message to a session of theirs, asked about.
     "terminal.prompt": {

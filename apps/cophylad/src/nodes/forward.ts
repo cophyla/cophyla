@@ -10,7 +10,7 @@
 // its primary removes the second.
 
 import { RpcError } from "@cophyla/protocol";
-import type { Ask, ClientKind, ClientParams, ClientResult, NodeRecord, Session, SpendTotals, Terminal, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientKind, ClosedSession, ClientParams, ClientResult, NodeRecord, Session, SpendTotals, Terminal, Workspace } from "@cophyla/protocol";
 import type { Chat } from "../chat/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { ProcessDetail } from "../metrics/delivery.ts";
@@ -82,6 +82,9 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "session.git":
     case "session.file":
       return node(host.ownerOfSession(p["id"] as string));
+    // An ended session may have left the mirror: the node a `session.closed` row named goes first.
+    case "session.reopen":
+      return node((p["node"] as string | undefined) ?? host.ownerOfSession(p["id"] as string));
     case "ask.answer":
       return node(host.ownerOfAsk(p["id"] as string));
     case "terminal.open":
@@ -127,6 +130,7 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
       return node(p["node"] as string | undefined);
     case "profile.list":
     case "profile.limits":
+    case "session.closed":
       return p["node"] === undefined ? { kind: "merge" } : node(p["node"] as string);
     case "profile.update":
       return node(p["node"] as string);
@@ -179,6 +183,18 @@ export const merges: Record<string, Merge> = {
     const others = await host.fanout("profile.list", params);
     const remote = [...others.values()].flatMap((r) => (r as { profiles?: { id: string }[] }).profiles ?? []);
     return { profiles: dedupe([...mine, ...remote]) };
+  },
+  "session.closed": async (local, params, host) => {
+    const mine = (local as { closed: ClosedSession[] }).closed;
+    const others = await host.fanout("session.closed", params);
+    const remote = [...others.values()].flatMap((r) => ((r as { closed?: ClosedSession[] }).closed ?? []).filter((c) => c.session.node !== host.selfId()));
+    const limit = P(params)["limit"] as number | undefined;
+    const seen = new Set<string>();
+    const closed = [...mine, ...remote]
+      .filter((c) => (seen.has(c.session.id) ? false : (seen.add(c.session.id), true)))
+      .sort((a, b) => (b.session.endedAt ?? 0) - (a.session.endedAt ?? 0))
+      .slice(0, limit);
+    return { closed };
   },
   "profile.limits": async (local, params, host) => {
     const limits = { ...(local as { limits: Record<string, unknown> }).limits };

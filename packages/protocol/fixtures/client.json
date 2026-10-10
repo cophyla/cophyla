@@ -52,6 +52,22 @@
     "session.send": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "text": "run the tests" }], "results": [{ "status": "queued", "ref": "cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0" }, { "status": "held" }] },
     "session.focus": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
     "session.stop": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{}] },
+    "session.closed": {
+      "params": [{}, { "since": 1758196000000, "limit": 20 }],
+      "results": [
+        { "closed": [] },
+        {
+          "closed": [
+            {
+              "session": { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "harness": "claude", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "native": { "id": "3f0c1b2a-7a2e-4c1e-9f0e-1c2d3e4f5a6b", "transport": "pipe" }, "origin": "user", "cwd": "C:\\D\\orchestrator", "status": "ended", "startedAt": 1758196000000, "lastActivity": 1758196800000, "endedAt": 1758196800000 },
+              "reason": "stopped",
+              "interrupted": false
+            }
+          ]
+        }
+      ]
+    },
+    "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {

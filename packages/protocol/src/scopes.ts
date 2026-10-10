@@ -27,6 +27,8 @@ export const requestScopes = {
   "session.send": "sessions:write",
   "session.focus": "sessions:write",
   "session.stop": "sessions:write",
+  "session.closed": "sessions:read",
+  "session.reopen": "sessions:write",
   "session.mode": "sessions:write",
   "session.watch": "sessions:read",
   "session.files": "sessions:read",

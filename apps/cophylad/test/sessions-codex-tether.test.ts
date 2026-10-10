@@ -136,6 +136,7 @@ beforeAll(async () => {
         processes: () => [...table],
         isAlive: (pid) => alive.has(pid),
         cliTiming: { debounceMs: 30, gapMs: 400 },
+        reopenHookMs: 300,
         home: scratch,
       },
     },
@@ -332,5 +333,61 @@ describe("a CLI of the user's waiting at its first prompt", () => {
     await expect(mini.sessions.promptTerminal(bare.id, "hello")).rejects.toThrow(/no agent CLI waiting/);
     await expect(mini.sessions.promptTerminal("t-none", "hello")).rejects.toThrow(/no running terminal/);
     bare.exit(0);
+  });
+});
+
+describe("a Codex session reopened", () => {
+  /** A thread of the user's whose CLI went under it, as when the machine goes. */
+  function interrupted(pid: number): SessionRecord {
+    const rec = mini.sessions.ensure({ harness: "codex", nativeId: uuidv7(Date.now() - 60_000), profile: profileOf("own").id, cwd, transport: "app-server", liveness: "hook", pid });
+    mini.sessions.end(rec, "gone");
+    return rec;
+  }
+
+  test("resumes its thread in a tether terminal, and comes back by its CLI when no hook says so first", async () => {
+    threadMode = "none";
+    const rec = interrupted(9700);
+    expect(mini.sessions.closed().find((c) => c.session.id === rec.session.id)).toMatchObject({ reason: "gone", interrupted: true });
+    const previous = fake.onSpawn;
+    // The resumed CLI is the terminal's own process; it makes no thread and fires no hook.
+    fake.onSpawn = (x) => {
+      previous?.(x);
+      table.push({ pid: x.pid, parent: 1, name: "codex.exe" });
+      setTimeout(() => fake.emit({ ev: "title", session: x.id, title: "work" }), 20);
+    };
+    try {
+      const back = await mini.sessions.reopen(rec.session.id, { profiles: mini.profiles });
+      const f = [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.reopen"] === rec.session.id)!;
+      expect(f.spawn.argv.slice(-2)).toEqual(["resume", rec.session.native.id]);
+      expect(f.spawn.cwd).toBe(cwd);
+      expect(f.spawn.env.set?.["CODEX_HOME"]).toBeUndefined();
+      expect(back).toMatchObject({ id: rec.session.id, status: "idle", origin: "user", native: { id: rec.session.native.id, pid: f.pid, terminal: { host: fake.host.host, id: f.id } } });
+      expect(mini.sessions.closed().map((c) => c.session.id)).not.toContain(rec.session.id);
+      // It lives while its CLI does.
+      alive.delete(f.pid);
+      f.exit(0);
+    } finally {
+      fake.onSpawn = previous;
+    }
+  }, 10_000);
+
+  test("a hook from the resumed CLI brings it back at once", async () => {
+    threadMode = "none";
+    const rec = interrupted(9800);
+    const previous = fake.onSpawn;
+    fake.onSpawn = (x) => {
+      previous?.(x);
+      setTimeout(() => mini.sessions.ensure({ harness: "codex", nativeId: rec.session.native.id, profile: profileOf("own").id, cwd, transport: "app-server", liveness: "hook", pid: x.pid, terminal: { host: fake.host.host, id: x.id } }), 30);
+    };
+    try {
+      const started = Date.now();
+      const back = await mini.sessions.reopen(rec.session.id, { profiles: mini.profiles });
+      expect(Date.now() - started).toBeLessThan(300);
+      const f = [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.reopen"] === rec.session.id)!;
+      expect(back.native.terminal).toEqual({ host: fake.host.host, id: f.id });
+      f.exit(0);
+    } finally {
+      fake.onSpawn = previous;
+    }
   });
 });

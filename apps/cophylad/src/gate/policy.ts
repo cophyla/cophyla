@@ -43,9 +43,11 @@ export type PolicySource = "control" | "system" | "session" | "remembered" | "co
  * to ask before every reply could not converse. So is starting a session: the user asked for
  * it, and the session runs under their own account in their own terminal, where they watch it.
  * A start in a mode looser than asking before each edit is not covered (`loosens`): it falls
- * to the class default, which asks. Anything else that reaches a session, a machine or the
- * network stays under the class default (`ask`) unless config says otherwise;
- * `"brain:session.spawn" = "ask"` in `[gate.rules]` puts the ask back.
+ * to the class default, which asks. So is starting an ended session again where it left off,
+ * under the same account and launch, with nothing typed into it. Anything else that reaches a
+ * session, a machine or the network stays under the class default (`ask`) unless config says
+ * otherwise; `"brain:session.spawn" = "ask"` in `[gate.rules]` puts the ask back, and
+ * `"brain:session.reopen" = "ask"` does for a reopen.
  */
 export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:ui.say": "allow",
@@ -63,6 +65,7 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "brain:memory.write": "allow",
   "brain:prompt.write": "allow",
   "brain:session.spawn": "allow",
+  "brain:session.reopen": "allow",
   // Its own words to the chat's own session, which runs with no tool that writes or runs anything.
   "brain:assistant.wake": "allow",
   // One of the user's agent sessions listing and messaging the others: traffic between the

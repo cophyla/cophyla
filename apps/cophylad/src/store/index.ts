@@ -388,6 +388,23 @@ export class Store {
       const rows = this.db.query("SELECT * FROM harness_sessions WHERE status != 'ended' ORDER BY last_activity DESC, id DESC").all() as SessionRow[];
       return rows.map(sessionFromRow);
     },
+    /**
+     * The sessions that ended at `since` or later, the last to end first, each with the reason
+     * its last end was recorded under. The chat's own are left out, and so are the ones whose
+     * end was no end of a conversation: a spare process, or one that went on as a background job.
+     */
+    closed: (since: number, limit: number): { session: Session; reason: string }[] => {
+      const rows = this.db
+        .query(
+          `SELECT * FROM (
+             SELECT s.*, (SELECT json_extract(e.payload, '$.reason') FROM session_events e WHERE e.session = s.id AND e.kind = 'ended' ORDER BY e.seq DESC LIMIT 1) AS end_reason
+             FROM harness_sessions s WHERE s.status = 'ended' AND s.ended_at >= $since AND s.role IS NULL
+           ) WHERE end_reason IS NULL OR end_reason NOT IN ('spare', 'backgrounded')
+           ORDER BY ended_at DESC, id DESC LIMIT $limit`,
+        )
+        .all({ since, limit }) as (SessionRow & { end_reason: string | null })[];
+      return rows.map((r) => ({ session: sessionFromRow(r), reason: r.end_reason ?? "exit" }));
+    },
     /** Where the session's transcript was last recorded up to: the file, the offset its next line starts at, and a view's cursor (Muse). */
     tail: (id: string): { path: string; offset: number; cursor?: string } | undefined => {
       const row = this.db.query("SELECT path, offset, cursor FROM transcript_tails WHERE session = $session").get({ session: id }) as { path: string; offset: number; cursor: string | null } | null;

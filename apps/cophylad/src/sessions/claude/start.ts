@@ -45,16 +45,19 @@ export interface ClaudeStart {
   launch?: Launch;
   /** The model the brain asked for, over the launch's own. */
   model?: string;
+  /** Goes on with the conversation `sessionId` names (`--resume`), which keeps its id and its name. */
+  resume?: boolean;
 }
 
 /**
  * The command line a fresh session starts with, the program first, before cophylad's
- * `--settings`. No prompt: a session started with one is busy before its registry entry is
- * written, and the text would have to survive the terminal's parser.
+ * `--settings`, or one that resumes a conversation under its own id. No prompt: a session
+ * started with one is busy before its registry entry is written, and the text would have to
+ * survive the terminal's parser.
  */
 export function claudeArgv(start: ClaudeStart): string[] {
-  const argv = [start.command, "--session-id", start.sessionId];
-  const name = start.name ? sessionName(start.name) : "";
+  const argv = [start.command, start.resume ? "--resume" : "--session-id", start.sessionId];
+  const name = start.name && !start.resume ? sessionName(start.name) : "";
   if (name) argv.push("--name", name);
   argv.push(...launchFlags(start.launch, start.model ? { model: start.model } : {}).args);
   if (start.model) argv.push("--model", start.model);

@@ -298,6 +298,19 @@ export const Session = z.object({
 export type Session = z.infer<typeof Session>;
 
 /**
+ * A session that ended, as `session.closed` lists it: why it ended, as its end was recorded
+ * (`gone`, `inactive`, a harness's own exit reason such as `prompt_input_exit` or `resume`,
+ * `stopped`), and whether that was an interruption — its program went without ending its
+ * session (killed, crashed, its window or the machine gone) — rather than the user closing it.
+ */
+export const ClosedSession = z.object({
+  session: Session,
+  reason: z.string(),
+  interrupted: z.boolean(),
+});
+export type ClosedSession = z.infer<typeof ClosedSession>;
+
+/**
  * An agent session as another agent addresses it (agent messaging): the session, the short
  * alias the directory gives it, its harness, and the machine and folder it works in. A
  * message's sender is one, and so is each row `list_agents` answers.
@@ -1369,6 +1382,7 @@ export const entities = {
   HarnessCapabilities,
   HarnessProfile,
   Session,
+  ClosedSession,
   SessionEvent,
   Terminal,
   Task,

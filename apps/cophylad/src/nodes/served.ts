@@ -60,6 +60,8 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
   "session.spawn",
   "session.stop",
   "session.mode",
+  "session.closed",
+  "session.reopen",
   "terminal.prompt",
   "ask.answer",
   "annotate",
@@ -258,6 +260,7 @@ export class NodeServer {
       case "session.history":
       case "session.send":
       case "session.stop":
+      case "session.reopen":
       case "session.mode": {
         const s = local?.session(String(p["id"]));
         c.require(s?.cwd, "that session");
@@ -305,6 +308,10 @@ export class NodeServer {
       case "session.list": {
         const r = result as CapabilityResult<"session.list">;
         return { ...r, sessions: r.sessions.filter((s) => c.session(s)) };
+      }
+      case "session.closed": {
+        const r = result as CapabilityResult<"session.closed">;
+        return { ...r, closed: r.closed.filter((x) => c.session(x.session)) };
       }
       case "workspace.list": {
         const r = result as CapabilityResult<"workspace.list">;
