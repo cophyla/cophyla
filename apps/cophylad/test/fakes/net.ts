@@ -4,8 +4,9 @@
 // stderr, reads what cophylad asked and told it, and plays the peers: an offer or an answer is
 // a fake SDP naming the peer, and `open` / `data` / `close` are the channel's events. Two
 // fakes on one `FakeWire` join their channels: an offer on one answered on the other opens
-// both once accepted, what one side sends the other hears, and a side that goes (closed, or
-// its helper gone) leaves the other failed, as ICE would say it.
+// both once accepted, if the answering side was given one of the offerer's candidates (its
+// router lets in only what it sent toward), what one side sends the other hears, and a side
+// that goes (closed, or its helper gone) leaves the other failed, as ICE would say it.
 
 import { RpcError } from "@cophyla/protocol";
 import type { HelperProcess, HelperSpawner, SpawnOptions } from "../../src/direct/helper.ts";
@@ -20,6 +21,11 @@ export class FakeWire {
   private links = new Map<string, End>();
   /** No channel opens while set: a path that cannot be found. */
   blocked = false;
+  /**
+   * The answering side sits behind a router that lets in only what it sent toward first: no
+   * channel opens unless its helper was given one of the offerer's candidates, and ICE fails.
+   */
+  filtering = true;
   /** How long ICE takes to call the far side failed. */
   failMs = 30;
 
@@ -48,6 +54,12 @@ export class FakeWire {
   accepted(end: End): void {
     const other = this.other(end);
     if (!other || this.blocked) return;
+    if (this.filtering && !other.helper.peers.get(other.peer)?.candidates.length) {
+      setTimeout(() => {
+        for (const e of [end, other]) e.helper.emit("peer.state", { peer: e.peer, state: "failed", reason: "ICE failed" });
+      }, this.failMs);
+      return;
+    }
     setTimeout(() => {
       for (const e of [end, other]) {
         e.helper.emit("peer.open", { peer: e.peer });
@@ -113,6 +125,8 @@ export class FakeHelper implements HelperProcess {
         this.peers.set(peer, { role: "offer", candidates: [] });
         const sdp = `fake-offer:${peer}`;
         this.net.wire?.offered(sdp, { helper: this, peer });
+        // as the real helper does, its candidates follow the offer at once: ahead of the offer crossing to the far side
+        if (this.net.wire) queueMicrotask(() => this.emit("peer.candidate", { peer, candidate: { candidate: "candidate:1 1 udp 1686052607 198.51.100.20 61000 typ srflx raddr 0.0.0.0 rport 0" } }));
         return { sdp };
       }
       case "peer.answer": {

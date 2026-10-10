@@ -1,6 +1,7 @@
 // Two nodes on no common network, linked through the server relay, each with direct
 // connections on and a fake helper joined on one wire: the secondary offers the link a data
-// channel, the link's frames move to it (the primary's row says `p2p`, both states list the
+// channel (its first candidate crossing ahead of the offer, which the primary keeps for it,
+// as the channel opens only once the primary's helper holds one), the link's frames move to it (the primary's row says `p2p`, both states list the
 // other node), and what rides the link carries on across it; the secondary's helper killed,
 // the link falls back to the relay with no `node.left`, and switches again once the helper is
 // back. A primary with links kept off direct connections answers `unsupported`, and the
@@ -106,6 +107,17 @@ describe("a relayed node link's data channel", () => {
     await waitFor(() => p.d.nodes.mirror.ownerOfWorkspace(ws3.id) === s.identity.id, 5000);
     expect(left).toEqual([]);
     expect(s.nodes.primaryId()).toBe(p.d.identity.id);
+  });
+
+  test("the candidate the secondary's helper gave as it made the offer crosses ahead of the offer; the primary keeps it for the offer, and the channel opens", async () => {
+    const { secondary: s, netP, netS } = await start();
+    await waitFor(() => s.direct.state().peers.some((x) => x.kind === "node"), 8000);
+    const attempt = netS.live!.requests.find((r) => r.method === "peer.offer")!.params["peer"];
+    const given = netP.live!.requests.filter((r) => r.method === "peer.candidate" && r.params["peer"] === attempt);
+    expect(given.map((r) => (r.params["candidate"] as { candidate: string }).candidate)).toEqual([expect.stringContaining("typ srflx")]);
+    // it reached the helper after the answer, never before (a helper refuses a peer it does not know)
+    const methods = netP.live!.requests.filter((r) => r.params["peer"] === attempt).map((r) => r.method);
+    expect(methods.slice(0, 2)).toEqual(["peer.answer", "peer.candidate"]);
   });
 
   test("a primary that keeps links off direct connections answers unsupported, and the secondary asks no more", async () => {

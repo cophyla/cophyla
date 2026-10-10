@@ -2,7 +2,10 @@
 // (`direct.offer` on the link, its own helper's SDP and a fresh key), the primary's helper
 // answers, the candidates cross as `direct.candidate` frames, and the records are keyed from
 // the two keys and the secondary's grant key (the one its link is sealed with), bound to the
-// secondary. Once the helpers say it is open,
+// secondary. The secondary's helper gives its first candidates as it makes the offer, so they
+// cross ahead of it: the primary keeps them until its helper has answered, as a helper refuses
+// a peer it does not know and the primary's router lets nothing in from an address it was
+// never told of. Once the helpers say it is open,
 // the channel is handed to the link's switch, which moves the frames when it has proven
 // the channel both ways. ICE gives up within six seconds, inside the link's heartbeats, so a
 // lost path falls back to the relay before anyone calls the node gone. A primary that does
@@ -27,6 +30,8 @@ export const FIRST_TRY_MS = 2000;
 export const RETRY_MS = [60_000, 120_000, 240_000, 480_000, 960_000, 1_800_000];
 /** How long a channel has from the offer to `open`. */
 export const OPEN_MS = 20_000;
+/** The most candidates kept for an offer that has not come yet. */
+const EARLY_MAX = 32;
 
 export interface LinkDirectDeps {
   direct: Direct;
@@ -64,12 +69,16 @@ interface Attempt {
   path?: DirectPathType;
   since: number;
   timer?: ReturnType<typeof setTimeout>;
+  /** The other end's candidates while this end's helper does not know the peer yet. */
+  held?: unknown[];
 }
 
 export class LinkDirect {
   private deps: LinkDirectDeps;
   private log: Logger;
   private attempt?: Attempt;
+  /** On the primary, the candidates of an offer still crossing: the newest attempt's only. */
+  private early?: { attempt: string; candidates: unknown[]; at: number };
   private blocked = false;
   private backoff = 0;
   private timer?: ReturnType<typeof setTimeout>;
@@ -162,12 +171,18 @@ export class LinkDirect {
     if (!this.deps.enabled()) throw new RpcError("unsupported", "direct connections are off for links on this node");
     if (!this.deps.direct.ready) throw new RpcError("unavailable", "direct connections are not running on this node");
     if (this.attempt) this.fail(this.attempt, "a newer offer");
-    const attempt: Attempt = { id: params.attempt, since: this.now() };
+    const early = this.early?.attempt === params.attempt && this.now() - this.early.at < OPEN_MS ? this.early.candidates : [];
+    this.early = undefined;
+    const attempt: Attempt = { id: params.attempt, since: this.now(), held: early };
     this.begin(attempt);
     try {
       const mine = await ephemeral(params.curve ?? "x25519");
       attempt.tunnel = await derive("responder", mine, params.epk, this.key(), { kind: "direct", peer: this.deps.secondary });
       const answer = (await this.deps.direct.request("peer.answer", { peer: attempt.id, sdp: params.sdp, ice: NODE_ICE })) as { sdp: string };
+      // the helper knows the peer now: what came ahead of it goes to it
+      const held = attempt.held ?? [];
+      attempt.held = undefined;
+      if (this.isCurrent(attempt)) for (const c of held) this.give(attempt, c);
       return { sdp: answer.sdp, epk: mine.publicKey };
     } catch (e) {
       this.fail(attempt, e instanceof Error ? e.message : String(e));
@@ -175,11 +190,22 @@ export class LinkDirect {
     }
   }
 
-  /** A candidate from the other end, for the attempt it names. */
+  /** A candidate from the other end, for the attempt it names; on the primary, one ahead of its offer is kept for it. */
   candidate(params: { attempt: string; candidate: unknown }): void {
     const attempt = this.attempt;
-    if (!attempt || attempt.id !== params.attempt || attempt.socket) return;
-    void this.deps.direct.request("peer.candidate", { peer: attempt.id, candidate: params.candidate }).catch(() => undefined);
+    if (attempt?.id === params.attempt) {
+      if (attempt.socket) return;
+      if (attempt.held) attempt.held.push(params.candidate);
+      else this.give(attempt, params.candidate);
+      return;
+    }
+    if (this.deps.role !== "primary" || this.stopped) return;
+    if (this.early?.attempt !== params.attempt) this.early = { attempt: params.attempt, candidates: [], at: this.now() };
+    if (this.early.candidates.length < EARLY_MAX) this.early.candidates.push(params.candidate);
+  }
+
+  private give(attempt: Attempt, candidate: unknown): void {
+    void this.deps.direct.request("peer.candidate", { peer: attempt.id, candidate }).catch(() => undefined);
   }
 
   // --- the helper's side -------------------------------------------------------------------------
@@ -294,6 +320,7 @@ export class LinkDirect {
     this.stopped = true;
     this.off();
     if (this.timer) clearTimeout(this.timer);
+    this.early = undefined;
     const attempt = this.attempt;
     this.attempt = undefined;
     if (attempt) {
