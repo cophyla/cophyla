@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Release } from "@cophyla/protocol";
 import { BUN_NAMES, MCP_PATHS, NET_PATHS, SHELL_PATHS } from "../../cophylad/src/update/platform.ts";
-import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, parseSignArgs, parseTarget, releaseTag, SHELL_REL, TARGETS } from "../scripts/lib.ts";
+import { BUN_NAME, bundleArch, findMachO, installerNames, isMachO, isMachOHeader, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, missingImports, MODEL_NAME, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, OS, packageDataFiles, parseSignArgs, parseTarget, releaseTag, SHELL_REL, TARGETS } from "../scripts/lib.ts";
 import { feedFilesFor, mergeInto, releaseKey } from "../scripts/feed.ts";
 import { LAUNCHER_IDENTIFIER, overlayFor } from "../scripts/overlay.ts";
 import { installerAssets, mergePlan } from "../scripts/publish.ts";
@@ -138,6 +138,39 @@ describe("mach-o", () => {
     const found = findMachO(join(dir, "node_modules")).map((p) => p.slice(dir.length + 1).replace(/\\/g, "/"));
     expect(found).toEqual(["node_modules/other/lib.dylib", "node_modules/pty/build/pty.node"]);
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe("the stage's copy of a workspace package", () => {
+  test("takes the JSON beside src/ but not package.json or a tsconfig, and names every relative import that lands on nothing", () => {
+    const pkg = mkdtempSync(join(tmpdir(), "stage-pkg-"));
+    try {
+      mkdirSync(join(pkg, "src", "sub"), { recursive: true });
+      for (const f of ["package.json", "tsconfig.json", "tsconfig.build.json", "agent-tools.json", "README.md"]) writeFileSync(join(pkg, f), "{}");
+      expect(packageDataFiles(pkg)).toEqual(["agent-tools.json"]);
+      rmSync(join(pkg, "agent-tools.json"));
+      writeFileSync(join(pkg, "src", "b.ts"), "export const b = 1;\n");
+      writeFileSync(join(pkg, "src", "sub", "index.ts"), "export const c = 1;\n");
+      writeFileSync(
+        join(pkg, "src", "a.ts"),
+        [
+          'import definition from "../agent-tools.json";',
+          'import { b } from "./b";',
+          'import { b as b2 } from "./b.ts";',
+          'export { c } from "./sub";',
+          'import "./gone.ts";',
+          'const lazy = await import("./later.ts");',
+          '// `import "./only-in-a-comment.ts"` is no import',
+          ' * from "./nor-in-a-doc-comment.ts"',
+          'import { readFileSync } from "node:fs";',
+        ].join("\n"),
+      );
+      expect(missingImports(pkg)).toEqual(["src/a.ts: ../agent-tools.json", "src/a.ts: ./gone.ts", "src/a.ts: ./later.ts"]);
+      writeFileSync(join(pkg, "agent-tools.json"), "{}");
+      expect(missingImports(pkg)).toEqual(["src/a.ts: ./gone.ts", "src/a.ts: ./later.ts"]);
+    } finally {
+      rmSync(pkg, { recursive: true, force: true });
+    }
   });
 });
 

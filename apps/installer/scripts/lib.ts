@@ -244,3 +244,40 @@ export function insideStage(path: string): boolean {
   const rel = relative(STAGE, resolve(path));
   return rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 }
+
+/** The data beside a workspace package's `src/` that its source imports (JSON, such as the agents' tool words): copied with `src/`, never `package.json` or a tsconfig. */
+export function packageDataFiles(dir: string): string[] {
+  return readdirSync(dir)
+    .filter((f) => f.endsWith(".json") && f !== "package.json" && !f.startsWith("tsconfig"))
+    .sort();
+}
+
+const SOURCE = /\.(ts|mts|tsx|js|mjs)$/;
+const RELATIVE_IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)["'](\.{1,2}\/[^"']+)["']/g;
+
+/**
+ * Relative imports in a tree's source that point at nothing: a file a stage left out, which
+ * would show only when the installed daemon starts. `file: specifier` for each, sorted.
+ */
+export function missingImports(dir: string): string[] {
+  const out: string[] = [];
+  const walk = (d: string) => {
+    for (const e of readdirSync(d, { withFileTypes: true })) {
+      const p = join(d, e.name);
+      if (e.isDirectory()) {
+        if (e.name !== "node_modules") walk(p);
+        continue;
+      }
+      if (!SOURCE.test(e.name)) continue;
+      // a comment that shows an import is no import
+      const code = readFileSync(p, "utf8").split(/\r?\n/).filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join("\n");
+      for (const m of code.matchAll(RELATIVE_IMPORT)) {
+        const target = resolve(dirname(p), m[1]!);
+        const found = [target, `${target}.ts`, `${target}.js`, join(target, "index.ts"), join(target, "index.js")].some((c) => existsSync(c) && (c !== target || statSync(c).isFile()));
+        if (!found) out.push(`${relative(dir, p).split("\\").join("/")}: ${m[1]}`);
+      }
+    }
+  };
+  walk(dir);
+  return out.sort();
+}

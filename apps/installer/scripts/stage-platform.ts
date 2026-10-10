@@ -7,7 +7,8 @@
 // `apps/mcp/`, under `bin/` with its crates' licences beside it too), cophylad's source tree
 // with a hoisted production `node_modules` (no optional dependencies: the harness binaries
 // are never shipped; cophylad finds the user's own) and physical copies of the workspace
-// packages it depends on (tether's TypeScript SDK among them), and the icons, the built
+// packages it depends on (tether's TypeScript SDK among them; their `src/` and the JSON beside
+// it, the build failing on any import the copy leaves out), and the icons, the built
 // controller app cophylad serves on the LAN (with the wake word's models and runtime under its
 // `wake/`), and the speech sidecar's sources (its Python environment is built on the node,
 // never shipped). Signs what needs signing here, so the bundler leaves it alone: the shell,
@@ -23,9 +24,9 @@
 //   bun run apps/installer/scripts/stage-platform.ts --version 0.1.0 [--skip-shell-build]
 
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { parseArgs } from "node:util";
-import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
+import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, missingImports, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, packageDataFiles, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -144,8 +145,12 @@ for (const name of workspace) {
   mkdirSync(dst, { recursive: true });
   cpSync(join(src, "package.json"), join(dst, "package.json"));
   cpSync(join(src, "src"), join(dst, "src"), { recursive: true });
+  for (const f of packageDataFiles(src)) cpSync(join(src, f), join(dst, f));
 }
 log(`workspace packages copied: ${workspace.join(", ")}`);
+// Whatever the copied source imports must be in the stage: a file left out shows only when the installed daemon starts.
+const unresolved = [join(cophyladDir, "src"), ...workspace.map((name) => join(cophyladDir, "node_modules", ...name.split("/")))].flatMap((d) => missingImports(d).map((m) => `${relative(cophyladDir, d).split("\\").join("/")}/${m}`));
+if (unresolved.length > 0) fail(`the stage leaves out what its source imports: ${unresolved.join("; ")}`);
 // The harness binaries are optional dependencies of the SDKs and are never shipped.
 const HARNESS_BINARY = /^(claude-agent-sdk|codex)-(win32|darwin|linux)-/;
 for (const scope of ["@anthropic-ai", "@openai"]) {
