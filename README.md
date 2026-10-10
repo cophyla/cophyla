@@ -59,9 +59,11 @@ The editable layer under `~/.cophyla` uses erasable syntax only (`erasableSyntax
 
 ## Install and update
 
-The first release, [0.13.0](https://github.com/cophyla/cophyla/releases/tag/platform-v0.13.0),
+The latest release, [0.14.0](https://github.com/cophyla/cophyla/releases/tag/platform-v0.14.0),
 is a pre-release for Windows on x64. Its installer is signed with a self-signed certificate
 until one Windows trusts exists, so SmartScreen warns about it: More info, then Run anyway.
+The Android app is attached to the same release as a debug build: a release-signed one will
+not install over it, so it has to be uninstalled (and the phone paired again) once one exists.
 macOS and Linux have no package yet; there Cophyla runs from a checkout (see Building above).
 
 Windows: run `Cophyla_<version>_x64-setup.exe` from the

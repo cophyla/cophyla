@@ -1,6 +1,6 @@
 [package]
 name = "cophyla"
-version = "0.13.0"
+version = "0.14.0"
 description = "Cophyla's desktop app: a Tauri 2 shell that hosts views and starts cophylad"
 license = "Apache-2.0"
 edition = "2021"
