@@ -12,11 +12,15 @@
 // that fails says nothing, and is asked again a while later, never taken for "not the daemon".
 // A record found holding a daemon's pid (from before this was so) lets it go at the next tick.
 // A new login rewrites `auth.json`, which an app-server read at its start: it starts again.
+//
+// Its questions to the user (`request_user_input`, `request_user_input_async`) are asks while
+// the rollout holds them as waiting (asking.ts); a dialog waiting is the session's status.
 
 import { basename, dirname, join } from "node:path";
 import { AGENT_MCP_SERVER, RpcError, ulid } from "@cophyla/protocol";
 import type { HarnessProfile, Session, SessionStatus } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
+import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import type { ProcessArgs, ProcessInfo, ProcessTree } from "../focus.ts";
 import { capText, oneLine, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
@@ -26,8 +30,11 @@ import type { ProfileChange } from "../profiles.ts";
 import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
 import { CodexAppServer } from "./appserver.ts";
+import { CodexAsking } from "./asking.ts";
+import type { DialogTiming, QuestionTerminal } from "./asking.ts";
 import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
 import type { TrustResult } from "./hooks.ts";
+import { readableReplies } from "./questions.ts";
 import { applyCodexRow, findRollout, newCodexState, readSessionIndex, statsFor } from "./rollout.ts";
 import type { CodexRolloutState } from "./rollout.ts";
 
@@ -72,6 +79,13 @@ export interface CodexAdapterOptions {
   isAlive?: (pid: number) => boolean;
   /** How long a process that could not be told apart waits before it is asked about again; a test shortens it. */
   retryMs?: number;
+  /** Where its questions to the user are asked; without, they are not. */
+  asks?: Asks;
+  askTimeoutS?: number;
+  /** The terminals a dialog's answers are typed into: tether. */
+  terminal?: QuestionTerminal;
+  /** Shorter waits on a dialog for a test. */
+  dialogTiming?: Partial<DialogTiming>;
 }
 
 const RETRY_MS = 15000;
@@ -108,12 +122,24 @@ export class CodexAdapter implements HarnessAdapter {
   /** Records whose process was told apart, or is being: the tick's look at a held pid is made once. */
   private classified = new WeakSet<SessionRecord>();
   private retryMs: number;
+  private asking?: CodexAsking;
 
   constructor(opts: CodexAdapterOptions) {
     this.opts = opts;
     this.host = opts.host;
     this.log = opts.log;
     this.retryMs = opts.retryMs ?? RETRY_MS;
+    if (opts.asks) {
+      this.asking = new CodexAsking({
+        host: opts.host,
+        asks: opts.asks,
+        log: opts.log,
+        askTimeoutS: opts.askTimeoutS ?? opts.host.config.hook_timeout_s,
+        ...(opts.terminal ? { terminal: opts.terminal } : {}),
+        ...(opts.dialogTiming ? { timing: opts.dialogTiming } : {}),
+        reply: (rec, text, ref) => this.send(rec, text, ref),
+      });
+    }
   }
 
   /** The trust outcome per profile, for the log and for tests. */
@@ -237,6 +263,7 @@ export class CodexAdapter implements HarnessAdapter {
   }
 
   async stop(): Promise<void> {
+    this.asking?.stop();
     for (const entry of this.entries.values()) await entry.server.stop();
   }
 
@@ -256,7 +283,10 @@ export class CodexAdapter implements HarnessAdapter {
       this.tailRollout(rec, entry, now);
       this.checkLiveness(rec, now);
       this.heal(rec);
+      // With nothing new read: a question shown for want of a terminal is asked once one is linked.
+      if (rec.parser) this.asking?.sync(rec, (rec.parser as CodexRolloutState).questions, now);
     }
+    this.asking?.sweep(now);
     // What was learnt of a process goes with it.
     const isAlive = this.opts.isAlive;
     if (isAlive) {
@@ -310,7 +340,8 @@ export class CodexAdapter implements HarnessAdapter {
         if (rec.session.status === "ended") continue;
         rec.lastRolloutActivity = Math.max(rec.lastRolloutActivity ?? 0, updated);
         if (title && rec.session.title !== title) this.host.patch(rec, { title }, now);
-        if (t.status?.type === "active") this.host.setStatus(rec, "busy", now);
+        // A thread on a dialog is active to the listing, and needs input.
+        if (t.status?.type === "active" && !this.asking?.holds(rec)) this.host.setStatus(rec, "busy", now);
       }
       cursor = r?.nextCursor;
       if (stop || !cursor) break;
@@ -376,24 +407,27 @@ export class CodexAdapter implements HarnessAdapter {
             status = "idle";
             if (record) this.host.event(rec, "status", { status: "idle", turn: item.turnId, ...(item.lastMessage ? { lastAssistantMessage: capText(item.lastMessage, 2000) } : {}) }, rawIfSmall(row), item.at);
             break;
-          case "user_message":
+          case "user_message": {
+            // An answer to an async question reads as the question quoted and its answer.
+            const said = item.replies ? readableReplies(item.replies) : item.text;
             if (item.clientId) {
               if (this.host.receiptByRef(rec, item.clientId)) break;
               if (this.host.isOwnText(rec, item.text)) {
                 if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
                 break;
               }
-              if (record) this.host.event(rec, "user_turn", { text: capText(item.text), source: "queued", clientId: item.clientId }, rawIfSmall(row), item.at);
+              if (record) this.host.event(rec, "user_turn", { text: capText(said), source: "queued", clientId: item.clientId }, rawIfSmall(row), item.at);
               break;
             }
             if (this.host.isOwnText(rec, item.text)) {
               if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
               break;
             }
-            if (rec.session.intent === undefined && patch.intent === undefined && item.text.trim()) patch.intent = oneLine(item.text);
-            else if (rec.session.intent !== undefined && !rec.parser) patch.intent = oneLine(item.text);
-            if (record) this.host.event(rec, "user_turn", { text: capText(item.text), source: "typed" }, rawIfSmall(row), item.at);
+            if (rec.session.intent === undefined && patch.intent === undefined && said.trim()) patch.intent = oneLine(said);
+            else if (rec.session.intent !== undefined && !rec.parser) patch.intent = oneLine(said);
+            if (record) this.host.event(rec, "user_turn", { text: capText(said), source: "typed" }, rawIfSmall(row), item.at);
             break;
+          }
           case "assistant_text":
             if (record) this.host.event(rec, "assistant_text", { text: capText(item.text) }, rawIfSmall(row), item.at);
             break;
@@ -422,7 +456,9 @@ export class CodexAdapter implements HarnessAdapter {
       patch.stats = statsFor(state);
     }
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
-    if (status) this.host.setStatus(rec, status, now);
+    // The questions still waiting once the read is whole: one answered or let go in the same read is never asked.
+    this.asking?.sync(rec, state.questions, now);
+    if (status && !this.asking?.holds(rec)) this.host.setStatus(rec, status, now);
     this.host.tailed(rec);
   }
 

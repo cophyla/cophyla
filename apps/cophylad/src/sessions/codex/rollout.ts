@@ -2,17 +2,24 @@
 // each row an envelope `{timestamp, ordinal, type, payload}`. This parser turns rows into
 // normalised items and keeps the running stats from `token_count`, whose totals are
 // cumulative and therefore replace rather than add.
+//
+// It also keeps the questions to the user still waiting (questions.ts): a `request_user_input`
+// until its output, an async question until a reply names it, and either until its turn ends,
+// which is when the TUI lets go of both. Turns run one after another, so any turn's start or
+// end is the end of every question asked before it.
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionStats } from "@cophyla/protocol";
+import { ASK_TOOL, isQuestionTool, questionCall, repliesIn } from "./questions.ts";
+import type { CodexQuestionCall, QuestionReply } from "./questions.ts";
 
 export type CodexItem =
   | { kind: "meta"; sessionId: string; cwd: string; originator?: string; cliVersion?: string; at: number }
   | { kind: "turn_context"; model?: string; approvalPolicy?: string; sandbox?: string; cwd?: string }
   | { kind: "task_started"; turnId: string; at: number }
   | { kind: "task_complete"; turnId: string; lastMessage?: string; at: number }
-  | { kind: "user_message"; text: string; clientId?: string; at: number }
+  | { kind: "user_message"; text: string; clientId?: string; replies?: QuestionReply[]; at: number }
   | { kind: "assistant_text"; text: string; at: number }
   | { kind: "tool_call"; callId: string; name: string; input: unknown; at: number }
   | { kind: "tool_result"; callId: string; name?: string; output: unknown; at: number };
@@ -24,10 +31,22 @@ export interface CodexRolloutState {
   /** The turn in flight, when the last task event was a start. */
   busyTurn?: string;
   model?: string;
+  /** The questions to the user still waiting for an answer, by call id, in the order asked. */
+  questions: Map<string, CodexQuestionCall>;
 }
 
 export function newCodexState(): CodexRolloutState {
-  return { stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 } }, statsChanged: false, toolCalls: new Map() };
+  return { stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 } }, statsChanged: false, toolCalls: new Map(), questions: new Map() };
+}
+
+/** A reply settles the async questions it names; a call with none left waiting goes. */
+function settleReplies(state: CodexRolloutState, replies: QuestionReply[]): void {
+  const named = new Set(replies.map((r) => r.itemId));
+  for (const [id, call] of state.questions) {
+    if (call.tool === ASK_TOOL) continue;
+    call.open = call.open.filter((i) => !named.has(call.questions[i]!.key));
+    if (call.open.length === 0) state.questions.delete(id);
+  }
 }
 
 type Row = Record<string, unknown>;
@@ -97,6 +116,7 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
         case "task_started": {
           const turnId = String(payload["turn_id"] ?? "");
           state.busyTurn = turnId;
+          state.questions.clear();
           const window = payload["model_context_window"];
           if (typeof window === "number" && window > 0) {
             state.stats.context = { used: state.stats.context?.used ?? 0, limit: window };
@@ -108,11 +128,16 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
         case "task_complete": {
           const turnId = String(payload["turn_id"] ?? "");
           delete state.busyTurn;
+          state.questions.clear();
           const item: CodexItem = { kind: "task_complete", turnId, at: when };
           if (typeof payload["last_agent_message"] === "string") item.lastMessage = payload["last_agent_message"];
           items.push(item);
           break;
         }
+        case "turn_aborted":
+          // An interrupted dialog writes no output: the turn's end is its end.
+          state.questions.clear();
+          break;
         case "token_count": {
           const info = payload["info"];
           if (!info || typeof info !== "object") break;
@@ -137,6 +162,11 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
           if (item["type"] === "UserMessage") {
             const text = textOf(item["content"]);
             const out: CodexItem = { kind: "user_message", text, at: when };
+            const replies = repliesIn(text);
+            if (replies) {
+              out.replies = replies;
+              settleReplies(state, replies);
+            }
             if (typeof item["client_id"] === "string") out.clientId = item["client_id"];
             else {
               state.stats.turns++;
@@ -164,12 +194,19 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
           const callId = String(payload["call_id"] ?? payload["id"] ?? "");
           const name = String(payload["name"] ?? "tool");
           state.toolCalls.set(callId, name);
-          items.push({ kind: "tool_call", callId, name, input: parseInput(payload["type"] === "function_call" ? payload["arguments"] : payload["input"]), at: when });
+          const input = parseInput(payload["type"] === "function_call" ? payload["arguments"] : payload["input"]);
+          if (isQuestionTool(name)) {
+            const call = questionCall(name, callId, input, when);
+            if (call) state.questions.set(callId, call);
+          }
+          items.push({ kind: "tool_call", callId, name, input, at: when });
           break;
         }
         case "function_call_output":
         case "custom_tool_call_output": {
           const callId = String(payload["call_id"] ?? "");
+          // The dialog's answers, or its being let go: an async call's output is only its acceptance.
+          if (state.questions.get(callId)?.tool === ASK_TOOL) state.questions.delete(callId);
           const item: CodexItem = { kind: "tool_result", callId, output: parseInput(payload["output"]), at: when };
           const name = state.toolCalls.get(callId);
           if (name) item.name = name;

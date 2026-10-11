@@ -534,7 +534,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     return [
       new ClaudeAdapter({ host, log: sessionsLog.child("claude"), raiser }),
       // A Codex session known by its hooks and its process ends when the process does, SessionEnd or not.
-      new CodexAdapter({ host, log: sessionsLog.child("codex"), version: PLATFORM_VERSION, raiser, isAlive }),
+      // Its questions to the user are asks; a dialog's answers are typed into its terminal.
+      new CodexAdapter({ host, log: sessionsLog.child("codex"), version: PLATFORM_VERSION, raiser, isAlive, asks, askTimeoutS: config.sessions.hook_timeout_s, ...(tether ? { terminal: tether } : {}) }),
       muse,
     ];
   };
