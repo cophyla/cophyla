@@ -5,7 +5,7 @@
 // input under the pane sends to whichever is selected, `chat.send` or `session.send`, and
 // none shows under a terminal; `ask.answer` is
 // by hand. A session that runs in a terminal the node holds shows that terminal, its
-// timeline a click away, and a bare terminal (New terminal, in a recent workspace the user picks)
+// timeline a click away, and a bare terminal (New terminal: its + where the tab shown works, its ⌄ a place the user picks)
 // has a tab and a pane of its own; one terminal shows at a time (terminal.ts). Notifications from the host become actions on the
 // model; clicks and inputs become requests on the host's connection; every change renders,
 // and the terminal screen moves to the pane that shows it. Under the tabs, Status gives a
@@ -57,8 +57,8 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
+import { answerParams, apply, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -240,6 +240,7 @@ rpc.onNotification((n) => {
       if (ready.prefs) {
         prefs = ready.prefs;
         if (!splitDrag) ui.railSplit = railSplit(prefs["railSplit"]);
+        ui.lastPlace = lastPlace(prefs["newTerminal"]);
         restoreViewerPrefs(prefs["viewer"]);
         restoreRemotePrefs(prefs["remoteView"]);
       }
@@ -533,6 +534,8 @@ async function toggleNewTerminal(): Promise<void> {
   const menu: TerminalMenu = {};
   ui.newTerminal = menu;
   draw();
+  // The field takes the typing at once, except on a phone, where it would bring up the keyboard.
+  if (!phone.matches) roots.tabs.querySelector<HTMLInputElement>(".new-terminal-filter")?.focus();
   let workspaces: Iterable<Workspace>;
   try {
     workspaces = state.scopes.includes("sessions:read") ? (await rpc.request<{ workspaces: Workspace[] }>("workspace.list", {})).workspaces : [];
@@ -543,8 +546,26 @@ async function toggleNewTerminal(): Promise<void> {
   if (ui.newTerminal !== menu) return;
   menu.workspaces = [...workspaces];
   draw();
-  // The menu grows the rail's list under the button, which may need scrolling to.
-  roots.tabs.querySelector<HTMLElement>(".new-terminal-menu")?.scrollIntoView({ block: "nearest" });
+}
+
+/** What is typed into New terminal's field: the places it leaves, the first of them to Enter. */
+function filterNewTerminal(text: string): void {
+  const menu = ui.newTerminal;
+  if (!menu) return;
+  menu.filter = text;
+  menu.active = 0;
+  menu.error = undefined;
+  draw();
+}
+
+/** The arrow keys in New terminal's field: the row they are on moves, and stays in view. */
+function stepNewTerminal(by: number): void {
+  const menu = ui.newTerminal;
+  const rows = roots.tabs.querySelectorAll<HTMLElement>(".new-terminal-place");
+  if (!menu || rows.length === 0) return;
+  menu.active = Math.min(Math.max((menu.active ?? 0) + by, 0), rows.length - 1);
+  draw();
+  rows[menu.active]?.scrollIntoView({ block: "nearest" });
 }
 
 function closeNewTerminal(): void {
@@ -608,27 +629,44 @@ async function openSettings(): Promise<void> {
 }
 
 /**
- * Starts a shell from New terminal's menu, on the machine the place is on, and shows it: in a
- * workspace's folder, the user's home there, or the folder picked there (`cwd`).
+ * Starts a shell in one of New terminal's places, on the machine the place is on, and shows it:
+ * in a workspace's folder, the user's home there, or a folder picked or typed there (`cwd`).
+ * From the menu (`row`, the key of the row picked) the row says Starting… and the menu says what
+ * went wrong; from + at once (`row` undefined), + waits. The place is kept for +.
  */
-async function newTerminal(place: string, cwd?: string): Promise<void> {
-  const menu = ui.newTerminal;
-  if (!state.scopes.includes("terminal") || !menu || menu.starting !== undefined) return;
-  menu.starting = place;
+async function newTerminal(place: string, cwd?: string, row?: string): Promise<void> {
+  const menu = row !== undefined ? ui.newTerminal : undefined;
+  if (!state.scopes.includes("terminal") || (row !== undefined && !menu) || ui.quickStarting || ui.newTerminal?.starting !== undefined) return;
+  if (menu) {
+    menu.starting = row;
+    menu.error = undefined;
+  } else ui.quickStarting = true;
   draw();
   try {
     const { terminal: t } = await rpc.request<{ terminal: Terminal }>("terminal.spawn", spawnParams(state, place, cwd));
-    if (ui.newTerminal === menu) ui.newTerminal = undefined;
+    if (menu && ui.newTerminal === menu) ui.newTerminal = undefined;
+    rememberPlace(cwd !== undefined ? { place, cwd } : { place });
     dispatch({ type: "terminal.state", params: t });
     selectTerminal(t.id);
   } catch (e) {
-    if (ui.newTerminal === menu) menu.starting = undefined;
-    if (menu.browse) {
-      // said in the picker, where the folder was picked
-      menu.browse.error = `The terminal did not start: ${e instanceof Error ? e.message : String(e)}`;
-      draw();
+    const words = `The terminal did not start: ${e instanceof Error ? e.message : String(e)}`;
+    // said in the menu, where the place was picked (in the picker for a folder picked there), while it is open
+    if (menu && ui.newTerminal === menu) {
+      if (menu.browse) menu.browse.error = words;
+      else menu.error = words;
     } else fail("terminal", e);
+  } finally {
+    if (menu) menu.starting = undefined;
+    else ui.quickStarting = false;
+    draw();
   }
+}
+
+/** Where a terminal started from here, kept on the device for +. */
+function rememberPlace(place: LastPlace): void {
+  ui.lastPlace = place;
+  prefs = { ...prefs, newTerminal: place };
+  void rpc.request("host.savePrefs", { prefs }).catch(() => {});
 }
 
 /** Other folder…: the picker in place of the places, on that machine, at the folder it last showed there or the home. */
@@ -637,8 +675,8 @@ function browseFolders(node: string, name: string): void {
   if (!menu || menu.starting !== undefined) return;
   menu.browse = { node, name };
   draw();
+  if (!phone.matches) roots.tabs.querySelector<HTMLInputElement>(".folder-path")?.focus();
   void openFolder(ui.folderAt.get(node));
-  roots.tabs.querySelector<HTMLElement>(".folder-picker")?.scrollIntoView({ block: "nearest" });
 }
 
 /**
@@ -665,7 +703,6 @@ async function openFolder(path: string | undefined): Promise<void> {
   b.loading = undefined;
   draw();
   roots.tabs.querySelector<HTMLElement>(".folder-list")?.scrollTo({ top: 0 });
-  roots.tabs.querySelector<HTMLElement>(".folder-picker")?.scrollIntoView({ block: "nearest" });
 }
 
 /** Back from the picker to the places. */
@@ -674,7 +711,7 @@ function closeFolders(): void {
   if (!menu?.browse) return;
   menu.browse = undefined;
   draw();
-  roots.tabs.querySelector<HTMLButtonElement>(".new-terminal-place[data-action='folder-browse']")?.focus();
+  if (!phone.matches) roots.tabs.querySelector<HTMLInputElement>(".new-terminal-filter")?.focus();
 }
 
 /**
@@ -2572,7 +2609,7 @@ function selectTerminal(id: string): void {
 
 document.addEventListener("click", (ev) => {
   // New terminal's menu, and the ⋮ menu, close on a click anywhere but in them or on their buttons.
-  if (ui.newTerminal && !(ev.target as Element | null)?.closest(".new-terminal-menu, .tab-new-terminal")) closeNewTerminal();
+  if (ui.newTerminal && !(ev.target as Element | null)?.closest(".new-terminal-menu, .new-terminal-pick")) closeNewTerminal();
   if (ui.railMenu && !(ev.target as Element | null)?.closest(".rail-menu, .rail-more")) {
     ui.railMenu = undefined;
     draw();
@@ -2658,6 +2695,11 @@ document.addEventListener("click", (ev) => {
     case "new-terminal":
       void toggleNewTerminal();
       return;
+    case "new-terminal-go": {
+      const q = quickPlace(state, { session: ui.selected, terminal: ui.terminal }, ui.lastPlace);
+      if (q) void newTerminal(q.place, q.cwd);
+      return;
+    }
     case "rail-more":
       ui.railMenu = ui.railMenu ? undefined : {};
       draw();
@@ -2702,7 +2744,7 @@ document.addEventListener("click", (ev) => {
       void openSettings();
       return;
     case "new-terminal-in":
-      if (target.dataset["place"]) void newTerminal(target.dataset["place"]);
+      if (target.dataset["place"]) void newTerminal(target.dataset["place"], target.dataset["cwd"], target.dataset["key"]);
       return;
     case "folder-browse":
       if (target.dataset["node"]) browseFolders(target.dataset["node"], target.dataset["name"] ?? "");
@@ -2715,7 +2757,7 @@ document.addEventListener("click", (ev) => {
       return;
     case "new-terminal-here": {
       const b = ui.newTerminal?.browse;
-      if (b?.listing) void newTerminal(folderPlace(b.node), b.listing.path);
+      if (b?.listing) void newTerminal(folderPlace(b.node), b.listing.path, folderPlace(b.node));
       return;
     }
     case "pane-mode": {
@@ -3095,6 +3137,18 @@ document.addEventListener("submit", (ev) => {
   if (session && input && !input.disabled) void send(session, input.value);
 });
 
+// In New terminal's field, the arrow keys move along the places and Enter starts the shell in the one they are on.
+document.addEventListener("keydown", (ev) => {
+  if (!(ev.target as HTMLElement | null)?.matches?.(".new-terminal-filter") || ev.isComposing) return;
+  if (ev.key === "ArrowDown" || ev.key === "ArrowUp") {
+    ev.preventDefault();
+    stepNewTerminal(ev.key === "ArrowDown" ? 1 : -1);
+  } else if (ev.key === "Enter") {
+    ev.preventDefault();
+    roots.tabs.querySelector<HTMLButtonElement>(".new-terminal-place[aria-selected='true']")?.click();
+  }
+});
+
 // In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
 document.addEventListener("keydown", (ev) => {
   const input = ev.target as HTMLElement | null;
@@ -3105,6 +3159,10 @@ document.addEventListener("keydown", (ev) => {
 
 document.addEventListener("input", (ev) => {
   const input = ev.target as HTMLInputElement | HTMLTextAreaElement;
+  if (input.classList.contains("new-terminal-filter")) {
+    filterNewTerminal(input.value);
+    return;
+  }
   if (input.classList.contains("composer-text")) {
     fitField(input as HTMLTextAreaElement);
     typing(input.value.trim() !== "");
@@ -3166,7 +3224,7 @@ document.addEventListener("keydown", (ev) => {
     closeFolders();
   } else if (ui.newTerminal) {
     closeNewTerminal();
-    roots.tabs.querySelector<HTMLButtonElement>(".tab-new-terminal")?.focus();
+    roots.tabs.querySelector<HTMLButtonElement>(".new-terminal-pick")?.focus();
   } else if (ui.railMenu) {
     ui.railMenu = undefined;
     draw();

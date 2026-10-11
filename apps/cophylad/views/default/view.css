@@ -371,28 +371,32 @@ button:disabled {
   background: var(--raised);
 }
 
-/* the chat stays put; the sessions scroll under it. Its tab shares the row with the view's
-   ⋮ menu, at the right. */
+/* the chat stays put; the sessions scroll under it. Its tab shares the row with the speaker,
+   New terminal and the view's ⋮ menu, at the right, each as narrow as it can be so the chat's
+   name still shows whole. */
 
 .rail-top {
   position: relative;
   display: flex;
   flex: 0 0 auto;
   align-items: stretch;
-  gap: 4px;
+  gap: 2px;
   margin-bottom: 8px;
 }
 
 .tab.chat {
   flex: 1 1 auto;
+  gap: 6px;
   width: auto;
   min-width: 0;
+  padding-right: 8px;
+  padding-left: 8px;
   font-weight: 600;
 }
 
 .rail-more {
   display: flex;
-  flex: 0 0 34px;
+  flex: 0 0 24px;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -419,6 +423,77 @@ button:disabled {
   border-radius: 50%;
   background: currentColor;
   box-shadow: 0 -5.5px currentColor, 0 5.5px currentColor;
+}
+
+/* New terminal, between the speaker and ⋮: + starts a shell at once, ⌄ opens the menu of
+   places. One button in two halves, its seam showing on hover. */
+.new-terminal {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.new-terminal-go,
+.new-terminal-pick {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--muted);
+}
+
+.new-terminal-go {
+  flex: 0 0 26px;
+  border-radius: 4px 0 0 4px;
+}
+
+.new-terminal-pick {
+  flex: 0 0 13px;
+  margin-left: -1px;
+  border-radius: 0 4px 4px 0;
+}
+
+.new-terminal-go svg {
+  width: 18px;
+  height: 18px;
+}
+
+.new-terminal-pick svg {
+  width: 11px;
+  height: 11px;
+}
+
+.new-terminal:hover .new-terminal-go,
+.new-terminal:hover .new-terminal-pick {
+  border-color: var(--line);
+}
+
+.new-terminal-go:hover:enabled,
+.new-terminal-pick:hover:enabled,
+.new-terminal-pick[aria-expanded="true"] {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.new-terminal-pick[aria-expanded="true"] {
+  border-color: var(--line-strong);
+}
+
+.new-terminal-go:disabled,
+.new-terminal-pick:disabled {
+  opacity: 0.4;
+}
+
+.new-terminal-go[data-starting="true"] {
+  opacity: 1;
+  color: var(--cophyla-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .new-terminal-go[data-starting="true"] svg {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
 }
 
 /* The ⋮ menu drops over the sessions, under its button. */
@@ -2136,7 +2211,7 @@ button:disabled {
    reply will be, pulsing while one is read, struck through once hushed */
 .speak-next {
   display: flex;
-  flex: 0 0 34px;
+  flex: 0 0 28px;
   align-items: center;
   justify-content: center;
   padding: 0;
@@ -4568,66 +4643,77 @@ button:disabled {
   gap: 2px;
 }
 
-.tab-new-terminal {
-  display: block;
-  width: 100%;
-  margin: 8px 0 4px;
-  padding: 3px 10px;
-  border: 1px dashed var(--line-strong);
-  border-radius: 4px;
-  background: transparent;
-  color: var(--muted);
-  font-size: 12px;
-  text-align: left;
-}
-
-.tab-new-terminal:hover:not(:disabled) {
-  color: var(--ink);
-  border-color: var(--ink);
-}
-
-.tab-new-terminal[aria-expanded="true"] {
-  border-style: solid;
-  border-color: var(--line-strong);
-  background: var(--raised);
-  color: var(--ink);
-}
-
-/* New terminal's menu, under it: the workspaces worked in last first, then the home folder. */
+/* New terminal's menu, dropped from ⌄ over the sessions and the pane, as wide as a path needs
+   and no taller than the frame: the field, then the places, which scroll in it. */
 .new-terminal-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 40;
   display: flex;
   flex-direction: column;
-  margin: 0 0 4px;
-  padding: 4px;
+  width: 360px;
+  max-width: calc(100vw - 16px);
+  max-height: min(560px, calc(100vh - 64px));
+  padding: 6px;
   border: 1px solid var(--line-strong);
-  border-radius: 4px;
+  border-radius: 6px;
   background: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
 }
 
-.new-terminal-head,
-.new-terminal-loading {
+.new-terminal-filter {
+  flex: 0 0 auto;
+  margin: 0 0 6px;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--well);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.new-terminal-filter::placeholder {
+  color: var(--faint);
+}
+
+.new-terminal-filter:focus {
+  outline: none;
+  border-color: var(--cophyla);
+}
+
+.new-terminal-loading,
+.new-terminal-note {
   margin: 2px 6px 4px;
   color: var(--muted);
   font-size: 11.5px;
 }
 
-.new-terminal-head {
-  font-weight: 600;
-  letter-spacing: 0.02em;
+.new-terminal-note {
+  color: var(--rust);
+  overflow-wrap: anywhere;
 }
 
 .new-terminal-places {
   display: flex;
+  flex: 0 1 auto;
   flex-direction: column;
   gap: 1px;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
+/* A place on one line: its name, and dimmer at the right the folder it is in, cut at its start
+   so the end that tells folders apart stays (the hint runs right to left, its text in a <bdi>). */
 .new-terminal-place {
   display: flex;
-  flex-direction: column;
+  flex: 0 0 auto;
+  align-items: baseline;
+  gap: 12px;
   width: 100%;
   min-width: 0;
-  padding: 4px 6px;
+  padding: 5px 8px;
   border: 0;
   border-radius: 3px;
   background: transparent;
@@ -4638,25 +4724,37 @@ button:disabled {
   background: var(--raised);
 }
 
+/* the row the arrow keys are on, which Enter starts */
+.new-terminal-place[aria-selected="true"] {
+  background: var(--raised);
+  box-shadow: inset 2px 0 var(--cophyla);
+}
+
 .new-terminal-place:disabled {
   opacity: 0.6;
 }
 
-.place-name,
-.place-path {
+.place-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 70%;
   overflow: hidden;
+  font-size: 12.5px;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
-.place-name {
-  font-size: 12.5px;
-}
-
-.place-path {
+.place-hint {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   color: var(--muted);
+  direction: rtl;
   font-family: var(--mono);
   font-size: 11px;
+  text-align: right;
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 /* With several machines, each one's places under its name. */
@@ -4667,7 +4765,7 @@ button:disabled {
 }
 
 .new-terminal-machine-name {
-  margin: 2px 6px 2px;
+  margin: 2px 8px 2px;
   color: var(--cophyla-ink);
   font-size: 11.5px;
   font-weight: 600;
@@ -6479,11 +6577,6 @@ button:disabled {
     padding-bottom: 9px;
   }
 
-  .tab-new-terminal {
-    padding-top: 8px;
-    padding-bottom: 8px;
-  }
-
   .rail-more {
     flex-basis: 44px;
   }
@@ -6494,6 +6587,14 @@ button:disabled {
 
   .new-terminal-place {
     padding: 8px 10px;
+  }
+
+  .new-terminal-go {
+    flex-basis: 36px;
+  }
+
+  .new-terminal-pick {
+    flex-basis: 22px;
   }
 
   .folder-row {

@@ -1465,6 +1465,160 @@ export function spawnParams(state: ViewState, place: string, cwd?: string): { wo
   return { workspace: place };
 }
 
+/** A folder's own name: its last part, or the whole of a root. */
+export function folderName(path: string): string {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const name = trimmed.slice(Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\")) + 1);
+  return name === "" || /^[a-z]:$/i.test(name) ? path : name;
+}
+
+/** The folder a path is in, as New terminal's rows show it beside the name; none for a root. */
+export function parentFolder(path: string): string | undefined {
+  const trimmed = path.replace(/[\\/]+$/, "");
+  const at = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  if (at < 0) return undefined;
+  const parent = trimmed.slice(0, at);
+  if (parent === "") return trimmed[0];
+  return /^[a-z]:$/i.test(parent) ? parent + trimmed[at] : parent;
+}
+
+/** A path typed into New terminal's filter, as a folder to start in: absolute, its quotes taken off; undefined for anything else. */
+export function typedFolder(text: string): string | undefined {
+  const t = text.trim().replace(/^"(.*)"$/, "$1").replace(/^'(.*)'$/, "$1").trim();
+  return /^([a-z]:[\\/]|[\\/])/i.test(t) ? t : undefined;
+}
+
+/** Whether a place is left by New terminal's filter: each of its words in the name or the path, in any case, with either slash. */
+export function placeMatches(filter: string, name: string, path?: string): boolean {
+  const norm = (s: string) => s.toLowerCase().replace(/\\/g, "/");
+  const hay = `${norm(name)}\n${path !== undefined ? norm(path) : ""}`;
+  return norm(filter.replace(/["']/g, "")).split(/\s+/).every((w) => hay.includes(w));
+}
+
+/** One row of New terminal's menu. */
+export interface PlaceRow {
+  /** Unique in its machine's rows. */
+  key: string;
+  /** The place it starts in, as `spawnParams` takes it, with the folder for `folderPlace`. */
+  place: string;
+  cwd?: string;
+  name: string;
+  /** What the row shows beside the name, dimmer: the folder a workspace is in, or the path typed. */
+  hint?: string;
+  /** Its full path, when the view knows it. */
+  path?: string;
+  /** Other folder…: it opens the picker on the machine. */
+  browse?: true;
+}
+
+/** One machine's rows of New terminal's menu, under its name when there are several. */
+export interface MachinePlaces {
+  machine: TerminalMachine;
+  places: PlaceRow[];
+}
+
+/** How many of a machine's workspaces New terminal's menu shows while its filter has words. */
+export const MATCHES_PER_MACHINE = 12;
+
+/**
+ * New terminal's menu, per machine that starts terminals, this computer's first: a path typed
+ * into the filter, as a place of its own; the workspaces worked in last that the filter
+ * leaves, more of them while it has words; the home folder, while the filter leaves it; and
+ * Other folder…, always.
+ */
+export function placeRows(state: ViewState, workspaces: Iterable<Workspace>, filter: string): MachinePlaces[] {
+  const machines = terminalMachines(state);
+  const list = [...workspaces];
+  const typed = typedFolder(filter);
+  const limit = filter.trim() !== "" ? MATCHES_PER_MACHINE : machines.length > 1 ? RECENT_PER_MACHINE : RECENT_WORKSPACES;
+  return machines.map((machine) => {
+    const places: PlaceRow[] = [];
+    if (typed !== undefined) places.push({ key: `typed:${machine.node}`, place: folderPlace(machine.node), cwd: typed, name: "Open in", hint: typed, path: typed });
+    const mine = recentWorkspaces(list, machine.node, Infinity).filter((w) => placeMatches(filter, w.name, w.path));
+    for (const w of mine.slice(0, limit)) {
+      const parent = parentFolder(w.path);
+      places.push({ key: w.id, place: w.id, name: w.name, path: w.path, ...(parent !== undefined ? { hint: parent } : {}) });
+    }
+    if (placeMatches(filter, "Home folder")) places.push({ key: homePlace(machine.node), place: homePlace(machine.node), name: "Home folder" });
+    places.push({ key: folderPlace(machine.node), place: folderPlace(machine.node), name: "Other folder…", browse: true });
+    return { machine, places };
+  });
+}
+
+/** Where a terminal last started from this view, as the device keeps it: one of New terminal's places, with its folder. */
+export interface LastPlace {
+  place: string;
+  cwd?: string;
+}
+
+/** The place the device handed back, or nothing for anything else. */
+export function lastPlace(value: unknown): LastPlace | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const v = value as { place?: unknown; cwd?: unknown };
+  if (typeof v.place !== "string" || v.place === "") return undefined;
+  return typeof v.cwd === "string" ? { place: v.place, cwd: v.cwd } : { place: v.place };
+}
+
+/** Where New terminal's + starts a shell at once: one of the menu's places, with its folder's name (none for the home) and path. */
+export interface QuickPlace {
+  place: string;
+  cwd?: string;
+  name?: string;
+  path?: string;
+  machine: TerminalMachine;
+}
+
+/**
+ * Where New terminal's + starts a shell, on a machine that starts them: in the folder of the
+ * tab shown (a session's workspace or its own folder, a bare terminal's), else where the last
+ * one started from here, else in this computer's workspace worked in last as the view knows
+ * it, else in its home. A folder that is a workspace's starts as the workspace, which moves it
+ * up the menu. Undefined while no machine starts terminals.
+ */
+export function quickPlace(state: ViewState, shown: { session?: string; terminal?: string }, last: LastPlace | undefined): QuickPlace | undefined {
+  const machines = terminalMachines(state);
+  const first = machines[0];
+  if (!first) return undefined;
+  const on = (node: NodeId) => machines.find((m) => m.node === node);
+  const inWorkspace = (w: Workspace | undefined): QuickPlace | undefined => {
+    const machine = w && on(w.node);
+    return w && machine ? { place: w.id, name: w.name, path: w.path, machine } : undefined;
+  };
+  const inFolder = (node: NodeId, cwd: string): QuickPlace | undefined => {
+    const machine = on(node);
+    if (!machine) return undefined;
+    const key = placeKey(cwd);
+    for (const w of state.workspaces.values()) if (w.node === node && placeKey(w.path) === key) return inWorkspace(w);
+    return { place: folderPlace(node), cwd, name: folderName(cwd), path: cwd, machine };
+  };
+  const session = shown.session !== undefined ? state.sessions.get(shown.session)?.session : undefined;
+  if (session) {
+    const q = (session.workspace !== undefined ? inWorkspace(state.workspaces.get(session.workspace)) : undefined) ?? inFolder(session.node, session.cwd);
+    if (q) return q;
+  }
+  const terminal = shown.terminal !== undefined ? state.terminals.get(shown.terminal) : undefined;
+  if (terminal) {
+    const q = inFolder(terminal.node, terminal.cwd);
+    if (q) return q;
+  }
+  if (last) {
+    const machine = last.place.startsWith("home:") ? on(last.place.slice(5)) : undefined;
+    const q = machine
+      ? { place: last.place, machine }
+      : last.place.startsWith("folder:")
+        ? last.cwd !== undefined ? inFolder(last.place.slice(7), last.cwd) : undefined
+        : inWorkspace(state.workspaces.get(last.place));
+    if (q) return q;
+  }
+  return inWorkspace(recentWorkspaces(state.workspaces.values(), first.node, 1)[0]) ?? { place: homePlace(first.node), machine: first };
+}
+
+/** What New terminal's + says it does: where, on which machine while there are several, and the folder's path under it. */
+export function quickTitle(q: QuickPlace, several: boolean): string {
+  const where = `New terminal in ${q.name ?? "your home folder"}${several ? ` on ${q.machine.name}` : ""}`;
+  return q.path !== undefined ? `${where}\n${q.path}` : where;
+}
+
 /** The terminal a session runs in, when this node holds it and the view may open it. */
 export function sessionTerminal(state: ViewState, session: Session): Terminal | undefined {
   const ref = session.native.terminal;

@@ -24,8 +24,10 @@
 // only while its tab is open. Above a timeline, and at the top of the chat, a button loads
 // history a page earlier per press, and reads Load history while none is loaded, as on a
 // phone or the web app, which load nothing unasked. Under the sessions, a tab per bare
-// terminal (a shell started here) and New terminal, which opens a menu of the node's recent
-// workspaces and its home folder to start one in; a session that runs in a terminal the node
+// terminal (a shell started here). New terminal, in the chat's row, starts one with its + in the
+// folder of the tab shown, or where the last one started, and its ⌄ drops a menu of each
+// machine's recent workspaces, its home folder and a folder picker, filtered by what is typed
+// over them, a path typed a place of its own; a session that runs in a terminal the node
 // holds shows it in its pane, its timeline a click away (the screen itself is terminal.ts's), and
 // a pane's head ends with Kill session, which asks in place before it ends anything. The
 // input sits under the pane, the chat's or a timeline's, and there is none under a terminal,
@@ -52,8 +54,8 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, recentWorkspaces, RECENT_WORKSPACES, RECENT_PER_MACHINE, homePlace, folderPlace, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
-import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
@@ -116,6 +118,10 @@ export interface UiState {
   kill?: { session: string; phase: "asking" | "killing" };
   /** New terminal's menu is open. */
   newTerminal?: TerminalMenu;
+  /** New terminal's + is starting a shell. */
+  quickStarting?: boolean;
+  /** Where a terminal last started from here, which + starts the next in when no tab says where: kept on the device. */
+  lastPlace?: LastPlace;
   /** The folder New terminal's picker last showed on each machine: it opens there again. */
   folderAt: Map<NodeId, string>;
   /** The ⋮ menu beside the chat's tab is open, with what went wrong when Change view or Settings could not open the host's layer. */
@@ -184,13 +190,16 @@ export interface UiState {
 export type RailTab = "files" | "status";
 
 /**
- * New terminal's menu: every node's workspaces once the node listed them, and the place a shell
- * is starting in (a workspace's id, `homePlace` or `folderPlace` of a machine); with the folder
- * picker, open on one machine in place of the places.
+ * New terminal's menu: every node's workspaces once listed, what its field holds, the row the
+ * arrow keys are on (counted down through every machine's), the row whose shell is starting
+ * (its key), why the last could not start, and the picker while it shows.
  */
 export interface TerminalMenu {
   workspaces?: Workspace[];
+  filter?: string;
+  active?: number;
   starting?: string;
+  error?: string;
   browse?: FolderBrowse;
 }
 
@@ -1739,23 +1748,45 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     restart.setAttribute("role", "menuitem");
     restart.title = "End the agent session the chat runs in and start it again, with the conversation it had";
     moreMenu.append(change, settings, restart, el("p", "rail-menu-note"));
-    top.append(chat, speaker, more, moreMenu);
-    const list = el("div", "tab-sessions");
-    const newTerminal = el("button", "tab-new-terminal", "New terminal");
-    newTerminal.type = "button";
-    newTerminal.dataset["action"] = "new-terminal";
-    newTerminal.title = "Start a shell on a computer, in a folder you pick, shown here";
-    newTerminal.setAttribute("aria-haspopup", "true");
-    // Under it, once pressed: where to start the shell, each machine's places, or a folder picked on one.
+    // After the speaker, New terminal: + starts a shell at once where its title says, ⌄ opens the menu of places.
+    const newTerminal = el("div", "new-terminal");
+    newTerminal.setAttribute("role", "group");
+    newTerminal.setAttribute("aria-label", "New terminal");
+    const go = actionButton("new-terminal-go", "", "new-terminal-go");
+    go.append(newTerminalIcon());
+    const pick = actionButton("new-terminal-pick", "", "new-terminal");
+    pick.setAttribute("aria-haspopup", "listbox");
+    pick.setAttribute("aria-label", "New terminal in…");
+    pick.title = "New terminal in… a workspace, a home folder, or any folder on a computer";
+    pick.append(chevronIcon());
+    newTerminal.append(go, pick);
+    // Dropped over the sessions and the pane once ⌄ is pressed: a field that filters the places or
+    // takes a path, then each machine's places, or in their place a folder picked on one.
     const menu = el("div", "new-terminal-menu");
-    menu.append(el("p", "new-terminal-head", "Open a terminal in"), el("p", "new-terminal-loading", "Loading workspaces…"), el("div", "new-terminal-places"), createFolderPicker());
+    const filter = el("input", "new-terminal-filter");
+    filter.type = "text";
+    filter.spellcheck = false;
+    filter.autocomplete = "off";
+    filter.placeholder = "Filter, or type a path";
+    filter.setAttribute("aria-label", "Where the terminal starts: filter the places, or type a folder's path");
+    filter.setAttribute("role", "combobox");
+    filter.setAttribute("aria-autocomplete", "list");
+    filter.setAttribute("aria-expanded", "true");
+    filter.setAttribute("aria-controls", "new-terminal-places");
+    const places = el("div", "new-terminal-places");
+    places.id = "new-terminal-places";
+    places.setAttribute("role", "listbox");
+    places.setAttribute("aria-label", "Places");
+    menu.append(filter, el("p", "new-terminal-loading", "Loading workspaces…"), el("p", "new-terminal-note"), places, createFolderPicker());
+    top.append(chat, speaker, newTerminal, more, moreMenu, menu);
+    const list = el("div", "tab-sessions");
     // The bare terminals under a heading of their own, which folds them like a folder's, by machine when there are several.
     const terminals = el("div", "tab-group terminals-group");
     const terminalsName = actionButton("tab-group-name", "Terminals", "group-fold");
     terminalsName.dataset["group"] = TERMINALS_GROUP;
     terminalsName.title = "Terminals no agent session runs in";
     terminals.append(terminalsName, el("div", "tab-terminals"), el("div", "tab-subgroups terminal-machines"));
-    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, newTerminal, menu);
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals);
     // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
     const cards = createStatus();
     // While an agent's tab is selected they are the Status tab, beside its folder's files.
@@ -1808,10 +1839,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
   renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
-  const newTerminal = root.querySelector<HTMLButtonElement>(".tab-new-terminal")!;
-  setHidden(newTerminal, !canTerminal);
-  newTerminal.disabled = !state.connected;
-  renderNewTerminal(root.querySelector<HTMLElement>(".new-terminal-menu")!, newTerminal, state, ui, canTerminal);
+  renderNewTerminal(root, state, ui, canTerminal);
 
   renderPanel(root, state, ui);
   renderStatus(root.querySelector<HTMLElement>(".rail-cards")!, state, ui);
@@ -2354,80 +2382,101 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   setText(root.querySelector(".railbar-title")!, ui.devices ? "Devices" : card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
 }
 
-/** A row of New terminal's menu: a workspace, a machine's home folder, or Other folder…, which opens the picker on that machine. */
-interface Place {
-  key: string;
-  name: string;
-  path?: string;
-  browse?: true;
-}
-
-/** One machine's rows of New terminal's menu, under its name when there are several. */
-interface MachinePlaces {
-  machine: TerminalMachine;
-  places: Place[];
-}
-
 /**
- * New terminal's menu, open once pressed: each machine that starts terminals, this computer's
- * first, with its recent workspaces once the node listed them, its home folder and Other
- * folder…; Starting… on the one picked. Other folder… shows the picker in their place.
+ * New terminal, in the chat's row: + starts a shell at once where its title says
+ * (`quickPlace`), Starting… until it is up; ⌄ opens the menu under them. The menu: a field that
+ * filters the places or takes a path, then each machine that starts terminals, this
+ * computer's first, with its rows once the node listed its workspaces (`placeRows`), the one
+ * the arrow keys are on marked, Starting… on the one picked, and what went wrong; Other
+ * folder… shows the picker in their place.
  */
-function renderNewTerminal(menu: HTMLElement, button: HTMLButtonElement, state: ViewState, ui: UiState, canTerminal: boolean): void {
+function renderNewTerminal(root: HTMLElement, state: ViewState, ui: UiState, canTerminal: boolean): void {
+  const group = root.querySelector<HTMLElement>(".new-terminal")!;
+  setHidden(group, !canTerminal);
+  const go = group.querySelector<HTMLButtonElement>(".new-terminal-go")!;
+  const pick = group.querySelector<HTMLButtonElement>(".new-terminal-pick")!;
+  const menu = root.querySelector<HTMLElement>(".new-terminal-menu")!;
+  const several = terminalMachines(state).length > 1;
+  const quick = canTerminal ? quickPlace(state, { session: ui.selected, terminal: ui.terminal }, ui.lastPlace) : undefined;
+  const title = ui.quickStarting ? "Starting a terminal…" : quick ? quickTitle(quick, several) : "No computer here starts terminals";
+  go.title = title;
+  go.setAttribute("aria-label", title.split("\n")[0]!);
+  go.disabled = !state.connected || !quick || ui.quickStarting === true;
+  setData(go, "starting", String(ui.quickStarting === true));
+  pick.disabled = !state.connected;
   const m = canTerminal && state.connected ? ui.newTerminal : undefined;
-  button.setAttribute("aria-expanded", m ? "true" : "false");
+  pick.setAttribute("aria-expanded", m ? "true" : "false");
   setHidden(menu, !m);
   if (!m) return;
   const browsing = m.browse !== undefined;
-  setHidden(menu.querySelector<HTMLElement>(".new-terminal-head")!, browsing);
+  const filter = menu.querySelector<HTMLInputElement>(".new-terminal-filter")!;
+  setHidden(filter, browsing);
+  // The field is the user's: set only when the menu's filter is not what it holds, as a new menu's empty one.
+  if (filter.value !== (m.filter ?? "")) filter.value = m.filter ?? "";
   setHidden(menu.querySelector<HTMLElement>(".new-terminal-loading")!, browsing || m.workspaces !== undefined);
+  const note = menu.querySelector<HTMLElement>(".new-terminal-note")!;
+  setText(note, m.error ?? "");
+  setHidden(note, browsing || m.error === undefined);
   const placesNode = menu.querySelector<HTMLElement>(".new-terminal-places")!;
   setHidden(placesNode, browsing);
-  const machines = terminalMachines(state);
-  const several = machines.length > 1;
-  const listed = m.workspaces;
-  const sections: MachinePlaces[] = listed
-    ? machines.map((machine) => ({
-        machine,
-        places: [
-          ...recentWorkspaces(listed, machine.node, several ? RECENT_PER_MACHINE : RECENT_WORKSPACES).map((w) => ({ key: w.id, name: w.name, path: w.path })),
-          { key: homePlace(machine.node), name: "Home folder" },
-          { key: folderPlace(machine.node), name: "Other folder…", browse: true as const },
-        ],
-      }))
-    : [];
-  reconcile(placesNode, sections, (s) => s.machine.node, createMachinePlaces, (n, s) => updateMachinePlaces(n, s, several, m.starting));
+  const sections = m.workspaces ? placeRows(state, m.workspaces, m.filter ?? "") : [];
+  const count = sections.reduce((n, s) => n + s.places.length, 0);
+  const active = count === 0 ? -1 : Math.min(Math.max(m.active ?? 0, 0), count - 1);
+  let at = 0;
+  reconcile(placesNode, sections, (s) => s.machine.node, createMachinePlaces, (n, s) => {
+    updateMachinePlaces(n, s, several, m.starting, at, active);
+    at += s.places.length;
+  });
+  if (active >= 0 && !browsing) filter.setAttribute("aria-activedescendant", placeRowId(active));
+  else filter.removeAttribute("aria-activedescendant");
   renderFolderPicker(menu.querySelector<HTMLElement>(".folder-picker")!, m);
 }
 
+/** The id of New terminal's row at `index`, counted down through every machine's. */
+const placeRowId = (index: number): string => `new-terminal-row-${index}`;
+
 function createMachinePlaces(): HTMLElement {
   const section = el("div", "new-terminal-machine");
+  section.setAttribute("role", "group");
   section.append(el("p", "new-terminal-machine-name"), el("div", "new-terminal-machine-places"));
   return section;
 }
 
-function updateMachinePlaces(node: HTMLElement, s: MachinePlaces, several: boolean, starting: string | undefined): void {
+function updateMachinePlaces(node: HTMLElement, s: MachinePlaces, several: boolean, starting: string | undefined, first: number, active: number): void {
   const name = node.querySelector<HTMLElement>(".new-terminal-machine-name")!;
   setHidden(name, !several);
-  setText(name, s.machine.here ? `${s.machine.name} · this computer` : s.machine.name);
-  reconcile(node.querySelector<HTMLElement>(".new-terminal-machine-places")!, s.places, (p) => p.key, createPlace, (b, p) => updatePlace(b as HTMLButtonElement, p, s.machine, starting));
+  const words = s.machine.here ? `${s.machine.name} · this computer` : s.machine.name;
+  setText(name, words);
+  node.setAttribute("aria-label", words);
+  let index = first;
+  reconcile(node.querySelector<HTMLElement>(".new-terminal-machine-places")!, s.places, (p) => p.key, createPlace, (b, p) => updatePlace(b as HTMLButtonElement, p, s.machine, starting, index++, active));
 }
 
 function createPlace(): HTMLElement {
   const b = actionButton("new-terminal-place", "", "new-terminal-in");
-  b.append(el("span", "place-name"), el("span", "place-path"));
+  b.setAttribute("role", "option");
+  b.tabIndex = -1;
+  // The hint keeps its end, the part that tells folders apart, and drops its start (view.css).
+  const hint = el("span", "place-hint");
+  hint.append(el("bdi"));
+  b.append(el("span", "place-name"), hint);
   return b;
 }
 
-function updatePlace(b: HTMLButtonElement, p: Place, machine: TerminalMachine, starting: string | undefined): void {
+function updatePlace(b: HTMLButtonElement, p: PlaceRow, machine: TerminalMachine, starting: string | undefined, index: number, active: number): void {
   setData(b, "action", p.browse ? "folder-browse" : "new-terminal-in");
-  setData(b, "place", p.key);
+  setData(b, "place", p.place);
+  if (p.cwd !== undefined) setData(b, "cwd", p.cwd);
+  else delete b.dataset["cwd"];
   setData(b, "node", machine.node);
   setData(b, "name", machine.name);
+  const id = placeRowId(index);
+  if (b.id !== id) b.id = id;
+  b.setAttribute("aria-selected", index === active ? "true" : "false");
   setText(b.querySelector(".place-name")!, p.name);
-  const path = b.querySelector<HTMLElement>(".place-path")!;
-  setText(path, starting === p.key ? "Starting…" : (p.path ?? ""));
-  setHidden(path, starting !== p.key && p.path === undefined);
+  const hint = starting === p.key ? "Starting…" : (p.hint ?? "");
+  setText(b.querySelector(".place-hint bdi")!, hint);
+  setHidden(b.querySelector<HTMLElement>(".place-hint")!, hint === "");
   b.title = p.path ?? (p.browse ? `Pick a folder on ${machine.name}` : `Your home folder on ${machine.name}`);
   b.disabled = starting !== undefined;
 }
@@ -3175,6 +3224,31 @@ function speakerIcon(): SVGSVGElement {
   }
   return svg;
 }
+
+/** Lines drawn in the button's own colour. */
+function lineIcon(viewBox: string, paths: string[]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", viewBox);
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  for (const d of paths) {
+    const path = document.createElementNS(SVG_NS, "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.8");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+  }
+  return svg;
+}
+
+/** A shell's prompt with a plus at its corner: New terminal's +. */
+const newTerminalIcon = (): SVGSVGElement => lineIcon("0 0 24 24", ["M3.5 9l4 3.5-4 3.5", "M10.5 16.5h5.5", "M18 3v6.5M14.75 6.25h6.5"]);
+
+/** The point under a split button's arrow that opens its menu. */
+const chevronIcon = (): SVGSVGElement => lineIcon("0 0 12 12", ["M3 4.75l3 3 3-3"]);
 
 /** A microphone, drawn in the button's own colour. */
 function micIcon(): SVGSVGElement {

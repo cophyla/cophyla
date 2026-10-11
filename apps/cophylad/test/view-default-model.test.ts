@@ -10,14 +10,14 @@
 // node's desktop, with what this client may do with it.
 // The node's terminals: a bare one's tab, a session's own reached from its pane, a send typed
 // into a terminal joined to its turn, and how a followed screen picks its font. Which
-// sessions the user can kill from their pane, and the workspaces New terminal offers. The
+// sessions the user can kill from their pane, New terminal's places and where its + starts one. The
 // prompts pinned over the pane, less a session's own while its terminal shows.
 // The explorer: its folders as listed, its rows, the paths they drag, and the repository's line;
 // which agent's Files panel shows a file a chip names, and what a chip calls a session.
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, recentWorkspaces, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 
@@ -2112,6 +2112,103 @@ describe("default view: terminals", () => {
     expect(recentWorkspaces(list, undefined)).toEqual([]);
     const many = Array.from({ length: RECENT_WORKSPACES + 3 }, (_, i) => ws(`ws_${i}`, i));
     expect(recentWorkspaces(many, NODE).map((w) => w.id)).toEqual(Array.from({ length: RECENT_WORKSPACES }, (_, i) => `ws_${RECENT_WORKSPACES + 2 - i}`));
+  });
+
+  test("New terminal's rows: the folder a workspace is in beside its name, a path typed as a place of its own, the filter's words in any case", () => {
+    expect(folderName("C:\\src\\app")).toBe("app");
+    expect(folderName("C:\\src\\app\\")).toBe("app");
+    expect(folderName("C:\\")).toBe("C:\\");
+    expect(folderName("/home/me/site")).toBe("site");
+    expect(folderName("/")).toBe("/");
+    expect(parentFolder("C:\\src\\app")).toBe("C:\\src");
+    expect(parentFolder("C:\\src")).toBe("C:\\");
+    expect(parentFolder("C:\\")).toBeUndefined();
+    expect(parentFolder("/home/me")).toBe("/home");
+    expect(parentFolder("/home")).toBe("/");
+    expect(parentFolder("/")).toBeUndefined();
+    expect(parentFolder("\\\\box\\share\\x")).toBe("\\\\box\\share");
+    // a path typed is absolute, its quotes taken off; anything else only filters
+    expect(typedFolder("  C:\\src\\app ")).toBe("C:\\src\\app");
+    expect(typedFolder("\"D:\\My Games\"")).toBe("D:\\My Games");
+    expect(typedFolder("d:/x")).toBe("d:/x");
+    expect(typedFolder("/home/me")).toBe("/home/me");
+    expect(typedFolder("app")).toBeUndefined();
+    expect(typedFolder("src\\app")).toBeUndefined();
+    expect(placeMatches("", "app")).toBe(true);
+    expect(placeMatches("APP", "My App", "C:\\src\\app")).toBe(true);
+    expect(placeMatches("src app", "My App", "C:\\src\\app")).toBe(true);
+    expect(placeMatches("c:/src/a", "My App", "C:\\src\\app")).toBe(true);
+    expect(placeMatches("\"C:\\src", "My App", "C:\\src\\app")).toBe(true);
+    expect(placeMatches("lib", "My App", "C:\\src\\app")).toBe(false);
+
+    const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const s = scoped(ready({ node: NODE, scopes: [...CLIENT.scopes, "terminal"] }));
+    const ws = (id: string, lastActivity: number, path: string, name: string, node = NODE): Workspace => ({ id, node, path, name, origin: "discovered", lastActivity });
+    const list = [ws("ws_app", 3, "C:\\src\\app", "My App"), ws("ws_site", 2, "C:\\web\\site", "Site"), ws("ws_game", 9, "D:\\games\\game", "Game", LAPTOP)];
+    const rows = (filter: string) => placeRows(s, list, filter).map((m) => [m.machine.name, m.places.map((p) => [p.name, p.hint ?? null, p.cwd ?? null])]);
+    // one machine: its workspaces worked in last first, each with the folder it is in, then the home and Other folder…
+    expect(rows("")).toEqual([["This computer", [["My App", "C:\\src", null], ["Site", "C:\\web", null], ["Home folder", null, null], ["Other folder…", null, null]]]]);
+    expect(placeRows(s, list, "")[0]?.places.at(-1)).toMatchObject({ place: folderPlace(NODE), browse: true });
+    // the filter leaves what it names, the home only by its own name, Other folder… always
+    expect(rows("site")).toEqual([["This computer", [["Site", "C:\\web", null], ["Other folder…", null, null]]]]);
+    expect(rows("home")).toEqual([["This computer", [["Home folder", null, null], ["Other folder…", null, null]]]]);
+    // a path typed is a place of its own, first, over the workspaces under it
+    expect(rows("C:\\src")).toEqual([["This computer", [["Open in", "C:\\src", "C:\\src"], ["My App", "C:\\src", null], ["Other folder…", null, null]]]]);
+    expect(placeRows(s, list, "C:\\src")[0]?.places[0]).toMatchObject({ key: `typed:${NODE}`, place: folderPlace(NODE), cwd: "C:\\src" });
+    // two machines: each its own; five workspaces each at most unfiltered, more while the filter has words
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop", { terminals: true })] });
+    expect(rows("game")).toEqual([["desk", [["Other folder…", null, null]]], ["laptop", [["Game", "D:\\games", null], ["Other folder…", null, null]]]]);
+    const many = Array.from({ length: MATCHES_PER_MACHINE + 3 }, (_, i) => ws(`ws_${i}`, i, `C:\\src\\p${i}`, `p${i}`));
+    expect(placeRows(s, many, "")[0]?.places.filter((p) => p.place.startsWith("ws_"))).toHaveLength(RECENT_PER_MACHINE);
+    expect(placeRows(s, many, "p")[0]?.places.filter((p) => p.place.startsWith("ws_"))).toHaveLength(MATCHES_PER_MACHINE);
+  });
+
+  test("New terminal's + starts in the folder of the tab shown, else where the last started, else the workspace worked in last, else the home", () => {
+    const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const here = { node: NODE, name: "This computer", here: true };
+    const s = scoped(ready({ node: NODE, scopes: [...CLIENT.scopes, "terminal"] }));
+    // nothing known: this computer's home
+    expect(quickPlace(s, {}, undefined)).toEqual({ place: homePlace(NODE), machine: here });
+    expect(quickTitle(quickPlace(s, {}, undefined)!, false)).toBe("New terminal in your home folder");
+    // the workspace worked in last, as the view knows it
+    apply(s, { type: "workspace.state", params: { id: "ws_old", node: NODE, path: "C:\\src\\old", name: "old", origin: "discovered", lastActivity: 1 } });
+    apply(s, { type: "workspace.state", params: { id: "ws_app", node: NODE, path: "C:\\src\\app", name: "My App", origin: "discovered", lastActivity: 5 } });
+    expect(quickPlace(s, {}, undefined)).toMatchObject({ place: "ws_app", name: "My App", path: "C:\\src\\app" });
+    expect(quickTitle(quickPlace(s, {}, undefined)!, false)).toBe("New terminal in My App\nC:\\src\\app");
+    // where the last started from here: a workspace, a home, a folder; a workspace's folder starts as the workspace
+    expect(quickPlace(s, {}, { place: "ws_old" })).toMatchObject({ place: "ws_old", name: "old" });
+    expect(quickPlace(s, {}, { place: homePlace(NODE) })).toEqual({ place: homePlace(NODE), machine: here });
+    expect(quickPlace(s, {}, { place: folderPlace(NODE), cwd: "D:\\games" })).toMatchObject({ place: folderPlace(NODE), cwd: "D:\\games", name: "games", path: "D:\\games" });
+    expect(quickPlace(s, {}, { place: folderPlace(NODE), cwd: "c:\\src\\old\\" })).toMatchObject({ place: "ws_old" });
+    // one gone, or on a machine that starts none now, gives way
+    expect(quickPlace(s, {}, { place: "ws_gone" })).toMatchObject({ place: "ws_app" });
+    expect(quickPlace(s, {}, { place: homePlace(LAPTOP) })).toMatchObject({ place: "ws_app" });
+    // the tab shown comes first: a session's workspace, else its own folder; a bare terminal's folder
+    apply(s, { type: "session.state", params: session("sess_w", 1, { workspace: "ws_old", cwd: "C:\\src\\old\\sub" }) });
+    apply(s, { type: "session.state", params: session("sess_f", 1, { cwd: "C:\\tools" }) });
+    expect(quickPlace(s, { session: "sess_w" }, { place: "ws_app" })).toMatchObject({ place: "ws_old" });
+    expect(quickPlace(s, { session: "sess_f" }, { place: "ws_app" })).toMatchObject({ place: folderPlace(NODE), cwd: "C:\\tools", name: "tools" });
+    apply(s, { type: "terminal.state", params: term("t1", 1, { cwd: "C:\\src\\app" }) });
+    expect(quickPlace(s, { terminal: "t1" }, { place: "ws_old" })).toMatchObject({ place: "ws_app" });
+    // a terminal on another machine: the next starts there, and + says where while there are several
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk"), machine(LAPTOP, "laptop", { terminals: true })] });
+    apply(s, { type: "terminal.state", params: term("t2", 2, { node: LAPTOP, cwd: "D:\\games" }) });
+    const there = quickPlace(s, { terminal: "t2" }, undefined)!;
+    expect(there).toMatchObject({ place: folderPlace(LAPTOP), cwd: "D:\\games", machine: { node: LAPTOP, name: "laptop" } });
+    expect(spawnParams(s, there.place, there.cwd)).toEqual({ node: LAPTOP, cwd: "D:\\games" });
+    expect(quickTitle(there, true)).toBe("New terminal in games on laptop\nD:\\games");
+    // no machine starts terminals: none
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk", { terminals: false })] });
+    expect(quickPlace(s, {}, undefined)).toBeUndefined();
+  });
+
+  test("the place New terminal last started in comes back from the device as it was kept, and nothing else does", () => {
+    expect(lastPlace({ place: "ws_app" })).toEqual({ place: "ws_app" });
+    expect(lastPlace({ place: "folder:n", cwd: "C:\\x" })).toEqual({ place: "folder:n", cwd: "C:\\x" });
+    expect(lastPlace({ place: "" })).toBeUndefined();
+    expect(lastPlace({ cwd: "C:\\x" })).toBeUndefined();
+    expect(lastPlace("ws_app")).toBeUndefined();
+    expect(lastPlace(undefined)).toBeUndefined();
   });
 
   test("a session's own terminal is reached from its pane only with the terminal scope and on its host", () => {
