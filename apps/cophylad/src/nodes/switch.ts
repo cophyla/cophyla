@@ -9,9 +9,11 @@
 // `link.replay {n, f}`. The other side reads the relay up to that `link.switch`, then the
 // channel; channel frames that came first wait for it.
 //
-// The fallback: the channel silent for three seconds (no ack), failed, or gone with the
-// helper. Silence is measured on the monotonic clock: a wall clock set forward (NTP, a VM's
-// time sync) is not three seconds without an ack. The side that notices sends `link.fallback {received}` on the relay, the count of
+// The fallback: the channel silent for three seconds (no ack, and no piece of a frame coming
+// in), failed, or gone with the helper. A frame that takes longer than that to come holds
+// back the acks sent after it, on a channel that keeps order; its pieces arriving are the
+// other side heard all the same. Silence is measured on the monotonic clock: a wall clock set
+// forward (NTP, a VM's time sync) is not three seconds without an ack. The side that notices sends `link.fallback {received}` on the relay, the count of
 // the other's channel frames it took, and holds what it sends until the other's fallback
 // says how many of its own arrived; the rest go again on the relay as `link.replay`, taken
 // once each by their number, and then the held frames. The side that hears a fallback first
@@ -20,11 +22,11 @@
 
 import type { Logger } from "../log.ts";
 
-/** A data channel as the link sees it: sealed text frames both ways. */
+/** A data channel as the link sees it: sealed text frames both ways, and word of each piece of one as it comes in. */
 export interface LinkChannel {
   send(text: string): void;
   close(code?: number, reason?: string): void;
-  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void): void;
+  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void, onPiece?: () => void): void;
 }
 
 export interface SwitchTimers {
@@ -89,7 +91,8 @@ export class SwitchableLink {
   private early: { n: number; f: string }[] = [];
   private channel?: LinkChannel;
   private acked = false;
-  private lastAck = 0;
+  /** When the other side was last heard on the channel: an ack, or a piece of a frame. */
+  private lastHeard = 0;
   private ticker?: unknown;
   private closed = false;
 
@@ -178,11 +181,14 @@ export class SwitchableLink {
     if (this.channel) this.lose("a newer channel");
     this.channel = channel;
     this.acked = false;
-    this.lastAck = this.now();
+    this.lastHeard = this.now();
     channel.attach(
       (text) => this.fromChannel(channel, text),
       (_code, reason) => {
         if (this.channel === channel) this.lose(reason || "the channel closed");
+      },
+      () => {
+        if (this.channel === channel) this.lastHeard = this.now();
       },
     );
     this.sendAck();
@@ -191,7 +197,7 @@ export class SwitchableLink {
 
   private tick(): void {
     if (!this.channel) return;
-    if (this.now() - this.lastAck > (this.deps.silenceMs ?? SILENCE_MS)) {
+    if (this.now() - this.lastHeard > (this.deps.silenceMs ?? SILENCE_MS)) {
       this.lose("the channel went silent");
       return;
     }
@@ -207,7 +213,7 @@ export class SwitchableLink {
     const c = control(text);
     if (!c) return;
     if (c.method === "link.ack") {
-      this.lastAck = this.now();
+      this.lastHeard = this.now();
       const n = c.params["n"];
       if (typeof n === "number") this.peerTook(n);
       if (!this.acked) {

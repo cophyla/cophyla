@@ -2,8 +2,8 @@
 // delivers by hand. Frames keep their order across the switch even when the channel runs
 // ahead of the relay; a channel lost with frames in flight has them replayed on the relay,
 // each taken once; silence past three seconds falls back, but a wall clock set forward is not
-// silence; the side that hears a fallback falls back too; and a channel that stops
-// acknowledging ends the link past the cap.
+// silence, and neither is a frame whose pieces are still coming in; the side that hears a
+// fallback falls back too; and a channel that stops acknowledging ends the link past the cap.
 
 import { describe, expect, spyOn, test } from "bun:test";
 import { silentLogger } from "../src/log.ts";
@@ -56,6 +56,7 @@ class FakeChannel implements LinkChannel {
   closed?: string;
   private out: Wire;
   private onEnd?: (code: number, reason: string) => void;
+  private onPiece?: () => void;
   constructor(out: Wire, inbound: Wire) {
     this.out = out;
     inbound.onText = (t) => this.onText?.(t);
@@ -67,12 +68,17 @@ class FakeChannel implements LinkChannel {
   close(_code?: number, reason = ""): void {
     this.closed = reason;
   }
-  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void): void {
+  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void, onPiece?: () => void): void {
     this.onText = onText;
     this.onEnd = onEnd;
+    this.onPiece = onPiece;
   }
   end(reason: string): void {
     this.onEnd?.(1006, reason);
+  }
+  /** A piece of a frame from the other side came in; the frame is not whole yet. */
+  piece(): void {
+    this.onPiece?.();
   }
 }
 
@@ -236,6 +242,34 @@ describe("the switchable node link", () => {
     a.send(f(3));
     flush();
     expect(got.b).toEqual([f(1), f(2), f(3)]);
+  });
+
+  test("a frame that takes seconds to come is not silence: its pieces keep the channel, and silence counts from the last one", () => {
+    const { clock, a, b, chAB, chBA, open, flush } = pair();
+    const { ca } = open();
+    flush();
+    expect(a.mode).toBe("direct");
+    // b sends a frame of megabytes: its acks wait behind it, while its pieces reach a
+    for (let i = 0; i < 12; i++) {
+      ca.piece();
+      chBA.drop();
+      chAB.deliver();
+      clock.advance(500);
+    }
+    expect(a.mode).toBe("direct");
+    expect(b.mode).toBe("direct");
+    // the pieces stop too: three seconds after the last one, a falls back
+    for (let i = 0; i < 2; i++) {
+      chBA.drop();
+      chAB.deliver();
+      clock.advance(1000);
+    }
+    expect(a.mode).toBe("direct");
+    chBA.drop();
+    clock.advance(1000);
+    expect(a.mode).toBe("relay");
+    flush();
+    expect(b.mode).toBe("relay");
   });
 
   test("frames not acknowledged past the cap end the link with 4408", () => {

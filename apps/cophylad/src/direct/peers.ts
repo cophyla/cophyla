@@ -1,10 +1,11 @@
 // One data channel the helper holds, as a socket the api or the nodes module can speak
 // through. What goes out is sealed as an `@cophyla/relay` record and cut into messages of
 // 16 KiB at most, each one `peer.send` to the helper, in order; what comes in (`peer.data`)
-// is put back together and opened, in order. The helper sees ciphertext only. A record that
-// fails to open closes the channel: the far end lacks the secret, or the stream was tampered
-// with. `buffered()` is what the helper last said it holds for the channel, with what is
-// still being sealed here.
+// is put back together and opened, in order, each piece told as it comes (a record of
+// megabytes takes seconds to arrive, and the node link's switch must not take that for
+// silence). The helper sees ciphertext only. A record that fails to open closes the channel:
+// the far end lacks the secret, or the stream was tampered with. `buffered()` is what the
+// helper last said it holds for the channel, with what is still being sealed here.
 
 import { chunk, Reassembler, TunnelError } from "@cophyla/relay";
 import type { Tunnel } from "@cophyla/relay";
@@ -38,16 +39,18 @@ export class ChannelSocket {
   private gone = false;
   private onText?: (text: string) => void;
   private onEnd?: (code: number, reason: string) => void;
+  private onPiece?: () => void;
 
   constructor(deps: ChannelSocketDeps) {
     this.deps = deps;
     this.remote = deps.remote;
   }
 
-  /** Where the frames that come in go, and who hears the end. */
-  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void): void {
+  /** Where the frames that come in go, who hears the end, and who hears each piece of a frame arrive. */
+  attach(onText: (text: string) => void, onEnd: (code: number, reason: string) => void, onPiece?: () => void): void {
     this.onText = onText;
     this.onEnd = onEnd;
+    this.onPiece = onPiece;
   }
 
   // --- the socket's side ------------------------------------------------------------------------
@@ -89,6 +92,7 @@ export class ChannelSocket {
   /** One `peer.data` message. */
   receive(message: string): void {
     if (this.closed) return;
+    this.onPiece?.();
     let record: string | undefined;
     try {
       record = this.reassembler.push(message);
