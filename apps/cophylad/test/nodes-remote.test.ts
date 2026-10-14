@@ -195,7 +195,7 @@ describe("remote desktop across nodes", () => {
     expect(claim.status).toBe(200);
     expect(claim.headers.get("set-cookie")).not.toContain("Secure");
     const page = await claim.text();
-    expect(page).toContain(`s.dataTransport="websocket";s.canvasRenderer=true;`);
+    expect(page).toContain(`s.dataTransport="websocket";s.videoCodec="h264";s.canvasRenderer=true;`);
     expect(page).toContain(`s.videoSize="custom";s.videoSizeCustom={"width":2560,"height":1440};s.fps=60;s.bitrate=55296;`);
     // the stream page hides the pointer over the picture, which shows the desktop's own cursor
     const cookie = claim.headers.get("set-cookie")!.split(";")[0]!;
