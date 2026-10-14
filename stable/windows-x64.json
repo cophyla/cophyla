@@ -1,5 +1,5 @@
 {
-  "generatedAt": 1791976032811,
+  "generatedAt": 1791987425721,
   "releases": [
     {
       "component": "brain",
@@ -56,6 +56,23 @@
       "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
       "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
       "publishedAt": 1791285528651
+    },
+    {
+      "component": "platform",
+      "name": "platform-0.15.2-windows-x64.tar.gz",
+      "version": "0.15.2",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/platform-v0.15.2/platform-0.15.2-windows-x64.tar.gz",
+      "size": 128090335,
+      "sha256": "74fc724044b0dbece525f0462237a0ff0c493bbe8cf17c415b0dce14b5459f4e",
+      "signature": "ed25519:SHiCbBVVTcdLSZSnkMmzhioGRAaUNGn/oGe/OL5fTGIpnCx42oUSe6SeCWYOcI4Uvgrtm2Y7xDrQU+VE4sIrDg==",
+      "publishedAt": 1791986673281
     },
     {
       "component": "platform",
