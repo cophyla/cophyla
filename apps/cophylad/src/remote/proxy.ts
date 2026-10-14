@@ -254,21 +254,22 @@ const ORIGIN = /^https?:\/\/(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/
 export const SEEDED_KEY = "cophylaSeeded";
 
 /**
- * What the claim page sets in the stream page's settings: the ticket's transport, for a
- * low-latency one the canvas renderer and HEVC where the browser decodes it (H.264 where it
- * does not; AV1 shows no picture in moonlight-web 2.10.0), and the stream's size, frame rate
- * and bitrate when the ticket has them (the viewer's own are 1920×1080 at 10 Mbps). The page's
- * storage is its origin's and outlives the session, so what an earlier claim seeded and this
- * one does not is taken out first, back to the viewer's own (it lays what is stored over its
- * defaults): one session's size and renderer are not the next one's. What the user set in the
- * viewer themselves, and no claim ever seeded, stays.
+ * What the claim page sets in the stream page's settings: the ticket's transport, H.264
+ * always (MediaSource saying HEVC is no word on WebCodecs, which the canvas renderer decodes
+ * with, and a page told h265 it cannot decode finds no video pipeline; AV1 shows no picture
+ * in moonlight-web 2.10.0), for a low-latency one the canvas renderer, and the stream's size,
+ * frame rate and bitrate when the ticket has them (the viewer's own are 1920×1080 at 10 Mbps).
+ * The page's storage is its origin's and outlives the session, so what an earlier claim seeded
+ * and this one does not is taken out first, back to the viewer's own (it lays what is stored
+ * over its defaults): one session's size and renderer are not the next one's. What the user
+ * set in the viewer themselves, and no claim ever seeded, stays.
  */
 export function seedScript(transport: StreamTransport, lowLatency: boolean, video?: StreamVideo): string {
-  const low = lowLatency ? `s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";` : "";
+  const low = lowLatency ? `s.canvasRenderer=true;` : "";
   const sized = video ? `s.videoSize="custom";s.videoSizeCustom=${JSON.stringify({ width: video.width, height: video.height })};s.fps=${video.fps};s.bitrate=${video.bitrate};` : "";
-  const seeded = [...(lowLatency ? ["canvasRenderer", "videoCodec"] : []), ...(video ? ["videoSize", "videoSizeCustom", "fps", "bitrate"] : [])];
+  const seeded = ["videoCodec", ...(lowLatency ? ["canvasRenderer"] : []), ...(video ? ["videoSize", "videoSizeCustom", "fps", "bitrate"] : [])];
   const before = `var p=[];try{p=JSON.parse(localStorage.getItem(m)||"[]")}catch(e){}(Array.isArray(p)?p:[]).forEach(function(n){delete s[n]});`;
-  return `try{var k="mlSettings",m=${JSON.stringify(SEEDED_KEY)},s=JSON.parse(localStorage.getItem(k)||"{}");${before}s.dataTransport=${JSON.stringify(transport)};${low}${sized}localStorage.setItem(k,JSON.stringify(s));localStorage.setItem(m,${JSON.stringify(JSON.stringify(seeded))})}catch(e){}`;
+  return `try{var k="mlSettings",m=${JSON.stringify(SEEDED_KEY)},s=JSON.parse(localStorage.getItem(k)||"{}");${before}s.dataTransport=${JSON.stringify(transport)};s.videoCodec="h264";${low}${sized}localStorage.setItem(k,JSON.stringify(s));localStorage.setItem(m,${JSON.stringify(JSON.stringify(seeded))})}catch(e){}`;
 }
 
 /** Who may frame a session's pages: for the stream door the app's page it was minted for and no other, elsewhere the page's own origin as before. */

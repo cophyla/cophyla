@@ -386,7 +386,7 @@ describe("remote web viewer", () => {
     for (const host of ["192.168.1.44:4818", "127.0.0.1.evil:1", "[fe80::1]:4818", null]) expect(loopbackHost(host)).toBe(false);
   });
 
-  test("a low-latency ticket seeds the canvas renderer and HEVC where the page decodes it; others seed the transport alone", async () => {
+  test("every ticket seeds H.264, a low-latency one the canvas renderer too", async () => {
     const tickets = new RemoteTickets();
     const proxy = new RemoteProxy({ tickets, upstream: () => undefined, transport: () => "webrtc", log: silentLogger });
     const target = { node: "node_x", hostId: 1, appId: 2 };
@@ -395,10 +395,10 @@ describe("remote web viewer", () => {
       return res!.text();
     };
     const low = await claim(tickets.mint("client_a", target, { door: "loopback", transport: "websocket", secureCookie: false, lowLatency: true }).ticket);
-    expect(low).toContain(`s.dataTransport="websocket";s.canvasRenderer=true;s.videoCodec=MediaSource.isTypeSupported('video/mp4; codecs="hvc1.1.6.L120.90"')?"h265":"h264";`);
+    expect(low).toContain(`s.dataTransport="websocket";s.videoCodec="h264";s.canvasRenderer=true;localStorage.setItem`);
     const plain = await claim(tickets.mint("client_a", target, { door: "loopback" }).ticket);
-    expect(plain).toContain(`s.dataTransport="webrtc";localStorage.setItem`);
-    expect(plain).not.toContain("videoCodec");
+    expect(plain).toContain(`s.dataTransport="webrtc";s.videoCodec="h264";localStorage.setItem`);
+    expect(plain).not.toContain("canvasRenderer");
   });
 
   test("what one claim seeded and the next does not is put back to the viewer's own; what the user set there themselves stays", () => {
@@ -410,19 +410,19 @@ describe("remote web viewer", () => {
     // the user's own choices in the viewer, made before any claim
     stored.set("mlSettings", JSON.stringify({ bitrate: 20000, mouseMode: "relative" }));
     run(seedScript("webrtc", false));
-    expect(settings()).toEqual({ bitrate: 20000, mouseMode: "relative", dataTransport: "webrtc" });
-    expect(stored.get(SEEDED_KEY)).toBe("[]");
+    expect(settings()).toEqual({ bitrate: 20000, mouseMode: "relative", dataTransport: "webrtc", videoCodec: "h264" });
+    expect(stored.get(SEEDED_KEY)).toBe('["videoCodec"]');
     // a session beside the view: its renderer, codec, size, rate
     run(seedScript("websocket", true, { width: 2560, height: 1440, fps: 60, bitrate: 55296 }));
-    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "websocket", canvasRenderer: true, videoCodec: "h265", videoSize: "custom", videoSizeCustom: { width: 2560, height: 1440 }, fps: 60, bitrate: 55296 });
-    expect(JSON.parse(stored.get(SEEDED_KEY)!)).toEqual(["canvasRenderer", "videoCodec", "videoSize", "videoSizeCustom", "fps", "bitrate"]);
-    // the next one, plain: none of it is left, and the viewer falls back to its own
+    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "websocket", canvasRenderer: true, videoCodec: "h264", videoSize: "custom", videoSizeCustom: { width: 2560, height: 1440 }, fps: 60, bitrate: 55296 });
+    expect(JSON.parse(stored.get(SEEDED_KEY)!)).toEqual(["videoCodec", "canvasRenderer", "videoSize", "videoSizeCustom", "fps", "bitrate"]);
+    // the next one, plain: none of it is left but the codec every claim seeds, and the viewer falls back to its own
     run(seedScript("webrtc", false));
-    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "webrtc" });
+    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "webrtc", videoCodec: "h264" });
     // low latency without a size keeps no size from before
     run(seedScript("websocket", true, { width: 1920, height: 1080, fps: 60, bitrate: 20000 }));
     run(seedScript("websocket", true));
-    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "websocket", canvasRenderer: true, videoCodec: "h265" });
+    expect(settings()).toEqual({ mouseMode: "relative", dataTransport: "websocket", canvasRenderer: true, videoCodec: "h264" });
     // a list that is not one is nothing to put back, and the settings are still seeded
     stored.set(SEEDED_KEY, "{oops");
     run(seedScript("webrtc", false));
@@ -467,7 +467,7 @@ describe("remote web viewer", () => {
 
   test("a ticket with a video seeds its size, frame rate and bitrate over the viewer's own; one without leaves them", async () => {
     const video = { width: 1920, height: 1200, fps: 60, bitrate: 34560 };
-    expect(seedScript("websocket", true, video)).toContain(`"h265":"h264";s.videoSize="custom";s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=34560;localStorage.setItem`);
+    expect(seedScript("websocket", true, video)).toContain(`s.canvasRenderer=true;s.videoSize="custom";s.videoSizeCustom={"width":1920,"height":1200};s.fps=60;s.bitrate=34560;localStorage.setItem`);
     expect(seedScript("webrtc", false)).not.toContain("videoSize");
     const tickets = new RemoteTickets();
     const proxy = new RemoteProxy({ tickets, upstream: () => undefined, transport: () => "webrtc", log: silentLogger });
