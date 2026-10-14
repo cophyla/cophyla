@@ -1,6 +1,23 @@
 {
-  "generatedAt": 1791288860613,
+  "generatedAt": 1791964754992,
   "releases": [
+    {
+      "component": "brain",
+      "name": "brain-0.16.0-windows-x64.exe",
+      "version": "0.16.0",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/brain-v0.16.0/brain-0.16.0-windows-x64.exe",
+      "size": 99397352,
+      "sha256": "c3edf20de90ceae85c7e628d070f79add3fab2b2d55e6733d6c7c99c2a9476c5",
+      "signature": "ed25519:w5bsFWZk/u1IVdiXhlpXqdHJLRb+/5hTOnQCadiCXHxXzc4gXVnTR9Wk4z4NIRU1My2yjRlFpyysVkKpxfD9Cg==",
+      "publishedAt": 1791962531096
+    },
     {
       "component": "brain",
       "name": "brain-0.15.2-windows-x64.exe",
@@ -39,6 +56,23 @@
       "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
       "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
       "publishedAt": 1791285528651
+    },
+    {
+      "component": "platform",
+      "name": "platform-0.15.0-windows-x64.tar.gz",
+      "version": "0.15.0",
+      "channel": "stable",
+      "os": "windows",
+      "arch": "x64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/platform-v0.15.0/platform-0.15.0-windows-x64.tar.gz",
+      "size": 128089183,
+      "sha256": "968595b03a25ddb141dc9391bcc7ea5a1eae3423cac4e542e0936da9cd89ffe0",
+      "signature": "ed25519:0nYQOHBOVvwMfrq8pbyKbM3zN7lyQNnrBcXto5N8sS/rtz5tmwUcF0B8bL3xXoP0YocTCyTUrKM9RhRMKdaGBg==",
+      "publishedAt": 1791962528968
     },
     {
       "component": "platform",
