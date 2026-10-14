@@ -386,6 +386,13 @@ describe("claude adapter over a fake profile directory", () => {
     expect(events(s.id).map((e) => e.kind)).toEqual(["status"]);
   });
 
+  test("a rename in the registry moves the session's name", async () => {
+    expect(mini.sessions.list()[0]!.name).toBe("my-session");
+    writeRegistry(registry, { pid: 100, sessionId: "sess-a", cwd, status: "busy", name: "login-review" });
+    await mini.sessions.tick();
+    expect(mini.sessions.list()[0]!.name).toBe("login-review");
+  });
+
   test("a resume under a new pid keeps the id and refreshes the handles", async () => {
     const before = mini.sessions.list()[0]!;
     clearRegistry(registry, 100);

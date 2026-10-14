@@ -2,8 +2,10 @@
 // another agent addresses it by. A Claude session's alias is the name its registry gave it;
 // any other's is `<folder>-<harness>`. Two that would meet are told apart by `@machine`, then
 // by four characters of the id, the older session keeping the plainer form, so an alias given
-// out stays its session's while that session lives. `to` takes an alias, `alias@machine`, any
-// of the forms a session could have had, or a session id.
+// out stays its session's while that session lives. A renamed session goes by its new name and
+// still answers to the forms it had before, as long as no other session has taken them. `to`
+// takes an alias, `alias@machine`, any of the forms a session could have had or had, or a
+// session id.
 //
 // The chat's own session is no agent, and nor are the sessions a workspace node runs for this
 // cluster on another person's machine (a hands node that shares folders alone): they take no
@@ -20,8 +22,8 @@ export interface DirectoryEntry {
 
 export interface Directory {
   entries: DirectoryEntry[];
-  /** Each session's alias and every form it answers to, by session id. */
-  aliases: Map<string, { alias: string; forms: string[] }>;
+  /** Each session's alias, the forms its name gives it, and those it had under a name before. */
+  aliases: Map<string, { alias: string; forms: string[]; former: string[] }>;
 }
 
 const ALIAS_CHARS = 40;
@@ -71,16 +73,20 @@ export function eligible(s: Session, node: Pick<NodeRecord, "hands" | "scope" | 
   return true;
 }
 
-/** Aliases for every entry: the oldest session first takes the plainest form free. */
-export function directory(entries: DirectoryEntry[]): Directory {
+/**
+ * Aliases for every entry: the oldest session first takes the plainest form free. `earlier`: the
+ * forms a session was given out under before, which it keeps answering to after a rename.
+ */
+export function directory(entries: DirectoryEntry[], earlier: (session: string) => readonly string[] | undefined = () => undefined): Directory {
   const sorted = [...entries].sort((a, b) => a.session.startedAt - b.session.startedAt || (a.session.id < b.session.id ? -1 : 1));
   const taken = new Set<string>();
-  const aliases = new Map<string, { alias: string; forms: string[] }>();
+  const aliases = new Map<string, { alias: string; forms: string[]; former: string[] }>();
   for (const e of sorted) {
     const all = forms(e.session, e.nodeName);
     const alias = all.find((f) => !taken.has(f)) ?? e.session.id;
     taken.add(alias);
-    aliases.set(e.session.id, { alias, forms: all });
+    const former = (earlier(e.session.id) ?? []).filter((f) => !all.includes(f) && f !== e.session.id.toLowerCase());
+    aliases.set(e.session.id, { alias, forms: all, former });
   }
   return { entries: sorted, aliases };
 }
@@ -125,10 +131,13 @@ export function resolve(d: Directory, to: string): DirectoryEntry | { error: str
     const on = d.entries.filter((e) => slug(e.nodeName) === machine && (d.aliases.get(e.session.id)?.alias.replace(/@[^@]*$/, "") === name));
     if (on.length === 1) return on[0]!;
   }
-  // a form the session could have had: one given out before another session came or went
-  const any = d.entries.filter((e) => d.aliases.get(e.session.id)?.forms.includes(key));
-  if (any.length === 1) return any[0]!;
-  if (any.length > 1) return { error: `"${want}" names more than one session: use the name list_agents gives, or the session's sess_ id` };
+  // a form the session could have had: one given out before another session came or went; then
+  // one it had under a name it no longer has
+  for (const field of ["forms", "former"] as const) {
+    const any = d.entries.filter((e) => d.aliases.get(e.session.id)?.[field].includes(key));
+    if (any.length === 1) return any[0]!;
+    if (any.length > 1) return { error: `"${want}" names more than one session: use the name list_agents gives, or the session's sess_ id` };
+  }
   return { error: `no agent session is called "${want}": list_agents shows who you can message` };
 }
 

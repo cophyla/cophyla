@@ -1502,8 +1502,8 @@ export class Sessions implements SessionHost {
     }
     if (seed.transcriptPath !== undefined && rec.session.transcript?.path !== seed.transcriptPath) patch.transcript = { path: seed.transcriptPath };
     if (seed.title !== undefined && rec.session.title === undefined) patch.title = seed.title;
-    // Kept from the first time it is met: what other agents address the session by does not move.
-    if (seed.name !== undefined && rec.session.name === undefined) patch.name = seed.name;
+    // Follows the registry, so a rename moves what other agents address the session by; the router still takes the old one.
+    if (seed.name !== undefined && rec.session.name !== seed.name) patch.name = seed.name;
     if (seed.intent !== undefined && rec.session.intent === undefined) patch.intent = seed.intent;
     if (seed.cwd && rec.session.cwd !== seed.cwd) patch.cwd = seed.cwd;
     if (Object.keys(patch).length > 0) this.patch(rec, patch, now);

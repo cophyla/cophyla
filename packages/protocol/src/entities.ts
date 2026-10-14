@@ -268,8 +268,8 @@ export const Session = z.object({
   cwd: z.string(),
   title: z.string().optional(),
   /**
-   * A Claude session's name as its registry first gave it, which its alias in agent messaging
-   * is made from. It is not stored: a restart reads it again from the registry.
+   * A Claude session's name as its registry gives it now, a rename included, which its alias in
+   * agent messaging is made from. It is not stored: a restart reads it again from the registry.
    */
   name: z.string().optional(),
   intent: z.string().optional(),
@@ -317,7 +317,7 @@ export type ClosedSession = z.infer<typeof ClosedSession>;
  */
 export const AgentRef = z.object({
   session: SessionId,
-  /** Short and stable: a Claude session's own name, else `<folder>-<harness>`, with `@machine` or an id suffix when two would meet. */
+  /** Short and stable but for a rename: a Claude session's own name, else `<folder>-<harness>`, with `@machine` or an id suffix when two would meet. */
   alias: z.string().min(1).max(120),
   harness: HarnessKind,
   node: NodeId,

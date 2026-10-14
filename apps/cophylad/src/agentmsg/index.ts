@@ -111,7 +111,7 @@ export class AgentMessages {
   private deps: AgentMessagesDeps;
   private log: Logger;
   readonly limits: Limits;
-  /** Where each session listed lately ran, and the names it answered to: a node that leaves takes its rows from the mirror. */
+  /** Where each session listed lately ran, and the names it answered to, a renamed one's old ones too: a node that leaves takes its rows from the mirror. */
   private known = new Map<string, { node: string; nodeName: string; forms: string[] }>();
 
   constructor(deps: AgentMessagesDeps) {
@@ -226,10 +226,11 @@ export class AgentMessages {
       seen.add(s.id);
       entries.push({ session: s, nodeName: node?.name ?? s.node });
     }
-    const d = directory(entries);
+    const d = directory(entries, (id) => this.known.get(id)?.forms);
     for (const e of d.entries) {
+      const a = d.aliases.get(e.session.id);
       this.known.delete(e.session.id);
-      this.known.set(e.session.id, { node: e.session.node, nodeName: e.nodeName, forms: [e.session.id.toLowerCase(), ...(d.aliases.get(e.session.id)?.forms ?? [])] });
+      this.known.set(e.session.id, { node: e.session.node, nodeName: e.nodeName, forms: [e.session.id.toLowerCase(), ...(a?.forms ?? []), ...(a?.former ?? [])] });
     }
     while (this.known.size > KNOWN) this.known.delete(this.known.keys().next().value!);
     return d;

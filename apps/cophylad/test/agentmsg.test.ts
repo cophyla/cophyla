@@ -330,6 +330,24 @@ describe("the router", () => {
     expect(row).toMatchObject({ principal: { kind: "harness", session: me.id }, decision: "allow", target: codex.id, outcome: "ok" });
   });
 
+  test("a renamed session goes by its new name; the one it was listed under reaches it until another session takes it", async () => {
+    const me = sess("claude", "C:/work/api", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    const web = sess("claude", "C:/work/web", { native: { id: "c-w", pid: 4200, transport: "pipe" }, name: "web-3f" });
+    const local = [me, web];
+    const r = rig({ local });
+    expect((await r.call(me, "list_agents", {})).text).toContain("- web-3f: Claude Code on Desk");
+    web.name = "Login Review";
+    const listed = (await r.call(me, "list_agents", {})).text;
+    expect(listed).toContain("- login-review: Claude Code on Desk");
+    expect(listed).not.toContain("web-3f");
+    expect((await r.call(me, "send_message", { to: "web-3f", text: "still you?" })).text).toMatch(/^Sent to login-review \(/);
+    expect(r.sent.at(-1)!.id).toBe(web.id);
+    const other = sess("claude", "C:/work/other", { native: { id: "c-o", pid: 4400, transport: "pipe" }, name: "web-3f" });
+    local.push(other);
+    expect((await r.call(me, "send_message", { to: "web-3f", text: "and now?" })).text).toMatch(/^Sent to web-3f \(/);
+    expect(r.sent.at(-1)!.id).toBe(other.id);
+  });
+
   test("a rule of the user's can deny it; itself and no one are refused", async () => {
     const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
     const codex = sess("codex", "C:/work/api");
