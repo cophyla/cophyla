@@ -21,6 +21,8 @@ export const CLAUDE_HOOK_EVENTS = [
   "PostToolUseFailure",
   "Notification",
   "Stop",
+  // A turn the API ended (a usage limit, an outage) fires this in place of Stop.
+  "StopFailure",
   "SessionEnd",
 ] as const;
 

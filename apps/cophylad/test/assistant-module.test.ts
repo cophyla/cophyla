@@ -8,7 +8,7 @@
 // the context once idle; a prompt that does not reach the session is tried once more and then
 // said; a program that went is started again where it was; the session's tools are the
 // brain's; what the user sets is kept and starts it again; and on Claude Code its hooks carry
-// what it is told, in parts.
+// what it is told, in parts, and a turn its API ended (a usage limit) ends all the same.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { newId, RpcError } from "@cophyla/protocol";
 import type { AssistantState, HarnessProfile, LlmTool, Message, Session, TerminalRef, ToolCallResult } from "@cophyla/protocol";
 import { CLAUDE_PART_CHARS, CODEX_PART_CHARS, parts } from "../src/assistant/context.ts";
-import { Assistant, NO_ACCOUNT } from "../src/assistant/index.ts";
+import { Assistant, failureText, NO_ACCOUNT, UNTAKEN } from "../src/assistant/index.ts";
 import type { AssistantBrain, AssistantDeps, AssistantHost, AssistantSessions, HostEvents } from "../src/assistant/index.ts";
 import type { FeedEvent } from "../src/brain-link/feed.ts";
 import { Bus } from "../src/bus.ts";
@@ -32,8 +32,7 @@ const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const PORT = 4817;
 const RULES = "You are Cophyla.";
 const TOOLS: LlmTool[] = [{ name: "agents", description: "The agent sessions.", schema: { type: "object", properties: {} } }];
-const UNDELIVERED = "Your message did not reach the chat's session. Send it again; if it keeps happening, restart the chat agent from the chat's menu.";
-const UNTAKEN = "Your message has not reached the chat's agent yet. If no answer comes, send it again, or restart the chat agent from the chat's menu.";
+const UNDELIVERED = "Cophyla didn't receive your message. Send it again; if it keeps happening, use Restart chat agent in the chat's ⋮ menu.";
 
 type Json = Record<string, unknown>;
 type Told = [string, Json];
@@ -1144,7 +1143,7 @@ describe("its program going", () => {
     const id = w.say("hello");
     await until(() => w.host.sent[0]?.told);
     w.host.events.ended("its app-server went");
-    expect(w.said).toEqual(["The chat's agent stopped before it answered, and is being started again. Send your message again."]);
+    expect(w.said).toEqual(["Cophyla stopped before it answered and is starting again. Send your message again."]);
     expect(w.brain.turns()).toEqual([
       ["assistant.prompted", { prompt: { kind: "user", message: id } }],
       ["assistant.replied", { text: "", prompt: { kind: "user", message: id }, interrupted: true }],
@@ -1489,6 +1488,51 @@ describe("on Claude Code", () => {
     expect(w.brain.turns().at(-1)).toEqual(["assistant.replied", { text: "Two sessions are open.", prompt: { kind: "user", message: id } }]);
     expect(w.assistant.busy).toBe(false);
     expect(w.typed).toEqual([]);
+  });
+
+  test("a turn its API ended on a usage limit is over all the same: cut short to the brain, the harness's words to the user, and a wake may go", async () => {
+    const w = await up({ claude: true });
+    const id = w.say("what is open?");
+    await until(() => w.sessions.sends.length === 1);
+    await w.sessions.hooks!.hook(hook("UserPromptSubmit", "native-1", { prompt: "what is open?", promptId: "p-1" }), { ref: "cophylad-1" });
+    expect(w.assistant.busy).toBe(true);
+    const limit = "You've hit your weekly limit · resets Oct 18, 10am (Europe/Budapest)";
+    expect(await w.sessions.hooks!.hook(hook("StopFailure", "native-1", { error: "rate_limit", lastAssistantMessage: limit }), {})).toEqual({});
+    expect(w.brain.turns().at(-1)).toEqual(["assistant.replied", { text: "", prompt: { kind: "user", message: id }, interrupted: true }]);
+    expect(w.said).toEqual([`Cophyla can't answer: the work account it runs on is out of usage (“${limit}”). Pick another account under Settings → Chat, or send your message again once it resets.`]);
+    expect(w.assistant.busy).toBe(false);
+    expect(status(w)).toBe("idle");
+    // a wake waits for a turn to end: this one has
+    w.assistant.wake({ id: "w1", text: "The build finished." });
+    await until(() => w.sessions.sends.length === 2);
+  });
+
+  test("while turns keep failing a wake's is told once, a user's every time, and a reply ends the run", async () => {
+    const w = await up({ claude: true });
+    let n = 0;
+    const turn = async (send: () => void, end: NormalisedHook) => {
+      send();
+      await until(() => w.sessions.sends.length === n + 1);
+      n++;
+      await w.sessions.hooks!.hook(hook("UserPromptSubmit", "native-1", { prompt: `prompt ${n}`, promptId: `p-${n}` }), { ref: `cophylad-${n}` });
+      await w.sessions.hooks!.hook(end, {});
+    };
+    const failure = hook("StopFailure", "native-1", { error: "overloaded" });
+    await turn(() => w.assistant.wake({ id: "w1", text: "one" }), failure);
+    await turn(() => w.assistant.wake({ id: "w2", text: "two" }), failure);
+    expect(w.said).toEqual([failureText("overloaded", undefined, "work")]);
+    await turn(() => w.say("hello"), failure);
+    expect(w.said).toHaveLength(2);
+    await turn(() => w.assistant.wake({ id: "w3", text: "three" }), hook("Stop", "native-1", { lastAssistantMessage: "Done." }));
+    await turn(() => w.assistant.wake({ id: "w4", text: "four" }), failure);
+    expect(w.said).toHaveLength(3);
+    expect(w.brain.told("assistant.replied").filter((r) => r["interrupted"] === true)).toHaveLength(4);
+  });
+
+  test("what the user is told names the account and says what to do, by the kind of error", () => {
+    expect(failureText("billing_error", "Credit balance is too low", "gmail")).toBe("Cophyla can't answer: the gmail account it runs on was refused (“Credit balance is too low”). Sign in to it again, or pick another account under Settings → Chat.");
+    expect(failureText("server_error", "  ", undefined)).toBe("Cophyla's answer was cut short by an error. Send your message again.");
+    expect(failureText("rate_limit", undefined, undefined)).toBe("Cophyla can't answer: the account it runs on is out of usage. Pick another account under Settings → Chat, or send your message again once it resets.");
   });
 
   test("words typed straight into its terminal are stored as the user's message, and not typed again", async () => {

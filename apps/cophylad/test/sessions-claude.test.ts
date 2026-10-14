@@ -190,7 +190,7 @@ describe("claude hooks installer", () => {
   test("a missing or empty settings file becomes one with only cophylad's hooks, and uninstall empties it again", () => {
     const path = join(tempHome(), "settings.json");
     installClaudeHooks(path, spec);
-    expect(Object.keys(readSettings(path)["hooks"] as object)).toHaveLength(9);
+    expect(Object.keys(readSettings(path)["hooks"] as object)).toHaveLength(10);
     uninstallClaudeHooks(path);
     expect(readSettings(path)).toEqual({});
   });
@@ -290,7 +290,7 @@ describe("claude hooks over the daemon's own start and stop", () => {
     );
     try {
       const installed = readSettings(settings)["hooks"] as Record<string, unknown[]>;
-      expect(Object.keys(installed)).toHaveLength(9);
+      expect(Object.keys(installed)).toHaveLength(10);
       const ours = installed["Stop"]!.filter(isCophyladGroup);
       expect(ours).toHaveLength(1);
       expect(isOwnGroup(ours[0], [{ url: "http://127.0.0.1:4899/hooks/claude" }])).toBe(true);
@@ -704,6 +704,20 @@ describe("claude background jobs, spares, and what an idle session waits on", ()
     from = events(id).length;
     await hook("w-a", "Stop", { last_assistant_message: "All green." });
     expect(statuses(from)).toEqual([{ status: "idle", lastAssistantMessage: "All green." }]);
+  });
+
+  test("a turn its API ended fires StopFailure in place of Stop: idle all the same, with the error and the harness's words for it", async () => {
+    writeRegistry(registry, { pid: 1000, sessionId: "w-a", cwd, status: "busy" });
+    await hook("w-a", "UserPromptSubmit", { prompt: "and now?" });
+    expect(live("w-a")!.status).toBe("busy");
+    const id = live("w-a")!.id;
+    const from = events(id).length;
+    writeRegistry(registry, { pid: 1000, sessionId: "w-a", cwd, status: "idle" });
+    const limit = "You've hit your weekly limit · resets Oct 18, 10am (Europe/Budapest)";
+    expect(await hook("w-a", "StopFailure", { error: "rate_limit", last_assistant_message: limit })).toEqual({});
+    expect(live("w-a")!.status).toBe("idle");
+    const statuses = events(id).slice(from).filter((e) => e.kind === "status").map((e) => e.payload);
+    expect(statuses).toEqual([{ status: "idle", pid: 1000, lastAssistantMessage: limit, failed: "rate_limit" }]);
   });
 
   test("a spare is no session; a record of one from an older daemon ends, and comes back when the spare becomes a job", async () => {

@@ -19,7 +19,8 @@
 //
 // The session's turns are told to the brain as they go: a prompt taken (`assistant.prompted`),
 // a tool of the harness's own run (`assistant.step`), the words a turn ends with
-// (`assistant.replied`), and where the session stands (`assistant.state`). Beside each prompt
+// (`assistant.replied`; a turn its API ended, on a usage limit or an outage, as cut short,
+// the user told why), and where the session stands (`assistant.state`). Beside each prompt
 // and at each session's start the brain is asked what the session is to be told
 // (`assistant.context`); the answer is cut into parts a harness will carry whole
 // (context.ts), and the last one that reached the session is named in the next ask, so the
@@ -66,6 +67,24 @@ const BACKOFF_MAX_MS = 60_000;
 
 /** What says the chat has nothing to run on, to the user who wrote to it. */
 export const NO_ACCOUNT = "The chat runs on your own Claude Code or Codex account, and none is signed in on this machine. Sign in to one (run `claude` or `codex` in a terminal), then send your message again.";
+
+/** What tells the user a message of theirs was typed into the session and not taken in time. */
+export const UNTAKEN = "Cophyla hasn't received your message yet. If no answer comes, send it again, or use Restart chat agent in the chat's ⋮ menu.";
+
+/** API errors that are the account's, not the moment's: another account is the way out. */
+const ACCOUNT_ERRORS = new Set(["authentication_failed", "oauth_org_not_allowed", "account_on_hold", "verification_required", "billing_error", "cloud_credential_error"]);
+
+/**
+ * What the user is told when a turn of the chat's ended on an error of its harness's API, in
+ * the harness's own words where it gave some (Claude Code's for a usage limit name the reset).
+ */
+export function failureText(error: string, words: string | undefined, account: string | undefined): string {
+  const said = words?.trim() ? ` (“${words.trim()}”)` : "";
+  const on = account ? `the ${account} account it runs on` : "the account it runs on";
+  if (error === "rate_limit") return `Cophyla can't answer: ${on} is out of usage${said}. Pick another account under Settings → Chat, or send your message again once it resets.`;
+  if (ACCOUNT_ERRORS.has(error)) return `Cophyla can't answer: ${on} was refused${said}. Sign in to it again, or pick another account under Settings → Chat.`;
+  return `Cophyla's answer was cut short by an error${said}. Send your message again.`;
+}
 
 /** What the user chose in the app; either may be left to cophylad. */
 export interface AssistantPrefs {
@@ -226,6 +245,8 @@ export class Assistant {
   private again = false;
   /** The brain's rules changed under a running session: it is started again under them once it is idle. */
   private stale = false;
+  /** The last turn ended on an API error and none has replied since: a wake's failing again is not told again. */
+  private failing = false;
   private sent = 0;
   private bringing?: Promise<void>;
   private backoffMs: number;
@@ -521,7 +542,7 @@ export class Assistant {
     this.log.warn("the chat's session ended; starting it again", { why });
     this.host = undefined;
     // A turn of the user's that went with it had no answer: they are told, since nothing else will say so.
-    if (this.current && this.current.prompt.kind !== "wake") this.deps.chat.say([{ type: "text", text: "The chat's agent stopped before it answered, and is being started again. Send your message again." }]);
+    if (this.current && this.current.prompt.kind !== "wake") this.deps.chat.say([{ type: "text", text: "Cophyla stopped before it answered and is starting again. Send your message again." }]);
     this.abandon();
     this.setStatus("down", "the chat's session ended and is being started again");
     void this.bring();
@@ -670,7 +691,7 @@ export class Assistant {
       if (this.late.size >= 8) this.late.delete(this.late.keys().next().value!);
       this.late.set(ref, item);
       if (item.kind === "wake") this.tell("assistant.replied", { text: "", prompt: { kind: "wake", wake: item.id }, interrupted: true });
-      else if (item.kind === "user") this.deps.chat.say([{ type: "text", text: "Your message has not reached the chat's agent yet. If no answer comes, send it again, or restart the chat agent from the chat's menu." }]);
+      else if (item.kind === "user") this.deps.chat.say([{ type: "text", text: UNTAKEN }]);
     }
     this.pump();
   }
@@ -683,7 +704,7 @@ export class Assistant {
       this.queue.unshift({ ...item, tries: (item.tries ?? 0) + 1 });
       return;
     }
-    this.deps.chat.say([{ type: "text", text: "Your message did not reach the chat's session. Send it again; if it keeps happening, restart the chat agent from the chat's menu." }]);
+    this.deps.chat.say([{ type: "text", text: "Cophyla didn't receive your message. Send it again; if it keeps happening, use Restart chat agent in the chat's ⋮ menu." }]);
   }
 
   // --- what the session's host tells ------------------------------------------------------
@@ -747,7 +768,26 @@ export class Assistant {
   private replied(text: string): void {
     const turn = this.current;
     this.current = undefined;
+    this.failing = false;
     this.tell("assistant.replied", { text, ...(turn ? { prompt: turn.prompt } : {}) });
+    if (this.running) this.setStatus("idle");
+    if (this.stale && this.queue.length === 0) return this.renew();
+    this.pump();
+  }
+
+  /**
+   * The session's turn ended on an error of its harness's API (a usage limit, an outage) and
+   * not with a reply. It is over all the same, so the next prompt may go: the brain hears it
+   * was cut short, which owes a wake again a few times at most. The user is told, on a turn of
+   * theirs, and once on a wake's while the errors last.
+   */
+  private failed(error: string, words: string | undefined): void {
+    const turn = this.current;
+    this.current = undefined;
+    this.log.warn("the chat's turn ended on an error", { error, kind: turn?.prompt.kind });
+    if (turn) this.tell("assistant.replied", { text: "", prompt: turn.prompt, interrupted: true });
+    if (turn?.prompt.kind === "user" || !this.failing) this.deps.chat.say([{ type: "text", text: failureText(error, words, this.profile?.name) }]);
+    this.failing = true;
     if (this.running) this.setStatus("idle");
     if (this.stale && this.queue.length === 0) return this.renew();
     this.pump();
@@ -791,6 +831,9 @@ export class Assistant {
         return {};
       case "Stop":
         this.replied(hook.lastAssistantMessage ?? "");
+        return {};
+      case "StopFailure":
+        this.failed(hook.error ?? "unknown", hook.lastAssistantMessage);
         return {};
       default:
         return {};

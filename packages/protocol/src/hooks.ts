@@ -19,6 +19,7 @@ export const ClaudeHookEventName = z.enum([
   "Notification",
   "Elicitation",
   "Stop",
+  "StopFailure",
   "SubagentStop",
   "PreCompact",
   "SessionEnd",
@@ -42,14 +43,17 @@ export const ClaudeHookEvent = z.object({
   tool_input: z.unknown().optional(),
   tool_response: z.unknown().optional(),
   tool_use_id: z.string().optional(),
+  /** PostToolUseFailure: what went wrong. StopFailure: the kind of API error the turn ended on (`rate_limit`, `billing_error`, `server_error`…). */
   error: z.string().optional(),
+  /** StopFailure: more of what the API said. */
+  error_details: z.string().optional(),
   permission_suggestions: z.array(z.unknown()).optional(),
   /** Set when a sub-agent ran the tool: its call is in the sub-agent's transcript, not the session's. */
   agent_id: z.string().optional(),
   // Notification
   message: z.string().optional(),
   notification_type: z.string().optional(),
-  // Stop, SubagentStop
+  // Stop, SubagentStop; StopFailure's is the harness's own words for the error, such as "You've hit your weekly limit · resets…"
   stop_hook_active: z.boolean().optional(),
   last_assistant_message: z.string().optional(),
   // SessionStart, SessionEnd, PreCompact

@@ -3548,7 +3548,10 @@ export class Sessions implements SessionHost {
         else if (hook.notificationType === "idle_prompt") this.setStatus(rec, "idle", now);
         return {};
       }
-      case "Stop": {
+      // A turn its API ended (a usage limit, an outage) fires StopFailure in place of Stop: it is
+      // over all the same, its words are the harness's for the error, and the error goes with them.
+      case "Stop":
+      case "StopFailure": {
         // The turn ended, so a prompt still held was answered in the terminal.
         if (rec.held && !rec.held.settled) this.closeHeld(rec, "stopped", "idle");
         const stopped = rec;
@@ -3556,7 +3559,10 @@ export class Sessions implements SessionHost {
         const settle = (waiting: SessionWaiting | undefined) => {
           if (this.stopped || stopped.session.status === "ended") return;
           // Room for an agent's closing report whole: the brain's wake carries it, and one it had to cut sends it to read the history.
-          const words = hook.lastAssistantMessage ? { lastAssistantMessage: capText(hook.lastAssistantMessage, 2000) } : {};
+          const words = {
+            ...(hook.lastAssistantMessage ? { lastAssistantMessage: capText(hook.lastAssistantMessage, 2000) } : {}),
+            ...(hook.name === "StopFailure" ? { failed: hook.error ?? "unknown" } : {}),
+          };
           // One event for the turn's end: the status it brings, with the last words. A hook since
           // (the next turn's prompt) says more than this one did, and a status the registry read
           // first changes nothing: the Stop's own event still carries the words.
