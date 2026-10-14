@@ -9,17 +9,23 @@
 // `continued-in` row, and the record follows it there: the tab the user knew carries on as the
 // job. The window it left either exits or shows the agents screen, which is a terminal of
 // Claude's agents, not a session; the daemon's spare process is no session either.
+//
+// A session belongs to the profile whose registry lists it, else the one whose directory holds
+// its transcript; the profile a hook names is a hint. A transcript in a Claude directory no
+// profile has is an account cophylad was not told of: the session is listed under the profile
+// its hooks name, its timeline and the log say so, and the registry moves it to its own profile
+// once there is one.
 
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
 import type { Logger } from "../../log.ts";
 import type { ProcessTree } from "../focus.ts";
 import { capText, oneLine, rawIfSmall, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
-import { isWithin } from "../paths.ts";
+import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
 import { acceptsCrossSessionInbound, installClaudeHooks, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
@@ -38,6 +44,22 @@ const STOP_POLL_MS = 50;
 const STOP_POLLS = 10;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * The Claude directory a transcript is in: Claude keeps one at
+ * `<configDir>/projects/<project>/<session>.jsonl`, a sub-agent's further down. `undefined`
+ * for a path of no such shape.
+ */
+export function claudeConfigDirOf(transcriptPath: string): string | undefined {
+  let dir = dirname(transcriptPath);
+  for (let up = dirname(dir); up !== dir; dir = up, up = dirname(up)) {
+    if (basename(up) === "projects") return dirname(up);
+  }
+  return undefined;
+}
+
+/** Whose a session is by its transcript: a profile's, or a Claude directory's that no profile has. */
+type Account = { profile: HarnessProfile; dir?: undefined } | { profile?: undefined; dir: string };
 
 export interface ClaudeAdapterOptions {
   host: SessionHost;
@@ -78,6 +100,8 @@ export class ClaudeAdapter implements HarnessAdapter {
   private expected = new Map<string, ExpectedSession>();
   /** What this daemon wrote, by settings file: one owner per profile installed there. */
   private installed = new Map<string, ClaudeHookOwner[]>();
+  /** What `checkAccount` has logged: a directory no profile has, a profile and the one its hooks named. */
+  private logged = new Set<string>();
 
   constructor(opts: ClaudeAdapterOptions) {
     this.host = opts.host;
@@ -245,6 +269,17 @@ export class ClaudeAdapter implements HarnessAdapter {
     });
     // Still listed under the process it ended in: a session on its way out, not a resume.
     if (rec.session.status === "ended") return rec;
+    // Listed under another profile while its own was not known: the registry says whose it is.
+    // Never away from a profile that holds its transcript, so two profiles that share a registry
+    // do not toss it between them.
+    if (rec.session.profile !== profile.id) {
+      const filed = this.profiles.find((p) => p.id === rec.session.profile);
+      const transcript = rec.session.transcript?.path;
+      if (!(filed && transcript && isWithin(transcript, filed.configDir))) {
+        this.log.info("claude session moved to the profile whose registry lists it", { session: rec.session.id, from: rec.session.profile, to: profile.id });
+        this.host.patch(rec, { profile: profile.id }, rec.session.lastActivity);
+      }
+    }
     if (expected) this.log.info("terminal session met", { session: rec.session.id, native: live.sessionId, pid: live.pid, workspace: expected.workspace, task: expected.task });
     // A job's transcript opens with the history it was forked with, already recorded.
     if (live.jobId !== undefined && rec.copiedBefore === undefined) rec.copiedBefore = jobCreatedAt(profile.configDir, live.jobId) ?? 0;
@@ -489,7 +524,53 @@ export class ClaudeAdapter implements HarnessAdapter {
     if (!found) return undefined;
     found.lastHookAt = this.host.now();
     this.findProcess(found, meta);
+    this.checkAccount(found, hook, meta);
     return found;
+  }
+
+  /**
+   * Whose a session is by its transcript, which Claude keeps at
+   * `<configDir>/projects/<project>/<session>.jsonl`: the profile whose directory holds it, or,
+   * when none does, the Claude directory it is in. `undefined` with no transcript path, or one
+   * of no such shape.
+   */
+  private accountOf(transcriptPath: string | undefined): Account | undefined {
+    if (!transcriptPath) return undefined;
+    const profile = this.profiles.find((p) => isWithin(transcriptPath, p.configDir));
+    if (profile) return { profile };
+    const dir = claudeConfigDirOf(transcriptPath);
+    return dir ? { dir } : undefined;
+  }
+
+  /**
+   * What a hook's transcript says against what its hooks name, logged once each: a session in a
+   * directory no profile has, which is listed under another profile until config names it; and
+   * a session in one profile's directory running another's hooks, launched with that profile's
+   * settings (`--settings`), which the directory decides.
+   */
+  private checkAccount(rec: SessionRecord, hook: NormalisedHook, meta: HookMeta): void {
+    const account = this.accountOf(hook.transcriptPath);
+    if (account?.dir !== undefined) {
+      const key = `dir:${pathKey(account.dir)}`;
+      if (this.logged.has(key)) return;
+      this.logged.add(key);
+      this.log.warn("a claude session runs under a directory no profile has; [[profiles]] in config.toml can name it", { dir: account.dir, hooks: meta.profile, session: rec.session.id, profile: rec.session.profile });
+    } else if (account && meta.profile !== undefined && meta.profile !== account.profile.id) {
+      const key = `hooks:${account.profile.id}:${meta.profile}`;
+      if (this.logged.has(key)) return;
+      this.logged.add(key);
+      this.log.info("a claude session runs another profile's hooks; its directory decides whose it is", { dir: account.profile.configDir, profile: account.profile.id, hooks: meta.profile, session: rec.session.id });
+    }
+  }
+
+  /** The session's timeline says it is listed under a profile not its own, and how to list it under its own. */
+  private unknownAccount(rec: SessionRecord, dir: string, profile: HarnessProfile, hinted: boolean): void {
+    this.host.event(rec, "notification", {
+      type: "unknown_account",
+      configDir: dir,
+      profile: profile.id,
+      message: `This session runs under ${dir}, a Claude folder that is none of Cophyla's profiles, so it is listed under "${profile.name}", ${hinted ? "whose hooks it runs" : "the usual one"}. Add the folder to [[profiles]] in config.toml and restart Cophyla to list it under its own.`,
+    });
   }
 
   /**
@@ -525,12 +606,17 @@ export class ClaudeAdapter implements HarnessAdapter {
     // Not in any registry. The agents screen and `claude attach` register nothing, yet send a
     // Notification (a job done) and a SessionEnd of their own: neither is a conversation.
     if (hook.name === "Notification" || hook.name === "SessionEnd") return undefined;
-    // The transcript path names the directory the profile owns.
-    const byDir = hook.transcriptPath ? this.profiles.find((p) => isWithin(hook.transcriptPath!, p.configDir)) : undefined;
-    const profile = byDir ?? this.profiles.find((p) => p.id === meta.profile) ?? this.profiles.find((p) => p.default) ?? this.profiles[0];
+    // The transcript path names the directory the profile owns. One in a Claude directory no
+    // profile has is an account cophylad was not told of: the session is still listed, under
+    // the profile its hooks name (else the usual one), so the user sees it and is told why it
+    // is there; it keeps its own directory for what is read from it, and moves to its own
+    // profile once the registry there lists it (`meet`).
+    const account = this.accountOf(hook.transcriptPath);
+    const hinted = this.profiles.find((p) => p.id === meta.profile);
+    const profile = account?.profile ?? hinted ?? this.profiles.find((p) => p.default) ?? this.profiles[0];
     if (!profile || !hook.cwd) return undefined;
-    this.log.info("claude session known only from its hook", { session: hook.sessionId, profile: profile.id });
-    return this.host.ensure({
+    this.log.info("claude session known only from its hook", { session: hook.sessionId, profile: profile.id, ...(account?.dir !== undefined ? { dir: account.dir } : {}) });
+    const rec = this.host.ensure({
       harness: "claude",
       nativeId: hook.sessionId,
       profile: profile.id,
@@ -538,8 +624,10 @@ export class ClaudeAdapter implements HarnessAdapter {
       transport: "pipe",
       status: "busy",
       ...(hook.transcriptPath ? { transcriptPath: hook.transcriptPath } : {}),
-      handles: { configDir: profile.configDir },
+      handles: { configDir: account?.dir ?? profile.configDir },
     });
+    if (account?.dir !== undefined && rec.session.status !== "ended") this.unknownAccount(rec, account.dir, profile, profile === hinted);
+    return rec;
   }
 }
 

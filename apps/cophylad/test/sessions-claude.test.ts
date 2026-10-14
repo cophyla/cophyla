@@ -5,7 +5,9 @@
 // ending and resuming on evidence: a hook-only session kept for the grace and ended after,
 // resumed by its next hook, its process found through the shim's ancestors, a registry still
 // showing the ended process ignored, `setStatus` never un-ending, and an exit recording the
-// transcript's last lines with a resume recording nothing twice.
+// transcript's last lines with a resume recording nothing twice; then a session in a Claude
+// directory no profile has: listed under the profile its hooks name, flagged in its timeline
+// and once in the log, and moved to its own profile once a restart declares it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,7 +15,8 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, SessionEvent } from "@cophyla/protocol";
-import { ClaudeAdapter } from "../src/sessions/claude/adapter.ts";
+import { createLogger } from "../src/log.ts";
+import { ClaudeAdapter, claudeConfigDirOf } from "../src/sessions/claude/adapter.ts";
 import { installClaudeHooks, isCophyladGroup, isOwnGroup, readSettings, uninstallClaudeHooks, withCophyladHooks, withoutCophyladHooks } from "../src/sessions/claude/hooks.ts";
 import { claudeFrames, injectClaude } from "../src/sessions/claude/inject.ts";
 import { readRegistry, transcriptDirName, transcriptPathFor } from "../src/sessions/claude/registry.ts";
@@ -843,5 +846,128 @@ describe("claude background jobs, spares, and what an idle session waits on", ()
     const list = mini.sessions.list();
     expect(list.some((s) => s.native.job !== undefined)).toBe(true);
     for (const s of list as Session[]) expect(Session.safeParse(s).success).toBe(true);
+  });
+});
+
+describe("claude sessions under an account no profile has", () => {
+  let scratch: string;
+  let homeDir: string;
+  let workDir: string;
+  let gmailDir: string;
+  let cwd: string;
+  let storePath: string;
+  let mini: Mini;
+  const lines: string[] = [];
+  const alive = new Set<number>();
+  /** Declared profiles, the first the usual one; the store outlives a restart. */
+  const start = (profiles: [string, string][]) =>
+    miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n` + profiles.map(([name, dir], i) => `\n[[profiles]]\nharness = "claude"\nname = "${name}"\nconfig_dir = ${tomlString(dir)}\n${i === 0 ? "default = true\n" : ""}`).join(""),
+      (host, log) => [new ClaudeAdapter({ host, log, isAlive: (pid) => alive.has(pid), inject: async () => undefined, sharedSettings: join(scratch, "none.json") })],
+      { log: createLogger("info", (line) => lines.push(line)), storePath },
+    );
+
+  beforeAll(async () => {
+    scratch = tempHome();
+    homeDir = join(scratch, "claude-home");
+    workDir = join(scratch, "claude-accounts", "work");
+    gmailDir = join(scratch, "claude-accounts", "gmail");
+    cwd = join(scratch, "work");
+    storePath = join(scratch, "store.sqlite");
+    for (const dir of [join(homeDir, "sessions"), join(workDir, "sessions"), cwd]) mkdirSync(dir, { recursive: true });
+    mini = await start([["home", homeDir], ["work", workDir]]);
+  });
+  afterAll(() => mini.stop());
+
+  const profileId = (name: string) => mini.profiles.byHarness("claude").find((p) => p.name === name)!.id;
+  const hook = (native: string, transcript: string | undefined, hooks: string | undefined, name = "UserPromptSubmit") =>
+    mini.sessions.onHook("claude", { session_id: native, ...(transcript !== undefined ? { transcript_path: transcript } : {}), cwd, hook_event_name: name, ...(name === "UserPromptSubmit" ? { prompt: "hi" } : {}) } as never, { via: "http", ...(hooks !== undefined ? { profile: hooks } : {}) });
+  const byNative = (native: string) => mini.store.sessions.getByNative("claude", native)!;
+  const flags = (native: string) =>
+    mini.store.sessionEvents
+      .history(byNative(native).id, { limit: 500 })
+      .map((e) => e.payload as Record<string, unknown>)
+      .filter((p) => p["type"] === "unknown_account");
+  /** The log lines that say `text`, from `from` on, with their fields. */
+  const logged = (text: string, from = 0) =>
+    lines
+      .slice(from)
+      .filter((l) => l.includes(text))
+      .map((l) => ({ line: l, fields: JSON.parse(l.slice(l.indexOf(" {") + 1)) as Record<string, unknown> }));
+
+  test("the directory a transcript is in, a sub-agent's too; none for a path of another shape", () => {
+    expect(claudeConfigDirOf(join(gmailDir, "projects", "C--work", "s.jsonl"))).toBe(gmailDir);
+    expect(claudeConfigDirOf(join(gmailDir, "projects", "C--work", "s", "subagents", "agent-1.jsonl"))).toBe(gmailDir);
+    expect(claudeConfigDirOf(join("elsewhere", "s.jsonl"))).toBeUndefined();
+  });
+
+  test("a transcript under a known profile's directory files the session there, whatever profile its hooks name", async () => {
+    const from = lines.length;
+    const path = transcriptPathFor(workDir, cwd, "w1");
+    await hook("w1", path, profileId("home"));
+    await hook("w1", path, profileId("home"), "Stop");
+    expect(byNative("w1").profile).toBe(profileId("work"));
+    expect(mini.sessions.find("claude", "w1")!.handles.configDir).toBe(workDir);
+    expect(flags("w1")).toEqual([]);
+    // Another profile's hooks: said once, as information, since the directory decides.
+    const crossed = logged("runs another profile's hooks", from);
+    expect(crossed).toHaveLength(1);
+    expect(crossed[0]!.line).toContain(" INFO ");
+    expect(crossed[0]!.fields).toMatchObject({ dir: workDir, profile: profileId("work"), hooks: profileId("home") });
+    expect(logged("no profile has", from)).toEqual([]);
+  });
+
+  test("a transcript in a Claude directory no profile has, its hooks naming the usual profile: listed under it, flagged in its timeline, warned of once in the log", async () => {
+    const from = lines.length;
+    const path = transcriptPathFor(gmailDir, cwd, "g1");
+    await hook("g1", path, profileId("home"));
+    await hook("g1", path, profileId("home"), "Stop");
+    expect(byNative("g1").profile).toBe(profileId("home"));
+    // What is read from its directory is read from its own.
+    expect(mini.sessions.find("claude", "g1")!.handles.configDir).toBe(gmailDir);
+    const flagged = flags("g1");
+    expect(flagged).toHaveLength(1);
+    expect(flagged[0]).toMatchObject({ configDir: gmailDir, profile: profileId("home") });
+    expect(String(flagged[0]!["message"])).toContain(gmailDir);
+    expect(String(flagged[0]!["message"])).toContain(`"home", whose hooks it runs`);
+    // Another session from the same directory: flagged in its own timeline, not again in the log.
+    await hook("g2", transcriptPathFor(gmailDir, cwd, "g2"), profileId("home"));
+    expect(byNative("g2").profile).toBe(profileId("home"));
+    expect(flags("g2")).toHaveLength(1);
+    const warned = logged("no profile has", from);
+    expect(warned).toHaveLength(1);
+    expect(warned[0]!.line).toContain(" WARN ");
+    expect(warned[0]!.fields).toMatchObject({ dir: gmailDir, hooks: profileId("home"), profile: profileId("home") });
+    expect(logged("runs another profile's hooks", from)).toEqual([]);
+  });
+
+  test("with no transcript path, the profile its hooks name, else the usual one, and nothing flagged", async () => {
+    const from = lines.length;
+    await hook("n1", undefined, profileId("work"));
+    await hook("n2", undefined, undefined);
+    expect(byNative("n1").profile).toBe(profileId("work"));
+    expect(byNative("n2").profile).toBe(profileId("home"));
+    expect(flags("n1")).toEqual([]);
+    expect(flags("n2")).toEqual([]);
+    expect(logged("no profile has", from)).toEqual([]);
+    expect(logged("runs another profile's hooks", from)).toEqual([]);
+  });
+
+  test("its directory declared, a restart moves the session to its own profile as soon as the registry there lists it", async () => {
+    const id = byNative("g1").id;
+    await mini.stop();
+    alive.add(7100);
+    writeRegistry(join(gmailDir, "sessions"), { pid: 7100, sessionId: "g1", cwd, status: "idle" });
+    const from = lines.length;
+    mini = await start([["home", homeDir], ["work", workDir], ["gmail", gmailDir]]);
+    const s = byNative("g1");
+    expect(s.id).toBe(id);
+    expect(s.profile).toBe(profileId("gmail"));
+    expect(mini.sessions.find("claude", "g1")!.handles.configDir).toBe(gmailDir);
+    expect(logged("moved to the profile whose registry lists it", from)).toHaveLength(1);
+    // The next poll leaves it there.
+    await mini.sessions.tick();
+    expect(byNative("g1").profile).toBe(profileId("gmail"));
+    expect(logged("moved to the profile whose registry lists it", from)).toHaveLength(1);
   });
 });

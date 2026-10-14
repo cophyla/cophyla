@@ -132,6 +132,16 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   list it) has its pid looked up through a command-mode hook's shim ancestors; with none
   known, the registry sweep keeps it for `claude_hook_grace_ms` after its last hook and then
   ends it `inactive`.
+- **Whose a Claude session is.** The profile whose registry lists it, else the one whose
+  directory holds its transcript (`<configDir>/projects/<project>/<session>.jsonl`); the
+  `x-cophyla-profile` a hook carries is a hint, used only when neither says. A transcript in
+  a Claude directory no profile has is an account cophylad was not told of (a wrapper that
+  sets `CLAUDE_CONFIG_DIR` and passes another profile's `--settings`): the session is listed
+  under the profile its hooks name, else the usual one, reads its registry and settings from
+  its own directory, gets an `unknown_account` notification in its timeline, and the log
+  warns once per directory. Once `[[profiles]]` declares the directory, the registry there
+  moves the record to it. Hooks of one profile on a session in another's directory are logged
+  once, as information: the directory decides.
 - **History once.** A transcript or rollout is parsed whole whenever a tail opens (a daemon
   start, a resume), but only lines past the offset the last tail recorded to become events;
   the offset is kept per session in the store's `transcript_tails`, never on the `Session`.
