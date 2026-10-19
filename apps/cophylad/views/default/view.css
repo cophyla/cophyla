@@ -1102,6 +1102,124 @@ button:disabled {
   color: var(--muted);
 }
 
+/* The fold at the head's start: its arrow turns down while the head is open. A finger's size
+   of room round it, without the head growing for it. It outranks the rail's `.fold`. */
+.fold.session-fold {
+  flex: none;
+  align-self: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: -4px -6px -4px -8px;
+}
+
+/* Folded, as it starts: one line, the status dot (the chip's, without its words), what the
+   session is doing cut to fit, then Timeline | Terminal, the terminal's − scale + and Fit while
+   it shows (terminal.ts docks them here), and Kill, all made small; the rest shows once it is
+   opened, the terminal's controls back on its own bar. */
+.session-head[data-open="false"] {
+  align-items: center;
+  column-gap: 8px;
+  padding-block: 4px;
+}
+
+.session-head[data-open="false"] .chip {
+  padding: 4px;
+  border: 0;
+  background: none;
+}
+
+.session-head[data-open="false"] :is(.chip-harness, .chip-profile, .session-workspace, .session-cwd, .session-stats, .session-kill-ask) {
+  display: none;
+}
+
+.session-head[data-open="false"] .session-intent {
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-head[data-open="false"] .session-actions {
+  flex: none;
+  gap: 6px;
+}
+
+.session-head[data-open="false"] :is(.term-fit, .session-kill-start, .session-kill-confirm, .session-kill-cancel) {
+  padding: 1px 7px;
+  font-size: 12px;
+}
+
+/* Timeline | Terminal as a glyph each, their words left to the reader of the page. */
+.session-head[data-open="false"] .pane-mode button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 20px;
+  padding: 0;
+  font-size: 0;
+}
+
+.session-head[data-open="false"] .pane-mode button::before {
+  content: "";
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask: var(--glyph) center / contain no-repeat;
+  mask: var(--glyph) center / contain no-repeat;
+}
+
+.pane-mode-timeline {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round'%3E%3Ccircle cx='3' cy='4' r='0.9' fill='%23000'/%3E%3Ccircle cx='3' cy='8' r='0.9' fill='%23000'/%3E%3Ccircle cx='3' cy='12' r='0.9' fill='%23000'/%3E%3Cpath d='M6.5 4h7M6.5 8h7M6.5 12h5'/%3E%3C/svg%3E");
+}
+
+.pane-mode-terminal {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2 3l3 3-3 3M6.5 9.5h4'/%3E%3C/svg%3E");
+}
+
+/* While Kill asks, its Kill and Cancel take the terminal's controls' room. */
+.session-head[data-open="false"]:not([data-kill=""]) .term-controls {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .session-head[data-open="false"] {
+    padding-inline: 12px;
+  }
+}
+
+.session-head[data-open="false"] :is(.term-smaller, .term-larger) {
+  min-width: 20px;
+  padding: 1px 4px;
+  font-size: 12px;
+}
+
+.session-head[data-open="false"] .term-scale-value {
+  min-width: 4ch;
+  padding: 0 3px;
+  font-size: 11.5px;
+}
+
+/* The terminal's controls: in its bar's row as they always were, or a group of their own on a
+   folded header's line. */
+.term-bar .term-controls,
+.session-term-slot {
+  display: contents;
+}
+
+.session-head .term-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.session-head .term-scale {
+  margin-left: 0;
+}
+
 .session-body {
   max-width: 960px;
   margin: 0 auto;

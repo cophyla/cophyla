@@ -181,6 +181,7 @@ function syncTerminal(): void {
     if (bare) {
       terminal.show(bare.id, roots.terminal, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(bare, true, ui.fit, ui.end?.terminal === bare.id ? ui.end.phase : undefined);
+      terminal.dock();
       return;
     }
     const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
@@ -189,6 +190,8 @@ function syncTerminal(): void {
     if (card && own && pane && paneMode(ui.modes.get(card.session.id), true) === "terminal") {
       terminal.show(own.id, pane, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(own, false, ui.fit);
+      // Folded, the header's one line takes the terminal's controls too.
+      terminal.dock(ui.headOpen ? undefined : (pane.querySelector<HTMLElement>(".session-term-slot") ?? undefined));
       return;
     }
     // The chat's own session, on its terminal: no row of the node's lists it, so the bar names nothing.
@@ -196,6 +199,7 @@ function syncTerminal(): void {
     if (chats !== undefined) {
       terminal.show(chats, roots.chat, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(undefined, false, ui.fit);
+      terminal.dock();
       return;
     }
   }
@@ -2796,6 +2800,10 @@ document.addEventListener("click", (ev) => {
       ui.end = undefined;
       draw();
       terminal.focus();
+      return;
+    case "session-fold":
+      ui.headOpen = !ui.headOpen;
+      draw();
       return;
     case "pinned-fold":
       ui.pinnedFolded = !ui.pinnedFolded;

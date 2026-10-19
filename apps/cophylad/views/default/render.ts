@@ -114,6 +114,8 @@ export interface UiState {
   pinnedFocus: boolean;
   /** The user folded the pinned prompts away to their bar's one line. */
   pinnedFolded?: boolean;
+  /** The user opened a session pane's header to all it says; until then it is folded to one line. The same for every session. */
+  headOpen?: boolean;
   /** A session being killed from its pane: the user is asked to confirm, then it is on its way until the session ends. */
   kill?: { session: string; phase: "asking" | "killing" };
   /** New terminal's menu is open. */
@@ -2570,7 +2572,10 @@ function workspaceTitle(w: Workspace | undefined): string {
 
 function createPane(): HTMLElement {
   const root = el("article", "session");
+  // Folded to one line until opened: the status dot, what the session is doing, Timeline | Terminal.
   const head = el("header", "session-head");
+  const fold = actionButton("fold session-fold", "", "session-fold");
+  fold.setAttribute("aria-label", "Session details");
   const chip = el("button", "chip");
   chip.type = "button";
   chip.dataset["action"] = "focus";
@@ -2583,9 +2588,13 @@ function createPane(): HTMLElement {
   const modes = el("div", "pane-mode");
   modes.setAttribute("role", "group");
   modes.setAttribute("aria-label", "Show");
-  for (const [mode, label] of [["timeline", "Timeline"], ["terminal", "Terminal"]] as const) {
+  for (const [mode, label, title] of [
+    ["timeline", "Timeline", "Show what the session said and did"],
+    ["terminal", "Terminal", "Show the terminal it runs in"],
+  ] as const) {
     const b = el("button", `pane-mode-${mode}`, label);
     b.type = "button";
+    b.title = title;
     b.dataset["action"] = "pane-mode";
     b.dataset["mode"] = mode;
     modes.append(b);
@@ -2599,8 +2608,9 @@ function createPane(): HTMLElement {
     actionButton("session-kill-cancel", "Cancel", "session-kill-cancel"),
   );
   const actions = el("div", "session-actions");
-  actions.append(modes, kill);
-  head.append(chip, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied);
+  // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
+  actions.append(modes, el("span", "session-term-slot"), kill);
+  head.append(fold, chip, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied);
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
@@ -2615,6 +2625,13 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   setData(node, "session", s.id);
   setData(node, "status", s.status);
   setHidden(node, ui.selected !== s.id);
+  const open = ui.headOpen === true;
+  const head = node.querySelector<HTMLElement>(".session-head")!;
+  setData(head, "open", String(open));
+  setData(head, "kill", ui.kill?.session === s.id ? ui.kill.phase : "");
+  const fold = node.querySelector<HTMLButtonElement>(".session-fold")!;
+  fold.setAttribute("aria-expanded", String(open));
+  fold.title = open ? "Fold the session's details away" : "Show the session's details";
   const terminal = sessionTerminal(state, s);
   const mode = paneMode(ui.modes.get(s.id), terminal !== undefined);
   setData(node, "mode", mode);
@@ -2681,6 +2698,7 @@ function updateKill(block: HTMLElement, s: Session, state: ViewState, ui: UiStat
   for (const b of Array.from(block.querySelectorAll<HTMLButtonElement>("button"))) setData(b, "session", s.id);
   const start = block.querySelector<HTMLButtonElement>(".session-kill-start")!;
   setHidden(start, phase !== undefined);
+  setText(start, ui.headOpen ? "Kill session" : "Kill");
   start.disabled = !state.connected;
   start.title = s.origin === "orchestrator" && s.native.terminal ? "End this session and the terminal it runs in" : "End this session's process";
   setHidden(block.querySelector<HTMLElement>(".session-kill-ask")!, phase !== "asking");

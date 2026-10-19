@@ -101,6 +101,9 @@ export interface ShowOptions {
 export class TerminalView {
   /** The pane's contents: a bar (what it is, − scale +, Fit, End and its question) above the screen. */
   readonly el: HTMLElement;
+  /** The bar, and its controls (− scale +, Fit, End and its question), which a folded session header takes onto its line (`dock`). */
+  private bar: HTMLElement;
+  private controls: HTMLElement;
   private screen: HTMLElement;
   private rpc: HostRpc;
   private changed: () => void;
@@ -136,7 +139,7 @@ export class TerminalView {
     this.files = files;
     this.el = document.createElement("div");
     this.el.className = "term-view";
-    const bar = document.createElement("div");
+    const bar = (this.bar = document.createElement("div"));
     bar.className = "term-bar";
     const status = document.createElement("span");
     status.className = "term-status";
@@ -159,7 +162,10 @@ export class TerminalView {
     end.title = "End the program running in this terminal";
     const ask = document.createElement("span");
     ask.className = "term-end-ask";
-    bar.append(status, note, scale, fit, end, ask, button("term-end-confirm", "End"), button("term-end-cancel", "Cancel"));
+    this.controls = document.createElement("span");
+    this.controls.className = "term-controls";
+    this.controls.append(scale, fit, end, ask, button("term-end-confirm", "End"), button("term-end-cancel", "Cancel"));
+    bar.append(status, note, this.controls);
     this.screen = document.createElement("div");
     this.screen.className = "term-screen";
     this.el.append(bar, this.screen);
@@ -208,7 +214,20 @@ export class TerminalView {
   /** Closes the terminal shown and takes the pane away. */
   hide(): void {
     this.close();
+    this.dock();
     this.el.remove();
+  }
+
+  /**
+   * Where the controls sit: on a folded session header's line (`slot`), with Fit saying less,
+   * the bar then showing only to say why the terminal is read only or shows nothing; else on
+   * the bar.
+   */
+  dock(slot?: HTMLElement): void {
+    const into = slot ?? this.bar;
+    if (this.controls.parentElement !== into) into.append(this.controls);
+    this.bar.hidden = slot !== undefined && this.note === undefined;
+    this.controls.querySelector<HTMLElement>(".term-fit")!.textContent = slot ? "Fit" : "Fit to this window";
   }
 
   /**
@@ -216,29 +235,29 @@ export class TerminalView {
    * then once pressed the question with End and Cancel, then Ending… until it exited.
    */
   update(row: TerminalRow | undefined, bare: boolean, fit: boolean, ending?: "asking" | "ending"): void {
-    const status = this.el.querySelector<HTMLElement>(".term-status")!;
+    const status = this.bar.querySelector<HTMLElement>(".term-status")!;
     const size = row ? `${row.cols}×${row.rows}` : "";
     status.textContent = row ? (row.status === "exited" ? `exited${row.exitCode !== undefined ? ` ${row.exitCode}` : ""} · ${size}` : `${row.title || row.name || row.argv0} · ${size}`) : "";
-    const note = this.el.querySelector<HTMLElement>(".term-note")!;
+    const note = this.bar.querySelector<HTMLElement>(".term-note")!;
     note.textContent = this.note ?? "";
     note.hidden = this.note === undefined;
-    const fitButton = this.el.querySelector<HTMLButtonElement>(".term-fit")!;
+    const fitButton = this.controls.querySelector<HTMLButtonElement>(".term-fit")!;
     fitButton.setAttribute("aria-pressed", fit ? "true" : "false");
     this.drivable = this.typing && row?.status !== "exited";
     fitButton.disabled = !this.drivable;
     this.showScale();
     const endable = bare && row !== undefined && row.status !== "exited";
     const phase = endable ? ending : undefined;
-    for (const b of Array.from(this.el.querySelectorAll<HTMLButtonElement>(".term-end, .term-end-confirm, .term-end-cancel"))) b.dataset["terminal"] = row?.id ?? "";
-    this.el.querySelector<HTMLElement>(".term-end")!.hidden = !endable || phase !== undefined;
-    const ask = this.el.querySelector<HTMLElement>(".term-end-ask")!;
+    for (const b of Array.from(this.controls.querySelectorAll<HTMLButtonElement>(".term-end, .term-end-confirm, .term-end-cancel"))) b.dataset["terminal"] = row?.id ?? "";
+    this.controls.querySelector<HTMLElement>(".term-end")!.hidden = !endable || phase !== undefined;
+    const ask = this.controls.querySelector<HTMLElement>(".term-end-ask")!;
     ask.hidden = phase !== "asking";
     ask.textContent = row ? `End ${row.argv0} in this terminal?` : "";
-    const confirm = this.el.querySelector<HTMLButtonElement>(".term-end-confirm")!;
+    const confirm = this.controls.querySelector<HTMLButtonElement>(".term-end-confirm")!;
     confirm.hidden = phase === undefined;
     confirm.textContent = phase === "ending" ? "Ending…" : "End";
     confirm.disabled = phase === "ending";
-    this.el.querySelector<HTMLElement>(".term-end-cancel")!.hidden = phase !== "asking";
+    this.controls.querySelector<HTMLElement>(".term-end-cancel")!.hidden = phase !== "asking";
   }
 
   /** Output of the terminal shown; anything else is dropped. */
@@ -392,9 +411,9 @@ export class TerminalView {
   /** The scale between − and +, each disabled with no step left its way. */
   private showScale(): void {
     const scale = this.scale;
-    this.el.querySelector<HTMLElement>(".term-scale-value")!.textContent = scale !== undefined ? `${scale}%` : "";
-    this.el.querySelector<HTMLButtonElement>(".term-smaller")!.disabled = !this.drivable || scale === undefined || stepScale(scale, -1) === undefined;
-    this.el.querySelector<HTMLButtonElement>(".term-larger")!.disabled = !this.drivable || scale === undefined || stepScale(scale, 1) === undefined;
+    this.controls.querySelector<HTMLElement>(".term-scale-value")!.textContent = scale !== undefined ? `${scale}%` : "";
+    this.controls.querySelector<HTMLButtonElement>(".term-smaller")!.disabled = !this.drivable || scale === undefined || stepScale(scale, -1) === undefined;
+    this.controls.querySelector<HTMLButtonElement>(".term-larger")!.disabled = !this.drivable || scale === undefined || stepScale(scale, 1) === undefined;
   }
 
   /** The pane changed size: a followed terminal refits its font, a driven one sends its new size. */
