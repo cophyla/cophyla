@@ -6,6 +6,11 @@
 
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
 
+/** The most a single `read()` takes in; the rest follows on the next calls. */
+const MAX_READ = 64 * 1024 * 1024;
+/** Where a fresh tail on a file bigger than MAX_READ starts: this far from its end. */
+const FRESH_TAIL = 8 * 1024 * 1024;
+
 /** Only this much of a transcript that predates the attach is recorded as events; the rest feeds stats and intent. */
 export const REPLAY_BYTES = 256 * 1024;
 
@@ -108,7 +113,15 @@ export class Tail {
         this.partialStart = 0;
       }
       if (size === this.offset) return [];
-      const buf = Buffer.alloc(size - this.offset);
+      // A transcript can outgrow one Buffer (4 GiB): a 4.7 GB Claude transcript failed every tick of its adapter, so no
+      // session on the node updated. Read at most MAX_READ per call; a fresh tail on a bigger file starts at its last
+      // FRESH_TAIL bytes, and the partial line it lands in fails to parse and is skipped like any other.
+      if (this.offset === 0 && size > MAX_READ) {
+        this.offset = size - FRESH_TAIL;
+        this.partial = Buffer.alloc(0);
+        this.partialStart = 0;
+      }
+      const buf = Buffer.alloc(Math.min(size - this.offset, MAX_READ));
       let read = 0;
       while (read < buf.length) {
         const n = readSync(fd, buf, read, buf.length - read, this.offset + read);
