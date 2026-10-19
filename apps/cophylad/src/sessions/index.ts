@@ -436,7 +436,18 @@ function titleWord(text: string): string {
  * its project (`Respond to greeting | work`), or the project alone before the thread has one.
  */
 function titleItems(title: string | undefined): string[] {
-  return title === undefined ? [] : titleWord(title).split(" | ").flatMap((p) => (p.trim() ? [p.trim()] : []));
+  return title === undefined ? [] : titleWord(title).split(" | ").flatMap((p) => (titleWord(p) ? [titleWord(p)] : []));
+}
+
+/** What Codex ends an item of its title with in place of the rest, past the item's width: a project's name past 24 characters, a thread's past 48. */
+const TITLE_CUT = "...";
+
+/** Whether an item of a title gives `name`: the same words, or their start where Codex cut the item short. */
+function itemGives(item: string, name: string): boolean {
+  if (item === name) return true;
+  if (!item.endsWith(TITLE_CUT)) return false;
+  const head = item.slice(0, -TITLE_CUT.length);
+  return head !== "" && name.length > head.length && name.startsWith(head);
 }
 
 /** The names a title may give a folder by: its own and each one's above it, the git repository's root being the project Codex names. */
@@ -444,12 +455,16 @@ function folderNames(path: string): Set<string> {
   return new Set(path.split(/[\\/]/).flatMap((p) => (titleWord(p) && !p.endsWith(":") ? [titleWord(p)] : [])));
 }
 
+/** Whether an item of a title gives one of these folder names (`folderNames`). */
+function namesFolder(items: string[], names: Set<string>): boolean {
+  return items.some((i) => [...names].some((n) => itemGives(i, n)));
+}
+
 /** Whether a title has a thread's name before a project that is none of `cwd`'s folders: the Codex CLI that drew it works elsewhere. */
 function worksElsewhere(title: string | undefined, cwd: string): boolean {
   const items = titleItems(title);
   if (items.length < 2) return false;
-  const names = folderNames(cwd);
-  return !items.some((i) => names.has(i));
+  return !namesFolder(items, folderNames(cwd));
 }
 
 /** What each thing a terminal has that fits a thread counts for: they add up (`terminalFit`). */
@@ -464,11 +479,10 @@ const FIT = { name: 4, title: 2, folder: 1 } as const;
 function terminalFit(entry: TerminalEntry, session: Session): number {
   if (worksElsewhere(entry.info.title, session.cwd)) return 0;
   const items = titleItems(entry.info.title);
-  const names = folderNames(session.cwd);
-  const named = items.some((i) => names.has(i));
+  const named = namesFolder(items, folderNames(session.cwd));
   const inFolder = pathKey(entry.info.cwdReported || entry.info.cwd) === pathKey(session.cwd);
   if (!named && !inFolder) return 0;
-  const thread = session.title !== undefined && items.length > 1 && items.slice(0, -1).join(" | ") === titleWord(session.title);
+  const thread = session.title !== undefined && items.length > 1 && itemGives(items.slice(0, -1).join(" | "), titleWord(session.title));
   return (thread ? FIT.name : 0) + (named ? FIT.title : 0) + (inFolder ? FIT.folder : 0);
 }
 

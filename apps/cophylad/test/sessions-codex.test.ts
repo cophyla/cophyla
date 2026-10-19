@@ -996,6 +996,40 @@ describe("a codex thread the app-server daemon runs", () => {
     for (const t of [own, other, bare]) t.shell.exit(0);
   });
 
+  test("a project or thread name longer than Codex's title has room for, cut short with '...', still names the folder and the thread: the terminal is taken and kept", async () => {
+    // As Codex cuts an item of its title (`truncate_terminal_title_part`): a project's name past 24 graphemes, a thread's past 48.
+    const cut = (s: string, max: number) => (s.length > max ? `${s.slice(0, max - 3)}...` : s);
+    const long = folder("a-much-longer-project-folder-name");
+    const near = folder("a-much-longer-proj");
+    const start = folder("started-elsewhere");
+    const T0 = Date.now() - 600_000;
+    const thread = "Investigate why the relay drops frames past four megabytes";
+    // The shell started elsewhere and `cd`'d there: only the title tells which folder the CLI works in.
+    const named = await cli(9910, 9911, `${cut(thread, 48)} | ${cut("a-much-longer-project-folder-name", 24)}`, start, T0);
+    expect(cut("a-much-longer-project-folder-name", 24)).toBe("a-much-longer-project...");
+    const rec = hostedRecord(uuidv7(T0 + 300_000), long);
+    mini.sessions.patch(rec, { title: thread });
+    mini.sessions.linkMarked(rec);
+    expect(rec.session.native.terminal).toEqual(named.ref);
+    expect(rec.session.native.pid).toBe(9911);
+    // A turn retitles it with a spinner: the thread keeps it.
+    fake.emit({ ev: "title", session: named.shell.id, title: `⠹ ${cut(thread, 48)} | ${cut("a-much-longer-project-folder-name", 24)}` });
+    await sleep(50);
+    expect(rec.session.native.terminal).toEqual(named.ref);
+    mini.sessions.end(rec, "exit");
+    // A folder whose whole name is shorter than the cut's start is not the one the title names.
+    const short = hostedRecord(uuidv7(T0 + 310_000), near);
+    mini.sessions.linkMarked(short);
+    expect(short.session.native.terminal).toBeUndefined();
+    mini.sessions.end(short, "exit");
+    // Met again after a restart, before any hook: its cut name in the title is its name.
+    const met = mini.sessions.ensure({ harness: "codex", nativeId: uuidv7(Date.now() - 1000), profile, cwd: long, transport: "app-server", title: thread });
+    mini.sessions.linkMarked(met);
+    expect(met.session.native.terminal).toEqual(named.ref);
+    mini.sessions.end(met, "exit");
+    named.shell.exit(0);
+  });
+
   test("a CLI that goes on to a new thread (/new) hands it its terminal; one it resumes (/resume) takes it back; the one left lives on with neither", async () => {
     const at = folder("handover");
     const { shell, ref } = await cli(9840, 9841, "handover", at);
