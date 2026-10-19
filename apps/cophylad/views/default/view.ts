@@ -980,7 +980,10 @@ function connectionClock(): void {
   }
 }
 
-const chosenSession = (form: HTMLFormElement): string => field(form, "session");
+/** The session a form is for: the one whose header it is under, or the one picked in Devices. */
+const chosenSession = (form: HTMLFormElement): string => form.dataset["session"] ?? field(form, "session");
+/** A form in a session's Connect panel rather than Devices'. */
+const inHead = (form: HTMLFormElement): boolean => form.classList.contains("session-connect-form");
 
 /** A code for one of this user's sessions, shown where it was asked for until Done or until it is used. */
 async function makeConnectionCode(form: HTMLFormElement): Promise<void> {
@@ -991,7 +994,9 @@ async function makeConnectionCode(form: HTMLFormElement): Promise<void> {
   draw();
   try {
     const r = await rpc.request<{ connection: Connection; invite: { code: string; expiresAt: number } }>("connection.invite", { session, ...(only ? { for: only } : {}) });
-    ui.connectionForm = undefined;
+    if (inHead(form)) {
+      if (ui.headConnect?.session === session) ui.headConnect = { ...ui.headConnect, made: r.connection.id };
+    } else ui.connectionForm = undefined;
     ui.connectionCopied = undefined;
     form.reset();
     dispatch({ type: "connection.state", params: r.connection });
@@ -1014,7 +1019,9 @@ async function useConnectionCode(form: HTMLFormElement): Promise<void> {
   draw();
   try {
     const r = await rpc.request<{ connection: Connection }>("connection.accept", { session, code });
-    ui.connectionForm = undefined;
+    if (inHead(form)) {
+      if (ui.headConnect?.session === session) ui.headConnect = { ...ui.headConnect, made: r.connection.id };
+    } else ui.connectionForm = undefined;
     form.reset();
     dispatch({ type: "connection.state", params: r.connection });
   } catch (e) {
@@ -1034,6 +1041,14 @@ async function endConnection(id: string): Promise<void> {
   void loadConnections();
 }
 
+/** The open Connect panel's first field: the login for a code, or the box their code goes in. */
+function focusHeadConnect(): void {
+  const open = ui.headConnect;
+  if (!open) return;
+  const panel = document.querySelector<HTMLElement>(`.session[data-session="${open.session}"] .session-connect`);
+  panel?.querySelector<HTMLElement>(open.mode === "invite" ? ".session-connect-for" : ".session-connect-code-input")?.focus();
+}
+
 async function copyConnectionCode(): Promise<void> {
   const code = state.connectionCode;
   if (!code) return;
@@ -1042,7 +1057,7 @@ async function copyConnectionCode(): Promise<void> {
     await navigator.clipboard.writeText(code.code);
     ok = true;
   } catch {
-    const box = document.querySelector<HTMLTextAreaElement>(".connection-code-panel .invite-text");
+    const box = document.querySelector<HTMLTextAreaElement>(ui.headConnect?.made === code.id ? `.session[data-session="${ui.headConnect.session}"] .session-connect-code .invite-text` : ".connection-code-panel .invite-text");
     if (box) {
       box.focus();
       box.select();
@@ -3104,6 +3119,34 @@ document.addEventListener("click", (ev) => {
     case "connections-open":
       openDevices("connections");
       return;
+    case "session-connect": {
+      // the Connect panel under a session's header, opened on Invite someone, or closed again
+      const session = target.dataset["session"];
+      if (!session) return;
+      ui.headConnect = ui.headConnect?.session === session ? undefined : { session, mode: "invite" };
+      draw();
+      focusHeadConnect();
+      return;
+    }
+    case "session-connect-mode": {
+      const mode = target.dataset["mode"] === "accept" ? "accept" : "invite";
+      if (ui.headConnect && target.dataset["session"] === ui.headConnect.session) ui.headConnect = { session: ui.headConnect.session, mode };
+      draw();
+      focusHeadConnect();
+      return;
+    }
+    case "session-connect-close": {
+      // Done on the code takes it off the screen; the code stays good, listed in Devices until used or cancelled
+      const made = ui.headConnect?.made;
+      ui.headConnect = undefined;
+      if (made !== undefined && state.connectionCode?.id === made) {
+        ui.connectionCopied = undefined;
+        dispatch({ type: "connection.code" });
+        return;
+      }
+      draw();
+      return;
+    }
     case "node-remove":
       if (target.dataset["node"]) ui.removing = { node: target.dataset["node"], phase: "asking" };
       ui.leaving = undefined;
@@ -3277,6 +3320,16 @@ document.addEventListener("submit", (ev) => {
   if (form.classList.contains("node-join-form")) {
     ev.preventDefault();
     void submitJoin(form);
+    return;
+  }
+  if (form.classList.contains("session-connect-invite")) {
+    ev.preventDefault();
+    void makeConnectionCode(form);
+    return;
+  }
+  if (form.classList.contains("session-connect-accept")) {
+    ev.preventDefault();
+    void useConnectionCode(form);
     return;
   }
   if (form.classList.contains("connection-invite-form")) {

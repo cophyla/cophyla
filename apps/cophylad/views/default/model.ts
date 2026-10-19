@@ -3118,6 +3118,45 @@ export function codeWords(code: IssuedCode, now: number): { left: string; expire
   return leftWords(code.expiresAt, now);
 }
 
+/** What making a code (`invite`) or using one (`accept`) for a session means, said under the form. */
+export function connectNote(kind: "invite" | "accept", session: Pick<Session, "mode"> | undefined): string {
+  const what = kind === "invite" ? "Whoever uses the code within fifteen minutes connects a terminal of theirs to this session's. It works once." : "Their agent and this session's will be able to message each other.";
+  const bypass = session?.mode === "bypassPermissions" ? " That session runs without permission prompts: their agent's messages will reach it as they are." : "";
+  return `${what} The connection lasts as long as the terminal.${bypass}`;
+}
+
+/** Whether a session's header offers Connect: a live agent session of the user's, not the chat's own, to a client that sees connections. */
+export function headConnectOffered(state: Pick<ViewState, "scopes">, s: Pick<Session, "status" | "role">): boolean {
+  return state.scopes.includes("controllers") && s.status !== "ended" && s.role !== "assistant";
+}
+
+/** The Connect panel under a session's header, open: its mode, and the connection it made, once it made one. */
+export interface HeadConnect {
+  session: string;
+  mode: "invite" | "accept";
+  made?: string;
+}
+
+/** What the Connect panel shows: why this client makes none; the form; the code it made; or who it connected to. */
+export type HeadConnectView =
+  | { kind: "blocked"; why: string }
+  | { kind: "form"; mode: "invite" | "accept"; note: string }
+  | { kind: "code"; code: IssuedCode; left: string; expired: boolean }
+  | { kind: "connected"; peer: string };
+
+export function headConnectView(state: Pick<ViewState, "client" | "controllers" | "connections" | "connectionCode">, session: Pick<Session, "mode">, open: Omit<HeadConnect, "session">, now: number): HeadConnectView {
+  const blocked = connectionBlock(state);
+  if (blocked !== undefined) return { kind: "blocked", why: blocked };
+  const made = open.made !== undefined ? state.connections.get(open.made) : undefined;
+  if (made?.state === "active" && made.peer) return { kind: "connected", peer: `${made.peer.user}/${made.peer.name}` };
+  const code = state.connectionCode;
+  if (open.made !== undefined && code?.id === open.made) {
+    const words = codeWords(code, now);
+    return { kind: "code", code, left: words.left, expired: words.expired };
+  }
+  return { kind: "form", mode: open.mode, note: connectNote(open.mode, session) };
+}
+
 /**
  * Why this client makes and uses no connection, when it does not: a connection has no end of
  * its own, so a browser's or a phone's access that ends, or a shared computer's session, may

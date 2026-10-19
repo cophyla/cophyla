@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Connection, Controller, Node, ClientSession as Session } from "@cophyla/protocol";
-import { agentLabel, apply, connectableSessions, connectionBlock, initialState, selectConnections, sessionConnections } from "../views/default/model.ts";
+import { agentLabel, apply, connectableSessions, connectionBlock, headConnectOffered, headConnectView, initialState, selectConnections, sessionConnections } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -83,6 +83,51 @@ describe("connections in the view", () => {
     expect(connectionBlock(state)).toMatch(/^This browser's access ends/);
     apply(state, { type: "controllers", controllers: [{ ...row, session: true }] });
     expect(connectionBlock(state)).toMatch(/^A shared computer's session makes no connection/);
+  });
+
+  test("a session's header offers Connect for a live agent session of the user's, not for an ended one, the chat's own, or a client without the scope", () => {
+    const state = connected();
+    expect(headConnectOffered(state, session(A))).toBe(true);
+    expect(headConnectOffered(state, session(A, { status: "ended" }))).toBe(false);
+    expect(headConnectOffered(state, session(A, { role: "assistant" }))).toBe(false);
+    state.scopes = state.scopes.filter((s) => s !== "controllers");
+    expect(headConnectOffered(state, session(A))).toBe(false);
+  });
+
+  test("the Connect panel shows the form, then the code it made with the time it holds, then who it connected to; a cancelled code gives the form back", () => {
+    const state = connected();
+    const s = session(A, { mode: "bypassPermissions" });
+    apply(state, { type: "session.state", params: s });
+    const form = headConnectView(state, s, { mode: "invite" }, NOW);
+    expect(form).toMatchObject({ kind: "form", mode: "invite" });
+    expect(form.kind === "form" && form.note).toMatch(/fifteen minutes.*runs without permission prompts/);
+    expect(headConnectView(state, s, { mode: "accept" }, NOW)).toMatchObject({ kind: "form", mode: "accept" });
+
+    // made here: the code, until it is used
+    const made: Connection = { ...pending, session: A, by: "app" };
+    apply(state, { type: "connections", connections: [made] });
+    apply(state, { type: "connection.code", code: { id: made.id, code: "cophyla-connect:x", expiresAt: NOW + 900_000 } });
+    expect(headConnectView(state, s, { mode: "invite", made: made.id }, NOW)).toMatchObject({ kind: "code", left: "15:00", expired: false });
+    // a code shown for another session's panel is not this one's
+    expect(headConnectView(state, s, { mode: "invite" }, NOW).kind).toBe("form");
+
+    // used: who it connected to
+    apply(state, { type: "connection.state", params: { ...made, state: "active", peer: { user: "bob", name: "api-codex" } } });
+    expect(headConnectView(state, s, { mode: "invite", made: made.id }, NOW)).toEqual({ kind: "connected", peer: "bob/api-codex" });
+
+    // cancelled from Devices instead: the form again
+    apply(state, { type: "connection.state", params: { ...made, state: "ended" } });
+    expect(headConnectView(state, s, { mode: "invite", made: made.id }, NOW).kind).toBe("form");
+  });
+
+  test("a browser whose access ends sees why in the panel, not the forms", () => {
+    const state = connected();
+    const ctl = "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    state.client = { ...state.client!, controller: ctl };
+    apply(state, { type: "controllers", controllers: [{ id: ctl, name: "laptop browser", connected: true, pairedAt: 1, access: ACCESS_PRESETS.full, form: "browser", expiresAt: NOW + 3_600_000 } as unknown as Controller] });
+    const v = headConnectView(state, session(A), { mode: "accept" }, NOW);
+    expect(v.kind).toBe("blocked");
+    expect(v.kind === "blocked" && v.why).toMatch(/^This browser's access ends/);
   });
 
   test("another person's message is labelled with their login, never as one of the user's own", () => {

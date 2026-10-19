@@ -58,7 +58,8 @@ import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, byt
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
-import { codeWords, connectableSessions, connectionBlock, selectConnections, sessionConnections } from "./model.ts";
+import { codeWords, connectableSessions, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionConnections } from "./model.ts";
+import type { HeadConnect } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
@@ -188,6 +189,8 @@ export interface UiState {
   connectionCopied?: { id: string; ok: boolean };
   /** A connection being ended from its row: asked in place. */
   endingConnection?: string;
+  /** A session's Connect panel, open under its header: making a code for it, or using another person's. */
+  headConnect?: HeadConnect;
   /**
    * Devices lies over the pane: every machine and phone with all they can do, and the account.
    * Once more errors came than `errorsAt`, the count as it opened, it says the last of them,
@@ -2260,14 +2263,7 @@ function renderConnections(section: HTMLElement, state: ViewState, ui: UiState):
     setHidden(form, ui.connectionForm !== kind || blocked !== undefined);
     for (const b of form.querySelectorAll<HTMLButtonElement>("button")) b.disabled = !state.connected || ui.connectionBusy === true;
     const chosen = state.sessions.get(form.querySelector<HTMLSelectElement>(".connection-session")!.value)?.session;
-    const note = form.querySelector<HTMLElement>(".grant-form-note")!;
-    const bypass = chosen?.mode === "bypassPermissions" ? " That session runs without permission prompts: their agent's messages will reach it as they are." : "";
-    setText(
-      note,
-      (kind === "invite" ? "Whoever uses the code within fifteen minutes connects a terminal of theirs to this session's. It works once." : "Their agent and this session's will be able to message each other.") +
-        " The connection lasts as long as the terminal." +
-        bypass,
-    );
+    setText(form.querySelector<HTMLElement>(".grant-form-note")!, connectNote(kind, chosen));
   }
   renderConnectionCode(tools.querySelector<HTMLElement>(".connection-code-slot")!, state, ui);
 }
@@ -2295,7 +2291,7 @@ function renderConnectionCode(slot: HTMLElement, state: ViewState, ui: UiState):
     panel.append(el("p", "invite-head", "The code"), el("p", "invite-hint"), text, el("p", "invite-left"), buttons);
     slot.append(panel);
   }
-  setText(panel.querySelector(".invite-hint")!, `Give it to the other person${code.for ? ` (only ${code.for} may use it)` : ""}: they enter it in Cophyla under Connections, or their agent uses it with accept_invite. It works once.`);
+  setText(panel.querySelector(".invite-hint")!, `Give it to the other person${code.for ? ` (only ${code.for} may use it)` : ""}: they enter it in a session's Connect, or under Connections in Devices, or their agent uses it with accept_invite. It works once.`);
   const words = codeWords(code, Date.now());
   const copied = ui.connectionCopied?.id === code.id ? ui.connectionCopied : undefined;
   setText(panel.querySelector(".invite-left")!, [words.expired ? "this code has run out" : `good for ${words.left}`, copied ? (copied.ok ? "copied" : "select the text and copy it") : ""].filter(Boolean).join(" · "));
@@ -2789,12 +2785,17 @@ function createPane(): HTMLElement {
     actionButton("session-kill-confirm", "Kill", "session-kill-confirm"),
     actionButton("session-kill-cancel", "Cancel", "session-kill-cancel"),
   );
+  // Connect: this session's terminal joined to another person's, by a code made or used here.
+  const connect = actionButton("session-connect-start", "", "session-connect");
+  connect.append(el("span", "session-connect-glyph", "⇄"), el("span", "session-connect-word", "Connect"));
+  connect.setAttribute("aria-label", "Connect this session to another person's agent");
+  connect.title = "Connect this session to another person's agent: make a code for them, or enter theirs";
   const actions = el("div", "session-actions");
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
-  actions.append(modes, el("span", "session-term-slot"), kill);
+  actions.append(modes, el("span", "session-term-slot"), connect, kill);
   // The other people's agents this session is connected to, when it is: a press opens them in Devices.
   const links = actionButton("session-links", "", "connections-open");
-  head.append(fold, chip, links, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied);
+  head.append(fold, chip, links, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createHeadConnect());
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
@@ -2826,6 +2827,7 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
     b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
   }
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
+  updateHeadConnect(node, s, state, ui);
   const linked = sessionConnections(state, s.id);
   const links = node.querySelector<HTMLButtonElement>(".session-links")!;
   setHidden(links, linked.length === 0);
@@ -2876,6 +2878,112 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   const timeline = node.querySelector<HTMLElement>(".timeline")!;
   const cardKey = `session:${s.id}`;
   reconcile(timeline, selectTimeline(state, card), (r) => r.key, createRow, (li, row) => updateRow(li, row, cardKey, ui));
+}
+
+/**
+ * The Connect panel, on a line of its own under a session's header: Invite someone | Enter a
+ * code, the one form, then the code to copy with the time it holds, or who it connected to.
+ */
+function createHeadConnect(): HTMLElement {
+  const panel = el("div", "session-connect");
+  const top = el("div", "session-connect-top");
+  const tabs = el("div", "session-connect-tabs");
+  tabs.setAttribute("role", "group");
+  tabs.setAttribute("aria-label", "Connect");
+  for (const [mode, label] of [
+    ["invite", "Invite someone"],
+    ["accept", "Enter a code"],
+  ] as const) {
+    const b = actionButton(`session-connect-tab session-connect-tab-${mode}`, label, "session-connect-mode");
+    b.dataset["mode"] = mode;
+    tabs.append(b);
+  }
+  const close = actionButton("session-connect-close", "×", "session-connect-close");
+  close.setAttribute("aria-label", "Close");
+  close.title = "Close";
+  top.append(tabs, close);
+
+  const invite = el("form", "session-connect-form session-connect-invite");
+  const login = el("input", "session-connect-for");
+  login.name = "for";
+  login.placeholder = "only for this GitHub login (optional)";
+  login.setAttribute("aria-label", "Only for this GitHub login");
+  login.autocomplete = "off";
+  login.spellcheck = false;
+  const make = el("button", "session-connect-submit", "Make the code");
+  make.type = "submit";
+  invite.append(login, make);
+
+  const accept = el("form", "session-connect-form session-connect-accept");
+  const code = el("textarea", "session-connect-code-input");
+  code.name = "code";
+  code.rows = 2;
+  code.spellcheck = false;
+  code.placeholder = "their code: cophyla-connect:…";
+  code.setAttribute("aria-label", "Their code");
+  const go = el("button", "session-connect-submit", "Connect");
+  go.type = "submit";
+  accept.append(code, go);
+
+  const issued = el("div", "session-connect-code");
+  const text = el("textarea", "invite-text");
+  text.readOnly = true;
+  text.rows = 2;
+  text.spellcheck = false;
+  text.setAttribute("aria-label", "The code");
+  const buttons = el("div", "invite-buttons");
+  buttons.append(actionButton("invite-copy", "Copy", "connection-code-copy"), actionButton("invite-done", "Done", "session-connect-close"));
+  issued.append(el("p", "invite-hint"), text, el("p", "invite-left"), buttons);
+
+  const done = el("div", "session-connect-done");
+  done.append(el("p", "session-connect-done-words"), actionButton("invite-done", "Done", "session-connect-close"));
+
+  panel.append(top, el("p", "session-connect-why"), invite, accept, el("p", "session-connect-note"), issued, done);
+  return panel;
+}
+
+function updateHeadConnect(node: HTMLElement, s: Session, state: ViewState, ui: UiState): void {
+  const offered = headConnectOffered(state, s);
+  const start = node.querySelector<HTMLButtonElement>(".session-connect-start")!;
+  setHidden(start, !offered);
+  setData(start, "session", s.id);
+  const open = offered && ui.headConnect?.session === s.id ? ui.headConnect : undefined;
+  start.setAttribute("aria-expanded", String(open !== undefined));
+  start.disabled = !state.connected;
+  const panel = node.querySelector<HTMLElement>(".session-connect")!;
+  setHidden(panel, open === undefined);
+  if (!open) return;
+  const v = headConnectView(state, s, open, Date.now());
+  setData(panel, "kind", v.kind);
+  for (const b of Array.from(panel.querySelectorAll<HTMLElement>("button, form"))) setData(b, "session", s.id);
+  const tabs = panel.querySelector<HTMLElement>(".session-connect-tabs")!;
+  setHidden(tabs, v.kind !== "form");
+  for (const b of Array.from(tabs.querySelectorAll<HTMLButtonElement>("button"))) b.setAttribute("aria-pressed", String(b.dataset["mode"] === open.mode));
+  const why = panel.querySelector<HTMLElement>(".session-connect-why")!;
+  setText(why, v.kind === "blocked" ? v.why : "");
+  setHidden(why, v.kind !== "blocked");
+  const busy = !state.connected || ui.connectionBusy === true;
+  for (const mode of ["invite", "accept"] as const) {
+    const form = panel.querySelector<HTMLFormElement>(`.session-connect-${mode}`)!;
+    setHidden(form, v.kind !== "form" || v.mode !== mode);
+    for (const b of Array.from(form.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = busy;
+  }
+  const note = panel.querySelector<HTMLElement>(".session-connect-note")!;
+  setText(note, v.kind === "form" ? v.note : "");
+  setHidden(note, v.kind !== "form");
+  const issued = panel.querySelector<HTMLElement>(".session-connect-code")!;
+  setHidden(issued, v.kind !== "code");
+  if (v.kind === "code") {
+    const text = issued.querySelector<HTMLTextAreaElement>(".invite-text")!;
+    if (text.value !== v.code.code) text.value = v.code.code;
+    setText(issued.querySelector(".invite-hint")!, `Give it to the other person${v.code.for ? ` (only ${v.code.for} may use it)` : ""}: they enter it in a session's Connect, or their agent uses it with accept_invite. It works once.`);
+    const copied = ui.connectionCopied?.id === v.code.id ? ui.connectionCopied : undefined;
+    setText(issued.querySelector(".invite-left")!, [v.expired ? "this code has run out" : `good for ${v.left}`, copied ? (copied.ok ? "copied" : "select the text and copy it") : ""].filter(Boolean).join(" · "));
+    setData(issued, "expired", v.expired ? "1" : "0");
+  }
+  const done = panel.querySelector<HTMLElement>(".session-connect-done")!;
+  setHidden(done, v.kind !== "connected");
+  setText(done.querySelector(".session-connect-done-words")!, v.kind === "connected" ? `Connected to ${v.peer}: their agent and this one can message each other now, until the terminal closes or either of you ends it.` : "");
 }
 
 /** Kill session, or, once pressed, the question and its Kill and Cancel; Killing… until the session ends. */

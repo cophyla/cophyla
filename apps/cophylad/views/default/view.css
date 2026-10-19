@@ -3632,6 +3632,202 @@ button:disabled {
   border-color: var(--line-strong);
 }
 
+/* Connect, beside Kill: a code for another person's agent, or theirs used here. */
+.session-connect-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.session-connect-start:hover:not(:disabled),
+.session-connect-start[aria-expanded="true"] {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.session-connect-glyph {
+  font-family: var(--mono);
+}
+
+.session-head[data-open="false"] .session-connect-start {
+  padding: 1px 7px;
+  font-size: 12px;
+}
+
+/* A phone's folded line has no room for the word: the glyph alone, its name read aloud. */
+@media (max-width: 640px) {
+  .session-head[data-open="false"] .session-connect-word {
+    display: none;
+  }
+}
+
+/* The panel, on a line of its own under the header, as the copied tether command is: the
+   whole line (a narrower box would fit beside the folded line and squeeze it), its contents
+   kept to a readable width. */
+.session-connect {
+  flex: 0 0 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--cophyla);
+  border-radius: 6px;
+  background: var(--raised);
+  font-size: 13px;
+}
+
+.session-connect p {
+  margin: 0;
+}
+
+.session-connect > :not(.session-connect-top) {
+  max-width: 720px;
+}
+
+.session-connect-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.session-connect-tabs {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.session-connect-tabs[hidden] {
+  display: none;
+}
+
+.session-connect-tab {
+  padding: 3px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.session-connect-tab + .session-connect-tab {
+  border-left: 1px solid var(--line-strong);
+}
+
+.session-connect-tab[aria-pressed="true"] {
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.session-connect-close {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.session-connect-close:hover {
+  color: var(--ink);
+}
+
+.session-connect-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 6px;
+}
+
+.session-connect-form[hidden],
+.session-connect-code[hidden],
+.session-connect-done[hidden] {
+  display: none;
+}
+
+.session-connect-form :is(input, textarea) {
+  flex: 1 1 240px;
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 7px;
+}
+
+.session-connect-form textarea {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  resize: vertical;
+}
+
+.session-connect button:not(.session-connect-tab, .session-connect-close) {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.session-connect button:not(.session-connect-tab, .session-connect-close):hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.session-connect button.session-connect-submit {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.session-connect button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.session-connect-note,
+.session-connect-why {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.session-connect-code,
+.session-connect-done {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.session-connect-code .invite-text {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.session-connect-code[data-expired="1"] .invite-text {
+  opacity: 0.5;
+}
+
+.session-connect-done {
+  align-items: flex-start;
+}
+
 .devices-view .controller-sub {
   font-size: 12px;
 }
