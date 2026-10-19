@@ -605,6 +605,11 @@ export type DirectConfig = z.infer<typeof DirectConfig>;
  * Agent messaging: every agent session is given the `cophyla-agents` MCP server, through which
  * it lists the user's other agent sessions, on any harness and any node, and messages one.
  */
+/** The logins' names: whether a profile shows its login's email beside the account mark, so the user can tell accounts apart. */
+export const AccountsConfig = z.object({
+  show_email: z.boolean().default(false),
+});
+
 export const AgentMessagesConfig = z.object({
   /** Off, calls are refused, and the server is taken out of every profile at the next start. */
   enabled: z.boolean().default(true),
@@ -697,6 +702,7 @@ export const Config = z.object({
   cloud: CloudConfig.prefault({}),
   direct: DirectConfig.prefault({}),
   agent_messages: AgentMessagesConfig.prefault({}),
+  accounts: AccountsConfig.prefault({}),
   push: PushConfig.prefault({}),
   log: z
     .object({
@@ -1081,6 +1087,11 @@ stun = ["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"]
 # command = "C:\\path\\to\\cophyla-net.exe"   # over the helper the platform ships
 restart_backoff_ms = 1000
 restart_backoff_max_ms = 30000
+
+# The logins: off, a profile carries only a mark of its account (a hash, the same on every machine
+# signed in as it); on, it also carries the login's email, so the apps can name each account.
+[accounts]
+show_email = false             # true: each Claude profile here shows its login's email to the user's apps
 
 # Agent messaging: every agent session gets the cophyla-agents MCP server, to list the user's
 # other agent sessions (any harness, any machine) and message one.

@@ -132,6 +132,8 @@ export function accountMark(harness: ProfileHarness, ids: string[]): string {
 interface GlobalConfig {
   onboarded: boolean;
   account?: string;
+  /** The login's email, for `accountLabel` where `[accounts] show_email` allows it. */
+  email?: string;
 }
 
 /** A global config's facts, cached by the file's size and time: the file can run to megabytes. */
@@ -147,11 +149,12 @@ function globalConfig(path: string): GlobalConfig {
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.facts;
   const facts: GlobalConfig = { onboarded: false };
   try {
-    const g = JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown; oauthAccount?: { accountUuid?: unknown; organizationUuid?: unknown } };
+    const g = JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown; oauthAccount?: { accountUuid?: unknown; organizationUuid?: unknown; emailAddress?: unknown } };
     facts.onboarded = g.hasCompletedOnboarding === true;
     // A login's limits are its account's in its organisation: the same person in a team is another subscription.
     const a = g.oauthAccount;
     if (a && typeof a.accountUuid === "string" && a.accountUuid) facts.account = accountMark("claude", [a.accountUuid, typeof a.organizationUuid === "string" ? a.organizationUuid : ""]);
+    if (a && typeof a.emailAddress === "string" && a.emailAddress) facts.email = a.emailAddress;
   } catch {
     // Unreadable or mid-write: not onboarded as far as can be told.
   }
@@ -454,6 +457,11 @@ export class Profiles {
     if (p.status === "ok") {
       const account = harness === "claude" ? globalConfig(claudeGlobalConfig(configDir, this.home)).account : harness === "codex" ? codexAccount(configDir) : undefined;
       if (account) p.account = account;
+      // Read with the mark from the same cached file, so naming the account costs nothing more.
+      if (harness === "claude" && this.deps.config.accounts.show_email) {
+        const email = globalConfig(claudeGlobalConfig(configDir, this.home)).email;
+        if (email) p.accountLabel = email;
+      }
     }
     return { profile: p, configDefault: pc.default, configArgs: [...pc.args] };
   }
