@@ -57,7 +57,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
@@ -991,6 +991,7 @@ async function makeConnectionCode(form: HTMLFormElement): Promise<void> {
   if (!session) return;
   const only = field(form, "for").trim();
   ui.connectionBusy = true;
+  connectionFailed(form, session, undefined);
   draw();
   try {
     const r = await rpc.request<{ connection: Connection; invite: { code: string; expiresAt: number } }>("connection.invite", { session, ...(only ? { for: only } : {}) });
@@ -1003,6 +1004,7 @@ async function makeConnectionCode(form: HTMLFormElement): Promise<void> {
     dispatch({ type: "connection.code", code: { id: r.connection.id, code: r.invite.code, expiresAt: r.invite.expiresAt, ...(only ? { for: only } : {}) } });
     connectionClock();
   } catch (e) {
+    connectionFailed(form, session, e);
     fail("connection", e);
   } finally {
     ui.connectionBusy = false;
@@ -1016,6 +1018,7 @@ async function useConnectionCode(form: HTMLFormElement): Promise<void> {
   const code = field(form, "code").trim();
   if (!session || !code) return;
   ui.connectionBusy = true;
+  connectionFailed(form, session, undefined);
   draw();
   try {
     const r = await rpc.request<{ connection: Connection }>("connection.accept", { session, code });
@@ -1025,11 +1028,23 @@ async function useConnectionCode(form: HTMLFormElement): Promise<void> {
     form.reset();
     dispatch({ type: "connection.state", params: r.connection });
   } catch (e) {
+    connectionFailed(form, session, e);
     fail("connection", e);
   } finally {
     ui.connectionBusy = false;
     draw();
   }
+}
+
+/** Says why a form's try failed beside the form it came from (the header's panel or Devices'), or clears it as a new try starts. */
+function connectionFailed(form: HTMLFormElement, session: string, e: unknown): void {
+  const words = e === undefined ? undefined : connectionFailure(e instanceof ViewRpcError ? e.code : undefined, e instanceof Error ? e.message : String(e));
+  if (inHead(form)) {
+    if (ui.headConnect?.session !== session) return;
+    const { error: _old, ...rest } = ui.headConnect;
+    ui.headConnect = words === undefined ? rest : { ...rest, error: words };
+  } else if (words === undefined) delete ui.connectionError;
+  else ui.connectionError = words;
 }
 
 async function endConnection(id: string): Promise<void> {
@@ -3085,11 +3100,13 @@ document.addEventListener("click", (ev) => {
     case "connection-form-invite":
     case "connection-form-accept":
       ui.connectionForm = target.dataset["action"] === "connection-form-invite" ? "invite" : "accept";
+      delete ui.connectionError;
       draw();
       roots.devices.querySelector<HTMLElement>(ui.connectionForm === "invite" ? ".connection-invite-form select" : ".connection-accept-form textarea")?.focus();
       return;
     case "connection-form-close":
       ui.connectionForm = undefined;
+      delete ui.connectionError;
       draw();
       return;
     case "connection-end": {

@@ -7,7 +7,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Connection, Controller, Node, ClientSession as Session } from "@cophyla/protocol";
-import { agentLabel, apply, connectableSessions, connectionBlock, headConnectOffered, headConnectView, initialState, selectConnections, sessionConnections } from "../views/default/model.ts";
+import { agentLabel, apply, connectableSessions, connectionBlock, connectionFailure, headConnectOffered, headConnectView, initialState, selectConnections, sessionConnections } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -118,6 +118,15 @@ describe("connections in the view", () => {
     // cancelled from Devices instead: the form again
     apply(state, { type: "connection.state", params: { ...made, state: "ended" } });
     expect(headConnectView(state, s, { mode: "invite", made: made.id }, NOW).kind).toBe("form");
+  });
+
+  test("a failed try is said in the panel, an app or a Cophyla older than connections as a reason to update", () => {
+    const state = connected();
+    const s = session(A);
+    expect(headConnectView(state, s, { mode: "invite", error: "that code is for carol" }, NOW)).toMatchObject({ kind: "form", error: "that code is for carol" });
+    expect(connectionFailure("unsupported", "unknown method connection.invite")).toMatch(/^This Cophyla app is older than connections: update it/);
+    expect(connectionFailure("unsupported", "unsupported: connection.invite")).toMatch(/^Cophyla on this computer is older than connections/);
+    expect(connectionFailure("denied", "the code is for carol")).toBe("the code is for carol");
   });
 
   test("a browser whose access ends sees why in the panel, not the forms", () => {

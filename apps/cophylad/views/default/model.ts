@@ -3130,17 +3130,29 @@ export function headConnectOffered(state: Pick<ViewState, "scopes">, s: Pick<Ses
   return state.scopes.includes("controllers") && s.status !== "ended" && s.role !== "assistant";
 }
 
-/** The Connect panel under a session's header, open: its mode, and the connection it made, once it made one. */
+/** The Connect panel under a session's header, open: its mode, the connection it made once it made one, and why the last try failed. */
 export interface HeadConnect {
   session: string;
   mode: "invite" | "accept";
   made?: string;
+  error?: string;
+}
+
+/**
+ * A connection request that failed, in words the user can act on. An app built before
+ * connections refuses the request itself ("unknown method"), and a daemon from before them
+ * answers `unsupported`: both mean updating, which the bare message does not say.
+ */
+export function connectionFailure(code: string | undefined, message: string): string {
+  if (code === "unsupported" && /^unknown method connection\./.test(message)) return "This Cophyla app is older than connections: update it, or open it again after an update, then try again.";
+  if (code === "unsupported" && /connection\./.test(message)) return "Cophyla on this computer is older than connections: update it, then try again.";
+  return message;
 }
 
 /** What the Connect panel shows: why this client makes none; the form; the code it made; or who it connected to. */
 export type HeadConnectView =
   | { kind: "blocked"; why: string }
-  | { kind: "form"; mode: "invite" | "accept"; note: string }
+  | { kind: "form"; mode: "invite" | "accept"; note: string; error?: string }
   | { kind: "code"; code: IssuedCode; left: string; expired: boolean }
   | { kind: "connected"; peer: string };
 
@@ -3154,7 +3166,7 @@ export function headConnectView(state: Pick<ViewState, "client" | "controllers" 
     const words = codeWords(code, now);
     return { kind: "code", code, left: words.left, expired: words.expired };
   }
-  return { kind: "form", mode: open.mode, note: connectNote(open.mode, session) };
+  return { kind: "form", mode: open.mode, note: connectNote(open.mode, session), ...(open.error !== undefined ? { error: open.error } : {}) };
 }
 
 /**

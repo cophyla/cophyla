@@ -185,6 +185,8 @@ export interface UiState {
   qrZoom?: boolean;
   /** Devices' Connections: the form open (a code for one of this user's sessions, or using another person's), a request on its way, Copy's outcome. */
   connectionForm?: "invite" | "accept";
+  /** Why the last code made or used from Devices' forms failed, said under the form. */
+  connectionError?: string;
   connectionBusy?: boolean;
   connectionCopied?: { id: string; ok: boolean };
   /** A connection being ended from its row: asked in place. */
@@ -2172,7 +2174,7 @@ function createConnectionInviteForm(): HTMLFormElement {
   login.spellcheck = false;
   const make = el("button", "grant-submit", "Make the code");
   make.type = "submit";
-  form.append(el("p", "grant-form-head", "Invite someone"), sessionSelect(), login, el("p", "grant-form-hint grant-form-note"), make, actionButton("grant-form-cancel", "Cancel", "connection-form-close"));
+  form.append(el("p", "grant-form-head", "Invite someone"), sessionSelect(), login, el("p", "grant-form-hint grant-form-note"), connectionFormError(), make, actionButton("grant-form-cancel", "Cancel", "connection-form-close"));
   return form;
 }
 
@@ -2186,8 +2188,15 @@ function createConnectionAcceptForm(): HTMLFormElement {
   code.setAttribute("aria-label", "Their code");
   const go = el("button", "grant-submit", "Connect");
   go.type = "submit";
-  form.append(el("p", "grant-form-head", "Enter a code"), sessionSelect(), code, el("p", "grant-form-hint grant-form-note"), go, actionButton("grant-form-cancel", "Cancel", "connection-form-close"));
+  form.append(el("p", "grant-form-head", "Enter a code"), sessionSelect(), code, el("p", "grant-form-hint grant-form-note"), connectionFormError(), go, actionButton("grant-form-cancel", "Cancel", "connection-form-close"));
   return form;
+}
+
+/** Why the form's last try failed, under it: a refusal the user would otherwise look for by the composer. */
+function connectionFormError(): HTMLElement {
+  const p = el("p", "grant-form-hint connection-form-error");
+  p.setAttribute("role", "alert");
+  return p;
 }
 
 function renderConnections(section: HTMLElement, state: ViewState, ui: UiState): void {
@@ -2264,6 +2273,9 @@ function renderConnections(section: HTMLElement, state: ViewState, ui: UiState):
     for (const b of form.querySelectorAll<HTMLButtonElement>("button")) b.disabled = !state.connected || ui.connectionBusy === true;
     const chosen = state.sessions.get(form.querySelector<HTMLSelectElement>(".connection-session")!.value)?.session;
     setText(form.querySelector<HTMLElement>(".grant-form-note")!, connectNote(kind, chosen));
+    const failed = form.querySelector<HTMLElement>(".connection-form-error")!;
+    setText(failed, ui.connectionForm === kind ? (ui.connectionError ?? "") : "");
+    setHidden(failed, ui.connectionForm !== kind || ui.connectionError === undefined);
   }
   renderConnectionCode(tools.querySelector<HTMLElement>(".connection-code-slot")!, state, ui);
 }
@@ -2938,7 +2950,9 @@ function createHeadConnect(): HTMLElement {
   const done = el("div", "session-connect-done");
   done.append(el("p", "session-connect-done-words"), actionButton("invite-done", "Done", "session-connect-close"));
 
-  panel.append(top, el("p", "session-connect-why"), invite, accept, el("p", "session-connect-note"), issued, done);
+  const error = el("p", "session-connect-error");
+  error.setAttribute("role", "alert");
+  panel.append(top, el("p", "session-connect-why"), invite, accept, error, el("p", "session-connect-note"), issued, done);
   return panel;
 }
 
@@ -2968,6 +2982,9 @@ function updateHeadConnect(node: HTMLElement, s: Session, state: ViewState, ui: 
     setHidden(form, v.kind !== "form" || v.mode !== mode);
     for (const b of Array.from(form.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = busy;
   }
+  const error = panel.querySelector<HTMLElement>(".session-connect-error")!;
+  setText(error, v.kind === "form" ? (v.error ?? "") : "");
+  setHidden(error, v.kind !== "form" || v.error === undefined);
   const note = panel.querySelector<HTMLElement>(".session-connect-note")!;
   setText(note, v.kind === "form" ? v.note : "");
   setHidden(note, v.kind !== "form");

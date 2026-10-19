@@ -7120,3 +7120,15 @@ button:disabled {
     opacity: 1;
   }
 }
+
+/* Why the last code made or used failed, beside the form it came from. */
+.session-connect-error,
+.connection-form-error {
+  color: var(--rust);
+  font-size: 12px;
+}
+
+.session-connect-error[hidden],
+.connection-form-error[hidden] {
+  display: none;
+}
