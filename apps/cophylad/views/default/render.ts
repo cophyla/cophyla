@@ -2,7 +2,9 @@
 // element is created once and updated in place, keyed on `data-key`, so inputs keep focus
 // and the frame does not flicker. The rail on the left holds, on the desktop, a dot for the
 // line to cophylad at the very top, one tab for the chat, fixed, the speaker beside it that says
-// whether the next reply is read out and silences it,
+// whether the next reply is read out and silences it; under them, while a Cophyla release is
+// staged on the node, a note with Update, which restarts Cophyla into it once nothing waits on
+// it, and while it waits, on what, with Update now and Cancel;
 // and under it one tab per open session, the agent's mark and its name, grouped under the
 // folder they work in, a workspace inside another's indented under it, a folded heading
 // saying how many tabs it holds, the bare terminals under Terminals, each named by the folder it works
@@ -60,6 +62,7 @@ import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from ".
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionConnections } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
+import { selectUpdateNote, waitingWords } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
@@ -87,6 +90,11 @@ export interface UiState {
   chatMode?: "chat" | "terminal";
   /** The chat's session is being started again from the menu. */
   chatRestarting?: boolean;
+  /**
+   * The rail's update note: the release the user put away (×) until a newer one is staged, the
+   * request made from it while it runs, and why one could not be made.
+   */
+  update?: { dismissed?: string; pending?: "update" | "now" | "cancel"; note?: string };
   /** Terminals shown here are sized to the pane ("Fit to this window") rather than followed. */
   fit: boolean;
   /** The font they are sized at, in percent of the default: − and + step it, and drive them. */
@@ -1828,7 +1836,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     split.setAttribute("aria-valuemin", String(RAIL_SPLIT.min));
     split.setAttribute("aria-valuemax", String(RAIL_SPLIT.max));
     split.title = "Drag to share the height; double-click for the usual";
-    root.append(top, list, split, panel);
+    root.append(top, createUpdateNote(), list, split, panel);
   }
   const link = linkWords(state);
   const dot = chat.querySelector<HTMLElement>(".link-dot")!;
@@ -1844,6 +1852,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
   renderRailMenu(root, state, ui);
+  renderUpdateNote(root.querySelector<HTMLElement>(".update-note")!, state, ui);
   // The chat tab pulses while the orchestrator works or a reply streams, and while a phone is in a conversation.
   setHidden(chat.querySelector<HTMLElement>(".pulse")!, state.streaming.size === 0 && state.progress === undefined && !voiceBusy(state));
 
@@ -1857,6 +1866,65 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
 
   renderPanel(root, state, ui);
   renderStatus(root.querySelector<HTMLElement>(".rail-cards")!, state, ui);
+}
+
+// --- the rail's update note --------------------------------------------------------------------
+
+/**
+ * Under the chat's row while a Cophyla release is staged on the node: what it is, and Update,
+ * which restarts Cophyla into it once nothing waits on it; while it waits, on what, with Update
+ * now and Cancel; then that it is restarting. × puts it away until a newer one.
+ */
+function createUpdateNote(): HTMLElement {
+  const note = el("section", "update-note");
+  note.setAttribute("aria-label", "Update");
+  const text = el("div", "update-text");
+  text.setAttribute("aria-live", "polite");
+  text.append(el("p", "update-title"), el("p", "update-detail"));
+  const dismiss = actionButton("update-dismiss viewer-tool viewer-close", "", "update-dismiss");
+  dismiss.setAttribute("aria-label", "Not now");
+  dismiss.title = "Not now: the tray's menu restarts into it too, and Cophyla starts on it the next time it starts";
+  const actions = el("div", "update-actions");
+  const apply = actionButton("update-apply", "Update", "update-apply");
+  const now = actionButton("update-now", "Update now", "update-now");
+  const cancel = actionButton("update-cancel", "Cancel", "update-cancel");
+  cancel.title = "Stay on this version; Update starts the wait again";
+  actions.append(apply, now, cancel);
+  note.append(el("span", "update-mark"), text, dismiss, actions);
+  return note;
+}
+
+function renderUpdateNote(note: HTMLElement, state: ViewState, ui: UiState): void {
+  const u = selectUpdateNote(state);
+  const shown = u !== undefined && (ui.update?.dismissed !== u.version || u.restarting === true);
+  setHidden(note, !shown);
+  if (!u || !shown) return;
+  const restarting = u.restarting === true;
+  const waiting = u.waiting;
+  const pending = ui.update?.pending;
+  const on = u.machine ? ` on ${u.machine}` : "";
+  setData(note, "phase", restarting ? "restarting" : waiting ? "waiting" : "ready");
+  setText(note.querySelector(".update-title")!, restarting ? `Restarting into ${u.version}…` : waiting ? `Updating to ${u.version} soon` : `Cophyla ${u.version} is ready${on}`);
+  const detail = restarting
+    ? `Cophyla${on} is back in a few seconds. Terminals and agent sessions keep running.`
+    : waiting
+      ? `Once nothing waits on Cophyla${on}: ${waitingWords(waiting)}.`
+      : (ui.update?.note ?? "Restart Cophyla into it. Terminals and agent sessions keep running.");
+  setText(note.querySelector(".update-detail")!, detail);
+  setData(note.querySelector<HTMLElement>(".update-detail")!, "failed", ui.update?.note !== undefined && !restarting && !waiting ? "1" : "0");
+  const apply = note.querySelector<HTMLButtonElement>(".update-apply")!;
+  const now = note.querySelector<HTMLButtonElement>(".update-now")!;
+  const cancel = note.querySelector<HTMLButtonElement>(".update-cancel")!;
+  setHidden(apply, restarting || waiting !== undefined);
+  setHidden(now, waiting === undefined);
+  setHidden(cancel, waiting === undefined);
+  setHidden(note.querySelector<HTMLElement>(".update-actions")!, restarting);
+  setHidden(note.querySelector<HTMLElement>(".update-dismiss")!, restarting);
+  apply.title = `Restart Cophyla${on} into ${u.version} as soon as nothing waits on it`;
+  now.title = waiting ? `Restart now, cutting off ${waitingWords(waiting)}` : "";
+  for (const b of [apply, now, cancel]) b.disabled = !state.connected || pending !== undefined;
+  setText(apply, pending === "update" ? "Updating…" : "Update");
+  setText(now, pending === "now" ? "Updating…" : "Update now");
 }
 
 // --- the rail's Status: a glance at the machines, the usage and the phones ----------------------

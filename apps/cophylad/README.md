@@ -445,7 +445,16 @@ platform by stopping the daemon when idle and, on the automatic path, no desktop
 attached (the tray offers the restart otherwise); the launcher rotates the pointers at the
 next start. Idle means no open ask, no held hook response, no agent prompt in flight or
 queued, the brain not starting and no brain request in flight, no download running.
-`update.apply` needs only idle and answers `conflict` with the reasons otherwise. On
+`update.apply` needs only idle and answers `conflict` with the reasons otherwise; for the
+platform, `whenIdle` waits instead (it answers `{waiting}`, `update.state` carries the same
+`waiting` while it does, and it is looked at every 2 s and applied once idle, desktop app or
+not), `force` does not wait, and `cancel` ends the wait; the last `update.state` before the
+stop says `restarting`. The default view's rail note asks
+with `whenIdle`, and offers Update now and Cancel while it waits. The stop leaves the next
+start to the desktop app on this machine (`DESKTOP_NAME` on loopback); with none attached it
+starts the launcher (`COPHYLA_LAUNCHER`, else the root's `launcher` file, else the one beside
+the root) with `--wait-pid <pid> --hidden` once the daemon has stopped, so the node comes back
+on the new version in the tray. On
 `channel = "beta"` the feed is the account's server, `<cloud url>/releases`, read with the
 account token as a bearer that goes to that origin alone; signed out, or on a plan without
 the channel, the daemon warns and reads the stable feed. A daemon

@@ -137,7 +137,7 @@ import { nodeTz } from "./tasks/triggers.ts";
 import { Tools } from "./tools/index.ts";
 import { Update } from "./update/index.ts";
 import { RELEASE_KEYS } from "./update/keys.ts";
-import { detectInstall } from "./update/platform.ts";
+import { detectInstall, relaunchAfterUpdate } from "./update/platform.ts";
 import { freeOwnPort, helperPaths } from "./portheld.ts";
 import { spawnsGuarded } from "./inherit.ts";
 import { BUILTIN_VIEWS_DIR, Views } from "./views/index.ts";
@@ -249,10 +249,11 @@ export interface DaemonOptions {
     /** An install directory to run as if installed there, at this daemon's own version. */
     installDir?: string;
     fetch?: typeof fetch;
-    exit?: (code: number) => void;
+    exit?: (code: number, how?: { relaunch: boolean }) => void;
     target?: { os: string; arch: string };
     applyRetryMs?: number;
     exitDelayMs?: number;
+    idlePollMs?: number;
   };
   /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
   lan?: { peer?: (address: string) => string; limiter?: LimiterOptions; sessionLingerMs?: number; ownCertificatePollMs?: number };
@@ -641,10 +642,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     locate,
     busy: busyReasons,
     uiConnected: () => api?.clients().some((c) => c.kind === "ui") ?? false,
+    desktopAttached: () => clients.desktopAttached(),
     exit:
       opts.update?.exit ??
-      ((code) => {
-        void (stopper ? stopper() : Promise.resolve()).finally(() => process.exit(code));
+      ((code, how) => {
+        void (stopper ? stopper() : Promise.resolve()).finally(() => {
+          // No desktop app to start the next version: the launcher does, once this process is gone.
+          if (how?.relaunch && install) relaunchAfterUpdate(install, env, log.child("update"));
+          process.exit(code);
+        });
       }),
     store,
     bus,
@@ -655,6 +661,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...(opts.update?.fetch ? { fetch: opts.update.fetch } : {}),
     ...(opts.update?.target ? { target: opts.update.target } : {}),
     ...(opts.update?.applyRetryMs !== undefined ? { applyRetryMs: opts.update.applyRetryMs } : {}),
+    ...(opts.update?.idlePollMs !== undefined ? { idlePollMs: opts.update.idlePollMs } : {}),
     ...(opts.update?.exitDelayMs !== undefined ? { exitDelayMs: opts.update.exitDelayMs } : {}),
   });
 

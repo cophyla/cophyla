@@ -1059,8 +1059,17 @@ export const clientRequests = {
     result: z.object({ peer: z.string().min(1), sdp: z.string(), epk: z.string() }),
   },
   "update.check": { params: Empty, result: Empty },
-  /** `name` names the model when the component is `model`. */
-  "update.apply": { params: z.object({ component: UpdateComponent.optional(), name: z.string().optional() }), result: Empty },
+  /**
+   * `name` names the model when the component is `model`. A platform release stops the daemon,
+   * which starts again on it; `conflict` with the reasons while that would cut something off
+   * (an open ask, a held hook response, a prompt or a turn in flight), unless `force`. With
+   * `whenIdle` it waits for those instead, answers what it waits for (`waiting`, as
+   * `update.state` says too) and applies once nothing does; `cancel` ends that wait.
+   */
+  "update.apply": {
+    params: z.object({ component: UpdateComponent.optional(), name: z.string().optional(), whenIdle: z.boolean().optional(), force: z.boolean().optional(), cancel: z.boolean().optional() }),
+    result: z.object({ waiting: z.array(z.string()).optional() }),
+  },
 } as const;
 
 export type ClientRequestName = keyof typeof clientRequests;
@@ -1295,6 +1304,10 @@ export const clientNotifications = {
     available: z.string().optional(),
     staged: z.string().optional(),
     progress: z.number().min(0).max(1).optional(),
+    /** The platform: the user asked for the staged release `whenIdle`, and it waits on these to finish. */
+    waiting: z.array(z.string()).optional(),
+    /** The platform: the daemon is stopping to start again on the staged release; its last word before the line goes. */
+    restarting: z.boolean().optional(),
   }),
 } as const;
 

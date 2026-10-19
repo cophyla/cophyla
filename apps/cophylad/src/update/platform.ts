@@ -10,9 +10,11 @@
 // at first start. The names below are the one definition per OS; the launcher's and the
 // shell's Rust constants are pinned equal to them by apps/ui/test/manifest.test.ts.
 
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import type { Release } from "@cophyla/protocol";
+import type { Logger } from "../log.ts";
 import { extractTarGz } from "./archive.ts";
 import { isSemver } from "./feed.ts";
 
@@ -123,6 +125,53 @@ export function detectInstall(env: Record<string, string | undefined>, here = im
     cursor = parent;
   }
   return undefined;
+}
+
+/**
+ * The launcher, found as the shell finds it (apps/ui `resolve_launcher`): `COPHYLA_LAUNCHER`,
+ * which the launcher gives the shell and the shell the daemon it starts, else the path the
+ * root's `launcher` file names, else the launcher beside the root.
+ */
+export function launcherPath(root: string, env: Record<string, string | undefined>): string | undefined {
+  const fromEnv = env["COPHYLA_LAUNCHER"];
+  if (fromEnv) return fromEnv;
+  try {
+    const line = readFileSync(join(root, LAUNCHER_FILE), "utf8").trim();
+    if (line) return line;
+  } catch {
+    // none written
+  }
+  const beside = join(root, LAUNCHER_NAME);
+  return existsSync(beside) ? beside : undefined;
+}
+
+/**
+ * Starts the launcher to wait for this process to exit (`--wait-pid`), rotate the pointers and
+ * start the current version in the tray (`--hidden`), as launch at login does: what brings the
+ * node back on a new version when no desktop app is there to. Detached, with no console and no
+ * handles of ours, so it outlives the daemon; its pid, or a throw when it could not start.
+ */
+export function startLauncher(launcher: string, root: string): number {
+  const child = spawn(launcher, ["--wait-pid", String(process.pid), "--hidden"], { cwd: root, detached: true, windowsHide: true, stdio: "ignore" });
+  // A spawn that failed also raises `error`; the throw below is what reports it.
+  child.once("error", () => {});
+  if (child.pid === undefined) throw new Error(`${launcher} did not start`);
+  child.unref();
+  return child.pid;
+}
+
+/** The launcher started for the next version once the daemon stopped for an update, or why not; never a throw. */
+export function relaunchAfterUpdate(install: Install, env: Record<string, string | undefined>, log: Logger): void {
+  const launcher = launcherPath(install.dir, env);
+  if (!launcher) {
+    log.warn("no launcher to start the next version; it starts at the next launch of Cophyla", { root: install.dir });
+    return;
+  }
+  try {
+    log.info("the launcher starts the next version once this daemon exits", { launcher, pid: startLauncher(launcher, install.dir) });
+  } catch (e) {
+    log.warn("the launcher did not start; the next version starts at the next launch of Cophyla", { launcher, error: e instanceof Error ? e.message : String(e) });
+  }
 }
 
 /** A pointer file holds one version on one line. */

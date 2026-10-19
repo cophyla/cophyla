@@ -7,7 +7,10 @@
 // range outside ours are dropped and logged and nothing is staged; a platform release is
 // staged into `versions/<v>` behind the `staged` pointer; `update.apply {platform}` is a
 // `conflict` while an ask is open or an agent prompt is in flight and, idle, publishes the
-// final state and exits; a daemon whose `current` pointer names another version stops when
+// final state and exits; asked `whenIdle` it answers what it waits on, says so in
+// `update.state` and applies once idle, desktop app or not, `cancel` ending the wait and
+// `force` not waiting; the stop asks for the launcher only when no desktop app on this machine
+// will start the next version, found as the shell finds it; a daemon whose `current` pointer names another version stops when
 // idle with no desktop app attached; a checkout takes brain updates and no platform ones;
 // `.broken` versions are never staged again; both methods leave audit rows with their risk;
 // the scheduler never runs two checks at once; a bundled brain is found and verified.
@@ -20,7 +23,7 @@ import type { AuditEntry, ClientNotificationParams, Release, Session } from "@co
 import type { Daemon, DaemonOptions } from "../src/daemon.ts";
 import { PLATFORM_VERSION } from "../src/daemon.ts";
 import { createLogger } from "../src/log.ts";
-import { BUN_NAME, defaultTar, detectInstall, LAUNCHER_NAME, SHELL_NAME } from "../src/update/platform.ts";
+import { BUN_NAME, defaultTar, detectInstall, LAUNCHER_NAME, launcherPath, relaunchAfterUpdate, SHELL_NAME } from "../src/update/platform.ts";
 import { sha256File, signRelease } from "../src/update/verify.ts";
 import { ARCH, FakeFeed, KEY, OS } from "./fakes/feed.ts";
 import { isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
@@ -90,6 +93,8 @@ interface Started {
   install: string;
   lines: string[];
   exits: number[];
+  /** Whether each exit asked for the launcher: no desktop app on this machine to start the next version. */
+  relaunches: boolean[];
 }
 
 let current: Started | undefined;
@@ -134,6 +139,7 @@ async function start(opts: StartOptions = {}): Promise<Started> {
   writeFileSync(join(scratch, "config.toml"), toml);
   const lines: string[] = [];
   const exits: number[] = [];
+  const relaunches: boolean[] = [];
   const { startDaemon } = await import("../src/daemon.ts");
   const d = Object.assign(
     await startDaemon({
@@ -141,7 +147,18 @@ async function start(opts: StartOptions = {}): Promise<Started> {
       port: 0,
       log: createLogger("info", (line) => lines.push(line)),
       env: { ...process.env, COPHYLA_BRAIN: undefined, COPHYLA_INSTALL_DIR: undefined, COPHYLA_PLATFORM_DIR: undefined, FAKE_BRAIN_SCRIPT: undefined },
-      update: { keys: [KEY.pub], ...(installed ? { installDir: install } : {}), exit: (code) => exits.push(code), applyRetryMs: 50, exitDelayMs: 20, ...opts.daemon },
+      update: {
+        keys: [KEY.pub],
+        ...(installed ? { installDir: install } : {}),
+        exit: (code, how) => {
+          exits.push(code);
+          relaunches.push(how?.relaunch ?? false);
+        },
+        applyRetryMs: 50,
+        exitDelayMs: 20,
+        idlePollMs: 50,
+        ...opts.daemon,
+      },
     }),
     { home: scratch },
   );
@@ -150,9 +167,18 @@ async function start(opts: StartOptions = {}): Promise<Started> {
     c = await TestClient.connect(d.api.url);
     await c.hello(d.token, { name: "test" });
   }
-  current = { d, ...(c ? { c } : {}), feed, scratch, install, lines, exits };
+  current = { d, ...(c ? { c } : {}), feed, scratch, install, lines, exits, relaunches };
   return current;
 }
+
+/** A platform release one patch up, checked for and staged. */
+async function stagePlatform(s: Started): Promise<void> {
+  s.feed.body = { releases: [await s.feed.entry("platform", NEXT_PLATFORM, `platform-${NEXT_PLATFORM}-${OS}-${ARCH}.tar.gz`, await platformArchive(s.scratch, NEXT_PLATFORM))] };
+  await s.c!.request("update.check");
+  await s.c!.next(isMethod("update.state", (p) => (p as UpdateState).component === "platform" && (p as UpdateState).staged === NEXT_PLATFORM));
+}
+
+const askOf = (d: Daemon) => d.asks.open({ type: "permission", source: { kind: "brain" }, title: "may I", options: [{ id: "yes", label: "yes" }, { id: "no", label: "no" }], answerableBy: ["user"] });
 
 const stateOf = (n: { params?: unknown }) => n.params as UpdateState;
 const audit = (d: Daemon, action: string): AuditEntry[] => d.store.audit.list({ limit: 200 }).filter((e) => e.action === action);
@@ -378,6 +404,68 @@ describe("update", () => {
     await waitFor(() => s.exits.length === 1);
   }, 15_000);
 
+  test("update.apply {platform, whenIdle} while busy answers what it waits on, says so in update.state, and applies once idle, desktop app attached or not; the desktop app starts the next version", async () => {
+    const s = await start();
+    const { d, c } = s;
+    await waitFor(() => d.brain?.state === "up");
+    const desktop = await TestClient.connect(d.api.url);
+    try {
+      await desktop.hello(d.token, { name: "desktop" });
+      await stagePlatform(s);
+      const ask = askOf(d);
+      expect(await c!.request<{ waiting?: string[] }>("update.apply", { component: "platform", whenIdle: true })).toEqual({ waiting: ["1 open ask"] });
+      await c!.next(isMethod("update.state", (p) => (p as UpdateState).component === "platform" && (p as UpdateState).waiting?.[0] === "1 open ask"));
+      // Asked again meanwhile, it still waits.
+      expect(await c!.request<{ waiting?: string[] }>("update.apply", { component: "platform", whenIdle: true })).toEqual({ waiting: ["1 open ask"] });
+      await sleep(250);
+      expect(s.exits).toEqual([]);
+      // What it waits on changes: said again.
+      const second = askOf(d);
+      await c!.next(isMethod("update.state", (p) => (p as UpdateState).waiting?.[0] === "2 open asks"));
+      d.asks.answer(second.id, { option: "yes" }, { kind: "user", client: "test" });
+      d.asks.answer(ask.id, { option: "yes" }, { kind: "user", client: "test" });
+      await waitFor(() => s.exits.length === 1, 3000);
+      expect(s.exits).toEqual([0]);
+      expect(s.relaunches).toEqual([false]);
+      expect(logged(s.lines, "platform release applies once the daemon is idle")).toHaveLength(1);
+      expect(logged(s.lines, '"by":"idle"')).toHaveLength(1);
+      // The last word says it is restarting, and nothing waits any more.
+      const final = c!.notifications.filter(isMethod("update.state", (p) => (p as UpdateState).component === "platform")).map(stateOf).pop()!;
+      expect(final).toMatchObject({ staged: NEXT_PLATFORM, restarting: true });
+      expect(final.waiting).toBeUndefined();
+      // Only that last word says so.
+      expect(c!.notifications.filter(isMethod("update.state", (p) => (p as UpdateState).restarting === true))).toHaveLength(1);
+    } finally {
+      desktop.close();
+    }
+  }, 30_000);
+
+  test("cancel ends a wait with nothing applied; force applies at once though busy, and with no desktop app on this machine it asks for the launcher", async () => {
+    const s = await start();
+    const { d, c } = s;
+    await waitFor(() => d.brain?.state === "up");
+    await stagePlatform(s);
+    const ask = askOf(d);
+    await c!.request("update.apply", { component: "platform", whenIdle: true });
+    const before = c!.notifications.length;
+    await c!.request("update.apply", { component: "platform", cancel: true });
+    const platformAfter = () => c!.notifications.slice(before).filter(isMethod("update.state", (p) => (p as UpdateState).component === "platform")).map(stateOf);
+    await waitFor(() => platformAfter().length > 0);
+    expect(platformAfter().at(-1)).toMatchObject({ staged: NEXT_PLATFORM });
+    expect(platformAfter().at(-1)!.waiting).toBeUndefined();
+    d.asks.answer(ask.id, { option: "yes" }, { kind: "user", client: "test" });
+    await sleep(250);
+    expect(s.exits).toEqual([]);
+    // Only the platform waits: a cancel for another component is refused.
+    expect(await c!.call("update.apply", { component: "brain", cancel: true })).toMatchObject({ error: { data: { code: "invalid" } } });
+    askOf(d);
+    expect(await c!.request<{ waiting?: string[] }>("update.apply", { component: "platform", force: true })).toEqual({});
+    await waitFor(() => s.exits.length === 1, 3000);
+    expect(s.relaunches).toEqual([true]);
+    expect(logged(s.lines, "platform release applied though the daemon is busy")).toHaveLength(1);
+    expect(logged(s.lines, '"next":"the launcher"')).toHaveLength(1);
+  }, 30_000);
+
   test("a checkout takes no platform update and still updates its brain, applied by itself when idle", async () => {
     const s = await start({ installed: false, update: "enabled = false\nauto_apply = true\n" });
     const { d, c } = s;
@@ -477,7 +565,7 @@ describe("update", () => {
     const d = Object.assign(await startDaemon({ home, port: 0, log: createLogger("info", (l) => lines.push(l)), env: { ...process.env, FAKE_BRAIN_SCRIPT: script, COPHYLA_BRAIN: undefined }, update: { keys: [KEY.pub] } }), { home });
     const c = await TestClient.connect(d.api.url);
     await c.hello(d.token);
-    current = { d, c, feed, scratch, install: "", lines, exits: [] };
+    current = { d, c, feed, scratch, install: "", lines, exits: [], relaunches: [] };
     await waitFor(() => d.brain?.state === "up");
     expect(d.brain!.location?.origin).toBe("config");
     expect(d.brain!.brainVersion).toBe("fake-0.1");
@@ -509,5 +597,30 @@ describe("detectInstall", () => {
     expect(detectInstall({}, join(bare, "versions", PLATFORM_VERSION, "cophylad"))).toBeUndefined();
     expect(detectInstall({ COPHYLA_INSTALL_DIR: windows, COPHYLA_PLATFORM_DIR: join(windows, "versions", "not-a-version") })).toBeUndefined();
     expect(detectInstall({}, join(scratch, "checkout", "apps", "cophylad", "src", "update"))).toBeUndefined();
+  });
+
+  test("the launcher is found as the shell finds it: COPHYLA_LAUNCHER, else the root's launcher file, else the one beside the root", () => {
+    const scratch = tempHome();
+    try {
+      const root = join(scratch, "root");
+      writeInstall(root, { launcher: false });
+      expect(launcherPath(root, {})).toBeUndefined();
+      writeFileSync(join(root, LAUNCHER_NAME), "launcher stub");
+      expect(launcherPath(root, {})).toBe(join(root, LAUNCHER_NAME));
+      writeFileSync(join(root, "launcher"), "  /Applications/Cophyla.app/Contents/MacOS/Cophyla\n");
+      expect(launcherPath(root, {})).toBe("/Applications/Cophyla.app/Contents/MacOS/Cophyla");
+      expect(launcherPath(root, { COPHYLA_LAUNCHER: "/usr/bin/Cophyla" })).toBe("/usr/bin/Cophyla");
+      // An empty file or variable says nothing.
+      writeFileSync(join(root, "launcher"), "\n");
+      expect(launcherPath(root, { COPHYLA_LAUNCHER: "" })).toBe(join(root, LAUNCHER_NAME));
+      // With none to be found, the next version starts at the next launch, and the warning says so.
+      const lines: string[] = [];
+      const bare = join(scratch, "bare");
+      writeInstall(bare, { launcher: false });
+      relaunchAfterUpdate({ dir: bare, versionDir: join(bare, "versions", PLATFORM_VERSION), version: PLATFORM_VERSION }, {}, createLogger("info", (l) => lines.push(l)));
+      expect(lines.some((l) => l.includes("no launcher to start the next version"))).toBe(true);
+    } finally {
+      removeHome(scratch);
+    }
   });
 });

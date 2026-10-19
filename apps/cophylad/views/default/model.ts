@@ -64,6 +64,8 @@ export type VoiceNext = ClientNotificationParams<"voice.next">;
 export type AccountState = ClientNotificationParams<"account.state">;
 /** A node's direct connections: `direct.state`. */
 export type DirectState = ClientNotificationParams<"direct.state">;
+/** A node's release of one component, staged or on its way: `update.state`. */
+export type UpdateState = ClientNotificationParams<"update.state">;
 
 /** A login the user started, with the code to type on the page, until it is used or runs out. */
 export interface LoginOffer {
@@ -263,6 +265,8 @@ export interface ViewState {
   remote: Map<NodeId, RemoteState>;
   /** Each node's direct connections, from `direct.state`, while connected. */
   direct: Map<NodeId, DirectState>;
+  /** Each node's releases, from `update.state`, by `updateKey`: kept through a disconnect, which an update's restart is, until the next hello says them again. */
+  updates: Map<string, UpdateState>;
   /** The phone code the user asked a node for, while it is shown. */
   remoteInvite?: RemoteInvite;
   /** The node whose PIN form is open. */
@@ -363,6 +367,7 @@ export type Action =
   | { type: "remote.pin"; node?: NodeId }
   | { type: "account.state"; params: AccountState }
   | { type: "direct.state"; params: DirectState }
+  | { type: "update.state"; params: UpdateState }
   /** A code came back from `account.login`, or the panel closed. */
   | { type: "login"; offer?: LoginOffer }
   | { type: "error"; message: string };
@@ -403,6 +408,7 @@ export function initialState(): ViewState {
     spend: new Map(),
     remote: new Map(),
     direct: new Map(),
+    updates: new Map(),
     quick: false,
     chatLoaded: false,
     threadsExhausted: false,
@@ -983,6 +989,9 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "direct.state":
       state.direct.set(action.params.node, action.params);
       return state;
+    case "update.state":
+      state.updates.set(updateKey(action.params), action.params);
+      return state;
     case "login":
       if (action.offer) state.login = action.offer;
       else delete state.login;
@@ -1021,6 +1030,7 @@ export function chatDraw(action: Action): ChatDraw {
     case "draft":
     case "send.result":
     case "assistant.state":
+    case "update.state":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -1408,6 +1418,55 @@ export function hereNode(state: ViewState): NodeId | undefined {
 /** A machine's name as the rail says it. */
 export function machineName(state: ViewState, node: NodeId): string {
   return state.nodes.get(node)?.name ?? (node === state.node ? "This computer" : "Another computer");
+}
+
+/** Where a release's `update.state` is kept: by node, component and a model's name. */
+export function updateKey(u: { node: NodeId; component: string; name?: string }): string {
+  return `${u.node}/${u.component}/${u.name ?? ""}`;
+}
+
+/** A Cophyla release staged on the node this view talks to, which `update.apply` restarts it into. */
+export interface UpdateNote {
+  version: string;
+  /** The machine, named when the app runs on another (a phone's view of its computer). */
+  machine?: string;
+  /** The user asked for it once nothing waits on Cophyla, and it waits on these: what the node says, for every view alike. */
+  waiting?: string[];
+  /** The node is stopping to start again on it: its last word before the line goes, kept through the disconnect. */
+  restarting?: boolean;
+}
+
+/**
+ * What an update waits on, as the user knows it: the node's reasons (`1 open ask`, `2 held hook
+ * responses`, `the chat mid-turn`) in their words, the brain's three as one, any other as it came.
+ */
+export function waitingWords(reasons: string[]): string {
+  const count = (r: string) => Number(/^(\d+)/.exec(r)?.[1] ?? "1");
+  const n = (k: number, one: string, many: string) => (k === 1 ? one : `${k} ${many}`);
+  const words: string[] = [];
+  for (const r of reasons) {
+    let w: string;
+    if (/open asks?$/.test(r)) w = n(count(r), "a question waiting for an answer", "questions waiting for an answer");
+    else if (/held hook responses?$/.test(r)) w = n(count(r), "an agent session waiting on Cophyla", "agent sessions waiting on Cophyla");
+    else if (/agent prompts? in flight$/.test(r)) w = n(count(r), "an agent prompt running", "agent prompts running");
+    else if (r === "brain starting" || r === "the chat mid-turn" || /brain requests? in flight$/.test(r)) w = "the chat working";
+    else if (r === "a download is running") w = "a download";
+    else w = r;
+    if (!words.includes(w)) words.push(w);
+  }
+  return words.join(", ");
+}
+
+/** The rail's note of an update: a platform release staged above what runs, where this view may apply it. */
+export function selectUpdateNote(state: ViewState): UpdateNote | undefined {
+  if (!state.scopes.includes("updates") || state.node === undefined) return undefined;
+  const p = state.updates.get(updateKey({ node: state.node, component: "platform" }));
+  if (p?.staged === undefined || p.staged === p.current) return undefined;
+  return {
+    version: p.staged,
+    ...(state.client?.node !== state.node ? { machine: machineName(state, state.node) } : {}),
+    ...(p.restarting ? { restarting: true } : p.waiting !== undefined && p.waiting.length > 0 ? { waiting: p.waiting } : {}),
+  };
 }
 
 /**

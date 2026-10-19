@@ -425,6 +425,100 @@ button:disabled {
   box-shadow: 0 -5.5px currentColor, 0 5.5px currentColor;
 }
 
+/* A Cophyla release staged on the node: a note under the chat's row, in the brand's wash, its
+   mark and its words beside ×, its buttons under the words. It stays put as the sessions scroll. */
+.update-note {
+  display: grid;
+  flex: 0 0 auto;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0 8px;
+  margin: 0 0 8px;
+  padding: 7px 4px 8px 9px;
+  border: 1px solid var(--cophyla);
+  border-radius: 4px;
+  background: var(--cophyla-wash);
+}
+
+/* an arrow up out of a tray */
+.update-mark {
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  background-color: var(--cophyla-ink);
+  --mark: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M8 10.5V2.5M4.75 5.75 8 2.5l3.25 3.25M2.5 10v3.5h11V10'/%3E%3C/svg%3E");
+  -webkit-mask: var(--mark) center / contain no-repeat;
+  mask: var(--mark) center / contain no-repeat;
+}
+
+.update-note[data-phase="restarting"] .update-mark {
+  animation: pulse 1.2s ease-in-out infinite;
+}
+
+.update-text {
+  min-width: 0;
+}
+
+.update-title {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.update-detail {
+  margin: 2px 0 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+
+.update-detail[data-failed="1"] {
+  color: var(--rust);
+}
+
+.update-note .update-dismiss {
+  flex-basis: 22px;
+  height: 22px;
+  margin-top: -3px;
+}
+
+.update-actions {
+  display: flex;
+  grid-column: 2 / 4;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.update-actions button {
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ink);
+  font-size: 11.5px;
+}
+
+.update-actions .update-apply {
+  border-color: var(--cophyla);
+  background: var(--cophyla);
+  color: #fff;
+  font-weight: 600;
+}
+
+.update-actions button:hover:not(:disabled) {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+}
+
+.update-actions .update-apply:hover:not(:disabled) {
+  background: #9a63e3;
+}
+
+.update-actions button:disabled {
+  opacity: 0.6;
+}
+
 /* New terminal, between the speaker and ⋮: + starts a shell at once, ⌄ opens the menu of
    places. One button in two halves, its seam showing on hover. */
 .new-terminal {

@@ -17,6 +17,7 @@
     "metrics:read",
     "remote",
     "account",
-    "terminal"
+    "terminal",
+    "updates"
   ]
 }

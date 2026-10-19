@@ -79,7 +79,9 @@ launcher rotates the pointers and starts the current version; and while connecte
 daemon whose `platformVersion` is not this shell's, or while `current` names another
 version, it sends `update.apply {component: platform}` and again every minute, so the
 daemon stops when idle and the first rule takes over. A staged platform the daemon reports
-in `update.state` puts "Restart to update <v>" in the tray. Launch at login registers the launcher with `--hidden` (through `auto-launch`:
+in `update.state` puts "Restart to update <v>" in the tray, and the default view shows it in
+a note at the top of its rail; both send `update.apply {component: platform, whenIdle: true}`,
+so cophylad stops as soon as nothing waits on it (the note says on what meanwhile). Launch at login registers the launcher with `--hidden` (through `auto-launch`:
 the value `Cophyla` under the Run key, the launch agent `~/Library/LaunchAgents/
 com.fareaststudios.cophyla.launcher.plist`, the entry `~/.config/autostart/Cophyla.desktop`), so the entry
 survives updates; from a checkout it registers this executable; the item is disabled when no

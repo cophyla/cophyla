@@ -207,8 +207,8 @@ pub fn build<R: Runtime>(app: &App<R>, install: Option<&Install>) -> tauri::Resu
                 }
             }
             UPDATE => {
-                // The daemon stops when idle (else answers `conflict`, logged); the link then
-                // relaunches through the launcher, which rotates the pointers.
+                // The daemon stops once idle (at once if it is; else the view's note says on what
+                // it waits); the link then relaunches through the launcher, which rotates the pointers.
                 if let Err(e) = app.state::<Link>().request_platform_apply() {
                     log::warn!("restart to update: {e}");
                 }

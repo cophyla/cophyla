@@ -58,7 +58,8 @@
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
+import { selectUpdateNote } from "./model.ts";
+import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
@@ -324,6 +325,9 @@ rpc.onNotification((n) => {
       return;
     case "direct.state":
       dispatch({ type: "direct.state", params: n.params as DirectState });
+      return;
+    case "update.state":
+      dispatch({ type: "update.state", params: n.params as UpdateState });
       return;
     case "node.state": {
       const node = n.params as CophylaNode;
@@ -624,6 +628,29 @@ async function restartChat(): Promise<void> {
     ui.railMenu = { note: unsupported ? "The chat agent cannot be restarted from here yet: update the app and the node." : `Restart chat agent: ${e instanceof Error ? e.message : String(e)}` };
   } finally {
     ui.chatRestarting = false;
+    draw();
+  }
+}
+
+/**
+ * The rail's update note. Update asks the node to restart into the staged release once nothing
+ * waits on it (`whenIdle`): idle, it restarts at once; busy, the node's `update.state` says on
+ * what, and the note offers Update now, which does not wait, and Cancel. Either way the node's
+ * last `update.state` says it is restarting, which the note shows until the node is back on the
+ * new version. A refusal says why under the note.
+ */
+async function applyUpdate(kind: "update" | "now" | "cancel"): Promise<void> {
+  const note = selectUpdateNote(state);
+  if (!note || ui.update?.pending) return;
+  ui.update = { pending: kind };
+  draw();
+  const params = kind === "cancel" ? { component: "platform", cancel: true } : kind === "now" ? { component: "platform", force: true } : { component: "platform", whenIdle: true };
+  try {
+    await rpc.request<{ waiting?: string[] }>("update.apply", params);
+    ui.update = {};
+  } catch (e) {
+    ui.update = { note: `Not updated: ${e instanceof Error ? e.message : String(e)}` };
+  } finally {
     draw();
   }
 }
@@ -2860,6 +2887,21 @@ document.addEventListener("click", (ev) => {
     case "chat-restart":
       void restartChat();
       return;
+    case "update-apply":
+      void applyUpdate("update");
+      return;
+    case "update-now":
+      void applyUpdate("now");
+      return;
+    case "update-cancel":
+      void applyUpdate("cancel");
+      return;
+    case "update-dismiss": {
+      const note = selectUpdateNote(state);
+      if (note) ui.update = { dismissed: note.version };
+      draw();
+      return;
+    }
     case "chat-mode": {
       const mode = target.dataset["mode"];
       if (mode !== "chat" && mode !== "terminal") return;

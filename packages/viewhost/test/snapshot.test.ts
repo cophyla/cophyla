@@ -1,4 +1,4 @@
-// The snapshot cache: the latest picture per session, workspace, node, open task and open
+// The snapshot cache: the latest picture per session, workspace, node, open task, release and open
 // ask, replayed in the daemon's post-hello order, idempotent.
 
 import { describe, expect, test } from "bun:test";
@@ -83,6 +83,22 @@ describe("snapshot cache", () => {
     expect(c.replay().map((x) => x.method)).toEqual(["node.state", "remote.state", "remote.state", "task.state"]);
     c.clear();
     expect(c.remote.size).toBe(0);
+  });
+
+  test("keeps the latest update.state per node, component and model, replayed after the tasks, so a late view shows a release that is ready", () => {
+    const c = new SnapshotCache();
+    c.upsert(n("update.state", { node: "node_1", component: "platform", current: "0.16.0" }));
+    c.upsert(n("update.state", { node: "node_1", component: "platform", current: "0.16.0", available: "0.16.1", staged: "0.16.1" }));
+    c.upsert(n("update.state", { node: "node_1", component: "brain", current: "0.16.0" }));
+    c.upsert(n("update.state", { node: "node_1", component: "model", name: "tts-kokoro-en", current: "1.0.0" }));
+    c.upsert(n("update.state", { node: "node_2", component: "platform", current: "0.15.2" }));
+    c.upsert(n("update.state", { component: "platform", current: "0.16.0" }));
+    c.upsert(n("task.state", { id: "task_1", status: "ready" }));
+    c.upsert(n("voice.state", { state: "idle" }));
+    expect(c.updates.get("node_1/platform/")).toEqual({ node: "node_1", component: "platform", current: "0.16.0", available: "0.16.1", staged: "0.16.1" } as never);
+    expect(c.replay().map((x) => x.method)).toEqual(["task.state", "update.state", "update.state", "update.state", "update.state", "voice.state"]);
+    c.clear();
+    expect(c.updates.size).toBe(0);
   });
 
   test("keeps the latest voice.state, replayed last, and drops it on clear", () => {

@@ -20,6 +20,7 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
+import { selectUpdateNote, updateKey, waitingWords } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLIENT: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["sessions:read", "sessions:write", "asks:answer", "audit:read", "chat", "tasks:read"], via: "direct", audio: { in: false, out: false }, connectedAt: 1 };
@@ -2567,5 +2568,65 @@ describe("default view: the explorer", () => {
     expect(sessionWho(session("sess_a", 1, { title: "Tidy the build", intent: "fix it" }))).toBe("claude: Tidy the build");
     expect(sessionWho(session("sess_a", 1, { intent: "fix it" }))).toBe("claude: fix it");
     expect(sessionWho(session("sess_a", 1, { harness: "codex" }))).toBe("codex");
+  });
+});
+
+describe("default view: the update note", () => {
+  const OTHER = "node_01ARZ3NDEKTSV4RRFFQ69G5FC0";
+  /** A view that may see updates, on the node's own computer (the desktop app) unless `client` says otherwise. */
+  const updatable = (client: Partial<Client> = { node: NODE }): ViewState => {
+    const s = initialState();
+    const scopes: Scope[] = [...CLIENT.scopes, "updates", "nodes"];
+    apply(s, { type: "host.ready", params: { ...READY, client: { ...CLIENT, scopes, ...client }, scopes } });
+    apply(s, { type: "host.state", params: { connected: true } });
+    return s;
+  };
+  const platform = (s: ViewState, extra: Record<string, unknown>, node = NODE) => apply(s, { type: "update.state", params: { node, component: "platform", current: "0.16.0", ...extra } });
+
+  test("a platform release staged on the node the view talks to is the note; none before it is staged, once it runs, nor on another node", () => {
+    const s = updatable();
+    platform(s, { available: "0.16.1", progress: 0.5 });
+    expect(selectUpdateNote(s)).toBeUndefined();
+    platform(s, { staged: "0.16.2" }, OTHER);
+    expect(selectUpdateNote(s)).toBeUndefined();
+    apply(s, { type: "update.state", params: { node: NODE, component: "brain", current: "0.16.0", staged: "0.16.1" } });
+    expect(selectUpdateNote(s)).toBeUndefined();
+    platform(s, { available: "0.16.1", staged: "0.16.1" });
+    expect(selectUpdateNote(s)).toEqual({ version: "0.16.1" });
+    // The user asked for it while the node was busy: it says on what, in every view.
+    platform(s, { available: "0.16.1", staged: "0.16.1", waiting: ["1 open ask", "the chat mid-turn"] });
+    expect(selectUpdateNote(s)).toEqual({ version: "0.16.1", waiting: ["1 open ask", "the chat mid-turn"] });
+    // The node's last word: it is restarting, waiting on nothing. A disconnect is what the restart
+    // is, and the note keeps until the next hello says otherwise.
+    platform(s, { available: "0.16.1", staged: "0.16.1", restarting: true });
+    expect(selectUpdateNote(s)).toEqual({ version: "0.16.1", restarting: true });
+    apply(s, { type: "host.state", params: { connected: false } });
+    expect(selectUpdateNote(s)).toEqual({ version: "0.16.1", restarting: true });
+    apply(s, { type: "host.state", params: { connected: true } });
+    platform(s, { current: "0.16.1" });
+    expect(selectUpdateNote(s)).toBeUndefined();
+    expect(s.updates.has(updateKey({ node: OTHER, component: "platform" }))).toBe(true);
+  });
+
+  test("a view without the updates scope has no note; a phone's names the computer it would restart", () => {
+    const plain = ready();
+    platform(plain, { staged: "0.16.1" });
+    expect(selectUpdateNote(plain)).toBeUndefined();
+    const phone = updatable({ kind: "controller" });
+    apply(phone, { type: "node.state", params: { id: NODE, name: "Desk", role: "primary", status: "online", platform: "windows", version: "0.16.0", lastSeen: 1, capabilities: { harnesses: [], brain: false, voice: false } } as unknown as Node });
+    platform(phone, { staged: "0.16.1" });
+    expect(selectUpdateNote(phone)).toEqual({ version: "0.16.1", machine: "Desk" });
+  });
+
+  test("what an update waits on, in the user's words: one each, the brain's reasons as one", () => {
+    expect(waitingWords(["1 open ask"])).toBe("a question waiting for an answer");
+    expect(waitingWords(["2 open asks", "3 held hook responses"])).toBe("2 questions waiting for an answer, 3 agent sessions waiting on Cophyla");
+    expect(waitingWords(["1 held hook response", "1 agent prompt in flight"])).toBe("an agent session waiting on Cophyla, an agent prompt running");
+    expect(waitingWords(["brain starting", "2 brain requests in flight", "the chat mid-turn"])).toBe("the chat working");
+    expect(waitingWords(["a download is running", "something new"])).toBe("a download, something new");
+  });
+
+  test("an update's state changes no item of the chat", () => {
+    expect(chatDraw({ type: "update.state", params: { node: NODE, component: "platform", current: "0.16.0" } })).toBe("none");
   });
 });

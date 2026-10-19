@@ -1,6 +1,7 @@
 // The daemon's picture as the host last saw it: the latest `session.state` per live session,
 // `workspace.state` per workspace, `node.state`, `remote.state` and `direct.state` per node,
-// `task.state` per open task, every open `ask.state`, the latest `voice.state`, the words heard
+// `task.state` per open task, `update.state` per node and component (a model's by its name),
+// every open `ask.state`, the latest `voice.state`, the words heard
 // so far of this client's utterance (`voice.partial`, whole), the voice engine still being set
 // up (`voice.setup`), whether the next reply is read out (`voice.next`), the account
 // (`account.state`), where the session the chat runs in stands (`assistant.state`) and the
@@ -19,6 +20,7 @@ type VoiceNextParams = ClientNotificationParams<"voice.next">;
 type AccountStateParams = ClientNotificationParams<"account.state">;
 type ProgressParams = ClientNotificationParams<"chat.progress">;
 type AssistantParams = ClientNotificationParams<"assistant.state">;
+type UpdateStateParams = ClientNotificationParams<"update.state">;
 
 export class SnapshotCache {
   readonly sessions = new Map<string, Session>();
@@ -30,6 +32,8 @@ export class SnapshotCache {
   readonly direct = new Map<string, DirectState>();
   readonly asks = new Map<string, Ask>();
   readonly tasks = new Map<string, Task>();
+  /** Each node's releases, by node, component and a model's name: a view that mounts late still shows an update that is ready. */
+  readonly updates = new Map<string, UpdateStateParams>();
   /** The latest voice state, replayed after the rest so a view shows the conversation in flight. */
   voice?: VoiceStateParams;
   /**
@@ -99,6 +103,11 @@ export class SnapshotCache {
       if (r && typeof r === "object" && typeof r.node === "string") this.remote.set(r.node, r);
       return;
     }
+    if (n.method === "update.state") {
+      const u = n.params as UpdateStateParams | undefined;
+      if (u && typeof u === "object" && typeof u.node === "string" && typeof u.component === "string") this.updates.set(`${u.node}/${u.component}/${u.name ?? ""}`, u);
+      return;
+    }
     if (n.method === "direct.state") {
       const d = n.params as DirectState | undefined;
       if (d && typeof d === "object" && typeof d.node === "string" && typeof d.state === "string") this.direct.set(d.node, d);
@@ -136,7 +145,7 @@ export class SnapshotCache {
     }
   }
 
-  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the voice state, the words heard, the setup and the speaker, the account and the nodes' direct connections, then the brain's turn and the chat's session. */
+  /** In the daemon's post-hello order: asks, sessions, workspaces, nodes and their remote state, tasks, the releases, the voice state, the words heard, the setup and the speaker, the account and the nodes' direct connections, then the brain's turn and the chat's session. */
   replay(): RpcNotification[] {
     const out: RpcNotification[] = [];
     for (const ask of this.asks.values()) out.push({ jsonrpc: "2.0", method: "ask.state", params: ask });
@@ -145,6 +154,7 @@ export class SnapshotCache {
     for (const node of this.nodes.values()) out.push({ jsonrpc: "2.0", method: "node.state", params: node });
     for (const state of this.remote.values()) out.push({ jsonrpc: "2.0", method: "remote.state", params: state });
     for (const task of this.tasks.values()) out.push({ jsonrpc: "2.0", method: "task.state", params: task });
+    for (const state of this.updates.values()) out.push({ jsonrpc: "2.0", method: "update.state", params: state });
     if (this.voice) out.push({ jsonrpc: "2.0", method: "voice.state", params: this.voice });
     if (this.heard) out.push({ jsonrpc: "2.0", method: "voice.partial", params: this.heard });
     if (this.voiceSetup) out.push({ jsonrpc: "2.0", method: "voice.setup", params: this.voiceSetup });
@@ -164,6 +174,7 @@ export class SnapshotCache {
     this.direct.clear();
     this.asks.clear();
     this.tasks.clear();
+    this.updates.clear();
     this.voice = undefined;
     this.heard = undefined;
     this.voiceSetup = undefined;

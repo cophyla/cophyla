@@ -8,8 +8,12 @@
 // applied by restarting brain-link, which promotes it before the spawn and verifies it; a
 // staged platform is applied by stopping the daemon when nothing waits on it (and, on the
 // automatic path, no desktop app is attached), because the launcher rotates the pointers at
-// the next start. A daemon whose `current` pointer names another version is stale and stops
-// the same way. Every drop and refusal is logged with its reason.
+// the next start. The user's request may wait for that (`whenIdle`), looked at every couple of
+// seconds and applied once nothing waits, desktop app or not, or not wait at all (`force`). A
+// desktop app on this machine starts the next version itself; with none attached the stop
+// asks for the launcher, which waits for the daemon to exit and starts it again in the tray. A
+// daemon whose `current` pointer names another version is stale and stops the same way.
+// Every drop and refusal is logged with its reason.
 
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
@@ -53,8 +57,13 @@ export interface UpdateDeps {
   busy: () => string[];
   /** A desktop app is attached: a staged platform then waits for the user or the tray. */
   uiConnected: () => boolean;
-  /** Stops the daemon so the launcher can rotate; `process.exit` in production. */
-  exit: (code: number) => void;
+  /** The desktop app on this machine is attached, and starts the next daemon once this one stops. */
+  desktopAttached?: () => boolean;
+  /**
+   * Stops the daemon so the launcher can rotate; `process.exit` in production. `relaunch`: no
+   * desktop app will start the next version, so the launcher is started once the daemon stopped.
+   */
+  exit: (code: number, opts?: { relaunch: boolean }) => void;
   store: Store;
   bus: Bus;
   log: Logger;
@@ -72,7 +81,16 @@ export interface UpdateDeps {
   applyRetryMs?: number;
   /** Between the last `update.state` and the exit, so the answer and the state reach clients. */
   exitDelayMs?: number;
+  /** How often a platform release the user asked for `whenIdle` looks again at whether the daemon is idle. */
+  idlePollMs?: number;
   tar?: string;
+}
+
+/** What `update.apply` may say beside the component: wait for idle, do not wait, or stop waiting. */
+export interface ApplyOptions {
+  whenIdle?: boolean;
+  force?: boolean;
+  cancel?: boolean;
 }
 
 interface ComponentState {
@@ -91,6 +109,7 @@ export interface Trigger {
 const KV_NS = "update";
 const KV_BROKEN = "broken";
 const APPLY_RETRY_MS = 30_000;
+const IDLE_POLL_MS = 2_000;
 const EXIT_DELAY_MS = 200;
 const UPDATABLE_ORIGINS = new Set<BrainLocation["origin"]>(["installed", "bundled"]);
 
@@ -109,6 +128,9 @@ export class Update {
   private target: { os: string; arch: string };
   private timer?: ReturnType<typeof setTimeout>;
   private applyTimer?: ReturnType<typeof setTimeout>;
+  /** What a platform release the user asked for `whenIdle` waits on, as last published; none while nobody asked. */
+  private waiting?: string[];
+  private idleTimer?: ReturnType<typeof setTimeout>;
   private running?: Trigger;
   private abort = new AbortController();
   private downloading = false;
@@ -183,8 +205,10 @@ export class Update {
     this.disposed = true;
     if (this.timer) clearTimeout(this.timer);
     if (this.applyTimer) clearTimeout(this.applyTimer);
+    if (this.idleTimer) clearTimeout(this.idleTimer);
     this.timer = undefined;
     this.applyTimer = undefined;
+    this.idleTimer = undefined;
     this.abort.abort();
   }
 
@@ -216,6 +240,8 @@ export class Update {
       ...(s.available !== undefined ? { available: s.available } : {}),
       ...(s.staged !== undefined ? { staged: s.staged } : {}),
       ...(s.progress !== undefined ? { progress: s.progress } : {}),
+      ...(key === "platform" && this.waiting !== undefined ? { waiting: this.waiting } : {}),
+      ...(key === "platform" && this.exiting && this.platform !== undefined ? { restarting: true } : {}),
     };
   }
 
@@ -593,8 +619,17 @@ export class Update {
     }
   }
 
-  /** `update.apply`: the explicit path needs only an idle daemon. */
-  async apply(component?: "platform" | "brain" | "model", name?: string): Promise<void> {
+  /**
+   * `update.apply`: the explicit path needs only an idle daemon. A platform release asked for
+   * `whenIdle` while the daemon is busy answers what it waits on, and applies once nothing does;
+   * one asked with `force` applies at once; `cancel` ends a wait.
+   */
+  async apply(component?: "platform" | "brain" | "model", name?: string, opts: ApplyOptions = {}): Promise<string[] | undefined> {
+    if (opts.cancel) {
+      if (component !== undefined && component !== "platform") throw new RpcError("invalid", "only a platform release waits for an idle daemon");
+      this.stopWaiting();
+      return undefined;
+    }
     if (component === "model") {
       if (!name) throw new RpcError("invalid", "a model release needs its name");
       const staged = this.models.stagedVersion(name);
@@ -602,7 +637,7 @@ export class Update {
       if (!(this.deps.voiceIdle?.() ?? true)) throw new RpcError("conflict", "busy: a voice conversation is running", { reasons: ["a voice conversation is running"] });
       this.log.info("applying model release", { model: name, version: staged, by: "request" });
       if (!this.promoteModel(name, staged)) throw new RpcError("unavailable", `${name} ${staged} could not be promoted`);
-      return;
+      return undefined;
     }
     const which: Component = component ?? (this.platform && (this.platform.staged() || this.isStale()) ? "platform" : "brain");
     if (which === "brain") {
@@ -615,27 +650,87 @@ export class Update {
       if (reasons.length > 0) throw new RpcError("conflict", `busy: ${reasons.join("; ")}`, { reasons });
       this.log.info("applying brain release", { version: staged, by: "request" });
       await link.restart();
-      return;
+      return undefined;
     }
     if (!this.platform) throw new RpcError("unsupported", "the platform is not installed; a checkout updates with git");
     const staged = this.platform.staged();
     const stale = this.isStale();
     if (!staged && !stale) throw new RpcError("not_found", "no platform release is staged");
     const reasons = this.busyReasons();
-    if (reasons.length > 0) throw new RpcError("conflict", `busy: ${reasons.join("; ")}`, { reasons });
-    this.exitForPlatform("request");
+    if (reasons.length === 0) this.exitForPlatform("request");
+    else if (opts.force) {
+      this.log.info("platform release applied though the daemon is busy", { staged, reasons });
+      this.exitForPlatform("force");
+    } else if (opts.whenIdle) {
+      this.waitForIdle(reasons);
+      return reasons;
+    } else throw new RpcError("conflict", `busy: ${reasons.join("; ")}`, { reasons });
+    return undefined;
   }
 
-  /** The final `update.state`, then the exit: the shell relaunches through the launcher, which rotates the pointers. */
-  private exitForPlatform(by: "auto" | "request"): void {
+  /** A platform release the user asked for waits for an idle daemon, which is looked at again every couple of seconds. */
+  private waitForIdle(reasons: string[]): void {
+    if (this.waiting === undefined) this.log.info("platform release applies once the daemon is idle", { staged: this.platform?.staged(), reasons });
+    this.waiting = reasons;
+    this.publish("platform");
+    if (!this.idleTimer) this.scheduleIdleCheck();
+  }
+
+  private scheduleIdleCheck(): void {
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = undefined;
+      this.checkIdle();
+    }, this.deps.idlePollMs ?? IDLE_POLL_MS);
+    this.idleTimer.unref?.();
+  }
+
+  /** Idle now: the release the user asked for applies, desktop app or not; still busy, what it waits on is published when it changes. */
+  private checkIdle(): void {
+    if (this.waiting === undefined || this.disposed || this.exiting) return;
+    if (!this.platform?.staged() && !this.isStale()) {
+      this.log.info("platform release no longer staged; the wait ends");
+      this.stopWaiting();
+      return;
+    }
+    const reasons = this.busyReasons();
+    if (reasons.length === 0) {
+      this.exitForPlatform("idle");
+      return;
+    }
+    if (reasons.join("\n") !== this.waiting.join("\n")) {
+      this.waiting = reasons;
+      this.publish("platform");
+    }
+    this.scheduleIdleCheck();
+  }
+
+  /** The wait for an idle daemon ends, nothing applied. */
+  private stopWaiting(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+    if (this.waiting === undefined) return;
+    this.waiting = undefined;
+    this.log.info("platform release no longer waits for an idle daemon");
+    this.publish("platform");
+  }
+
+  /**
+   * The final `update.state`, then the exit. A desktop app on this machine relaunches through
+   * the launcher, which rotates the pointers; with none attached the launcher is asked for.
+   */
+  private exitForPlatform(by: "auto" | "request" | "idle" | "force"): void {
     if (this.exiting) return;
     this.exiting = true;
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+    this.waiting = undefined;
     const platform = this.platform!;
     const staged = platform.staged();
     const current = platform.pointer("current");
-    this.log.info("platform release applies at the next start; stopping", { staged, current, running: this.deps.platformVersion, by });
+    const relaunch = !(this.deps.desktopAttached?.() ?? this.deps.uiConnected());
+    this.log.info("platform release applies at the next start; stopping", { staged, current, running: this.deps.platformVersion, by, next: relaunch ? "the launcher" : "the desktop app" });
     this.publish("platform");
-    const t = setTimeout(() => this.deps.exit(0), this.deps.exitDelayMs ?? EXIT_DELAY_MS);
+    const t = setTimeout(() => this.deps.exit(0, { relaunch }), this.deps.exitDelayMs ?? EXIT_DELAY_MS);
     t.unref?.();
   }
 

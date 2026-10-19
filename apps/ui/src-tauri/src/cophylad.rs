@@ -312,9 +312,11 @@ impl Link {
         })
     }
 
-    /// `update.apply {component: platform}`: the daemon stops when idle and the shell relaunches through the launcher.
+    /// The tray's Restart to update: `update.apply {component: platform, whenIdle}`, so the daemon
+    /// stops as soon as nothing waits on it (the view's note says on what meanwhile) and the shell
+    /// relaunches through the launcher.
     pub fn request_platform_apply(&self) -> Result<(), String> {
-        self.send(apply_frame().to_string())
+        self.send(apply_frame(true).to_string())
     }
 
     /// Asks the link to close and reconnect, so cophylad re-sends its post-hello snapshot to a
@@ -339,8 +341,11 @@ impl Default for Link {
     }
 }
 
-fn apply_frame() -> Value {
-    json!({ "jsonrpc": "2.0", "id": APPLY_ID, "method": "update.apply", "params": { "component": "platform" } })
+/// `update.apply` for the platform: `when_idle` for the user's request, which waits for an idle
+/// daemon; without it for the version check, which asks again every minute anyway.
+fn apply_frame(when_idle: bool) -> Value {
+    let params = if when_idle { json!({ "component": "platform", "whenIdle": true }) } else { json!({ "component": "platform" }) };
+    json!({ "jsonrpc": "2.0", "id": APPLY_ID, "method": "update.apply", "params": params })
 }
 
 // --- the loop --------------------------------------------------------------------------------
@@ -611,7 +616,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
     let mismatch = version_mismatch(&result, install);
     if let Some(why) = &mismatch {
         log::warn!("{why}: asking the daemon to stop when idle");
-        if let Err(e) = ws.send(Message::text(apply_frame().to_string())).await {
+        if let Err(e) = ws.send(Message::text(apply_frame(false).to_string())).await {
             return Attempt::Dropped(format!("send failed: {e}"));
         }
     }
@@ -652,7 +657,7 @@ async fn attempt<R: Runtime>(app: &AppHandle<R>, link: &Link, url: &str, token: 
                 // The rule re-evaluated, so a rotation that happened while connected is seen too.
                 if let Some(why) = version_mismatch(&result, install) {
                     log::info!("{why}: asking again");
-                    if let Err(e) = ws.send(Message::text(apply_frame().to_string())).await {
+                    if let Err(e) = ws.send(Message::text(apply_frame(false).to_string())).await {
                         return Attempt::Dropped(format!("send failed: {e}"));
                     }
                 }

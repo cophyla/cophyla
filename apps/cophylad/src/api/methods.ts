@@ -441,7 +441,7 @@ export interface UpdateDeps {
   update: Update;
 }
 
-/** `update.check` answers once the feed is evaluated; staging goes on behind it. `update.apply` needs an idle daemon. */
+/** `update.check` answers once the feed is evaluated; staging goes on behind it. `update.apply` needs an idle daemon, waits for one (`whenIdle`), or does not (`force`). */
 export function updateMethods(deps: UpdateDeps): MethodTable {
   return {
     "update.check": {
@@ -453,8 +453,8 @@ export function updateMethods(deps: UpdateDeps): MethodTable {
     "update.apply": {
       target: (p) => (p.name !== undefined ? `${p.component ?? "model"}:${p.name}` : p.component),
       handler: async (p) => {
-        await deps.update.apply(p.component, p.name);
-        return {};
+        const waiting = await deps.update.apply(p.component, p.name, { ...(p.whenIdle ? { whenIdle: true } : {}), ...(p.force ? { force: true } : {}), ...(p.cancel ? { cancel: true } : {}) });
+        return waiting ? { waiting } : {};
       },
     },
   };
