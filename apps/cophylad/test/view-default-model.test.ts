@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
+import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 
@@ -2331,6 +2331,50 @@ describe("default view: terminals", () => {
 
   test("Shift+Enter sends ESC CR, which a Claude prompt takes as a new line", () => {
     expect(SHIFT_ENTER).toBe("\x1b\r");
+  });
+
+  test("a finger scrolls the way it moved most once past a tap", () => {
+    expect(dragAxis(0, 0)).toBeUndefined();
+    expect(dragAxis(TOUCH_SLOP - 1, 0)).toBeUndefined();
+    expect(dragAxis(5, -5)).toBeUndefined();
+    expect(dragAxis(0, -TOUCH_SLOP)).toBe("y");
+    expect(dragAxis(3, 12)).toBe("y");
+    expect(dragAxis(-12, 3)).toBe("x");
+  });
+
+  test("a drag scrolls whole steps and keeps what is left of one for the next move", () => {
+    expect(dragSteps(0, 40, 16)).toEqual({ steps: 2, rest: 0.5 });
+    expect(dragSteps(0.5, 8, 16)).toEqual({ steps: 1, rest: 0 });
+    expect(dragSteps(0, 10, 16)).toEqual({ steps: 0, rest: 0.625 });
+    // Back up: the rest counts down, and a move the other way eats into it first.
+    expect(dragSteps(0, -40, 16)).toEqual({ steps: -2, rest: -0.5 });
+    expect(dragSteps(0.5, -12, 16)).toEqual({ steps: 0, rest: -0.25 });
+    // Nothing drawn yet: nothing scrolls.
+    expect(dragSteps(0.25, 40, 0)).toEqual({ steps: 0, rest: 0.25 });
+  });
+
+  test("a drag scrolls the lines back, else turns the wheel: every three rows for a program that reads it, every row for the alternate screen's arrow keys", () => {
+    expect(dragScroll("normal", "none")).toEqual({ by: "lines", rows: 1 });
+    // X10 reports presses only, so the wheel scrolls the lines, as it does in xterm.
+    expect(dragScroll("normal", "x10")).toEqual({ by: "lines", rows: 1 });
+    for (const t of ["vt200", "drag", "any"] as const) {
+      expect(dragScroll("normal", t)).toEqual({ by: "wheel", rows: 3 });
+      expect(dragScroll("alternate", t)).toEqual({ by: "wheel", rows: 3 });
+    }
+    expect(dragScroll("alternate", "none")).toEqual({ by: "wheel", rows: 1 });
+    expect(dragScroll("alternate", "x10")).toEqual({ by: "wheel", rows: 1 });
+  });
+
+  test("a fling slows each frame and stops once too slow to see", () => {
+    expect(flingSpeed(2, 16)).toBeCloseTo(1.9);
+    expect(flingSpeed(-2, 32)).toBeCloseTo(-1.805);
+    expect(flingSpeed(2, 0)).toBe(2);
+    expect(flingSpeed(0.021, 16)).toBe(0);
+    let speed = 3;
+    let frames = 0;
+    for (; speed !== 0; frames++) speed = flingSpeed(speed, 16);
+    expect(frames).toBeGreaterThan(60);
+    expect(frames).toBeLessThan(120);
   });
 });
 

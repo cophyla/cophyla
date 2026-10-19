@@ -64,6 +64,7 @@ export interface IBufferLine {
 }
 
 export interface IBuffer {
+  readonly type: "normal" | "alternate";
   getLine(y: number): IBufferLine | undefined;
 }
 
@@ -105,6 +106,7 @@ export declare class Terminal implements IDisposable {
   write(data: string | Uint8Array, callback?: () => void): void;
   reset(): void;
   resize(cols: number, rows: number): void;
+  scrollLines(amount: number): void;
   focus(): void;
   loadAddon(addon: ITerminalAddon): void;
   onData(listener: (data: string) => void): IDisposable;

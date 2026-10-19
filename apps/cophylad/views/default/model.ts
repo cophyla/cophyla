@@ -469,6 +469,52 @@ export function repeatsTracking(params: (number | number[])[], active: MouseTrac
   return params.length > 0 && params.every((p) => typeof p === "number" && TRACKING_MODES[p] !== undefined && TRACKING.indexOf(TRACKING_MODES[p]) <= TRACKING.indexOf(active));
 }
 
+/** How far, in CSS pixels, a finger moves on a terminal before it scrolls rather than taps. */
+export const TOUCH_SLOP = 8;
+
+/** The way a finger's drag scrolls, once it went past a tap: the way it moved most; none yet within `TOUCH_SLOP`. */
+export function dragAxis(dx: number, dy: number): "x" | "y" | undefined {
+  if (Math.hypot(dx, dy) < TOUCH_SLOP) return undefined;
+  return Math.abs(dx) > Math.abs(dy) ? "x" : "y";
+}
+
+/**
+ * The whole steps a drag of `by` CSS pixels scrolls a terminal (positive: on to later lines),
+ * a step `stepPx` long, with `rest`, the part of a step left from the drag before: what is
+ * left of one now waits for the next move.
+ */
+export function dragSteps(rest: number, by: number, stepPx: number): { steps: number; rest: number } {
+  if (stepPx <= 0) return { steps: 0, rest };
+  const total = rest + by / stepPx;
+  const steps = Math.trunc(total) || 0; // never -0
+  return { steps, rest: total - steps };
+}
+
+/** The lines a program scrolls a turn of the wheel, as Claude's full screen does and vim. */
+const WHEEL_LINES = 3;
+
+/**
+ * How a drag on a terminal scrolls it, and how many rows of the drag make one step: back
+ * through its lines, a line a row; else with its wheel, where the program reads the wheel
+ * (tracking that reports it), a turn each `WHEEL_LINES` rows, or on the alternate screen,
+ * which keeps no lines to scroll back to and takes a turn as an arrow key, a turn a row.
+ */
+export function dragScroll(buffer: "normal" | "alternate", tracking: MouseTracking): { by: "lines" | "wheel"; rows: number } {
+  if (tracking !== "none" && tracking !== "x10") return { by: "wheel", rows: WHEEL_LINES };
+  return buffer === "alternate" ? { by: "wheel", rows: 1 } : { by: "lines", rows: 1 };
+}
+
+/** A fling's speed, in pixels per millisecond, slows by this much each 16 ms… */
+const FLING_DECAY = 0.95;
+/** …and stops below this. */
+const FLING_STOP = 0.02;
+
+/** A fling's speed `ms` after it was `speed`: slowing as a page does, and 0 once too slow to see. */
+export function flingSpeed(speed: number, ms: number): number {
+  const next = speed * FLING_DECAY ** (ms / 16);
+  return Math.abs(next) < FLING_STOP ? 0 : next;
+}
+
 /**
  * The text an OSC 52 puts on the clipboard (its data after `52;`: the selections, `;`, the
  * text in base64), or undefined: a query (`?`), which is never answered, a clear, or only

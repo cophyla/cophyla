@@ -25,9 +25,16 @@
 // `C:\repo\apps`) in the Files panel, when the view can place it in an agent's folder
 // (`FileLinks`). A file or a folder dragged from the explorer onto the screen is typed in as
 // its path, as a paste.
+//
+// A finger scrolls it, as the wheel does, since xterm.js 6 reads no touch of its own: a drag
+// up or down goes back through the lines or on to the latest, a line a row, or turns the
+// wheel of a program that reads it (Claude's full screen) a turn each three rows, as it
+// scrolls three lines a turn, or the alternate screen's arrow keys, a turn a row; a flick
+// carries on and slows. Where the terminal is bigger than the pane, the pane scrolls first,
+// sideways always.
 
 import type { Terminal as TerminalRow } from "@cophyla/protocol";
-import { clipboardWrite, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, pathsIn, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
+import { clipboardWrite, dragAxis, dragScroll, dragSteps, flingSpeed, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, pathsIn, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
 import type { PathInText, TerminalOutput } from "./model.ts";
 import type { FitAddon } from "./vendor/addon-fit.mjs";
 import type { Unicode11Addon } from "./vendor/addon-unicode11.mjs";
@@ -61,6 +68,20 @@ const FOLLOW = `Follow link (${MAC ? "⌘" : "Ctrl"}+click)`;
 /** What a file's path says while the mouse is on it, and a folder's. */
 const OPEN_FILE = `Open the file (${MAC ? "⌘" : "Ctrl"}+click)`;
 const SHOW_FOLDER = `Show the folder in Files (${MAC ? "⌘" : "Ctrl"}+click)`;
+/** A finger held still this long before it lifts stops a drag rather than flinging it. */
+const FLING_HOLD_MS = 100;
+
+/** A finger on the screen: where it went down and was last, the way it scrolls once past a tap, and how fast it went. */
+interface Finger {
+  id: number;
+  startX: number;
+  startY: number;
+  x: number;
+  y: number;
+  at: number;
+  axis?: "x" | "y";
+  speed: number;
+}
 
 /** The files and folders a terminal's paths name: whether the view can open one, and opening it, a file at its line. */
 export interface FileLinks {
@@ -98,6 +119,10 @@ export class TerminalView {
   /** A button went down on the screen, and whether the selection changed since: copied when it comes up. */
   private pressed = false;
   private reselected = false;
+  /** The finger scrolling the screen, the part of a step it has yet to scroll, and its fling's frame. */
+  private finger?: Finger;
+  private stepRest = 0;
+  private flinging = 0;
   /** Keys typed here reach the terminal. */
   typing = false;
   /** Why it shows nothing, or why it is read only. */
@@ -149,6 +174,10 @@ export class TerminalView {
       true,
     );
     window.addEventListener("mouseup", () => this.selected(), true);
+    this.screen.addEventListener("touchstart", (ev) => this.touchStart(ev), { passive: true });
+    this.screen.addEventListener("touchmove", (ev) => this.touchMove(ev), { passive: false });
+    this.screen.addEventListener("touchend", (ev) => this.touchEnd(ev), { passive: false });
+    this.screen.addEventListener("touchcancel", (ev) => this.touchEnd(ev), { passive: false });
   }
 
   /** The terminal shown, if one is. */
@@ -393,6 +422,85 @@ export class TerminalView {
     });
   }
 
+  /** A finger went down: one may scroll, a second makes it a pinch, which scrolls nothing. A fling under way stops. */
+  private touchStart(ev: TouchEvent): void {
+    cancelAnimationFrame(this.flinging);
+    const t = ev.touches[0];
+    if (ev.touches.length !== 1 || !t) {
+      this.finger = undefined;
+      return;
+    }
+    this.finger = { id: t.identifier, startX: t.clientX, startY: t.clientY, x: t.clientX, y: t.clientY, at: ev.timeStamp, speed: 0 };
+    this.stepRest = 0;
+  }
+
+  /** The finger moved: once it went past a tap, it scrolls the way it moved most, and the browser does nothing with it. */
+  private touchMove(ev: TouchEvent): void {
+    const f = this.finger;
+    const t = f && Array.from(ev.changedTouches).find((c) => c.identifier === f.id);
+    if (!f || !t) return;
+    f.axis ??= dragAxis(t.clientX - f.startX, t.clientY - f.startY);
+    if (!f.axis) return;
+    if (ev.cancelable) ev.preventDefault();
+    const by = f.axis === "y" ? f.y - t.clientY : f.x - t.clientX;
+    const ms = ev.timeStamp - f.at;
+    if (ms > 0) f.speed = by / ms;
+    f.x = t.clientX;
+    f.y = t.clientY;
+    f.at = ev.timeStamp;
+    this.scroll(f.axis, by, f.x, f.y);
+  }
+
+  /** The finger lifted: a drag is no tap, and one still moving flings on. */
+  private touchEnd(ev: TouchEvent): void {
+    const f = this.finger;
+    if (!f || Array.from(ev.touches).some((t) => t.identifier === f.id)) return;
+    this.finger = undefined;
+    if (!f.axis) return;
+    if (ev.cancelable) ev.preventDefault();
+    if (ev.type === "touchend" && ev.timeStamp - f.at < FLING_HOLD_MS) this.fling(f.axis, f.speed, f.x, f.y);
+  }
+
+  /** Scrolls on at `speed` pixels a millisecond, slowing each frame until it stops. */
+  private fling(axis: "x" | "y", speed: number, x: number, y: number): void {
+    let last = performance.now();
+    const frame = (now: number) => {
+      const ms = Math.min(Math.max(now - last, 0), 50);
+      last = now;
+      speed = flingSpeed(speed, ms);
+      if (speed === 0 || !this.term) return;
+      this.scroll(axis, speed * ms, x, y);
+      this.flinging = requestAnimationFrame(frame);
+    };
+    this.flinging = requestAnimationFrame(frame);
+  }
+
+  /**
+   * Scrolls `by` CSS pixels on (positive: right, or down to later lines) at the finger's `x`, `y`:
+   * sideways the pane; down or up the pane while the terminal is taller than it and it has
+   * room that way, then the terminal, through its lines or with its wheel.
+   */
+  private scroll(axis: "x" | "y", by: number, x: number, y: number): void {
+    const pane = this.screen;
+    if (axis === "x") {
+      pane.scrollLeft += by;
+      return;
+    }
+    if (by > 0 ? pane.scrollTop < pane.scrollHeight - pane.clientHeight - 1 : pane.scrollTop > 0) {
+      pane.scrollTop += by;
+      return;
+    }
+    const term = this.term;
+    const drawn = term?.element?.querySelector<HTMLElement>(".xterm-screen");
+    if (!term || !drawn) return;
+    const how = dragScroll(term.buffer.active.type, term.modes.mouseTrackingMode);
+    const { steps, rest } = dragSteps(this.stepRest, by, (drawn.offsetHeight / term.rows) * how.rows);
+    this.stepRest = rest;
+    if (steps === 0) return;
+    if (how.by === "wheel") wheel(drawn, steps, x, y);
+    else term.scrollLines(steps);
+  }
+
   /** A link was clicked: the host opens it, with Ctrl or ⌘ held, or at a tap where there is no mouse. */
   private openLink(ev: MouseEvent, url: string): void {
     if (!ev.ctrlKey && !ev.metaKey && !touch()) return;
@@ -445,6 +553,8 @@ export class TerminalView {
   private close(): void {
     this.generation++;
     clearTimeout(this.resizeTimer);
+    cancelAnimationFrame(this.flinging);
+    this.finger = undefined;
     if (this.id !== undefined) {
       const id = this.id;
       void this.rpc.request("terminal.close", { terminal: id }).catch(() => undefined);
@@ -480,6 +590,17 @@ export class TerminalView {
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/**
+ * Turns the wheel `turns` times (positive: down) at a finger's place, clamped onto the screen,
+ * by the events a mouse's wheel sends, so xterm does with them what it does with the wheel's:
+ * tells a program that reads it, with its own encoding, or types arrow keys.
+ */
+function wheel(screen: HTMLElement, turns: number, x: number, y: number): void {
+  const box = screen.getBoundingClientRect();
+  const at = { clientX: Math.min(Math.max(x, box.left), box.right - 1), clientY: Math.min(Math.max(y, box.top), box.bottom - 1) };
+  for (let i = 0; i < Math.abs(turns); i++) screen.dispatchEvent(new WheelEvent("wheel", { ...at, deltaY: Math.sign(turns), deltaMode: WheelEvent.DOM_DELTA_LINE, bubbles: true, cancelable: true }));
 }
 
 /** No mouse to hover or hold Ctrl with: a phone's touch screen. */

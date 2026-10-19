@@ -5253,13 +5253,15 @@ button:disabled {
 /* Followed, the screen keeps the terminal's own columns and rows, its font scaled to fill the
    pane, centred across it: a pane too small for them even at the smallest font scrolls.
    Content-box, because xterm's fit (a driven terminal's size) reads the pane's computed width
-   and height as the room it has, which must leave the padding out. */
+   and height as the room it has, which must leave the padding out. A finger's drag is the
+   terminal's to scroll, the pane with it (terminal.ts), never the browser's. */
 .term-screen {
   flex: 1 1 auto;
   box-sizing: content-box;
   min-height: 0;
   overflow: auto;
   padding: 6px 10px;
+  touch-action: none;
 }
 
 /* Clipped: xterm moves its hidden input to the cursor only when the cursor moves, so after a
