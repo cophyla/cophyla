@@ -27,9 +27,10 @@ export type TunnelRole = "initiator" | "responder";
  * What a tunnel joins: a phone (`controller`), a node linking to its primary (`node`), a
  * phone pairing through the account (`pair`), or a machine redeeming an invite (`enroll`);
  * on a data channel a phone or a node (`direct`), keyed from the same secret but never from
- * the same keys.
+ * the same keys; one user's Cophyla reaching another's for a connection between two of their
+ * terminals, or redeeming its invite (`connection`).
  */
-export type TunnelKind = "controller" | "node" | "pair" | "enroll" | "direct";
+export type TunnelKind = "controller" | "node" | "pair" | "enroll" | "direct" | "connection";
 
 /** A fresh key pair for one tunnel, and its public half as it travels. */
 export interface Ephemeral {

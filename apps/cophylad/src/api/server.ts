@@ -413,6 +413,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("session.state", (session) => registry.broadcastSession(session)),
           deps.bus.on("session.event", (event) => registry.broadcastEvent(event)),
           deps.bus.on("terminal.state", (terminal) => broadcast("terminal.state", terminal)),
+          deps.bus.on("connection.state", (connection) => broadcast("connection.state", connection)),
           deps.bus.on("workspace.state", (workspace) => registry.broadcastWorkspace(workspace)),
           deps.bus.on("chat.message", (message) => broadcast("chat.message", { message })),
           deps.bus.on("chat.delta", (delta) => broadcast("chat.delta", delta)),

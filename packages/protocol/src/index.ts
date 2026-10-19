@@ -21,6 +21,7 @@ export * from "./docframe.ts";
 export * from "./apppage.ts";
 export * from "./key.ts";
 export * from "./agent-tools.ts";
+export * from "./connection.ts";
 
 import { entities } from "./entities.ts";
 import { brainRequests, CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";
@@ -30,6 +31,7 @@ import { serverAuthHttp, serverLinkFrames, serverLinkInbound, serverLinkRequests
 import { relayPeerFrames, relayPeerRequests } from "./relay.ts";
 import { nodeLinkFrames, nodeLinkRequests } from "./node-link.ts";
 import { InviteBody } from "./invite.ts";
+import { connectionLinkRequests } from "./connection.ts";
 import { RpcFailure, RpcNotification, RpcRequest, RpcSuccess } from "./rpc.ts";
 
 /** Everything with a schema, grouped the way the fixtures are. */
@@ -54,6 +56,8 @@ export const registry = {
   serverLink: { requests: serverLinkRequests, inbound: serverLinkInbound, frames: serverLinkFrames, auth: serverAuthHttp },
   relayPeer: { requests: relayPeerRequests, frames: relayPeerFrames },
   nodeLink: { requests: nodeLinkRequests, frames: nodeLinkFrames },
+  /** A connection's own link between two users' primaries. */
+  connectionLink: { requests: connectionLinkRequests },
   /** What an invite's text and link carry; its codec has its own tests. */
   invite: { body: InviteBody },
 } as const;

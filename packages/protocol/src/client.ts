@@ -16,6 +16,7 @@ import {
   Client,
   ClientKind,
   ClosedSession,
+  Connection,
   ContentBlock,
   Controller,
   DirectState,
@@ -40,6 +41,7 @@ import {
   SpendTotals,
   Task,
   Terminal,
+  TerminalRef,
   Thread,
   Usage,
   ViewManifest,
@@ -48,7 +50,7 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
@@ -174,6 +176,14 @@ export type PairedLan = z.infer<typeof PairedLan>;
 /** An invite as the node that minted it hands it out: the text to paste, the link a QR code holds, and until when it may be redeemed. */
 export const InviteOffer = z.object({ text: z.string(), link: z.string(), expiresAt: Timestamp });
 export type InviteOffer = z.infer<typeof InviteOffer>;
+
+/** Which terminal a connection is for: the one a session runs in, or one by its ref on `node` (this node without it). */
+export const ConnectionEndpoint = z.object({ session: SessionId.optional(), terminal: TerminalRef.optional(), node: NodeId.optional() });
+export type ConnectionEndpoint = z.infer<typeof ConnectionEndpoint>;
+
+/** A connection's invite as the node that minted it hands it out, once: the code to give the other person, and its end. */
+export const ConnectionInvite = z.object({ code: z.string(), expiresAt: Timestamp });
+export type ConnectionInvite = z.infer<typeof ConnectionInvite>;
 
 /** A six-digit pairing code, shown on the desktop and typed on the phone. */
 export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six digits" });
@@ -1015,6 +1025,22 @@ export const clientRequests = {
    * The node's row says how it stands (`capabilities.agents`).
    */
   "agents.accept": { params: z.object({ node: NodeId.optional(), on: z.boolean() }), result: Empty },
+  /** This user's connections to other users' terminals, pending and active, on every machine. */
+  "connection.list": { params: Empty, result: z.object({ connections: z.array(Connection) }) },
+  /**
+   * An invite for another Cophyla user to connect a terminal of theirs to one of this user's:
+   * the terminal a session runs in (`session`), or one by its ref on `node`. A session in no
+   * tether terminal is its own end. The code is good once, for fifteen minutes; `for` keeps
+   * it to one GitHub login. Needs this account signed in, with the relay.
+   */
+  "connection.invite": {
+    params: ConnectionEndpoint.extend({ for: z.string().min(1).max(64).optional() }),
+    result: z.object({ connection: Connection, invite: ConnectionInvite }),
+  },
+  /** Uses another user's code for the terminal named as in `connection.invite`; answered once both ends keep the connection. */
+  "connection.accept": { params: ConnectionEndpoint.extend({ code: z.string().min(1).max(4096) }), result: z.object({ connection: Connection }) },
+  /** Ends a connection at both ends, or cancels a pending one's invite. */
+  "connection.end": { params: z.object({ id: ConnectionId }), result: Empty },
   "direct.enable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   "direct.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   /**
@@ -1258,6 +1284,8 @@ export const clientNotifications = {
   "remote.pipe.data": PipeData,
   "remote.pipe.ack": PipeAck,
   "remote.pipe.close": PipeClose,
+  /** A connection's row when it is made, used, changes end or ends (`state: ended`, the last word about it). */
+  "connection.state": Connection,
   "update.state": z.object({
     node: NodeId,
     component: UpdateComponent,

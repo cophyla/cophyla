@@ -131,7 +131,7 @@ export async function readInvite(file: string | undefined, questions?: Questions
     for await (const chunk of process.stdin) {
       text += String(chunk);
       // The invite is one line: the first line that holds one is enough.
-      if (/cophyla(-invite:|:\/\/invite)\S+\s*\n/.test(text)) break;
+      if (/cophyla(-invite:|-connect:|:\/\/invite)\S+\s*\n/.test(text)) break;
     }
   }
   if (!text.trim()) throw new Error(`no invite ${file !== undefined && file !== "-" ? `in ${file}` : "on stdin"}: give it the line \`cophylad invite\` printed on the primary`);

@@ -39,7 +39,9 @@ import { startDeviceFlow } from "./login.ts";
 import { RegistryClient } from "./registry.ts";
 import type { Arbiter } from "./registry.ts";
 import { Tunnels } from "./tunnels.ts";
-import type { InviteTunnel, NodeTunnel } from "./tunnels.ts";
+import type { ConnectionTunnel, InviteTunnel, NodeTunnel } from "./tunnels.ts";
+import { verifyIdentity } from "./identity.ts";
+import type { VerifiedIdentity } from "./identity.ts";
 import type { DeviceOffer } from "./login.ts";
 import { systemOpener } from "./opener.ts";
 import type { Opener } from "./opener.ts";
@@ -73,6 +75,13 @@ export interface CloudDeps {
   acceptPairing?: () => ((sock: NodeSocket, pairing: { login: string }) => NodeSocketHandler) | undefined;
   /** A phone redeeming its invite on the invite's throwaway peer: how the tunnel is keyed and who serves it. */
   acceptInvite?: (peer: string) => InviteTunnel | undefined;
+  /** Another user's Cophyla on one of this node's connections, or redeeming one's invite. */
+  acceptConnection?: (peer: string) => ConnectionTunnel | undefined;
+}
+
+/** What a server from before connections answers, in words the user can act on. */
+function noConnections(): RpcError {
+  return new RpcError("unavailable", "the Cophyla server does not offer connections yet: it needs Server 0.8.0", { provider: "server" });
 }
 
 export interface LoginOptions {
@@ -167,6 +176,7 @@ export class Cloud {
       },
       acceptPairing: () => deps.acceptPairing?.(),
       acceptInvite: (peer) => deps.acceptInvite?.(peer),
+      acceptConnection: (peer) => deps.acceptConnection?.(peer),
       subject: () => this.subject,
     });
     this.registry = new RegistryClient({
@@ -541,13 +551,36 @@ export class Cloud {
    * (`relay.grant`), bound to the grant's kind and its end; this node adds the server's
    * origin. Nothing while signed out, on a plan without the relay, or with the link down.
    */
-  async relayGrant(peer: string, opts: { kind: GrantKind; name?: string; expiresAt?: number }): Promise<{ url: string; token: string }> {
+  async relayGrant(peer: string, opts: { kind: GrantKind | "connection"; name?: string; expiresAt?: number }): Promise<{ url: string; token: string }> {
     const why = this.hostedAllowed("relay");
     if (why) throw why;
     const params = { peer, kind: opts.kind, ...(opts.name !== undefined ? { name: opts.name } : {}), ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}) };
-    const r = (await this.link.request("relay.grant", params, { timeoutMs: 15_000 })) as { token?: unknown };
+    const r = (await this.link.request("relay.grant", params, { timeoutMs: 15_000 }).catch((e: unknown) => {
+      // a server before 0.8.0 parses no connection's peer, and says only that the params are wrong
+      throw opts.kind === "connection" && e instanceof RpcError && (e.code === "invalid" || e.code === "unsupported") ? noConnections() : e;
+    })) as { token?: unknown };
     if (typeof r?.token !== "string") throw new RpcError("unavailable", "the server granted no relay token", { provider: "server" });
     return { url: this.deps.config.url.replace(/\/$/, ""), token: r.token };
+  }
+
+  /**
+   * The server's word on who this account is, bound to `aud`: what a connection's redemption
+   * hands the other user's Cophyla. Nothing while signed out, on a plan without the relay, or
+   * with the link down.
+   */
+  async attest(aud: string): Promise<string> {
+    const why = this.hostedAllowed("relay");
+    if (why) throw why;
+    const r = (await this.link.request("identity.attest", { aud }, { timeoutMs: 15_000 }).catch((e: unknown) => {
+      throw e instanceof RpcError && e.code === "unsupported" ? noConnections() : e;
+    })) as { token?: unknown };
+    if (typeof r?.token !== "string") throw new RpcError("unavailable", "the server vouched for nobody", { provider: "server" });
+    return r.token;
+  }
+
+  /** Another account's identity token, checked against the keys this node ships with, for `aud`, now. */
+  verifyIdentity(token: string, aud: string): VerifiedIdentity {
+    return verifyIdentity(token, this.deps.keys, aud, this.now());
   }
 
   /** Tells the server a controller's relay grant is over; best effort. */

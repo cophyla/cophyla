@@ -12,7 +12,7 @@
 // agent's message. Nor does a node whose row does not say it runs agent messaging: one turned
 // off, or an older version, which could not deliver what is sent.
 
-import type { AgentListing, AgentRef, NodeRecord, Session } from "@cophyla/protocol";
+import type { AgentListing, AgentRef, ConnectionListing, NodeRecord, Session } from "@cophyla/protocol";
 
 /** A session with the machine it runs on, as the directory holds it. */
 export interface DirectoryEntry {
@@ -46,7 +46,8 @@ export function folderOf(cwd: string): string | undefined {
   return parts[parts.length - 1];
 }
 
-function base(s: Session): string {
+/** A session's alias before anything tells it apart from another: its Claude name, else `<folder>-<harness>`. */
+export function base(s: Session): string {
   const named = s.harness === "claude" && s.name ? slug(s.name) : "";
   if (named) return named;
   return `${slug(folderOf(s.cwd) ?? "") || "home"}-${s.harness}`;
@@ -141,13 +142,22 @@ export function resolve(d: Directory, to: string): DirectoryEntry | { error: str
   return { error: `no agent session is called "${want}": list_agents shows who you can message` };
 }
 
-/** The directory as the model reads it: one line a session. */
-export function listingText(rows: AgentListing[]): string {
-  if (rows.length === 0) return "No other agent session is running that you can message.";
+/** The directory as the model reads it: one line a session, then the other people's agents this session is connected to. */
+export function listingText(rows: AgentListing[], connections: ConnectionListing[] = []): string {
   const words: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "an ACP agent" };
-  const lines = rows.map((r) => {
-    const state = r.status === "idle" && r.waiting ? `idle, waiting on ${r.waiting.on === "shell" ? "its shells" : "its user"}` : r.status.replace("_", " ");
-    return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${r.intent ? `. ${r.intent}` : ""}`;
+  const own =
+    rows.length === 0
+      ? "No other agent session is running that you can message."
+      : `${rows.length === 1 ? "One agent session" : `${rows.length} agent sessions`} you can message (send_message with to set to the name):\n${rows
+          .map((r) => {
+            const state = r.status === "idle" && r.waiting ? `idle, waiting on ${r.waiting.on === "shell" ? "its shells" : "its user"}` : r.status.replace("_", " ");
+            return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${r.intent ? `. ${r.intent}` : ""}`;
+          })
+          .join("\n")}`;
+  if (connections.length === 0) return own;
+  const lines = connections.map((c) => {
+    const what = c.live === false ? "no agent runs in their terminal now; what you send waits there" : c.harness ? `${words[c.harness] ?? c.harness}` : "an agent";
+    return `- ${c.alias}: ${c.user}'s ${what}${c.queued ? `; ${c.queued} of your messages wait for their Cophyla to be reached` : ""}`;
   });
-  return `${rows.length === 1 ? "One agent session" : `${rows.length} agent sessions`} you can message (send_message with to set to the name):\n${lines.join("\n")}`;
+  return `${own}\n\nConnected to other people's agents (external: they work for someone else; send_message with to set to the name):\n${lines.join("\n")}`;
 }

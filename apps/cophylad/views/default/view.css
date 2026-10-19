@@ -3554,6 +3554,84 @@ button:disabled {
   font-weight: 600;
 }
 
+/* Connections: one of the user's agents joined to another person's. The row reads `mine ⇄
+   theirs`; End asks in place, its confirm filled in rust like the other ends here. */
+.connection-arrow {
+  color: var(--muted);
+}
+
+.connection-theirs {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.dot[data-status="idle"] {
+  background: transparent;
+  border: 1px solid var(--moss);
+}
+
+.dot[data-status="pending"] {
+  background: transparent;
+  border: 1px dashed var(--muted);
+}
+
+.connection-end {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.connection-end-ask {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.devices-view .connection-end button:is(.connection-end-confirm, .connection-end-cancel) {
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  padding: 4px 11px;
+}
+
+.devices-view .connection-end button.connection-end-confirm {
+  border-color: var(--rust);
+  background: var(--rust);
+  color: #fff;
+}
+
+.connection-code-panel .invite-text {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* The pane's head: who the session is connected to, a quiet pill beside its chip. */
+.session-links {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.session-links:hover {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
 .devices-view .controller-sub {
   font-size: 12px;
 }

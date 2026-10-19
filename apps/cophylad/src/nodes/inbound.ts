@@ -685,7 +685,8 @@ export class Inbound {
         return linkDirect.answer(parsed.data);
       }
       case "agent.list":
-      case "agent.send": {
+      case "agent.send":
+      case "connection.tool": {
         // Checked and gated as the node's session, never as the node; answered at once, held or not.
         const agents = this.deps.agents?.();
         if (!agents) throw new RpcError("unavailable", "agent messaging is off on the primary");

@@ -41,6 +41,11 @@ const b64url = (s: string | Buffer): string => (typeof s === "string" ? Buffer.f
 
 /** A JWT the way the server issues one: `EdDSA`, the claims the `Entitlement` entity. */
 export function signEntitlement(claims: Entitlement, key: KeyObject, kid: string): string {
+  return signJwt(claims, key, kid);
+}
+
+/** Any claims signed as the server signs: an entitlement's, or an identity's. */
+export function signJwt(claims: unknown, key: KeyObject, kid: string): string {
   const header = b64url(JSON.stringify({ alg: "EdDSA", typ: "JWT", kid }));
   const payload = b64url(JSON.stringify(claims));
   const sig = sign(null, Buffer.from(`${header}.${payload}`, "utf8"), key);
@@ -74,8 +79,8 @@ interface LinkData {
   /** A peer socket after `relay.auth`: the controller id it speaks as and the node it was granted by. */
   peer?: string;
   peerNode?: string;
-  /** Which kind of grant the peer's token is: a phone's goes to its granting node, a node's to the primary. */
-  peerKind?: "controller" | "node";
+  /** Which kind of grant the peer's token is: a phone's goes to its granting node, a node's to the primary, a connection's to the node that minted it. */
+  peerKind?: "controller" | "node" | "connection";
   /** A pairing peer: the account its grant signed in as, and the node it asked for. */
   pairing?: { subject: string; login: string; node?: string };
 }
@@ -86,7 +91,7 @@ interface Tunnel {
   aId: string;
   b: ServerWebSocket<LinkData>;
   bId: string;
-  kind: "controller" | "node" | "pair";
+  kind: "controller" | "node" | "pair" | "connection";
   frames: number;
 }
 
@@ -142,6 +147,8 @@ export class FakeServer {
   plan = "pro";
   /** Milliseconds `relay.grant` takes: a pairing slow enough for the phone to leave before its answer. */
   grantDelayMs = 0;
+  /** Answers as a server before 0.8.0 does: a connection's relay peer is not a kind it parses, and `identity.attest` is not a method it has. */
+  noConnections = false;
   subject = "usr_fake";
   /** Answers `llm.complete` with `quota_exceeded {metric, resetsAt}` while set. */
   quota: { metric: string; resetsAt: number } | undefined;
@@ -160,7 +167,11 @@ export class FakeServer {
   /** Accept `auth` only for tokens in `tokens` that are not revoked; when false, every auth is denied (a server that lost its database). */
   acceptTokens = true;
   /** The relay tokens granted, by controller id. */
-  readonly relayTokens = new Map<string, { token: string; node: string; kind: "controller" | "node"; name?: string; expiresAt?: number; revoked: boolean }>();
+  readonly relayTokens = new Map<string, { token: string; node: string; kind: "controller" | "node" | "connection"; subject?: string; name?: string; expiresAt?: number; revoked: boolean }>();
+  /** The GitHub login of each account the fake knows, for `identity.attest`; `octocat` for one not named. */
+  readonly logins = new Map<string, string>();
+  /** Every `identity.attest`: the account and the audience. */
+  readonly attests: { subject: string; aud: string }[] = [];
   /** The grants of the app's sign-in, as the real server's page would hand them out; spent at `relay.auth`. */
   readonly pairGrants = new Map<string, { subject: string; login: string; node?: string }>();
   private nextPairing = 0;
@@ -250,6 +261,11 @@ export class FakeServer {
   /** Node tunnels open: the `relayed_nodes` gauge. */
   get relayedNodes(): number {
     return [...this.tunnels].filter((t) => t.kind === "node").length;
+  }
+
+  /** A link signed in to another person's account than this fake's own: kept out of its registry. */
+  private otherAccount(ws: ServerWebSocket<LinkData>): boolean {
+    return ws.data.subject !== undefined && ws.data.subject !== this.subject;
   }
 
   /** Whether a node holds a link now. */
@@ -424,9 +440,12 @@ export class FakeServer {
     return grant;
   }
 
-  mintToken(node?: string): string {
+  /** An account token: this fake's account, or another person's (`subject`, with its `login`), for a connection between two users. */
+  mintToken(node?: string, account?: { subject: string; login?: string }): string {
     const token = `tok_fake_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
-    this.tokens.set(token, { subject: this.subject, revoked: false, ...(node ? { node } : {}) });
+    const subject = account?.subject ?? this.subject;
+    if (account?.login) this.logins.set(subject, account.login);
+    this.tokens.set(token, { subject, revoked: false, ...(node ? { node } : {}) });
     return token;
   }
 
@@ -654,6 +673,18 @@ export class FakeServer {
         throw fail("unavailable", e instanceof Error ? e.message : String(e), { provider: "server" });
       }
     }
+    if (method === "relay.open" && ws.data.peerKind === "connection") {
+      // another user's Cophyla on a connection's peer: to the node that minted it, whoever dials
+      if (this.plan !== "pro") throw fail("denied", "the plan has no relay");
+      const target = this.linkOf(ws.data.peerNode!);
+      if (!target) throw fail("unavailable", "that Cophyla is not linked to the server", { provider: "server" });
+      try {
+        return await this.openTunnel("connection", ws, ws.data.peer, target, ws.data.peerNode!, String(p["epk"] ?? ""), p["curve"]);
+      } catch (e) {
+        if (e instanceof Error && "error" in e) throw e;
+        throw fail("unavailable", e instanceof Error ? e.message : String(e), { provider: "server" });
+      }
+    }
     if (method === "relay.open" && ws.data.peerKind === "node") {
       // a node's grant: to the primary the registry names now, against the plan's relayed nodes
       if (this.plan !== "pro") throw fail("denied", "the plan has no relay");
@@ -715,15 +746,30 @@ export class FakeServer {
       case "relay.grant": {
         if (this.grantDelayMs > 0) await new Promise((r) => setTimeout(r, this.grantDelayMs));
         if (this.plan !== "pro") throw fail("denied", "the plan has no relay");
+        if (this.noConnections && p["kind"] === "connection") throw fail("invalid", "relay.grant: invalid params");
         const peer = String(p["peer"] ?? "");
-        const kind = p["kind"] === "node" ? "node" : "controller";
-        if (!peer.startsWith(kind === "node" ? "grt_" : "ctl_")) throw fail("invalid", `a ${kind} grant's peer is a ${kind === "node" ? "grt_" : "ctl_"} id`);
+        const kind = p["kind"] === "node" ? "node" : p["kind"] === "connection" ? "connection" : "controller";
+        const prefix = kind === "node" ? "grt_" : kind === "connection" ? "con_" : "ctl_";
+        if (!peer.startsWith(prefix)) throw fail("invalid", `a ${kind} grant's peer is a ${prefix} id`);
         const expiresAt = typeof p["expiresAt"] === "number" ? p["expiresAt"] : undefined;
         if (expiresAt !== undefined && expiresAt <= this.now()) throw fail("invalid", "the grant has already ended");
+        const prior = this.relayTokens.get(peer);
+        if (prior?.subject !== undefined && prior.subject !== ws.data.subject) throw fail("conflict", "that peer id belongs to another account");
         const token = `rly_fake_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
-        this.relayTokens.set(peer, { token, node: ws.data.node!, kind, ...(typeof p["name"] === "string" ? { name: p["name"] } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), revoked: false });
+        this.relayTokens.set(peer, { token, node: ws.data.node!, kind, ...(ws.data.subject ? { subject: ws.data.subject } : {}), ...(typeof p["name"] === "string" ? { name: p["name"] } : {}), ...(expiresAt !== undefined ? { expiresAt } : {}), revoked: false });
         for (const s of [...this.sockets]) if (s.data.kind === "peer" && s.data.peer === peer) s.close(4401, "token replaced");
         return { token };
+      }
+      case "identity.attest": {
+        // the server's word on the account, bound to the audience asked for
+        if (this.noConnections) throw fail("unsupported", `unsupported: ${method}`);
+        if (this.plan !== "pro") throw fail("denied", "the plan has no relay");
+        const aud = typeof p["aud"] === "string" ? p["aud"] : "";
+        if (!aud) throw fail("invalid", "identity.attest: aud required");
+        const subject = ws.data.subject ?? this.subject;
+        this.attests.push({ subject, aud });
+        const now = this.now();
+        return { token: signJwt({ typ: "cophyla-identity", sub: subject, login: this.logins.get(subject) ?? "octocat", aud, iat: now, exp: now + 600_000 }, this.signer, this.kid) };
       }
       case "relay.revoke": {
         const peer = String(p["peer"] ?? "");
@@ -741,6 +787,8 @@ export class FakeServer {
         if (this.plan !== "pro") throw fail("denied", "the plan has no relay: the registry is part of it");
         const node = p["node"] as Node;
         const epoch = typeof p["epoch"] === "number" ? p["epoch"] : 0;
+        // another person's account (a connection's far end): a registry of its own, its one node the primary
+        if (this.otherAccount(ws)) return node.role === "primary" ? { primary: node.id, epoch } : {};
         this.nodeRows.set(node.id, { role: node.role, epoch, via: node.via });
         let answer: unknown;
         if (node.role !== "primary") answer = this.holder();
@@ -752,6 +800,7 @@ export class FakeServer {
       case "registry.heartbeat": {
         if (this.plan !== "pro") throw fail("denied", "the plan has no relay: the registry is part of it");
         const node = String(p["node"] ?? "");
+        if (this.otherAccount(ws)) return { primary: node, epoch: 0 };
         const l = this.lease;
         const answer = l && l.until > this.now() && l.node !== node ? { primary: l.node, epoch: l.epoch } : this.grant(node, l?.epoch ?? 0);
         this.registryLog.push({ method, node, answer });
@@ -761,6 +810,7 @@ export class FakeServer {
         if (this.plan !== "pro") throw fail("denied", "the plan has no relay: the registry is part of it");
         const node = String(p["node"] ?? "");
         const epoch = typeof p["epoch"] === "number" ? p["epoch"] : 0;
+        if (this.otherAccount(ws)) return { granted: true, primary: node, epoch };
         const answer = this.arbitrate({ node, epoch, chosen: p["chosen"] === true }) ? { granted: true, ...this.grant(node, epoch) } : { granted: false, primary: this.lease!.node, epoch: this.lease!.epoch };
         this.registryLog.push({ method, node, answer, ...(p["chosen"] === true ? { chosen: true } : {}) });
         return answer;

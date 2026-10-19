@@ -2,8 +2,8 @@
 // whitespace and line breaks are forgiven, and anything else is refused with InviteError.
 
 import { describe, expect, test } from "bun:test";
-import { INVITE_LINK_PREFIX, INVITE_TEXT_PREFIX, InviteError, inviteLink, inviteText, parseInvite } from "../src/index.ts";
-import type { InviteBody } from "../src/index.ts";
+import { CONNECT_PREFIX, connectionInviteText, INVITE_LINK_PREFIX, INVITE_TEXT_PREFIX, InviteError, inviteLink, inviteText, parseConnectionInvite, parseInvite } from "../src/index.ts";
+import type { ConnectionInviteBody, InviteBody } from "../src/index.ts";
 
 const body: InviteBody = {
   v: 1,
@@ -43,5 +43,32 @@ describe("invites", () => {
     expect(() => parseInvite(inviteText({ ...body, secret: "short" }))).toThrow(InviteError);
     const { lan: _lan, relay: _relay, ...bare } = body;
     expect(parseInvite(inviteText(bare))).toEqual(bare);
+  });
+});
+
+describe("connection codes", () => {
+  const code: ConnectionInviteBody = {
+    v: 1,
+    id: "con_01ARZ3NDEKTSV4RRFFQ69G5FE1",
+    secret: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    expiresAt: 1758200400000,
+    relay: { url: "https://orc.example", peer: "con_01ARZ3NDEKTSV4RRFFQ69G5FE3", token: "rly_abc" },
+  };
+
+  test("a code reads back to its body, whatever a paste brought along", () => {
+    const text = connectionInviteText(code);
+    expect(text.startsWith(CONNECT_PREFIX)).toBe(true);
+    expect(text).not.toMatch(/[+/=]/);
+    expect(parseConnectionInvite(text)).toEqual(code);
+    expect(parseConnectionInvite(`  ${text.slice(0, 30)}\n${text.slice(30)}  `)).toEqual(code);
+  });
+
+  test("a machine's or a phone's invite is not a connection's code, nor is anything damaged", () => {
+    expect(() => parseConnectionInvite(inviteText(body))).toThrow(/a phone or a machine, not a connection's/);
+    expect(() => parseConnectionInvite("hello")).toThrow(InviteError);
+    expect(() => parseConnectionInvite(`${CONNECT_PREFIX}!!!`)).toThrow(InviteError);
+    expect(() => parseConnectionInvite(connectionInviteText({ ...code, relay: { ...code.relay, peer: "grt_01ARZ3NDEKTSV4RRFFQ69G5FD9" as never } }))).toThrow(InviteError);
+    // and a connection's code is no machine's invite
+    expect(() => parseInvite(connectionInviteText(code))).toThrow(InviteError);
   });
 });

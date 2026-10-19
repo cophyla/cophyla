@@ -14,7 +14,7 @@
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
 
-import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
+import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, Connection, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
 
 export interface UserMessageEvent {
@@ -71,6 +71,8 @@ export interface BusEvents {
   /** Every stored event as it lands, `raw` dropped; not debounced, unlike `session.state`. */
   "session.event": SessionEvent;
   "terminal.state": Terminal;
+  /** A connection to another user's terminal was made, used, changed end or ended. */
+  "connection.state": Connection;
   "workspace.state": Workspace;
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;

@@ -111,6 +111,12 @@ for (const [name, def] of Object.entries(registry.relayPeer.requests)) {
 }
 for (const [name, schema] of Object.entries(registry.relayPeer.frames)) add(`relayPeer.frames.${name}`, schema, rp.frames[name]);
 
+const cl = read("connection-link.json") as { requests: Record<string, { params: unknown; results: unknown }> };
+for (const [name, def] of Object.entries(registry.connectionLink.requests)) {
+  add(`connectionLink.requests.${name}.params`, def.params, cl.requests[name]?.params);
+  add(`connectionLink.requests.${name}.result`, def.result, cl.requests[name]?.results);
+}
+
 // --- orphan fixtures: names in a fixture file with no schema ---------------------------
 
 const known = new Set(cases.map((c) => c.path));
@@ -136,6 +142,7 @@ for (const name of Object.keys(nl.requests)) check(`nodeLink.requests.${name}.pa
 for (const name of Object.keys(nl.frames)) check(`nodeLink.frames.${name}`);
 for (const name of Object.keys(rp.requests)) check(`relayPeer.requests.${name}.params`);
 for (const name of Object.keys(rp.frames)) check(`relayPeer.frames.${name}`);
+for (const name of Object.keys(cl.requests)) check(`connectionLink.requests.${name}.params`);
 
 // --- tests -----------------------------------------------------------------------------
 

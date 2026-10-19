@@ -17,7 +17,8 @@
 // notice in the same envelope, from cophyla, so it never waits for an answer that will not come.
 
 import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { Access, AgentListing, AgentMode, AgentRef, Ask, NodeRecord, Session } from "@cophyla/protocol";
+import type { Access, AgentListing, AgentMode, AgentRef, Ask, ConnectionListing, NodeRecord, Session } from "@cophyla/protocol";
+import { Connections } from "../connections/index.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { SendOptions } from "../sessions/index.ts";
@@ -76,16 +77,27 @@ export interface AgentMessagesDeps {
   version: string;
   /** The bypass switch: lets agents' messages into this node's Claude sessions that run without prompts, or takes that back. */
   accept?: (on: boolean) => void;
+  /** The connections to other users' terminals, on the node that routes. */
+  connections?: () => Connections | undefined;
   now?: () => number;
 }
 
-/** What a send is answered: delivered as far as cophylad can tell, held in the receiving terminal, or waiting on the user. */
+/**
+ * What a send is answered: delivered as far as cophylad can tell, held in the receiving
+ * terminal, or waiting on the user; on a connection, also kept until the other user's Cophyla
+ * is reached (`queued`) or until an agent runs in its terminal (`waiting`).
+ */
 export interface SendAnswer {
-  status: "sent" | "held" | "pending";
+  status: "sent" | "held" | "pending" | "queued" | "waiting";
   id: string;
-  to: AgentRef;
+  to?: AgentRef;
+  /** A message on a connection: to another user's agent. */
+  peer?: { connection: string; alias: string };
   ask?: string;
 }
+
+/** The connection tools, which a secondary's sessions call through the primary. */
+const CONNECTION_TOOLS = new Set(["create_invite", "accept_invite", "end_connection"]);
 
 /** A send's text as the audit row and an ask keep it. */
 const AUDIT_TEXT = 2000;
@@ -156,7 +168,7 @@ export class AgentMessages {
 
   /** A tool call, as the model reads its answer. */
   private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<{ text: string; isError?: boolean }> {
-    if (name !== "list_agents" && name !== "send_message") return { text: `cophyla-agents has no tool ${name}`, isError: true };
+    if (name !== "list_agents" && name !== "send_message" && !CONNECTION_TOOLS.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
     if (!this.deps.config().enabled) return { text: "Agent messaging is off on this machine ([agent_messages] enabled = false); nothing was sent.", isError: true };
     const who = identify(evidence, meta, this.deps.sessions);
     if ("error" in who) {
@@ -164,8 +176,15 @@ export class AgentMessages {
       return { text: `${who.error}.`, isError: true };
     }
     const caller = who.session;
+    if (CONNECTION_TOOLS.has(name)) {
+      const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
+      return this.connectionTool(caller, mode, name as "create_invite" | "accept_invite" | "end_connection", args);
+    }
     try {
-      if (name === "list_agents") return { text: listingText(await this.listFrom(caller)) };
+      if (name === "list_agents") {
+        const listed = await this.listFrom(caller);
+        return { text: listingText(listed.agents, listed.connections) };
+      }
       const to = typeof args["to"] === "string" ? args["to"].trim() : "";
       const text = typeof args["text"] === "string" ? args["text"] : "";
       const replyTo = args["reply_to"];
@@ -180,11 +199,25 @@ export class AgentMessages {
     }
   }
 
-  /** The directory as `caller` sees it, from here or from the primary. */
-  private async listFrom(caller: Session): Promise<AgentListing[]> {
-    if (this.deps.cluster.routes()) return this.list(caller);
-    const r = await this.upward("agent.list", { caller: caller.id });
-    return nodeLinkRequests["agent.list"].result.parse(r).agents;
+  /** The directory as `caller` sees it, and its connections to other users' agents, from here or from the primary. */
+  private async listFrom(caller: Session): Promise<{ agents: AgentListing[]; connections: ConnectionListing[] }> {
+    if (this.deps.cluster.routes()) return { agents: await this.list(caller), connections: this.deps.connections?.()?.listing(caller) ?? [] };
+    const r = nodeLinkRequests["agent.list"].result.parse(await this.upward("agent.list", { caller: caller.id }));
+    return { agents: r.agents, connections: r.connections ?? [] };
+  }
+
+  /** One of the connection tools, on the primary's connections, here or through the link. */
+  private async connectionTool(caller: Session, mode: AgentMode, tool: "create_invite" | "accept_invite" | "end_connection", args: Json): Promise<{ text: string; isError?: boolean }> {
+    try {
+      if (this.deps.cluster.routes()) {
+        const c = this.deps.connections?.();
+        if (!c) return { text: "Connections are off on this machine; nothing was done.", isError: true };
+        return { text: await c.tool(caller, tool, args, mode === "bypass") };
+      }
+      return nodeLinkRequests["connection.tool"].result.parse(await this.upward("connection.tool", { caller: caller.id, mode, tool, args }));
+    } catch (e) {
+      return { text: connectionRefusal(e), isError: true };
+    }
   }
 
   private async sendFrom(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }): Promise<SendAnswer> {
@@ -194,7 +227,7 @@ export class AgentMessages {
   }
 
   /** One request to the primary's router; what it refuses comes back as it said it. */
-  private async upward(method: "agent.list" | "agent.send", params: unknown): Promise<unknown> {
+  private async upward(method: "agent.list" | "agent.send" | "connection.tool", params: unknown): Promise<unknown> {
     const noLink = () => new RpcError("unavailable", `this machine has no link to ${this.deps.cluster.primaryName() ?? "the primary"}, which carries agents' messages, so nothing was sent`);
     if (!this.deps.cluster.primaryLinked()) throw noLink();
     try {
@@ -261,6 +294,13 @@ export class AgentMessages {
    * when it is not. `access` is the grant of the node it came up from, when it did.
    */
   async send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }, access?: Access): Promise<SendAnswer> {
+    // another user's agent, on a connection of the caller's terminal: carried by the connection alone
+    const connections = this.deps.connections?.();
+    if (connections && (connections.resolveFor(caller, p.to) || Connections.names(p.to))) {
+      if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
+      const sent = await connections.send(caller, p);
+      return { status: sent.status, id: sent.id, peer: { connection: sent.connection, alias: sent.alias } };
+    }
     const d = this.directory();
     const fromEntry = d.entries.find((e) => e.session.id === caller.id) ?? { session: caller, nodeName: this.nameOf(caller.node) };
     const found = resolve(d, p.to);
@@ -375,12 +415,27 @@ export class AgentMessages {
    * the primary does not hold as that node's, and a send as far as the node's grant may
    * message; gated as the session, never as the node.
    */
-  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send", params: unknown): Promise<unknown> {
+  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool", params: unknown): Promise<unknown> {
     if (!this.deps.config().enabled) throw new RpcError("unavailable", "agent messaging is off on the primary");
     if (method === "agent.list") {
       const parsed = nodeLinkRequests["agent.list"].params.safeParse(params ?? {});
       if (!parsed.success) throw new RpcError("invalid", "bad agent.list", parsed.error.issues);
-      return { agents: await this.list(this.callerOf(peer, parsed.data.caller)) };
+      const caller = this.callerOf(peer, parsed.data.caller);
+      const connections = this.deps.connections?.()?.listing(caller) ?? [];
+      return { agents: await this.list(caller), ...(connections.length > 0 ? { connections } : {}) };
+    }
+    if (method === "connection.tool") {
+      const parsed = nodeLinkRequests["connection.tool"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad connection.tool", parsed.error.issues);
+      const p = parsed.data;
+      const caller = this.callerOf(peer, p.caller);
+      const grant = peer.grant !== undefined ? this.deps.cluster.grant(peer.grant) : undefined;
+      if (!grant) throw new RpcError("denied", "the node's grant is not known here");
+      // a node whose sessions may send no message makes no connection for them either
+      if (p.tool !== "end_connection" && !mayMessage(grant.access, "initiate")) throw new RpcError("denied", "this machine's access lets its sessions send no messages to other people");
+      const c = this.deps.connections?.();
+      if (!c) throw new RpcError("unavailable", "connections are off on the primary");
+      return { text: await c.tool(caller, p.tool, p.args, p.mode === "bypass") };
     }
     const parsed = nodeLinkRequests["agent.send"].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", "bad agent.send", parsed.error.issues);
@@ -411,13 +466,20 @@ export class AgentMessages {
 
 /** A send's answer, as the model reads it. */
 export function answerText(a: SendAnswer): string {
+  const to = a.peer?.alias ?? a.to?.alias ?? "the session";
   switch (a.status) {
     case "sent":
-      return `Sent to ${a.to.alias} (${a.id}). Its answer, if any, comes to you as a <cophyla-message>; do not wait for it.`;
+      return `Sent to ${to} (${a.id}). Its answer, if any, comes to you as a <cophyla-message>; do not wait for it.`;
     case "held":
-      return `Held in ${a.to.alias}'s terminal (${a.id}): that session runs without permission prompts, so Claude Code asks its user before it takes a message from a session that does not. It is delivered once they allow it.`;
+      return `Held in ${to}'s terminal (${a.id}): that session runs without permission prompts, so Claude Code asks its user before it takes a message from a session that does not. It is delivered once they allow it.`;
     case "pending":
-      return `Waiting for the user's approval (${a.id}) before it reaches ${a.to.alias}. It is delivered once they allow it; if they do not, you will be told.`;
+      return a.peer
+        ? `Waiting for ${to}'s user to approve (${a.id}): that session runs without permission prompts. It is delivered once they allow it; if they do not, you will be told.`
+        : `Waiting for the user's approval (${a.id}) before it reaches ${to}. It is delivered once they allow it; if they do not, you will be told.`;
+    case "queued":
+      return `Kept to send (${a.id}): the other person's Cophyla cannot be reached now (asleep, or offline). It goes to ${to} once it can be, within a day; if it cannot, you will be told.`;
+    case "waiting":
+      return `Delivered to ${to}'s Cophyla (${a.id}), but no agent runs in that terminal now: it waits there for one, up to a day.`;
   }
 }
 
@@ -425,4 +487,10 @@ function refusalText(e: unknown): string {
   const text = message(e);
   const why = text.endsWith(".") ? text.slice(0, -1) : text;
   return /not sent|nothing was sent|not delivered/.test(why) ? `${why}.` : `Not sent: ${why}.`;
+}
+
+function connectionRefusal(e: unknown): string {
+  const text = message(e);
+  const why = text.endsWith(".") ? text.slice(0, -1) : text;
+  return /nothing was done|not sent|not delivered/.test(why) ? `${why}.` : `Not done: ${why}.`;
 }

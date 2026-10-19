@@ -7,11 +7,16 @@
 // Neither harness says who a message is from (Claude's own wrapper says only "another Claude
 // session", Codex and Muse show it as the user's words), so the envelope is the provenance,
 // and the MCP server's instructions say what it means. A notice of cophyla's own about a
-// message the session sent is `from="cophyla"`. Attribute values are cut to one short line
-// with nothing that could close the tag, and a closing tag inside the text is broken, so the
-// text cannot end the envelope early and pass what follows as cophyla's words.
+// message the session sent is `from="cophyla"`. A message that came in on a connection from
+// another user's terminal names that person and the connection, and says it is external:
+//
+//   <cophyla-message from="bob/api" harness="codex" user="bob" connection="con_…" external="true" id="pmsg_…">
+//
+// Attribute values are cut to one short line with nothing that could close the tag, and a
+// closing tag inside the text is broken, so the text cannot end the envelope early and pass
+// what follows as cophyla's words.
 
-import type { AgentRef } from "@cophyla/protocol";
+import type { AgentRef, ConnectionSender } from "@cophyla/protocol";
 import { capText } from "../sessions/model.ts";
 
 /** What every envelope starts with: how a harness's echo of one is known. */
@@ -23,8 +28,10 @@ const ATTR_CHARS = 80;
 
 /** What an envelope carries beside its text. */
 export interface EnvelopeInfo {
-  /** Absent: a notice of cophyla's own. */
+  /** Absent, with no `peer`: a notice of cophyla's own. */
   from?: AgentRef;
+  /** The message came in on a connection from another user's terminal. */
+  peer?: ConnectionSender;
   messageId: string;
   replyTo?: string;
 }
@@ -32,9 +39,16 @@ export interface EnvelopeInfo {
 /** What an envelope said, read back from a harness's echo of it. */
 export interface ReadEnvelope {
   from: { alias: string; harness?: string; nodeName?: string; folder?: string };
+  /** It named a connection: another user's agent. */
+  peer?: { connection: string; user: string };
   messageId: string;
   replyTo?: string;
   text: string;
+}
+
+/** How another user's agent is named to the agent it messages: `<login>/<its end's name>`. */
+export function peerAlias(p: Pick<ConnectionSender, "user" | "name">): string {
+  return `${p.user}/${p.name}`;
 }
 
 /** One attribute value: one line, no quote or angle bracket, and short. */
@@ -53,14 +67,22 @@ export function neutralise(text: string): string {
 }
 
 export function envelope(info: EnvelopeInfo, text: string): string {
-  const attrs: [string, string | undefined][] = info.from
+  const attrs: [string, string | undefined][] = info.peer
     ? [
-        ["from", info.from.alias],
-        ["harness", info.from.harness],
-        ["machine", info.from.nodeName],
-        ["folder", info.from.folder],
+        ["from", peerAlias(info.peer)],
+        ["harness", info.peer.harness],
+        ["user", info.peer.user],
+        ["connection", info.peer.connection],
+        ["external", "true"],
       ]
-    : [["from", NOTICE_FROM]];
+    : info.from
+      ? [
+          ["from", info.from.alias],
+          ["harness", info.from.harness],
+          ["machine", info.from.nodeName],
+          ["folder", info.from.folder],
+        ]
+      : [["from", NOTICE_FROM]];
   attrs.push(["id", info.messageId], ["reply_to", info.replyTo]);
   const head = attrs.flatMap(([k, v]) => (v !== undefined && v !== "" ? [`${k}="${attrValue(v)}"`] : [])).join(" ");
   return `${ENVELOPE_TAG} ${head}>\n${neutralise(text)}\n${CLOSE_TAG}`;
@@ -68,7 +90,15 @@ export function envelope(info: EnvelopeInfo, text: string): string {
 
 /** The turn an agent's message is recorded as in the session it reached: who it is from, its id, what it answers, and its text. */
 export function agentTurn(info: EnvelopeInfo, text: string, ref?: string): Record<string, unknown> {
-  return { source: "agent", ...(info.from ? { from: info.from } : {}), messageId: info.messageId, ...(info.replyTo ? { replyTo: info.replyTo } : {}), text: capText(text), ...(ref ? { ref } : {}) };
+  return {
+    source: "agent",
+    ...(info.from ? { from: info.from } : {}),
+    ...(info.peer ? { peer: info.peer } : {}),
+    messageId: info.messageId,
+    ...(info.replyTo ? { replyTo: info.replyTo } : {}),
+    text: capText(text),
+    ...(ref ? { ref } : {}),
+  };
 }
 
 const ENVELOPE = /<cophyla-message ([^>]*)>\r?\n?([\s\S]*?)\r?\n?<\/cophyla-message>/;
@@ -87,8 +117,11 @@ export function readEnvelope(text: string): ReadEnvelope | undefined {
   const nodeName = attrs.get("machine");
   const folder = attrs.get("folder");
   const replyTo = attrs.get("reply_to");
+  const connection = attrs.get("connection");
+  const user = attrs.get("user");
   return {
     from: { alias: from, ...(harness ? { harness } : {}), ...(nodeName ? { nodeName } : {}), ...(folder ? { folder } : {}) },
+    ...(connection && user ? { peer: { connection, user } } : {}),
     messageId: id,
     ...(replyTo ? { replyTo } : {}),
     text: m[2]!,

@@ -11,6 +11,9 @@
 //   cophyla node join <name> [--file F|-]     a workspace node joins a cluster again
 //   cophyla node leave <name>                 it leaves its cluster; what it holds stays
 //   cophyla node remove <name>                it leaves, and what it held here goes
+//   cophyla connections [list|invite|accept|end]
+//                                             the user's agents connected to other
+//                                             people's (`connection.*`, on the primary)
 //   cophyla invite | join | leave             as `cophylad invite | join | leave`
 //   cophyla agents uninstall                  takes the agents' MCP server out of every
 //                                             profile, with no daemon running (the
@@ -24,6 +27,70 @@ import type { ClientResult } from "@cophyla/protocol";
 import { call, COMMANDS, readInvite, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
 import { uninstallAgents } from "./agentmsg/uninstall.ts";
+
+function connectionLine(c: ClientResult<"connection.list">["connections"][number]): string {
+  const theirs = c.state === "pending" ? `(a code${c.expiresAt !== undefined ? `, until ${new Date(c.expiresAt).toLocaleTimeString()}` : ""})` : c.peer ? `${c.peer.user}/${c.peer.name}` : "?";
+  const counts = c.state === "active" ? `${c.sent} sent, ${c.received} received${c.queued ? `, ${c.queued} waiting` : ""}` : "";
+  return [c.id, c.state, c.name ?? c.session ?? "terminal", theirs, counts].join("\t");
+}
+
+/**
+ * `cophyla connections [list] | invite --session S [--for LOGIN] | accept --session S [--file F|-] | end <id>`:
+ * the user's agents connected to other people's. Asked of the primary, which keeps them, from
+ * whichever machine it runs on; a code is read from F or stdin, never the command line.
+ */
+async function connectionsCommand(argv: string[]): Promise<number> {
+  let verb = "";
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv,
+      options: { home: { type: "string" }, port: { type: "string" }, session: { type: "string" }, for: { type: "string" }, file: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    });
+    verb = positionals[0] ?? "list";
+    const where = { ...(values.home !== undefined ? { home: values.home } : {}), ...(values.port !== undefined ? { port: values.port } : {}) };
+    // not `local`: a secondary passes the request to its primary
+    const how = { name: "cophyla" };
+    const session = (): string => {
+      if (!values.session) throw new Error(`give the session: cophyla connections ${verb} --session <sess_…>`);
+      return values.session;
+    };
+    switch (verb) {
+      case "list": {
+        const r = await call(where, "connection.list", {}, how);
+        if (r.connections.length === 0) process.stdout.write("None of your agents is connected to anyone else's.\n");
+        else process.stdout.write(r.connections.map(connectionLine).join("\n") + "\n");
+        return 0;
+      }
+      case "invite": {
+        const r = await call(where, "connection.invite", { session: session(), ...(values.for ? { for: values.for } : {}) }, how);
+        process.stderr.write(`A code for ${r.connection.name ?? r.connection.session}, good once until ${new Date(r.invite.expiresAt).toLocaleTimeString()}${values.for ? `, for ${values.for} alone` : ""}. Give it to the other person:\n`);
+        process.stdout.write(r.invite.code + "\n");
+        return 0;
+      }
+      case "accept": {
+        const code = await readInvite(values.file);
+        const r = await call(where, "connection.accept", { session: session(), code: code.trim() }, how);
+        process.stdout.write(`Connected to ${r.connection.peer ? `${r.connection.peer.user}/${r.connection.peer.name}` : "the other side"} (${r.connection.id}).\n`);
+        return 0;
+      }
+      case "end": {
+        const id = positionals[1];
+        if (!id) throw new Error("give the connection: cophyla connections end <con_…>");
+        await call(where, "connection.end", { id }, how);
+        process.stdout.write(`${id} has ended at both ends.\n`);
+        return 0;
+      }
+      default:
+        process.stderr.write(`cophyla connections: no command ${verb}\n\n${HELP}`);
+        return 2;
+    }
+  } catch (e) {
+    process.stderr.write(`cophyla connections${verb ? ` ${verb}` : ""}: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
+}
 
 /** `cophyla agents uninstall [--home H]`. */
 async function agentsCommand(argv: string[]): Promise<number> {
@@ -50,6 +117,17 @@ const HELP = `cophyla: the Cophyla commands, for the daemon running on this mach
                  it leaves its cluster; what it holds here stays until it joins another
   cophyla node remove <name>
                  it leaves, and its sessions' records, asks and audit go with it
+
+  cophyla connections [list]
+                 your agents connected to other people's, and the codes still open
+  cophyla connections invite --session <sess_…> [--for <login>]
+                 a code another Cophyla user enters to connect one of their agents to
+                 that session's terminal; --for keeps it to one GitHub login
+  cophyla connections accept --session <sess_…> [--file F|-]
+                 connect that session to another person's agent with their code, read
+                 from F or stdin
+  cophyla connections end <con_…>
+                 end a connection at both ends, or cancel a code
 
   cophyla invite | join | leave
                  as cophylad invite | join | leave
@@ -89,6 +167,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   if ((COMMANDS as readonly string[]).includes(group)) return runCommand(group as Command, rest, { local: true, prog: "cophyla" });
   if (group === "agents") return agentsCommand(rest);
+  if (group === "connections") return connectionsCommand(rest);
   if (group !== "node") {
     process.stderr.write(`cophyla: no command ${group}\n\n${HELP}`);
     return 2;

@@ -295,13 +295,13 @@ function node(id: string, name: string, extra: Partial<NodeRecord> = {}): NodeRe
 }
 
 describe("the router", () => {
-  test("speaks MCP: the handshake with its instructions, the two tools, ping, and nothing for a notification", async () => {
+  test("speaks MCP: the handshake with its instructions, its tools, ping, and nothing for a notification", async () => {
     const r = rig({ local: [] });
     const init = (await r.router.mcp({}, { jsonrpc: "2.0", id: 0, method: "initialize", params: { protocolVersion: "2025-11-25" } })) as { result: { protocolVersion: string; serverInfo: { name: string }; instructions: string; capabilities: object } };
     expect(init.result).toMatchObject({ protocolVersion: "2025-11-25", serverInfo: { name: "cophyla-agents" }, capabilities: { tools: {} } });
     expect(init.result.instructions).toContain("never the user's");
     const list = (await r.router.mcp({}, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message"]);
+    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "create_invite", "accept_invite", "end_connection"]);
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: 2, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 2, result: {} });
     expect(await r.router.mcp({}, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: "d", method: "server/discover" })).toEqual({ jsonrpc: "2.0", id: "d", error: { code: -32601, message: "method not found: server/discover" } });

@@ -3274,7 +3274,9 @@ export class Sessions implements SessionHost {
     if (!read) return false;
     if (this.agentSeen(rec.session.id, read.messageId)) return true;
     const notice = read.from.alias === NOTICE_FROM && read.from.harness === undefined;
-    this.event(rec, "user_turn", { source: "agent", ...(notice ? {} : { from: read.from }), messageId: read.messageId, ...(read.replyTo ? { replyTo: read.replyTo } : {}), text: capText(read.text), late: true }, raw, at);
+    // another user's agent, on a connection: named as its envelope named it, never as one of the user's own
+    const peer = read.peer ? { peer: { connection: read.peer.connection, user: read.peer.user, name: read.from.alias.slice(read.peer.user.length + 1) || read.from.alias, ...(read.from.harness ? { harness: read.from.harness } : {}) } } : undefined;
+    this.event(rec, "user_turn", { source: "agent", ...(notice ? {} : peer ?? { from: read.from }), messageId: read.messageId, ...(read.replyTo ? { replyTo: read.replyTo } : {}), text: capText(read.text), late: true }, raw, at);
     return true;
   }
 

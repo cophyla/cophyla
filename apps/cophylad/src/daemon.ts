@@ -99,6 +99,8 @@ import { helperEnv } from "./direct/helper.ts";
 import { locateNet, stageNet } from "./direct/locate.ts";
 import { locateMcp, stageMcp } from "./agentmsg/locate.ts";
 import { agentMethods } from "./agentmsg/methods.ts";
+import { Connections } from "./connections/index.ts";
+import { connectionMethods } from "./connections/methods.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
 import { DirectClients } from "./direct/clients.ts";
@@ -283,6 +285,8 @@ export interface Daemon {
   sessions: Sessions;
   /** Agent messaging: the `cophyla-agents` MCP server's calls, the directory and the router. */
   agentMessages: AgentMessages;
+  /** Connections between this user's terminals and other users'. */
+  connections: Connections;
   views: Views;
   chat: Chat;
   activity: Activity;
@@ -392,6 +396,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let nodes: Nodes | undefined;
   /** The workspace nodes this machine hosts, built after `nodes`. */
   let guests: Guests | undefined;
+  /** The connections to other users' terminals, built with the terminals; the relay reaches them through the cloud. */
+  let connections: Connections | undefined;
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
   let backup: BackupSync | undefined;
@@ -490,6 +496,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       const invite = { grant: row.id, peer };
       return { psk: pskFromHex(row.invite.secretHash), accept: (sock) => api!.acceptTunnel(sock, { invite }) };
     },
+    // another user's Cophyla on one of this node's connections, or redeeming one's invite
+    acceptConnection: (peer) => connections?.acceptTunnel(peer),
   });
   // The vendors' keys: typed in the app, config.toml's, or the environment's, asked at every call.
   const keys = openProviderKeys({ dataDir: p.data, config: config.providers, env, log: log.child("keys") });
@@ -1114,6 +1122,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     gate,
     log: log.child("agentmsg"),
     version: PLATFORM_VERSION,
+    connections: () => connections,
     accept: (on) => {
       store.kv.put(AGENT_SWITCH_NS, "accept_in_bypass", on);
       log.info("agents' messages into bypass sessions", { accept: on });
@@ -1236,6 +1245,43 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     send: (id, method, params) => (id.startsWith(LINK_VIEWER) ? (nodes?.linkViewers.send(id.slice(LINK_VIEWER.length), params) ?? false) : clients.send(id, method, params)),
   };
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
+  // Connections to other users' terminals, kept by the primary: the agents in two terminals of
+  // two users message each other through the relay, and reach nothing else.
+  const connectionsLive = new Connections({
+    store,
+    bus,
+    log: log.child("connections"),
+    gate,
+    asks,
+    self: () => ({ id: identity.id, name: node().name }),
+    routes: () => nodes!.roleOf() === "primary" || nodes!.member() === undefined,
+    cloud: {
+      allowed: () => cloud.hostedAllowed("relay"),
+      subject: () => cloud.account,
+      serverUrl: () => config.cloud.url,
+      relayGrant: (peer, o) => cloud.relayGrant(peer, o),
+      revokeRelay: (peer) => cloud.revokeRelay(peer),
+      attest: (aud) => cloud.attest(aud),
+      verifyIdentity: (token, aud) => cloud.verifyIdentity(token, aud),
+    },
+    sessions: () => {
+      const own = sessions.list();
+      const ids = new Set(own.map((s) => s.id));
+      return [...own, ...forwardHost.mirrorSessions().filter((s) => !ids.has(s.id))];
+    },
+    // this node's own as its records say; another node's as its row says, which tells a Claude session in bypass
+    bypasses: (s) => (s.node === identity.id ? sessions.bypasses(s.id) === true : s.mode === "bypassPermissions"),
+    deliver: async (s, text, info) => {
+      if (s.node === identity.id) return agentMessages.deliverHere(s.id, text, info);
+      return (await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" };
+    },
+    linked: (n) => n === identity.id || forwardHost.linked(n),
+    terminals: (n) => (n === identity.id ? terminalRows?.list() : forwardHost.linked(n) ? forwardHost.mirrorTerminals().filter((t) => t.node === n) : undefined),
+    nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),
+  });
+  connections = connectionsLive;
+  connectionsLive.start();
+  const offConnectionsUp = cloud.onUp(() => connectionsLive.linkUp());
   // New terminal's picker: a folder of this computer at a time.
   const folderDeps = systemFolderDeps(sessionsLog.child("terminals"));
   const folders = (path: string | undefined) => listFolders(path, folderDeps);
@@ -1372,6 +1418,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...guestMethods({ guests }),
     ...directMethods({ direct, clients: directClients }),
     ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
+    ...connectionMethods({ connections: () => connections }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
   }, forwardHost);
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
@@ -1631,6 +1678,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     workspaces,
     sessions,
     agentMessages,
+    connections: connectionsLive,
     views,
     chat,
     activity,
@@ -1677,6 +1725,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       grantClock?.dispose();
       sessionGrants.dispose();
       push.dispose();
+      offConnectionsUp();
+      connectionsLive.stop();
       await cloud.stop();
       metrics.dispose();
       update.dispose();

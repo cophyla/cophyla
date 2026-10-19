@@ -1,12 +1,15 @@
 // The `cophyla-agents` MCP server's words, defined once in `agent-tools.json`: its name, the
-// instructions every session is given with it, and its two tools. The native shim (`apps/mcp`)
-// embeds the same file, to answer a session started while the daemon is down; cophylad serves
-// it otherwise.
+// instructions every session is given with it, and its tools: listing and messaging the
+// user's other sessions, and making, using and ending a connection to another user's. The
+// native shim (`apps/mcp`) embeds the same file, to answer a session started while the daemon
+// is down; cophylad serves it otherwise.
 
 import definition from "../agent-tools.json";
 
+export type AgentToolName = "list_agents" | "send_message" | "create_invite" | "accept_invite" | "end_connection";
+
 export interface AgentTool {
-  name: "list_agents" | "send_message";
+  name: AgentToolName;
   description: string;
   inputSchema: Record<string, unknown>;
   annotations: Record<string, unknown>;

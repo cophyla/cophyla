@@ -24,7 +24,7 @@
 // What the chat's session is told (`brain.context`) is shown part by part, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -247,6 +247,10 @@ export interface ViewState {
   invite?: IssuedInvite;
   /** A browser's key just minted, while its panel shows. */
   browserKey?: IssuedKey;
+  /** This user's connections to other users' terminals, pending and active, from `connection.list` and `connection.state`. */
+  connections: Map<string, Connection>;
+  /** A connection's code just made, while its panel shows. */
+  connectionCode?: IssuedCode;
   /** The node this client's socket is on, on its own network (`lan.info`); none from a node that does not say. */
   lan?: LanState;
   /** Every node of the user, from `node.list` and `node.state`. */
@@ -337,6 +341,11 @@ export type Action =
   | { type: "invite"; invite?: IssuedInvite }
   /** A browser's key came back from `browser.invite`, or its panel closed. */
   | { type: "browser.key"; key?: IssuedKey }
+  | { type: "connections"; connections: Connection[] }
+  /** A connection was made, used, changed end, or ended (`state: ended`, which takes its row away). */
+  | { type: "connection.state"; params: Connection }
+  /** A connection's code came back from `connection.invite`, or its panel closed. */
+  | { type: "connection.code"; code?: IssuedCode }
   /** How the node stands on its own network, from `lan.info` or the switch's answer; none when it does not say. */
   | { type: "lan"; lan?: LanState }
   | { type: "quick.toggle"; quick?: boolean }
@@ -388,6 +397,7 @@ export function initialState(): ViewState {
     tasks: new Map(),
     controllers: new Map(),
     grants: new Map(),
+    connections: new Map(),
     nodes: new Map(),
     metrics: new Map(),
     spend: new Map(),
@@ -892,6 +902,20 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "invite":
       if (action.invite) state.invite = action.invite;
       else delete state.invite;
+      return state;
+    case "connections":
+      state.connections = new Map(action.connections.map((c) => [c.id, c]));
+      if (state.connectionCode && state.connections.get(state.connectionCode.id)?.state !== "pending") delete state.connectionCode;
+      return state;
+    case "connection.state":
+      if (action.params.state === "ended") state.connections.delete(action.params.id);
+      else state.connections.set(action.params.id, action.params);
+      // the code on show was used, or cancelled: its panel has done its job
+      if (state.connectionCode?.id === action.params.id && action.params.state !== "pending") delete state.connectionCode;
+      return state;
+    case "connection.code":
+      if (action.code) state.connectionCode = action.code;
+      else delete state.connectionCode;
       return state;
     case "browser.key":
       if (action.key) state.browserKey = action.key;
@@ -1734,10 +1758,16 @@ export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask
 
 /**
  * Who another agent's message to a session came from, as its turn is labelled: `@alias ·
- * harness`, and the machine when it is not the session's own; `cophyla` for a notice of
- * cophyla's own about a message the session sent.
+ * harness`, and the machine when it is not the session's own; another person's agent on a
+ * connection as `@login/name · harness · login's`; `cophyla` for a notice of cophyla's own
+ * about a message the session sent.
  */
 export function agentLabel(payload: unknown, session: Pick<Session, "node">, state: Pick<ViewState, "nodes">): string {
+  const peer = (payload as { peer?: { user?: unknown; name?: unknown; harness?: unknown } } | undefined)?.peer;
+  if (peer && typeof peer.user === "string" && typeof peer.name === "string") {
+    const harness = typeof peer.harness === "string" ? (HARNESS_NAMES[peer.harness as keyof typeof HARNESS_NAMES] ?? peer.harness) : undefined;
+    return `@${peer.user}/${peer.name}${harness ? ` · ${harness}` : ""} · ${peer.user}'s`;
+  }
   const from = (payload as { from?: { alias?: unknown; harness?: unknown; node?: unknown; nodeName?: unknown } } | undefined)?.from;
   if (!from || typeof from.alias !== "string") return "cophyla";
   const harness = typeof from.harness === "string" ? (HARNESS_NAMES[from.harness as keyof typeof HARNESS_NAMES] ?? from.harness) : undefined;
@@ -3000,6 +3030,106 @@ export interface IssuedKey {
   expiresAt: number;
   /** For a shared computer: nothing is kept in that browser, and its access ends with its tab. */
   session: boolean;
+}
+
+// --- connections: this user's terminals joined to other users' -----------------------------------
+
+/** A connection's code just made, as its panel shows it: which connection, the code, until when, and whose alone. */
+export interface IssuedCode {
+  id: string;
+  code: string;
+  expiresAt: number;
+  for?: string;
+}
+
+/** One connection as Devices shows it. */
+export interface ConnectionRowView {
+  id: string;
+  pending: boolean;
+  /** This end: the agent there now, or the terminal; the machine. */
+  mine: string;
+  /** The other end: `login/name`, or who the code is for while pending. */
+  theirs: string;
+  /** The rest on one line: their agent, the counts, the last message, what waits, the time an invite has left. */
+  words: string;
+  /** The dot: the far end has an agent now (`live`), has none (`idle`), or not used yet (`pending`). */
+  tone: "live" | "idle" | "pending";
+  title: string;
+}
+
+/** Every connection, the live ones first, oldest first within each. */
+export function selectConnections(state: Pick<ViewState, "connections" | "sessions" | "nodes" | "connectionCode">, now: number): ConnectionRowView[] {
+  const rows = [...state.connections.values()].filter((c) => c.state !== "ended").sort((a, b) => (a.state === b.state ? a.createdAt - b.createdAt : a.state === "active" ? -1 : 1));
+  return rows.map((c) => {
+    const card = c.session ? state.sessions.get(c.session) : undefined;
+    const machine = state.nodes.get(c.node)?.name;
+    const here = card ? `${c.name ?? sessionLabel(card.session)} (${HARNESS_NAMES[card.session.harness]})` : (c.name ?? "a terminal");
+    const mine = `${here}${machine ? ` on ${machine}` : ""}`;
+    if (c.state === "pending") {
+      const left = c.expiresAt !== undefined ? leftWords(c.expiresAt, now) : undefined;
+      const shown = state.connectionCode?.id === c.id;
+      return {
+        id: c.id,
+        pending: true,
+        mine,
+        theirs: c.by === "agent" ? "invited by its agent" : "invited",
+        words: [left ? (left.expired ? "the code ran out" : `the code holds ${left.left}`) : "", shown ? "" : "not used yet"].filter(Boolean).join(" · "),
+        tone: "pending",
+        title: `A code for ${mine}${c.by === "agent" ? ", made by its agent" : ""}: whoever uses it connects a terminal of theirs to this one.`,
+      };
+    }
+    const peer = c.peer;
+    const theirs = peer ? `${peer.user}/${peer.name}` : "someone";
+    const agent = peer?.live === false ? "no agent there now" : peer?.harness ? `${HARNESS_NAMES[peer.harness]} at ${peer.user}'s` : "";
+    const counts = c.sent + c.received > 0 ? `${c.sent} sent, ${c.received} received` : "no messages yet";
+    const last = c.lastAt !== undefined ? `last ${agoWords(c.lastAt, now)}` : "";
+    const waiting = c.queued ? `${c.queued} waiting` : "";
+    return {
+      id: c.id,
+      pending: false,
+      mine,
+      theirs,
+      words: [agent, counts, last, waiting].filter(Boolean).join(" · "),
+      tone: peer?.live === false ? "idle" : "live",
+      title: `${mine} and ${theirs}${peer ? `, ${peer.user} as the Cophyla server vouched for them` : ""}: their agent and yours may message each other until the terminal closes or either of you ends it.`,
+    };
+  });
+}
+
+/** The connections a session is an end of, by the names its agent sends to: what its pane's head shows. */
+export function sessionConnections(state: Pick<ViewState, "connections">, session: string): string[] {
+  return [...state.connections.values()].filter((c) => c.state === "active" && c.session === session && c.peer).map((c) => `${c.peer!.user}/${c.peer!.name}`);
+}
+
+/** The sessions a connection may be made for: live agent sessions, not the chat's own, newest first. */
+export function connectableSessions(state: Pick<ViewState, "sessions" | "nodes">): { id: string; label: string }[] {
+  return [...state.sessions.values()]
+    .map((c) => c.session)
+    .filter((s) => s.status !== "ended" && s.role !== "assistant")
+    .sort((a, b) => b.startedAt - a.startedAt)
+    .map((s) => {
+      const machine = state.nodes.get(s.node)?.name;
+      return { id: s.id, label: `${sessionLabel(s)} (${HARNESS_NAMES[s.harness]}${machine ? ` on ${machine}` : ""})` };
+    });
+}
+
+/** The code's panel: how long it holds. */
+export function codeWords(code: IssuedCode, now: number): { left: string; expired: boolean } {
+  return leftWords(code.expiresAt, now);
+}
+
+/**
+ * Why this client makes and uses no connection, when it does not: a connection has no end of
+ * its own, so a browser's or a phone's access that ends, or a shared computer's session, may
+ * end one but never make one. Undefined for the desktop app and a device whose access lasts.
+ */
+export function connectionBlock(state: Pick<ViewState, "client" | "controllers">): string | undefined {
+  const id = state.client?.controller;
+  const own = id !== undefined ? state.controllers.get(id) : undefined;
+  if (!own) return undefined;
+  if (own.session) return "A shared computer's session makes no connection. Make one in the desktop app.";
+  if (own.expiresAt !== undefined) return `This ${own.form === "browser" ? "browser's" : "phone's"} access ends, and a connection lasts as long as its terminal: make one in the desktop app, or on a device whose access does not end. You can end one here.`;
+  return undefined;
 }
 
 /** How long a browser's access lasts, thirty days first: a browser's grant always ends, ninety days at the most. */

@@ -6,6 +6,7 @@ import { z } from "zod";
 import {
   AgentMode,
   AgentRef,
+  ConnectionSender,
   Ask,
   AskAnswer,
   ClosedSession,
@@ -418,7 +419,16 @@ export const capabilityRequests = {
        * a message the session sent), the message's id, the message it answers, and the sender's
        * permission class, which the owner holds against the session's for the parity rule.
        */
-      agent: z.object({ from: AgentRef.optional(), messageId: AgentMessageId, replyTo: AgentMessageId.optional(), mode: AgentMode.optional() }).optional(),
+      agent: z
+        .object({
+          from: AgentRef.optional(),
+          /** The message came in on a connection from another user's terminal: who it is from, set by the primary. */
+          peer: ConnectionSender.optional(),
+          messageId: AgentMessageId,
+          replyTo: AgentMessageId.optional(),
+          mode: AgentMode.optional(),
+        })
+        .optional(),
       /** The task the session works on from this message: it becomes the session's `task`. */
       task: TaskId.optional(),
       /**

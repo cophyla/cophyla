@@ -11,7 +11,7 @@
 import { z } from "zod";
 import { LlmComplete, LlmResult, capabilityNotices, capabilityRequests } from "./capability.ts";
 import { DirectReport, IceServer, Node, PushPlatform, Usage, VoiceStopped } from "./entities.ts";
-import { ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { ConnectionId, ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
 const Empty = z.object({});
@@ -51,9 +51,17 @@ export type BackupEntry = z.infer<typeof BackupEntry>;
 export const RelayCurve = z.enum(["x25519", "p256"]);
 export type RelayCurve = z.infer<typeof RelayCurve>;
 
-/** Which kind of peer a relay tunnel joins to a node: a paired phone, a node linking to its primary, or a phone pairing through the account. */
-export const RelayPeerKind = z.enum(["controller", "node", "pair"]);
+/**
+ * Which kind of peer a relay tunnel joins to a node: a paired phone, a node linking to its
+ * primary, a phone pairing through the account, or another user's Cophyla reaching one of
+ * this account's connections (or redeeming its invite) at the account's primary.
+ */
+export const RelayPeerKind = z.enum(["controller", "node", "pair", "connection"]);
 export type RelayPeerKind = z.infer<typeof RelayPeerKind>;
+
+/** A relay peer a node mints a token for: a grant's, or a connection's. */
+export const RelayPeerRef = z.union([GrantRef, ConnectionId]);
+export type RelayPeerRef = z.infer<typeof RelayPeerRef>;
 
 /** An ask as it travels in a push: the parts the phone shows and the buttons it offers. */
 export const PushAsk = z.object({
@@ -128,10 +136,16 @@ export const serverLinkRequests = {
    * account's primary, wherever that is now. `expiresAt` ends the token with the grant.
    */
   "relay.grant": {
-    params: z.object({ peer: GrantRef, kind: z.enum(["controller", "node"]).optional(), name: z.string().optional(), expiresAt: Timestamp.optional() }),
+    params: z.object({ peer: RelayPeerRef, kind: z.enum(["controller", "node", "connection"]).optional(), name: z.string().optional(), expiresAt: Timestamp.optional() }),
     result: z.object({ token: z.string() }),
   },
-  "relay.revoke": { params: z.object({ peer: GrantRef }), result: Empty },
+  "relay.revoke": { params: z.object({ peer: RelayPeerRef }), result: Empty },
+  /**
+   * The server's word on who this account is, for a connection to another user's Cophyla: a
+   * token signed with the entitlement key naming the account and its GitHub login, bound to
+   * `aud` and good for ten minutes. The far end verifies it against the keys it ships with.
+   */
+  "identity.attest": { params: z.object({ aud: z.string().min(1).max(300) }), result: z.object({ token: z.string() }) },
   /** The account's backup, if it has one: its header and what it holds. */
   "backup.status": {
     params: Empty,

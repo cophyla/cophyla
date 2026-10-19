@@ -115,6 +115,10 @@ export const requestScopes = {
   "backup.disable": "account",
   "backup.restore": "account",
   "agents.accept": "sessions:write",
+  "connection.list": "controllers",
+  "connection.invite": "controllers",
+  "connection.accept": "controllers",
+  "connection.end": "controllers",
   "direct.enable": "account",
   "direct.disable": "account",
   "direct.info": null,
@@ -154,6 +158,7 @@ export const notificationScopes = {
   "remote.pipe.data": null,
   "remote.pipe.ack": null,
   "remote.pipe.close": null,
+  "connection.state": "controllers",
   "update.state": "updates",
 } as const satisfies Record<ClientNotificationName, Scope | null>;
 

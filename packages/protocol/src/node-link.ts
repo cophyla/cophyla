@@ -11,8 +11,8 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
-import { AgentMessageId, AskId, ClientId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
+import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 
@@ -225,7 +225,7 @@ export const nodeLinkRequests = {
    * secondary's, may message, every node's, with the aliases the primary gives them. Refused
    * for a session the primary does not hold as the secondary's.
    */
-  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing) }) },
+  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing), connections: z.array(ConnectionListing).optional() }) },
   /**
    * Secondary → primary, agent messaging: `caller`'s message to the agent `to` names (an
    * alias, `alias@machine` or a session id), `mode` its permission class as the secondary
@@ -235,7 +235,24 @@ export const nodeLinkRequests = {
    */
   "agent.send": {
     params: z.object({ caller: SessionId, mode: AgentMode, to: z.string().min(1).max(200), text: z.string().min(1), replyTo: AgentMessageId.optional() }),
-    result: z.object({ status: z.enum(["sent", "held", "pending"]), id: AgentMessageId, to: AgentRef, ask: AskId.optional() }),
+    result: z.object({
+      /** `queued`: kept until the other user's Cophyla is reached; `waiting`: there, kept until an agent runs in its terminal. */
+      status: z.enum(["sent", "held", "pending", "queued", "waiting"]),
+      id: AgentMessageId,
+      /** One of the user's sessions; or, for a message on a connection, `peer`. */
+      to: AgentRef.optional(),
+      peer: z.object({ connection: ConnectionId, alias: z.string() }).optional(),
+      ask: AskId.optional(),
+    }),
+  },
+  /**
+   * Secondary → primary: one of the connection tools (`create_invite`, `accept_invite`,
+   * `end_connection`) called by `caller`, a live session of the secondary's. Connections live
+   * on the primary; the answer is the text the model reads.
+   */
+  "connection.tool": {
+    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["create_invite", "accept_invite", "end_connection"]), args: z.record(z.string(), z.unknown()) }),
+    result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
 } as const;
 

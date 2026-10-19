@@ -21,5 +21,12 @@ export const VOICE_ORIGINS_NS = "voice.origins";
 /** Which harness and account the chat's own session runs on, as the user chose (see `assistant/`). */
 export const ASSISTANT_NS = "assistant";
 
+/**
+ * The connections to other users' terminals (see `connections/`): their keys, relay tokens and
+ * the messages waiting either way. Replicated to the backups; never the brain's, never in the
+ * cloud backup.
+ */
+export const CONNECTIONS_KV_NS = "connections";
+
 /** The namespaces no store request of the brain may read or write. */
-export const RESERVED_KV_NS: readonly string[] = [GRANTS_NS, LOCAL_GRANTS_NS, CLUSTER_NS, LEGACY_CONTROLLERS_NS, LISTENERS_NS, VOICE_ORIGINS_NS, ASSISTANT_NS];
+export const RESERVED_KV_NS: readonly string[] = [GRANTS_NS, LOCAL_GRANTS_NS, CLUSTER_NS, LEGACY_CONTROLLERS_NS, LISTENERS_NS, VOICE_ORIGINS_NS, ASSISTANT_NS, CONNECTIONS_KV_NS];

@@ -668,6 +668,31 @@
     { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex-01A9", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "user", "detail": "a question" } }
   ],
   "AgentMode": ["bypass", "prompting"],
+  "ConnectionPeer": [{ "user": "bob", "name": "api-codex", "harness": "codex", "live": true, "seenAt": 1758196800000 }, { "user": "alice", "name": "terminal" }],
+  "ConnectionState": ["pending", "active", "ended"],
+  "ConnectionSender": [{ "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "user": "bob", "name": "api-codex", "harness": "codex" }, { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "user": "bob", "name": "terminal" }],
+  "ConnectionListing": [
+    { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "alias": "bob/api-codex", "user": "bob", "name": "api-codex", "harness": "codex", "live": true, "seenAt": 1758196800000 },
+    { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE2", "alias": "con_01ARZ3NDEKTSV4RRFFQ69G5FE2", "user": "bob", "name": "api-codex", "live": false, "queued": 2 }
+  ],
+  "Connection": [
+    {
+      "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1",
+      "state": "active",
+      "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      "terminal": { "host": "a1b2c3d4e5f60718", "id": "5f2a9c01d4e7" },
+      "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3",
+      "name": "web",
+      "peer": { "user": "bob", "name": "api-codex", "harness": "codex", "live": true, "seenAt": 1758196800000 },
+      "by": "app",
+      "createdAt": 1758196700000,
+      "lastAt": 1758196800000,
+      "sent": 3,
+      "received": 2
+    },
+    { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE2", "state": "pending", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB4", "by": "agent", "createdAt": 1758196700000, "expiresAt": 1758197600000, "sent": 0, "received": 0 },
+    { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "app", "createdAt": 1758196700000, "sent": 3, "received": 2, "queued": 1, "reason": "its terminal closed" }
+  ],
   "Client": [
     {
       "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",

@@ -507,6 +507,27 @@
     "backup.disable": { "params": [{}, { "forget": true }], "results": [{}] },
     "backup.restore": { "params": [{ "passphrase": "correct horse battery staple" }], "results": [{}] },
     "agents.accept": { "params": [{ "on": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "on": false }], "results": [{}] },
+    "connection.list": {
+      "params": [{}],
+      "results": [
+        { "connections": [] },
+        { "connections": [{ "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "terminal": { "host": "a1b2c3d4e5f60718", "id": "5f2a9c01d4e7" }, "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "name": "web", "peer": { "user": "bob", "name": "api-codex", "harness": "codex", "live": true }, "by": "app", "createdAt": 1758196700000, "sent": 3, "received": 2 }] }
+      ]
+    },
+    "connection.invite": {
+      "params": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3" }, { "terminal": { "host": "a1b2c3d4e5f60718", "id": "5f2a9c01d4e7" }, "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "for": "bob" }],
+      "results": [
+        {
+          "connection": { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE2", "state": "pending", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "name": "web", "by": "app", "createdAt": 1758196700000, "expiresAt": 1758197600000, "sent": 0, "received": 0 },
+          "invite": { "code": "cophyla-connect:eyJ2IjoxfQ", "expiresAt": 1758197600000 }
+        }
+      ]
+    },
+    "connection.accept": {
+      "params": [{ "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "code": "cophyla-connect:eyJ2IjoxfQ" }],
+      "results": [{ "connection": { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "alice", "name": "web", "harness": "claude", "live": true }, "by": "app", "createdAt": 1758196700000, "sent": 0, "received": 0 } }]
+    },
+    "connection.end": { "params": [{ "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1" }], "results": [{}] },
     "direct.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.info": {
@@ -740,6 +761,10 @@
     "remote.pipe.data": [{ "pipe": "p7", "data": "SFRUUC8xLjEgMjAwIE9LDQo=" }],
     "remote.pipe.ack": [{ "pipe": "p7", "bytes": 1024 }],
     "remote.pipe.close": [{ "pipe": "p7" }],
+    "connection.state": [
+      { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "bob", "name": "api-codex" }, "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "queued": 1 },
+      { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "reason": "bob ended it (ended by the user)" }
+    ],
     "update.state": [
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "platform", "current": "0.1.0" },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "brain", "current": "0.1.0", "available": "0.2.0", "staged": "0.2.0", "progress": 1 },

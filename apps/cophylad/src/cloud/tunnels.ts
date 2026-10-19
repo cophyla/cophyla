@@ -45,6 +45,12 @@ export interface NodeTunnel {
   accept: (sock: NodeSocket) => NodeSocketHandler;
 }
 
+/** Another user's Cophyla on one of this node's connections, or redeeming a connection's invite: keyed from the connection's key or the invite's secret. */
+export interface ConnectionTunnel {
+  psk: Psk;
+  accept: (sock: NodeSocket) => NodeSocketHandler;
+}
+
 export interface TunnelsDeps {
   log: Logger;
   link: TunnelLink;
@@ -60,9 +66,11 @@ export interface TunnelsDeps {
   acceptPairing: () => ((sock: NodeSocket, pairing: { login: string }) => NodeSocketHandler) | undefined;
   /** The account this node is signed in to: a pairing must name it. */
   subject: () => string | undefined;
+  /** A connection's tunnel, or its invite's, for the peer; nothing when the peer is no connection's here. */
+  acceptConnection?: (peer: string) => ConnectionTunnel | undefined;
 }
 
-type OpenKind = "controller" | "pair" | SealedKind;
+type OpenKind = "controller" | "pair" | "connection" | SealedKind;
 
 interface Open {
   peer: string;
@@ -93,7 +101,7 @@ export class Tunnels {
   /** `relay.open` from the server: derives the keys and serves the far end; answers this node's ephemeral key. */
   async accept(params: unknown): Promise<{ epk: string }> {
     const p = (params ?? {}) as { peer?: unknown; kind?: unknown; epk?: unknown; curve?: unknown; subject?: unknown; login?: unknown };
-    if (typeof p.peer !== "string" || typeof p.epk !== "string" || (p.kind !== "controller" && p.kind !== "node" && p.kind !== "pair")) throw new RpcError("invalid", "relay.open: peer, kind and epk required");
+    if (typeof p.peer !== "string" || typeof p.epk !== "string" || (p.kind !== "controller" && p.kind !== "node" && p.kind !== "pair" && p.kind !== "connection")) throw new RpcError("invalid", "relay.open: peer, kind and epk required");
     if (p.curve !== undefined && p.curve !== "x25519" && p.curve !== "p256") throw new RpcError("invalid", "relay.open: unknown curve");
     const curve = p.curve as RelayCurve | undefined;
     const peer = p.peer;
@@ -126,6 +134,13 @@ export class Tunnels {
       kind = "pair";
       psk = await pairingPsk();
       accept = (sock) => pairing(sock, { login });
+    } else if (p.kind === "connection") {
+      // another user's Cophyla: only a peer one of this node's connections minted, keyed from what the two share
+      const connection = this.deps.acceptConnection?.(peer);
+      if (!connection) throw new RpcError("denied", "no such connection on this node");
+      kind = "connection";
+      psk = connection.psk;
+      accept = connection.accept;
     } else {
       // A node's grant, or the throwaway peer of an invite it is redeeming: the nodes module says which, and whether it is taken here.
       const node = this.deps.acceptNode(peer);

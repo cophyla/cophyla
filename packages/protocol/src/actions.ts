@@ -175,6 +175,15 @@ export const actions = {
   "agent.escalate": { risk: "exec" },
   // A node's Claude sessions that run without prompts taking agents' messages without their hold.
   "agents.accept": { risk: "exec" },
+  // Connections to other users' terminals. Making one lets another user's agent into a
+  // terminal (`exec`); an agent's own invite or acceptance always asks its user, outside the
+  // gate. `connection.send` is a message out on one; `connection.deliver` one coming in.
+  "connection.list": { risk: "read" },
+  "connection.invite": { risk: "exec" },
+  "connection.accept": { risk: "exec" },
+  "connection.end": { risk: "write" },
+  "connection.send": { risk: "network" },
+  "connection.deliver": { risk: "write" },
 } as const satisfies Record<string, ActionDefinition>;
 
 export type ActionName = keyof typeof actions;

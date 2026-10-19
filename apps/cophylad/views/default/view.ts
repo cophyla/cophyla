@@ -56,7 +56,7 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientResult, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
@@ -288,6 +288,7 @@ rpc.onNotification((n) => {
         if (loadsHistory(state)) void loadChat();
         void loadControllers();
         void loadGrants();
+        void loadConnections();
         void loadNodes();
         void loadTerminals();
         void loadContextOn();
@@ -394,6 +395,10 @@ rpc.onNotification((n) => {
       }
       return;
     }
+    case "connection.state":
+      dispatch({ type: "connection.state", params: n.params as Connection });
+      connectionClock();
+      return;
     case "terminal.state": {
       const t = n.params as Terminal;
       dispatch({ type: "terminal.state", params: t });
@@ -505,7 +510,14 @@ function openDevices(focus?: string): void {
   draw();
   const body = roots.devices.querySelector<HTMLElement>(".devices-body");
   const [kind, id] = focus?.split(/:(.*)/) ?? [];
-  const target = kind === "node" && id ? roots.devices.querySelector<HTMLElement>(`.node-card[data-node="${id}"]`) : kind === "phone" && id ? roots.devices.querySelector<HTMLElement>(`.controller[data-controller="${id}"]`) : null;
+  const target =
+    kind === "node" && id
+      ? roots.devices.querySelector<HTMLElement>(`.node-card[data-node="${id}"]`)
+      : kind === "phone" && id
+        ? roots.devices.querySelector<HTMLElement>(`.controller[data-controller="${id}"]`)
+        : kind === "connections"
+          ? roots.devices.querySelector<HTMLElement>(".devices-connections")
+          : null;
   if (!target) {
     if (body) body.scrollTop = 0;
     body?.focus({ preventScroll: true });
@@ -940,6 +952,109 @@ async function revokeController(id: string): Promise<void> {
     fail("revoke", e);
   }
   void loadControllers();
+}
+
+// --- connections: this user's agents joined to other people's ---------------------------------
+
+/** Every connection this user has, and the codes still open. */
+async function loadConnections(): Promise<void> {
+  if (!state.scopes.includes("controllers")) return;
+  try {
+    const { connections } = await rpc.request<{ connections: Connection[] }>("connection.list", {});
+    dispatch({ type: "connections", connections });
+    connectionClock();
+  } catch (e) {
+    fail("connections", e);
+  }
+}
+
+let connectionTimer: ReturnType<typeof setInterval> | undefined;
+
+/** While a code shows or one is open, its countdown moves every second; nothing else needs a clock. */
+function connectionClock(): void {
+  const ticking = state.connectionCode !== undefined || [...state.connections.values()].some((c) => c.state === "pending");
+  if (ticking && connectionTimer === undefined) connectionTimer = setInterval(() => state.connected && draw(), 1000);
+  if (!ticking && connectionTimer !== undefined) {
+    clearInterval(connectionTimer);
+    connectionTimer = undefined;
+  }
+}
+
+const chosenSession = (form: HTMLFormElement): string => field(form, "session");
+
+/** A code for one of this user's sessions, shown where it was asked for until Done or until it is used. */
+async function makeConnectionCode(form: HTMLFormElement): Promise<void> {
+  const session = chosenSession(form);
+  if (!session) return;
+  const only = field(form, "for").trim();
+  ui.connectionBusy = true;
+  draw();
+  try {
+    const r = await rpc.request<{ connection: Connection; invite: { code: string; expiresAt: number } }>("connection.invite", { session, ...(only ? { for: only } : {}) });
+    ui.connectionForm = undefined;
+    ui.connectionCopied = undefined;
+    form.reset();
+    dispatch({ type: "connection.state", params: r.connection });
+    dispatch({ type: "connection.code", code: { id: r.connection.id, code: r.invite.code, expiresAt: r.invite.expiresAt, ...(only ? { for: only } : {}) } });
+    connectionClock();
+  } catch (e) {
+    fail("connection", e);
+  } finally {
+    ui.connectionBusy = false;
+    draw();
+  }
+}
+
+/** Another person's code, used for one of this user's sessions. */
+async function useConnectionCode(form: HTMLFormElement): Promise<void> {
+  const session = chosenSession(form);
+  const code = field(form, "code").trim();
+  if (!session || !code) return;
+  ui.connectionBusy = true;
+  draw();
+  try {
+    const r = await rpc.request<{ connection: Connection }>("connection.accept", { session, code });
+    ui.connectionForm = undefined;
+    form.reset();
+    dispatch({ type: "connection.state", params: r.connection });
+  } catch (e) {
+    fail("connection", e);
+  } finally {
+    ui.connectionBusy = false;
+    draw();
+  }
+}
+
+async function endConnection(id: string): Promise<void> {
+  try {
+    await rpc.request("connection.end", { id });
+  } catch (e) {
+    fail("connection", e);
+  }
+  void loadConnections();
+}
+
+async function copyConnectionCode(): Promise<void> {
+  const code = state.connectionCode;
+  if (!code) return;
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(code.code);
+    ok = true;
+  } catch {
+    const box = document.querySelector<HTMLTextAreaElement>(".connection-code-panel .invite-text");
+    if (box) {
+      box.focus();
+      box.select();
+      try {
+        ok = document.execCommand("copy");
+      } catch {
+        ok = false;
+      }
+    }
+  }
+  ui.connectionCopied = { id: code.id, ok };
+  draw();
 }
 
 // --- grants: invites for machines and phones, joining and leaving ------------------------------
@@ -2952,6 +3067,43 @@ document.addEventListener("click", (ev) => {
     case "grant-cancel":
       if (target.dataset["grant"]) void revokeGrant(target.dataset["grant"]);
       return;
+    case "connection-form-invite":
+    case "connection-form-accept":
+      ui.connectionForm = target.dataset["action"] === "connection-form-invite" ? "invite" : "accept";
+      draw();
+      roots.devices.querySelector<HTMLElement>(ui.connectionForm === "invite" ? ".connection-invite-form select" : ".connection-accept-form textarea")?.focus();
+      return;
+    case "connection-form-close":
+      ui.connectionForm = undefined;
+      draw();
+      return;
+    case "connection-end": {
+      const id = target.dataset["connection"];
+      // a code not used yet goes at once; a live connection is asked about in place
+      if (id && state.connections.get(id)?.state === "pending") void endConnection(id);
+      else ui.endingConnection = id;
+      draw();
+      return;
+    }
+    case "connection-end-confirm":
+      ui.endingConnection = undefined;
+      if (target.dataset["connection"]) void endConnection(target.dataset["connection"]);
+      draw();
+      return;
+    case "connection-end-cancel":
+      ui.endingConnection = undefined;
+      draw();
+      return;
+    case "connection-code-copy":
+      void copyConnectionCode();
+      return;
+    case "connection-code-done":
+      ui.connectionCopied = undefined;
+      dispatch({ type: "connection.code" });
+      return;
+    case "connections-open":
+      openDevices("connections");
+      return;
     case "node-remove":
       if (target.dataset["node"]) ui.removing = { node: target.dataset["node"], phase: "asking" };
       ui.leaving = undefined;
@@ -3125,6 +3277,16 @@ document.addEventListener("submit", (ev) => {
   if (form.classList.contains("node-join-form")) {
     ev.preventDefault();
     void submitJoin(form);
+    return;
+  }
+  if (form.classList.contains("connection-invite-form")) {
+    ev.preventDefault();
+    void makeConnectionCode(form);
+    return;
+  }
+  if (form.classList.contains("connection-accept-form")) {
+    ev.preventDefault();
+    void useConnectionCode(form);
     return;
   }
   if (form.classList.contains("composer-form")) {

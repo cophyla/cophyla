@@ -158,8 +158,16 @@
       ],
       "results": [
         { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web" } },
-        { "status": "pending", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" }
+        { "status": "pending", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
+        { "status": "queued", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD3", "peer": { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "alias": "bob/api-codex" } }
       ]
+    },
+    "connection.tool": {
+      "params": [
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "tool": "create_invite", "args": {} },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "accept_invite", "args": { "code": "cophyla-connect:eyJ2IjoxfQ" } }
+      ],
+      "results": [{ "text": "Connected to bob/api-codex (con_01ARZ3NDEKTSV4RRFFQ69G5FE1)." }, { "text": "Not done: your user did not allow it; nothing was done.", "isError": true }]
     },
     "remote.close": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "stream_0123456789abcdef", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV:client_01ARZ3NDEKTSV4RRFFQ69G5FAZ" }], "results": [{}] },
     "replicate.snapshot": {

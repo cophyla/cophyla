@@ -1,0 +1,39 @@
+{
+  "requests": {
+    "connection.redeem": {
+      "params": [
+        {
+          "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1",
+          "identity": "eyJhbGciOiJFZERTQSJ9.eyJ0eXAiOiJjb3BoeWxhLWlkZW50aXR5In0.c2ln",
+          "end": { "name": "api-codex", "harness": "codex", "live": true },
+          "relay": { "url": "https://orc.example", "peer": "con_01ARZ3NDEKTSV4RRFFQ69G5FE4", "token": "rly_9f86d081884c7d659a2feaa0c55ad015" }
+        },
+        {
+          "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1",
+          "identity": "eyJhbGciOiJFZERTQSJ9.eyJ0eXAiOiJjb3BoeWxhLWlkZW50aXR5In0.c2ln",
+          "end": { "name": "terminal", "live": false },
+          "relay": { "url": "https://orc.example", "peer": "con_01ARZ3NDEKTSV4RRFFQ69G5FE4", "token": "rly_9f86d081884c7d659a2feaa0c55ad015" }
+        }
+      ],
+      "results": [
+        {
+          "identity": "eyJhbGciOiJFZERTQSJ9.eyJ0eXAiOiJjb3BoeWxhLWlkZW50aXR5In0.c2ln",
+          "end": { "name": "web", "harness": "claude", "live": true },
+          "relay": { "url": "https://orc.example", "peer": "con_01ARZ3NDEKTSV4RRFFQ69G5FE5", "token": "rly_2c26b46b68ffc68ff99b453c1d304134" },
+          "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+        }
+      ]
+    },
+    "connection.confirm": { "params": [{ "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1" }], "results": [{}] },
+    "conn.send": {
+      "params": [
+        { "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "text": "What does /v2/users return?", "from": { "name": "web", "harness": "claude", "live": true }, "sentAt": 1758196800000 },
+        { "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "text": "A page of users.", "replyTo": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "from": { "name": "api-codex", "harness": "codex", "live": true }, "sentAt": 1758196810000 }
+      ],
+      "results": [{ "status": "sent" }, { "status": "held" }, { "status": "pending" }, { "status": "waiting" }]
+    },
+    "conn.notice": { "params": [{ "about": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "why": "the user did not allow it" }], "results": [{}] },
+    "conn.state": { "params": [{ "name": "api-claude", "harness": "claude", "live": true }, { "name": "terminal", "live": false }], "results": [{}] },
+    "conn.end": { "params": [{ "reason": "its terminal closed" }], "results": [{}] }
+  }
+}

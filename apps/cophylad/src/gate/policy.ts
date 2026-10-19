@@ -74,6 +74,13 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:agent.list": "allow",
   "harness:agent.send": "allow",
   "harness:agent.escalate": "ask",
+  // An agent's message on a connection its terminal has to another user's, and the record of
+  // an invite it made, used or ended: its user was asked before the first two, outside the
+  // gate and never remembered, so nothing here asks again. A rule can still deny one.
+  "harness:connection.send": "allow",
+  "harness:connection.invite": "allow",
+  "harness:connection.accept": "allow",
+  "harness:connection.end": "allow",
 };
 
 /**

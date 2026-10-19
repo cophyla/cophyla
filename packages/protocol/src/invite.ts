@@ -9,7 +9,7 @@
 
 import { z } from "zod";
 import { GrantKind } from "./entities.ts";
-import { GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { ConnectionId, GrantRef, NodeId, Timestamp } from "./ids.ts";
 
 export const INVITE_TEXT_PREFIX = "cophyla-invite:";
 export const INVITE_LINK_PREFIX = "cophyla://invite?i=";
@@ -90,5 +90,49 @@ export function parseInvite(input: string): InviteBody {
   }
   const parsed = InviteBody.safeParse(json);
   if (!parsed.success) throw new InviteError("the invite is damaged or from another version");
+  return parsed.data;
+}
+
+// A connection's invite: another Cophyla user's way into one terminal of this user's, made on
+// the primary for that terminal alone. It names the pending connection, carries the one-use
+// secret its redemption is keyed from, and the relay peer of its own to reach the primary by:
+// the two may be on networks that never meet, and the users are signed in to different
+// accounts, so the relay is the only way, and no LAN listener is named.
+//
+//   code = "cophyla-connect:" base64url(json)
+
+export const CONNECT_PREFIX = "cophyla-connect:";
+
+/** How one end of a connection is reached: the relay's origin, a peer of that end's own and its token. */
+export const ConnectionRelay = z.object({ url: z.string().min(1).max(500), peer: ConnectionId, token: z.string().min(1).max(200) });
+export type ConnectionRelay = z.infer<typeof ConnectionRelay>;
+
+export const ConnectionInviteBody = z.object({
+  v: z.literal(1),
+  /** The pending connection it redeems: the id both ends keep it under. */
+  id: ConnectionId,
+  secret: Secret,
+  expiresAt: Timestamp,
+  relay: ConnectionRelay,
+});
+export type ConnectionInviteBody = z.infer<typeof ConnectionInviteBody>;
+
+/** A connection's invite as the code to hand the other person. */
+export function connectionInviteText(body: ConnectionInviteBody): string {
+  return CONNECT_PREFIX + toBase64Url(JSON.stringify(body));
+}
+
+/** A connection's invite read back from its code, whatever whitespace a paste brought; throws `InviteError` on anything else. */
+export function parseConnectionInvite(input: string): ConnectionInviteBody {
+  const compact = input.replace(/\s+/g, "");
+  if (!compact.startsWith(CONNECT_PREFIX)) throw new InviteError(compact.startsWith(INVITE_TEXT_PREFIX) || compact.startsWith(INVITE_LINK_PREFIX) ? "that is an invite for a phone or a machine, not a connection's" : "not a Cophyla connection code");
+  let json: unknown;
+  try {
+    json = JSON.parse(fromBase64Url(compact.slice(CONNECT_PREFIX.length)));
+  } catch (e) {
+    throw e instanceof InviteError ? e : new InviteError("the code is damaged");
+  }
+  const parsed = ConnectionInviteBody.safeParse(json);
+  if (!parsed.success) throw new InviteError("the code is damaged or from another version");
   return parsed.data;
 }

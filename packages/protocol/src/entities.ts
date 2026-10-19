@@ -6,6 +6,7 @@ import {
   AskId,
   AuditId,
   ClientId,
+  ConnectionId,
   ControllerId,
   GrantRef,
   ListenerId,
@@ -343,6 +344,87 @@ export type AgentListing = z.infer<typeof AgentListing>;
  */
 export const AgentMode = z.enum(["bypass", "prompting"]);
 export type AgentMode = z.infer<typeof AgentMode>;
+
+/**
+ * A connection's far end: the other person, by the GitHub login the server vouched for when
+ * the two connected, and their terminal's agent as their Cophyla last said: its name, its
+ * harness, whether one runs there now. `seenAt` is when their Cophyla was last reached, or
+ * reached this one.
+ */
+export const ConnectionPeer = z.object({
+  user: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+  live: z.boolean().optional(),
+  seenAt: Timestamp.optional(),
+});
+export type ConnectionPeer = z.infer<typeof ConnectionPeer>;
+
+/**
+ * Who a message that came in on a connection is from, as the session it reaches is told:
+ * the connection, the other person's login, their end's name and its harness. Set by the
+ * primary from the connection it came in on, never from what the far end said of itself
+ * beyond its name and harness.
+ */
+export const ConnectionSender = z.object({
+  connection: ConnectionId,
+  user: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+});
+export type ConnectionSender = z.infer<typeof ConnectionSender>;
+
+/**
+ * A connection as the agent at this end sees it in `list_agents`: the name to send to
+ * (`<user>/<name>`, or the connection's id when two would meet), and the far end as its
+ * Cophyla last said; `queued` counts this end's messages waiting for it to be reached.
+ */
+export const ConnectionListing = z.object({
+  connection: ConnectionId,
+  alias: z.string().min(1).max(200),
+  user: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+  live: z.boolean().optional(),
+  seenAt: Timestamp.optional(),
+  queued: z.number().int().nonnegative().optional(),
+});
+export type ConnectionListing = z.infer<typeof ConnectionListing>;
+
+/** `pending` while its invite waits to be used; `active` once both ends keep it; `ended` in the last notice about it. */
+export const ConnectionState = z.enum(["pending", "active", "ended"]);
+export type ConnectionState = z.infer<typeof ConnectionState>;
+
+/**
+ * A connection between one terminal of this user's and one of another Cophyla user's: the
+ * agents in the two may message each other, and nothing else of either side is reached. It
+ * lives with its terminal (`node`, `terminal`): a `/clear`, a harness started again there, a
+ * daemon restart or a machine asleep leave it as it is; the terminal closing, or either side
+ * ending it, ends it. A session in no tether terminal is its own end (`session` alone).
+ * `session` is the agent session in the terminal now. `name` is this end as the other side
+ * sees it. `by` says who made it here: the app or the command line, or the agent through
+ * its tools. `queued` counts messages waiting to go either way. A pending one's invite runs
+ * out at `expiresAt`.
+ */
+export const Connection = z.object({
+  id: ConnectionId,
+  state: ConnectionState,
+  node: NodeId,
+  terminal: TerminalRef.optional(),
+  session: SessionId.optional(),
+  name: z.string().optional(),
+  peer: ConnectionPeer.optional(),
+  by: z.enum(["app", "agent"]),
+  createdAt: Timestamp,
+  expiresAt: Timestamp.optional(),
+  lastAt: Timestamp.optional(),
+  sent: z.number().int().nonnegative(),
+  received: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative().optional(),
+  /** Why it ended, in the notice that says it did. */
+  reason: z.string().optional(),
+});
+export type Connection = z.infer<typeof Connection>;
 
 /** The harnesses the chat's own session runs on. */
 export const AssistantHarness = z.enum(["claude", "codex"]);
@@ -1407,6 +1489,11 @@ export const entities = {
   AgentRef,
   AgentListing,
   AgentMode,
+  Connection,
+  ConnectionListing,
+  ConnectionPeer,
+  ConnectionSender,
+  ConnectionState,
   Client,
   Controller,
   Access,
