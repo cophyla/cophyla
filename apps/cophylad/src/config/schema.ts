@@ -486,7 +486,7 @@ export const MetricsConfig = z
     /** Percent of a resource at which `node.pressure` says `warn`, and `critical`. */
     warn: z.number().min(0).max(100).default(80),
     critical: z.number().min(0).max(100).default(95),
-    /** Read the GPU through NVML where the driver is there. */
+    /** Read the GPU: NVIDIA's through NVML, any other on Windows through the GPU counters, a Mac's through IOKit. */
     gpu: z.boolean().default(true),
     /**
      * Read each harness login's plan limits for the samples, while a client watches them:
@@ -1005,7 +1005,7 @@ min_interval_ms = 1000         # the floor under a subscriber's interval
 retention_days = 7             # per-minute rollups kept
 warn = 80                      # percent at which node.pressure says warn
 critical = 95                  # and critical
-gpu = true                     # read the GPU through NVML where the driver is there
+gpu = true                     # read the GPU: NVML for NVIDIA's, Windows' GPU counters for any other
 limits = true                  # each login's session and weekly limits: Claude's usage endpoint, Codex's rollouts
 
 # Prices in USD per million tokens, by vendor/model, over the built-in table.

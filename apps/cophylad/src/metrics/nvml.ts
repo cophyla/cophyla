@@ -1,6 +1,7 @@
 // NVIDIA GPUs through NVML: `nvml.dll` comes with the driver on Windows, `libnvidia-ml.so.1`
 // on Linux. Initialised once at the first sample; a machine without the library, or with a
-// driver that refuses, is logged once and read as no GPU from then on. Per-process VRAM is
+// driver that refuses, is logged once and read through nothing from then on (`off`: on
+// Windows the GPU counters take over). Per-process VRAM is
 // taken where the driver reports it (Linux, TCC); WDDM answers `NVML_VALUE_NOT_AVAILABLE`
 // for every process and those rows are skipped. Spike 13 has the layouts.
 
@@ -41,6 +42,11 @@ export class Nvml {
     this.log = log;
   }
 
+  /** Given up for good: no NVML here, or a sample failed. */
+  get off(): boolean {
+    return this.state === "off";
+  }
+
   private init(): boolean {
     if (this.state !== "new") return this.state === "up";
     try {
@@ -61,7 +67,7 @@ export class Nvml {
       }).symbols as unknown as NvmlSymbols;
       const rc = symbols.nvmlInit_v2();
       if (rc !== 0) {
-        this.log.info("no GPU metrics: NVML refused", { rc });
+        this.log.info("NVML refused", { rc });
         this.state = "off";
         return false;
       }
@@ -69,7 +75,7 @@ export class Nvml {
       this.state = "up";
       return true;
     } catch (e) {
-      this.log.info("no GPU metrics: NVML not loaded", { error: e instanceof Error ? e.message : String(e) });
+      this.log.info("NVML not loaded", { error: e instanceof Error ? e.message : String(e) });
       this.state = "off";
       return false;
     }
