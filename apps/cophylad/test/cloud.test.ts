@@ -126,12 +126,18 @@ describe("cloud", () => {
     // the welcome carried the signed-out state (the notification precedes the hello result in the stream, so look at the whole list)
     const initial = await c.next((n) => n.method === "account.state");
     expect(initial.params).toEqual({ plan: "free", limits: { ...FREE_ENTITLEMENT.limits, hosted: FREE_ENTITLEMENT.hosted, brainChannel: "stable" }, backup: { enabled: false, state: "idle" } });
-    const r = await c.request<{ verificationUrl: string; userCode: string; expiresAt: number }>("account.login");
+    // two at once (a double click) share one code, the page opened for each
+    type Offer = { verificationUrl: string; userCode: string; expiresAt: number };
+    const [r, twin] = await Promise.all([c.request<Offer>("account.login"), c.request<Offer>("account.login")]);
+    expect(twin).toEqual(r);
     expect(r.userCode).toMatch(/^[A-Z]{4}-[A-Z]{4}$/);
     expect(r.verificationUrl).toContain(r.userCode);
-    expect(opened).toEqual([r.verificationUrl]);
+    expect(opened).toEqual([r.verificationUrl, r.verificationUrl]);
     expect(existsSync(d.paths.accountToken)).toBe(false);
-    expect(await c.call("account.login")).toMatchObject({ error: { data: { code: "conflict" } } });
+    // asked again once its panel closed: the same code, and the page again
+    expect(await c.request<Offer>("account.login")).toEqual(r);
+    expect(opened).toHaveLength(3);
+    expect(fake.devices.size).toBe(1);
     fake.approve(r.userCode);
     await waitFor(() => existsSync(d.paths.accountToken));
     const token = readFileSync(d.paths.accountToken, "utf8").trim();

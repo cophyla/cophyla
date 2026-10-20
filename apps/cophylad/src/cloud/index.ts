@@ -101,6 +101,8 @@ export class Cloud {
   private stored: { token: string; claims: Entitlement; status: EntitlementStatus } | undefined;
   private refreshTimer: ReturnType<typeof setInterval> | undefined;
   private login_: { offer: DeviceOffer; abort: AbortController } | undefined;
+  /** The device code being asked for, shared by a second `login` that comes before it is answered. */
+  private loginStart_: Promise<DeviceOffer> | undefined;
   private stopped = false;
   private hosted: HostedDeps;
   private tunnels: Tunnels;
@@ -359,11 +361,30 @@ export class Cloud {
     return () => this.ups.delete(fn);
   }
 
-  /** The device-code login: the code and URL answered at once; the token arrives in the background. */
+  /**
+   * The device-code login: the code and URL answered at once; the token arrives in the background.
+   * A login already open (its panel closed, or started from another client) is answered again,
+   * its page opened again, so trying once more goes on with the same code until it runs out.
+   */
   async login(opts: LoginOptions = {}): Promise<{ verificationUrl: string; userCode: string; expiresAt: number }> {
     if (!this.deps.config.enabled) throw new RpcError("unavailable", "the cloud is off in this node's config", { provider: "server" });
     if (this.token) throw new RpcError("conflict", "already signed in; sign out first");
-    if (this.login_) throw new RpcError("conflict", "a login is already open: enter its code, or wait for it to expire", { userCode: this.login_.offer.userCode, expiresAt: this.login_.offer.expiresAt });
+    const open = this.login_ && this.login_.offer.expiresAt > this.now() ? this.login_.offer : undefined;
+    const offer = open ?? (await (this.loginStart_ ??= this.startLogin().finally(() => (this.loginStart_ = undefined))));
+    if (opts.openBrowser) {
+      try {
+        await (this.deps.openBrowser ?? systemOpener())(offer.verificationUrl);
+      } catch (e) {
+        this.log.warn("could not open the browser; the user must open the URL by hand", { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return { verificationUrl: offer.verificationUrl, userCode: offer.userCode, expiresAt: offer.expiresAt };
+  }
+
+  /** Asks the server for a device code and polls for its token in the background. */
+  private async startLogin(): Promise<DeviceOffer> {
+    // one run out whose poll has not ended it yet
+    this.login_?.abort.abort();
     const abort = new AbortController();
     const flow = await startDeviceFlow({
       url: this.deps.config.url.replace(/\/$/, ""),
@@ -393,14 +414,7 @@ export class Cloud {
         this.log.info("login ended without a token", { reason: e instanceof Error ? e.message : String(e) });
         this.broadcast();
       });
-    if (opts.openBrowser) {
-      try {
-        await (this.deps.openBrowser ?? systemOpener())(flow.offer.verificationUrl);
-      } catch (e) {
-        this.log.warn("could not open the browser; the user must open the URL by hand", { error: e instanceof Error ? e.message : String(e) });
-      }
-    }
-    return { verificationUrl: flow.offer.verificationUrl, userCode: flow.offer.userCode, expiresAt: flow.offer.expiresAt };
+    return flow.offer;
   }
 
   /** Revokes the token (best effort), forgets everything, and tells the clients the free plan. */

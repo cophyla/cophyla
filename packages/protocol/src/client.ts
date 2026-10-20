@@ -984,6 +984,10 @@ export const clientRequests = {
    * and can still connect to it directly until they are.
    */
   "remote.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
+  /**
+   * Starts the device-code login, or answers the one already open (a closed panel, another
+   * client) with its code until that runs out; `conflict` only when already signed in.
+   */
   "account.login": {
     params: Empty,
     result: z.object({ verificationUrl: z.string(), userCode: z.string(), expiresAt: Timestamp }),
