@@ -1,46 +1,45 @@
 // The host's settings: a layer over the frame that is the host's own, like the view picker,
-// so any view opens the same one by asking `host.settings` and none has to draw it. It is
-// made of sections, and more will join. Chat comes first: the chat runs in an agent session
-// of the user's own, and the section says where it stands (`assistant.state`), which harness
-// and which account it runs on, each left to cophylad or picked (`assistant.configure`, which
-// starts it afresh), and has a button that ends it and starts it again where it was
-// (`assistant.restart`); a node from before the chat ran so leaves the section out. Then
-// Listening for: what wakes Cophyla
-// besides the user's messages, the listeners it set with its tools (`listener.list`), each
-// with why it listens, on what, how it tells, the fires left and made, and a Remove
-// (`listener.remove`); a node from before there were listeners leaves the section out.
-// Voice follows on a host with a microphone of its own (the desktop app; the phone keeps
-// its switches in its bar's menu): whether it listens
-// for the wake words and which ones the node listens for, whether replies are spoken, the
-// talk key, which microphone it listens on (the system's default, or one picked, which
-// `micOptions` lists), and what is wrong with the microphone when something is. On every host it holds
-// the node's wake words, a box each for every phrase its wake model has, ticked for the ones
-// that listen (none ticked, only the talk key and the button wake it), with where the pick came
-// from and a way back to config.toml's (`voice.configure` `wake`), and the node's engines:
-// the one that transcribes and the one that reads replies out
-// (`voice.settings`, set with `voice.configure`), the voice, the speed replies are read at,
-// where each choice came from with a way back to config.toml's, and Hear it
-// (`voice.preview`). An online engine says where it goes first, the account's server (Cophyla
-// cloud, on a Pro plan) or the user's own key alone, and the node's Gemini and DeepInfra keys
-// show where each comes from and its last four characters, with a field to give one and a
-// Clear for one given here (`account.apiKey`); what is typed there is gone from the page once
-// it is saved. A local engine the node has not
-// installed shows the licences it comes under, each a link, and an Install button with what
-// it would download (`voice.install`); nothing is installed unless that is pressed. While an
-// engine loads or installs the panel asks again each second, so the status follows it. Then
-// Agents. For each machine and harness it
-// shows the usual account — Automatic, naming the profile cophylad picks and why, or one the
-// user picks — and for each profile its name, whether it is signed in, how much of its
-// session and weekly limits it has used (`profile.limits`) and, for a Claude profile, what a
-// session cophylad starts under it is started with: a permission mode and other flags, with
-// where the launch in use came from (set here, config.toml, or the user's own last session
-// there) and a Reset. It reads with the host's own connection and writes with
-// `profile.update`. It closes on its ✕, on Escape and on a click outside its card, and says
-// what failed beside what failed. `settingsRows`, `chatRow`, `speechRow`, `wakeRow`, `listenerLine` and
-// `SettingsModel` are DOM-free; the panel draws them. Its look is `settings.css`, which each
-// host page links.
+// so any view opens the same one by asking `host.settings` and none has to draw it. A side list
+// of pages, the one picked beside it (across the top on a phone), each page a few titled
+// groups of rows: a label and a line of help on the left, the control on the right. Switches
+// and picks take effect at once; text is kept with Save or Enter; what few need (a launch's
+// flags) is folded away. The pages:
+// - Sessions: which of the user's own sessions each machine connects to (`session.scope`, set
+//   with `session.setScope` as each change is made): its accounts, each ticked unless left off,
+//   "Tether (Cophyla) started sessions only", and the allowed and hidden folders (`scope.ts`).
+// - Accounts: per machine and harness, the usual account (Automatic, naming the profile
+//   cophylad picks and why, or one the user picks), and for each profile its name, sign-in
+//   state and how much of its limits it has used (`profile.limits`), and for a Claude profile
+//   what a session cophylad starts under it is started with: a permission mode and other flags,
+//   with where the launch came from (set here, config.toml, or the user's own last session
+//   there) and a Reset, written with `profile.update`.
+// - Chat: where the chat's own agent session stands (`assistant.state`), the harness and the
+//   account it runs on, each left to cophylad or picked (`assistant.configure`, which starts
+//   it afresh), and Restart (`assistant.restart`), which keeps the conversation.
+// - Voice: on a host with a microphone of its own (the desktop app; the phone keeps its
+//   switches in its bar's menu) what voice is doing, which microphone (`micOptions`), listening
+//   for the wake words and speaking replies, and the talk key; on every host the node's wake
+//   words, a box each, with where the pick came from (`voice.configure` `wake`), the engine
+//   that transcribes and the one that reads replies out (`voice.settings`, `voice.configure`)
+//   with the voice, the speed, Hear it (`voice.preview`), where an online engine goes first,
+//   and for a local engine not installed its licences and Install (`voice.install`), read again
+//   each second while one loads or installs; and the node's Gemini and DeepInfra keys, by where
+//   each comes from and its last four characters (`account.apiKey`; what is typed leaves the
+//   page once it is sent).
+// - Listeners: what wakes Cophyla besides the user's messages (`listener.list`), each with why
+//   it listens, on what, how it tells and its fires, and Remove (`listener.remove`).
+// - This browser, on a host that is a paired device of its own: when its access ends, Install
+//   as an app, and Forget, asked twice.
+// A node from before a page's requests says so on the page. The layer closes on its ✕, on
+// Escape and on a click outside its card, and says what failed beside what failed.
+// `settingsRows`, `chatRow`, `speechRow`, `wakeRow`, `listenerLine`, `settingsPages` and
+// `SettingsModel` are DOM-free; the panel draws them with `ui.ts`. Its look is `settings.css`,
+// which each host page links.
 
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
+import type { FolderDrafts } from "./scope.ts";
+import { block, button, checkRow, controlId, el, group, keepFocus, message, pill, row, select, span, switchInput } from "./ui.ts";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
 
@@ -698,6 +697,10 @@ export class SettingsModel {
   readonly busy = new Set<string>();
   /** The node's speech, once read; absent while reading and on a node that has none to say. */
   speech?: SpeechSettings;
+  /** The speech, the listeners and the chat were each asked for and answered, or refused. */
+  speechRead = false;
+  listenersRead = false;
+  chatRead = false;
   speechBusy = false;
   speechNote = "";
   sttNote = "";
@@ -763,6 +766,7 @@ export class SettingsModel {
     } catch {
       this.chat = undefined;
     }
+    this.chatRead = true;
     this.changed();
   }
 
@@ -810,6 +814,7 @@ export class SettingsModel {
     } catch {
       this.listeners = undefined;
     }
+    this.listenersRead = true;
     this.changed();
   }
 
@@ -838,6 +843,7 @@ export class SettingsModel {
     } catch {
       this.speech = undefined;
     }
+    this.speechRead = true;
     this.afterSpeech();
   }
 
@@ -1156,9 +1162,9 @@ export function deviceEnds(d: DeviceSettingsState, now: number = Date.now(), loc
 export interface SettingsPanelDeps {
   /** The host's own connection. */
   request: SettingsRequest;
-  /** The host's own voice, when it has a microphone: the Voice section shows. */
+  /** The host's own voice, when it has a microphone: the Voice page shows its switches. */
   voice?: VoiceSettings;
-  /** The host as a paired device of its own, when it is one: its section shows last. */
+  /** The host as a paired device of its own, when it is one: its page shows last. */
   device?: DeviceSettings;
   /** Where the layer goes; the page's body when absent. */
   root?: HTMLElement;
@@ -1170,11 +1176,49 @@ export interface SettingsPanelDeps {
   onToggle?: (open: boolean) => void;
 }
 
-/** The layer itself: opened by `host.settings`, drawn from a `SettingsModel`. */
+/** The pages of the settings, in the order the side list shows them. */
+export type SettingsPage = "sessions" | "accounts" | "chat" | "voice" | "listeners" | "device";
+
+export interface PageEntry {
+  id: SettingsPage;
+  label: string;
+  /** The line under the page's title: what is set there. */
+  lead: string;
+}
+
+/** The pages a host shows: every one, and the paired device's only on a host that is one. */
+export function settingsPages(o: { device: boolean; microphone: boolean }): PageEntry[] {
+  const pages: PageEntry[] = [
+    { id: "sessions", label: "Sessions", lead: "Which of your agent sessions Cophyla connects to. A session that is not connected stays out of its lists, its chat and other agents' messages, and asks its questions in its own window." },
+    { id: "accounts", label: "Accounts", lead: "The accounts sessions start under, and how Cophyla starts them. It uses the usual account, and another signed-in one only when that one nears its limit." },
+    { id: "chat", label: "Chat", lead: "The chat runs in an agent session of your own, on your Claude Code or Codex plan: Cophyla starts it, gives it its tools and wakes it." },
+    {
+      id: "voice",
+      label: "Voice",
+      lead: o.microphone ? "Say a wake word, or hold the talk key, and Cophyla listens: what you say is transcribed and answered as if you had typed it." : "How Cophyla hears you and reads its replies out when you talk to it.",
+    },
+    { id: "listeners", label: "Listeners", lead: "What wakes Cophyla besides your messages: what it set itself to hear when you asked, and the agents it started. Each wake-up is a model call." },
+  ];
+  if (o.device) pages.push({ id: "device", label: "This browser", lead: "This page is paired with the node as a device of its own. What it may do was decided where it was added, and ends by itself." });
+  return pages;
+}
+
+const STATUS_TONE: Record<HarnessProfile["status"], "ok" | "warn"> = { ok: "ok", unauthenticated: "warn", missing: "warn" };
+
+/** The layer itself: opened by `host.settings`, a side list of pages and the page picked, drawn from a `SettingsModel` and a `ScopeModel`. */
 export class SettingsPanel {
   private deps: SettingsPanelDeps;
   private layer?: HTMLElement;
   private model?: SettingsModel;
+  private scope?: ScopeModel;
+  /** The page showing; the one left open last time when the layer opens again. */
+  private page: SettingsPage = "sessions";
+  /** The machine the Sessions and Accounts pages show, when there are several. */
+  private machine?: string;
+  /** Folder fields as typed, by machine and list. */
+  private folderDrafts: FolderDrafts = new Map();
+  /** Launch options unfolded, by profile. */
+  private launchOpen = new Set<string>();
   /** The talk key as typed and not yet set, and why the last one could not be. */
   private keyDraft?: string;
   private keyNote = "";
@@ -1203,32 +1247,32 @@ export class SettingsPanel {
       this.layer.querySelector<HTMLElement>(".host-settings-close")?.focus();
       return;
     }
-    const layer = document.createElement("div");
-    layer.className = "host-settings";
+    const layer = el("div", "host-settings");
     layer.addEventListener("click", (ev) => {
       if (ev.target === layer) this.close();
     });
-    const card = document.createElement("div");
-    card.className = "host-settings-card";
+    const card = el("div", "host-settings-card");
     card.setAttribute("role", "dialog");
     card.setAttribute("aria-modal", "true");
     card.setAttribute("aria-labelledby", "host-settings-title");
-    const head = document.createElement("div");
-    head.className = "host-settings-head";
-    const title = document.createElement("h2");
+    const title = el("h2", "host-settings-title", "Settings");
     title.id = "host-settings-title";
-    title.textContent = "Settings";
-    const close = document.createElement("button");
-    close.type = "button";
-    close.className = "host-settings-close";
-    close.setAttribute("aria-label", "Close");
-    close.title = "Close";
-    close.textContent = "✕";
-    close.addEventListener("click", () => this.close());
-    head.append(title, close);
-    const body = document.createElement("div");
-    body.className = "host-settings-body";
-    card.append(head, body);
+    const list = el("div", "host-settings-nav-list");
+    list.setAttribute("role", "tablist");
+    list.setAttribute("aria-orientation", "vertical");
+    list.addEventListener("keydown", (ev) => this.navKey(ev));
+    const nav = el("nav", "host-settings-nav", title, list);
+    nav.setAttribute("aria-label", "Settings pages");
+    const close = button("close", "✕", "quiet", () => this.close(), { title: "Close" });
+    close.classList.add("host-settings-close");
+    close.setAttribute("aria-label", "Close settings");
+    const pageTitle = el("h2", "host-settings-page-title");
+    pageTitle.id = "host-settings-page-title";
+    const body = el("div", "host-settings-page");
+    body.setAttribute("role", "tabpanel");
+    body.setAttribute("aria-labelledby", "host-settings-page-title");
+    const main = el("div", "host-settings-main", el("div", "host-settings-main-head", pageTitle, close), body);
+    card.append(nav, main);
     layer.append(card);
     (this.deps.root ?? document.body).append(layer);
     this.layer = layer;
@@ -1236,17 +1280,23 @@ export class SettingsPanel {
       if (this.model === model) this.render();
     });
     this.model = model;
+    const scope = new ScopeModel(this.deps.request, () => {
+      if (this.scope === scope) this.render();
+    }, { autosave: true });
+    this.scope = scope;
     document.addEventListener("keydown", this.onKey);
     this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
     this.unsubscribeDevice = this.deps.device?.subscribe?.(() => this.render());
     this.deps.voice?.listMics?.();
+    if (this.page === "device" && !this.deps.device) this.page = "sessions";
     this.render();
-    close.focus();
+    layer.querySelector<HTMLElement>(`[data-page="${this.page}"]`)?.focus();
     this.deps.onToggle?.(true);
     void model.load();
     void model.loadSpeech();
     void model.loadListeners();
     void model.loadChat();
+    void scope.load();
   }
 
   close(): void {
@@ -1255,6 +1305,7 @@ export class SettingsPanel {
     this.layer = undefined;
     this.model?.dispose();
     this.model = undefined;
+    this.scope = undefined;
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.unsubscribeDevice?.();
@@ -1264,98 +1315,416 @@ export class SettingsPanel {
     this.keyDraft = undefined;
     this.keyNote = "";
     this.apiKeyDrafts.clear();
+    this.folderDrafts.clear();
     document.removeEventListener("keydown", this.onKey);
     this.deps.onToggle?.(false);
     this.deps.refocus?.();
   }
 
-  /** Draws the model anew, keeping the focus (and the caret) where it was. */
+  /** Another page: drawn at once, scrolled to its top. */
+  show(page: SettingsPage): void {
+    if (this.page === page) return;
+    this.page = page;
+    this.render();
+    const body = this.layer?.querySelector<HTMLElement>(".host-settings-page");
+    if (body) body.scrollTop = 0;
+  }
+
+  /** Up and down move along the side list, Home and End to its ends; the page follows the focus. */
+  private navKey(ev: KeyboardEvent): void {
+    const items = [...(this.layer?.querySelectorAll<HTMLElement>(".host-settings-nav-item") ?? [])];
+    const at = items.findIndex((i) => i === document.activeElement);
+    if (at < 0) return;
+    const next = ev.key === "ArrowDown" || ev.key === "ArrowRight" ? at + 1 : ev.key === "ArrowUp" || ev.key === "ArrowLeft" ? at - 1 : ev.key === "Home" ? 0 : ev.key === "End" ? items.length - 1 : undefined;
+    if (next === undefined) return;
+    ev.preventDefault();
+    const item = items[(next + items.length) % items.length]!;
+    this.show(item.dataset["page"] as SettingsPage);
+    this.layer?.querySelector<HTMLElement>(`[data-page="${item.dataset["page"]}"]`)?.focus();
+  }
+
+  /** Draws the side list and the page showing, keeping the focus, the caret and the scroll where they were. */
   private render(): void {
     const layer = this.layer;
     const model = this.model;
     if (!layer || !model) return;
-    const active = document.activeElement as HTMLElement | null;
-    const focusKey = active && layer.contains(active) ? active.dataset["focus"] : undefined;
-    const caret = active instanceof HTMLInputElement ? ([active.selectionStart, active.selectionEnd] as const) : undefined;
-    const body = layer.querySelector<HTMLElement>(".host-settings-body")!;
-    const agents = section("Agents", "The accounts sessions start under, and how Cophyla starts them. Cophyla uses the usual account, and another signed-in one only when it is near its limit.");
-    const note = paragraph("host-settings-note", model.note);
-    note.hidden = model.note === "";
-    agents.append(note, ...model.sections().map((m) => this.machine(m, model)));
-    const speech = model.speechRow();
-    const voice = this.deps.voice
-      ? this.voiceSection(this.deps.voice, speech, model)
-      : speech
-        ? this.speechOnly(speech, model)
-        : undefined;
-    const listening = model.listeners ? this.listeningSection(model.listeners, model) : undefined;
-    const chatRow = model.chatRow();
-    const chat = chatRow ? this.chatSection(chatRow, model) : undefined;
-    const device = this.deps.device ? this.deviceSection(this.deps.device) : undefined;
-    body.replaceChildren(...(chat ? [chat] : []), ...(listening ? [listening] : []), ...(voice ? [voice] : []), agents, ...(device ? [device] : []));
-    if (focusKey) {
-      const again = layer.querySelector<HTMLElement>(`[data-focus="${CSS.escape(focusKey)}"]`);
-      again?.focus();
-      if (again instanceof HTMLInputElement && caret && caret[0] !== null && caret[1] !== null) again.setSelectionRange(caret[0], caret[1]);
+    const pages = settingsPages({ device: this.deps.device !== undefined, microphone: this.deps.voice !== undefined });
+    const entry = pages.find((p) => p.id === this.page) ?? pages[0]!;
+    const body = layer.querySelector<HTMLElement>(".host-settings-page")!;
+    const scrolled = body.scrollTop;
+    keepFocus(layer, () => {
+      const list = layer.querySelector<HTMLElement>(".host-settings-nav-list")!;
+      list.replaceChildren(
+        ...pages.map((p) => {
+          const item = el("button", "host-settings-nav-item", p.label);
+          item.type = "button";
+          item.dataset["page"] = p.id;
+          item.dataset["focus"] = `nav:${p.id}`;
+          item.setAttribute("role", "tab");
+          item.setAttribute("aria-selected", String(p.id === entry.id));
+          item.tabIndex = p.id === entry.id ? 0 : -1;
+          item.addEventListener("click", () => this.show(p.id));
+          return item;
+        }),
+      );
+      layer.querySelector<HTMLElement>(".host-settings-page-title")!.textContent = entry.label;
+      body.dataset["page"] = entry.id;
+      body.replaceChildren(el("p", "host-settings-page-lead", entry.lead), ...this.pageBody(entry.id, model));
+    });
+    body.scrollTop = scrolled;
+  }
+
+  private pageBody(page: SettingsPage, model: SettingsModel): HTMLElement[] {
+    switch (page) {
+      case "sessions":
+        return this.sessionsPage();
+      case "accounts":
+        return this.accountsPage(model);
+      case "chat":
+        return this.chatPage(model);
+      case "voice":
+        return this.voicePage(model);
+      case "listeners":
+        return this.listenersPage(model);
+      case "device":
+        return this.deps.device ? this.devicePage(this.deps.device) : [];
     }
   }
 
-  private chatSection(row: ChatRow, model: SettingsModel): HTMLElement {
-    const box = section("Chat", "The chat runs in an agent session of your own, on your Claude Code or Codex plan: Cophyla starts it, gives it its tools and wakes it. Changing where it runs starts it with a fresh context.");
-    box.dataset["section"] = "chat";
-    const card = document.createElement("div");
-    card.className = "host-settings-profile";
-    const top = document.createElement("div");
-    top.className = "host-settings-profile-top";
-    const restart = document.createElement("button");
-    restart.type = "button";
-    restart.className = "host-settings-reset";
-    restart.dataset["focus"] = "chat:restart";
-    restart.textContent = row.busy ? "Working…" : "Restart chat agent";
-    restart.title = "End the agent session the chat runs in and start it again, with the conversation it had";
-    restart.disabled = row.busy || !row.restartable;
-    restart.addEventListener("click", () => void model.restartChat());
-    top.append(span(`host-settings-state state-${row.trouble ? "unauthenticated" : "ok"}`, row.status), restart);
-    card.append(top);
-    if (row.runs) card.append(paragraph("host-settings-usage", row.runs));
-    if (row.detail) card.append(paragraph(row.trouble ? "host-settings-error" : "host-settings-note", row.detail));
-    const pick = (focus: string, label: string, value: string, options: { value: string; label: string }[], set: (value: string) => void): HTMLElement => {
-      const line = document.createElement("label");
-      line.className = "host-settings-usual";
-      const select = document.createElement("select");
-      select.dataset["focus"] = focus;
-      for (const o of options) select.append(option(o.value, o.label));
-      select.value = value;
-      select.disabled = row.busy;
-      select.addEventListener("change", () => set(select.value));
-      line.append(span("host-settings-label", label), select);
-      return line;
-    };
-    card.append(
-      pick("chat:harness", "Runs on", row.harness.value, row.harness.options, (v) => void model.setChatHarness(v as "" | AssistantHarness)),
-      pick("chat:account", "Account", row.account.value, row.account.options, (v) => void model.setChatAccount(v)),
-    );
-    if (row.note) card.append(paragraph("host-settings-error", row.note));
-    box.append(card);
-    return box;
+  /** A choice of machine above a page that shows one at a time, when there are several. */
+  private machinePicker(machines: { node: string; name: string }[], current: string): HTMLElement | undefined {
+    if (machines.length < 2) return undefined;
+    return group(undefined, [
+      row({
+        label: "Machine",
+        help: "Each machine keeps its own.",
+        for: controlId("machine"),
+        control: select("machine", "Machine", current, machines.map((m) => ({ value: m.node, label: m.name })), (v) => {
+          this.machine = v;
+          this.render();
+        }),
+      }),
+    ]);
   }
 
-  /** The host as the paired device it is: its name, where it is connected, when its access ends, and Forget, asked twice. */
-  private deviceSection(device: DeviceSettings): HTMLElement {
+  // --- Sessions -------------------------------------------------------------------------
+
+  private sessionsPage(): HTMLElement[] {
+    const scope = this.scope;
+    if (!scope) return [];
+    if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note)];
+    const machines = scope.machines();
+    const m = machines.find((x) => x.node === this.machine) ?? machines[0];
+    if (!m) return [];
+    return [
+      ...[this.machinePicker(machines, m.node)].filter((x): x is HTMLElement => x !== undefined),
+      ...scopeControls(m, { model: scope, drafts: this.folderDrafts, redraw: () => this.render() }),
+      el("p", "host-settings-page-foot", m.busy ? "Saving…" : "Sessions Cophyla starts itself are always connected. Changes apply at once."),
+    ];
+  }
+
+  // --- Accounts -------------------------------------------------------------------------
+
+  private accountsPage(model: SettingsModel): HTMLElement[] {
+    const sections = model.sections();
+    if (model.note) return [el("p", model.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", model.note)];
+    const m = sections.find((s) => s.node === this.machine) ?? sections[0];
+    if (!m) return [];
+    const out: HTMLElement[] = [];
+    const picker = this.machinePicker(sections, m.node);
+    if (picker) out.push(picker);
+    for (const h of m.harnesses) out.push(group(HARNESS_NAMES[h.harness] ?? h.label, [this.usual(h.usual, model), ...h.profiles.map((p) => this.account(p, model))]));
+    return out;
+  }
+
+  private usual(r: UsualRow, model: SettingsModel): HTMLElement {
+    return row({
+      label: "Usual account",
+      help: "What sessions Cophyla starts use, unless it is near its limit.",
+      for: controlId(r.key),
+      control: select(r.key, "Usual account", r.value, r.options, (v) => void model.setUsual(r.node, r.harness, v), r.busy),
+      ...(r.note ? { note: r.note } : {}),
+    });
+  }
+
+  private account(p: ProfileRow, model: SettingsModel): HTMLElement {
+    const name = span("host-settings-account-name", p.name);
+    name.title = p.configDir;
+    const head = el("div", "host-settings-account-head", name, p.usual ? pill("Usual", "accent") : undefined, pill(p.signedIn, STATUS_TONE[p.status]));
+    const card = block(head, el("p", "host-settings-row-help host-settings-mono", p.configDir), el("p", "host-settings-row-help", p.usage));
+    card.dataset["profile"] = p.id;
+    if (p.launch) card.append(this.launch(p, p.launch, model));
+    return card;
+  }
+
+  private launch(p: ProfileRow, l: LaunchRow, model: SettingsModel): HTMLElement {
+    const more = el("details", "host-settings-disclosure is-inline");
+    more.open = this.launchOpen.has(p.id) || l.dirty || l.note !== undefined;
+    more.addEventListener("toggle", () => {
+      if (more.open) this.launchOpen.add(p.id);
+      else this.launchOpen.delete(p.id);
+    });
+    const summary = el("summary", "", "Launch options");
+    summary.dataset["focus"] = `${launchKey(p.id)}:more`;
+    const mode = select(`${launchKey(p.id)}:mode`, "Permission mode", l.mode, [...LAUNCH_MODES, ...(l.extraMode ? [l.extraMode] : [])], () => edited(), l.busy);
+    const flags = el("input", "host-settings-input host-settings-mono");
+    flags.type = "text";
+    flags.spellcheck = false;
+    flags.autocomplete = "off";
+    flags.placeholder = "Other flags, e.g. --effort high --add-dir ../lib";
+    flags.setAttribute("aria-label", "Other flags");
+    flags.dataset["focus"] = `${launchKey(p.id)}:flags`;
+    flags.value = l.flags;
+    flags.disabled = l.busy;
+    const save = button(`${launchKey(p.id)}:save`, l.busy ? "Saving…" : "Save", "primary", () => void model.saveLaunch(p.id), { disabled: !l.dirty || l.busy });
+    const reset = button(`${launchKey(p.id)}:reset`, "Reset", "quiet", () => void model.resetLaunch(p.id), { disabled: l.busy, hidden: !l.reset, title: "Forget what was set here: config.toml's flags, or your own last session's, are used again" });
+    const edited = (): void => {
+      model.edit(p.id, { mode: mode.value, flags: flags.value });
+      const now = model.sections().flatMap((m) => m.harnesses.flatMap((h) => h.profiles)).find((x) => x.id === p.id)?.launch;
+      save.disabled = !now?.dirty;
+    };
+    flags.addEventListener("input", edited);
+    flags.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !save.disabled) void model.saveLaunch(p.id);
+    });
+    more.append(
+      summary,
+      el("p", "host-settings-row-help", "What a session Cophyla starts under this account is started with."),
+      el("div", "host-settings-inline", mode, flags),
+      el("div", "host-settings-inline is-end", el("span", "host-settings-row-help", l.source), reset, save),
+    );
+    if (l.note) more.append(el("p", "host-settings-row-note", l.note));
+    return more;
+  }
+
+  // --- Chat -----------------------------------------------------------------------------
+
+  private chatPage(model: SettingsModel): HTMLElement[] {
+    const r = model.chatRow();
+    if (!r) return [el("p", model.chatRead ? "host-settings-page-note" : "host-settings-page-note is-quiet", model.chatRead ? "This Cophyla runs no chat agent of its own: update it to choose where the chat runs." : "Loading…")];
+    const restart = button("chat:restart", r.busy ? "Working…" : "Restart", "secondary", () => void model.restartChat(), { disabled: r.busy || !r.restartable, title: "End the agent session the chat runs in and start it again, with the conversation it had" });
+    return [
+      group(undefined, [
+        row({ label: "Chat agent", help: r.runs ?? "Not running yet.", control: [pill(r.status, r.trouble ? "warn" : r.status === "Off" ? "off" : "ok"), restart], ...(r.detail ? { note: r.detail, trouble: r.trouble } : {}) }),
+        row({ label: "Runs on", help: "Changing it starts the chat with a fresh context.", for: controlId("chat:harness"), control: select("chat:harness", "Runs on", r.harness.value, r.harness.options, (v) => void model.setChatHarness(v as "" | AssistantHarness), r.busy) }),
+        row({ label: "Account", help: "A signed-in account of that harness.", for: controlId("chat:account"), control: select("chat:account", "Account", r.account.value, r.account.options, (v) => void model.setChatAccount(v), r.busy), ...(r.note ? { note: r.note } : {}) }),
+      ]),
+    ];
+  }
+
+  // --- Voice ----------------------------------------------------------------------------
+
+  private voicePage(model: SettingsModel): HTMLElement[] {
+    const out: HTMLElement[] = [];
+    if (this.deps.voice) out.push(this.microphone(this.deps.voice));
+    const wake = model.wakeRow();
+    if (wake) out.push(this.wake(wake, model));
+    const stt = model.sttRow();
+    if (stt) out.push(group("Transcription", this.engine(stt, model)));
+    const speech = model.speechRow();
+    if (speech) out.push(group("Spoken replies", this.engine(speech, model)));
+    const keys = model.keyRows();
+    if (keys.length > 0) out.push(group("Your keys", keys.map((k) => this.key(k, model)), "Your own keys, for the online engines and the assistant's model. Only where each comes from and its last four characters show."));
+    if (!speech && !this.deps.voice) out.push(el("p", model.speechRead ? "host-settings-page-note" : "host-settings-page-note is-quiet", model.speechRead ? "This Cophyla cannot say how it speaks: update it to choose its engines." : "Loading…"));
+    return out;
+  }
+
+  /** The host's own microphone: what it is doing, which one, the two switches and the talk key. */
+  private microphone(voice: VoiceSettings): HTMLElement {
+    const v = voice.state();
+    const setTalkKey = voice.setTalkKey?.bind(voice);
+    // A name heard by two heads (said two ways) is named once.
+    const words = v.phrases.length > 0 ? [...new Set(v.phrases.map(titleCase))].map((p) => `“${p}”`).join(", ") : "the wake words";
+    const rows: (HTMLElement | undefined)[] = [
+      v.micError
+        ? row({ label: "The microphone is off", help: v.micError, control: button("voice:retry", "Try again", "secondary", () => void voice.retry().catch(() => {})), trouble: true })
+        : row({ label: "Status", help: v.status }),
+    ];
+    if (voice.setMic) {
+      const { options, value } = micOptions(v);
+      const mic = select("voice:mic", "Microphone", value, options, (id) => void voice.setMic?.(id).catch(() => {}));
+      mic.title = v.mic ? `Listening on ${v.mic}` : "No microphone is on";
+      rows.push(row({ label: "Microphone", ...(v.micNote ? { help: v.micNote } : {}), for: controlId("voice:mic"), control: mic }));
+    }
+    rows.push(
+      row({ label: `Listen for ${words}`, help: "Cophyla starts listening when it hears one.", for: controlId("voice:listen"), control: switchInput("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)) }),
+      row({ label: "Speak replies", help: "Answers to what you say aloud are read out.", for: controlId("voice:speak"), control: switchInput("voice:speak", "Speak replies", v.speak, (on) => voice.setSpeak(on)) }),
+    );
+    // The talk key is held outside the window, which only a host with a shell can arrange.
+    if (setTalkKey) rows.push(this.talkKey(setTalkKey, v));
+    return group("Microphone", rows);
+  }
+
+  /** The talk key: what is held, and Set. */
+  private talkKey(setTalkKey: (accelerator: string) => Promise<string>, v: VoiceSettingsState): HTMLElement {
+    const input = el("input", "host-settings-input host-settings-key-input");
+    input.type = "text";
+    input.spellcheck = false;
+    input.autocomplete = "off";
+    input.placeholder = "No talk key";
+    input.setAttribute("aria-label", "Talk key");
+    input.dataset["focus"] = "voice:key";
+    input.id = controlId("voice:key");
+    input.value = this.keyDraft ?? v.talkKey;
+    const set = (): void => {
+      setTalkKey(input.value).then(
+        () => {
+          this.keyDraft = undefined;
+          this.keyNote = "";
+          this.render();
+        },
+        (e: unknown) => {
+          this.keyNote = message(e).replace(/^(invalid|unavailable): /, "");
+          this.render();
+        },
+      );
+    };
+    const save = button("voice:key:set", "Set", "secondary", set, { disabled: this.keyDraft === undefined || this.keyDraft.trim() === v.talkKey });
+    input.addEventListener("input", () => {
+      this.keyDraft = input.value;
+      save.disabled = input.value.trim() === v.talkKey;
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !save.disabled) set();
+    });
+    return row({ label: "Hold to talk", help: "Held anywhere, even with Cophyla behind other windows. For example Ctrl+Shift+Space; empty for none.", for: input.id, control: [input, save], ...(this.keyNote ? { note: this.keyNote } : {}) });
+  }
+
+  /** The node's wake words: a box each, what listens in words, where the pick came from and Reset. */
+  private wake(r: WakeRow, model: SettingsModel): HTMLElement {
+    const reset = button("wake:reset", "Reset", "quiet", () => void model.resetWake(), { disabled: r.busy, hidden: !r.reset, title: "Forget what was picked here: config.toml's wake words are used again" });
+    const rows: HTMLElement[] = r.choices.map((c) => {
+      const line = checkRow(`wake:${c.head}`, c.label, c.on, (on) => void model.setWake(c.head, on), { ...(c.sound ? { aside: `said ${c.sound}` } : {}), disabled: r.busy });
+      line.dataset["head"] = c.head;
+      return line;
+    });
+    rows.push(row({ label: r.status, help: r.source, control: reset, ...(r.note ? { note: r.note } : {}) }));
+    const g = group("Wake words", rows);
+    if (r.trouble) g.classList.add("is-trouble");
+    return g;
+  }
+
+  /** One stage's engine: the pick, its status and where it came from, its voice, speed and a sample for speech, where it goes online, and an install for one not here. */
+  private engine(r: SpeechRow, model: SettingsModel): HTMLElement[] {
+    const tts = r.stage === "tts";
+    const rows: HTMLElement[] = [];
+    const reset = button(`${r.stage}:reset`, "Reset", "quiet", () => void (tts ? model.setEngine(null) : model.setStt(null)), {
+      disabled: r.busy,
+      hidden: !r.reset,
+      title: tts ? "Forget what was picked here: config.toml's engine and voice are used again" : "Forget what was picked here: config.toml's engine is used again",
+    });
+    const pick = select(`${r.stage}:engine`, tts ? "Speech engine" : "Transcription engine", r.engine, r.options, (v) => void (tts ? model.setEngine(v as TtsEngineId) : model.setStt(v as SttEngineId)), r.busy);
+    rows.push(row({ label: "Engine", help: [r.detail, r.source].filter(Boolean).join(" "), for: pick.id, control: [pick, reset] }));
+    // Green only for an engine that is up: one not installed, turned off or still loading is grey.
+    rows.push(statusRow(r.status, r.trouble ? "trouble" : r.install || r.engine === "off" || r.status.endsWith("…") ? "idle" : "ok"));
+    if (r.voices !== undefined) {
+      const voice = el("input", "host-settings-input host-settings-number");
+      voice.type = "number";
+      voice.min = "1";
+      voice.max = String(r.voices);
+      voice.step = "1";
+      voice.value = String(r.voice ?? 1);
+      voice.dataset["focus"] = "speech:voice";
+      voice.id = controlId("speech:voice");
+      voice.setAttribute("aria-label", `Voice, 1 to ${r.voices}`);
+      voice.disabled = r.busy;
+      voice.addEventListener("change", () => void model.setVoice(Number(voice.value)));
+      rows.push(row({ label: "Voice", help: `One of ${r.voices}.`, for: voice.id, control: voice }));
+    }
+    if (r.speeds !== undefined) rows.push(row({ label: "Speed", help: "How fast replies are read, whichever engine reads them.", for: controlId("speech:speed"), control: select("speech:speed", "Speed", String(r.speed), r.speeds, (v) => void model.setSpeed(Number(v)), r.busy) }));
+    if (tts && !r.install) rows.push(row({ label: "Hear it", help: "A line in the voice set now.", control: button("speech:hear", "Play a sample", "secondary", () => void model.preview(), { disabled: !r.canPreview || r.busy }) }));
+    if (r.route) {
+      const route = r.route;
+      rows.push(row({ label: "Goes through", help: route.detail, for: controlId(`${r.stage}:route`), control: select(`${r.stage}:route`, tts ? "Where speech goes" : "Where transcription goes", route.value, route.options, (v) => void model.setRoute(r.stage, v as VoiceRoute), r.busy), ...(route.trouble ? { note: route.detail, trouble: true } : {}) }));
+    }
+    if (r.install) rows.push(this.install(r, r.install, model));
+    if (r.note) rows.push(el("p", "host-settings-row-note host-settings-row-alone", r.note));
+    return rows;
+  }
+
+  /** What a local engine not installed comes under, each licence a link, and the button that installs it. */
+  private install(r: SpeechRow, install: InstallRow, model: SettingsModel): HTMLElement {
+    const list = el("ul", "host-settings-licences");
+    for (const l of install.licences) {
+      const link = el("a", "", l.name);
+      link.href = l.url;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.addEventListener("click", (ev) => {
+        ev.preventDefault();
+        if (this.deps.openLink) void this.deps.openLink(l.url).catch(() => {});
+        else window.open(l.url, "_blank", "noopener");
+      });
+      list.append(el("li", "", link, ` — ${l.covers}`));
+    }
+    const go = button(`${r.stage}:install`, install.progress ? "Installing…" : `Install (${megabytes(install.bytes)})`, "primary", () => void model.install(r.engine, r.stage), { disabled: r.busy });
+    return block(
+      el("p", "host-settings-row-help", "Cophyla does not ship this engine. Installing downloads it to this computer from where its makers publish it, under these licences:"),
+      list,
+      el("div", "host-settings-inline is-end", install.progress ? el("span", "host-settings-row-help", install.progress) : undefined, go),
+      install.error ? el("p", "host-settings-row-note", install.error) : undefined,
+    );
+  }
+
+  /** A vendor's key: where it comes from, a field to give one, saved with Save or Enter and gone from the field as it is sent, and Clear for one given here. */
+  private key(r: KeyRow, model: SettingsModel): HTMLElement {
+    const input = el("input", "host-settings-input host-settings-mono host-settings-key-input");
+    input.type = "password";
+    input.autocomplete = "off";
+    input.spellcheck = false;
+    input.placeholder = r.clearable ? "Replace the key" : "Paste a key";
+    input.setAttribute("aria-label", r.label);
+    input.dataset["focus"] = `key:${r.provider}`;
+    input.id = controlId(`key:${r.provider}`);
+    input.value = this.apiKeyDrafts.get(r.provider) ?? "";
+    input.disabled = r.busy;
+    const send = (): void => {
+      const typed = input.value;
+      this.apiKeyDrafts.delete(r.provider);
+      input.value = "";
+      save.disabled = true;
+      void model.setKey(r.provider, typed);
+    };
+    const save = button(`key:${r.provider}:save`, r.busy ? "Saving…" : "Save", "secondary", send, { disabled: r.busy || input.value.trim() === "" });
+    const clear = button(`key:${r.provider}:clear`, "Clear", "quiet", () => void model.setKey(r.provider, null), { disabled: r.busy, hidden: !r.clearable, title: "Forget the key given here: config.toml's or the environment's is used again" });
+    input.addEventListener("input", () => {
+      if (input.value === "") this.apiKeyDrafts.delete(r.provider);
+      else this.apiKeyDrafts.set(r.provider, input.value);
+      save.disabled = input.value.trim() === "";
+    });
+    input.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" && !save.disabled) send();
+    });
+    const line = row({ label: r.label, help: `${r.status} ${r.detail}`, for: input.id, control: [input, save, clear], ...(r.note ? { note: r.note } : {}) });
+    line.dataset["provider"] = r.provider;
+    return line;
+  }
+
+  // --- Listeners ------------------------------------------------------------------------
+
+  private listenersPage(model: SettingsModel): HTMLElement[] {
+    const listeners = model.listeners;
+    if (!listeners) return [el("p", model.listenersRead ? "host-settings-page-note" : "host-settings-page-note is-quiet", model.listenersRead ? "This Cophyla keeps no listeners: update it to see them here." : "Loading…")];
+    if (listeners.length === 0) return [group(undefined, [el("div", "host-settings-row host-settings-row-empty", "Only your messages wake Cophyla.")])];
+    return [
+      group(
+        undefined,
+        listeners.map((l) => {
+          const removing = model.removing.has(l.id);
+          const r = row({ label: l.why, help: listenerLine(l), control: button(`listener:${l.id}`, removing ? "Removing…" : "Remove", "danger", () => void model.removeListener(l.id), { disabled: removing }), ...(model.listenerNotes.get(l.id) ? { note: model.listenerNotes.get(l.id)! } : {}) });
+          r.dataset["listener"] = l.id;
+          return r;
+        }),
+      ),
+    ];
+  }
+
+  // --- This browser ---------------------------------------------------------------------
+
+  /** The host as the paired device it is: its name, where it is connected, when its access ends, Install, and Forget asked twice. */
+  private devicePage(device: DeviceSettings): HTMLElement[] {
     const d = device.state();
-    const box = section("This browser", "This page is paired with the node as a device of its own. What it may do was decided where it was added, and ends by itself.");
-    box.dataset["section"] = "device";
-    const card = document.createElement("div");
-    card.className = "host-settings-profile";
-    const top = document.createElement("div");
-    top.className = "host-settings-profile-top";
-    const forget = document.createElement("button");
-    forget.type = "button";
-    forget.className = "host-settings-reset host-settings-remove";
-    forget.dataset["focus"] = "device:forget";
-    forget.textContent = this.forgetAsked ? "Forget it" : "Forget this browser";
-    forget.title = "End this browser's access on the node and remove what it keeps here";
-    forget.addEventListener("click", () => {
+    const forget = button("device:forget", this.forgetAsked ? "Forget it" : "Forget this browser", "danger", () => {
       if (!this.forgetAsked) {
         this.forgetAsked = true;
         this.render();
@@ -1370,550 +1739,43 @@ export class SettingsPanel {
           this.render();
         },
       );
-    });
-    top.append(span("host-settings-name", d.name), forget);
-    if (this.forgetAsked) {
-      const keep = document.createElement("button");
-      keep.type = "button";
-      keep.className = "host-settings-reset";
-      keep.dataset["focus"] = "device:keep";
-      keep.textContent = "Keep it";
-      keep.addEventListener("click", () => {
-        this.forgetAsked = false;
-        this.render();
-      });
-      top.append(keep);
-    }
-    card.append(top, paragraph("host-settings-usage", `${d.connected ? "Connected to" : "Not connected to"} ${d.address}`), paragraph("host-settings-source", deviceEnds(d)));
+    }, { title: "End this browser's access on the node and remove what it keeps here" });
+    const keep = this.forgetAsked
+      ? button("device:keep", "Keep it", "secondary", () => {
+          this.forgetAsked = false;
+          this.render();
+        })
+      : undefined;
+    const rows: (HTMLElement | undefined)[] = [
+      row({ label: d.name, help: `${d.connected ? "Connected to" : "Not connected to"} ${d.address}` }),
+      row({ label: "Access", help: deviceEnds(d) }),
+    ];
     // Offered while the browser offers it: Cophyla in a window of its own, opened like any app.
     if (d.installable && device.install) {
-      const row = document.createElement("div");
-      row.className = "host-settings-profile-top";
-      const install = document.createElement("button");
-      install.type = "button";
-      install.className = "host-settings-reset";
-      install.dataset["focus"] = "device:install";
-      install.textContent = "Install as an app";
-      install.title = "Cophyla in a window of its own, with its icon, opened from this computer's own menu";
-      install.addEventListener("click", () => {
+      const install = button("device:install", "Install as an app", "secondary", () => {
         install.disabled = true;
         void device.install!().catch(() => undefined);
-      });
-      row.append(span("host-settings-name", "Keep Cophyla as an app on this computer"), install);
-      card.append(row);
+      }, { title: "Cophyla in a window of its own, with its icon, opened from this computer's own menu" });
+      rows.push(row({ label: "Keep Cophyla as an app on this computer", control: install }));
     }
-    if (this.forgetAsked) card.append(paragraph("host-settings-note", "It will have to be paired again, with a new key or code from a device that is already in."));
-    if (this.forgetNote) card.append(paragraph("host-settings-error", this.forgetNote));
-    box.append(card);
-    return box;
-  }
-
-  private listeningSection(listeners: Listener[], model: SettingsModel): HTMLElement {
-    const box = section("Listening for", "What wakes Cophyla besides your messages: what it set itself to hear when you asked, and the agents it started. Each fire is a model call.");
-    box.dataset["section"] = "listening";
-    if (listeners.length === 0) box.append(paragraph("host-settings-note", "Only your messages wake Cophyla."));
-    for (const l of listeners) {
-      const card = document.createElement("div");
-      card.className = "host-settings-profile";
-      card.dataset["listener"] = l.id;
-      const top = document.createElement("div");
-      top.className = "host-settings-profile-top";
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "host-settings-reset host-settings-remove";
-      remove.dataset["focus"] = `listener:${l.id}`;
-      remove.textContent = model.removing.has(l.id) ? "Removing…" : "Remove";
-      remove.disabled = model.removing.has(l.id);
-      remove.addEventListener("click", () => void model.removeListener(l.id));
-      top.append(span("host-settings-name", l.why), remove);
-      card.append(top, paragraph("host-settings-usage", listenerLine(l)));
-      const note = model.listenerNotes.get(l.id);
-      if (note) card.append(paragraph("host-settings-error", note));
-      box.append(card);
-    }
-    return box;
-  }
-
-  private voiceSection(voice: VoiceSettings, speech: SpeechRow | undefined, model: SettingsModel): HTMLElement {
-    const v = voice.state();
-    const setTalkKey = voice.setTalkKey?.bind(voice);
-    const box = section("Voice", `Say a wake word, or hold the talk ${setTalkKey ? "key" : "button"}, and Cophyla listens; what you say is transcribed and answered as if you had typed it.`);
-    box.dataset["section"] = "voice";
-    box.append(paragraph(v.micError ? "host-settings-error" : "host-settings-voice-status", v.micError ? `The microphone is off: ${v.micError}` : v.status));
-    if (v.micError) {
-      const retry = document.createElement("button");
-      retry.type = "button";
-      retry.className = "host-settings-reset";
-      retry.dataset["focus"] = "voice:retry";
-      retry.textContent = "Try the microphone again";
-      retry.addEventListener("click", () => void voice.retry().catch(() => {}));
-      box.append(retry);
-    }
-    if (voice.setMic) box.append(this.micRow(voice, v));
-    if (v.micNote) box.append(paragraph("host-settings-source", v.micNote));
-    // A name heard by two heads (said two ways) is named once.
-    const words = v.phrases.length > 0 ? [...new Set(v.phrases.map(titleCase))].map((p) => `“${p}”`).join(", ") : "the node's wake words";
-    box.append(
-      toggle("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)),
-      toggle("voice:speak", "Speak the replies to what I say", v.speak, (on) => voice.setSpeak(on)),
+    rows.push(
+      row({
+        label: "Forget this browser",
+        help: this.forgetAsked ? "It will have to be paired again, with a new key or code from a device that is already in." : "Ends its access on the node and removes what it keeps here.",
+        control: [keep, forget],
+        ...(this.forgetNote ? { note: this.forgetNote } : {}),
+      }),
     );
-    // The talk key is held outside the window, which only a host with a shell can arrange.
-    if (setTalkKey) box.append(...this.talkKeyRow(setTalkKey, v));
-    const wake = model.wakeRow();
-    if (wake) box.append(this.wake(wake, model));
-    const stt = model.sttRow();
-    if (stt) box.append(this.speech(stt, model));
-    if (speech) box.append(this.speech(speech, model));
-    const keys = model.keyRows();
-    if (keys.length > 0) box.append(this.keys(keys, model));
-    return box;
-  }
-
-  /** The talk key: what is held, and Set. */
-  private talkKeyRow(setTalkKey: (accelerator: string) => Promise<string>, v: VoiceSettingsState): HTMLElement[] {
-    const key = document.createElement("div");
-    key.className = "host-settings-controls host-settings-talk";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.spellcheck = false;
-    input.autocomplete = "off";
-    input.placeholder = "No talk key";
-    input.setAttribute("aria-label", "Talk key");
-    input.dataset["focus"] = "voice:key";
-    input.value = this.keyDraft ?? v.talkKey;
-    const save = document.createElement("button");
-    save.type = "button";
-    save.className = "host-settings-save";
-    save.textContent = "Set";
-    save.disabled = this.keyDraft === undefined || this.keyDraft.trim() === v.talkKey;
-    const set = (): void => {
-      setTalkKey(input.value).then(
-        () => {
-          this.keyDraft = undefined;
-          this.keyNote = "";
-          this.render();
-        },
-        (e: unknown) => {
-          this.keyNote = message(e).replace(/^(invalid|unavailable): /, "");
-          this.render();
-        },
-      );
-    };
-    input.addEventListener("input", () => {
-      this.keyDraft = input.value;
-      save.disabled = input.value.trim() === v.talkKey;
-    });
-    input.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !save.disabled) set();
-    });
-    save.addEventListener("click", set);
-    key.append(span("host-settings-label", "Hold to talk"), input, save);
-    const rows = [key, paragraph("host-settings-source", "Held anywhere, even while Cophyla is behind other windows: it listens until you let go. For example Ctrl+Shift+Space or Ctrl+Shift+F9; empty for none.")];
-    if (this.keyNote) rows.push(paragraph("host-settings-error", this.keyNote));
-    return rows;
-  }
-
-  /** Which microphone the host listens on: the system's default, or one picked. */
-  private micRow(voice: VoiceSettings, v: VoiceSettingsState): HTMLElement {
-    const line = document.createElement("div");
-    line.className = "host-settings-controls host-settings-mic";
-    const select = document.createElement("select");
-    select.dataset["focus"] = "voice:mic";
-    select.setAttribute("aria-label", "Microphone");
-    select.title = v.mic ? `Listening on ${v.mic}` : "No microphone is on";
-    const { options, value } = micOptions(v);
-    for (const o of options) select.append(option(o.value, o.label));
-    select.value = value;
-    select.addEventListener("change", () => void voice.setMic?.(select.value).catch(() => {}));
-    line.append(span("host-settings-label", "Microphone"), select);
-    return line;
-  }
-
-  /** The Voice section on a host with no microphone of its own: the node's engines alone. */
-  private speechOnly(speech: SpeechRow, model: SettingsModel): HTMLElement {
-    const box = section("Voice", "How Cophyla hears you and reads its replies out when you talk to it.");
-    box.dataset["section"] = "voice";
-    const wake = model.wakeRow();
-    if (wake) box.append(this.wake(wake, model));
-    const stt = model.sttRow();
-    if (stt) box.append(this.speech(stt, model));
-    box.append(this.speech(speech, model));
-    const keys = model.keyRows();
-    if (keys.length > 0) box.append(this.keys(keys, model));
-    return box;
-  }
-
-  /** The node's wake words: a box each, ticked for the ones that listen, with how each is said, what listens, where the pick came from and Reset. */
-  private wake(row: WakeRow, model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    box.className = "host-settings-speech host-settings-wake";
-    box.dataset["stage"] = "wake";
-    const top = document.createElement("div");
-    top.className = "host-settings-controls";
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "host-settings-reset";
-    reset.dataset["focus"] = "wake:reset";
-    reset.textContent = "Reset";
-    reset.title = "Forget what was picked here: config.toml's wake words are used again";
-    reset.hidden = !row.reset;
-    reset.disabled = row.busy;
-    reset.addEventListener("click", () => void model.resetWake());
-    top.append(span("host-settings-label", "Wake words"), reset);
-    box.append(top);
-    for (const c of row.choices) {
-      const line = document.createElement("label");
-      line.className = "host-settings-toggle";
-      line.dataset["head"] = c.head;
-      const tick = document.createElement("input");
-      tick.type = "checkbox";
-      tick.checked = c.on;
-      tick.disabled = row.busy;
-      tick.dataset["focus"] = `wake:${c.head}`;
-      tick.addEventListener("change", () => void model.setWake(c.head, tick.checked));
-      line.append(tick, span("", c.label));
-      if (c.sound) line.append(span("host-settings-sound", `said ${c.sound}`));
-      box.append(line);
-    }
-    box.append(paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status), paragraph("host-settings-source", row.source));
-    if (row.note) box.append(paragraph("host-settings-error", row.note));
-    return box;
-  }
-
-  /**
-   * The node's own keys: a field each to give one, saved with Save or Enter and gone from the
-   * field as it is sent, and Clear for one given here. Only where each comes from and how it
-   * ends is shown.
-   */
-  private keys(rows: KeyRow[], model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    box.className = "host-settings-speech host-settings-keys";
-    box.dataset["stage"] = "keys";
-    for (const row of rows) {
-      const line = document.createElement("div");
-      line.className = "host-settings-controls host-settings-key";
-      line.dataset["provider"] = row.provider;
-      const input = document.createElement("input");
-      input.type = "password";
-      input.autocomplete = "off";
-      input.spellcheck = false;
-      input.placeholder = row.clearable ? "Replace the key" : "Paste a key";
-      input.setAttribute("aria-label", row.label);
-      input.dataset["focus"] = `key:${row.provider}`;
-      input.value = this.apiKeyDrafts.get(row.provider) ?? "";
-      input.disabled = row.busy;
-      const save = document.createElement("button");
-      save.type = "button";
-      save.className = "host-settings-save";
-      save.textContent = row.busy ? "Saving…" : "Save";
-      save.disabled = row.busy || input.value.trim() === "";
-      const send = (): void => {
-        const typed = input.value;
-        this.apiKeyDrafts.delete(row.provider);
-        input.value = "";
-        save.disabled = true;
-        void model.setKey(row.provider, typed);
-      };
-      input.addEventListener("input", () => {
-        if (input.value === "") this.apiKeyDrafts.delete(row.provider);
-        else this.apiKeyDrafts.set(row.provider, input.value);
-        save.disabled = input.value.trim() === "";
-      });
-      input.addEventListener("keydown", (ev) => {
-        if (ev.key === "Enter" && !save.disabled) send();
-      });
-      save.addEventListener("click", send);
-      const clear = document.createElement("button");
-      clear.type = "button";
-      clear.className = "host-settings-reset";
-      clear.dataset["focus"] = `key:${row.provider}:clear`;
-      clear.textContent = "Clear";
-      clear.title = "Forget the key given here: config.toml's or the environment's is used again";
-      clear.hidden = !row.clearable;
-      clear.disabled = row.busy;
-      clear.addEventListener("click", () => void model.setKey(row.provider, null));
-      line.append(span("host-settings-label", row.label), input, save, clear);
-      box.append(line, paragraph("host-settings-voice-status", row.status), paragraph("host-settings-source", row.detail));
-      if (row.note) box.append(paragraph("host-settings-error", row.note));
-    }
-    return box;
-  }
-
-  /** Where an online engine goes first: the account's server, or the user's own key alone. */
-  private route(row: SpeechRow, route: RouteRow, model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    const line = document.createElement("div");
-    line.className = "host-settings-controls host-settings-route";
-    const select = document.createElement("select");
-    select.dataset["focus"] = `${row.stage}:route`;
-    select.setAttribute("aria-label", row.stage === "tts" ? "Where speech goes" : "Where transcription goes");
-    for (const o of route.options) select.append(option(o.value, o.label));
-    select.value = route.value;
-    select.disabled = row.busy;
-    select.addEventListener("change", () => void model.setRoute(row.stage, select.value as VoiceRoute));
-    line.append(span("host-settings-label", "Goes through"), select);
-    box.append(line, paragraph(route.trouble ? "host-settings-error" : "host-settings-source", route.detail));
-    return box;
-  }
-
-  /** What a local engine not installed comes under, each licence a link, and the button that installs it. */
-  private install(row: SpeechRow, install: InstallRow, model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    box.className = "host-settings-install";
-    box.append(paragraph("host-settings-source", "Cophyla does not ship this engine. Installing downloads it to this computer from where its makers publish it, under these licences:"));
-    const list = document.createElement("ul");
-    list.className = "host-settings-licences";
-    for (const l of install.licences) {
-      const item = document.createElement("li");
-      const link = document.createElement("a");
-      link.href = l.url;
-      link.textContent = l.name;
-      link.target = "_blank";
-      link.rel = "noopener noreferrer";
-      link.addEventListener("click", (ev) => {
-        ev.preventDefault();
-        if (this.deps.openLink) void this.deps.openLink(l.url).catch(() => {});
-        else window.open(l.url, "_blank", "noopener");
-      });
-      item.append(link, document.createTextNode(` — ${l.covers}`));
-      list.append(item);
-    }
-    box.append(list);
-    const go = document.createElement("button");
-    go.type = "button";
-    go.className = "host-settings-save";
-    go.dataset["focus"] = `${row.stage}:install`;
-    go.textContent = install.progress ? "Installing…" : `Install (${megabytes(install.bytes)})`;
-    go.disabled = row.busy;
-    go.addEventListener("click", () => void model.install(row.engine, row.stage));
-    box.append(go);
-    if (install.progress) box.append(paragraph("host-settings-voice-status", install.progress));
-    if (install.error) box.append(paragraph("host-settings-error", install.error));
-    return box;
-  }
-
-  /** One stage's engine: the one that transcribes, or the one that reads replies out with its voice and Hear it; where the choice came from; and, for one not installed, what installing it means. */
-  private speech(row: SpeechRow, model: SettingsModel): HTMLElement {
-    const tts = row.stage === "tts";
-    const box = document.createElement("div");
-    box.className = "host-settings-speech";
-    box.dataset["stage"] = row.stage;
-    const line = document.createElement("div");
-    line.className = "host-settings-controls";
-    const engine = document.createElement("select");
-    engine.dataset["focus"] = `${row.stage}:engine`;
-    engine.setAttribute("aria-label", tts ? "Speech engine" : "Transcription engine");
-    for (const o of row.options) engine.append(option(o.value, o.label));
-    engine.value = row.engine;
-    engine.disabled = row.busy;
-    engine.addEventListener("change", () => void (tts ? model.setEngine(engine.value as TtsEngineId) : model.setStt(engine.value as SttEngineId)));
-    line.append(span("host-settings-label", tts ? "Reads replies with" : "Transcribes with"), engine);
-    if (row.voices !== undefined) {
-      const voice = document.createElement("input");
-      voice.type = "number";
-      voice.min = "1";
-      voice.max = String(row.voices);
-      voice.step = "1";
-      voice.value = String(row.voice ?? 1);
-      voice.className = "host-settings-voice";
-      voice.dataset["focus"] = "speech:voice";
-      voice.setAttribute("aria-label", `Voice, 1 to ${row.voices}`);
-      voice.title = `One of ${row.voices} voices`;
-      voice.disabled = row.busy;
-      voice.addEventListener("change", () => void model.setVoice(Number(voice.value)));
-      line.append(span("host-settings-label", "Voice"), voice);
-    }
-    if (row.speeds !== undefined) {
-      const speed = document.createElement("select");
-      speed.dataset["focus"] = "speech:speed";
-      speed.setAttribute("aria-label", "Speed");
-      speed.title = "How fast replies are read, whichever engine reads them";
-      for (const o of row.speeds) speed.append(option(o.value, o.label));
-      speed.value = String(row.speed);
-      speed.disabled = row.busy;
-      speed.addEventListener("change", () => void model.setSpeed(Number(speed.value)));
-      line.append(span("host-settings-label", "Speed"), speed);
-    }
-    if (tts && !row.install) {
-      const hear = document.createElement("button");
-      hear.type = "button";
-      hear.className = "host-settings-save";
-      hear.dataset["focus"] = "speech:hear";
-      hear.textContent = "Hear it";
-      hear.disabled = !row.canPreview || row.busy;
-      hear.addEventListener("click", () => void model.preview());
-      line.append(hear);
-    }
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "host-settings-reset";
-    reset.dataset["focus"] = `${row.stage}:reset`;
-    reset.textContent = "Reset";
-    reset.title = tts ? "Forget what was picked here: config.toml's engine and voice are used again" : "Forget what was picked here: config.toml's engine is used again";
-    reset.hidden = !row.reset;
-    reset.disabled = row.busy;
-    reset.addEventListener("click", () => void (tts ? model.setEngine(null) : model.setStt(null)));
-    line.append(reset);
-    box.append(line, paragraph(row.trouble ? "host-settings-error" : "host-settings-voice-status", row.status));
-    if (row.detail) box.append(paragraph("host-settings-source", `${row.detail} ${row.source}`));
-    else box.append(paragraph("host-settings-source", row.source));
-    if (row.route) box.append(this.route(row, row.route, model));
-    if (row.install) box.append(this.install(row, row.install, model));
-    if (row.note) box.append(paragraph("host-settings-error", row.note));
-    return box;
-  }
-
-  private machine(m: MachineSection, model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    box.className = "host-settings-machine";
-    box.append(heading("h3", m.name));
-    for (const h of m.harnesses) {
-      const group = document.createElement("div");
-      group.className = "host-settings-harness";
-      group.dataset["harness"] = h.harness;
-      group.append(heading("h4", h.label), this.usual(h.usual, model));
-      for (const p of h.profiles) group.append(this.profile(p, model));
-      box.append(group);
-    }
-    return box;
-  }
-
-  private usual(row: UsualRow, model: SettingsModel): HTMLElement {
-    const line = document.createElement("label");
-    line.className = "host-settings-usual";
-    const select = document.createElement("select");
-    select.dataset["focus"] = row.key;
-    for (const o of row.options) select.append(option(o.value, o.label));
-    select.value = row.value;
-    select.disabled = row.busy;
-    select.addEventListener("change", () => void model.setUsual(row.node, row.harness, select.value));
-    line.append(span("host-settings-label", "Usual account"), select);
-    const wrap = document.createElement("div");
-    wrap.append(line);
-    if (row.note) wrap.append(paragraph("host-settings-error", row.note));
-    return wrap;
-  }
-
-  private profile(p: ProfileRow, model: SettingsModel): HTMLElement {
-    const card = document.createElement("div");
-    card.className = "host-settings-profile";
-    card.dataset["profile"] = p.id;
-    const top = document.createElement("div");
-    top.className = "host-settings-profile-top";
-    const name = span("host-settings-name", p.name);
-    name.title = p.configDir;
-    const state = span(`host-settings-state state-${p.status}`, p.signedIn);
-    top.append(name, ...(p.usual ? [span("host-settings-badge", "usual")] : []), state);
-    card.append(top, paragraph("host-settings-usage", p.usage));
-    if (p.launch) card.append(this.launch(p, p.launch, model));
-    return card;
-  }
-
-  private launch(p: ProfileRow, l: LaunchRow, model: SettingsModel): HTMLElement {
-    const box = document.createElement("div");
-    box.className = "host-settings-launch";
-    box.append(span("host-settings-label", "Start sessions with"));
-    const mode = document.createElement("select");
-    mode.dataset["focus"] = `${launchKey(p.id)}:mode`;
-    mode.setAttribute("aria-label", "Permission mode");
-    for (const m of LAUNCH_MODES) mode.append(option(m.value, m.label));
-    if (l.extraMode) mode.append(option(l.extraMode.value, l.extraMode.label));
-    mode.value = l.mode;
-    const flags = document.createElement("input");
-    flags.type = "text";
-    flags.spellcheck = false;
-    flags.autocomplete = "off";
-    flags.placeholder = "Other flags, e.g. --effort high --add-dir ../lib";
-    flags.setAttribute("aria-label", "Other flags");
-    flags.dataset["focus"] = `${launchKey(p.id)}:flags`;
-    flags.value = l.flags;
-    const save = document.createElement("button");
-    save.type = "button";
-    save.className = "host-settings-save";
-    save.textContent = l.busy ? "Saving…" : "Save";
-    save.disabled = !l.dirty || l.busy;
-    const reset = document.createElement("button");
-    reset.type = "button";
-    reset.className = "host-settings-reset";
-    reset.textContent = "Reset";
-    reset.title = "Forget what was set here: config.toml's flags, or your own last session's, are used again";
-    reset.hidden = !l.reset;
-    reset.disabled = l.busy;
-    mode.disabled = flags.disabled = l.busy;
-    const edited = (): void => {
-      model.edit(p.id, { mode: mode.value, flags: flags.value });
-      const row = model.sections().flatMap((m) => m.harnesses.flatMap((h) => h.profiles)).find((x) => x.id === p.id)?.launch;
-      save.disabled = !row?.dirty;
-    };
-    mode.addEventListener("change", edited);
-    flags.addEventListener("input", edited);
-    flags.addEventListener("keydown", (ev) => {
-      if (ev.key === "Enter" && !save.disabled) void model.saveLaunch(p.id);
-    });
-    save.addEventListener("click", () => void model.saveLaunch(p.id));
-    reset.addEventListener("click", () => void model.resetLaunch(p.id));
-    const controls = document.createElement("div");
-    controls.className = "host-settings-controls";
-    controls.append(mode, flags, save, reset);
-    box.append(controls, paragraph("host-settings-source", l.source));
-    if (l.note) box.append(paragraph("host-settings-error", l.note));
-    return box;
+    return [group(undefined, rows)];
   }
 }
 
-function section(title: string, lead: string): HTMLElement {
-  const s = document.createElement("section");
-  s.className = "host-settings-section";
-  const h = heading("h3", title);
-  h.className = "host-settings-section-title";
-  s.append(h, paragraph("host-settings-lead", lead));
-  return s;
-}
-
-function toggle(focus: string, label: string, on: boolean, set: (on: boolean) => void): HTMLElement {
-  const line = document.createElement("label");
-  line.className = "host-settings-toggle";
-  const box = document.createElement("input");
-  box.type = "checkbox";
-  box.checked = on;
-  box.dataset["focus"] = focus;
-  box.addEventListener("change", () => set(box.checked));
-  line.append(box, span("", label));
-  return line;
+/** A status line with a dot coloured by how it stands. */
+function statusRow(text: string, tone: "ok" | "idle" | "trouble"): HTMLElement {
+  return el("div", `host-settings-row host-settings-status is-${tone}`, el("span", "host-settings-status-dot"), el("span", "host-settings-status-text", text));
 }
 
 /** "hey phyla" → "Hey Phyla": a phrase as it reads in a sentence. */
 export function titleCase(phrase: string): string {
   return phrase.replace(/(^|\s)(\p{Ll})/gu, (_m, space: string, ch: string) => space + ch.toUpperCase());
-}
-
-function heading(tag: "h3" | "h4", text: string): HTMLElement {
-  const h = document.createElement(tag);
-  h.textContent = text;
-  return h;
-}
-
-function paragraph(className: string, text: string): HTMLElement {
-  const p = document.createElement("p");
-  p.className = className;
-  p.textContent = text;
-  return p;
-}
-
-function span(className: string, text: string): HTMLElement {
-  const s = document.createElement("span");
-  s.className = className;
-  s.textContent = text;
-  return s;
-}
-
-function option(value: string, label: string): HTMLOptionElement {
-  const o = document.createElement("option");
-  o.value = value;
-  o.textContent = label;
-  return o;
-}
-
-function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
 }

@@ -1,52 +1,49 @@
-/* The host's settings (settings.ts), over the frame and everything else on the host page:
-   the page dimmed, one card in the middle with a section per kind of setting. Dark, in the
-   default view's tones like the view picker, so it reads as part of whichever view asked for
-   it. Each host page links this file. */
+/* The host's settings (settings.ts) and its first-run screen (setup.ts), over the frame and
+   everything else on the host page. Dark, in the default view's tones like the view picker, so
+   they read as part of whichever view asked for them. The settings are one card: a side list of
+   pages on the left, the page picked on the right, made of titled boxes of rows (a label and its
+   help on the left, the control on the right). On a phone the card fills the screen, the pages
+   run across the top and each row stacks. The first-run screen is one card on its own, over an
+   opaque ground so nothing of the view shows before the answer. Each host page links this file. */
 
 .host-settings {
+  --hs-paper: #14121a;
+  --hs-card: #1c1a24;
+  --hs-nav: #18161f;
+  --hs-raised: #25222e;
+  --hs-raised-hover: #2f2b3a;
+  --hs-well: #100f15;
+  --hs-ink: #ece9f2;
+  --hs-ink-2: #cfc9da;
+  --hs-muted: #9a94a8;
+  --hs-faint: #756f83;
+  --hs-line: #2b2833;
+  --hs-line-strong: #3d3947;
+  --hs-orchid: #8c52d9;
+  --hs-orchid-hover: #9a64e2;
+  --hs-orchid-ink: #c7a3f0;
+  --hs-ok: #7fc98f;
+  --hs-warn: #e2ae4d;
+  --hs-danger: #f0a593;
+
   position: fixed;
   inset: 0;
   z-index: 1000;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 16px;
+  padding: 24px;
   background: rgba(6, 5, 9, 0.66);
-  color: #ece9f2;
+  color: var(--hs-ink);
   font: 14px/1.5 "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
 }
 
 .host-settings *,
 .host-settings *::before,
 .host-settings *::after {
   box-sizing: border-box;
-}
-
-.host-settings-card {
-  display: flex;
-  flex-direction: column;
-  width: min(620px, 100%);
-  max-height: min(760px, 100%);
-  padding: 12px;
-  border: 1px solid #3d3947;
-  border-radius: 8px;
-  background: #1c1a24;
-  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
-}
-
-.host-settings-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  margin: 0 0 4px 4px;
-}
-
-.host-settings-head h2 {
-  margin: 0;
-  font-size: 15px;
-  font-weight: 600;
 }
 
 .host-settings button,
@@ -56,394 +53,847 @@
   color: inherit;
 }
 
-.host-settings button {
-  cursor: pointer;
-}
-
-.host-settings button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.host-settings button:focus-visible,
-.host-settings select:focus-visible,
-.host-settings input:focus-visible {
-  outline: 2px solid #8c52d9;
+.host-settings :focus-visible {
+  outline: 2px solid var(--hs-orchid);
   outline-offset: 1px;
 }
 
-.host-settings-close {
-  width: 30px;
-  height: 30px;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  background: transparent;
-  color: #9a94a8;
-  font-size: 13px;
+.host-settings [hidden] {
+  display: none !important;
 }
 
-.host-settings-close:hover {
-  background: #25222e;
-  color: #ece9f2;
+/* --- the card: side list and page ---------------------------------------------------- */
+
+.host-settings-card {
+  display: grid;
+  grid-template-columns: 208px minmax(0, 1fr);
+  width: min(920px, 100%);
+  height: min(680px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 12px;
+  background: var(--hs-paper);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
 }
 
-.host-settings-body {
+.host-settings-nav {
+  display: flex;
+  flex-direction: column;
   min-height: 0;
+  padding: 20px 12px;
+  border-right: 1px solid var(--hs-line);
+  background: var(--hs-nav);
+}
+
+.host-settings-title {
+  margin: 0;
+  padding: 0 10px 14px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.host-settings-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
   overflow: auto;
-  padding: 0 4px 4px;
 }
 
-.host-settings-section-title {
-  margin: 4px 0 0;
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
-  color: #c7a3f0;
-}
-
-.host-settings-lead {
-  margin: 2px 0 10px;
-  color: #9a94a8;
-  font-size: 12px;
-}
-
-.host-settings-machine {
-  margin: 0 0 12px;
-  padding: 10px;
-  border: 1px solid #2b2833;
+.host-settings-nav-item {
+  position: relative;
+  width: 100%;
+  padding: 7px 10px 7px 14px;
+  border: 0;
   border-radius: 6px;
+  background: transparent;
+  color: var(--hs-muted);
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
 }
 
-.host-settings-machine h3 {
-  margin: 0 0 6px;
-  font-size: 14px;
+/* the list scrolls, so a ring outside an item would be cut: it goes inside */
+.host-settings-nav-item:focus-visible {
+  outline-offset: -2px;
+}
+
+.host-settings-nav-item:hover {
+  background: rgba(37, 34, 46, 0.6);
+  color: var(--hs-ink);
+}
+
+.host-settings-nav-item[aria-selected="true"] {
+  background: var(--hs-raised);
+  color: var(--hs-ink);
   font-weight: 600;
 }
 
-.host-settings-harness + .host-settings-harness {
-  margin-top: 10px;
-  padding-top: 10px;
-  border-top: 1px solid #2b2833;
+/* the page showing: a bar of the accent at its left edge */
+.host-settings-nav-item[aria-selected="true"]::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 4px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--hs-orchid);
 }
 
-.host-settings-harness h4 {
-  margin: 0 0 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: #cfc9da;
+.host-settings-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
 }
 
-.host-settings-usual {
+.host-settings-main-head {
   display: flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 0 0 8px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 16px 2px 28px;
 }
 
-.host-settings-label {
-  color: #9a94a8;
+.host-settings-page-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.005em;
+}
+
+.host-settings-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 2px 28px 28px;
+  scrollbar-gutter: stable;
+}
+
+.host-settings-page-lead {
+  max-width: 66ch;
+  margin: 0 0 20px;
+  color: var(--hs-muted);
+  font-size: 13px;
+}
+
+.host-settings-page-note {
+  margin: 4px 0 12px;
+  color: var(--hs-warn);
+  font-size: 12.5px;
+}
+
+.host-settings-page-note.is-quiet {
+  color: var(--hs-muted);
+}
+
+.host-settings-page-foot {
+  margin: 16px 0 0;
+  color: var(--hs-faint);
   font-size: 12px;
 }
 
-.host-settings select,
-.host-settings input[type="text"],
-.host-settings input[type="password"],
-.host-settings input[type="number"] {
-  min-height: 30px;
-  padding: 4px 8px;
-  border: 1px solid #3d3947;
-  border-radius: 4px;
-  background: #14121a;
+/* --- groups and rows ------------------------------------------------------------------ */
+
+.host-settings-group + .host-settings-group,
+.host-settings-group + .host-settings-disclosure,
+.host-settings-disclosure + .host-settings-group {
+  margin-top: 22px;
 }
 
-.host-settings select {
-  max-width: 100%;
-}
-
-.host-settings select:disabled,
-.host-settings input:disabled {
-  opacity: 0.6;
-}
-
-.host-settings-profile {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border: 1px solid #2b2833;
-  border-radius: 6px;
-  background: #211f2a;
-}
-
-.host-settings-profile-top {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.host-settings-name {
+.host-settings-group-title {
+  margin: 0 0 4px;
+  color: var(--hs-ink-2);
+  font-size: 13px;
   font-weight: 600;
+}
+
+.host-settings-group-lead {
+  max-width: 66ch;
+  margin: 0 0 8px;
+  color: var(--hs-muted);
+  font-size: 12px;
+}
+
+.host-settings-box {
+  overflow: hidden;
+  border: 1px solid var(--hs-line);
+  border-radius: 10px;
+  background: var(--hs-card);
+}
+
+.host-settings-group.is-trouble .host-settings-box {
+  border-color: rgba(226, 174, 77, 0.35);
+}
+
+.host-settings-box > * + * {
+  border-top: 1px solid var(--hs-line);
+}
+
+.host-settings-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 16px;
+  margin: 0;
+  padding: 12px 16px;
+}
+
+.host-settings-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.host-settings-row-label {
+  font-size: 13.5px;
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 
-.host-settings-badge {
-  padding: 0 6px;
-  border-radius: 8px;
-  background: rgba(140, 82, 217, 0.22);
-  color: #c7a3f0;
-  font-size: 11px;
+label.host-settings-row-label {
+  cursor: pointer;
 }
 
-.host-settings-state {
+.host-settings-row-help {
+  color: var(--hs-muted);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+p.host-settings-row-help {
+  margin: 2px 0 0;
+}
+
+.host-settings-row-control {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.host-settings-row-note,
+.host-settings-row-news {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  font-size: 12px;
+}
+
+.host-settings-row-note {
+  color: var(--hs-warn);
+}
+
+.host-settings-row-news {
+  color: var(--hs-muted);
+}
+
+.host-settings-row-alone {
+  padding: 10px 16px;
+}
+
+.host-settings-row-block {
+  display: block;
+}
+
+.host-settings-row-empty {
+  display: block;
+  color: var(--hs-muted);
+  font-size: 12.5px;
+}
+
+.host-settings-row-add {
+  display: flex;
+  gap: 8px;
+}
+
+/* a status in a line, its dot coloured by how it stands */
+.host-settings-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  color: var(--hs-ink-2);
+  font-size: 12.5px;
+}
+
+.host-settings-status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--hs-ok);
+}
+
+.host-settings-status.is-idle .host-settings-status-dot {
+  background: var(--hs-faint);
+}
+
+.host-settings-status.is-trouble {
+  color: var(--hs-warn);
+}
+
+.host-settings-status.is-trouble .host-settings-status-dot {
+  background: var(--hs-warn);
+}
+
+/* --- controls ------------------------------------------------------------------------- */
+
+.host-settings-select,
+.host-settings-input {
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 6px;
+  background: var(--hs-well);
+}
+
+.host-settings-select {
+  max-width: 340px;
+  cursor: pointer;
+}
+
+.host-settings-select:disabled,
+.host-settings-input:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.host-settings-input::placeholder {
+  color: var(--hs-faint);
+}
+
+.host-settings-path {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.host-settings-mono {
+  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.host-settings-number {
+  width: 72px;
+}
+
+.host-settings-key-input {
+  width: 220px;
+}
+
+.host-settings-button {
+  min-height: 32px;
+  padding: 5px 14px;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 6px;
+  background: var(--hs-raised);
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.host-settings-button:hover:not(:disabled) {
+  background: var(--hs-raised-hover);
+}
+
+.host-settings-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.host-settings-button.is-primary {
+  border-color: var(--hs-orchid);
+  background: var(--hs-orchid);
+  color: #fff;
+}
+
+.host-settings-button.is-primary:hover:not(:disabled) {
+  border-color: var(--hs-orchid-hover);
+  background: var(--hs-orchid-hover);
+}
+
+.host-settings-button.is-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--hs-muted);
+}
+
+.host-settings-button.is-quiet:hover:not(:disabled) {
+  background: var(--hs-raised);
+  color: var(--hs-ink);
+}
+
+.host-settings-button.is-danger {
+  border-color: #5a2f28;
+  background: transparent;
+  color: var(--hs-danger);
+}
+
+.host-settings-button.is-danger:hover:not(:disabled) {
+  background: rgba(196, 69, 46, 0.16);
+}
+
+.host-settings-close {
+  width: 32px;
+  min-height: 32px;
+  padding: 0;
+  font-size: 14px;
+}
+
+/* an on/off switch: a checkbox drawn as a track and its knob */
+.host-settings-switch {
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: #3a3646;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  transition: background-color 0.15s;
+}
+
+.host-settings-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--hs-ink);
+  transition: transform 0.15s;
+}
+
+.host-settings-switch:checked {
+  background: var(--hs-orchid);
+}
+
+.host-settings-switch:checked::before {
+  transform: translateX(16px);
+}
+
+.host-settings-switch:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* one of several to pick: the box, its label and help, and a word aside */
+.host-settings-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 16px;
+  cursor: pointer;
+}
+
+.host-settings-check:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.host-settings-check input {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--hs-orchid);
+  cursor: pointer;
+}
+
+.host-settings-check input:disabled {
+  cursor: default;
+}
+
+.host-settings-check-text {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.host-settings-check-label {
+  font-size: 13.5px;
+  font-weight: 500;
+}
+
+.host-settings-check-aside {
   margin-left: auto;
+  padding-top: 1px;
+  color: var(--hs-faint);
   font-size: 12px;
   white-space: nowrap;
 }
 
-.host-settings-state.state-ok {
-  color: #7fc98f;
+.host-settings-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--hs-raised);
+  color: var(--hs-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.host-settings-state.state-unauthenticated,
-.host-settings-state.state-missing {
-  color: #e2ae4d;
+.host-settings-pill.is-ok {
+  background: rgba(127, 201, 143, 0.12);
+  color: var(--hs-ok);
 }
 
-.host-settings-usage {
-  margin: 2px 0 0;
-  color: #9a94a8;
-  font-size: 12px;
+.host-settings-pill.is-warn {
+  background: rgba(226, 174, 77, 0.12);
+  color: var(--hs-warn);
 }
 
-.host-settings-launch {
-  margin: 8px 0 0;
+.host-settings-pill.is-accent {
+  background: rgba(140, 82, 217, 0.22);
+  color: var(--hs-orchid-ink);
 }
 
-.host-settings-controls {
+/* an account: its name and pills, where it lives, its use, and its launch folded */
+.host-settings-account-head {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
-  margin: 4px 0 0;
-}
-
-.host-settings-controls input[type="text"] {
-  flex: 1 1 200px;
-  min-width: 0;
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 12px;
-}
-
-.host-settings-save,
-.host-settings-reset {
-  min-height: 30px;
-  padding: 4px 12px;
-  border: 1px solid #3d3947;
-  border-radius: 4px;
-  background: #25222e;
-}
-
-.host-settings-save:not(:disabled) {
-  border-color: #8c52d9;
-  background: rgba(140, 82, 217, 0.22);
-}
-
-.host-settings-save:hover:not(:disabled),
-.host-settings-reset:hover:not(:disabled) {
-  background: #2f2b3a;
-}
-
-.host-settings-remove {
-  margin-left: auto;
-  min-height: 26px;
-  padding: 2px 10px;
-  font-size: 12px;
-}
-
-.host-settings-reset[hidden] {
-  display: none;
-}
-
-.host-settings-source {
-  margin: 4px 0 0;
-  color: #6c6679;
-  font-size: 12px;
-}
-
-.host-settings-note,
-.host-settings-error {
-  margin: 4px 0 8px;
-  color: #e2ae4d;
-  font-size: 12px;
-}
-
-.host-settings-note[hidden] {
-  display: none;
-}
-
-.host-settings-section[data-section="voice"] {
-  margin: 0 0 14px;
-}
-
-.host-settings-voice-status {
-  margin: 0 0 8px;
-  color: #cfc9da;
-  font-size: 12px;
-}
-
-.host-settings-toggle {
-  display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 6px;
+}
+
+.host-settings-account-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.host-settings-account-head > .host-settings-pill:last-child {
+  margin-left: auto;
+}
+
+/* what few need, folded: the folder lists, a launch's flags */
+.host-settings-disclosure > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: fit-content;
+  padding: 2px 0;
+  color: var(--hs-ink-2);
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
   cursor: pointer;
 }
 
-.host-settings-toggle input {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-  accent-color: #8c52d9;
+.host-settings-disclosure > summary::-webkit-details-marker {
+  display: none;
 }
 
-.host-settings-talk {
+.host-settings-disclosure > summary::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin: 0 2px 0 1px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.15s;
+}
+
+.host-settings-disclosure[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.host-settings-disclosure > summary:hover {
+  color: var(--hs-ink);
+}
+
+.host-settings-disclosure > .host-settings-group {
+  margin-top: 14px;
+}
+
+.host-settings-disclosure.is-inline {
+  margin-top: 10px;
+}
+
+.host-settings-disclosure.is-inline > summary {
+  color: var(--hs-orchid-ink);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+
+.host-settings-inline {
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 8px;
   margin-top: 8px;
 }
 
-.host-settings-talk input[type="text"] {
-  flex: 0 1 220px;
+.host-settings-inline.is-end {
+  justify-content: flex-end;
 }
 
-/* which microphone: its names are long ("Microphone (USB Advanced Audio Device)") */
-.host-settings-mic {
-  align-items: center;
-  margin-top: 8px;
+.host-settings-inline.is-end > .host-settings-row-help {
+  margin-right: auto;
 }
 
-.host-settings-mic select {
-  flex: 0 1 340px;
+.host-settings-inline > .host-settings-input {
+  flex: 1 1 220px;
   min-width: 0;
-}
-
-/* the node's speech: the engine, its voice and Hear it on one line, what it is like below */
-.host-settings-speech {
-  margin: 12px 0 0;
-  padding: 10px 0 0;
-  border-top: 1px solid #2b2833;
-}
-
-/* alone in its section (a host with no microphone of its own): no rule under the heading */
-.host-settings-lead + .host-settings-speech {
-  margin: 4px 0 0;
-  padding: 0;
-  border-top: 0;
-}
-
-.host-settings-speech .host-settings-controls {
-  align-items: center;
-  margin: 0 0 6px;
-}
-
-/* the node's wake words: a box each, how it is said after its name */
-.host-settings-wake .host-settings-toggle {
-  margin: 0 0 4px;
-}
-
-.host-settings-sound {
-  color: #6c6679;
-  font-size: 12px;
-}
-
-.host-settings-toggle input:disabled {
-  cursor: default;
-}
-
-.host-settings-voice {
-  width: 72px;
-}
-
-/* where an online engine goes, under its status */
-.host-settings-route {
-  align-items: center;
-}
-
-/* the node's own keys: a password field each, never the key back, only how it ends */
-.host-settings-key {
-  align-items: center;
-}
-
-.host-settings-key + .host-settings-voice-status {
-  margin-top: 2px;
-}
-
-.host-settings-key input[type="password"] {
-  flex: 0 1 260px;
-  min-width: 0;
-  font-family: "Cascadia Mono", Consolas, ui-monospace, monospace;
-  font-size: 12px;
-}
-
-.host-settings-keys .host-settings-source {
-  margin-bottom: 8px;
-}
-
-/* a local engine not installed: what it comes under, each licence a link, and Install */
-.host-settings-install {
-  margin: 6px 0 0;
-  padding: 8px 10px;
-  border: 1px solid #2b2833;
-  border-radius: 6px;
-  background: #211f2a;
-}
-
-.host-settings-install .host-settings-source {
-  margin: 0 0 4px;
-  color: #9a94a8;
 }
 
 .host-settings-licences {
-  margin: 0 0 8px;
+  margin: 6px 0 4px;
   padding: 0 0 0 18px;
-  color: #9a94a8;
+  color: var(--hs-muted);
   font-size: 12px;
 }
 
 .host-settings-licences a {
-  color: #c4a3f0;
+  color: var(--hs-orchid-ink);
 }
 
-.host-settings-install .host-settings-voice-status {
-  margin: 6px 0 0;
+/* --- the first-run screen ------------------------------------------------------------- */
+
+.host-setup {
+  background:
+    radial-gradient(900px 520px at 50% -12%, rgba(140, 82, 217, 0.18), transparent 62%),
+    #0f0e14;
 }
 
-/* a phone: the card fills the screen's width, and what a thumb presses is big enough */
+.host-setup-card {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: min(820px, 100%);
+  overflow: hidden;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 14px;
+  background: var(--hs-paper);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.6);
+  animation: host-setup-in 0.22s ease-out both;
+}
+
+@keyframes host-setup-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+}
+
+.host-setup-head {
+  padding: 28px 32px 6px;
+}
+
+.host-setup-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.host-setup-title:focus {
+  outline: none;
+}
+
+.host-setup-lead {
+  margin: 8px 0 0;
+  color: var(--hs-muted);
+  font-size: 13.5px;
+  line-height: 1.55;
+}
+
+.host-setup-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px 32px 12px;
+}
+
+.host-setup-machine + .host-setup-machine {
+  margin-top: 28px;
+}
+
+.host-setup-machine-name {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.host-setup-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+  padding: 16px 32px 22px;
+  border-top: 1px solid var(--hs-line);
+  background: var(--hs-nav);
+}
+
+.host-setup-foot-note {
+  flex: 1 1 260px;
+  margin: 0;
+  color: var(--hs-faint);
+  font-size: 12px;
+}
+
+.host-setup-foot .host-settings-page-note {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.host-setup-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.host-setup-actions .host-settings-button {
+  min-height: 36px;
+  padding: 6px 18px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .host-settings-switch,
+  .host-settings-switch::before,
+  .host-settings-disclosure > summary::before {
+    transition: none;
+  }
+
+  .host-setup-card {
+    animation: none;
+  }
+}
+
+/* --- a phone: the card fills the screen, the pages run across the top, rows stack -------- */
+
 @media (max-width: 640px) {
   .host-settings {
-    padding: 8px;
+    padding: 0;
   }
 
   .host-settings-card {
-    max-height: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    grid-template-areas: "head" "nav" "page";
+    width: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .host-settings-main {
+    display: contents;
+  }
+
+  .host-settings-main-head {
+    grid-area: head;
+    padding: 12px 8px 6px 16px;
+    background: var(--hs-nav);
+  }
+
+  .host-settings-nav {
+    grid-area: nav;
+    padding: 0 8px 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--hs-line);
+  }
+
+  .host-settings-title {
+    display: none;
+  }
+
+  .host-settings-nav-list {
+    flex-direction: row;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .host-settings-nav-item {
+    width: auto;
+    padding: 8px 12px;
+    white-space: nowrap;
+  }
+
+  .host-settings-nav-item[aria-selected="true"]::before {
+    top: auto;
+    right: 12px;
+    bottom: 2px;
+    left: 12px;
+    width: auto;
+    height: 2px;
+  }
+
+  .host-settings-page {
+    grid-area: page;
+    padding: 14px 16px 24px;
   }
 
   .host-settings-close {
     width: 40px;
-    height: 40px;
-  }
-
-  .host-settings select,
-  .host-settings input[type="text"],
-  .host-settings input[type="password"],
-  .host-settings-save,
-  .host-settings-reset {
     min-height: 40px;
   }
 
-  .host-settings-controls select,
-  .host-settings-usual select {
+  .host-settings-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* a switch alone stays beside its label */
+  .host-settings-row:has(> .host-settings-row-control > .host-settings-switch:only-child) {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .host-settings-row-control {
+    justify-content: flex-start;
+  }
+
+  .host-settings-select,
+  .host-settings-input,
+  .host-settings-button {
+    min-height: 40px;
+  }
+
+  .host-settings-select {
     flex: 1 1 100%;
-    min-width: 0;
+    max-width: 100%;
+  }
+
+  .host-settings-key-input {
+    flex: 1 1 100%;
+    width: auto;
+  }
+
+  .host-setup-card {
+    width: 100%;
+    max-height: 100%;
+    height: 100%;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .host-setup-head {
+    padding: 22px 20px 4px;
+  }
+
+  .host-setup-body {
+    padding: 14px 20px 10px;
+  }
+
+  .host-setup-foot {
+    padding: 12px 20px 16px;
+  }
+
+  .host-setup-actions {
+    width: 100%;
+  }
+
+  .host-setup-actions .host-settings-button {
+    flex: 1 1 auto;
   }
 }

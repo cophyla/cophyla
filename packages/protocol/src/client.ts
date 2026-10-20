@@ -26,6 +26,8 @@ import {
   GrantRole,
   GuestInfo,
   HarnessProfile,
+  SessionScope,
+  SessionScopeState,
   LanState,
   LaunchMode,
   IceServer,
@@ -906,6 +908,10 @@ export const clientRequests = {
     }),
     result: z.object({ profile: HarnessProfile }),
   },
+  /** Which of the user's own sessions a node connects to (`SessionScope`), and whether the user has set it yet; the node asked, else this one. */
+  "session.scope": { params: z.object({ node: NodeId.optional() }), result: SessionScopeState },
+  /** Sets a node's scope whole, the node asked or else this one, and marks it set: hidden sessions leave every list at once, and come back as soon as they are in it again. */
+  "session.setScope": { params: z.object({ node: NodeId.optional(), scope: SessionScope }), result: SessionScopeState },
   /**
    * Live samples at `intervalMs`, floored per client (a controller's at five seconds); each
    * carries every token count since the last one this client was sent. `processes: owners`

@@ -28,7 +28,7 @@
 // `[gate.policy.node]` would ask is allowed; a workspace node never lets its primary in so.
 
 import { capabilityRequests, ClientId, clientRequests, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, MetricsSample, Principal, RiskClass, RpcId, Session, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
+import type { Ask, CapabilityRequestName, CapabilityResult, FileText, FolderPick, Hit, LaunchMode, MetricsSample, Principal, RiskClass, RpcId, Session, SessionScope, ToolDefinition, ToolSource, Workspace } from "@cophyla/protocol";
 import type { Confinement } from "./confine.ts";
 import type { ToolConfinement } from "../tools/index.ts";
 import { brainMethods, sendOptions, spawnLoosens } from "../brain-link/methods.ts";
@@ -39,6 +39,8 @@ import type { Metrics } from "../metrics/index.ts";
 import type { Remote } from "../remote/index.ts";
 import { revokeAsk, shareAsk, updatePatch } from "../api/methods.ts";
 import type { Profiles } from "../sessions/profiles.ts";
+import { checkScope } from "../sessions/scope.ts";
+import type { ScopeHost } from "../sessions/scope.ts";
 import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { FilesResult, SessionFiles } from "../sessions/files.ts";
 import type { Direct } from "../direct/index.ts";
@@ -85,6 +87,8 @@ export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.ena
 export const NODE_SERVED_PROFILES = ["profile.update"] as const;
 /** And the name the user gives this machine from an app on the primary. */
 export const NODE_SERVED_NAME = ["node.rename"] as const;
+/** And which of this machine's sessions it connects to, read and set from an app on the primary. */
+export const NODE_SERVED_SCOPE = ["session.scope", "session.setScope"] as const;
 
 /** The direct connections' switch, served for the primary's clients. */
 export const NODE_SERVED_DIRECT = ["direct.enable", "direct.disable"] as const;
@@ -172,6 +176,8 @@ export interface ServeDeps {
   remote?: Remote;
   /** This node's profiles, for `profile.update`. */
   profiles?: Pick<Profiles, "update">;
+  /** This node's scope, for `session.scope` and `session.setScope`. */
+  scope?: ScopeHost;
   /** Names this machine, for `node.rename`. */
   rename?: (name: string) => void;
   direct?: Direct;
@@ -364,6 +370,10 @@ export class NodeServer {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone: its profiles are its own");
       return this.serveProfile(params);
     }
+    if ((NODE_SERVED_SCOPE as readonly string[]).includes(method)) {
+      if (method === "session.setScope" && (this.confined() || this.deps.hands?.())) throw new RpcError("denied", "this machine is lent to the primary, not given: which of its sessions Cophyla connects to is its owner's");
+      return this.serveScope(method as (typeof NODE_SERVED_SCOPE)[number], params);
+    }
     if ((NODE_SERVED_NAME as readonly string[]).includes(method)) {
       if (this.confined() || this.deps.hands?.()) throw new RpcError("denied", "this machine is lent to the primary, not given: its name is its owner's");
       return this.serveRename(params);
@@ -449,6 +459,18 @@ export class NodeServer {
     if (!parsed.success) throw new RpcError("invalid", "bad params for profile.update", parsed.error.issues);
     const p = parsed.data;
     return this.gated({ principal: this.deps.principal, action: "profile.update", args: p, target: p.id, sessionKey: this.deps.sessionKey }, () => ({ profile: profiles.update(p.id, updatePatch(p.patch)) }));
+  }
+
+  /** This node's scope, read or set from an app on the primary: gated here, as the owner's policy says. */
+  private async serveScope(method: (typeof NODE_SERVED_SCOPE)[number], params: unknown): Promise<unknown> {
+    const scope = this.deps.scope;
+    if (!scope) throw new RpcError("unsupported", "this node has no sessions to scope");
+    const parsed = clientRequests[method].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
+    const p = parsed.data;
+    if (method === "session.scope") return this.gated({ principal: this.deps.principal, action: method, args: p, sessionKey: this.deps.sessionKey }, () => scope.scopeState());
+    const set = p as { scope: SessionScope };
+    return this.gated({ principal: this.deps.principal, action: method, args: p, sessionKey: this.deps.sessionKey }, () => scope.setScope(checkScope(set.scope)));
   }
 
   /** This machine's name, given from an app on the primary: gated here, as the owner's policy says. */

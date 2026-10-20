@@ -1063,6 +1063,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     metrics,
     remote: () => remote,
     profiles,
+    scope: sessions,
     files,
     terminals: () => nodeTerminals,
     direct: () => direct,

@@ -50,6 +50,7 @@ import { sealLan } from "./sealed-link.ts";
 import { NodeServer } from "./served.ts";
 import type { ServeDeps } from "./served.ts";
 import type { Profiles } from "../sessions/profiles.ts";
+import type { ScopeHost } from "../sessions/scope.ts";
 import { STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
 import { LINK_VIEWER, linkViewer } from "./terminals.ts";
@@ -147,6 +148,8 @@ export interface OutboundDeps {
   remote?: Remote;
   /** This node's profiles, which the primary's clients may set. */
   profiles?: Pick<Profiles, "update">;
+  /** This node's scope, which the primary's clients may read and set. */
+  scope?: ScopeHost;
   /** Names this machine, as the primary's clients may. */
   rename?: (name: string) => void;
   /** The direct connections, so the primary's clients can switch them here, and their state goes up on link; a relayed link offers a data channel through them. */
@@ -401,6 +404,7 @@ export class Outbound {
         metricsSubscriber: this.subscriberFor(j.linkId),
         ...(this.deps.remote ? { remote: this.deps.remote } : {}),
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),
+        ...(this.deps.scope ? { scope: this.deps.scope } : {}),
         ...(this.deps.rename ? { rename: this.deps.rename } : {}),
         ...(this.deps.direct ? { direct: this.deps.direct } : {}),
         ...(this.deps.agents ? { agents: this.deps.agents } : {}),

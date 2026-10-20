@@ -10,6 +10,7 @@
 // screen that does not show it. A session with no terminal to type into shows the question
 // and leaves it to its own window. An async question is asked as it comes, beside the others
 // of its call, and its answer goes into the thread as the reply Codex's own clients send.
+// A session outside the node's scope is left to its own window, as the chat's is.
 
 import type { Ask, TerminalRef } from "@cophyla/protocol";
 import type { Asks } from "../../gate/asks.ts";
@@ -103,7 +104,8 @@ export class CodexAsking {
   /** Brings the record's asks in step with the questions its rollout holds as waiting. */
   sync(rec: SessionRecord, pending: ReadonlyMap<string, CodexQuestionCall>, now = this.host.now()): void {
     if (rec.session.role === "assistant") return;
-    const live = rec.session.status !== "ended";
+    // A session outside the scope asks in its own window: what was open here closes.
+    const live = rec.session.status !== "ended" && this.host.connected(rec);
     let t = this.tracked.get(rec.session.id);
     if (!t && (!live || pending.size === 0)) return;
     if (!t) this.tracked.set(rec.session.id, (t = { rec, calls: new Map() }));

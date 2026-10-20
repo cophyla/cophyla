@@ -70,6 +70,7 @@ describe("view host", () => {
       request: async (method: string) => {
         requests.push(method);
         if (method === "view.list") return { views: [served] };
+        if (method === "session.scope") return { node: "node_1", scope: { profilesOff: [], tetherOnly: false, allowedFolders: [], hiddenFolders: [] }, setupAt: 1 };
         return { id: served.id, version: served.version, files: [] };
       },
       send: async () => ({}),
@@ -77,18 +78,19 @@ describe("view host", () => {
     const cache = { replay: () => [] } as unknown as SnapshotCache;
     const host = new ViewHost({ conn, cache, container: { replaceChildren: () => {} } as unknown as HTMLElement, stage: async (m) => ({ base: "http://view.localhost/", ...(m.version !== undefined ? { version: m.version } : {}) }) });
     await host.load();
-    expect(requests).toEqual(["view.list"]);
+    // A node that was set up is asked once a page, beside the first view.list.
+    expect(requests).toEqual(["session.scope", "view.list"]);
     expect(host.manifest?.version).toBe("v1");
     host.onChanged("default");
     host.onChanged("default");
     host.onChanged("other");
     await new Promise((r) => setTimeout(r, CHANGED_COALESCE_MS + 50));
-    expect(requests).toEqual(["view.list", "view.list"]);
+    expect(requests).toEqual(["session.scope", "view.list", "view.list"]);
     served = view("default", true, "v2");
     host.onChanged("default");
     await new Promise((r) => setTimeout(r, CHANGED_COALESCE_MS + 50));
     // The stale check's view.list, then the load's own view.list.
-    expect(requests).toEqual(["view.list", "view.list", "view.list", "view.list"]);
+    expect(requests).toEqual(["session.scope", "view.list", "view.list", "view.list", "view.list"]);
     expect(host.manifest?.version).toBe("v2");
   });
 
@@ -115,7 +117,12 @@ describe("view host", () => {
       state: { state: "connected", hello: { client: { scopes: [] } } },
       connected: true,
       // the picker's and the settings' own reads never answer: their layers are all this needs
-      request: (method: string) => (method === "view.list" ? Promise.resolve({ views: [view("default", true, "v1")] }) : new Promise(() => {})),
+      request: (method: string) =>
+        method === "view.list"
+          ? Promise.resolve({ views: [view("default", true, "v1")] })
+          : method === "session.scope"
+            ? Promise.resolve({ node: "node_1", scope: { profilesOff: [], tetherOnly: false, allowedFolders: [], hiddenFolders: [] }, setupAt: 1 })
+            : new Promise(() => {}),
       send: async () => ({}),
     } as unknown as Connection;
     const cache = { replay: () => [] } as unknown as SnapshotCache;

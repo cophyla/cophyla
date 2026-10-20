@@ -204,6 +204,35 @@ export const HarnessProfile = z.object({
 export type HarnessProfile = z.infer<typeof HarnessProfile>;
 
 // ---------------------------------------------------------------------------------------
+// SessionScope: which of the user's own sessions on a node Cophyla connects to
+
+/**
+ * Which of the user's own sessions a node connects to; every one by default. A session outside
+ * it is not connected: no list shows it, none of its events is kept or told, its questions stay
+ * in its own window, and no agent can message it. Sessions Cophyla starts are always connected.
+ * A folder holds what is under it.
+ */
+export const SessionScope = z.object({
+  /** Profiles whose sessions are left alone; any other, one found later too, is connected. */
+  profilesOff: z.array(ProfileId),
+  /** Only sessions running in a tether terminal: one Cophyla opened, or `tether` run by hand. */
+  tetherOnly: z.boolean(),
+  /** When any is listed, only sessions working in one of these folders are connected. */
+  allowedFolders: z.array(z.string().min(1)),
+  /** Sessions working in these folders are left alone, inside an allowed folder too. */
+  hiddenFolders: z.array(z.string().min(1)),
+});
+export type SessionScope = z.infer<typeof SessionScope>;
+
+/** A node's scope, and when the user first set it: the app asks once, before it shows any session, while `setupAt` is absent. */
+export const SessionScopeState = z.object({
+  node: NodeId,
+  scope: SessionScope,
+  setupAt: Timestamp.optional(),
+});
+export type SessionScopeState = z.infer<typeof SessionScopeState>;
+
+// ---------------------------------------------------------------------------------------
 // Session and SessionEvent
 
 export const SessionStatus = z.enum(["idle", "busy", "needs_input", "needs_permission", "ended"]);
@@ -1463,6 +1492,8 @@ export const entities = {
   HarnessKind,
   HarnessCapabilities,
   HarnessProfile,
+  SessionScope,
+  SessionScopeState,
   Session,
   ClosedSession,
   SessionEvent,

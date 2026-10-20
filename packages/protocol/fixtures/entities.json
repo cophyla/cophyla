@@ -584,6 +584,14 @@
     }
   ],
   "ProfileTokens": [{ "in": 5200, "out": 810, "cached": 40000, "cost": 0.42 }, { "in": 12, "out": 3, "cached": 0 }],
+  "SessionScope": [
+    { "profilesOff": [], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": [] },
+    { "profilesOff": ["prof_01ARZ3NDEKTSV4RRFFQ69G5FB8"], "tetherOnly": true, "allowedFolders": ["C:\\work"], "hiddenFolders": ["C:\\work\\secret"] }
+  ],
+  "SessionScopeState": [
+    { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "scope": { "profilesOff": [], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": [] } },
+    { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "scope": { "profilesOff": [], "tetherOnly": true, "allowedFolders": [], "hiddenFolders": [] }, "setupAt": 1758196800000 }
+  ],
   "ProfileLimits": [
     { "at": 1758196790000, "session": { "percent": 4, "resetsAt": 1758211200000 }, "weekly": { "percent": 55, "resetsAt": 1758528000000 } },
     { "at": 1758196790000, "weekly": { "percent": 1 } },

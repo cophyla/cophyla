@@ -23,13 +23,17 @@
 // or reloaded itself), and tells the view a stream is gone with `streamClosed`. A host that is
 // a wide window on a computer without being the desktop app says so (`desk`), and the view is
 // told in its `host.ready`; one that is a paired device of its own shows itself in the settings
-// (`device`).
+// (`device`). Before the first view mounts, a node whose user has not yet said which of their
+// sessions it connects to (`session.scope` with no `setupAt`) has the host's first-run screen
+// (`SetupPanel`) ask, and the view waits for the answer; a node too old to say, or a client
+// that may not ask it, mounts the view at once.
 
-import type { RpcMessage, ViewManifest } from "@cophyla/protocol";
+import type { RpcMessage, SessionScopeState, ViewManifest } from "@cophyla/protocol";
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
 import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
+import { SetupPanel } from "./setup.ts";
 import type { DeviceSettings, VoiceSettings } from "./settings.ts";
 import type { Connection, LinkSnapshot } from "./connection.ts";
 import type { SnapshotCache } from "./snapshot.ts";
@@ -143,6 +147,33 @@ function hostMic(voice: VoiceSettings): HostMic {
   return error !== undefined ? { error } : {};
 }
 
+/** How long the view waits on the node's word on whether to ask which sessions it connects to. */
+export const SETUP_WAIT_MS = 3000;
+
+/** A request's answer, or undefined once it failed or took longer than `ms`. */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T | undefined> {
+  return new Promise((resolve) => {
+    const t = setTimeout(() => resolve(undefined), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      () => {
+        clearTimeout(t);
+        resolve(undefined);
+      },
+    );
+  });
+}
+
+/** Whether an answer is a node's scope: one that names its node and holds a scope. */
+function isScopeState(v: unknown): v is SessionScopeState {
+  if (v === null || typeof v !== "object") return false;
+  const o = v as { node?: unknown; scope?: unknown };
+  return typeof o.node === "string" && o.scope !== null && typeof o.scope === "object";
+}
+
 /** Milliseconds `view.changed` notices are gathered for before one `view.list` asks what moved. */
 export const CHANGED_COALESCE_MS = 300;
 
@@ -157,6 +188,9 @@ export class ViewHost {
   private changedTimer?: ReturnType<typeof setTimeout>;
   private chooser: ViewChooser;
   private settings: SettingsPanel;
+  private setup: SetupPanel;
+  /** The node was asked whether its user has said which sessions it connects to, and answered. */
+  private setupChecked = false;
   private recordingNow = false;
 
   constructor(deps: ViewHostDeps) {
@@ -176,6 +210,7 @@ export class ViewHost {
       ...(deps.device ? { device: deps.device } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
+    this.setup = new SetupPanel({ request: (method, params) => deps.conn.request(method, params) });
     // A view that draws the talk button hears when the microphone behind it goes off.
     const voice = deps.voice;
     if (deps.talk && voice) voice.subscribe(() => this.mounted?.bridge.mic(hostMic(voice)));
@@ -198,10 +233,14 @@ export class ViewHost {
 
   private async doLoad(): Promise<void> {
     const { conn, container } = this.deps;
+    // Asked beside the view's own requests, so a node that was set up costs no wait; one that
+    // does not answer in a moment never keeps the view from mounting.
+    const scope = this.setupChecked ? undefined : withTimeout(conn.request<SessionScopeState>("session.scope", {}), SETUP_WAIT_MS);
     const { views } = await conn.request<{ views: ViewManifest[] }>("view.list", {});
     const listed = chooseView(views);
     if (!listed) throw new Error("cophylad serves no view");
     const staged = await this.deps.stage(listed);
+    if (scope) await this.firstRun(await scope);
     // The version that was staged is the one mounted: a later `view.list` compares against it.
     const manifest: ViewManifest = staged.version !== undefined ? { ...listed, version: staged.version } : listed;
     const base = staged.base;
@@ -251,6 +290,16 @@ export class ViewHost {
       }
     });
     container.replaceChildren(frame);
+  }
+
+  /**
+   * The node's answer to `session.scope`: a scope never set has the first-run screen ask before
+   * anything mounts. No answer (an older node, a client that may not ask) asks nothing. Either
+   * way the node is asked once a page: a node updated meanwhile asks at the app's next start.
+   */
+  private async firstRun(state: SessionScopeState | undefined): Promise<void> {
+    this.setupChecked = true;
+    if (isScopeState(state) && state.setupAt === undefined) await this.setup.run();
   }
 
   private unmount(): void {

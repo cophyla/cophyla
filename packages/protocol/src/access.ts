@@ -296,6 +296,8 @@ export const requestFilters = {
   "profile.list": { names: "global" },
   "profile.limits": { names: "global" },
   "profile.update": { names: "global" },
+  "session.scope": { names: "global" },
+  "session.setScope": { names: "global" },
   "metrics.subscribe": { names: (p, self) => [{ node: p.node ?? self, hosts: true }] },
   "metrics.unsubscribe": { names: "open" },
   "metrics.history": { names: (p) => [{ node: p.node, hosts: true }] },

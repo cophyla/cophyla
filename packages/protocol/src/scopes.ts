@@ -97,6 +97,8 @@ export const requestScopes = {
   "profile.list": "nodes",
   "profile.limits": "nodes",
   "profile.update": "nodes",
+  "session.scope": "nodes",
+  "session.setScope": "nodes",
   "metrics.subscribe": "metrics:read",
   "metrics.unsubscribe": "metrics:read",
   "metrics.history": "metrics:read",

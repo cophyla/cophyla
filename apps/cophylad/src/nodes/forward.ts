@@ -134,6 +134,10 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
       return p["node"] === undefined ? { kind: "merge" } : node(p["node"] as string);
     case "profile.update":
       return node(p["node"] as string);
+    // Which sessions a node connects to is its own: the node named answers, else this one.
+    case "session.scope":
+    case "session.setScope":
+      return node(p["node"] as string | undefined);
     case "session.list":
     case "workspace.list":
     case "terminal.list":

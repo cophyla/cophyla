@@ -469,6 +469,20 @@
         }
       ]
     },
+    "session.scope": {
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }],
+      "results": [
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "scope": { "profilesOff": [], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": [] } },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "scope": { "profilesOff": ["prof_01ARZ3NDEKTSV4RRFFQ69G5FB8"], "tetherOnly": true, "allowedFolders": ["C:\\work"], "hiddenFolders": ["C:\\work\\secret"] }, "setupAt": 1758196800000 }
+      ]
+    },
+    "session.setScope": {
+      "params": [
+        { "scope": { "profilesOff": [], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": [] } },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "scope": { "profilesOff": ["prof_01ARZ3NDEKTSV4RRFFQ69G5FB8"], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": ["/home/me/private"] } }
+      ],
+      "results": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "scope": { "profilesOff": ["prof_01ARZ3NDEKTSV4RRFFQ69G5FB8"], "tetherOnly": false, "allowedFolders": [], "hiddenFolders": ["/home/me/private"] }, "setupAt": 1758196800000 }]
+    },
     "metrics.subscribe": {
       "params": [
         { "intervalMs": 1000 },

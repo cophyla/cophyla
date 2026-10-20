@@ -4,8 +4,9 @@
 // it; `cluster` holds the cluster's id. They are the daemon's own: the brain's store methods refuse them,
 // and so they refuse `controllers`, where the paired phones lived before grants,
 // `listeners`, whose fires the platform counts (the brain goes through `listener.*`),
-// `voice.origins`, the device each user message came from, which no backup carries, and
-// `assistant`, the user's choice of what the chat runs on.
+// `voice.origins`, the device each user message came from, which no backup carries,
+// `assistant`, the user's choice of what the chat runs on, and `sessions.scope`, which of the
+// user's sessions the node connects to.
 
 export const GRANTS_NS = "grants";
 export const LOCAL_GRANTS_NS = "grants.local";
@@ -28,5 +29,8 @@ export const ASSISTANT_NS = "assistant";
  */
 export const CONNECTIONS_KV_NS = "connections";
 
+/** Which of the user's own sessions the node connects to (see `sessions/scope.ts`): the user's word alone. */
+export const SESSION_SCOPE_NS = "sessions.scope";
+
 /** The namespaces no store request of the brain may read or write. */
-export const RESERVED_KV_NS: readonly string[] = [GRANTS_NS, LOCAL_GRANTS_NS, CLUSTER_NS, LEGACY_CONTROLLERS_NS, LISTENERS_NS, VOICE_ORIGINS_NS, ASSISTANT_NS, CONNECTIONS_KV_NS];
+export const RESERVED_KV_NS: readonly string[] = [GRANTS_NS, LOCAL_GRANTS_NS, CLUSTER_NS, LEGACY_CONTROLLERS_NS, LISTENERS_NS, VOICE_ORIGINS_NS, ASSISTANT_NS, CONNECTIONS_KV_NS, SESSION_SCOPE_NS];

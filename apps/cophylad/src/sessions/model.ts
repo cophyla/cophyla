@@ -319,6 +319,8 @@ export interface SessionHost {
   now(): number;
   ensure(seed: SessionSeed): SessionRecord;
   find(harness: AttachedHarness, nativeId: string): SessionRecord | undefined;
+  /** Whether the record is a session this node connects to (`SessionScope`): one outside it asks nothing here. */
+  connected(rec: SessionRecord): boolean;
   /** Live records of a harness that the attached adapter owns: never the ACP-spawned ones. */
   records(harness: AttachedHarness): SessionRecord[];
   /** A second native id for a record, when a harness names a spawned session differently in its hooks. */

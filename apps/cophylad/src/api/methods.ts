@@ -10,6 +10,7 @@
 // the chat's own session as the settings show and set it (`assistant.state`, `assistant.configure`, `assistant.restart`).
 
 import { AssistantPreview, RpcError, sessionModeRisk } from "@cophyla/protocol";
+import { checkScope } from "../sessions/scope.ts";
 import type { AssistantState, BrainContext, Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
@@ -221,6 +222,14 @@ export function attachMethods(deps: AttachDeps): MethodTable {
     "profile.update": {
       target: (p) => p.id,
       handler: (p) => ({ profile: deps.profiles.update(p.id, updatePatch(p.patch)) }),
+    },
+    // Another node's scope too.
+    "session.scope": {
+      handler: () => deps.sessions.scopeState(),
+    },
+    "session.setScope": {
+      target: (p) => p.node,
+      handler: (p) => deps.sessions.setScope(checkScope(p.scope)),
     },
   };
 }

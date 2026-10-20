@@ -27,6 +27,8 @@ export const actions = {
   "profile.list": { risk: "read" },
   "profile.limits": { risk: "read" },
   "profile.update": { risk: "write" },
+  "session.scope": { risk: "read" },
+  "session.setScope": { risk: "write" },
   "session.list": { risk: "read" },
   "session.history": { risk: "read" },
   "session.send": { risk: "write" },

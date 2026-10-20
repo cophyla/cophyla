@@ -38,7 +38,7 @@ import type { FSWatcher } from "node:fs";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
+import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionScope, SessionScopeState, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
 import type { HookHarness, HookMeta } from "../api/hooks.ts";
@@ -83,6 +83,7 @@ import type { ProfileChange, Profiles } from "./profiles.ts";
 import { answersForHook, askInputFromQuestion, hookDecision, questionsFromAskUserQuestion } from "./questions.ts";
 import type { HookAnswers, Question } from "./questions.ts";
 import { toolResultText } from "./results.ts";
+import { admits, ScopeStore } from "./scope.ts";
 import { shimArgv, shimCommand, writeHookJson, writeShim } from "./shim.ts";
 import { mtimeOf, REPLAY_BYTES, Tail } from "./tail.ts";
 import { pickOpener } from "./terminals.ts";
@@ -548,12 +549,17 @@ export class Sessions implements SessionHost {
   private assistantIds = new Set<string>();
   /** Sessions being reopened now: a second reopen of one waits for none. */
   private reopening = new Set<string>();
+  /** Which of the user's own sessions this node connects to. */
+  private scope: ScopeStore;
+  /** The live sessions the bus was last told of as connected: one that leaves the scope is told it has gone. */
+  private told = new Set<string>();
 
   constructor(deps: SessionsDeps) {
     this.deps = deps;
     this.nodeId = deps.nodeId;
     this.config = deps.config;
     this.log = deps.log;
+    this.scope = new ScopeStore(deps.store);
     for (const a of deps.adapters(this)) this.adapters.set(a.harness, a);
     if (deps.acp) {
       this.acp = new AcpAdapter({
@@ -710,6 +716,7 @@ export class Sessions implements SessionHost {
         this.deps.store.sessions.update(rec.session);
       }
       if (session.native.pid !== undefined && HOOKED_PROCESS[session.harness]) held.push(rec);
+      if (session.role !== "assistant" && this.admitted(rec.session)) this.told.add(session.id);
     }
     this.log.info("sessions loaded", { count: this.byId.size });
     this.keepProcesses(held);
@@ -945,10 +952,60 @@ export class Sessions implements SessionHost {
     return out;
   }
 
-  /** Whether a session is in a partition: a workspace node's own (`part`), or, unset, the machine's. The chat's own session is in neither. */
-  private inPart(s: Pick<Session, "node" | "role">, part?: string): boolean {
+  /**
+   * Whether a session is in a partition: a workspace node's own (`part`), or, unset, the
+   * machine's, of which a session outside the scope is not. The chat's own session is in neither.
+   */
+  private inPart(s: Session, part?: string): boolean {
     if (s.role === "assistant" || part === ASSISTANT_PART) return s.role === "assistant" && part === ASSISTANT_PART;
-    return part === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) : s.node === part;
+    return part === undefined ? !(this.deps.owners?.isPrivate(s.node) ?? false) && this.admitted(s) : s.node === part;
+  }
+
+  // --- scope ----------------------------------------------------------------------------
+
+  /** Whether the session is one this node connects to (`SessionScope`): the chat's own and those Cophyla started always are. */
+  connected(rec: SessionRecord): boolean {
+    return this.admitted(rec.session);
+  }
+
+  private admitted(s: Session): boolean {
+    return admits(this.scope.get(), s);
+  }
+
+  /** This node's scope, and when the user first set it. */
+  scopeState(): SessionScopeState {
+    return this.scope.state(this.nodeId);
+  }
+
+  /**
+   * Keeps a new scope. Each live session it moves out leaves every list at once, as one that
+   * ended does, its open questions handed back to its own window; each it moves in is told as
+   * it stands.
+   */
+  setScope(scope: SessionScope): SessionScopeState {
+    this.scope.set(scope, this.now());
+    for (const rec of this.byId.values()) {
+      if (rec.session.status === "ended" || rec.session.role === "assistant") continue;
+      const now = this.admitted(rec.session);
+      if (now === this.told.has(rec.session.id)) continue;
+      if (!now) {
+        if (rec.held && !rec.held.settled) this.closeHeld(rec, "stopped");
+        if (rec.inputAsk) this.closeInput(rec, "stopped");
+      }
+      this.broadcast(rec, true);
+    }
+    return this.scopeState();
+  }
+
+  /** A session coming into the scope: one met outside it was given no workspace, and gets it now. */
+  private joined(session: Session): void {
+    if (session.workspace !== undefined || session.role === "assistant") return;
+    try {
+      session.workspace = this.deps.workspaces.fromSession(session.cwd, session.node).id;
+      this.deps.store.sessions.update(session);
+    } catch (e) {
+      if (!(e instanceof NotSettled)) this.log.warn("workspace lookup failed", { cwd: session.cwd, error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   /** The node a new session belongs to: the one its workspace is on when it was started into one, else the owner of the folder it runs in. */
@@ -1477,8 +1534,9 @@ export class Sessions implements SessionHost {
         if (seed.transcriptPath !== undefined) session.transcript = { path: seed.transcriptPath };
         if (assistant) session.role = "assistant";
         if (seed.workspace !== undefined) session.workspace = seed.workspace;
-        // Its folder is cophylad's own, and no workspace of the user's.
-        else if (!assistant) {
+        // Its folder is cophylad's own, and no workspace of the user's; nor is the folder of a
+        // session outside the scope, until it comes in (`joined`).
+        else if (!assistant && this.admitted(session)) {
           try {
             session.workspace = this.deps.workspaces.fromSession(seed.cwd, node).id;
           } catch (e) {
@@ -1704,6 +1762,13 @@ export class Sessions implements SessionHost {
       if (kind === "tool_call") this.called(rec as LiveRecord, payload);
       return { session: rec.session.id, seq: -1, at, kind, payload };
     }
+    // A session outside the scope is not connected: none of its events is kept or told.
+    if (!this.admitted(rec.session)) {
+      if (at > rec.session.lastActivity) rec.session.lastActivity = at;
+      this.broadcast(rec);
+      if (kind === "tool_call") this.called(rec as LiveRecord, payload);
+      return { session: rec.session.id, seq: -1, at, kind, payload };
+    }
     const e = this.deps.store.sessionEvents.append({ session: rec.session.id, at, kind, payload, ...(raw !== undefined ? { raw } : {}) });
     if (at > rec.session.lastActivity) {
       rec.session.lastActivity = at;
@@ -1842,10 +1907,26 @@ export class Sessions implements SessionHost {
     this.broadcasts.set(id, t);
   }
 
-  /** A session's row as it stands: on the bus, or, the chat's own, to the assistant module alone. */
+  /**
+   * A session's row as it stands: on the bus, or, the chat's own, to the assistant module alone.
+   * One outside the scope is not told; one that was, and has left it (the scope changed, its
+   * terminal went), is told it ended, so every list and the brain let it go while it runs on.
+   */
   private tell(session: Session): void {
-    if (session.role === "assistant") this.assistant?.changed({ ...session });
-    else this.deps.bus.emit("session.state", { ...session });
+    if (session.role === "assistant") {
+      this.assistant?.changed({ ...session });
+      return;
+    }
+    if (this.admitted(session)) {
+      if (session.status === "ended") this.told.delete(session.id);
+      else if (!this.told.has(session.id)) {
+        this.joined(session);
+        this.told.add(session.id);
+      }
+      this.deps.bus.emit("session.state", { ...session });
+    } else if (this.told.delete(session.id)) {
+      this.deps.bus.emit("session.state", { ...session, status: "ended", endedAt: this.now() });
+    }
   }
 
   // --- queries ------------------------------------------------------------------------
@@ -3526,10 +3607,11 @@ export class Sessions implements SessionHost {
         this.setStatus(rec, "busy", now);
         return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : {};
       }
+      // A session outside the scope asks in its own window: no answer here.
       case "PermissionRequest":
-        return this.holdPermission(rec, hook, meta, raw, now);
+        return this.admitted(rec.session) ? this.holdPermission(rec, hook, meta, raw, now) : {};
       case "Elicitation":
-        return this.openInput(rec, hook, raw, now);
+        return this.admitted(rec.session) ? this.openInput(rec, hook, raw, now) : {};
       case "PostToolUse":
       case "PostToolUseFailure": {
         const key = toolKey(hook.toolName, hook.toolInput);

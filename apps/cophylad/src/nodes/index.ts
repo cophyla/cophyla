@@ -66,6 +66,7 @@ import type { LinkDirectTiming } from "./direct.ts";
 import type { Remote as RemoteModule } from "../remote/index.ts";
 import type { SessionFiles } from "../sessions/files.ts";
 import type { Profiles } from "../sessions/profiles.ts";
+import type { ScopeHost } from "../sessions/scope.ts";
 import type { PipeHub, PipeWire } from "../remote/pipes.ts";
 import type { Store } from "../store/index.ts";
 import type { Tasks } from "../tasks/index.ts";
@@ -124,6 +125,8 @@ export interface NodesDeps {
   remote?: () => RemoteModule | undefined;
   /** This node's profiles, which the primary's clients may set over the link. */
   profiles?: Pick<Profiles, "update">;
+  /** This node's scope, which the primary's clients may read and set over the link. */
+  scope?: ScopeHost;
   /** This node's sessions' folders, repositories and files, which the primary's clients' explorer lists and viewer reads over the link. */
   files?: Pick<SessionFiles, "list" | "git" | "read">;
   /** This node's terminals, once built: their rows go up a link, and the primary's clients open them. */
@@ -345,6 +348,7 @@ export class Nodes {
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
+      ...(deps.scope ? { scope: deps.scope } : {}),
       rename: (name) => this.renameSelf(name),
       ...(deps.files ? { files: deps.files } : {}),
       ...(deps.terminals ? { terminals: deps.terminals } : {}),
