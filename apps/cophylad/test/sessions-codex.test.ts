@@ -1,7 +1,8 @@
 // The Codex adapter in pieces: the rollout parser over a redacted capture, the app-server
 // client against the fake stdio child, the hooks installer and the trust grant, the
 // injection bookkeeping with an injected clock, and the adapter over the fake: listing,
-// tailing, sending, withdrawing after the receipt window and holding while busy; then an
+// tailing, sending, withdrawing after the receipt window, steering into a running turn and
+// queuing what an interrupted turn never read, and holding while busy; then an
 // ended thread over a store file: history not resetting the inactivity clock, a listing with
 // nothing new leaving it ended, a grown rollout resuming it with only the new lines recorded,
 // and a restart tailing again without adding events. A profile that comes after start gets its
@@ -21,7 +22,7 @@
 // name.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CodexHookEvent, SessionEvent } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
@@ -382,6 +383,46 @@ describe("codex adapter over the fake app-server", () => {
     expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
     await sleep(400);
     expect(queueLog().filter((q) => q.op === "delete")).toHaveLength(1);
+  });
+
+  test("a send while a turn runs is steered into it through the daemon, never queued, and delivered at its receipt", async () => {
+    const s = mini.sessions.list()[0]!;
+    expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
+    const turn = "01a0af7a-265a-7bc1-a8ba-90e8624d432a";
+    writeFileSync(join(home, "daemon.json"), JSON.stringify({ [THREAD]: turn }));
+    try {
+      const r = await mini.sessions.send(s.id, "look at the failing test too");
+      expect(r.status).toBe("queued");
+      const steered = readJson<{ threadId: string; expectedTurnId: string; clientUserMessageId: string; input: { type: string; text: string }[] }[]>(join(home, "steer.json"), []);
+      expect(steered).toHaveLength(1);
+      expect(steered[0]!.threadId).toBe(THREAD);
+      expect(steered[0]!.expectedTurnId).toBe(turn);
+      expect(steered[0]!.clientUserMessageId).toBe(r.ref!);
+      expect(steered[0]!.input[0]!.text).toContain("look at the failing test too");
+      expect(queueLog().some((q) => q.clientUserMessageId === r.ref)).toBe(false);
+      const row = { timestamp: "2026-09-17T13:06:55.000Z", ordinal: 22, type: "event_msg", payload: { type: "item_completed", thread_id: THREAD, turn_id: turn, item: { type: "UserMessage", id: "01a0af7a-2701-7000-8000-000000000002", client_id: r.ref, content: [{ type: "text", text: steered[0]!.input[0]!.text, text_elements: [] }] } } };
+      writeFileSync(rolloutPath, JSON.stringify(row) + "\n", { flag: "a" });
+      await mini.sessions.tick();
+      const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);
+      expect(n?.payload).toEqual({ type: "message", ref: r.ref, state: "delivered" });
+      expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
+
+      // An interrupt drops what the turn has not read yet: that message is queued instead, under the same ref.
+      const dropped = await mini.sessions.send(s.id, "and the lint warnings");
+      expect(readJson<unknown[]>(join(home, "steer.json"), [])).toHaveLength(2);
+      const aborted = { timestamp: "2026-09-17T13:06:56.000Z", ordinal: 23, type: "event_msg", payload: { type: "turn_aborted", turn_id: turn, reason: "interrupted" } };
+      writeFileSync(rolloutPath, JSON.stringify(aborted) + "\n", { flag: "a" });
+      await mini.sessions.tick();
+      const queued = await waitFor(() => readJson<{ op: string; clientUserMessageId?: string; input?: { text: string }[] }[]>(join(home, "queue.json"), []).find((q) => q.op === "add" && q.clientUserMessageId === dropped.ref));
+      expect(queued.input![0]!.text).toContain("and the lint warnings");
+      const taken = { ...row, ordinal: 24, payload: { ...row.payload, turn_id: "01a0af7a-3000-7000-8000-000000000003", item: { ...row.payload.item, id: "01a0af7a-2702-7000-8000-000000000003", client_id: dropped.ref, content: [{ type: "text", text: queued.input![0]!.text, text_elements: [] }] } } };
+      writeFileSync(rolloutPath, JSON.stringify(taken) + "\n", { flag: "a" });
+      await mini.sessions.tick();
+      const m = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === dropped.ref);
+      expect(m?.payload).toEqual({ type: "message", ref: dropped.ref, state: "delivered" });
+    } finally {
+      rmSync(join(home, "daemon.json"));
+    }
   });
 
   test("the withdrawal timer is held while the thread is busy and re-armed at its Stop", async () => {

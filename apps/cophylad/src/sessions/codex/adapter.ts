@@ -1,8 +1,9 @@
 // The Codex adapter: an app-server child per profile lists the thread store, the rollout of
-// each live thread is tailed for events and stats, messages go in through
-// `thread/queue/add`, and liveness comes from hooks when they are trusted and the process is
-// known, and from rollout recency otherwise. A thread that ended is listed again for as long
-// as it is recent, and resumed only when its rollout grew past where it was recorded to.
+// each live thread is tailed for events and stats, messages go into a running turn through
+// the daemon that runs it (`turn/steer`) and otherwise through `thread/queue/add`, and
+// liveness comes from hooks when they are trusted and the process is known, and from rollout
+// recency otherwise. A thread that ended is listed again for as long as it is recent, and
+// resumed only when its rollout grew past where it was recorded to.
 //
 // A thread enters the store, and fires its first hook, at its first turn: a CLI sitting at an
 // empty prompt is known only by its terminal (tether/cli.ts). The session's process is the
@@ -32,6 +33,7 @@ import { mtimeOf } from "../tail.ts";
 import { CodexAppServer } from "./appserver.ts";
 import { CodexAsking } from "./asking.ts";
 import type { DialogTiming, QuestionTerminal } from "./asking.ts";
+import { steerTurn } from "./control.ts";
 import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
 import type { TrustResult } from "./hooks.ts";
 import { readableReplies } from "./questions.ts";
@@ -111,6 +113,8 @@ export class CodexAdapter implements HarnessAdapter {
   private opts: CodexAdapterOptions;
   private entries = new Map<string, ProfileEntry>();
   private queued = new Map<string, { profile: string; threadId: string; queuedSubmissionId: string }>();
+  /** Messages steered into a turn the rollout has not shown taking them yet, by ref. */
+  private steered = new Map<string, { session: string; turn: string; text: string }>();
   /** Whether a `codex` process is the managed daemon, by `pid:startedAt`: read off its command line once, and kept only when told. */
   private daemons = new Map<string, boolean>();
   /** The reads in flight, by the same key: one read for every hook that asks meanwhile. */
@@ -406,11 +410,16 @@ export class CodexAdapter implements HarnessAdapter {
           case "task_complete":
             status = "idle";
             if (record) this.host.event(rec, "status", { status: "idle", turn: item.turnId, ...(item.lastMessage ? { lastAssistantMessage: capText(item.lastMessage, 2000) } : {}) }, rawIfSmall(row), item.at);
+            this.unsteered(rec, entry, item.turnId);
+            break;
+          case "turn_aborted":
+            this.unsteered(rec, entry, item.turnId);
             break;
           case "user_message": {
             // An answer to an async question reads as the question quoted and its answer.
             const said = item.replies ? readableReplies(item.replies) : item.text;
             if (item.clientId) {
+              this.steered.delete(item.clientId);
               if (this.host.receiptByRef(rec, item.clientId)) break;
               if (this.host.isOwnText(rec, item.text)) {
                 if (!this.host.receiptByText(rec, item.text) && record) this.host.agentEcho(rec, item.text, rawIfSmall(row), item.at);
@@ -486,10 +495,16 @@ export class CodexAdapter implements HarnessAdapter {
     if (now - last > this.host.config.codex_recent_ms) this.host.end(rec, "inactive", now);
   }
 
+  /**
+   * A message goes into the turn the thread runs, if one does and cophylad can reach it
+   * (control.ts), and is queued otherwise: an idle thread's host starts it within seconds, a
+   * busy one's once the turn ends. Either way the rollout shows it with `ref` as its client id.
+   */
   async send(rec: SessionRecord, text: string, ref: string): Promise<SendOutcome> {
     const entry = this.entries.get(rec.session.profile);
     if (!entry) throw new RpcError("unavailable", "no app-server for the session's profile");
     const threadId = rec.session.native.id;
+    if (await this.steer(rec, entry, text, ref)) return { status: "queued" };
     const r = await entry.server.call<{ queuedSubmission?: { id: string } }>("thread/queue/add", {
       threadId,
       clientUserMessageId: ref,
@@ -500,7 +515,54 @@ export class CodexAdapter implements HarnessAdapter {
     return { status: "queued" };
   }
 
+  /** Steers a message into the turn the rollout says runs, through the daemon that runs it; false when there is none to reach. */
+  private async steer(rec: SessionRecord, entry: ProfileEntry, text: string, ref: string): Promise<boolean> {
+    // The rollout read up to now, so the turn it names is the latest.
+    this.tailRollout(rec, entry, this.host.now());
+    const turn = (rec.parser as CodexRolloutState | undefined)?.busyTurn;
+    if (!turn || rec.session.status === "ended") return false;
+    const r = await steerTurn(
+      {
+        command: entry.profile.exec?.command ?? this.opts.command ?? "codex",
+        args: entry.profile.exec?.args ?? [],
+        env: { ...(this.opts.env ?? process.env), ...entry.profile.env, CODEX_HOME: entry.codexHome },
+        version: this.opts.version,
+      },
+      rec.session.native.id,
+      turn,
+      text,
+      ref,
+    );
+    if (r.steered) {
+      this.steered.set(ref, { session: rec.session.id, turn: r.turnId, text });
+      this.log.info("message steered into the running turn", { session: rec.session.id, ref, turn: r.turnId });
+    } else this.log.info("message not steered: queued for after the turn", { session: rec.session.id, ref, reason: r.reason });
+    return r.steered;
+  }
+
+  /**
+   * A turn ended with messages steered into it that it never took: an interrupt drops what a
+   * turn has not read yet. They are queued, where they would have waited had no turn been
+   * steered, and withdrawn from there as any queued message is.
+   */
+  private unsteered(rec: SessionRecord, entry: ProfileEntry | undefined, turn: string): void {
+    for (const [ref, s] of this.steered) {
+      if (s.session !== rec.session.id || s.turn !== turn) continue;
+      this.steered.delete(ref);
+      if (!entry) continue;
+      const threadId = rec.session.native.id;
+      entry.server
+        .call<{ queuedSubmission?: { id: string } }>("thread/queue/add", { threadId, clientUserMessageId: ref, input: [{ type: "text", text: s.text }] })
+        .then((r) => {
+          this.queued.set(ref, { profile: entry.profile.id, threadId, queuedSubmissionId: r?.queuedSubmission?.id ?? ref });
+          this.log.info("a steered message's turn ended without it: queued", { session: rec.session.id, ref, turn });
+        })
+        .catch((e: unknown) => this.log.warn("a steered message its turn never took was not queued", { session: rec.session.id, ref, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
   async withdraw(rec: SessionRecord, ref: string): Promise<void> {
+    this.steered.delete(ref);
     const q = this.queued.get(ref);
     this.queued.delete(ref);
     const entry = this.entries.get(q?.profile ?? rec.session.profile);

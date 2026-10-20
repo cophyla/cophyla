@@ -5,7 +5,8 @@
 //   queue.json     every thread/queue/add and thread/queue/delete, appended
 //   trust.json     trusted_hash per hook key, written by config/batchWrite
 //   requests.json  answers to the server→client request sent when FAKE_SERVER_REQUEST is set
-// Run as `bun codex-app-server.ts app-server --stdio ...`; the arguments are ignored.
+// Run as `bun codex-app-server.ts app-server --stdio ...`; the arguments are ignored, but for
+// `proxy`, which runs codex-proxy.ts instead.
 
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, readFileSync, writeFileSync, writeSync } from "node:fs";
@@ -149,34 +150,38 @@ function handle(method: string, params: Record<string, unknown>): unknown {
   }
 }
 
-const rl = createInterface({ input: process.stdin });
-rl.on("line", (line) => {
-  if (trace) appendFileSync(trace, `IN  ${line}\n`);
-  let m: { id?: unknown; method?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown };
-  try {
-    m = JSON.parse(line) as typeof m;
-  } catch {
-    return;
-  }
-  if (m.method === undefined) {
-    // A response to our own request.
-    if (m.id === 100) {
-      const log = readJson<unknown[]>("requests.json", []);
-      log.push({ result: m.result, error: m.error });
-      writeJson("requests.json", log);
+// `app-server proxy`: the daemon behind the control socket, which steers a running turn.
+if (process.argv.includes("proxy")) await import("./codex-proxy.ts");
+else {
+  const rl = createInterface({ input: process.stdin });
+  rl.on("line", (line) => {
+    if (trace) appendFileSync(trace, `IN  ${line}\n`);
+    let m: { id?: unknown; method?: string; params?: Record<string, unknown>; result?: unknown; error?: unknown };
+    try {
+      m = JSON.parse(line) as typeof m;
+    } catch {
+      return;
     }
-    return;
-  }
-  if (m.id === undefined) {
-    if (m.method === "initialized" && process.env["FAKE_SERVER_REQUEST"]) {
-      send({ jsonrpc: "2.0", id: 100, method: "item/commandExecution/requestApproval", params: { threadId: "t", turnId: "u", itemId: "i", command: "rm -rf /" } });
+    if (m.method === undefined) {
+      // A response to our own request.
+      if (m.id === 100) {
+        const log = readJson<unknown[]>("requests.json", []);
+        log.push({ result: m.result, error: m.error });
+        writeJson("requests.json", log);
+      }
+      return;
     }
-    return;
-  }
-  try {
-    send({ jsonrpc: "2.0", id: m.id, result: handle(m.method, m.params ?? {}) });
-  } catch (e) {
-    send({ jsonrpc: "2.0", id: m.id, error: { code: (e as { code?: number }).code ?? -32000, message: e instanceof Error ? e.message : String(e) } });
-  }
-});
-rl.on("close", () => process.exit(0));
+    if (m.id === undefined) {
+      if (m.method === "initialized" && process.env["FAKE_SERVER_REQUEST"]) {
+        send({ jsonrpc: "2.0", id: 100, method: "item/commandExecution/requestApproval", params: { threadId: "t", turnId: "u", itemId: "i", command: "rm -rf /" } });
+      }
+      return;
+    }
+    try {
+      send({ jsonrpc: "2.0", id: m.id, result: handle(m.method, m.params ?? {}) });
+    } catch (e) {
+      send({ jsonrpc: "2.0", id: m.id, error: { code: (e as { code?: number }).code ?? -32000, message: e instanceof Error ? e.message : String(e) } });
+    }
+  });
+  rl.on("close", () => process.exit(0));
+}

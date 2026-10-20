@@ -66,7 +66,7 @@ const BACKOFF_MAX_MS = 30000;
 const KILL_GRACE_MS = 1000;
 
 /** What a declined approval looks like per request, and a JSON-RPC error for the rest. */
-function declineFor(method: string): { result: unknown } | { error: { code: number; message: string } } {
+export function declineFor(method: string): { result: unknown } | { error: { code: number; message: string } } {
   switch (method) {
     case "item/commandExecution/requestApproval":
     case "item/fileChange/requestApproval":

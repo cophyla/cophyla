@@ -19,6 +19,7 @@ export type CodexItem =
   | { kind: "turn_context"; model?: string; approvalPolicy?: string; sandbox?: string; cwd?: string }
   | { kind: "task_started"; turnId: string; at: number }
   | { kind: "task_complete"; turnId: string; lastMessage?: string; at: number }
+  | { kind: "turn_aborted"; turnId: string; at: number }
   | { kind: "user_message"; text: string; clientId?: string; replies?: QuestionReply[]; at: number }
   | { kind: "assistant_text"; text: string; at: number }
   | { kind: "tool_call"; callId: string; name: string; input: unknown; at: number }
@@ -135,8 +136,10 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
           break;
         }
         case "turn_aborted":
-          // An interrupted dialog writes no output: the turn's end is its end.
+          // The turn is over: an interrupted dialog writes no output, and what was steered in unread is dropped.
+          delete state.busyTurn;
           state.questions.clear();
+          items.push({ kind: "turn_aborted", turnId: String(payload["turn_id"] ?? ""), at: when });
           break;
         case "token_count": {
           const info = payload["info"];
