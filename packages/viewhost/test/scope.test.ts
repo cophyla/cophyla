@@ -88,7 +88,7 @@ describe("the machines", () => {
 });
 
 /** A fake node: answers by method, records what was sent, and can hold an answer back. */
-function fakeNode(opts: { scopes?: Record<string, SessionScopeState>; refuse?: (method: string, params: Record<string, unknown>) => string | undefined } = {}) {
+function fakeNode(opts: { scopes?: Record<string, SessionScopeState>; nodes?: Node[]; refuse?: (method: string, params: Record<string, unknown>) => string | undefined } = {}) {
   const sent: { method: string; params: Record<string, unknown> }[] = [];
   const held: (() => void)[] = [];
   let holding = false;
@@ -112,7 +112,9 @@ function fakeNode(opts: { scopes?: Record<string, SessionScopeState>; refuse?: (
         case "profile.list":
           return { profiles: PROFILES };
         case "node.list":
-          return { nodes: [node(DESK, "Desk"), node(LAPTOP, "Air")] };
+          return { nodes: opts.nodes ?? [node(DESK, "Desk"), node(LAPTOP, "Air")] };
+        case "agents.accept":
+          return {};
         case "workspace.list":
           return { workspaces: [] };
         default:
@@ -214,6 +216,45 @@ describe("the scope model", () => {
       { node: LAPTOP, scope: OPEN_SCOPE },
     ]);
     expect([...model.kept.values()].every((s) => s.setupAt === 5)).toBe(true);
+  });
+
+  test("the bypass switch as each machine has it, none on one lent as hands; the first-run screen sends it with Continue, and only where it changed", async () => {
+    const agents = (n: Node, acceptInBypass: boolean, over: Partial<Node> = {}): Node => ({ ...n, capabilities: { ...n.capabilities, agents: { acceptInBypass } }, ...over });
+    const fake = fakeNode({
+      scopes: { [DESK]: { node: DESK, scope: OPEN_SCOPE }, [LAPTOP]: { node: LAPTOP, scope: OPEN_SCOPE } },
+      nodes: [agents(node(DESK, "Desk"), false), agents(node(LAPTOP, "Air"), true), agents(node("node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "Lent"), false, { hands: true })],
+    });
+    const model = new ScopeModel(fake.request, () => {}, { autosave: false });
+    await model.load();
+    expect(model.machines().map((m) => [m.name, m.accept])).toEqual([
+      ["Desk", false],
+      ["Air", true],
+    ]);
+    model.setAccept(DESK, true);
+    // ticked and back again: nothing to send there
+    model.setAccept(LAPTOP, false);
+    model.setAccept(LAPTOP, true);
+    expect(model.machines()[0]!.accept).toBe(true);
+    expect(fake.sent.some((s) => s.method === "agents.accept")).toBe(false);
+    expect(await model.saveAll()).toBe(true);
+    expect(fake.sent.filter((s) => s.method === "agents.accept").map((s) => s.params)).toEqual([{ node: DESK, on: true }]);
+    expect(model.acceptKept.get(DESK)).toBe(true);
+    expect(model.acceptDrafts.size).toBe(0);
+  });
+
+  test("in the settings the bypass switch goes at once; a refusal says why beside the machine and the switch shows what it keeps", async () => {
+    const withAgents = (n: Node): Node => ({ ...n, capabilities: { ...n.capabilities, agents: { acceptInBypass: false } } });
+    const fake = fakeNode({ nodes: [withAgents(node(DESK, "Desk"))], refuse: (m, p) => (m === "agents.accept" && p["on"] === false ? "denied: not now" : undefined) });
+    const model = new ScopeModel(fake.request, () => {}, { autosave: true });
+    await model.load();
+    model.setAccept(DESK, true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fake.sent.filter((s) => s.method === "agents.accept").map((s) => s.params)).toEqual([{ node: DESK, on: true }]);
+    expect(model.accept(DESK)).toBe(true);
+    model.setAccept(DESK, false);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(model.notes.get(DESK)).toBe("Not saved: not now");
+    expect(model.accept(DESK)).toBe(true);
   });
 
   test("nothing read says why where the machines would be", async () => {

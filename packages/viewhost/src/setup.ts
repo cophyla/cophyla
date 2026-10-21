@@ -1,9 +1,10 @@
 // The host's first-run screen. Before the first view mounts on a node whose user has not yet
 // said which of their sessions it connects to (its `session.scope` has no `setupAt`), the host
 // asks over the whole page, so no session shows before the answer: every account on each
-// machine with a box, all ticked; "Tether (Cophyla) started sessions only"; and, folded, the
+// machine with a box, all ticked; "Tether (Cophyla) started sessions only"; whether its Claude
+// sessions in bypass take agents' messages at once, as the machine has it now; and, folded, the
 // allowed and hidden folders. Continue saves every machine's scope as it stands, which marks
-// each set, and the view mounts. It cannot be dismissed without an answer, but the answer that
+// each set, and the bypass switch where it was changed, and the view mounts. It cannot be dismissed without an answer, but the answer that
 // changes nothing is one press. Its look is in `settings.css`, beside the settings it mirrors.
 
 import { continueLabel, ScopeModel, scopeControls } from "./scope.ts";

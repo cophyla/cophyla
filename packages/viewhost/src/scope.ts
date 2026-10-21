@@ -3,10 +3,13 @@
 // machine: a box for every account (profile) on it, ticked unless left off; "Tether (Cophyla)
 // started sessions only"; and two optional lists of folders, the allowed ones (when any is
 // listed, only sessions in them connect) and the hidden ones (sessions in them never do), with
-// the folders its sessions worked in to pick from. The settings save each change as it is made
-// (`autosave`); the first-run screen keeps them until Continue, which saves every machine and so
-// marks each set. `ScopeModel` and `scopeMachines` are DOM-free; `scopeControls` draws one
-// machine's with the settings' own pieces.
+// the folders its sessions worked in to pick from. Beside them, on a machine that runs agent
+// messaging and is not lent as hands, its bypass switch (`agents.accept`): whether its Claude
+// sessions that skip permission prompts take other sessions' messages at once. The settings save
+// each change as it is made (`autosave`); the first-run screen keeps them until Continue, which
+// saves every machine and so marks each set, and sends the switch only where it was changed.
+// `ScopeModel` and `scopeMachines` are DOM-free; `scopeControls` draws one machine's with the
+// settings' own pieces.
 
 import type { HarnessProfile, Node, SessionScope, SessionScopeState, Workspace } from "@cophyla/protocol";
 import { button, checkRow, controlId, el, group, message, option, row, switchInput } from "./ui.ts";
@@ -42,6 +45,8 @@ export interface ScopeMachine {
   tetherOnly: boolean;
   allowedFolders: string[];
   hiddenFolders: string[];
+  /** Its Claude sessions that skip permission prompts take agents' messages at once; absent where it cannot be switched from here. */
+  accept?: boolean;
   /** Folders the machine's sessions worked in, most recent first, to pick from. */
   suggestions: string[];
   /** Why the machine's scope cannot be read: its Cophyla is too old, or out of reach. */
@@ -56,6 +61,8 @@ export interface MachinesInput {
   profiles: HarnessProfile[];
   workspaces: Workspace[];
   scopes: ReadonlyMap<string, SessionScope>;
+  /** Each machine's bypass switch, where it has one this host may set. */
+  accepts?: ReadonlyMap<string, boolean>;
   unavailable?: ReadonlyMap<string, string>;
   busy?: ReadonlySet<string>;
   notes?: ReadonlyMap<string, string>;
@@ -76,6 +83,7 @@ export function scopeMachines(input: MachinesInput): ScopeMachine[] {
       const listed = new Set([...scope.allowedFolders, ...scope.hiddenFolders].map((f) => f.toLowerCase()));
       const suggestions = [...new Set(input.workspaces.filter((w) => w.node === node).sort((a, b) => b.lastActivity - a.lastActivity).map((w) => w.path))].filter((p) => !listed.has(p.toLowerCase()));
       const unavailable = input.unavailable?.get(node);
+      const accept = input.accepts?.get(node);
       const note = input.notes?.get(node);
       return {
         node,
@@ -86,6 +94,7 @@ export function scopeMachines(input: MachinesInput): ScopeMachine[] {
         tetherOnly: scope.tetherOnly,
         allowedFolders: [...scope.allowedFolders],
         hiddenFolders: [...scope.hiddenFolders],
+        ...(accept !== undefined ? { accept } : {}),
         suggestions,
         ...(unavailable !== undefined ? { unavailable } : {}),
         busy: input.busy?.has(node) ?? false,
@@ -134,12 +143,16 @@ export class ScopeModel {
   note = "Loading…";
   readonly kept = new Map<string, SessionScopeState>();
   readonly drafts = new Map<string, SessionScope>();
+  /** Each machine's bypass switch as it last said, and as changed here and not yet saved. */
+  readonly acceptKept = new Map<string, boolean>();
+  readonly acceptDrafts = new Map<string, boolean>();
   readonly unavailable = new Map<string, string>();
   readonly notes = new Map<string, string>();
   /** Why a folder typed was not added, by machine and list. */
   readonly fieldNotes = new Map<string, string>();
   readonly busy = new Set<string>();
   private sent = new Map<string, number>();
+  private acceptSent = new Map<string, number>();
   private request: ScopeRequest;
   private changed: () => void;
   private autosave: boolean;
@@ -166,6 +179,9 @@ export class ScopeModel {
       this.profiles = profiles.profiles;
       this.nodes = nodes.nodes;
       this.workspaces = workspaces.workspaces;
+      // a hands machine's switch is its owner's: the primary refuses it, so it is not offered
+      this.acceptKept.clear();
+      for (const n of this.nodes) if (n.capabilities.agents && !n.hands) this.acceptKept.set(n.id, n.capabilities.agents.acceptInBypass);
     } catch (e) {
       this.note = `Which sessions Cophyla connects to could not be read: ${message(e)}`;
       this.changed();
@@ -190,9 +206,15 @@ export class ScopeModel {
     return this.drafts.get(node) ?? this.kept.get(node)?.scope ?? OPEN_SCOPE;
   }
 
+  /** A machine's bypass switch now: the change being made, else what it said; undefined where it has none to set. */
+  accept(node: string): boolean | undefined {
+    return this.acceptDrafts.get(node) ?? this.acceptKept.get(node);
+  }
+
   machines(): ScopeMachine[] {
     const scopes = new Map([...this.kept.keys(), ...this.drafts.keys()].map((n) => [n, this.scope(n)]));
-    return scopeMachines({ ...(this.here ? { here: this.here } : {}), nodes: this.nodes, profiles: this.profiles, workspaces: this.workspaces, scopes, unavailable: this.unavailable, busy: this.busy, notes: this.notes });
+    const accepts = new Map([...this.acceptKept.keys()].map((n) => [n, this.accept(n)!]));
+    return scopeMachines({ ...(this.here ? { here: this.here } : {}), nodes: this.nodes, profiles: this.profiles, workspaces: this.workspaces, scopes, accepts, unavailable: this.unavailable, busy: this.busy, notes: this.notes });
   }
 
   setProfile(node: string, id: string, on: boolean): void {
@@ -201,6 +223,14 @@ export class ScopeModel {
 
   setTetherOnly(node: string, on: boolean): void {
     this.change(node, (s) => ({ ...s, tetherOnly: on }));
+  }
+
+  setAccept(node: string, on: boolean): void {
+    if (!this.acceptKept.has(node)) return;
+    this.acceptDrafts.set(node, on);
+    this.notes.delete(node);
+    if (this.autosave) void this.saveAccept(node);
+    else this.changed();
   }
 
   /** A folder added to a list; false when it is blank, listed there already, or not a whole path, with why beside the field. */
@@ -262,10 +292,43 @@ export class ScopeModel {
     }
   }
 
-  /** Every machine that can say, saved together: true once each took its scope. */
+  /**
+   * A machine's bypass switch as changed here, sent only when it differs from what the machine
+   * said; the latest send's answer is the one kept, and a refusal says why beside it.
+   */
+  async saveAccept(node: string): Promise<boolean> {
+    const on = this.acceptDrafts.get(node);
+    if (on === undefined) return true;
+    if (on === this.acceptKept.get(node)) {
+      this.acceptDrafts.delete(node);
+      this.changed();
+      return true;
+    }
+    const seq = (this.acceptSent.get(node) ?? 0) + 1;
+    this.acceptSent.set(node, seq);
+    this.busy.add(node);
+    this.changed();
+    try {
+      await this.request("agents.accept", { node, on });
+      if (this.acceptSent.get(node) !== seq) return true;
+      this.acceptKept.set(node, on);
+      if (this.acceptDrafts.get(node) === on) this.acceptDrafts.delete(node);
+      return true;
+    } catch (e) {
+      if (this.acceptSent.get(node) !== seq) return false;
+      this.notes.set(node, `Not saved: ${message(e).replace(/^[a-z_]+: /, "")}`);
+      if (this.autosave) this.acceptDrafts.delete(node);
+      return false;
+    } finally {
+      if (this.acceptSent.get(node) === seq) this.busy.delete(node);
+      this.changed();
+    }
+  }
+
+  /** Every machine that can say, saved together, and each bypass switch changed here: true once each took it. */
   async saveAll(): Promise<boolean> {
     const nodes = [...this.kept.keys()];
-    const done = await Promise.all(nodes.map((n) => this.save(n)));
+    const done = await Promise.all([...nodes.map((n) => this.save(n)), ...[...this.acceptDrafts.keys()].map((n) => this.saveAccept(n))]);
     return done.every(Boolean);
   }
 }
@@ -308,7 +371,10 @@ export interface ScopeControlsOptions {
   unfolded?: Set<string>;
 }
 
-/** One machine's controls as groups: its accounts, tether only, and the two folder lists. */
+const ACCEPT_LABEL = "Accept agent messages in bypass sessions";
+const ACCEPT_HELP = "Claude Code sessions that skip permission prompts take messages from your other sessions at once. Left off, Claude holds each one until you allow it.";
+
+/** One machine's controls as groups: its accounts, tether only, its bypass switch where it has one, and the two folder lists. */
 export function scopeControls(m: ScopeMachine, o: ScopeControlsOptions): HTMLElement[] {
   if (m.unavailable) return [group(undefined, [row({ label: m.name, help: m.unavailable })])];
   const accounts = group(
@@ -332,6 +398,16 @@ export function scopeControls(m: ScopeMachine, o: ScopeControlsOptions): HTMLEle
   ]);
   const lists = (["allowedFolders", "hiddenFolders"] as const).map((kind) => folderGroup(m, kind, o));
   const out: HTMLElement[] = [accounts, tether];
+  if (m.accept !== undefined) {
+    const focus = `scope:${m.node}:accept`;
+    out.push(
+      group(undefined, [
+        o.form
+          ? checkRow(focus, ACCEPT_LABEL, m.accept, (on) => o.model.setAccept(m.node, on), { help: ACCEPT_HELP })
+          : row({ label: ACCEPT_LABEL, help: ACCEPT_HELP, for: controlId(focus), control: switchInput(focus, ACCEPT_LABEL, m.accept, (on) => o.model.setAccept(m.node, on)) }),
+      ]),
+    );
+  }
   if (o.form) {
     const more = el("details", "host-settings-disclosure");
     more.open = (o.unfolded?.has(m.node) ?? false) || m.allowedFolders.length > 0 || m.hiddenFolders.length > 0;
