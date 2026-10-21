@@ -2,7 +2,8 @@
 // along, a button's activation answered on the connection, a refused answer showing the
 // window instead, and a toast taken down when its ask settles, live or while the link was
 // down. On a machine that can tell, an ask is toasted only while someone is at it: held
-// otherwise, and toasted when someone comes back if it is still open.
+// otherwise, and toasted when someone comes back if it is still open. Turned off by the host's
+// user, no ask is toasted, and one toasted before still comes down when it settles.
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, RpcNotification } from "@cophyla/protocol";
@@ -29,7 +30,7 @@ function ask(id: string, extra: Partial<Ask> = {}): Ask {
   };
 }
 
-function harness() {
+function harness(opts: { enabled?: () => boolean } = {}) {
   const toasts: NotifyAsk[] = [];
   const dismissed: string[] = [];
   const answers: [string, string][] = [];
@@ -52,6 +53,7 @@ function harness() {
       shown += 1;
     },
     onError: (m) => errors.push(m),
+    ...(opts.enabled ? { enabled: opts.enabled } : {}),
   });
   return { notifier, toasts, dismissed, answers, errors, shown: () => shown, refuse: () => (refuse = true) };
 }
@@ -80,6 +82,21 @@ describe("ask notifier", () => {
     h.notifier.onNotification(n("ask.state", ask("ask_c", { status: "cancelled" })));
     h.notifier.onNotification(n("session.state", { id: "sess_1" }));
     expect(h.toasts).toEqual([]);
+  });
+
+  test("turned off by the host's user, toasts no ask; one toasted before still comes down when it settles", () => {
+    let on = true;
+    const h = harness({ enabled: () => on });
+    h.notifier.onNotification(n("ask.state", ask("ask_1")));
+    on = false;
+    h.notifier.onNotification(n("ask.state", ask("ask_2")));
+    h.notifier.onNotification(n("ask.state", ask("ask_1", { status: "answered" })));
+    expect(h.toasts.map((t) => t.id)).toEqual(["ask_1"]);
+    expect(h.dismissed).toEqual(["ask_1"]);
+    // On again, an ask that opens from then on is toasted.
+    on = true;
+    h.notifier.onNotification(n("ask.state", ask("ask_3")));
+    expect(h.toasts.map((t) => t.id)).toEqual(["ask_1", "ask_3"]);
   });
 
   test("a toasted ask that settles takes its toast down once; one never toasted takes nothing down", () => {

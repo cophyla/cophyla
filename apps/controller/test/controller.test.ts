@@ -8,7 +8,7 @@ import { deriveChrome } from "../src/chrome.ts";
 import type { ChromeInput } from "../src/chrome.ts";
 import { CONTROLLER_INSTALL_TAGS, CONTROLLER_META_CSP, controllerCsp, inviteLink, inviteText } from "@cophyla/protocol";
 import type { InviteBody } from "@cophyla/protocol";
-import { codeFromUrl, guessName, INVITE_CLOCK_SLACK_MS, inviteLanNodes, isInviteLink, LISTEN_KEY, parseCode, parseInviteLink, parsePairLink, pkcePair, readCredential, readListen, signInUrl, STORAGE_KEY, writeCredential, writeListen } from "../src/pairing.ts";
+import { codeFromUrl, guessName, INVITE_CLOCK_SLACK_MS, inviteLanNodes, isInviteLink, LISTEN_KEY, parseCode, parseInviteLink, parsePairLink, pkcePair, readCredential, readListen, signInUrl, STORAGE_KEY, writeCredential, writeListen, ASK_POPUPS_KEY, readAskPopups, writeAskPopups } from "../src/pairing.ts";
 import type { Storage } from "../src/pairing.ts";
 import { openTarget } from "../src/remote.ts";
 
@@ -176,6 +176,18 @@ describe("the credential", () => {
     expect(readListen(storage)).toBe(true);
     // a page with no storage listens
     expect(readListen(undefined)).toBe(true);
+  });
+
+  test("agents' questions show as notifications unless the user turned them off, and the off is remembered", () => {
+    const storage = new FakeStorage();
+    expect(readAskPopups(storage)).toBe(true);
+    writeAskPopups(storage, false);
+    expect(storage.map.get(ASK_POPUPS_KEY)).toBe("off");
+    expect(readAskPopups(storage)).toBe(false);
+    writeAskPopups(storage, true);
+    expect(storage.map.has(ASK_POPUPS_KEY)).toBe(false);
+    expect(readAskPopups(storage)).toBe(true);
+    expect(readAskPopups(undefined)).toBe(true);
   });
 
   test("a code is six digits, however the user types it", () => {
