@@ -33,6 +33,8 @@ function counted(n: number): Uint8Array {
 }
 
 const FAST = { transfers: { backoff: { firstMs: 100, maxMs: 400 }, relayConfirmBytes: 1000 } };
+/** Heartbeats at a second, as remote-forward's: a pipe pumping in the same process must not stall a slow runner's links past them. */
+const BEAT = 1000;
 
 describe("transfers across nodes", () => {
   let scratch: string;
@@ -44,9 +46,9 @@ describe("transfers across nodes", () => {
 
   beforeAll(async () => {
     scratch = tempHome();
-    primary = await startPrimary({ daemon: { ...FAST, revealer: async (path, kind) => void shown.push([path, kind]) } });
-    a = await startSecondary(primary, { daemon: FAST });
-    b = await startSecondary(primary, { daemon: FAST });
+    primary = await startPrimary({ heartbeatMs: BEAT, daemon: { ...FAST, revealer: async (path, kind) => void shown.push([path, kind]) } });
+    a = await startSecondary(primary, { heartbeatMs: BEAT, daemon: FAST });
+    b = await startSecondary(primary, { heartbeatMs: BEAT, daemon: FAST });
     await linked(a);
     await linked(b);
     c = await client(primary.d);
@@ -152,7 +154,7 @@ describe("transfers across nodes", () => {
   test("the sending machine's link drops mid-file: the transfer waits, then goes on from where it stopped", async () => {
     const src = join(scratch, "on-a-big");
     mkdirSync(src, { recursive: true });
-    const bytes = counted(96 * 1024 * 1024);
+    const bytes = counted(32 * 1024 * 1024);
     writeFileSync(join(src, "disk.img"), bytes);
     const dir = join(scratch, "b-big");
     // every file pipe b opens, and from where
@@ -184,10 +186,10 @@ describe("transfers across nodes", () => {
   }, 60_000);
 
   test("a cancel stops it and deletes what came", async () => {
-    await waitFor(() => primary.d.nodes.linkedTo(a.identity.id) && b.nodes.registry.get(a.identity.id)?.status === "online", 10_000);
+    await waitFor(() => primary.d.nodes.linkedTo(a.identity.id) && primary.d.nodes.linkedTo(b.identity.id) && b.nodes.registry.get(a.identity.id)?.status === "online", 10_000);
     const src = join(scratch, "on-a-cancel");
     mkdirSync(src, { recursive: true });
-    writeFileSync(join(src, "big.bin"), counted(64 * 1024 * 1024));
+    writeFileSync(join(src, "big.bin"), counted(32 * 1024 * 1024));
     const dir = join(scratch, "b-cancel");
     const r = await c.request<{ transfer: Transfer }>("transfer.start", { from: { node: a.identity.id, path: join(src, "big.bin") }, to: { node: b.identity.id, dir } });
     await waitFor(() => (b.transfers.get(r.transfer.id)?.bytes ?? 0) > 0, 20_000, 2);
@@ -253,9 +255,9 @@ describe("a confined node and a hands node", () => {
     scratch = tempHome();
     shared = join(scratch, "shared");
     mkdirSync(shared, { recursive: true });
-    primary = await startPrimary({ daemon: FAST });
-    conf = await startSecondary(primary, { daemon: FAST, paths: [shared] });
-    hands = await startSecondary(primary, { daemon: FAST, hands: true });
+    primary = await startPrimary({ heartbeatMs: BEAT, daemon: FAST });
+    conf = await startSecondary(primary, { heartbeatMs: BEAT, daemon: FAST, paths: [shared] });
+    hands = await startSecondary(primary, { heartbeatMs: BEAT, daemon: FAST, hands: true });
     await linked(conf);
     await linked(hands);
     c = await client(primary.d);
