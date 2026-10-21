@@ -104,6 +104,13 @@ export const SessionsConfig = z.object({
    * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A message typed into a session in tether waits for the prompt to show empty. On, it is also
+   * typed into a busy session whose prompt is not on screen or holds only the message typed
+   * last, into a terminal that has shown no prompt for 5 s, and, with no ask open, into one
+   * whose prompt has not come free in 30 s, which types over what the prompt holds.
+   */
+  type_into_busy: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -801,6 +808,7 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
+type_into_busy = false     # true: type into a busy session without waiting for an empty prompt; after 30 s with no ask open, type anyway
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
