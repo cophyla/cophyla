@@ -16,15 +16,19 @@
 // with when the CLI started, every CLI a read finds marked before any is told of; a Codex thread the app-server daemon runs takes the one terminal
 // whose CLI fits it, never when a desktop app started it, and of threads waiting, the one active
 // last takes a terminal freed.
+// With [sessions].resume_takes_terminal, a Claude CLI that resumes another thread in its
+// terminal takes the terminal to that thread, and the record of the id it left is ended when
+// it has no transcript, its process untouched.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { ClaudeHookEvent, Session, SessionEvent } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
 import type { TetherConfig } from "../src/config/schema.ts";
 import { silentLogger } from "../src/log.ts";
 import { ClaudeAdapter } from "../src/sessions/claude/adapter.ts";
+import { transcriptPathFor } from "../src/sessions/claude/registry.ts";
 import type { WindowRaiser } from "../src/sessions/focus.ts";
 import { envelope } from "../src/agentmsg/envelope.ts";
 import { SEND_PREFIX } from "../src/sessions/index.ts";
@@ -894,5 +898,88 @@ describe("how a session cophylad starts is launched", () => {
     } finally {
       tetherConfig.window_on_start = false;
     }
+  });
+});
+
+describe("[sessions].resume_takes_terminal", () => {
+  /** A thread the user ran before in a CLI that has exited since. */
+  async function olderThread(id: string, pid: number): Promise<void> {
+    alive.add(pid);
+    writeRegistry(registry, { pid, sessionId: id, cwd, status: "idle" });
+    await mini.sessions.tick();
+    alive.delete(pid);
+    rmSync(join(registry, `${pid}.json`));
+    await mini.sessions.tick();
+    expect(mini.sessions.find("claude", id)!.session.status).toBe("ended");
+  }
+
+  /** A shell in tether, `claude` typed into it under a new id, which then `/resume`s `older`. */
+  async function resumed(shellPid: number, newId: string, older: string, opts: { transcript?: boolean } = {}): Promise<{ shell: FakeSession; cli: number }> {
+    const cli = shellPid + 1;
+    const shell = fake.add({ argv: ["pwsh.exe"], cwd }, shellPid);
+    chains.set(cli, [
+      { pid: cli, name: "claude.exe" },
+      { pid: shellPid, name: "pwsh.exe" },
+    ]);
+    alive.add(cli);
+    if (opts.transcript) {
+      const path = transcriptPathFor(profileDir, cwd, newId);
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, "");
+    }
+    writeRegistry(registry, { pid: cli, sessionId: newId, cwd, status: "idle" });
+    await waitFor(() => tether.byPid(shellPid));
+    await mini.sessions.tick();
+    await waitFor(() => mini.sessions.find("claude", newId)?.session.native.terminal, 5000);
+    await sleep(20);
+    writeRegistry(registry, { pid: cli, sessionId: older, cwd, status: "busy" });
+    await mini.sessions.tick();
+    return { shell, cli };
+  }
+
+  afterAll(() => {
+    mini.sessions.config.resume_takes_terminal = false;
+  });
+
+  test("off, the terminal stays with the id the CLI left, and the thread it resumed has none", async () => {
+    await olderThread("resumed-off", 8710);
+    const { shell, cli } = await resumed(8720, "stub-off", "resumed-off");
+    await sleep(100);
+    const thread = mini.sessions.find("claude", "resumed-off")!;
+    expect(thread.session.status).not.toBe("ended");
+    expect(thread.session.native.pid).toBe(cli);
+    expect(thread.session.native.terminal).toBeUndefined();
+    expect(mini.sessions.find("claude", "stub-off")!.session.native.terminal).toEqual({ host: fake.host.host, id: shell.id });
+    shell.exit(0);
+    alive.delete(cli);
+  });
+
+  test("on, the thread the CLI resumed takes its terminal, and the empty record of the id it left is ended, its process untouched", async () => {
+    mini.sessions.config.resume_takes_terminal = true;
+    await olderThread("resumed-on", 8730);
+    const { shell, cli } = await resumed(8740, "stub-on", "resumed-on");
+    const ref = { host: fake.host.host, id: shell.id };
+    await waitFor(() => mini.sessions.find("claude", "resumed-on")?.session.native.terminal, 5000);
+    expect(mini.sessions.find("claude", "resumed-on")!.session.native.terminal).toEqual(ref);
+    expect(mini.sessions.sessionOfTerminal(ref)?.native.id).toBe("resumed-on");
+    const stub = mini.sessions.find("claude", "stub-on")!;
+    expect(stub.session.status).toBe("ended");
+    expect(stub.session.native.terminal).toBeUndefined();
+    expect(stub.session.native.pid).toBeUndefined();
+    expect(killed).not.toContain(cli);
+    shell.exit(0);
+    alive.delete(cli);
+  });
+
+  test("on, a thread the CLI left that has a transcript lets the terminal go and lives on", async () => {
+    await olderThread("resumed-kept", 8750);
+    const { shell, cli } = await resumed(8760, "left-with-transcript", "resumed-kept", { transcript: true });
+    await waitFor(() => mini.sessions.find("claude", "resumed-kept")?.session.native.terminal, 5000);
+    const left = mini.sessions.find("claude", "left-with-transcript")!;
+    expect(left.session.status).not.toBe("ended");
+    expect(left.session.native.terminal).toBeUndefined();
+    expect(left.session.native.pid).toBeUndefined();
+    shell.exit(0);
+    alive.delete(cli);
   });
 });

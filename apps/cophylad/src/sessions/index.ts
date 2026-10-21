@@ -1418,6 +1418,7 @@ export class Sessions implements SessionHost {
     const tether = this.deps.tether;
     const pid = rec.session.native.pid;
     if (!tether?.available || !TERMINAL_HARNESSES.includes(rec.session.harness) || rec.session.status === "ended" || pid === undefined || rec.session.native.terminal) return;
+    if (this.config.resume_takes_terminal && rec.session.harness === "claude" && this.takeFromLeft(rec, pid)) return;
     // A process learned after its record was made (from a hook) may be the terminal's own.
     const own = tether.byPid(pid);
     if (own && !this.sessionOfTerminal(own.ref)) {
@@ -1432,6 +1433,29 @@ export class Sessions implements SessionHost {
     rec.ancestry = { pid };
     this.ancestryWanted.add(rec);
     void this.readAncestry();
+  }
+
+  /**
+   * With `[sessions].resume_takes_terminal`: a Claude CLI that goes on to another thread in its
+   * terminal (`/resume`) leaves the terminal, and its pid, on the record of the thread it left,
+   * so the thread it runs now has no terminal and a message to it is not typed. One CLI runs one
+   * thread: a live Claude record that holds a terminal under this record's pid, with older
+   * activity, lets both go to this one. Left with no transcript, it was only the record of the
+   * new id the CLI started under before it resumed, and is ended; its process is not touched.
+   */
+  private takeFromLeft(rec: LiveRecord, pid: number): boolean {
+    for (const holder of this.byId.values()) {
+      if (holder === rec || holder.session.status === "ended" || holder.session.harness !== "claude" || holder.session.native.pid !== pid) continue;
+      const terminal = holder.session.native.terminal;
+      if (!terminal || holder.session.lastActivity >= rec.session.lastActivity) continue;
+      const { terminal: _terminal, pid: _pid, ...left } = holder.session.native;
+      this.patch(holder, { native: left });
+      this.patch(rec, { native: { ...rec.session.native, terminal } });
+      this.log.info("a Claude CLI went on to another thread in its terminal, which takes the terminal", { id: rec.session.id, from: holder.session.id, terminal: terminal.id, pid });
+      if (!holder.session.transcript) this.end(holder, "resumed_elsewhere");
+      return true;
+    }
+    return false;
   }
 
   /** The ancestors of every record waiting for them, in one read of the process table where the platform has one. */
