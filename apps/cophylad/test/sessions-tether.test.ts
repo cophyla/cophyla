@@ -14,6 +14,9 @@
 // with when the CLI started, every CLI a read finds marked before any is told of; a Codex thread the app-server daemon runs takes the one terminal
 // whose CLI fits it, never when a desktop app started it, and of threads waiting, the one active
 // last takes a terminal freed.
+// With [sessions].type_into_busy, a busy session is typed into with no prompt on screen or
+// with only the message typed last in it, a terminal that shows no prompt is typed into after a
+// while, and so is a held prompt with no ask open, never while one is.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -70,6 +73,9 @@ const table: ProcessRow[] = [];
 let reads = 0;
 const DEBOUNCE_MS = 30;
 const GAP_MS = 400;
+/** `[sessions].type_into_busy`'s waits, shortened: with no prompt on screen, and with the prompt held. */
+const NO_PROMPT_MS = 1500;
+const HELD_MS = 3000;
 
 /** A `tether` command's arguments without the state folder it is told. */
 const bare = (args: string[]) => (args[0] === "--dir" ? args.slice(2) : args);
@@ -167,6 +173,7 @@ beforeAll(async () => {
         },
         isAlive: (pid) => alive.has(pid),
         cliTiming: { debounceMs: DEBOUNCE_MS, gapMs: GAP_MS },
+        typeWaits: { noPromptMs: NO_PROMPT_MS, heldMs: HELD_MS },
         run: async (argv, env) => {
           ran.push({ argv, env });
           return { code: 0, out: "" };
@@ -851,4 +858,88 @@ describe("how a session cophylad starts is launched", () => {
       tetherConfig.window_on_start = false;
     }
   });
+});
+
+describe("[sessions].type_into_busy", () => {
+  let s: Session;
+  let fs: FakeSession;
+  const NO_PROMPT = ["⏺ Running the tests…", "  ⎿  412 passed"];
+  /** What was pasted: an earlier message that never landed may still get its second Enter. */
+  const pasted = () => fs.typed.filter((t) => t.startsWith("paste:"));
+
+  beforeAll(async () => {
+    s = await mini.sessions.spawn({ harness: "claude", workspace, prompt: "Start on the parser" }, { profiles: mini.profiles });
+    fs = [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.session"] === s.native.id)!;
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: "Start on the parser", prompt_id: "b1" }), { via: "http" });
+  });
+
+  afterAll(() => {
+    mini.sessions.config.type_into_busy = false;
+  });
+
+  test("off, a busy session whose prompt is not on screen waits for it", async () => {
+    expect(mini.sessions.get(s.id)!.status).toBe("busy");
+    fs.typed.length = 0;
+    fs.setScreen(NO_PROMPT);
+    await mini.sessions.send(s.id, "first", { from: "user" });
+    await sleep(NO_PROMPT_MS + 500);
+    expect(pasted()).toEqual([]);
+    fs.setScreen(EMPTY);
+    await waitFor(() => fs.typed.includes("paste:first"), 5000);
+  }, 20_000);
+
+  test("on, a busy session whose prompt is not on screen is typed into at once", async () => {
+    mini.sessions.config.type_into_busy = true;
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    fs.typed.length = 0;
+    fs.setScreen(NO_PROMPT);
+    await mini.sessions.send(s.id, "second", { from: "user" });
+    await waitFor(() => fs.typed.includes("paste:second"), NO_PROMPT_MS - 500);
+  }, 20_000);
+
+  test("on, a busy session whose prompt holds only the message typed last is typed into", async () => {
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    fs.typed.length = 0;
+    fs.setScreen(["", RULE, "❯ second", RULE]);
+    await mini.sessions.send(s.id, "third", { from: "user" });
+    await waitFor(() => fs.typed.includes("paste:third"), NO_PROMPT_MS - 500);
+  }, 20_000);
+
+  test("on, a terminal that shows no prompt is typed into once it has shown none for a while", async () => {
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    await mini.sessions.onHook("claude", hook(s, "Stop", { prompt_id: "b1" }), { via: "http" });
+    await waitFor(() => mini.sessions.get(s.id)!.status === "idle", 5000);
+    fs.typed.length = 0;
+    fs.setScreen([]);
+    await mini.sessions.send(s.id, "after a restart", { from: "user" });
+    await sleep(NO_PROMPT_MS - 700);
+    expect(pasted()).toEqual([]);
+    // Before the held prompt's longer wait would have typed it.
+    await waitFor(() => fs.typed.includes("paste:after a restart"), HELD_MS - NO_PROMPT_MS);
+  }, 20_000);
+
+  test("on, a prompt that stays held is typed into once the wait is over, with no ask open", async () => {
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    fs.typed.length = 0;
+    fs.setScreen(["", RULE, "❯ something else", RULE]);
+    await mini.sessions.send(s.id, "held", { from: "user" });
+    await sleep(HELD_MS - 1000);
+    expect(pasted()).toEqual([]);
+    await waitFor(() => fs.typed.includes("paste:held"), 5000);
+  }, 20_000);
+
+  test("on, nothing is typed while an ask is open, however long it is", async () => {
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    fs.typed.length = 0;
+    fs.setScreen(NO_PROMPT);
+    const decision = mini.sessions.onHook("claude", hook(s, "PermissionRequest", { tool_name: "Bash", tool_input: { command: "ls" }, prompt_id: "b2" }), { via: "http" });
+    const ask = await waitFor(() => mini.asks.listOpen().find((a) => a.source.kind === "harness" && a.source.session === s.id), 5000);
+    await mini.sessions.send(s.id, "after the ask", { from: "user" });
+    await sleep(HELD_MS + 500);
+    expect(pasted()).toEqual([]);
+    mini.asks.answer(ask.id, { option: "allow" }, { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" });
+    await decision;
+    await waitFor(() => fs.typed.includes("paste:after the ask"), 5000);
+  }, 20_000);
 });
