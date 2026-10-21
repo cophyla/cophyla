@@ -706,13 +706,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
           ...(opts.metrics?.now ? { now: opts.metrics.now } : {}),
         })
       : undefined;
+  // Under test the daemon reads no GPU: a reader's first sample holds the loop for its driver or
+  // PDH's counter catalogue, up to half a second, past a test link's two missed heartbeats. The
+  // readers have tests of their own.
   const metrics = new Metrics({
     config: config.metrics,
     nodeId: identity.id,
     store,
     bus,
     log: metricsLog,
-    engine: opts.metrics?.engine ?? (config.metrics.enabled ? hostEngine({ gpu: config.metrics.gpu, log: metricsLog }) : { name: "off", sample: () => ({ at: Date.now(), monoNs: 0n, cores: 1, cpu: { busyNs: 0, totalNs: 0 }, memory: { used: 0, total: 0 }, processes: [] }) }),
+    engine: opts.metrics?.engine ?? (config.metrics.enabled ? hostEngine({ gpu: config.metrics.gpu && env["NODE_ENV"] !== "test", log: metricsLog }) :{ name: "off", sample: () => ({ at: Date.now(), monoNs: 0n, cores: 1, cpu: { busyNs: 0, totalNs: 0 }, memory: { used: 0, total: 0 }, processes: [] }) }),
     // every partition's sessions are owned; the workspace nodes' are then kept from the machine's audience
     sessions: { pids: () => sessions.pidsAll(), list: () => sessions.list() },
     partitions: { sessionNode: (id) => sessions.getAny(id)?.node, isPrivate: (node) => owners.isPrivate(node) },
