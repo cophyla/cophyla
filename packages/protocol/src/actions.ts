@@ -186,6 +186,19 @@ export const actions = {
   "connection.end": { risk: "write" },
   "connection.send": { risk: "network" },
   "connection.deliver": { risk: "write" },
+  // Files and folders between the user's machines. Starting one writes on the receiving machine;
+  // the sending one reads what the receiving one asks of it (the node link's `files.*`). An
+  // agent's `send_file` is also `transfer.send`, which a built-in rule asks about unless the
+  // agent runs without prompts.
+  "transfer.start": { risk: "write" },
+  "transfer.cancel": { risk: "write" },
+  "transfer.retry": { risk: "write" },
+  "transfer.dismiss": { risk: "write" },
+  "transfer.list": { risk: "read" },
+  "transfer.reveal": { risk: "read" },
+  "transfer.send": { risk: "write" },
+  "files.tree": { risk: "read" },
+  "files.pipe.open": { risk: "read" },
 } as const satisfies Record<string, ActionDefinition>;
 
 export type ActionName = keyof typeof actions;

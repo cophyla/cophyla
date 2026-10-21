@@ -147,6 +147,10 @@
           "agents": [
             { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web", "status": "idle", "intent": "Review the login page change" },
             { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex@Laptop", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "shell" } }
+          ],
+          "machines": [
+            { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "Desk", "online": true, "files": true },
+            { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "Laptop", "online": false, "files": true }
           ]
         }
       ]
@@ -168,6 +172,21 @@
         { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "accept_invite", "args": { "code": "cophyla-connect:eyJ2IjoxfQ" } }
       ],
       "results": [{ "text": "Connected to bob/api-codex (con_01ARZ3NDEKTSV4RRFFQ69G5FE1)." }, { "text": "Not done: your user did not allow it; nothing was done.", "isError": true }]
+    },
+    "files.tree": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "/home/me/web/dist", "from": 5000 }],
+      "results": [
+        { "kind": "file", "name": "build.zip", "entries": [{ "rel": "", "size": 50331648, "mtimeMs": 1758196600000 }], "total": 50331648, "files": 1, "count": 1, "skipped": 0 },
+        { "kind": "folder", "name": "dist", "entries": [{ "rel": "assets", "dir": true }, { "rel": "assets/app.js", "size": 2000, "mtimeMs": 1758196600000 }, { "rel": "index.html", "size": 48, "mtimeMs": 1758196600000 }], "total": 2048, "files": 2, "count": 5003, "skipped": 1, "next": 5003 }
+      ]
+    },
+    "files.pipe.open": {
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "p_0123456789abcdef", "path": "C:\\Users\\me\\build.zip", "at": 0 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pipe": "p_0123456789abcdee", "path": "/home/me/web/dist", "rel": "assets/app.js", "at": 1024 }],
+      "results": [{ "window": 1048576, "size": 50331648, "mtimeMs": 1758196600000 }]
+    },
+    "file.send": {
+      "params": [{ "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "path": "dist/app.zip", "to": "web-review" }, { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "path": "/home/me/notes", "to": "Laptop", "dir": "C:\\Users\\me\\notes" }],
+      "results": [{ "text": "Sent app.zip (2.0 MB) to web-review on Laptop: C:\\Users\\me\\Downloads\\app.zip." }, { "text": "Not sent: your user did not allow it.", "isError": true }]
     },
     "remote.close": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "stream": "stream_0123456789abcdef", "viewer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV:client_01ARZ3NDEKTSV4RRFFQ69G5FAZ" }], "results": [{}] },
     "replicate.snapshot": {

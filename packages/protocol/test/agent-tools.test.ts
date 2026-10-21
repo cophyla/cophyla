@@ -21,7 +21,7 @@ describe("agent tools", () => {
   });
 
   test("list_agents reads, send_message writes and reaches nothing outside", () => {
-    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "create_invite", "accept_invite", "end_connection"]);
+    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection"]);
     const [list, send] = AGENT_TOOLS;
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
@@ -37,5 +37,14 @@ describe("agent tools", () => {
     expect(tool("accept_invite").annotations).toMatchObject({ openWorldHint: true });
     expect(tool("end_connection").inputSchema).toMatchObject({ required: ["to"] });
     expect(tool("end_connection").annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+  });
+
+  test("send_file copies within the user's own machines: a path, a session or a machine, a folder there", () => {
+    const tool = AGENT_TOOLS.find((t) => t.name === "send_file")!;
+    expect(tool.inputSchema).toMatchObject({ type: "object", required: ["path", "to"] });
+    expect(Object.keys((tool.inputSchema as { properties: object }).properties)).toEqual(["path", "to", "dir"]);
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("send_file");
+    expect(AGENT_MCP_INSTRUCTIONS).not.toContain("so say what you mean rather than pointing at a file");
   });
 });

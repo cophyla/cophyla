@@ -676,6 +676,7 @@
     { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex-01A9", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "user", "detail": "a question" } }
   ],
   "AgentMode": ["bypass", "prompting"],
+  "MachineListing": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "Laptop", "online": true, "files": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "Studio", "online": false, "files": false }],
   "ConnectionPeer": [{ "user": "bob", "name": "api-codex", "harness": "codex", "live": true, "seenAt": 1758196800000 }, { "user": "alice", "name": "terminal" }],
   "ConnectionState": ["pending", "active", "ended"],
   "ConnectionSender": [{ "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "user": "bob", "name": "api-codex", "harness": "codex" }, { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "user": "bob", "name": "terminal" }],
@@ -701,6 +702,14 @@
     { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE2", "state": "pending", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB4", "by": "agent", "createdAt": 1758196700000, "expiresAt": 1758197600000, "sent": 0, "received": 0 },
     { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "app", "createdAt": 1758196700000, "sent": 3, "received": 2, "queued": 1, "reason": "its terminal closed" }
   ],
+  "Transfer": [
+    { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/home/me/Downloads" }, "kind": "file", "name": "build.zip", "total": 50331648, "bytes": 12582912, "state": "running", "via": "relay", "rate": 4194304, "by": { "kind": "user" }, "startedAt": 1758196700000 },
+    { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX2", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "/home/me/web/dist" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "dir": "C:\\Users\\me\\Downloads", "path": "C:\\Users\\me\\Downloads\\dist (1)" }, "kind": "folder", "name": "dist", "total": 2048, "bytes": 2048, "files": { "done": 3, "total": 3 }, "state": "done", "via": "lan", "by": { "kind": "agent", "alias": "web-review", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, "startedAt": 1758196700000, "endedAt": 1758196701000 },
+    { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX3", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "/srv/data.bin" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/tmp" }, "kind": "file", "name": "data.bin", "total": 10, "bytes": 4, "state": "waiting", "error": "waiting for Laptop", "by": { "kind": "user" }, "startedAt": 1758196700000 }
+  ],
+  "TransferState": ["queued", "running", "waiting", "done", "failed", "cancelled"],
+  "TransferVia": ["lan", "direct", "relay"],
+  "TransferBy": [{ "kind": "user" }, { "kind": "agent", "alias": "api-codex@Laptop", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],
   "Client": [
     {
       "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7",

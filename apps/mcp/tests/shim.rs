@@ -382,6 +382,6 @@ fn a_call_cophylad_took_and_never_answered_is_not_said_to_be_unsent() {
     assert!(!text.contains("nothing was sent"), "{text}");
     // anything else it took and dropped is answered as when it is not there
     shim.send(r#"{"jsonrpc":"2.0","id":31,"method":"tools/list"}"#);
-    assert!(shim.next()["result"]["tools"].as_array().is_some_and(|t| t.len() == 5));
+    assert!(shim.next()["result"]["tools"].as_array().is_some_and(|t| t.len() == 6));
     shim.finish();
 }

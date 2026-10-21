@@ -6,6 +6,8 @@
 // token's and loopback's.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { AuditEntry, Session } from "@cophyla/protocol";
 import { waitFor } from "./helpers.ts";
 import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
@@ -88,6 +90,40 @@ describe("agent messages across nodes", () => {
     expect(Date.now() - started).toBeLessThan(2000);
   }, 60_000);
 
+  test("one secondary's session sends a file to another's through the primary: asked about first, then told where it landed", async () => {
+    primary = await startPrimary();
+    alpha = await startSecondary(primary, { agent: true, node: 'name = "Alpha"\n' });
+    beta = await startSecondary(primary, { agent: true, node: 'name = "Beta"\n' });
+    await linked(alpha);
+    await linked(beta);
+    await waitFor(() => primary!.d.nodes.linkedTo(alpha!.identity.id) && primary!.d.nodes.linkedTo(beta!.identity.id));
+    const a = await spawnOn(alpha);
+    const b = await spawnOn(beta);
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfSession(a.id) === alpha!.identity.id && primary!.d.nodes.mirror.ownerOfSession(b.id) === beta!.identity.id, 10_000);
+    mkdirSync(join(alpha.home, "out"), { recursive: true });
+    writeFileSync(join(alpha.home, "out", "report.txt"), "all green");
+
+    // the machines are listed for it, by name
+    expect((await callAs(alpha, a, "list_agents", {})).text).toContain("Machines (send_file with to set to the name):");
+    // the session prompts: the primary asks the user first
+    const sending = callAs(alpha, a, "send_file", { path: "out/report.txt", to: b.id, dir: "inbox" });
+    const ask = await waitFor(() => primary!.d.asks.listOpen().find((x) => x.title.startsWith("Let ")), 10_000);
+    expect(ask.title).toMatch(/send report\.txt \(9 B\) to .+ on Beta\?$/);
+    primary.d.asks.answer(ask.id, { option: "allow" }, { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" });
+    const sent = await sending;
+    expect(sent.isError).toBeUndefined();
+    const landed = join(beta.home, "inbox", "report.txt");
+    expect(sent.text).toContain(`it landed at ${landed}.`);
+    expect(readFileSync(landed, "utf8")).toBe("all green");
+    // the receiving session hears where, from cophyla
+    const told = await waitFor(() => beta!.store.sessionEvents.history(b.id, { limit: 200 }).find((e) => e.kind === "user_turn" && String((e.payload as { text?: string }).text ?? "").includes("sent you report.txt")), 10_000);
+    expect((told.payload as { text: string }).text).toContain(landed);
+    // the transfer was Beta's, started as the agent's, gated on Beta as the primary's node
+    const row = beta.transfers.list()[0]!;
+    expect(row).toMatchObject({ state: "done", by: { kind: "agent", session: a.id }, from: { node: alpha.identity.id } });
+    expect(beta.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "transfer.start")).toMatchObject({ principal: { kind: "node", id: primary.d.identity.id }, outcome: "ok" });
+  }, 60_000);
+
   test("the bypass switch is set on the node an app on the primary names, and that node's row says so", async () => {
     primary = await startPrimary();
     alpha = await startSecondary(primary, { node: 'name = "Alpha"\n' });
@@ -118,7 +154,7 @@ describe("agent messages across nodes", () => {
     expect((await post("wrong", { jsonrpc: "2.0", id: 1, method: "ping" })).status).toBe(401);
     const list = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(list.status).toBe(200);
-    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "create_invite", "accept_invite", "end_connection"]);
+    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection"]);
     expect((await post(primary.d.hookToken, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(204);
     const call = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_agents", arguments: {} } });
     expect(((await call.json()) as { result: { isError: boolean; content: { text: string }[] } }).result).toMatchObject({ isError: true, content: [{ text: "Cophyla can't tell which session you are, so nothing was sent." }] });

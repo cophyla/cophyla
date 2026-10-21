@@ -317,6 +317,13 @@ export const requestFilters = {
   "connection.invite": { names: "global" },
   "connection.accept": { names: "global" },
   "connection.end": { names: "global" },
+  // a transfer reaches any path of the machines it joins, as a shell there does
+  "transfer.start": { names: "global" },
+  "transfer.cancel": { names: "global" },
+  "transfer.retry": { names: "global" },
+  "transfer.dismiss": { names: "global" },
+  "transfer.list": { names: "global" },
+  "transfer.reveal": { names: "global" },
   // a node's direct connections are its settings; a phone's own data channel is about nothing a limit cuts
   "direct.enable": { names: "global" },
   "direct.disable": { names: "global" },
@@ -366,6 +373,7 @@ export const notificationFilters = {
   "remote.pipe.ack": "open",
   "remote.pipe.close": "open",
   "connection.state": "global",
+  "transfer.state": "global",
   "audit.entry": "global",
   "account.state": "global",
   "update.state": "global",

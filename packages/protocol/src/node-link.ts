@@ -11,7 +11,7 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, Terminal, Transfer, Workspace } from "./entities.ts";
 import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
@@ -75,6 +75,15 @@ export const ReplicaSnapshot = z.object({
 });
 export type ReplicaSnapshot = z.infer<typeof ReplicaSnapshot>;
 
+/** One entry of what `files.tree` lists: a folder, or a file with its size and when it last changed. */
+export const TreeEntry = z.object({
+  rel: z.string().max(4096),
+  dir: z.literal(true).optional(),
+  size: z.number().int().nonnegative().optional(),
+  mtimeMs: z.number().int().nonnegative().optional(),
+});
+export type TreeEntry = z.infer<typeof TreeEntry>;
+
 /** Requests over the link: the handshake and heartbeat upward, takeover downward, relay and replication. */
 export const nodeLinkRequests = {
   /**
@@ -115,6 +124,8 @@ export const nodeLinkRequests = {
       asks: z.array(Ask),
       /** The node's terminals, so the primary's clients see and open them; none from a node that keeps them its own. */
       terminals: z.array(Terminal).optional(),
+      /** The transfers the node receives, running and ended, so the primary's clients see them. */
+      transfers: z.array(Transfer).optional(),
     }),
     result: z.object({
       registry: z.array(NodeRecord),
@@ -219,11 +230,53 @@ export const nodeLinkRequests = {
   /** Either way: a stream `remote.ticket` opened on `node` for `viewer` ended (its window closed, or its client went), and its session goes. */
   "remote.close": { params: z.object({ node: NodeId, stream: z.string().min(1).max(64), viewer: z.string().min(1).max(128) }), result: Empty },
   /**
+   * Either way, carried on by the primary: what `path` on `node` holds, for a transfer to
+   * pull. A file is one entry (`rel` ""); a folder is its folders and files under it, each
+   * before what is in it, by its path there (`/` between the names), a link never followed
+   * (`skipped` counts them, and anything that is neither). `total` is the bytes of its files,
+   * `files` how many, `count` how many entries in all; a long listing comes a page at a time,
+   * `next` the entry the next page starts `from`. A path outside the folders a confined node
+   * shares is refused.
+   */
+  "files.tree": {
+    params: z.object({ node: NodeId, path: z.string().min(1).max(4096), from: z.number().int().nonnegative().optional() }),
+    result: z.object({
+      kind: z.enum(["file", "folder"]),
+      name: z.string().min(1),
+      entries: z.array(TreeEntry),
+      total: z.number().int().nonnegative(),
+      files: z.number().int().nonnegative(),
+      count: z.number().int().nonnegative(),
+      skipped: z.number().int().nonnegative(),
+      next: z.number().int().positive().optional(),
+    }),
+  },
+  /**
+   * Either way, carried on by the primary as `remote.pipe.open` is: a pipe of a file's bytes
+   * from `node`, read from `path` (or `rel` under it, for a file of a folder) from `at` bytes
+   * in. The answer is the window and the file as it is now, its size and when it last changed,
+   * so a resumed transfer can tell it changed. Its bytes from `at` to `size` follow, and the
+   * pipe stays open until the receiver closes it.
+   */
+  "files.pipe.open": {
+    params: z.object({ node: NodeId, pipe: PipeId, path: z.string().min(1).max(4096), rel: z.string().max(4096).optional(), at: z.number().int().nonnegative() }),
+    result: z.object({ window: z.number().int().positive(), size: z.number().int().nonnegative(), mtimeMs: z.number().int().nonnegative() }),
+  },
+  /**
+   * Secondary → primary: `caller`, a live session of the secondary's, sends `path` (on its own
+   * machine) to `to`, an agent or a machine, with the `send_file` tool. Transfers start where
+   * they land, from the primary; the answer is the text the model reads.
+   */
+  "file.send": {
+    params: z.object({ caller: SessionId, mode: AgentMode, path: z.string().min(1).max(4096), to: z.string().min(1).max(200), dir: z.string().min(1).max(4096).optional() }),
+    result: z.object({ text: z.string(), isError: z.boolean().optional() }),
+  },
+  /**
    * Secondary → primary, agent messaging: the agent sessions `caller`, a live session of the
    * secondary's, may message, every node's, with the aliases the primary gives them. Refused
    * for a session the primary does not hold as the secondary's.
    */
-  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing), connections: z.array(ConnectionListing).optional() }) },
+  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing), connections: z.array(ConnectionListing).optional(), machines: z.array(MachineListing).optional() }) },
   /**
    * Secondary → primary, agent messaging: `caller`'s message to the agent `to` names (an
    * alias, `alias@machine` or a session id), `mode` its permission class as the secondary
@@ -268,8 +321,8 @@ export const nodeLinkFrames = {
   "replicate.file": ReplicaFile,
   /** A candidate of the link's data channel attempt `attempt`, either way; `null` ends one side's. */
   "direct.candidate": z.object({ attempt: z.string().min(1).max(64), candidate: IceCandidate.nullable() }),
-  /** A pipe's bytes (base64), window and end, either way. */
-  "pipe.data": z.object({ pipe: PipeId, data: z.string().max(90_000) }),
+  /** A pipe's bytes (base64), window and end, either way: a stream's 48 KiB at a time, a file's 128 KiB. */
+  "pipe.data": z.object({ pipe: PipeId, data: z.string().max(180_000) }),
   "pipe.ack": z.object({ pipe: PipeId, bytes: z.number().int().positive() }),
   "pipe.close": z.object({ pipe: PipeId, reason: z.string().max(200).optional() }),
   /** Node → primary: output of a terminal of the node's that `client`, a client of the primary's, opened. */

@@ -68,12 +68,13 @@ again.
 | `sidecars/` | 8 | an external process supervised: a free loopback port, a health poll, restart with backoff, a rotated log under `data/sidecars/`, the daemon's own CPU mask (`index.ts`); `tts-py.ts` builds what ships as sources — `uv`, the environment, the locked requirements, the weights — each step marked so an interrupted run resumes, each reported as `voice.setup` |
 | `metrics/` | 9 | the machine sampled without a shell: the engines behind one interface (`windows.ts` through `bun:ffi` and `NtQuerySystemInformation`, `linux.ts` over `/proc`, `macos.ts` over libproc, `nvml.ts` for an NVIDIA GPU, `windows-gpu.ts` for any other on Windows (the GPU counters Task Manager reads, through PDH: each adapter's busiest engine, its dedicated memory in use and each process's, the adapters named and sized by DXGI), taking over where NVML is not there, and `apple-gpu.ts` for a Mac's (IOKit's IOAccelerator statistics: utilisation and the unified memory it holds, no per-process share), `fake.ts` for tests), owners from the process tree (`owners.ts`), the sample built from two raw readings (`sampler.ts`), pressure with hysteresis (`pressure.ts`), per-minute rollups (`rollup.ts`), the price table and the token counters (`prices.ts`, `tokens.ts`), each login's plan limits from Claude's usage endpoint, Codex's rollouts or Muse's host (`limits.ts`), each subscriber's share of the samples with the counts it skipped carried on and the rows summed per owner (`delivery.ts`), and the module with its ring, its subscribers and in-process watchers (a metric listener's, which move the rate and read no plan limits), its adaptive rate and a range's spend (`index.ts`) |
 | `remote/` | 10 | the remote desktop: the host found or installed with the package manager (`install.ts`), its API with the cookie login, the blind PIN and the viewer grant (`host.ts`), the Windows service or a spawned host (`service.ts`), moonlight-qt driven by its CLI (`moonlight.ts`), the moonlight-web sidecar fetched from its pinned release (`manifest.ts`, `web.ts`), the tickets and the reverse proxy under `/remote` (`proxy.ts`), the OS screenshot (`screenshot.ts`), and the module with `remote.state` and the viewers (`index.ts`) |
-| `nodes/` | 0, 9, 12, 17 | this node's identity (`self.ts`); the sealed sockets every link runs in (`sealed-link.ts`) and redeeming an invite (`enroll.ts`); confinement to the folders a join shares (`confine.ts`); the registry in the `nodes` table (`registry.ts`), the mirrors of remote sessions, asks, workspaces and terminals (`mirror.ts`), the terminals across the links (`terminals.ts`), the link's peer (`peer.ts`), the primary's side of the link with the relay host and the fan-out (`inbound.ts`), the secondary's side with reconnect, heartbeat and the upward stream over a direct socket or a relay tunnel (`outbound.ts`), the requests a secondary serves as principal `node` (`served.ts`), forwarding over both method tables (`forward.ts`), UDP discovery (`discovery.ts`), replication to a backup (`replication.ts`), the role machine with its epoch (`role.ts`), and the module with the server registry's grants folded into the role (`index.ts`) |
+| `transfers/` | 25 | files and folders sent between the user's machines, kept and pulled by the machine they go to (`index.ts`: the rows in `transfers.json`, one running per machine, the partials and their first free names, resuming after a drop, the relay's confirm over 1 GiB); what a path holds, walked without following a link (`tree.ts`); a file read into a pipe from an offset (`source.ts`) and written from one (`sink.ts`); `transfer.*` (`methods.ts`) |
+| `nodes/` | 0, 9, 12, 17 | this node's identity (`self.ts`); the sealed sockets every link runs in (`sealed-link.ts`) and redeeming an invite (`enroll.ts`); confinement to the folders a join shares (`confine.ts`); the registry in the `nodes` table (`registry.ts`), the mirrors of remote sessions, asks, workspaces, terminals and transfers (`mirror.ts`), the terminals across the links (`terminals.ts`), a transfer's walk and file pipes served and carried on (`transfers.ts`), the link's peer (`peer.ts`), the primary's side of the link with the relay host and the fan-out (`inbound.ts`), the secondary's side with reconnect, heartbeat and the upward stream over a direct socket or a relay tunnel (`outbound.ts`), the requests a secondary serves as principal `node` (`served.ts`), forwarding over both method tables (`forward.ts`), UDP discovery (`discovery.ts`), replication to a backup (`replication.ts`), the role machine with its epoch (`role.ts`), and the module with the server registry's grants folded into the role (`index.ts`) |
 
 `bus.ts` carries `ask.state`, `audit.entry`, `session.state`, `session.event`,
 `workspace.state`, `chat.message`, `chat.delta`, `chat.retract`, `chat.progress`, `assistant.state`, `task.state`, `task.ready`, `thread.state`,
 `user.message`, `user.activity`, `voice.state`, `voice.transcript`, `voice.setup` and
-`update.state`, `node.state`, `node.joined`, `node.left`, `node.pressure`, `remote.state`, `account.state`, `entitlement.updated`, `listener.fired` and `listener.removed` from the modules
+`update.state`, `transfer.state`, `node.state`, `node.joined`, `node.left`, `node.pressure`, `remote.state`, `account.state`, `entitlement.updated`, `listener.fired` and `listener.removed` from the modules
 that raise them to the api and brain-link in-process; on a secondary the same bus feeds the
 node link upward, and on the primary what a link reports is re-emitted here; `session.event`
 goes out per stored event, undebounced, so a timeline in a view grows as the harness works,
@@ -885,6 +886,22 @@ lease every `[nodes] registry_heartbeat_ms` while primary, and steps down when t
 names another holder. Its claims and a primary's register say `chosen`, and the server lets
 no higher epoch without it (an older daemon that promoted itself while cut off) take a live
 lease. Signed out, or on the free plan, the one-network rules above hold unchanged.
+
+## Transfers
+
+Send to… in a Files panel's menu, a file dropped from the desktop onto Files, or an agent's
+`send_file` start a transfer on the machine it goes to, which pulls it from the sending one
+over the node links, through the primary between two secondaries. It lands in the folder
+picked, or that machine's Downloads folder, as `<name>.cophyla-part` until it is all there,
+then under the first free of `name`, `name (1)`, …; nothing is overwritten. A link that drops
+or a daemon that restarts leaves it `waiting`, and it carries on from what came. Cancel deletes
+what came; a failed one keeps it for Retry until it is dismissed. Over 1 GiB through the relay
+asks first, since the relay counts what it carries. The rows are in `<data>/transfers.json`.
+
+A machine that shares folders alone (`--workspace`) sends and receives inside them, a hands
+machine and a workspace node neither, and a machine on an older Cophyla is named as one to
+update. A file pipe sends 128 KiB pieces with a 1 MiB window, acknowledged a quarter window at
+a time.
 
 ## Tests
 

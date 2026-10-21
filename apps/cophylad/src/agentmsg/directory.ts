@@ -12,7 +12,7 @@
 // agent's message. Nor does a node whose row does not say it runs agent messaging: one turned
 // off, or an older version, which could not deliver what is sent.
 
-import type { AgentListing, AgentRef, ConnectionListing, NodeRecord, Session } from "@cophyla/protocol";
+import type { AgentListing, AgentRef, ConnectionListing, MachineListing, NodeRecord, Session } from "@cophyla/protocol";
 
 /** A session with the machine it runs on, as the directory holds it. */
 export interface DirectoryEntry {
@@ -142,8 +142,23 @@ export function resolve(d: Directory, to: string): DirectoryEntry | { error: str
   return { error: `no agent session is called "${want}": list_agents shows who you can message` };
 }
 
-/** The directory as the model reads it: one line a session, then the other people's agents this session is connected to. */
-export function listingText(rows: AgentListing[], connections: ConnectionListing[] = []): string {
+/** The user's machines as the model reads them, for `send_file`: `here` is the caller's own. */
+export function machinesText(machines: MachineListing[], here?: string): string | undefined {
+  const named = machines.map((m) => {
+    const notes = [m.node === here ? "yours" : undefined, m.online ? undefined : "offline", m.files ? undefined : "runs an older Cophyla, which takes no files"].filter((n) => n !== undefined);
+    return notes.length > 0 ? `${m.name} (${notes.join(", ")})` : m.name;
+  });
+  return named.length === 0 ? undefined : `Machines (send_file with to set to the name): ${named.join(", ")}.`;
+}
+
+/** The directory as the model reads it: one line a session, then the other people's agents this session is connected to, then the user's machines. */
+export function listingText(rows: AgentListing[], connections: ConnectionListing[] = [], machines: MachineListing[] = [], here?: string): string {
+  const text = agentsText(rows, connections);
+  const m = machinesText(machines, here);
+  return m ? `${text}\n\n${m}` : text;
+}
+
+function agentsText(rows: AgentListing[], connections: ConnectionListing[]): string {
   const words: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "an ACP agent" };
   const own =
     rows.length === 0

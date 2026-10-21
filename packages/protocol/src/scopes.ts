@@ -8,7 +8,8 @@
 // phone's wake word is detected or start an utterance on it. A terminal's row is a headline
 // like a session's; its screen and its keys need `terminal`, since raw keys can do what
 // `session.send` cannot. `session.mode` presses Shift+Tab for `sessions:write`, but only
-// into a mode the session's own launch offers, as a plan's answer can.
+// into a mode the session's own launch offers, as a plan's answer can. A transfer reads and
+// writes anywhere on the machines it joins, as a shell there could: `terminal` too.
 //
 // `null` means the host's alone, for signals and notifications too: a data channel's
 // signalling (`direct.*`), which hands out TURN credentials and moves the host's own link,
@@ -121,6 +122,12 @@ export const requestScopes = {
   "connection.invite": "controllers",
   "connection.accept": "controllers",
   "connection.end": "controllers",
+  "transfer.start": "terminal",
+  "transfer.cancel": "terminal",
+  "transfer.retry": "terminal",
+  "transfer.dismiss": "terminal",
+  "transfer.list": "terminal",
+  "transfer.reveal": "terminal",
   "direct.enable": "account",
   "direct.disable": "account",
   "direct.info": null,
@@ -161,6 +168,7 @@ export const notificationScopes = {
   "remote.pipe.ack": null,
   "remote.pipe.close": null,
   "connection.state": "controllers",
+  "transfer.state": "terminal",
   "update.state": "updates",
 } as const satisfies Record<ClientNotificationName, Scope | null>;
 

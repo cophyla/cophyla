@@ -17,6 +17,7 @@ import {
   TaskId,
   ThreadId,
   Timestamp,
+  TransferId,
   WorkspaceId,
 } from "./ids.ts";
 import { ErrorCode } from "./rpc.ts";
@@ -91,6 +92,8 @@ export const NodeCapabilities = z.object({
    * message without Claude's own hold (`agents.accept`).
    */
   agents: z.object({ acceptInBypass: z.boolean() }).optional(),
+  /** It sends and receives files and folders (`transfer.*`): a full member of the cluster, never a hands or a workspace node. */
+  files: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 
@@ -380,6 +383,18 @@ export const AgentListing = AgentRef.extend({
 export type AgentListing = z.infer<typeof AgentListing>;
 
 /**
+ * One of the user's machines as `list_agents` names it for `send_file`: whether it is
+ * reachable now, and whether it takes files (an older Cophyla does not).
+ */
+export const MachineListing = z.object({
+  node: NodeId,
+  name: z.string(),
+  online: z.boolean(),
+  files: z.boolean(),
+});
+export type MachineListing = z.infer<typeof MachineListing>;
+
+/**
  * A sender's permission class, for the parity rule: `bypass` when it runs with no prompts,
  * `prompting` otherwise, and when cophylad cannot tell.
  */
@@ -466,6 +481,58 @@ export const Connection = z.object({
   reason: z.string().optional(),
 });
 export type Connection = z.infer<typeof Connection>;
+
+// ---------------------------------------------------------------------------------------
+// Transfer
+
+/**
+ * Where a transfer stands: `queued` behind another one to the same machine, `running`,
+ * `waiting` for the sending machine to be reachable again (it carries on where it stopped),
+ * `done`, `failed` (what came is kept for a retry until it is dismissed), `cancelled` (what
+ * came is gone).
+ */
+export const TransferState = z.enum(["queued", "running", "waiting", "done", "failed", "cancelled"]);
+export type TransferState = z.infer<typeof TransferState>;
+
+/** The way a transfer's bytes go, at the slowest of its hops: the LAN, a data channel, or the server's relay. */
+export const TransferVia = z.enum(["lan", "direct", "relay"]);
+export type TransferVia = z.infer<typeof TransferVia>;
+
+/** Who started a transfer: the user in an app, or an agent session through its `send_file` tool. */
+export const TransferBy = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("user") }),
+  z.object({ kind: z.literal("agent"), alias: z.string().min(1).max(200), session: SessionId }),
+]);
+export type TransferBy = z.infer<typeof TransferBy>;
+
+/**
+ * A file or a folder sent from one of the user's machines (`from`) to a folder on another
+ * (`to.dir`), kept by the receiving machine, which pulls it. `to.path` is where it landed,
+ * once it is done: the first of `name`, `name (1)`, … that was free, never over anything.
+ * `total` and `bytes` count the bytes to send and the bytes come; a folder counts its files
+ * too (`files`). `rate` is bytes a second lately, while it runs. `via` is the slowest way its
+ * bytes take. `error` says why it failed, or what it waits for. `dismissed` is its last row:
+ * the user took it off the list.
+ */
+export const Transfer = z.object({
+  id: TransferId,
+  from: z.object({ node: NodeId, path: z.string().min(1) }),
+  to: z.object({ node: NodeId, dir: z.string().min(1), path: z.string().optional() }),
+  kind: z.enum(["file", "folder"]),
+  name: z.string().min(1),
+  total: z.number().int().nonnegative(),
+  bytes: z.number().int().nonnegative(),
+  files: z.object({ done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).optional(),
+  state: TransferState,
+  error: z.string().optional(),
+  via: TransferVia.optional(),
+  rate: z.number().nonnegative().optional(),
+  by: TransferBy,
+  startedAt: Timestamp,
+  endedAt: Timestamp.optional(),
+  dismissed: z.literal(true).optional(),
+});
+export type Transfer = z.infer<typeof Transfer>;
 
 /** The harnesses the chat's own session runs on. */
 export const AssistantHarness = z.enum(["claude", "codex"]);
@@ -1522,11 +1589,16 @@ export const entities = {
   AgentRef,
   AgentListing,
   AgentMode,
+  MachineListing,
   Connection,
   ConnectionListing,
   ConnectionPeer,
   ConnectionSender,
   ConnectionState,
+  Transfer,
+  TransferState,
+  TransferVia,
+  TransferBy,
   Client,
   Controller,
   Access,

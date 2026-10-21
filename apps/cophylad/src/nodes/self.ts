@@ -50,9 +50,9 @@ export function platformName(p: NodeJS.Platform = process.platform): Platform {
  * `harnesses` are the kinds with a profile in status `ok`; the sessions module supplies
  * them, `voice` the voice module's loaded stages, `role` the nodes module's current role
  * (the configured one when absent), `remote` whether the desktop host serves, `via` how
- * this node reaches its primary (`relay` through the server's tunnel), and `terminals`
- * whether it starts terminals for the cluster's clients. A backup stays marked `backup` in
- * either role.
+ * this node reaches its primary (`relay` through the server's tunnel), `terminals`
+ * whether it starts terminals for the cluster's clients, and `files` whether it sends and
+ * receives transfers. A backup stays marked `backup` in either role.
  */
 export function selfNode(
   identity: NodeIdentity,
@@ -67,6 +67,7 @@ export function selfNode(
   via: Via = "direct",
   terminals = false,
   agents?: { acceptInBypass: boolean },
+  files = false,
 ): Node {
   const node: Node = {
     id: identity.id,
@@ -83,6 +84,7 @@ export function selfNode(
       brain: role === "primary",
       terminals,
       ...(agents ? { agents: { ...agents } } : {}),
+      ...(files ? { files: true } : {}),
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

@@ -37,7 +37,7 @@
 import { existsSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
-import type { Ask, ClientNotificationParams, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Via, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientNotificationParams, FolderPick, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
 import { readLinkFile, removeLinkFile, writeLinkFile } from "../grants/link-file.ts";
@@ -91,6 +91,11 @@ import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
 import type { NodeTerminals, TerminalViews } from "./terminals.ts";
+import { TransferLinks } from "./transfers.ts";
+import { TreeCache } from "../transfers/tree.ts";
+import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
+import type { Hop, Transfers } from "../transfers/index.ts";
+import type { TreePage } from "../transfers/tree.ts";
 import type { RoleState } from "./role.ts";
 import { openRelayLink } from "./sealed-link.ts";
 import type { NodeIdentity } from "./self.ts";
@@ -133,8 +138,12 @@ export interface NodesDeps {
   terminals?: () => NodeTerminals | undefined;
   /** The direct connections, once built: switched from the primary's clients, their state carried up on link. */
   direct?: () => Direct | undefined;
-  /** The pipes a stream page rides where there is no route to its desktop, once built. */
+  /** The pipes a stream page rides where there is no route to its desktop, and a transfer's files, once built. */
   pipes?: () => PipeHub | undefined;
+  /** The transfers this node receives, once built: their rows go up with the join, and the primary's clients start them here. */
+  transfers?: () => Transfers | undefined;
+  /** This computer's folders, for a picker on the primary's clients (Send to…'s), terminals here or not. */
+  folders?: (path: string | undefined) => Promise<FolderPick>;
   /** How soon a relayed link tries its data channel, and again; shorter in the tests. */
   directTiming?: LinkDirectTiming;
   log: Logger;
@@ -212,6 +221,8 @@ export class Nodes {
   readonly role: RoleMachine;
   private inbound: Inbound;
   private outbound: Outbound;
+  /** This node's walks of what a transfer pulls from it, kept for their next pages. */
+  private trees: TreeCache;
   private replicator: Replicator;
   private replica?: Replica;
   private discovery?: DiscoverySocket;
@@ -282,6 +293,25 @@ export class Nodes {
       },
       log: this.log.child("streams"),
     });
+    this.trees = new TreeCache(deps.now);
+    const transfers = new TransferLinks({
+      selfId: () => deps.identity.id,
+      gate: deps.gate,
+      pipes: () => deps.pipes?.(),
+      // only the primary carries a listing on, to the secondary that has the path
+      carry: (node, method, params, opts) => {
+        if (this.role.role !== "primary") return Promise.reject(new RpcError("unavailable", `no route to ${node} from here`));
+        return this.inbound.forward(node, method, params, opts);
+      },
+      row: (node) => this.registry.get(node),
+      trees: this.trees,
+      require: () => this.requirePath(),
+      sends: () => !this.role.hands,
+      // the primary, let work here unasked at the join
+      trusted: (node) => this.role.role !== "primary" && node === this.outbound.primaryId && this.membership !== undefined && this.membership.askPrimary !== true,
+      log: this.log.child("transfers"),
+      ...(deps.now ? { now: deps.now } : {}),
+    });
     this.inbound = new Inbound({
       credential: (grant, kind) => this.credential(grant, kind),
       cluster: () => this.membership?.cluster,
@@ -314,6 +344,7 @@ export class Nodes {
       ...(deps.direct ? { direct: deps.direct } : {}),
       directNodes: () => deps.config.direct.nodes,
       streams,
+      transfers,
       ...(deps.agents ? { agents: deps.agents } : {}),
       ...(deps.now ? { now: deps.now } : {}),
     });
@@ -357,6 +388,9 @@ export class Nodes {
       directNodes: () => deps.config.direct.nodes,
       ...(deps.directTiming ? { directTiming: deps.directTiming } : {}),
       streams,
+      transfers,
+      ...(deps.transfers ? { receiving: deps.transfers } : {}),
+      ...(deps.folders ? { folders: deps.folders } : {}),
       replica: () => this.replica,
       heartbeatMs: deps.config.nodes.heartbeat_ms,
       helloTimeoutMs: deps.config.nodes.hello_timeout_ms,
@@ -513,6 +547,55 @@ export class Nodes {
     return (await this.linkRequest(hop, "remote.pipe.open", params, { timeoutMs: PIPE_OPEN_TIMEOUT_MS })) as { window: number };
   }
 
+  /** Opens a file's pipe on the link to `hop`, from `params.node`: what that node found of the file. */
+  async openFilePipeOn(hop: string, params: { node: string; pipe: string; path: string; rel?: string; at: number }): Promise<{ window: number; size: number; mtimeMs: number }> {
+    return (await this.linkRequest(hop, "files.pipe.open", params, { timeoutMs: PIPE_OPEN_TIMEOUT_MS })) as { window: number; size: number; mtimeMs: number };
+  }
+
+  /** A page of what `path` on `node` holds, for a transfer: walked here for this node, asked over the links for another. */
+  async tree(node: string, path: string, from?: number): Promise<TreePage> {
+    if (node === this.deps.identity.id) {
+      const require = this.requirePath();
+      return this.trees.page(path, from, require ? { require } : {});
+    }
+    return (await this.linkRequest(node, "files.tree", { node, path, ...(from !== undefined ? { from } : {}) }, { timeoutMs: TREE_TIMEOUT_MS })) as TreePage;
+  }
+
+  /** What refuses a path outside the folders this node shares with its primary, when it shares some alone. */
+  requirePath(): ((path: string) => void) | undefined {
+    const c = this.confinement();
+    return c?.active ? (path) => c.require(path, "that path") : undefined;
+  }
+
+  /**
+   * Whether a pipe toward `node` could open now: this node; the primary, while linked to it;
+   * a secondary the primary holds a link to, as this node's registry says.
+   */
+  reachable(node: string): boolean {
+    if (node === this.deps.identity.id) return true;
+    if (this.nextHop(node) === undefined) return false;
+    if (this.role.role === "primary" || node === this.outbound.primaryId) return true;
+    return this.registry.get(node)?.status === "online";
+  }
+
+  /**
+   * The way the link between `node` and the primary goes, as this node knows it: the LAN, a
+   * relayed link's data channel, or the relay; none for the primary, or a node with no link.
+   */
+  hopOf(node: string): Hop | undefined {
+    if (node === this.primaryId()) return undefined;
+    if (node === this.deps.identity.id) return this.role.role === "primary" ? undefined : this.outbound.way;
+    const row = this.registry.get(node);
+    if (!row) return undefined;
+    if (row.via !== "relay") return "lan";
+    return row.p2p ? "direct" : "relay";
+  }
+
+  /** Whether this node sends and receives files: a full member, never a hands node. */
+  movesFiles(): boolean {
+    return !this.role.hands;
+  }
+
   /** How other nodes reach this one: the LAN listener on every address, the LAN ones first. */
   selfEndpoints(): string[] {
     const port = this.deps.lanPort();
@@ -607,6 +690,8 @@ export class Nodes {
       ownerOfAsk: (id) => (this.isLocal("ask", id) ? undefined : this.mirror.ownerOfAsk(id)),
       ownerOfWorkspace: (id) => (this.isLocal("workspace", id) ? undefined : this.mirror.ownerOfWorkspace(id)),
       ownerOfTerminal: (id) => (this.isLocal("terminal", id) ? undefined : this.mirror.ownerOfTerminal(id)),
+      ownerOfTransfer: (id) => (this.deps.transfers?.()?.get(id) ? undefined : this.mirror.ownerOfTransfer(id)),
+      mirrorTransfers: () => this.mirror.transfers(),
       noteTerminal: (node, t) => {
         if (this.inbound.linked(node)) this.mirror.apply(node, "terminal.state", t);
       },

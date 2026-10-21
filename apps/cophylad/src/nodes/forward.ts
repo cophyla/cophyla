@@ -3,14 +3,15 @@
 // owns goes to that node over the link, gated there as principal `node`; one that names a
 // `node` goes to it, and a tool run or a terminal started in a workspace goes where the
 // workspace is; a terminal opened or closed on another node goes with the client it is for
-// (terminals.ts); the list requests merge this node's rows with the mirrors or a fan-out;
+// (terminals.ts); a transfer goes to the machine it goes to, which keeps it, as the user's
+// whatever a client says; the list requests merge this node's rows with the mirrors or a fan-out;
 // the rest run here. The caller's own gate still runs first, on the primary, so a forwarded
 // write is asked about twice by default: once as the caller's class here, once as the
 // node's class there. `[gate.rules] "node:session.send" = "allow"` on a node that trusts
 // its primary removes the second.
 
 import { RpcError } from "@cophyla/protocol";
-import type { Ask, ClientKind, ClosedSession, ClientParams, ClientResult, NodeRecord, Session, SpendTotals, Terminal, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientKind, ClosedSession, ClientParams, ClientResult, NodeRecord, Session, SpendTotals, Terminal, Transfer, Workspace } from "@cophyla/protocol";
 import type { Chat } from "../chat/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { ProcessDetail } from "../metrics/delivery.ts";
@@ -21,6 +22,9 @@ export interface ForwardHost {
   ownerOfAsk(id: string): string | undefined;
   ownerOfWorkspace(id: string): string | undefined;
   ownerOfTerminal(id: string): string | undefined;
+  /** The machine a transfer goes to, which keeps it, when it is not this one. */
+  ownerOfTransfer(id: string): string | undefined;
+  mirrorTransfers(): Transfer[];
   /** A terminal a node answered it started: mirrored at once, so the client that opens it next is routed to it before the node's own row comes up. */
   noteTerminal(node: string, t: Terminal): void;
   mirrorAsk(id: string): Ask | undefined;
@@ -128,6 +132,15 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     // The picker lists a folder of the computer a terminal is to start on.
     case "terminal.folders":
       return node(p["node"] as string | undefined);
+    // A transfer starts on the machine it goes to, which keeps it.
+    case "transfer.start":
+      return node((p["to"] as { node?: string } | undefined)?.node);
+    case "transfer.cancel":
+    case "transfer.retry":
+    case "transfer.dismiss":
+      return node(host.ownerOfTransfer(p["id"] as string));
+    case "transfer.list":
+      return { kind: "merge" };
     case "profile.list":
     case "profile.limits":
     case "session.closed":
@@ -169,6 +182,7 @@ export const merges: Record<string, Merge> = {
   },
   "workspace.list": async (_local, _params, host) => ({ workspaces: dedupe([...host.localWorkspaces(), ...host.mirrorWorkspaces()]).sort(byActivity) }),
   "terminal.list": async (local, _params, host) => ({ terminals: dedupe([...(local as { terminals: Terminal[] }).terminals, ...host.mirrorTerminals()]) }),
+  "transfer.list": async (local, _params, host) => ({ transfers: dedupe([...(local as { transfers: Transfer[] }).transfers, ...host.mirrorTransfers()]).sort((a, b) => b.startedAt - a.startedAt) }),
   "node.list": async (_local, _params, host) => ({ nodes: host.registryList() }),
   "tool.list": async (local, params, host) => {
     const mine = (local as { tools: { name: string; node: string }[] }).tools;
@@ -210,6 +224,11 @@ export const merges: Record<string, Merge> = {
 
 function withoutAgent(p: Record<string, unknown>): Record<string, unknown> {
   const { agent: _agent, ...rest } = p;
+  return rest;
+}
+
+function withoutSender(p: Record<string, unknown>): Record<string, unknown> {
+  const { by: _by, notify: _notify, ...rest } = p;
   return rest;
 }
 
@@ -287,7 +306,13 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
           // The owner types a user's message and pipes the brain's, and ends a session of the
           // user's only for the user: it learns who asked from here, never from the caller. An
           // agent's message is the router's to forward (agentmsg), so a caller's `agent` is dropped.
-          const params = name === "session.send" || name === "session.stop" ? { ...withoutAgent(P(p)), as: c.principal?.kind === "brain" ? "brain" : "user" } : p;
+          // A client's transfer is the user's: who an agent's is from is the router's to say.
+          const params =
+            name === "session.send" || name === "session.stop"
+              ? { ...withoutAgent(P(p)), as: c.principal?.kind === "brain" ? "brain" : "user" }
+              : name === "transfer.start"
+                ? { ...withoutSender(P(p)), by: { kind: "user" } }
+                : p;
           const result = await host.forward(route.node, name, params, opts);
           after[name]?.(result, p, host, route.node);
           return result;

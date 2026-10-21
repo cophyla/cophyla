@@ -9,12 +9,12 @@
 // `voice.setup`, and a stage of it coming up raises `node.state`; its delivery `voice.next`; `metrics` raises
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
-// raise `terminal.state`; `listeners` raises `listener.fired` and `listener.removed`. The
+// raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
 
-import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, Connection, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, UserMessageSource, Workspace } from "@cophyla/protocol";
+import type { Ask, AssistantState, AuditEntry, CapabilityEventParams, ClientNotificationParams, Connection, EditableProblem, Message, Node, PressureLevel, PressureResource, Session, SessionEvent, Task, TaskBlocker, Terminal, Thread, Transfer, UserMessageSource, Workspace } from "@cophyla/protocol";
 import type { z } from "zod";
 
 export interface UserMessageEvent {
@@ -73,6 +73,8 @@ export interface BusEvents {
   "terminal.state": Terminal;
   /** A connection to another user's terminal was made, used, changed end or ended. */
   "connection.state": Connection;
+  /** A transfer this machine receives changed, or one a linked node receives, carried up; `dismissed` its last row. */
+  "transfer.state": Transfer;
   "workspace.state": Workspace;
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;

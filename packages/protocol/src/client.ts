@@ -45,6 +45,8 @@ import {
   Terminal,
   TerminalRef,
   Thread,
+  Transfer,
+  TransferBy,
   Usage,
   ViewManifest,
   VoiceState,
@@ -52,7 +54,7 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, TransferId, WorkspaceId } from "./ids.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
@@ -476,6 +478,14 @@ export const ClientWorkspace = Workspace.omit({ summary: true, tags: true });
 export type ClientWorkspace = z.infer<typeof ClientWorkspace>;
 export const ClientThread = Thread.omit({ summary: true, tags: true });
 export type ClientThread = z.infer<typeof ClientThread>;
+
+/**
+ * What `transfer.start` answers instead of starting, for the user's word first: the transfer
+ * is over 1 GB and a hop of it rides the server's relay, which counts every message it
+ * carries. `relayHops` names the machines whose link to the primary rides it.
+ */
+export const TransferConfirm = z.object({ bytes: z.number().int().nonnegative(), relayHops: z.array(NodeId).min(1) });
+export type TransferConfirm = z.infer<typeof TransferConfirm>;
 
 export const clientRequests = {
   hello: {
@@ -1051,6 +1061,39 @@ export const clientRequests = {
   "connection.accept": { params: ConnectionEndpoint.extend({ code: z.string().min(1).max(4096) }), result: z.object({ connection: Connection }) },
   /** Ends a connection at both ends, or cancels a pending one's invite. */
   "connection.end": { params: z.object({ id: ConnectionId }), result: Empty },
+  /**
+   * Sends a file or a folder from one of the user's machines (`from.path`, absolute there) to
+   * a folder on another (`to.dir`, absolute there; its Downloads folder without it), or to
+   * another folder on the same one. The receiving machine keeps the transfer and pulls it,
+   * one at a time per machine; it lands beside what is there, never over it. Over 1 GB with
+   * a hop through the server's relay, it is answered `confirm` and not started, unless
+   * `relayOk`. `by` and `notify` are what the primary carries for an agent's `send_file`
+   * (who sent it, and the agent session told where it landed); a client's own are dropped.
+   * Answered by the receiving machine.
+   */
+  "transfer.start": {
+    params: z.object({
+      from: z.object({ node: NodeId, path: z.string().min(1).max(4096) }),
+      to: z.object({ node: NodeId, dir: z.string().min(1).max(4096).optional() }),
+      relayOk: z.boolean().optional(),
+      by: TransferBy.optional(),
+      notify: SessionId.optional(),
+    }),
+    result: z.object({ transfer: Transfer.optional(), confirm: TransferConfirm.optional() }),
+  },
+  /** Stops a transfer and deletes what came of it. */
+  "transfer.cancel": { params: z.object({ id: TransferId }), result: Empty },
+  /** Starts a failed transfer again, from what came of it. */
+  "transfer.retry": { params: z.object({ id: TransferId }), result: Empty },
+  /** Forgets a transfer that ended: a failed one's partial goes with it. */
+  "transfer.dismiss": { params: z.object({ id: TransferId }), result: Empty },
+  /** Every machine's transfers, the ones running and the ones that ended and were not dismissed. */
+  "transfer.list": { params: Empty, result: z.object({ transfers: z.array(Transfer) }) },
+  /**
+   * Shows where a transfer to this computer landed in its file manager, as `session.reveal`
+   * shows a file: only the desktop app on this computer may ask, and it is never forwarded.
+   */
+  "transfer.reveal": { params: z.object({ id: TransferId }), result: Empty },
   "direct.enable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   "direct.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   /**
@@ -1305,6 +1348,8 @@ export const clientNotifications = {
   "remote.pipe.close": PipeClose,
   /** A connection's row when it is made, used, changes end or ends (`state: ended`, the last word about it). */
   "connection.state": Connection,
+  /** A transfer's row, when it starts, ends or changes state, and about once a second while its bytes come. */
+  "transfer.state": Transfer,
   "update.state": z.object({
     node: NodeId,
     component: UpdateComponent,

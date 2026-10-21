@@ -11,11 +11,12 @@
 // the relay host, `metrics.sample` to the clients watching that node, `remote.state` to the
 // bus like the rest, `terminal.output` to the one client that opened that terminal there
 // (terminals.ts). Requests go the other way as `forward` and `fanout`, and these come up:
-// `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN, and
-// `agent.list` and `agent.send`, a secondary's sessions reaching the agent router here
-// (agentmsg); a backup gets the replication stream. A link that closes
+// `remote.pair`, a secondary's viewer asking a desktop's owner to accept its PIN,
+// `agent.list`, `agent.send` and `file.send`, a secondary's sessions reaching the agent router
+// here (agentmsg), and `files.tree` and `files.pipe.open`, a transfer pulling from this
+// machine or another (transfers.ts); a backup gets the replication stream. A link that closes
 // marks the node offline, ends its mirrored sessions and terminals and cancels its mirrored
-// asks for every client, and raises `node.left`.
+// asks for every client, and raises `node.left`; its transfers show waiting until it is back.
 //
 // Every upward row must be the sender's own: a row that names another node, or claims a
 // session, ask or workspace this primary holds itself, is dropped with a line in the log, and
@@ -59,6 +60,8 @@ import { PIPE_FRAMES, STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
 import type { AgentMessages } from "../agentmsg/index.ts";
 import { TerminalViews } from "./terminals.ts";
+import { FILE_LINK_REQUESTS } from "./transfers.ts";
+import type { TransferLinks } from "./transfers.ts";
 
 type NodeLinkResult<N extends keyof typeof nodeLinkRequests> = z.infer<(typeof nodeLinkRequests)[N]["result"]>;
 
@@ -124,6 +127,8 @@ export interface InboundDeps {
   turn?: () => Promise<{ iceServers: IceServer[]; expiresAt: number }>;
   /** Agent messaging: a secondary's sessions' `agent.list` and `agent.send`, served by the router here. */
   agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
+  /** Transfers: what a path holds and a file's pipe, served here or carried on. */
+  transfers?: TransferLinks;
   now?: () => number;
 }
 
@@ -138,7 +143,7 @@ export interface UpwardClaim {
   workspace?: string;
 }
 
-type UpwardNotification = "session.state" | "session.event" | "ask.state" | "workspace.state" | "terminal.state" | "audit.entry" | "node.state" | "update.state" | "metrics.sample" | "remote.state" | "direct.state";
+type UpwardNotification = "session.state" | "session.event" | "ask.state" | "workspace.state" | "terminal.state" | "audit.entry" | "node.state" | "update.state" | "metrics.sample" | "remote.state" | "direct.state" | "transfer.state";
 type UpwardEvent = "session.discovered" | "session.updated" | "session.ask" | "session.ended" | "workspace.updated" | "event.custom" | "node.pressure";
 
 /** Who owns what an upward row names: the mirror for a row that names only a session or a workspace. */
@@ -163,6 +168,8 @@ export const UPWARD_NOTIFICATIONS: { [N in UpwardNotification]: (v: z.infer<(typ
   "metrics.sample": (v) => ({ node: v.node }),
   "remote.state": (v) => ({ node: v.node }),
   "direct.state": (v) => ({ node: v.node }),
+  // a transfer is the receiving machine's, which keeps it
+  "transfer.state": (v) => ({ node: v.to.node }),
 };
 
 /** The capability events a secondary may raise into this node's stream, each with what it claims. */
@@ -562,11 +569,13 @@ export class Inbound {
       const workspaces = own(p.workspaces, (w) => ({ node: w.node, workspace: w.id }));
       const asks = own(p.asks, (a) => ({ node: a.node, ask: a.id }));
       const terminals: Terminal[] = own(p.terminals ?? [], (t) => ({ node: t.node })).map(plainRow);
-      const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length;
+      const transfers = own(p.transfers ?? [], (t) => ({ node: t.to.node }));
+      const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) + (p.transfers?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length - transfers.length;
       if (dropped > 0) this.log.warn("join rows refused: not the joiner's", { node: p.node.id, count: dropped });
-      this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals });
+      this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals, transfers });
       for (const s of sessions) if (s.status !== "ended") this.deps.bus.emit("session.state", s);
       for (const t of terminals) if (t.status === "running") this.deps.bus.emit("terminal.state", t);
+      for (const t of transfers) this.deps.bus.emit("transfer.state", t);
       for (const w of workspaces) this.deps.bus.emit("workspace.state", w);
       for (const a of asks) if (a.status === "open") this.deps.bus.emit("ask.state", a);
       if (backup) {
@@ -606,6 +615,8 @@ export class Inbound {
     for (const s of dropped.sessions) this.deps.bus.emit("session.state", { ...s, status: "ended", endedAt: at, lastActivity: at });
     for (const t of dropped.terminals) this.deps.bus.emit("terminal.state", { ...t, status: "exited" });
     for (const a of dropped.asks) this.deps.bus.emit("ask.state", { ...a, status: "cancelled" });
+    // a transfer stays its machine's: it waits there, and its row here says so until the machine is back
+    for (const t of dropped.transfers) this.deps.bus.emit("transfer.state", t);
     this.deps.registry.markOffline(peer.id);
     this.log.info("node left", { node: peer.id, reason, sessions: dropped.sessions.length, asks: dropped.asks.length });
     this.broadcastRegistry();
@@ -686,7 +697,8 @@ export class Inbound {
       }
       case "agent.list":
       case "agent.send":
-      case "connection.tool": {
+      case "connection.tool":
+      case "file.send": {
         // Checked and gated as the node's session, never as the node; answered at once, held or not.
         const agents = this.deps.agents?.();
         if (!agents) throw new RpcError("unavailable", "agent messaging is off on the primary");
@@ -703,6 +715,12 @@ export class Inbound {
         if (peer.info.hands && STREAM_LINK_REQUESTS.has(method)) throw new RpcError("denied", "a hands node opens no stream to another node");
         if (streams && STREAM_LINK_REQUESTS.has(method)) {
           return streams.request({ id: peer.id, sessionKey: peer.info.linkId }, method, params, (ask) => void peer.notify("pending", { id, ask, at: this.now() }));
+        }
+        if (FILE_LINK_REQUESTS.has(method)) {
+          // a hands node pulls no file from another machine, and none is pulled from it
+          if (peer.info.hands) throw new RpcError("denied", "a hands node sends and receives no files");
+          if (!this.deps.transfers) throw new RpcError("unsupported", `${method} is not served here`);
+          return this.deps.transfers.request({ id: peer.id, sessionKey: peer.info.linkId }, method, params);
         }
         throw new RpcError("unsupported", `${method} is not served upward`);
       }

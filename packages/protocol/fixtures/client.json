@@ -542,6 +542,18 @@
       "results": [{ "connection": { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "alice", "name": "web", "harness": "claude", "live": true }, "by": "app", "createdAt": 1758196700000, "sent": 0, "received": 0 } }]
     },
     "connection.end": { "params": [{ "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1" }], "results": [{}] },
+    "transfer.start": {
+      "params": [
+        { "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" } },
+        { "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "/home/me/web/dist" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "dir": "C:\\Users\\me\\Downloads" }, "relayOk": true, "by": { "kind": "agent", "alias": "web-review", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, "notify": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3" }
+      ],
+      "results": [{ "transfer": { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/home/me/Downloads" }, "kind": "file", "name": "build.zip", "total": 50331648, "bytes": 12582912, "state": "running", "via": "relay", "rate": 4194304, "by": { "kind": "user" }, "startedAt": 1758196700000 } }, { "confirm": { "bytes": 3435973837, "relayHops": ["node_01ARZ3NDEKTSV4RRFFQ69G5FAW"] } }]
+    },
+    "transfer.cancel": { "params": [{ "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1" }], "results": [{}] },
+    "transfer.retry": { "params": [{ "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1" }], "results": [{}] },
+    "transfer.dismiss": { "params": [{ "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1" }], "results": [{}] },
+    "transfer.reveal": { "params": [{ "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1" }], "results": [{}] },
+    "transfer.list": { "params": [{}], "results": [{ "transfers": [] }, { "transfers": [{ "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/home/me/Downloads" }, "kind": "file", "name": "build.zip", "total": 50331648, "bytes": 12582912, "state": "running", "via": "relay", "rate": 4194304, "by": { "kind": "user" }, "startedAt": 1758196700000 }, { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX2", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "/home/me/web/dist" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "dir": "C:\\Users\\me\\Downloads", "path": "C:\\Users\\me\\Downloads\\dist (1)" }, "kind": "folder", "name": "dist", "total": 2048, "bytes": 2048, "files": { "done": 3, "total": 3 }, "state": "done", "via": "lan", "by": { "kind": "agent", "alias": "web-review", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, "startedAt": 1758196700000, "endedAt": 1758196701000 }] }] },
     "direct.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "direct.info": {
@@ -778,6 +790,10 @@
     "connection.state": [
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "bob", "name": "api-codex" }, "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "queued": 1 },
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "reason": "bob ended it (ended by the user)" }
+    ],
+    "transfer.state": [
+      { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX1", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/home/me/Downloads" }, "kind": "file", "name": "build.zip", "total": 50331648, "bytes": 12582912, "state": "running", "via": "relay", "rate": 4194304, "by": { "kind": "user" }, "startedAt": 1758196700000 },
+      { "id": "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX3", "from": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "/srv/data.bin" }, "to": { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "dir": "/tmp" }, "kind": "file", "name": "data.bin", "total": 10, "bytes": 4, "state": "waiting", "error": "waiting for Laptop", "by": { "kind": "user" }, "startedAt": 1758196700000 }
     ],
     "update.state": [
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "component": "platform", "current": "0.1.0" },

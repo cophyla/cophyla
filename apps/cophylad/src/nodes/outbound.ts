@@ -24,10 +24,14 @@
 // the primary's clients its terminals (terminals.ts): what they ask of one comes down as a
 // forwarded request, the keys they type and the size they drive as frames, and the output
 // goes up to the client that opened it. A confined node, and a workspace node, sends none.
+//
+// The transfers a node receives go up as their rows, with the join and on the bus; what a
+// transfer pulls from this node (`files.tree`, `files.pipe.open`) is served here as the
+// primary asks for it (transfers.ts), a confined node's within the folders it shares.
 
 import { nodeLinkFrames, nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
 import type { AgentMessages } from "../agentmsg/index.ts";
-import type { Ask, AuditEntry, ClientNotificationParams, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Terminal, Via, Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, ClientNotificationParams, ClientResult, IceServer, LinkLeaveReason, MetricsSample, Node, NodeRecord, ReplicaFile, ReplicaSnapshot, ReplicaWrite, RpcId, Session, Terminal, Transfer, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { ClientSocket } from "../api/clients.ts";
 import type { RelayUplink } from "../api/server.ts";
@@ -55,6 +59,9 @@ import { STREAM_LINK_REQUESTS } from "./streams.ts";
 import type { StreamLinks } from "./streams.ts";
 import { LINK_VIEWER, linkViewer } from "./terminals.ts";
 import type { NodeTerminals } from "./terminals.ts";
+import { FILE_LINK_REQUESTS } from "./transfers.ts";
+import type { TransferLinks } from "./transfers.ts";
+import type { Transfers } from "../transfers/index.ts";
 
 export interface HelloAnswer {
   nodeId: string;
@@ -162,6 +169,12 @@ export interface OutboundDeps {
   directTiming?: LinkDirectTiming;
   /** Streams for viewers with no route to the desktop: a ticket, its end and its pipes, served here. */
   streams?: StreamLinks;
+  /** Transfers pulling from this machine: what a path holds and a file's pipe, served here. */
+  transfers?: TransferLinks;
+  /** The transfers this machine receives: their rows go up with the join, and the primary's clients start them here. */
+  receiving?: () => Transfers | undefined;
+  /** This computer's folders, for a picker on the primary's clients, with or without terminals here. */
+  folders?: ServeDeps["folders"];
   /** The replica, on a backup; built by the owner with `fetchSnapshot` bound to this link. */
   replica?: () => Replica | undefined;
   heartbeatMs: number;
@@ -176,7 +189,7 @@ export interface OutboundDeps {
 }
 
 /** What goes up as it is: this node's client notifications, and the capability events its stream raises. */
-const UPWARD_NOTIFICATIONS = ["session.state", "session.event", "ask.state", "workspace.state", "terminal.state", "audit.entry", "node.state", "update.state", "remote.state", "direct.state"] as const;
+const UPWARD_NOTIFICATIONS = ["session.state", "session.event", "ask.state", "workspace.state", "terminal.state", "audit.entry", "node.state", "update.state", "remote.state", "direct.state", "transfer.state"] as const;
 const UPWARD_EVENTS = new Set<string>(["session.discovered", "session.updated", "session.ask", "session.ended", "workspace.updated", "event.custom", "node.pressure"]);
 
 interface Socket {
@@ -245,6 +258,8 @@ export class Outbound {
   private linkDirect?: LinkDirect;
   /** How much the link's socket holds unsent, where it can tell. */
   private linkBuffered?: () => number;
+  /** A relayed link's switch: whether its frames ride the relay or a data channel now. */
+  private switchable?: SwitchableLink;
   /** Requests from the primary being served, so the tests can wait on them. */
   served = 0;
 
@@ -390,6 +405,7 @@ export class Outbound {
       );
       this.peer = peer;
       this.linkBuffered = sock.sock.buffered;
+      this.switchable = sock.link;
       this.linkedInfo = { primary: j.primary, epoch: j.epoch, tz: j.tz, linkId: j.linkId, endpoint, via: target.kind };
       peer.onClose((reason) => this.onClosed(peer, reason));
       this.deps.registry.take(j.registry);
@@ -416,6 +432,8 @@ export class Outbound {
         ...(this.deps.tools ? { tools: this.deps.tools } : {}),
         ...(this.deps.files ? { files: this.deps.files } : {}),
         ...(this.deps.terminals ? { terminals: this.deps.terminals } : {}),
+        ...(this.deps.receiving ? { transfers: this.deps.receiving } : {}),
+        ...(this.deps.folders ? { folders: this.deps.folders } : {}),
       });
       this.subscribeUpward(peer);
       // What only changes on events goes up once now, so the primary's clients see it before the next change.
@@ -472,6 +490,7 @@ export class Outbound {
     if (info) this.deps.streams?.gone(info.primary);
     if (info && this.deps.metrics) this.deps.metrics.unsubscribe(this.subscriberFor(info.linkId));
     this.linkBuffered = undefined;
+    this.switchable = undefined;
     // the primary's clients looked at this node's terminals through the link
     this.deps.terminals?.()?.streams.dropViewers(LINK_VIEWER);
     for (const [peerId, port] of [...this.relayed]) {
@@ -503,14 +522,17 @@ export class Outbound {
 
   private sessionOf = (id: string): Session | undefined => this.deps.local?.session(id);
 
-  /** What the join carries: this node's lists, as far as the folders it shares reach, and its terminals unless it shares some alone. */
-  private lists(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[] } {
+  /** What the join carries: this node's lists, as far as the folders it shares reach, its terminals unless it shares some alone, and the transfers it receives. */
+  private lists(): { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] } {
     const sessions = this.deps.sessions();
     const workspaces = this.deps.workspaces();
     const asks = this.deps.asks();
     const c = this.confined();
     const terminals = c ? undefined : this.deps.terminals?.()?.rows.list();
-    const shown = c ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)) } : { sessions, workspaces, asks, ...(terminals ? { terminals } : {}) };
+    const transfers = this.deps.receiving?.()?.list();
+    const shown = c
+      ? { sessions: sessions.filter((s) => c.session(s)), workspaces: workspaces.filter((w) => c.workspace(w)), asks: asks.filter((a) => c.ask(a, this.sessionOf)), ...(transfers ? { transfers } : {}) }
+      : { sessions, workspaces, asks, ...(terminals ? { terminals } : {}), ...(transfers ? { transfers } : {}) };
     if (!this.deps.outgoing) return shown;
     return { sessions: shown.sessions.map((s) => this.out("session.state", s) as Session), workspaces: shown.workspaces.map((w) => this.out("workspace.state", w) as Workspace), asks: shown.asks.map((a) => this.out("ask.state", a) as Ask) };
   }
@@ -593,6 +615,13 @@ export class Outbound {
     return this.linkBuffered?.() ?? 0;
   }
 
+  /** Where the link's frames go now: the LAN, the relay, or a relayed link's data channel; none while unlinked. */
+  get way(): "lan" | "relay" | "direct" | undefined {
+    if (!this.linkedInfo) return undefined;
+    if (this.linkedInfo.via !== "relay") return "lan";
+    return this.switchable?.mode === "direct" ? "direct" : "relay";
+  }
+
   /** A sample of this node for the primary's watchers; on a confined node, with the processes of sessions outside folded. */
   deliverSample(sample: MetricsSample): boolean {
     const c = this.confined();
@@ -624,6 +653,10 @@ export class Outbound {
     this.served++;
     if (this.deps.streams && STREAM_LINK_REQUESTS.has(method)) {
       return this.deps.streams.request({ id: info.primary, sessionKey: info.linkId }, method, params, (ask) => void peer.notify("pending", { id, ask, at: this.now() }));
+    }
+    if (FILE_LINK_REQUESTS.has(method)) {
+      if (!this.deps.transfers) throw new RpcError("unsupported", `${method} is not served here`);
+      return this.deps.transfers.request({ id: info.primary, sessionKey: info.linkId }, method, params);
     }
     return this.server.serve(method, params, id);
   }

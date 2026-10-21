@@ -34,6 +34,12 @@ export interface PolicyQuery {
    * and the rules above it still decide.
    */
   trusted?: boolean;
+  /**
+   * The principal is an agent session that runs without permission prompts: a built-in rule
+   * that asks is an allow for it, as its own harness asks nothing (the parity rule). The
+   * user's own rules still decide.
+   */
+  unprompted?: boolean;
 }
 
 export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "membership" | "config.class";
@@ -81,6 +87,9 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:connection.invite": "allow",
   "harness:connection.accept": "allow",
   "harness:connection.end": "allow",
+  // An agent sending a file or a folder to another of the user's machines (`send_file`): asked
+  // about, unless the agent runs without permission prompts, which its harness would not ask.
+  "harness:transfer.send": "ask",
 };
 
 /**
@@ -162,6 +171,7 @@ export class Policy {
     if (!q.loosens) {
       for (const key of keys) {
         const d = BUILTIN_RULES[key] ?? (q.own ? BUILTIN_OWN_RULES[key] : undefined);
+        if (d === "ask" && q.unprompted) return { decision: "allow", source: "builtin.rule", rule: key };
         if (d) return { decision: d, source: "builtin.rule", rule: key };
       }
     }

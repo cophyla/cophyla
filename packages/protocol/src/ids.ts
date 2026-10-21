@@ -21,6 +21,8 @@ export const ID_PREFIXES = {
   agentMessage: "pmsg",
   /** A connection between a terminal of this user's and one of another user's, and the relay peers it is reached by. */
   connection: "con",
+  /** A file or a folder being sent from one of the user's machines to another. */
+  transfer: "xfr",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -107,6 +109,7 @@ export const GrantRef = z.union([ControllerId, GrantId]);
 export const ListenerId = idSchema("listener");
 export const AgentMessageId = idSchema("agentMessage");
 export const ConnectionId = idSchema("connection");
+export const TransferId = idSchema("transfer");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -124,6 +127,7 @@ export type GrantRef = z.infer<typeof GrantRef>;
 export type ListenerId = z.infer<typeof ListenerId>;
 export type AgentMessageId = z.infer<typeof AgentMessageId>;
 export type ConnectionId = z.infer<typeof ConnectionId>;
+export type TransferId = z.infer<typeof TransferId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");

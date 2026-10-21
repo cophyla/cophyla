@@ -18,7 +18,7 @@ process. They are the public contract; the design notes behind them are kept pri
 | `src/actions.ts` | every request name with its risk class: the gate's vocabulary |
 | `src/scopes.ts` | the scope each client request, notification and signal needs |
 | `src/quotes.ts` | the quote projection: `quotable` numbers a result the way the model sees it, `selectLines` picks a cited range and narrows its `Source` |
-| `agent-tools.json`, `src/agent-tools.ts` | the `cophyla-agents` MCP server's name, instructions and two tools, which cophylad serves and the native shim (`apps/mcp`) embeds |
+| `agent-tools.json`, `src/agent-tools.ts` | the `cophyla-agents` MCP server's name, instructions and tools (listing and messaging the user's other sessions, sending a file to one or to another machine, and a connection to another person's agent), which cophylad serves and the native shim (`apps/mcp`) embeds |
 | `fixtures/*.json` | at least one valid example per schema, and a list of invalid ones |
 | `scripts/emit-json-schema.ts` | writes JSON Schema for every entry under `schema/` (`bun run schema`) |
 
@@ -113,3 +113,16 @@ process. They are the public contract; the design notes behind them are kept pri
   and the text. A secondary's sessions reach the primary's directory and router through
   `agent.list` and `agent.send` on the node link; `agent.send` answers at once, held or not.
   `actions.ts` gains `agent.list`, `agent.send` and `agent.escalate`. All additive.
+- **Transfers.** A file or a folder sent from one of the user's machines to another is a
+  `Transfer` (`xfr_`, `TransferId`), kept by the machine it goes to, which pulls it; a node
+  that sends and receives them says so (`NodeCapabilities.files`). The client protocol gains
+  `transfer.start` (answered `{transfer}`, or `{confirm}` for a big one over the relay until
+  `relayOk`), `transfer.cancel`, `transfer.retry`, `transfer.dismiss`, `transfer.list`,
+  `transfer.reveal` and the `transfer.state` notification, all under the `terminal` scope and
+  refused to limited access. The node link gains `files.tree` (what a path holds, a page at a
+  time, `TreeEntry`), `files.pipe.open` (a file's bytes over the pipes, from `at`), `file.send`
+  (a secondary's agent's `send_file`), `transfers` in `node.join`, `machines` in `agent.list`'s
+  answer (`MachineListing`), and a `pipe.data` cap of 180 000 characters, which only file pipes
+  reach, between nodes that send files. `actions.ts` gains the `transfer.*` actions,
+  `transfer.send` (an agent's) and `files.tree` and `files.pipe.open`. The agent tools gain
+  `send_file`. All additive.

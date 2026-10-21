@@ -13,8 +13,9 @@
 // `session.files`, `session.git` and `session.file`, so their explorer shows this node's
 // sessions' files and their viewer a file's text, the terminal requests, so they see,
 // open, start and pick a folder for this node's terminals (terminals.ts), as `link:<client>`,
-// and `node.rename`, so they name this machine (not a guest's or a confined one's: its name
-// is its owner's).
+// `node.rename`, so they name this machine (not a guest's or a confined one's: its name
+// is its owner's), and the transfer requests, so they send files here and see them come (not
+// to a hands node).
 //
 // On a node whose owner shared some folders alone (`confine.ts`) this is where the primary's
 // requests are checked: a session, a workspace or a path outside is refused, and so is the
@@ -50,6 +51,8 @@ import { folderSummary } from "../sessions/tether/folders.ts";
 import { linkViewer, terminalsRefused } from "./terminals.ts";
 import type { NodeTerminals } from "./terminals.ts";
 import type { AgentMessages } from "../agentmsg/index.ts";
+import type { Transfers } from "../transfers/index.ts";
+import { transferAsk } from "../transfers/methods.ts";
 
 /** The capability requests a node answers for its primary. */
 export const NODE_SERVED: readonly CapabilityRequestName[] = [
@@ -101,6 +104,9 @@ export const NODE_SERVED_FILES = ["session.files", "session.git", "session.file"
 
 /** This node's terminals, for the primary's clients: the rows, a shell started, one opened, closed or read under, a folder listed for the picker. */
 export const NODE_SERVED_TERMINALS = ["terminal.list", "terminal.spawn", "terminal.open", "terminal.close", "terminal.file", "terminal.folders"] as const;
+
+/** The transfers this node receives, for the primary's clients and its agents' `send_file`: one started here, stopped, tried again, forgotten, listed. */
+export const NODE_SERVED_TRANSFERS = ["transfer.start", "transfer.cancel", "transfer.retry", "transfer.dismiss", "transfer.list"] as const;
 
 /**
  * The served table: `brainMethods` narrowed to the allowlist, with `ui.say` and its kin never
@@ -187,6 +193,10 @@ export interface ServeDeps {
   files?: Pick<SessionFiles, "list" | "git" | "read">;
   /** This node's terminals, once built; none on a workspace node. */
   terminals?: () => NodeTerminals | undefined;
+  /** The transfers this node receives, once built. */
+  transfers?: () => Transfers | undefined;
+  /** This computer's folders, for a picker on the primary's clients: Send to…'s needs no terminal here. */
+  folders?: (path: string | undefined) => Promise<FolderPick>;
   /** The folders this node shares with its primary, when its owner named some. */
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
@@ -385,6 +395,7 @@ export class NodeServer {
     }
     if ((NODE_SERVED_FILES as readonly string[]).includes(method)) return this.serveFiles(method as (typeof NODE_SERVED_FILES)[number], params);
     if ((NODE_SERVED_TERMINALS as readonly string[]).includes(method)) return this.serveTerminals(method as (typeof NODE_SERVED_TERMINALS)[number], params);
+    if ((NODE_SERVED_TRANSFERS as readonly string[]).includes(method)) return this.serveTransfers(method as (typeof NODE_SERVED_TRANSFERS)[number], params);
     const name = method as CapabilityRequestName;
     const def = capabilityRequests[name];
     const impl = this.deps.table[name];
@@ -572,8 +583,10 @@ export class NodeServer {
    */
   private async serveTerminals(method: (typeof NODE_SERVED_TERMINALS)[number], params: unknown): Promise<unknown> {
     const t = this.deps.terminals?.();
-    const refused = terminalsRefused(t, this.confined() !== undefined);
-    if (refused || !t) throw refused;
+    // a folder listed for a picker needs no terminal here, only a machine that is not lent
+    const folders = method === "terminal.folders" && !t && this.deps.folders && this.confined() === undefined && !this.deps.hands?.() ? this.deps.folders : undefined;
+    const refused = folders ? undefined : terminalsRefused(t, this.confined() !== undefined);
+    if (refused) throw refused;
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
     const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number };
@@ -592,25 +605,57 @@ export class NodeServer {
       async () => {
         switch (method) {
           case "terminal.list":
-            return { terminals: t.rows.list() };
+            return { terminals: t!.rows.list() };
           case "terminal.spawn":
-            return { terminal: await t.rows.spawn(parsed.data as Parameters<NodeTerminals["rows"]["spawn"]>[0]) };
+            return { terminal: await t!.rows.spawn(parsed.data as Parameters<NodeTerminals["rows"]["spawn"]>[0]) };
           case "terminal.open":
-            return t.streams.open(viewer, p.terminal!, { ...(p.input !== undefined ? { input: p.input } : {}), ...(p.drive ? { drive: p.drive } : {}) });
+            return t!.streams.open(viewer, p.terminal!, { ...(p.input !== undefined ? { input: p.input } : {}), ...(p.drive ? { drive: p.drive } : {}) });
           case "terminal.close":
-            await t.streams.close(viewer, p.terminal!, p.end === true);
+            await t!.streams.close(viewer, p.terminal!, p.end === true);
             return {};
           case "terminal.file": {
-            const row = t.rows.list().find((r) => r.id === p.terminal);
+            const row = t!.rows.list().find((r) => r.id === p.terminal);
             if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
-            if (!t.files) throw new RpcError("unsupported", "this node reads no files");
-            return t.files.readUnder(row.cwd, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
+            if (!t!.files) throw new RpcError("unsupported", "this node reads no files");
+            return t!.files.readUnder(row.cwd, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
           }
           case "terminal.folders":
-            return t.folders(p.path);
+            return (t?.folders ?? folders!)(p.path);
         }
       },
     );
+  }
+
+  /**
+   * The transfers this node receives, for the primary's clients and agents, gated here as the
+   * owner's policy says: starting, stopping, retrying and forgetting one is a write. A hands
+   * node receives none; a confined node's land inside the folders it shares (transfers/).
+   */
+  private async serveTransfers(method: (typeof NODE_SERVED_TRANSFERS)[number], params: unknown): Promise<unknown> {
+    const transfers = this.deps.transfers?.();
+    if (!transfers || this.deps.hands?.()) throw new RpcError("unsupported", "this machine receives no files");
+    const parsed = clientRequests[method].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
+    const p = parsed.data as { id?: string; from?: { node: string; path: string }; to?: { node: string; dir?: string } };
+    const target = method === "transfer.start" ? p.from?.path : p.id;
+    const ask = method === "transfer.start" ? transferAsk(parsed.data as Parameters<typeof transferAsk>[0]) : undefined;
+    return this.gated({ principal: this.deps.principal, action: method, args: p, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey }, async () => {
+      switch (method) {
+        case "transfer.start":
+          return transfers.begin(parsed.data as Parameters<Transfers["begin"]>[0]);
+        case "transfer.cancel":
+          await transfers.cancel(p.id!);
+          return {};
+        case "transfer.retry":
+          transfers.retry(p.id!);
+          return {};
+        case "transfer.dismiss":
+          await transfers.dismiss(p.id!);
+          return {};
+        case "transfer.list":
+          return { transfers: transfers.list() };
+      }
+    });
   }
 
   private async serveMetrics(method: (typeof NODE_SERVED_METRICS)[number], params: unknown): Promise<unknown> {

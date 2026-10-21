@@ -34,6 +34,8 @@ export interface GateRequest {
   loosens?: boolean;
   /** The principal is this node's own primary, let work here unasked at the join: an ask by class default is an allow. */
   trusted?: boolean;
+  /** The principal is an agent session that runs without permission prompts: a built-in rule's ask is an allow. */
+  unprompted?: boolean;
   /** The result as the audit row keeps it, when it carries a secret the generic redaction would miss. */
   redactResult?: (result: unknown) => unknown;
 }
@@ -99,6 +101,7 @@ export class Gate {
       ...(req.own ? { own: true } : {}),
       ...(req.loosens ? { loosens: true } : {}),
       ...(req.trusted ? { trusted: true } : {}),
+      ...(req.unprompted ? { unprompted: true } : {}),
     };
     const verdict = policy.decide(query);
     const startedAt = Date.now();

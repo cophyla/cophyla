@@ -9,8 +9,8 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { RpcError } from "@cophyla/protocol";
-import type { Client, Node, PairedLan, RelayAccess } from "@cophyla/protocol";
+import { newId, RpcError } from "@cophyla/protocol";
+import type { Client, Node, PairedLan, RelayAccess, Transfer } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
 import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
@@ -82,6 +82,7 @@ import { Guests } from "./nodes/guests.ts";
 import { Owners } from "./nodes/owners.ts";
 import { nodeServedTable } from "./nodes/served.ts";
 import { AgentMessages } from "./agentmsg/index.ts";
+import type { AgentFiles } from "./agentmsg/index.ts";
 import { Remote } from "./remote/index.ts";
 import { startStreamListener } from "./remote/listener.ts";
 import type { RemoteDeps } from "./remote/index.ts";
@@ -101,6 +102,9 @@ import { locateMcp, stageMcp } from "./agentmsg/locate.ts";
 import { agentMethods } from "./agentmsg/methods.ts";
 import { Connections } from "./connections/index.ts";
 import { connectionMethods } from "./connections/methods.ts";
+import { Transfers } from "./transfers/index.ts";
+import { transferMethods } from "./transfers/methods.ts";
+import { openSource } from "./transfers/source.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
 import { DirectClients } from "./direct/clients.ts";
@@ -175,6 +179,8 @@ export const LISTENER_SETTLE_MS = 3000;
 
 export interface DaemonOptions {
   home?: string;
+  /** The transfers' backoff, the size over which a relayed one asks first, and how long an agent's `send_file` waits before it answers; the tests' own. */
+  transfers?: { backoff?: { firstMs: number; maxMs: number }; relayConfirmBytes?: number; toolWaitMs?: number };
   /** The agents' MCP shim the profiles are given, over the one found; a test sets it to install in its own profiles. */
   agentShim?: string;
   /** Overrides config.api.port; 0 picks a free one. */
@@ -321,8 +327,10 @@ export interface Daemon {
   voice: Voice;
   metrics: Metrics;
   remote: Remote;
-  /** The pipes stream pages ride where there is no route to their desktop. */
+  /** The pipes stream pages ride where there is no route to their desktop, and transfers' files. */
   pipes: PipeHub;
+  /** The transfers this machine receives. */
+  transfers: Transfers;
   direct: Direct;
   nodes: Nodes;
   /** The workspace nodes this machine hosts. */
@@ -411,7 +419,11 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     const kept = store.kv.get(AGENT_SWITCH_NS, "accept_in_bypass");
     return typeof kept === "boolean" ? kept : config.agent_messages.accept_in_bypass;
   };
-  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined);
+  /** The transfers this machine receives, built with the nodes module, and what an agent's `send_file` reaches them through. */
+  let transfers: Transfers | undefined;
+  let agentFiles: AgentFiles | undefined;
+  // a hands node sends and receives no files
+  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, nodes?.movesFiles() ?? true);
   // The agents' MCP shim every session runs, from a copy in a folder that never moves, found
   // once; a test run gives the profiles none, unless it names one.
   let agentShim: string | null | undefined = opts.agentShim;
@@ -830,6 +842,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
 
   // The pipes a stream page's connections ride where there is no route to its desktop: from a
   // phone's forwarder or a window's forwarder here, over the links, to the host's loopback proxy.
+  // A transfer's files ride them too, from the file on the machine that has it.
   const pipes = new PipeHub({
     selfId: () => identity.id,
     loopbackPort: () => remote!.loopback.port(),
@@ -841,6 +854,11 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     linkWire: (target) => nodes?.linkWire(target),
     nextHop: (target) => nodes?.nextHop(target),
     openOnLink: (hop, params) => nodes!.openPipeOn(hop, params),
+    openFileOnLink: (hop, params) => nodes!.openFilePipeOn(hop, params),
+    openFile: (target, deliver, gone) => {
+      const require = nodes?.requirePath();
+      return openSource(target, deliver, gone, require ? { require } : {});
+    },
     log: log.child("pipes"),
   });
 
@@ -1071,6 +1089,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     terminals: () => nodeTerminals,
     direct: () => direct,
     pipes: () => pipes,
+    transfers: () => transfers,
+    folders: (path) => folders(path),
     ...(opts.direct?.link ? { directTiming: opts.direct.link } : {}),
     log: log.child("nodes"),
     platformVersion: PLATFORM_VERSION,
@@ -1134,6 +1154,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("agentmsg"),
     version: PLATFORM_VERSION,
     connections: () => connections,
+    files: () => agentFiles,
+    asks,
+    ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
     accept: (on) => {
       store.kv.put(AGENT_SWITCH_NS, "accept_in_bypass", on);
       log.info("agents' messages into bypass sessions", { accept: on });
@@ -1141,6 +1164,54 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       bus.emit("node.state", node());
     },
   });
+  // The transfers this machine receives: it pulls each from the machine that has it, over the pipes.
+  const nodesLive = nodes;
+  transfers = new Transfers({
+    selfId: () => identity.id,
+    nodeName: (id) => (id === identity.id ? node().name : (nodesLive.registry.get(id)?.name ?? id)),
+    dataDir: p.data,
+    bus,
+    pipes,
+    tree: (n, path, from) => nodesLive.tree(n, path, from),
+    reachable: (n) => nodesLive.reachable(n),
+    nodes: () => nodesLive.registry.list(),
+    primary: () => nodesLive.primaryId(),
+    hop: (n) => nodesLive.hopOf(n),
+    receives: () => nodesLive.movesFiles(),
+    require: (path) => nodesLive.requirePath()?.(path),
+    // a message of cophyla's own, to an agent session of this machine
+    tell: async (session, text) => {
+      await agentMessages.deliverHere(session, text, { messageId: newId("agentMessage") });
+    },
+    log: log.child("transfers"),
+    ...(opts.transfers?.backoff ? { backoff: opts.transfers.backoff } : {}),
+    ...(opts.transfers?.relayConfirmBytes !== undefined ? { relayConfirmBytes: opts.transfers.relayConfirmBytes } : {}),
+  });
+  // a machine back on its link: what waits for it tries now
+  bus.on("node.state", (n) => {
+    if (n.id === identity.id) transfers?.poke();
+    else if (n.status === "online") transfers?.poke(n.id);
+  });
+  // An agent's `send_file`, on the router: what a path holds, a transfer started where it goes, and its end.
+  const transfersLive = transfers;
+  const ended = (t: Transfer) => t.dismissed === true || t.state === "done" || t.state === "failed" || t.state === "cancelled";
+  agentFiles = {
+    peek: async (n, path) => {
+      const page = await nodesLive.tree(n, path);
+      return { kind: page.kind, name: page.name, total: page.total, files: page.files };
+    },
+    start: async (params) => (params.to.node === identity.id ? transfersLive.begin(params) : ((await forwardHost.forward(params.to.node, "transfer.start", params, {})) as Awaited<ReturnType<Transfers["begin"]>>)),
+    ended: (id) =>
+      new Promise<Transfer>((resolve) => {
+        const now = transfersLive.get(id) ?? forwardHost.mirrorTransfers().find((t) => t.id === id);
+        if (now && ended(now)) return resolve(now);
+        const off = bus.on("transfer.state", (t) => {
+          if (t.id !== id || !ended(t)) return;
+          off();
+          resolve(t);
+        });
+      }),
+  };
   // The workspace nodes: each a hands member of another person's cluster, over one folder.
   guests = new Guests({
     paths: p,
@@ -1431,6 +1502,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
     ...connectionMethods({ connections: () => connections }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
+    ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
   }, forwardHost);
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;
@@ -1614,6 +1686,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   await nodes.start();
   // the workspace nodes after the machine's own membership
   guests.start();
+  // what was coming when the daemon stopped goes on
+  transfers.start();
 
   // The brain runs only while this node is the primary; a promotion later starts it through
   // `nodes`. Its link is built now, ahead of the hooks and the scheduler, and the brain is
@@ -1722,6 +1796,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     metrics,
     remote,
     pipes,
+    transfers,
     direct,
     nodes,
     guests,
@@ -1741,6 +1816,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await cloud.stop();
       metrics.dispose();
       update.dispose();
+      // where a transfer got to is kept before its links go
+      await transfers!.stop();
       await guests!.stop();
       await nodes!.stop();
       directClients.stop();
