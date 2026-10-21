@@ -160,7 +160,7 @@ describe("send_file", () => {
   test("a session that runs without prompts sends to an agent unasked, from under its folder; the agent is named to be told", async () => {
     const me = sess("claude", "C:\\work\\web", { native: { id: "c-me", pid: 4100, transport: "pipe" }, name: "web" });
     const remote = sess("codex", "/home/me/api", { node: LAPTOP });
-    const r = rig({ local: [me], mirror: [remote], nodes: [node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: true } });
+    const r = rig({ local: [me], mirror: [remote], nodes: [node(DESK, "Desk", { role: "primary", platform: "windows" }), node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: true } });
     const answer = await r.call(me, "send_file", { path: "dist\\build.zip", to: "api-codex" });
     expect(answer.isError).toBeUndefined();
     expect(answer.text).toBe("Sent build.zip (48 MB) to api-codex on Laptop: it landed at /home/me/Downloads/build.zip. api-codex was told where it landed.");
@@ -174,7 +174,7 @@ describe("send_file", () => {
   test("a session that prompts is asked about first; a relative folder is under the receiving agent's", async () => {
     const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" }, name: "web" });
     const remote = sess("codex", "/home/me/api", { node: LAPTOP });
-    const r = rig({ local: [me], mirror: [remote], nodes: [node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: false } });
+    const r = rig({ local: [me], mirror: [remote], nodes: [node(DESK, "Desk", { role: "primary", platform: "windows" }), node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: false } });
     const pending = r.call(me, "send_file", { path: "C:/work/web/build.zip", to: "api-codex", dir: "incoming" });
     const ask = await waitFor(() => r.asks.listOpen()[0]);
     expect(ask.title).toBe("Let web send build.zip (48 MB) to api-codex on Laptop?");

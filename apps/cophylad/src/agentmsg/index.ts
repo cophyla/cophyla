@@ -472,9 +472,10 @@ export class AgentMessages {
 
   // --- files -------------------------------------------------------------------------------------
 
-  /** The path module of a machine: Windows's or everyone else's. */
+  /** The path module of a machine, as its row says: Windows's or everyone else's; this one's own process says it before its row is there. */
   private pathsOf(node: string): typeof posix {
-    const platform = node === this.deps.self().id ? (process.platform === "win32" ? "windows" : "posix") : this.deps.cluster.nodes().find((n) => n.id === node)?.platform;
+    const row = this.deps.cluster.nodes().find((n) => n.id === node)?.platform;
+    const platform = row ?? (node === this.deps.self().id && process.platform === "win32" ? "windows" : undefined);
     return platform === "windows" ? win32 : posix;
   }
 
