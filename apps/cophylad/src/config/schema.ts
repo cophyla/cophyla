@@ -104,6 +104,13 @@ export const SessionsConfig = z.object({
    * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A message's receipts (delivered, unconfirmed, withdrawn) carry only the send's ref, so the
+   * words of one whose harness does not echo them show only in the app that sent it, until it
+   * reloads. On, each receipt of a message the user sent carries its text, kept in the
+   * session's history.
+   */
+  record_sent_text: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -801,6 +808,7 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
+record_sent_text = false   # true: a message's receipts carry the text the user sent, so the history keeps it after a reload
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
