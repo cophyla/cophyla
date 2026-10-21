@@ -2164,13 +2164,21 @@ async function sendHere(relayOk = false): Promise<void> {
     closeFileMenu(true);
   } catch (e) {
     if (ui.fileMenu?.send !== send) return;
-    const unsupported = e instanceof ViewRpcError && e.code === "unsupported" && /unknown method/.test(e.message);
-    send.error = unsupported ? "This computer's Cophyla is too old to send files: update it." : `Not sent: ${e instanceof Error ? e.message : String(e)}`;
+    send.error = appTooOld(e) ? "Update the app to send files" : `Not sent: ${e instanceof Error ? e.message : String(e)}`;
     send.confirm = undefined;
   } finally {
     send.busy = false;
     draw();
   }
+}
+
+/**
+ * The app this view runs in was built before transfers: its own host refuses their requests by
+ * name ("unknown method") before the node sees them. The machines it offers all take files, so
+ * that refusal is the app's, never theirs.
+ */
+function appTooOld(e: unknown): boolean {
+  return e instanceof ViewRpcError && e.code === "unsupported" && /unknown method/.test(e.message);
 }
 
 /** A transfer's button: Cancel, Retry and Dismiss on the machine it goes to, Show in this computer's file manager. */
@@ -2890,6 +2898,11 @@ async function copyDropped(paths: string[], rel: string, relayOk = false): Promi
         ui.folded.delete("transfers");
       }
     } catch (e) {
+      // an app built before transfers refuses the request in its own host: the rest would be refused too
+      if (appTooOld(e)) {
+        fail("copy", new Error("update the app to send files"));
+        break;
+      }
       fail("copy", e);
     }
   }
