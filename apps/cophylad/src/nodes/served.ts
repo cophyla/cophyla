@@ -583,8 +583,8 @@ export class NodeServer {
    */
   private async serveTerminals(method: (typeof NODE_SERVED_TERMINALS)[number], params: unknown): Promise<unknown> {
     const t = this.deps.terminals?.();
-    // a folder listed for a picker needs no terminal here, only a machine that is not lent
-    const folders = method === "terminal.folders" && !t && this.deps.folders && this.confined() === undefined && !this.deps.hands?.() ? this.deps.folders : undefined;
+    // a folder listed for a picker needs no terminal here, only a machine that shares more than some folders
+    const folders = method === "terminal.folders" && !t && this.deps.folders && this.confined() === undefined ? this.deps.folders : undefined;
     const refused = folders ? undefined : terminalsRefused(t, this.confined() !== undefined);
     if (refused) throw refused;
     const parsed = clientRequests[method].params.safeParse(params ?? {});
@@ -629,11 +629,12 @@ export class NodeServer {
   /**
    * The transfers this node receives, for the primary's clients and agents, gated here as the
    * owner's policy says: starting, stopping, retrying and forgetting one is a write. A hands
-   * node receives none; a confined node's land inside the folders it shares (transfers/).
+   * node's too, which pulls only what the primary sent it; a confined node's land inside the
+   * folders it shares (transfers/).
    */
   private async serveTransfers(method: (typeof NODE_SERVED_TRANSFERS)[number], params: unknown): Promise<unknown> {
     const transfers = this.deps.transfers?.();
-    if (!transfers || this.deps.hands?.()) throw new RpcError("unsupported", "this machine receives no files");
+    if (!transfers) throw new RpcError("unsupported", "this machine receives no files");
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
     const p = parsed.data as { id?: string; from?: { node: string; path: string }; to?: { node: string; dir?: string } };

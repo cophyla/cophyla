@@ -717,10 +717,9 @@ export class Inbound {
           return streams.request({ id: peer.id, sessionKey: peer.info.linkId }, method, params, (ask) => void peer.notify("pending", { id, ask, at: this.now() }));
         }
         if (FILE_LINK_REQUESTS.has(method)) {
-          // a hands node pulls no file from another machine, and none is pulled from it
-          if (peer.info.hands) throw new RpcError("denied", "a hands node sends and receives no files");
+          // a hands node pulls only what the primary sent it (transfers.ts)
           if (!this.deps.transfers) throw new RpcError("unsupported", `${method} is not served here`);
-          return this.deps.transfers.request({ id: peer.id, sessionKey: peer.info.linkId }, method, params);
+          return this.deps.transfers.request({ id: peer.id, sessionKey: peer.info.linkId, ...(peer.info.hands ? { hands: true } : {}) }, method, params);
         }
         throw new RpcError("unsupported", `${method} is not served upward`);
       }

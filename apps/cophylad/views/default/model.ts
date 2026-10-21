@@ -4596,13 +4596,13 @@ export interface SendTarget {
 }
 
 /**
- * The machines a file on `source` can go to: every other one there now that takes files, never
- * a hands node or one that shares some folders alone; this computer first, the rest by name.
+ * The machines a file on `source` can go to: every other one there now that takes files, hands
+ * ones too, never one that shares some folders alone; this computer first, the rest by name.
  */
 export function sendTargets(state: ViewState, source: NodeId): SendTarget[] {
   const here = state.client?.node;
   return [...state.nodes.values()]
-    .filter((n) => n.id !== source && n.status === "online" && n.capabilities.files === true && n.hands !== true && n.scope.kind !== "workspaces")
+    .filter((n) => n.id !== source && n.status === "online" && n.capabilities.files === true && n.scope.kind !== "workspaces")
     .map((n) => ({ node: n.id, name: n.name, here: n.id === here }))
     .sort((a, b) => Number(b.here) - Number(a.here) || a.name.localeCompare(b.name));
 }

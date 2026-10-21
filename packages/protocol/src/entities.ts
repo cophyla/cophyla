@@ -92,7 +92,7 @@ export const NodeCapabilities = z.object({
    * message without Claude's own hold (`agents.accept`).
    */
   agents: z.object({ acceptInBypass: z.boolean() }).optional(),
-  /** It sends and receives files and folders (`transfer.*`): a full member of the cluster, never a hands or a workspace node. */
+  /** It sends and receives files and folders (`transfer.*`): a member of the cluster, hands ones too, never a workspace node. */
   files: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;

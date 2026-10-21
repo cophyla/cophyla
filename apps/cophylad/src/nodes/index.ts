@@ -34,10 +34,11 @@
 // was given at enrollment and no account of its own, is the last candidate of a seek, and
 // the first after a step-down to a node with no LAN endpoint.
 
+import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
 import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
-import type { Ask, ClientNotificationParams, FolderPick, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Via, Workspace } from "@cophyla/protocol";
+import type { Ask, ClientNotificationParams, FolderPick, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Transfer, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
 import { readLinkFile, removeLinkFile, writeLinkFile } from "../grants/link-file.ts";
@@ -91,7 +92,7 @@ import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
 import type { NodeTerminals, TerminalViews } from "./terminals.ts";
-import { TransferLinks } from "./transfers.ts";
+import { HandsPulls, TransferLinks } from "./transfers.ts";
 import { TreeCache } from "../transfers/tree.ts";
 import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
 import type { Hop, Transfers } from "../transfers/index.ts";
@@ -223,6 +224,8 @@ export class Nodes {
   private outbound: Outbound;
   /** This node's walks of what a transfer pulls from it, kept for their next pages. */
   private trees: TreeCache;
+  /** What this node, as the primary, sent its hands nodes: what they may pull. */
+  private handsPulls: HandsPulls;
   private replicator: Replicator;
   private replica?: Replica;
   private discovery?: DiscoverySocket;
@@ -294,6 +297,11 @@ export class Nodes {
       log: this.log.child("streams"),
     });
     this.trees = new TreeCache(deps.now);
+    this.handsPulls = new HandsPulls(deps.store.kv, deps.now);
+    // what the primary sent a hands node is pulled no more once it ends, wherever that is heard
+    deps.bus.on("transfer.state", (t) => {
+      if (t.dismissed || t.state === "done" || t.state === "cancelled") this.handsPulls.ended(t.id);
+    });
     const transfers = new TransferLinks({
       selfId: () => deps.identity.id,
       gate: deps.gate,
@@ -306,7 +314,8 @@ export class Nodes {
       row: (node) => this.registry.get(node),
       trees: this.trees,
       require: () => this.requirePath(),
-      sends: () => !this.role.hands,
+      sends: () => true,
+      handsPull: (hands, node, path) => this.role.role === "primary" && this.handsPulls.allows(hands, node, path),
       // the primary, let work here unasked at the join
       trusted: (node) => this.role.role !== "primary" && node === this.outbound.primaryId && this.membership !== undefined && this.membership.askPrimary !== true,
       log: this.log.child("transfers"),
@@ -575,7 +584,10 @@ export class Nodes {
     if (node === this.deps.identity.id) return true;
     if (this.nextHop(node) === undefined) return false;
     if (this.role.role === "primary" || node === this.outbound.primaryId) return true;
-    return this.registry.get(node)?.status === "online";
+    const row = this.registry.get(node);
+    // a hands node hears of no machine but its primary, which knows the way to the rest
+    if (!row) return this.role.hands;
+    return row.status === "online";
   }
 
   /**
@@ -586,14 +598,38 @@ export class Nodes {
     if (node === this.primaryId()) return undefined;
     if (node === this.deps.identity.id) return this.role.role === "primary" ? undefined : this.outbound.way;
     const row = this.registry.get(node);
-    if (!row) return undefined;
+    // a machine a hands node does not hear of may ride the relay: so it is taken to, and a big one asks
+    if (!row) return this.role.hands ? "relay" : undefined;
     if (row.via !== "relay") return "lan";
     return row.p2p ? "direct" : "relay";
   }
 
-  /** Whether this node sends and receives files: a full member, never a hands node. */
-  movesFiles(): boolean {
-    return !this.role.hands;
+  /**
+   * A request forwarded to `node`. A transfer it starts on a hands node, or a retry of one,
+   * writes down what that node may pull, the source machine and its path, nothing more: before
+   * it goes, since the start lists the path at once, and under the transfer's id once known.
+   */
+  private async forwardNoting(node: string, method: string, params: unknown, opts: { signal?: AbortSignal; onPending?: (ask: Ask) => void }): Promise<unknown> {
+    const hands = this.registry.get(node)?.hands === true;
+    const from = (params as { from?: { node?: unknown; path?: unknown } } | undefined)?.from;
+    if (!hands || method !== "transfer.start" || typeof from?.node !== "string" || typeof from.path !== "string") {
+      const r = await this.inbound.forward(node, method, params, opts);
+      if (hands && method === "transfer.retry") {
+        const id = (params as { id?: unknown } | undefined)?.id;
+        if (typeof id === "string") this.handsPulls.renew(id);
+      }
+      return r;
+    }
+    const asking = `start_${randomBytes(8).toString("hex")}`;
+    this.handsPulls.sent(node, { id: asking, from: { node: from.node, path: from.path } });
+    try {
+      const r = await this.inbound.forward(node, method, params, opts);
+      const t = (r as { transfer?: Transfer } | undefined)?.transfer;
+      if (t) this.handsPulls.sent(node, t);
+      return r;
+    } finally {
+      this.handsPulls.ended(asking);
+    }
   }
 
   /** How other nodes reach this one: the LAN listener on every address, the LAN ones first. */
@@ -701,7 +737,7 @@ export class Nodes {
       mirrorTerminals: () => this.mirror.terminals(),
       registryList: () => this.registry.list(),
       linked: (node) => this.inbound.linked(node),
-      forward: (node, method, params, opts) => this.inbound.forward(node, method, params, opts),
+      forward: (node, method, params, opts) => this.forwardNoting(node, method, params, opts),
       fanout: (method, params) => this.inbound.fanout(method, params),
       remoteMetrics: {
         subscribe: (client, node, intervalMs, processes, spend) => this.inbound.watchMetrics(client, node, intervalMs, processes, spend),

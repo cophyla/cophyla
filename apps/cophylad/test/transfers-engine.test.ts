@@ -361,7 +361,10 @@ describe("the transfer engine", () => {
 
   test("a start is refused for a machine that sends no files, a folder that cannot be made, and a relative path", async () => {
     const r = rig();
+    // a machine this node has no row of and no way to: a full member knows every one there is
+    r.reachable = false;
     await expect(r.t.begin({ from: { node: "node_01ARZ3NDEKTSV4RRFFQ69G5FZ9", path: "C:\\x" }, to: { node: DST, dir: r.home } })).rejects.toThrow("no machine");
+    r.reachable = true;
     await expect(start(r, join(r.home, "nope.txt"), r.home)).rejects.toThrow("no such file");
     await expect(start(r, "relative.txt", r.home)).rejects.toThrow("not an absolute path");
     writeFileSync(join(r.home, "a-file"), "x");

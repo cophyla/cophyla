@@ -5,13 +5,15 @@
 // merged list has them all. What lands takes a free name beside what is there. A link that
 // drops mid-file leaves the transfer waiting, and it goes on from where it stopped once the
 // link is back; a cancel deletes what came; a confined node sends and receives only inside
-// the folders it shares; a big one over a relayed hop waits for the user's word.
+// the folders it shares; a hands node sends and receives too, pulling only what its primary
+// sent it; a big one over a relayed hop waits for the user's word.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RpcNotification, Transfer } from "@cophyla/protocol";
+import { HANDS_PULLS_NS, HandsPulls } from "../src/nodes/transfers.ts";
 import type { FileTarget } from "../src/remote/pipes.ts";
 import { removeHome, tempHome, TestClient, waitFor } from "./helpers.ts";
 import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
@@ -290,12 +292,43 @@ describe("a confined node and a hands node", () => {
     expect((await rowOf(c, sent.transfer.id, ended)).state).toBe("done");
   }, 30_000);
 
-  test("a hands node says it takes no files, and neither sends nor receives any", async () => {
-    expect(primary.d.nodes.registry.get(hands.identity.id)?.capabilities.files).toBeUndefined();
+  test("a hands node takes files from the primary and from another machine, and sends them", async () => {
+    expect(primary.d.nodes.registry.get(hands.identity.id)?.capabilities.files).toBe(true);
     writeFileSync(join(scratch, "h.txt"), "h");
-    const to = await c.call("transfer.start", { from: { node: primary.d.identity.id, path: join(scratch, "h.txt") }, to: { node: hands.identity.id, dir: join(scratch, "h-in") } });
-    expect("error" in to).toBe(true);
-    const from = await c.call("transfer.start", { from: { node: hands.identity.id, path: join(scratch, "h.txt") }, to: { node: primary.d.identity.id, dir: join(scratch, "h-in") } });
-    expect("error" in from && from.error.data?.code).toBe("denied");
+    const to = await c.request<{ transfer: Transfer }>("transfer.start", { from: { node: primary.d.identity.id, path: join(scratch, "h.txt") }, to: { node: hands.identity.id, dir: join(scratch, "h-in") } });
+    expect((await rowOf(c, to.transfer.id, ended)).state).toBe("done");
+    expect(readFileSync(join(scratch, "h-in", "h.txt"), "utf8")).toBe("h");
+    // a folder from another secondary, through the primary, which the hands node hears nothing of
+    const dist = join(shared, "dist");
+    mkdirSync(join(dist, "sub"), { recursive: true });
+    writeFileSync(join(dist, "a.txt"), "a");
+    writeFileSync(join(dist, "sub", "b.txt"), "b");
+    const folder = await c.request<{ transfer: Transfer }>("transfer.start", { from: { node: conf.identity.id, path: dist }, to: { node: hands.identity.id, dir: join(scratch, "h-in") } });
+    const landed = await rowOf(c, folder.transfer.id, ended);
+    expect(landed.state).toBe("done");
+    expect(readFileSync(join(scratch, "h-in", "dist", "sub", "b.txt"), "utf8")).toBe("b");
+    // what it sent is not pulled again once it landed
+    expect(primary.d.store.kv.list(HANDS_PULLS_NS)).toEqual([]);
+    // and the other way, from the hands node to the primary
+    writeFileSync(join(scratch, "from-hands.txt"), "from hands");
+    const back = await c.request<{ transfer: Transfer }>("transfer.start", { from: { node: hands.identity.id, path: join(scratch, "from-hands.txt") }, to: { node: primary.d.identity.id, dir: join(scratch, "p-from-hands") } });
+    expect((await rowOf(c, back.transfer.id, ended)).state).toBe("done");
+    expect(readFileSync(join(scratch, "p-from-hands", "from-hands.txt"), "utf8")).toBe("from hands");
+  }, 30_000);
+
+  test("a hands node pulls only what its primary sent it, here or on another machine", async () => {
+    writeFileSync(join(scratch, "private.txt"), "the primary's own");
+    writeFileSync(join(shared, "other.txt"), "the other machine's");
+    const code = async (p: Promise<unknown>) => p.then(() => "ok", (e: unknown) => (e as { code?: string }).code ?? String(e));
+    expect(await code(hands.nodes.tree(primary.d.identity.id, join(scratch, "private.txt")))).toBe("denied");
+    expect(await code(hands.nodes.tree(conf.identity.id, join(shared, "other.txt")))).toBe("denied");
+    // sent, it may pull that path while the transfer lasts, and no other
+    writeFileSync(join(scratch, "sent.txt"), "sent");
+    const pulls = new HandsPulls(primary.d.store.kv);
+    pulls.sent(hands.identity.id, { id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FZZ", from: { node: primary.d.identity.id, path: join(scratch, "sent.txt") } });
+    expect(await code(hands.nodes.tree(primary.d.identity.id, join(scratch, "sent.txt")))).toBe("ok");
+    expect(await code(hands.nodes.tree(primary.d.identity.id, join(scratch, "private.txt")))).toBe("denied");
+    pulls.ended("xfr_01ARZ3NDEKTSV4RRFFQ69G5FZZ");
+    expect(await code(hands.nodes.tree(primary.d.identity.id, join(scratch, "sent.txt")))).toBe("denied");
   }, 30_000);
 });

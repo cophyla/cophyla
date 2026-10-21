@@ -142,6 +142,11 @@ const PROTOCOL = "2025-06-18";
 
 type Json = Record<string, unknown>;
 
+/** A workspace node: hands, lending folders of another person's machine to this cluster. Files never go there. */
+function lent(n: Pick<NodeRecord, "hands" | "scope">): boolean {
+  return n.hands === true && n.scope.kind === "workspaces";
+}
+
 function cap(text: string, n = AUDIT_TEXT): string {
   return text.length > n ? text.slice(0, n - 1) + "…" : text;
 }
@@ -243,13 +248,13 @@ export class AgentMessages {
     return { agents: r.agents, connections: r.connections ?? [], machines: r.machines ?? [] };
   }
 
-  /** The user's machines a file may be sent to: every full member, whether it is there now and whether it takes files. */
+  /** The user's machines a file may be sent to, hands ones too, never another person's folders lent here: whether it is there now and whether it takes files. */
   private machines(): MachineListing[] {
     if (!this.deps.files?.()) return [];
     const self = this.deps.self().id;
     return this.deps.cluster
       .nodes()
-      .filter((n) => !n.hands)
+      .filter((n) => !lent(n))
       .map((n) => ({ node: n.id, name: n.name, online: n.id === self || (n.status === "online" && this.deps.cluster.linked(n.id)), files: n.capabilities.files === true }));
   }
 
@@ -488,7 +493,7 @@ export class AgentMessages {
       return { node: found.session.node, nodeName: found.nodeName, agent: agentRef(d, found), cwd: found.session.cwd };
     }
     const key = to.trim().toLowerCase();
-    const machines = this.deps.cluster.nodes().filter((n) => !n.hands && (n.id === to.trim() || n.name.toLowerCase() === key || slug(n.name) === key));
+    const machines = this.deps.cluster.nodes().filter((n) => !lent(n) && (n.id === to.trim() || n.name.toLowerCase() === key || slug(n.name) === key));
     if (machines.length === 1) return { node: machines[0]!.id, nodeName: machines[0]!.name };
     if (machines.length > 1) throw new RpcError("invalid", `more than one machine is called "${to}"`);
     const away = this.offline(to);

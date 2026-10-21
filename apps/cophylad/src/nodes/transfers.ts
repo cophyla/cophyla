@@ -5,12 +5,19 @@
 // folders a confined node shares; a pipe is gated once per path a while, so the files of one
 // folder make one audit row and not one each. A request for another node the primary
 // carries on to it, a listing forwarded and a pipe joined from one link to the next, never to
-// a hands node or one that sends no files. Both ends of a link share this.
+// a node that sends no files or lends folders of another person's machine. Both ends of a
+// link share this.
+//
+// A hands node is driven and drives nothing, yet a transfer to it is pulled by it: so the
+// primary serves a hands node's pulls only for what the primary itself sent it, the source
+// and path of each transfer it forwarded there (`HandsPulls`), never any other path, here or
+// on another node. Pulling from a hands node needs no such word: its primary drives it.
 
 import { nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { NodeRecord } from "@cophyla/protocol";
+import type { NodeRecord, Transfer } from "@cophyla/protocol";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
+import type { Store } from "../store/index.ts";
 import type { PipeHub } from "../remote/pipes.ts";
 import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
 import type { TreeCache, TreePage } from "../transfers/tree.ts";
@@ -21,6 +28,69 @@ export const FILE_LINK_REQUESTS: ReadonlySet<string> = new Set(["files.tree", "f
 
 /** How long a path a link was let read stays let: about as long as a big folder takes. */
 const ALLOWED_MS = 60 * 60_000;
+
+/** The kv namespace of what the primary sent its hands nodes, by transfer id. */
+export const HANDS_PULLS_NS = "hands-pulls";
+/** How long a hands node may pull what it was sent, failed and retried included. */
+const HANDS_PULL_MS = 7 * 24 * 60 * 60_000;
+
+/** The node on the link a transfer request came from; `hands` when it joined as hands. */
+export interface TransferFrom extends LinkFrom {
+  hands?: boolean;
+}
+
+interface HandsPull {
+  hands: string;
+  node: string;
+  path: string;
+  until: number;
+}
+
+/**
+ * What the primary sent each hands node: the machine and path of every transfer it forwarded
+ * to one, which that node may then pull and nothing else. Kept in the store, so a restarted or
+ * a backup primary still serves a transfer that waits; forgotten once it ends, or after a week.
+ */
+export class HandsPulls {
+  private kv: Store["kv"];
+  private now: () => number;
+
+  constructor(kv: Store["kv"], now: () => number = Date.now) {
+    this.kv = kv;
+    this.now = now;
+  }
+
+  /** The primary forwarded `t` to hands node `hands`: its source may be pulled. */
+  sent(hands: string, t: Pick<Transfer, "id" | "from">): void {
+    this.kv.put(HANDS_PULLS_NS, t.id, { hands, node: t.from.node, path: t.from.path, until: this.now() + HANDS_PULL_MS } satisfies HandsPull);
+  }
+
+  /** A retry: the transfer is pulled again, for another week. */
+  renew(id: string): void {
+    const v = this.kv.get(HANDS_PULLS_NS, id) as HandsPull | undefined;
+    if (v) this.kv.put(HANDS_PULLS_NS, id, { ...v, until: this.now() + HANDS_PULL_MS });
+  }
+
+  /** It ended, or was dismissed: nothing of it is pulled again. */
+  ended(id: string): void {
+    this.kv.delete(HANDS_PULLS_NS, id);
+  }
+
+  /** Whether hands node `hands` was sent `path` on `node`. */
+  allows(hands: string, node: string, path: string): boolean {
+    const at = this.now();
+    for (const id of this.kv.list(HANDS_PULLS_NS)) {
+      const v = this.kv.get(HANDS_PULLS_NS, id) as HandsPull | undefined;
+      if (!v) continue;
+      if (v.until <= at) {
+        this.kv.delete(HANDS_PULLS_NS, id);
+        continue;
+      }
+      if (v.hands === hands && v.node === node && v.path === path) return true;
+    }
+    return false;
+  }
+}
 
 export interface TransferLinkDeps {
   selfId: () => string;
@@ -34,8 +104,10 @@ export interface TransferLinkDeps {
   trees: TreeCache;
   /** Refuses a path outside the folders this node shares, when it shares some alone. */
   require?: () => ((path: string) => void) | undefined;
-  /** Whether this node sends files at all: never a hands one. */
+  /** Whether this node sends files at all. */
   sends: () => boolean;
+  /** On the primary: whether hands node `hands` was sent `path` on `node`, which it may then pull. */
+  handsPull?: (hands: string, node: string, path: string) => boolean;
   /** The node on the link is this node's primary, let work here unasked at the join. */
   trusted?: (node: string) => boolean;
   log: Logger;
@@ -61,13 +133,14 @@ export class TransferLinks {
     return (this.deps.now ?? Date.now)();
   }
 
-  async request(from: LinkFrom, method: string, params: unknown): Promise<unknown> {
+  async request(from: TransferFrom, method: string, params: unknown): Promise<unknown> {
     const self = this.deps.selfId();
     switch (method) {
       case "files.tree": {
         const parsed = nodeLinkRequests["files.tree"].params.safeParse(params ?? {});
         if (!parsed.success) throw new RpcError("invalid", "bad files.tree", parsed.error.issues);
         const p = parsed.data;
+        this.handsMay(from, p.node, p.path);
         if (p.node !== self) {
           this.carriable(p.node);
           return this.deps.carry(p.node, method, p, { timeoutMs: TREE_TIMEOUT_MS });
@@ -84,6 +157,7 @@ export class TransferLinks {
         const parsed = nodeLinkRequests["files.pipe.open"].params.safeParse(params ?? {});
         if (!parsed.success) throw new RpcError("invalid", "bad files.pipe.open", parsed.error.issues);
         const p = parsed.data;
+        this.handsMay(from, p.node, p.path);
         const pipes = this.deps.pipes();
         if (!pipes) throw new RpcError("unsupported", "this node carries no pipes");
         const target = { kind: "file" as const, path: p.path, ...(p.rel !== undefined ? { rel: p.rel } : {}), at: p.at };
@@ -122,16 +196,21 @@ export class TransferLinks {
     );
   }
 
-  /** This node sends files: a hands node never does. */
+  /** This node sends files. */
   private sending(): void {
     if (!this.deps.sends()) throw new RpcError("denied", "this machine sends no files");
   }
 
-  /** A node a transfer may be carried to: a full member that sends files. */
+  /** A hands node pulls only what the primary sent it. */
+  private handsMay(from: TransferFrom, node: string, path: string): void {
+    if (from.hands && !this.deps.handsPull?.(from.id, node, path)) throw new RpcError("denied", "a hands node pulls only what its primary sent it");
+  }
+
+  /** A node a transfer may be carried to: one of this user's that sends files. */
   private carriable(node: string): void {
     const row = this.deps.row(node);
     if (!row) throw new RpcError("not_found", `no node ${node}`);
-    if (row.hands) throw new RpcError("denied", `${row.name} joined as hands: it sends no files`);
+    if (row.scope.kind === "workspaces" && row.hands) throw new RpcError("denied", `${row.name} lends folders of another person's machine: it sends no files`);
     if (!row.capabilities.files) throw new RpcError("unsupported", `${row.name} runs an older Cophyla: update it to send files`);
   }
 

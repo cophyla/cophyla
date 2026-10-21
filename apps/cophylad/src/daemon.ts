@@ -423,7 +423,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let transfers: Transfers | undefined;
   let agentFiles: AgentFiles | undefined;
   // a hands node sends and receives no files
-  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, nodes?.movesFiles() ?? true);
+  const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, true);
   // The agents' MCP shim every session runs, from a copy in a folder that never moves, found
   // once; a test run gives the profiles none, unless it names one.
   let agentShim: string | null | undefined = opts.agentShim;
@@ -1177,7 +1177,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     nodes: () => nodesLive.registry.list(),
     primary: () => nodesLive.primaryId(),
     hop: (n) => nodesLive.hopOf(n),
-    receives: () => nodesLive.movesFiles(),
     require: (path) => nodesLive.requirePath()?.(path),
     // a message of cophyla's own, to an agent session of this machine
     tell: async (session, text) => {

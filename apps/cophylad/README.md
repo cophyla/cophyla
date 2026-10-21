@@ -898,9 +898,11 @@ or a daemon that restarts leaves it `waiting`, and it carries on from what came.
 what came; a failed one keeps it for Retry until it is dismissed. Over 1 GiB through the relay
 asks first, since the relay counts what it carries. The rows are in `<data>/transfers.json`.
 
-A machine that shares folders alone (`--workspace`) sends and receives inside them, a hands
-machine and a workspace node neither, and a machine on an older Cophyla is named as one to
-update. A file pipe sends 128 KiB pieces with a 1 MiB window, acknowledged a quarter window at
+A machine that shares folders alone (`--workspace`) sends and receives inside them, a workspace
+node lending another person's folder neither, and a machine on an older Cophyla is named as
+one to update. A hands machine sends and receives too, but pulls only what its primary sent it:
+the primary writes down the source and path of each transfer it forwards to one (kv
+`hands-pulls`, until it ends or a week) and serves that hands machine nothing else. A file pipe sends 128 KiB pieces with a 1 MiB window, acknowledged a quarter window at
 a time.
 
 ## Tests

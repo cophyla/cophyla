@@ -14,6 +14,7 @@ const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
 const AGHA = "node_01ARZ3NDEKTSV4RRFFQ69G5FAX";
 const OLD = "node_01ARZ3NDEKTSV4RRFFQ69G5FAY";
 const LENT = "node_01ARZ3NDEKTSV4RRFFQ69G5FAZ";
+const HANDS = "node_01ARZ3NDEKTSV4RRFFQ69G5FB0";
 
 function node(id: string, name: string, over: Partial<Node> = {}, files = true): Node {
   return { id, name, role: "secondary", status: "online", via: "direct", platform: "windows", scope: { kind: "machine" }, capabilities: { brain: false, harnesses: ["claude"], voice: { wake: false, stt: false, tts: false }, remote: false, ...(files ? { files: true } : {}) }, versions: { platform: "0.17.0", protocol: 1 }, lastSeen: 0, ...over } as Node;
@@ -28,7 +29,7 @@ function connected(opts: { filePaths?: boolean; scopes?: Client["scopes"] } = {}
   apply(state, { type: "host.state", params: { connected: true } });
   apply(state, {
     type: "nodes",
-    nodes: [node(DESK, "Desk", { role: "primary" }), node(LAPTOP, "Laptop"), node(AGHA, "Agha", { status: "offline" }), node(OLD, "Studio", {}, false), node(LENT, "Lent", { scope: { kind: "workspaces", paths: ["C:\\shared"] } })],
+    nodes: [node(DESK, "Desk", { role: "primary" }), node(LAPTOP, "Laptop"), node(AGHA, "Agha", { status: "offline" }), node(OLD, "Studio", {}, false), node(LENT, "Lent", { scope: { kind: "workspaces", paths: ["C:\\shared"] } }), node(HANDS, "Ansar", { hands: true })],
   });
   return state;
 }
@@ -93,12 +94,15 @@ describe("transfers in the view", () => {
     expect(etaWords(Number.POSITIVE_INFINITY)).toBe("");
   });
 
-  test("Send to… offers the other computers there now that take files, this one first; never a lent one", () => {
+  test("Send to… offers the other computers there now that take files, this one first, hands ones too; never a lent one", () => {
     const state = connected();
-    expect(sendTargets(state, LAPTOP)).toEqual([{ node: DESK, name: "Desk", here: true }]);
+    expect(sendTargets(state, LAPTOP)).toEqual([
+      { node: DESK, name: "Desk", here: true },
+      { node: HANDS, name: "Ansar", here: false },
+    ]);
     apply(state, { type: "node.state", params: node(AGHA, "Agha") });
-    expect(sendTargets(state, LAPTOP).map((t) => t.name)).toEqual(["Desk", "Agha"]);
-    expect(sendTargets(state, DESK).map((t) => t.name)).toEqual(["Agha", "Laptop"]);
+    expect(sendTargets(state, LAPTOP).map((t) => t.name)).toEqual(["Desk", "Agha", "Ansar"]);
+    expect(sendTargets(state, DESK).map((t) => t.name)).toEqual(["Agha", "Ansar", "Laptop"]);
     expect(sendBlocked(state, DESK)).toBeUndefined();
     expect(sendBlocked(state, OLD)).toBe("Studio runs an older Cophyla, which sends no files: update it");
     expect(sendBlocked(connected({ scopes: ["sessions:read", "views"] }), DESK)).toBe("This app may not send files");

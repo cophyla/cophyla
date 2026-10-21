@@ -89,7 +89,7 @@ export interface TransfersDeps {
   primary: () => string | undefined;
   /** The way the link between `node` and the primary goes; none for the primary itself. */
   hop: (node: string) => Hop | undefined;
-  /** Whether this machine receives files: never a hands node. */
+  /** Whether this machine receives files. */
   receives?: () => boolean;
   /** Refuses a folder a confined node may not write in. */
   require?: (path: string) => void;
@@ -438,8 +438,12 @@ export class Transfers {
   private checkSender(source: string): void {
     if (source === this.deps.selfId()) return;
     const row = this.deps.nodes().find((n) => n.id === source);
-    if (!row) throw new RpcError("not_found", `no machine ${source}`);
-    if (row.hands) throw new RpcError("denied", `${row.name} joined as hands: it sends no files`);
+    // a hands node knows no machine but its primary: the primary, which sent it this, answers for the rest
+    if (!row) {
+      if (!this.deps.reachable(source)) throw new RpcError("not_found", `no machine ${source}`);
+      return;
+    }
+    if (row.hands && row.scope.kind === "workspaces") throw new RpcError("denied", `${row.name} lends folders of another person's machine: it sends no files`);
     if (!row.capabilities.files) throw new RpcError("unsupported", `${row.name} runs an older Cophyla: update it to send files`);
     if (!this.deps.reachable(source)) throw new RpcError("unavailable", `${row.name} is offline`);
   }
