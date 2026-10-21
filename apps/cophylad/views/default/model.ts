@@ -3669,6 +3669,11 @@ export function linkWords(state: ViewState): { status: "connected" | "gone"; tit
   return { status: "connected", title: about ? `Connected to cophylad — ${about}` : "Connected to cophylad" };
 }
 
+/** Its link's frames go through the relay now: it joined through it, and no data channel carries them. */
+export function relayed(node: Node): boolean {
+  return node.via === "relay" && !node.p2p;
+}
+
 /**
  * One card per node: the computer the app runs on first (the one it talks to, from a phone),
  * then the primary, then the others by name, the offline ones last; its bars from the latest
@@ -3688,7 +3693,7 @@ export function selectNodes(state: ViewState): NodeCard[] {
   );
   return nodes.map((node) => {
     const sample = state.metrics.get(node.id);
-    const sub = [node.id === own ? "this computer" : "", node.role, node.via === "relay" ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
+    const sub = [node.id === own ? "this computer" : "", node.role, relayed(node) ? "via relay" : "", node.status === "online" ? "" : node.status].filter(Boolean).join(" · ");
     const card: NodeCard = { node, sub, bars: [], owners: [] };
     if (!sample) {
       card.bars.push({ label: "cpu", words: "—" }, { label: "memory", words: "—" });
@@ -3934,7 +3939,7 @@ export function selectStatusMachines(state: ViewState, now = Date.now()): Status
     const remote = state.scopes.includes("remote") && online ? state.remote.get(node.id) : undefined;
     const card = selectRemote(state, node);
     // offline, since when is on hover and in Devices: beside a long name the line keeps the word
-    const sub = online ? [node.id === own ? "this computer" : "", node.role === "primary" ? "primary" : "", node.hands ? "hands" : "", node.via === "relay" ? "via relay" : ""].filter(Boolean).join(" · ") : node.status;
+    const sub = online ? [node.id === own ? "this computer" : "", node.role === "primary" ? "primary" : "", node.hands ? "hands" : "", relayed(node) ? "via relay" : ""].filter(Boolean).join(" · ") : node.status;
     const row: StatusMachine = {
       node: node.id,
       name: node.name,
@@ -4360,7 +4365,7 @@ export function machineFacts(state: ViewState, node: Node, now: number): Machine
   if (node.role === "primary") tags.push({ key: "primary", label: "Primary", title: "It runs the brain, the chat and the tasks; the others follow it" });
   if (grant.badge === "hands") tags.push({ key: "hands", label: "Hands", title: "It runs what the primary asks, and reaches no other machine" });
   if (grant.reinvite) tags.push({ key: "reinvite", label: "Invite it again", title: "Its key went with a removed machine: invite it again" });
-  const status = node.status === "online" ? (node.via === "relay" ? "online through the relay" : "online") : node.status === "offline" ? `offline, last seen ${ago(node.lastSeen, now)}` : node.status;
+  const status = node.status === "online" ? (relayed(node) ? "online through the relay" : "online") : node.status === "offline" ? `offline, last seen ${ago(node.lastSeen, now)}` : node.status;
   const line = [PLATFORM_NAMES[node.platform], `Cophyla ${node.versions.platform}`, status, grant.end ?? ""].filter(Boolean).join(" · ");
   return { tags, line };
 }

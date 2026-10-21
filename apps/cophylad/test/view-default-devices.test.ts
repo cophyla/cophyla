@@ -73,6 +73,22 @@ describe("the rail's Status: a line per machine", () => {
     expect(selectStatusMachines(state, NOW)[3]!.title).toBe("Build box · Linux · last seen 3h ago");
   });
 
+  test("a machine that joined through the relay says so only while its link goes through it: on a data channel, nothing", () => {
+    const state = cluster();
+    const mac = () => selectStatusMachines(state, NOW).find((m) => m.name === "Studio Mac")!.sub;
+    const card = () => selectNodes(state).find((c) => c.node.name === "Studio Mac")!.sub;
+    const line = () => machineFacts(state, state.nodes.get(MAC)!, NOW).line;
+    apply(state, { type: "node.state", params: node(MAC, "Studio Mac", { platform: "macos", via: "relay", hands: true, p2p: { path: "srflx", rttMs: 135, since: NOW - H } }) });
+    expect(mac()).toBe("hands");
+    expect(card()).toBe("secondary");
+    expect(line()).toBe("macOS · Cophyla 0.12.0 · online");
+    // the channel fell back: the relay carries it again
+    apply(state, { type: "node.state", params: node(MAC, "Studio Mac", { platform: "macos", via: "relay", hands: true }) });
+    expect(mac()).toBe("hands · via relay");
+    expect(card()).toBe("secondary · via relay");
+    expect(line()).toBe("macOS · Cophyla 0.12.0 · online through the relay");
+  });
+
   test("its readings once a sample came: cpu, memory, and the busiest GPU, coloured as they near the top; none offline", () => {
     const state = cluster();
     apply(state, { type: "metrics.sample", params: sample(DESK, 9.3, 34.3, 63.7, [{ name: "iGPU", util: 3, vramUsed: 0, vramTotal: 0 }, { name: "NVIDIA GeForce RTX 4080", util: 14, vramUsed: 7.6 * GB, vramTotal: 16 * GB }]) });

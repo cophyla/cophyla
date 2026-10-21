@@ -101,6 +101,16 @@ export const NodeVersions = z.object({
 });
 export type NodeVersions = z.infer<typeof NodeVersions>;
 
+/**
+ * How a data channel's selected pair reaches the far end, as the node's helper sees it:
+ * `host` both ends' own addresses, `srflx` through a NAT's address STUN saw, `prflx` through
+ * one the far end's own checks taught, `predicted` through a port the node predicted for a
+ * sequential NAT, `mapped` through the mapping the node's router keeps, `relay` through a
+ * TURN server the far end uses.
+ */
+export const DirectPathType = z.enum(["host", "srflx", "prflx", "predicted", "mapped", "relay"]);
+export type DirectPathType = z.infer<typeof DirectPathType>;
+
 export const Node = z.object({
   id: NodeId,
   name: z.string(),
@@ -115,6 +125,8 @@ export const Node = z.object({
   lastSeen: Timestamp,
   /** Joined as hands only: the primary drives it, and it can reach no other node. */
   hands: z.boolean().optional(),
+  /** A `via: relay` node's link running on a data channel: its path, round trip, and since when. The relay stays its fallback. */
+  p2p: z.object({ path: DirectPathType, rttMs: z.number().nonnegative().optional(), since: Timestamp }).optional(),
 });
 export type Node = z.infer<typeof Node>;
 
@@ -1372,16 +1384,6 @@ export const IceServer = z.object({
   credential: z.string().optional(),
 });
 export type IceServer = z.infer<typeof IceServer>;
-
-/**
- * How a data channel's selected pair reaches the far end, as the node's helper sees it:
- * `host` both ends' own addresses, `srflx` through a NAT's address STUN saw, `prflx` through
- * one the far end's own checks taught, `predicted` through a port the node predicted for a
- * sequential NAT, `mapped` through the mapping the node's router keeps, `relay` through a
- * TURN server the far end uses.
- */
-export const DirectPathType = z.enum(["host", "srflx", "prflx", "predicted", "mapped", "relay"]);
-export type DirectPathType = z.infer<typeof DirectPathType>;
 
 /** One data channel a node holds now: a phone (by its controller) or another node. */
 export const DirectPeer = z.object({

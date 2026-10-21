@@ -11,7 +11,7 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, DirectPathType, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, GrantRole, IceServer, Node, NodeRole, Session, Terminal, Workspace } from "./entities.ts";
 import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
@@ -29,8 +29,6 @@ export const NodeRecord = Node.extend({
   endpoints: z.array(Endpoint),
   epoch: z.number().int().nonnegative().optional(),
   rank: z.number().int().positive().optional(),
-  /** A relayed node's link running on a data channel: its path, round trip, and since when. */
-  p2p: z.object({ path: DirectPathType, rttMs: z.number().nonnegative().optional(), since: Timestamp }).optional(),
 });
 export type NodeRecord = z.infer<typeof NodeRecord>;
 

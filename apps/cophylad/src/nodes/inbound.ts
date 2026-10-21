@@ -1007,9 +1007,9 @@ export class Inbound {
   }
 }
 
-/** A node's own row as it sent it, with what its join settled kept: its role, backup rank, epoch, endpoints, way in and whether it is hands. */
+/** A node's own row as it sent it, with what its join settled kept: its role, backup rank, epoch, endpoints, way in, data channel and whether it is hands. */
 export function pinned(row: NodeRecord, sent: Omit<NodeRecord, "endpoints"> & { endpoints?: string[] }): NodeRecord {
-  const { backup: _backup, rank: _rank, epoch: _epoch, endpoints: _endpoints, hands: _hands, ...rest } = sent;
+  const { backup: _backup, rank: _rank, epoch: _epoch, endpoints: _endpoints, hands: _hands, p2p: _p2p, ...rest } = sent;
   return {
     ...rest,
     id: row.id,
@@ -1021,5 +1021,6 @@ export function pinned(row: NodeRecord, sent: Omit<NodeRecord, "endpoints"> & { 
     ...(row.rank !== undefined ? { rank: row.rank } : {}),
     ...(row.epoch !== undefined ? { epoch: row.epoch } : {}),
     ...(row.hands ? { hands: true } : {}),
+    ...(row.p2p ? { p2p: row.p2p } : {}),
   };
 }

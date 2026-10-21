@@ -81,6 +81,15 @@ describe("a relayed node link's data channel", () => {
     await waitFor(() => p.d.direct.state().peers.some((x) => x.kind === "node" && x.id === s.identity.id), 8000);
     await waitFor(() => p.d.nodes.forwardHost.registryList().find((n) => n.id === s.identity.id)?.p2p, 8000);
     expect((await row()).p2p).toMatchObject({ path: "srflx" });
+    // the secondary's own row changes (a voice stage, its desktop host): the primary's copy keeps the channel it saw, not one the row claims
+    // (the row the registry takes is caught as it goes out, by a name only it has: the node's own announcements may follow it at once)
+    let merged: NodeRecord | undefined;
+    p.d.bus.on("node.state", (r) => {
+      if (r.id === s.identity.id && r.name === "own row changed") merged = r as NodeRecord;
+    });
+    s.bus.emit("node.state", { ...s.nodes.self(), name: "own row changed", p2p: { path: "host", since: 1 } });
+    await waitFor(() => merged, 3000);
+    expect(merged!.p2p).toMatchObject({ path: "srflx" });
     expect(s.direct.state().peers).toEqual([expect.objectContaining({ kind: "node", id: p.d.identity.id, path: "srflx", rttMs: 12 })]);
     const relayedBefore = fake!.seen.filter((m) => m === "relay").length;
     // the link carries on over the channel: a workspace on the secondary reaches the primary's list
