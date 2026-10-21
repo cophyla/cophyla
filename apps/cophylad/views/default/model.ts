@@ -24,7 +24,7 @@
 // What the chat's session is told (`brain.context`) is shown part by part, in words.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -253,6 +253,8 @@ export interface ViewState {
   connections: Map<string, Connection>;
   /** A connection's code just made, while its panel shows. */
   connectionCode?: IssuedCode;
+  /** Files and folders on their way between the user's machines, and the ones that came, from `transfer.list` and `transfer.state`, while connected. */
+  transfers: Map<string, Transfer>;
   /** The node this client's socket is on, on its own network (`lan.info`); none from a node that does not say. */
   lan?: LanState;
   /** Every node of the user, from `node.list` and `node.state`. */
@@ -350,6 +352,9 @@ export type Action =
   | { type: "connection.state"; params: Connection }
   /** A connection's code came back from `connection.invite`, or its panel closed. */
   | { type: "connection.code"; code?: IssuedCode }
+  | { type: "transfers"; transfers: Transfer[] }
+  /** A transfer started, moved on, ended, or was dismissed (`dismissed`, which takes its row away). */
+  | { type: "transfer.state"; params: Transfer }
   /** How the node stands on its own network, from `lan.info` or the switch's answer; none when it does not say. */
   | { type: "lan"; lan?: LanState }
   | { type: "quick.toggle"; quick?: boolean }
@@ -403,6 +408,7 @@ export function initialState(): ViewState {
     controllers: new Map(),
     grants: new Map(),
     connections: new Map(),
+    transfers: new Map(),
     nodes: new Map(),
     metrics: new Map(),
     spend: new Map(),
@@ -644,8 +650,9 @@ export function apply(state: ViewState, action: Action): ViewState {
         state.direct.clear();
         delete state.remoteInvite;
         delete state.remotePin;
-        // Every terminal comes again with the next `terminal.list`.
+        // Every terminal comes again with the next `terminal.list`, and every transfer with `transfer.list`.
         state.terminals.clear();
+        state.transfers.clear();
       }
       return state;
     case "session.state": {
@@ -923,6 +930,13 @@ export function apply(state: ViewState, action: Action): ViewState {
       if (action.code) state.connectionCode = action.code;
       else delete state.connectionCode;
       return state;
+    case "transfers":
+      state.transfers = new Map(action.transfers.filter((t) => !t.dismissed).map((t) => [t.id, t]));
+      return state;
+    case "transfer.state":
+      if (action.params.dismissed) state.transfers.delete(action.params.id);
+      else state.transfers.set(action.params.id, action.params);
+      return state;
     case "browser.key":
       if (action.key) state.browserKey = action.key;
       else delete state.browserKey;
@@ -1031,6 +1045,8 @@ export function chatDraw(action: Action): ChatDraw {
     case "send.result":
     case "assistant.state":
     case "update.state":
+    case "transfers":
+    case "transfer.state":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -4483,4 +4499,123 @@ export function triggerWords(task: Task): string {
     case "event":
       return `on ${t.name}`;
   }
+}
+
+// --- transfers -------------------------------------------------------------------------------
+
+/** A transfer's row under Transfers: what it is, between which machines, how far, and what may be done with it. */
+export interface TransferRow {
+  id: string;
+  name: string;
+  /** Its path where it came from, and the folder it goes to: the row's hover. */
+  title: string;
+  /** From which machine to which: `Desk → Laptop`, one name for a copy on the same one. */
+  route: string;
+  state: Transfer["state"];
+  /** How far it is, 0 to 1. */
+  done: number;
+  /** What came of how much, with the speed and the time left while it runs; why it waits or failed. */
+  words: string;
+  /** Its bytes ride the server's relay. */
+  relay: boolean;
+  cancel: boolean;
+  retry: boolean;
+  dismiss: boolean;
+  /** It landed on this computer, whose file manager the desktop app here can show it in. */
+  reveal: boolean;
+}
+
+/** The ones under way first, the latest of each kind first. */
+const TRANSFER_ORDER: Record<Transfer["state"], number> = { running: 0, waiting: 1, queued: 2, failed: 3, done: 4, cancelled: 5 };
+
+/** Between which machines a transfer goes, by their names. */
+export function transferRoute(state: ViewState, t: Pick<Transfer, "from" | "to">): string {
+  const to = machineName(state, t.to.node);
+  return t.from.node === t.to.node ? to : `${machineName(state, t.from.node)} → ${to}`;
+}
+
+/** The time a transfer has left, at the speed it goes. */
+export function etaWords(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return "";
+  if (seconds < 60) return `${Math.max(1, Math.round(seconds))} s left`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)} min left`;
+  const h = Math.floor(seconds / 3600);
+  const m = Math.round((seconds % 3600) / 60);
+  return m > 0 && m < 60 ? `${h} h ${m} min left` : `${h} h left`;
+}
+
+/** What a transfer's row says under its bar. */
+export function transferWords(t: Transfer): string {
+  const of = `${bytesWords(t.bytes)} of ${bytesWords(t.total)}`;
+  const files = t.files && t.files.total > 1 ? `, ${t.files.done} of ${t.files.total} files` : "";
+  switch (t.state) {
+    case "running": {
+      const rate = t.rate !== undefined && t.rate > 0 ? t.rate : undefined;
+      const left = rate ? etaWords((t.total - t.bytes) / rate) : "";
+      return [`${of}${files}`, ...(rate ? [`${bytesWords(rate)}/s`] : []), ...(left ? [left] : [])].join(" · ");
+    }
+    case "queued":
+      return `${bytesWords(t.total)} · after the one before it`;
+    case "waiting":
+      return `${t.error ? t.error.charAt(0).toUpperCase() + t.error.slice(1) : "Waiting"} · ${of}${files}`;
+    case "done":
+      return `${bytesWords(t.total)}${t.files && t.files.total > 1 ? `, ${t.files.total} files` : ""} · done`;
+    case "failed":
+      return `Failed: ${t.error ?? "it did not finish"}`;
+    case "cancelled":
+      return "Cancelled";
+  }
+}
+
+/** Every transfer as the rail lists them. */
+export function selectTransfers(state: ViewState): TransferRow[] {
+  const here = state.client?.node;
+  return [...state.transfers.values()]
+    .sort((a, b) => TRANSFER_ORDER[a.state] - TRANSFER_ORDER[b.state] || (b.endedAt ?? b.startedAt) - (a.endedAt ?? a.startedAt) || (a.id < b.id ? -1 : 1))
+    .map((t) => ({
+      id: t.id,
+      name: t.name,
+      title: `${t.from.path}\n→ ${t.to.path ?? t.to.dir}`,
+      route: transferRoute(state, t),
+      state: t.state,
+      done: t.state === "done" ? 1 : t.total > 0 ? Math.min(1, t.bytes / t.total) : 0,
+      words: transferWords(t),
+      relay: t.via === "relay",
+      cancel: t.state === "queued" || t.state === "running" || t.state === "waiting",
+      retry: t.state === "failed",
+      dismiss: t.state === "done" || t.state === "failed" || t.state === "cancelled",
+      reveal: t.state === "done" && state.hostFilePaths && here !== undefined && t.to.node === here && t.to.path !== undefined,
+    }));
+}
+
+/** A machine a file can be sent to: its id, its name, and whether it is the one this app runs on. */
+export interface SendTarget {
+  node: NodeId;
+  name: string;
+  here: boolean;
+}
+
+/**
+ * The machines a file on `source` can go to: every other one there now that takes files, never
+ * a hands node or one that shares some folders alone; this computer first, the rest by name.
+ */
+export function sendTargets(state: ViewState, source: NodeId): SendTarget[] {
+  const here = state.client?.node;
+  return [...state.nodes.values()]
+    .filter((n) => n.id !== source && n.status === "online" && n.capabilities.files === true && n.hands !== true && n.scope.kind !== "workspaces")
+    .map((n) => ({ node: n.id, name: n.name, here: n.id === here }))
+    .sort((a, b) => Number(b.here) - Number(a.here) || a.name.localeCompare(b.name));
+}
+
+/** Why a file on `source` cannot be sent from here, or undefined when it can. */
+export function sendBlocked(state: ViewState, source: NodeId): string | undefined {
+  const row = state.nodes.get(source);
+  if (!state.scopes.includes("terminal")) return "This app may not send files";
+  if (row && row.capabilities.files !== true) return `${row.name} runs an older Cophyla, which sends no files: update it`;
+  return undefined;
+}
+
+/** The Downloads folder in a home folder's listing, where Send to… starts. */
+export function downloadsIn(listing: Pick<FolderPick, "folders">): string | undefined {
+  return listing.folders.find((f) => f.name.toLowerCase() === "downloads")?.path;
 }

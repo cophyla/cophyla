@@ -61,6 +61,8 @@ import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine,
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionConnections } from "./model.ts";
+import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
+import type { SendTarget, TransferRow } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
@@ -145,9 +147,13 @@ export interface UiState {
   /**
    * The Files panel's menu is open for a row (`rel`, `""` the folder itself), at the point it
    * was asked for; with what went wrong when the file manager could not show it, and while the
-   * request is on its way.
+   * request is on its way; and Send to… while it shows in the menu's place.
    */
-  fileMenu?: { place: string; rel: string; kind: "file" | "dir"; x: number; y: number; note?: string; busy?: boolean };
+  fileMenu?: { place: string; rel: string; kind: "file" | "dir"; x: number; y: number; note?: string; busy?: boolean; send?: SendPanel };
+  /** Transfers whose Cancel, Retry, Dismiss or Reveal is on its way. */
+  transferBusy?: Set<string>;
+  /** Files dropped on Files from the desktop that would ride the relay and are big: asked about in the panel, with how much. */
+  dropConfirm?: { place: string; rel: string; paths: string[]; bytes: number };
   /** A bare terminal being ended from its bar: the user is asked to confirm, then it is on its way until it exits. */
   end?: { terminal: string; phase: "asking" | "ending" };
   /** This node's restart: asked, refused while busy with the reasons, or under way until the line is back. */
@@ -225,7 +231,20 @@ export interface TerminalMenu {
   browse?: FolderBrowse;
 }
 
-/** New terminal's folder picker: the machine, the folder it shows once listed, one asked for and not answered yet, and why the last could not be listed. */
+/**
+ * Send to…, in the Files panel's menu: the machine picked (its folders in the picker once it
+ * is), the size asked about when a big one would ride the relay, why the last did not start,
+ * and while one starts.
+ */
+export interface SendPanel {
+  node?: NodeId;
+  browse?: FolderBrowse;
+  confirm?: { bytes: number };
+  error?: string;
+  busy?: boolean;
+}
+
+/** A folder picker's state, New terminal's or Send to…'s: the machine, the folder it shows once listed, one asked for and not answered yet, and why the last could not be listed. */
 export interface FolderBrowse {
   node: NodeId;
   name: string;
@@ -685,6 +704,71 @@ function renderTerminals(node: HTMLElement, terminals: Terminal[], state: ViewSt
 
 /** The fold key of the Terminals heading: no folder group's, which all hold a newline. */
 const TERMINALS_GROUP = "terminals";
+/** And of the Transfers heading. */
+const TRANSFERS_GROUP = "transfers";
+
+/**
+ * Transfers, while there are any: a heading folded like a folder's, and a row per transfer,
+ * the ones under way first: its name, `via relay` when its bytes ride the server's relay, the
+ * machines it goes between, a bar, how far with the speed and the time left (or why it waits
+ * or failed), and what may be done with it: Show where it landed on this computer, Retry,
+ * Cancel, Dismiss.
+ */
+function renderTransfers(node: HTMLElement, rows: TransferRow[], state: ViewState, ui: UiState): void {
+  setHidden(node, rows.length === 0);
+  const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
+  const folded = ui.folded.has(TRANSFERS_GROUP);
+  setText(name, groupHeading("Transfers", rows.length, folded));
+  name.setAttribute("aria-expanded", folded ? "false" : "true");
+  const list = node.querySelector<HTMLElement>(":scope > .transfer-list")!;
+  setHidden(list, folded);
+  reconcile(list, rows, (r) => r.id, createTransfer, (n, r) => updateTransfer(n, r, state, ui));
+}
+
+function createTransfer(): HTMLElement {
+  const row = el("div", "transfer");
+  const head = el("div", "transfer-head");
+  head.append(el("span", "transfer-name"), el("span", "transfer-relay", "via relay"));
+  const bar = el("div", "transfer-bar");
+  bar.setAttribute("role", "progressbar");
+  bar.setAttribute("aria-valuemin", "0");
+  bar.setAttribute("aria-valuemax", "100");
+  bar.append(el("span", "transfer-fill"));
+  const actions = el("div", "transfer-actions");
+  const show = actionButton("transfer-button", "Show", "transfer-reveal");
+  show.title = "Show it in this computer's file manager";
+  const retry = actionButton("transfer-button", "Retry", "transfer-retry");
+  retry.title = "Try again from what came";
+  const cancel = actionButton("transfer-button", "Cancel", "transfer-cancel");
+  cancel.title = "Stop it and delete what came";
+  const dismiss = actionButton("transfer-button", "Dismiss", "transfer-dismiss");
+  dismiss.title = "Take it off the list";
+  actions.append(show, retry, cancel, dismiss);
+  row.append(head, el("div", "transfer-route"), bar, el("div", "transfer-words"), actions);
+  return row;
+}
+
+function updateTransfer(row: HTMLElement, r: TransferRow, state: ViewState, ui: UiState): void {
+  setData(row, "state", r.state);
+  row.title = r.title;
+  setText(row.querySelector(".transfer-name")!, r.name);
+  setHidden(row.querySelector<HTMLElement>(".transfer-relay")!, !r.relay);
+  setText(row.querySelector(".transfer-route")!, r.route);
+  const bar = row.querySelector<HTMLElement>(".transfer-bar")!;
+  setHidden(bar, r.state === "cancelled");
+  const percent = String(Math.round(r.done * 1000) / 10);
+  bar.setAttribute("aria-valuenow", percent);
+  bar.setAttribute("aria-label", `${r.name}: ${percent}%`);
+  if (bar.style.getPropertyValue("--done") !== `${percent}%`) bar.style.setProperty("--done", `${percent}%`);
+  setText(row.querySelector(".transfer-words")!, r.words);
+  const busy = ui.transferBusy?.has(r.id) === true || !state.connected;
+  for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>(".transfer-button"))) {
+    setData(b, "id", r.id);
+    const action = b.dataset["action"];
+    setHidden(b, !(action === "transfer-reveal" ? r.reveal : action === "transfer-retry" ? r.retry : action === "transfer-cancel" ? r.cancel : r.dismiss));
+    b.disabled = busy;
+  }
+}
 /** A machine's under Terminals. */
 const machineGroupKey = (node: string): string => `${TERMINALS_GROUP}:${node}`;
 
@@ -1808,7 +1892,13 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     terminalsName.dataset["group"] = TERMINALS_GROUP;
     terminalsName.title = "Terminals no agent session runs in";
     terminals.append(terminalsName, el("div", "tab-terminals"), el("div", "tab-subgroups terminal-machines"));
-    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals);
+    // The files on their way between the machines, and the ones that came, under a heading folded the same way.
+    const transfers = el("div", "tab-group transfers-group");
+    const transfersName = actionButton("tab-group-name", "Transfers", "group-fold");
+    transfersName.dataset["group"] = TRANSFERS_GROUP;
+    transfersName.title = "Files and folders sent between your computers";
+    transfers.append(transfersName, el("div", "transfer-list"));
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, transfers);
     // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
     const cards = createStatus();
     // While an agent's tab is selected they are the Status tab, beside its folder's files.
@@ -1862,6 +1952,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
   renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
+  renderTransfers(root.querySelector<HTMLElement>(".transfers-group")!, canTerminal ? selectTransfers(state) : [], state, ui);
   renderNewTerminal(root, state, ui, canTerminal);
 
   renderPanel(root, state, ui);
@@ -2486,7 +2577,13 @@ function createExplorer(): HTMLElement {
   const git = el("div", "explorer-git");
   git.setAttribute("role", "status");
   git.append(el("span", "git-mark"), el("span", "git-branch"), el("span", "git-sync"));
-  block.append(head, tree, el("p", "explorer-note"), git);
+  // Files dropped from the desktop that are big and would ride the relay: asked about here.
+  const drop = el("div", "explorer-drop");
+  drop.setAttribute("role", "alert");
+  const buttons = el("div", "send-confirm-buttons");
+  buttons.append(actionButton("send-confirm-yes", "Copy", "drop-relay"), actionButton("send-confirm-no", "Cancel", "drop-relay-cancel"));
+  drop.append(el("p", "explorer-drop-words"), buttons);
+  block.append(head, tree, el("p", "explorer-note"), drop, git);
   return block;
 }
 
@@ -2517,6 +2614,10 @@ function renderExplorer(block: HTMLElement, state: ViewState, ui: UiState, sessi
   setText(note, words);
   setHidden(note, words === "");
   for (const b of Array.from(block.querySelectorAll<HTMLButtonElement>(".explorer-tool"))) b.disabled = !state.connected;
+  const drop = block.querySelector<HTMLElement>(".explorer-drop")!;
+  const asked = ui.dropConfirm?.place === place ? ui.dropConfirm : undefined;
+  setHidden(drop, !asked);
+  if (asked) setText(drop.querySelector(".explorer-drop-words")!, `Copy ${asked.paths.length === 1 ? (asked.paths[0]!.split(/[\\/]/).pop() ?? asked.paths[0]!) : `${asked.paths.length} items`} (${bytesWords(asked.bytes)}) through the relay? The two computers have no direct way between them, and the relay counts what it carries.`);
   const git = block.querySelector<HTMLElement>(".explorer-git")!;
   setHidden(git, ex?.git === undefined);
   if (!ex?.git) return;
@@ -2567,9 +2668,12 @@ function updateFileRow(row: HTMLElement, r: FileRow, picked: string | undefined,
 }
 
 /**
- * The Files panel's menu, fixed where it was asked for and kept inside the frame: its one item
+ * The Files panel's menu, fixed where it was asked for and kept inside the frame: one item
  * shows the row in the file manager of the computer it is on, named as that computer names it,
- * and is disabled with the reason where this view cannot (only the desktop app there can).
+ * and is disabled with the reason where this view cannot (only the desktop app there can);
+ * Send to… puts in the menu's place the machines the row can go to, then a folder picker on
+ * the one picked, from its Downloads folder, with Send here; a big one over the relay asks
+ * there first.
  */
 function renderFileMenu(app: HTMLElement, state: ViewState, ui: UiState): void {
   let menu = app.querySelector<HTMLElement>(":scope > .file-menu");
@@ -2584,27 +2688,105 @@ function renderFileMenu(app: HTMLElement, state: ViewState, ui: UiState): void {
     menu.setAttribute("role", "menu");
     const item = actionButton("rail-menu-item file-menu-reveal", "", "file-reveal");
     item.setAttribute("role", "menuitem");
-    menu.append(item, el("p", "rail-menu-note"));
+    const send = actionButton("rail-menu-item file-menu-send", "Send to…", "file-send");
+    send.setAttribute("role", "menuitem");
+    send.setAttribute("aria-haspopup", "true");
+    menu.append(item, send, el("p", "rail-menu-note"), createSendPanel());
     app.append(menu);
   }
+  const ex = state.explorers.get(m.place);
+  const path = joinPath(ex?.root ?? session.cwd, m.rel);
+  const name = m.rel === "" ? (path.split(/[\\/]/).filter((p) => p !== "").pop() ?? path) : (m.rel.split("/").pop() ?? m.rel);
+  menu.setAttribute("aria-label", m.rel === "" ? "The folder" : name);
+  const sending = m.send !== undefined;
+  setData(menu, "send", String(sending));
   const item = menu.querySelector<HTMLButtonElement>(".file-menu-reveal")!;
+  setHidden(item, sending);
   const label = revealLabel(state.nodes.get(session.node)?.platform, m.kind);
   setText(item, label);
-  const ex = state.explorers.get(m.place);
-  item.title = joinPath(ex?.root ?? session.cwd, m.rel);
-  menu.setAttribute("aria-label", m.rel === "" ? "The folder" : (m.rel.split("/").pop() ?? m.rel));
+  item.title = path;
   const blocked = revealBlocked(state, session);
   item.disabled = blocked !== undefined || !state.connected || m.busy === true;
-  const note = menu.querySelector<HTMLElement>(".rail-menu-note")!;
-  const words = m.note ?? blocked ?? "";
+  const send = menu.querySelector<HTMLButtonElement>(".file-menu-send")!;
+  setHidden(send, sending);
+  const sendBlock = sendBlocked(state, session.node);
+  send.disabled = !state.connected || sendBlock !== undefined;
+  send.title = sendBlock ?? `Copy ${name} to another of your computers`;
+  const note = menu.querySelector<HTMLElement>(":scope > .rail-menu-note")!;
+  const words = sending ? "" : (m.note ?? blocked ?? "");
   setText(note, words);
   setHidden(note, words === "");
+  renderSendPanel(menu.querySelector<HTMLElement>(".send-panel")!, state, m.send, name, session.node);
   setHidden(menu, false);
   // Where it was asked for, moved in from an edge it would run past.
   const x = Math.max(4, Math.min(m.x, window.innerWidth - menu.offsetWidth - 4));
   const y = Math.max(4, Math.min(m.y, window.innerHeight - menu.offsetHeight - 4));
   menu.style.left = `${x}px`;
   menu.style.top = `${y}px`;
+}
+
+/**
+ * Send to…, in the Files panel's menu's place: back, what is sent and where, the computers it
+ * can go to, the folder picker on the one picked with Send here, the question a big one over
+ * the relay asks first, and what went wrong.
+ */
+function createSendPanel(): HTMLElement {
+  const panel = el("div", "send-panel");
+  const head = el("div", "folder-head send-head");
+  const back = actionButton("folder-back send-back", "‹", "send-back");
+  back.setAttribute("aria-label", "Back");
+  head.append(back, el("span", "folder-title send-title"));
+  const machines = el("div", "send-machines");
+  machines.setAttribute("role", "group");
+  machines.setAttribute("aria-label", "Your computers");
+  const confirm = el("div", "send-confirm");
+  confirm.setAttribute("role", "alert");
+  const buttons = el("div", "send-confirm-buttons");
+  buttons.append(actionButton("send-confirm-yes", "Send", "send-relay"), actionButton("send-confirm-no", "Cancel", "send-relay-cancel"));
+  confirm.append(el("p", "send-confirm-words"), buttons);
+  panel.append(head, el("p", "send-none", "No other computer of yours takes files now"), machines, createFolderPicker("Send here", "send-here"), confirm, el("p", "rail-menu-note send-note"));
+  return panel;
+}
+
+function renderSendPanel(panel: HTMLElement, state: ViewState, send: SendPanel | undefined, name: string, source: NodeId): void {
+  setHidden(panel, !send);
+  if (!send) return;
+  const picked = send.node;
+  setText(panel.querySelector(".send-title")!, picked ? `Send ${name} to ${machineName(state, picked)}` : `Send ${name} to…`);
+  const back = panel.querySelector<HTMLButtonElement>(".send-back")!;
+  back.title = picked ? "Back to the computers" : "Back to the menu";
+  back.disabled = send.busy === true;
+  const targets = picked ? [] : sendTargets(state, source);
+  setHidden(panel.querySelector<HTMLElement>(".send-none")!, picked !== undefined || targets.length > 0);
+  const machines = panel.querySelector<HTMLElement>(".send-machines")!;
+  setHidden(machines, picked !== undefined);
+  reconcile(machines, targets, (t) => t.node, createSendMachine, (b, t) => updateSendMachine(b as HTMLButtonElement, t, state));
+  renderFolderPicker(panel.querySelector<HTMLElement>(".folder-picker")!, picked ? (send.browse ?? { node: picked, name: machineName(state, picked) }) : undefined, {
+    title: (n) => `A folder on ${n}`,
+    here: send.busy ? "Sending…" : "Send here",
+    hereTitle: (path) => `Put ${name} in ${path}`,
+    busy: send.busy === true || send.confirm !== undefined,
+  });
+  const confirm = panel.querySelector<HTMLElement>(".send-confirm")!;
+  setHidden(confirm, !send.confirm);
+  if (send.confirm) setText(confirm.querySelector(".send-confirm-words")!, `Send ${bytesWords(send.confirm.bytes)} through the relay? The two computers have no direct way between them, and the relay counts what it carries.`);
+  for (const b of Array.from(confirm.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = send.busy === true;
+  const note = panel.querySelector<HTMLElement>(".send-note")!;
+  setText(note, send.error ?? "");
+  setHidden(note, send.error === undefined);
+}
+
+function createSendMachine(): HTMLElement {
+  const b = actionButton("rail-menu-item send-machine", "", "send-machine");
+  b.setAttribute("role", "menuitem");
+  return b;
+}
+
+function updateSendMachine(b: HTMLButtonElement, t: SendTarget, state: ViewState): void {
+  setData(b, "node", t.node);
+  setText(b, t.here ? `${t.name} · this computer` : t.name);
+  b.title = `Pick a folder on ${t.name}`;
+  b.disabled = !state.connected;
 }
 
 /** The ⋮ menu beside the chat's tab: Change view, Settings and Restart chat agent, and why one did not do as asked when it could not. */
@@ -2689,7 +2871,12 @@ function renderNewTerminal(root: HTMLElement, state: ViewState, ui: UiState, can
   });
   if (active >= 0 && !browsing) filter.setAttribute("aria-activedescendant", placeRowId(active));
   else filter.removeAttribute("aria-activedescendant");
-  renderFolderPicker(menu.querySelector<HTMLElement>(".folder-picker")!, m);
+  renderFolderPicker(menu.querySelector<HTMLElement>(".folder-picker")!, m.browse, {
+    title: (name) => `A folder on ${name}`,
+    here: m.starting !== undefined ? "Starting…" : "Open terminal here",
+    hereTitle: (path) => `Start a shell in ${path}`,
+    busy: m.starting !== undefined,
+  });
 }
 
 /** The id of New terminal's row at `index`, counted down through every machine's. */
@@ -2741,8 +2928,12 @@ function updatePlace(b: HTMLButtonElement, p: PlaceRow, machine: TerminalMachine
   b.disabled = starting !== undefined;
 }
 
-/** The picker: back to the places, the folder's path to type into, the home and the roots, its folders, and Open terminal here. */
-function createFolderPicker(): HTMLElement {
+/**
+ * A folder picker: back to what it was opened from, the folder's path to type into, the home
+ * and the roots, its folders, and the button that does it there (`here`, its `action`): Open
+ * terminal here in New terminal's menu, Send here in Send to….
+ */
+function createFolderPicker(here = "Open terminal here", action = "new-terminal-here"): HTMLElement {
   const picker = el("div", "folder-picker");
   const head = el("div", "folder-head");
   const back = actionButton("folder-back", "‹", "folder-back");
@@ -2760,9 +2951,16 @@ function createFolderPicker(): HTMLElement {
   form.append(input, go);
   const list = el("div", "folder-list");
   list.setAttribute("aria-label", "Folders");
-  const here = actionButton("folder-here", "Open terminal here", "new-terminal-here");
-  picker.append(head, form, el("div", "folder-roots"), el("p", "folder-status"), list, here);
+  picker.append(head, form, el("div", "folder-roots"), el("p", "folder-status"), list, actionButton("folder-here", here, action));
   return picker;
+}
+
+/** What a picker's head and its button say: the head's words, the button's, its hover for the folder shown, and whether it waits. */
+interface PickerWords {
+  title: (name: string) => string;
+  here: string;
+  hereTitle: (path: string) => string;
+  busy: boolean;
 }
 
 /** A row of the picker: a folder in the one shown, or `..`, its parent. */
@@ -2773,12 +2971,11 @@ interface FolderRow {
   up?: true;
 }
 
-function renderFolderPicker(picker: HTMLElement, m: TerminalMenu): void {
-  const b = m.browse;
+function renderFolderPicker(picker: HTMLElement, b: FolderBrowse | undefined, say: PickerWords): void {
   setHidden(picker, !b);
   if (!b) return;
   const listing = b.listing;
-  setText(picker.querySelector(".folder-title")!, `A folder on ${b.name}`);
+  setText(picker.querySelector(".folder-title")!, say.title(b.name));
   // The field follows the folder shown, not each keystroke: it is set when the folder changes.
   const input = picker.querySelector<HTMLInputElement>(".folder-path")!;
   const shown = listing?.path ?? "";
@@ -2803,9 +3000,9 @@ function renderFolderPicker(picker: HTMLElement, m: TerminalMenu): void {
   const rows: FolderRow[] = listing ? [...(listing.parent !== undefined ? [{ key: "..", name: "..", path: listing.parent, up: true as const }] : []), ...listing.folders.map((f) => ({ key: f.path, name: f.name, path: f.path }))] : [];
   reconcile(picker.querySelector<HTMLElement>(".folder-list")!, rows, (r) => r.key, createFolderRow, (n, r) => updateFolderRow(n as HTMLButtonElement, r));
   const here = picker.querySelector<HTMLButtonElement>(".folder-here")!;
-  setText(here, m.starting !== undefined ? "Starting…" : "Open terminal here");
-  here.disabled = !listing || b.loading !== undefined || m.starting !== undefined;
-  here.title = listing ? `Start a shell in ${listing.path}` : "";
+  setText(here, say.here);
+  here.disabled = !listing || b.loading !== undefined || say.busy;
+  here.title = listing ? say.hereTitle(listing.path) : "";
 }
 
 function createFolderRow(): HTMLElement {

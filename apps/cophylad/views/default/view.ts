@@ -56,12 +56,13 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote } from "./model.ts";
+import { downloadsIn, machineName } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
-import type { RenderOptions, Roots, TerminalMenu, UiState } from "./render.ts";
+import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
 import { FileViewer } from "./fileview.ts";
@@ -292,6 +293,7 @@ rpc.onNotification((n) => {
         void loadConnections();
         void loadNodes();
         void loadTerminals();
+        void loadTransfers();
         void loadContextOn();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
@@ -403,6 +405,13 @@ rpc.onNotification((n) => {
       dispatch({ type: "connection.state", params: n.params as Connection });
       connectionClock();
       return;
+    case "transfer.state": {
+      const t = n.params as Transfer;
+      dispatch({ type: "transfer.state", params: t });
+      // what landed in the folder Files shows is listed there
+      if (t.state === "done" && t.to.node === shownExplorer()?.node) explorerSoon();
+      return;
+    }
     case "terminal.state": {
       const t = n.params as Terminal;
       dispatch({ type: "terminal.state", params: t });
@@ -451,6 +460,17 @@ async function loadTerminals(): Promise<void> {
     dispatch({ type: "terminals", terminals });
   } catch {
     dispatch({ type: "terminals", terminals: [] });
+  }
+}
+
+/** Every machine's transfers, under Transfers; a node too old to list them has none. */
+async function loadTransfers(): Promise<void> {
+  if (!state.scopes.includes("terminal")) return;
+  try {
+    const { transfers } = await rpc.request<{ transfers: Transfer[] }>("transfer.list", {});
+    dispatch({ type: "transfers", transfers });
+  } catch {
+    dispatch({ type: "transfers", transfers: [] });
   }
 }
 
@@ -724,28 +744,38 @@ function browseFolders(node: string, name: string): void {
 
 /**
  * Lists a folder of the picker's machine: one picked, typed, or the home without a path. One
- * that cannot be listed says why and leaves the folder shown as it was.
+ * that cannot be listed says why and leaves the folder shown as it was. New terminal's picker
+ * or Send to…'s, which `send` says.
  */
-async function openFolder(path: string | undefined): Promise<void> {
-  const menu = ui.newTerminal;
-  const b = menu?.browse;
-  if (!menu || !b) return;
+async function openFolder(path: string | undefined, send = false): Promise<void> {
+  if (send) {
+    const b = ui.fileMenu?.send?.browse;
+    if (b) await listFolder(b, path, () => ui.fileMenu?.send?.browse, roots.app.querySelector<HTMLElement>(".file-menu .folder-list"));
+    return;
+  }
+  const b = ui.newTerminal?.browse;
+  if (!b) return;
+  await listFolder(b, path, () => ui.newTerminal?.browse, roots.tabs.querySelector<HTMLElement>(".new-terminal-menu .folder-list"));
+  if (b.listing && ui.newTerminal?.browse === b) ui.folderAt.set(b.node, b.listing.path);
+}
+
+/** Lists a folder into a picker, `b`, while it is still the picker shown (`current`); the list scrolls back to its top. */
+async function listFolder(b: FolderBrowse, path: string | undefined, current: () => FolderBrowse | undefined, list: HTMLElement | null): Promise<void> {
   b.loading = path ?? "~";
   b.error = undefined;
   draw();
   try {
     const listing = await rpc.request<FolderPick>("terminal.folders", { ...(b.node !== state.node ? { node: b.node } : {}), ...(path !== undefined ? { path } : {}) });
-    if (menu.browse !== b || b.loading !== (path ?? "~")) return;
+    if (current() !== b || b.loading !== (path ?? "~")) return;
     b.listing = listing;
-    ui.folderAt.set(b.node, listing.path);
   } catch (e) {
-    if (menu.browse !== b || b.loading !== (path ?? "~")) return;
+    if (current() !== b || b.loading !== (path ?? "~")) return;
     const unsupported = e instanceof ViewRpcError && e.code === "unsupported";
     b.error = unsupported && !b.listing ? "This app or that computer cannot list folders yet: update it." : e instanceof Error ? e.message : String(e);
   }
   b.loading = undefined;
   draw();
-  roots.tabs.querySelector<HTMLElement>(".folder-list")?.scrollTo({ top: 0 });
+  list?.scrollTo({ top: 0 });
 }
 
 /** Back from the picker to the places. */
@@ -2074,6 +2104,91 @@ async function revealInFileManager(): Promise<void> {
   }
 }
 
+/** Send to…, from the Files panel's menu: the computers the row can go to show in the menu's place. */
+function openSend(): void {
+  const m = ui.fileMenu;
+  if (!m || m.send) return;
+  ui.fileMenu = { ...m, send: {} };
+  draw();
+  roots.app.querySelector<HTMLButtonElement>(".file-menu .send-machine:not(:disabled)")?.focus({ preventScroll: true });
+}
+
+/** Back in Send to…: from a computer's folders to the computers, and from there to the menu. */
+function sendBack(): void {
+  const m = ui.fileMenu;
+  const send = m?.send;
+  if (!m || !send || send.busy) return;
+  ui.fileMenu = send.node !== undefined ? { ...m, send: {} } : { ...m, send: undefined };
+  draw();
+  roots.app.querySelector<HTMLButtonElement>(".file-menu .send-machine:not(:disabled), .file-menu .file-menu-send")?.focus({ preventScroll: true });
+}
+
+/** A computer picked in Send to…: its folders, from its Downloads folder when its home has one. */
+async function pickSendMachine(node: string): Promise<void> {
+  const m = ui.fileMenu;
+  if (!m?.send || m.send.busy) return;
+  const browse: FolderBrowse = { node, name: machineName(state, node) };
+  const send: SendPanel = { node, browse };
+  ui.fileMenu = { ...m, send };
+  const current = () => ui.fileMenu?.send?.browse;
+  const list = () => roots.app.querySelector<HTMLElement>(".file-menu .folder-list");
+  await listFolder(browse, undefined, current, list());
+  const downloads = browse.listing ? downloadsIn(browse.listing) : undefined;
+  if (downloads !== undefined && current() === browse) await listFolder(browse, downloads, current, list());
+}
+
+/**
+ * Send here: the row goes from its computer to the folder the picker shows. A big one over the
+ * relay is asked about first (`confirm`), and goes once the user says Send; once it started, the
+ * menu goes and Transfers shows it, unfolded.
+ */
+async function sendHere(relayOk = false): Promise<void> {
+  const m = ui.fileMenu;
+  const send = m?.send;
+  const s = shownExplorer();
+  const dir = send?.browse?.listing?.path;
+  if (!m || !send || send.busy || !s || send.node === undefined || dir === undefined || explorerKey(state, s) !== m.place) return;
+  const path = joinPath(state.explorers.get(m.place)?.root ?? s.cwd, m.rel);
+  send.busy = true;
+  send.error = undefined;
+  draw();
+  try {
+    const r = await rpc.request<{ transfer?: Transfer; confirm?: TransferConfirm }>("transfer.start", { from: { node: s.node, path }, to: { node: send.node, dir }, ...(relayOk ? { relayOk: true } : {}) });
+    if (ui.fileMenu?.send !== send) return;
+    if (r.confirm) {
+      send.confirm = { bytes: r.confirm.bytes };
+      return;
+    }
+    if (r.transfer) dispatch({ type: "transfer.state", params: r.transfer });
+    ui.folded.delete("transfers");
+    closeFileMenu(true);
+  } catch (e) {
+    if (ui.fileMenu?.send !== send) return;
+    const unsupported = e instanceof ViewRpcError && e.code === "unsupported" && /unknown method/.test(e.message);
+    send.error = unsupported ? "This computer's Cophyla is too old to send files: update it." : `Not sent: ${e instanceof Error ? e.message : String(e)}`;
+    send.confirm = undefined;
+  } finally {
+    send.busy = false;
+    draw();
+  }
+}
+
+/** A transfer's button: Cancel, Retry and Dismiss on the machine it goes to, Show in this computer's file manager. */
+async function transferAction(id: string, action: "cancel" | "retry" | "dismiss" | "reveal"): Promise<void> {
+  const busy = (ui.transferBusy ??= new Set());
+  if (busy.has(id)) return;
+  busy.add(id);
+  draw();
+  try {
+    await rpc.request(`transfer.${action}`, { id });
+  } catch (e) {
+    fail(action === "reveal" ? "show" : action, e);
+  } finally {
+    busy.delete(id);
+    draw();
+  }
+}
+
 /** When the keyboard opened the menu last: the `contextmenu` the same key sends after is not a second opening. */
 let keyedMenuAt = 0;
 
@@ -2656,11 +2771,13 @@ function composerInput(): HTMLTextAreaElement | null {
 /**
  * Where a dragged path would land: the terminal on show, typed into as a paste; a text field,
  * which takes a row's text itself where it is dropped and files' paths at its caret; the pane
- * or its input's row, which puts it in the input at its caret; or nowhere.
+ * or its input's row, which puts it in the input at its caret; the Files panel, where files
+ * from the desktop are copied into the folder they are dropped on; or nowhere.
  */
-function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" | undefined {
+function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" | "files" | undefined {
   const node = target instanceof Element ? target : target instanceof Node ? target.parentElement : null;
   if (!node) return undefined;
+  if (node.closest(".explorer") && shownExplorer() && state.scopes.includes("terminal")) return "files";
   if (terminal.el.contains(node)) return terminal.droppable ? "terminal" : undefined;
   if (node.matches("input[type=text], textarea")) return (node as HTMLInputElement).disabled ? undefined : "field";
   if (node.closest("#panes") && composerInput()) return "pane";
@@ -2672,17 +2789,52 @@ document.addEventListener("dragover", (ev) => {
   if (!kind) return;
   const where = dropTarget(ev.target);
   // A text field takes a row's text itself; files it would not, nor those WebKitGTK hid, of
-  // which it would take the first one's URI.
-  if (where === undefined || (where === "field" && kind === "row")) return;
+  // which it would take the first one's URI. A row stays where it is in Files.
+  if (where === undefined || ((where === "field" || where === "files") && kind === "row")) return;
   ev.preventDefault();
   ev.dataTransfer!.dropEffect = "copy";
+  markDrop(where === "files" ? dropFolder(ev.target) : undefined);
 });
 
+document.addEventListener("dragleave", (ev) => {
+  if (!roots.tabs.contains(ev.relatedTarget as Node | null)) markDrop(undefined);
+});
+
+/** The folder in Files a drop there goes into: the folder row under it, else the folder Files shows. */
+function dropFolder(target: EventTarget | null): HTMLElement | undefined {
+  const node = target instanceof Element ? target : null;
+  return node?.closest<HTMLElement>(".explorer-tree .file-row[data-kind=dir]") ?? roots.tabs.querySelector<HTMLElement>(".explorer") ?? undefined;
+}
+
+let dropMarked: HTMLElement | undefined;
+
+/** Marks where a drop into Files would go, while a drag is over it. */
+function markDrop(el: HTMLElement | undefined): void {
+  if (dropMarked === el) return;
+  if (dropMarked) delete dropMarked.dataset["drop"];
+  dropMarked = el;
+  if (el) el.dataset["drop"] = "1";
+}
+
 document.addEventListener("drop", (ev) => {
+  markDrop(undefined);
   const kind = dragKind(ev.dataTransfer);
   if (!kind) return;
   const where = dropTarget(ev.target);
-  if (where === undefined || (where === "field" && kind === "row")) return;
+  if (where === undefined || ((where === "field" || where === "files") && kind === "row")) return;
+  if (where === "files") {
+    // a link dragged in is no file
+    if (kind === "uri" && ev.dataTransfer!.getData("text/uri-list") !== "") return;
+    ev.preventDefault();
+    const rel = dropFolder(ev.target)?.dataset["rel"] ?? "";
+    const files = Array.from(ev.dataTransfer!.files);
+    const paths = kind === "uri" ? dropped.hidden() : files.length > 0 ? dropped.paths(files) : Promise.resolve([]);
+    paths.then(
+      (p) => void copyDropped(p, rel),
+      (e: unknown) => fail("copy", e),
+    );
+    return;
+  }
   // A link has its URL in the list; files WebKitGTK hid leave the list empty. A field, which
   // would have put the link in had the view not taken the drag, is given it; elsewhere it is
   // the web view's.
@@ -2715,8 +2867,39 @@ document.addEventListener("drop", (ev) => {
   );
 });
 
+/**
+ * Files and folders dropped from the desktop onto Files: each is copied from this computer into
+ * the folder dropped on, on the machine the agent works on, as Send to… sends. The ones that
+ * would ride the relay and are big are asked about in the panel first.
+ */
+async function copyDropped(paths: string[], rel: string, relayOk = false): Promise<void> {
+  const s = shownExplorer();
+  const here = state.client?.node;
+  if (!s || here === undefined || paths.length === 0) return;
+  const place = explorerKey(state, s);
+  const dir = joinPath(state.explorers.get(place)?.root ?? s.cwd, rel);
+  const asked: { paths: string[]; bytes: number } = { paths: [], bytes: 0 };
+  for (const path of paths) {
+    try {
+      const r = await rpc.request<{ transfer?: Transfer; confirm?: TransferConfirm }>("transfer.start", { from: { node: here, path }, to: { node: s.node, dir }, ...(relayOk ? { relayOk: true } : {}) });
+      if (r.confirm) {
+        asked.paths.push(path);
+        asked.bytes += r.confirm.bytes;
+      } else if (r.transfer) {
+        dispatch({ type: "transfer.state", params: r.transfer });
+        ui.folded.delete("transfers");
+      }
+    } catch (e) {
+      fail("copy", e);
+    }
+  }
+  if (asked.paths.length > 0) ui.dropConfirm = { place, rel, ...asked };
+  draw();
+}
+
 /** Dropped paths, landing where they were dropped: typed into the terminal, or put in a field at its caret (the pane's is its input's). */
-function land(where: "terminal" | "field" | "pane", text: string, field?: HTMLInputElement | HTMLTextAreaElement): void {
+function land(where: "terminal" | "field" | "pane" | "files", text: string, field?: HTMLInputElement | HTMLTextAreaElement): void {
+  if (where === "files") return;
   if (where === "terminal") {
     // With a space after it, as macOS's terminals drop a file, so the next one dropped is a word of its own.
     terminal.paste(`${text} `);
@@ -2941,10 +3124,49 @@ document.addEventListener("click", (ev) => {
       if (target.dataset["node"]) browseFolders(target.dataset["node"], target.dataset["name"] ?? "");
       return;
     case "folder-open":
-      if (target.dataset["path"] !== undefined) void openFolder(target.dataset["path"]);
+      if (target.dataset["path"] !== undefined) void openFolder(target.dataset["path"], target.closest(".send-panel") !== null);
       return;
     case "folder-back":
-      closeFolders();
+      if (target.closest(".send-panel")) sendBack();
+      else closeFolders();
+      return;
+    case "file-send":
+      openSend();
+      return;
+    case "drop-relay": {
+      const asked = ui.dropConfirm;
+      ui.dropConfirm = undefined;
+      if (asked) void copyDropped(asked.paths, asked.rel, true);
+      draw();
+      return;
+    }
+    case "drop-relay-cancel":
+      ui.dropConfirm = undefined;
+      draw();
+      return;
+    case "send-back":
+      sendBack();
+      return;
+    case "send-machine":
+      if (target.dataset["node"]) void pickSendMachine(target.dataset["node"]);
+      return;
+    case "send-here":
+      void sendHere();
+      return;
+    case "send-relay":
+      void sendHere(true);
+      return;
+    case "send-relay-cancel": {
+      const send = ui.fileMenu?.send;
+      if (send && !send.busy) send.confirm = undefined;
+      draw();
+      return;
+    }
+    case "transfer-cancel":
+    case "transfer-retry":
+    case "transfer-dismiss":
+    case "transfer-reveal":
+      if (target.dataset["id"]) void transferAction(target.dataset["id"], target.dataset["action"].slice("transfer-".length) as "cancel" | "retry" | "dismiss" | "reveal");
       return;
     case "new-terminal-here": {
       const b = ui.newTerminal?.browse;
@@ -3353,7 +3575,7 @@ document.addEventListener("submit", (ev) => {
     // A path typed into the picker, gone to with Enter or Go.
     ev.preventDefault();
     const typed = form.querySelector<HTMLInputElement>(".folder-path")?.value.trim();
-    if (typed) void openFolder(typed);
+    if (typed) void openFolder(typed, form.closest(".send-panel") !== null);
     return;
   }
   if (form.classList.contains("backup-form")) {

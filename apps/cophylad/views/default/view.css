@@ -5764,6 +5764,212 @@ button:disabled {
   padding-right: 14px;
 }
 
+/* --- transfers ------------------------------------------------------------------------------ */
+
+/* Files and folders between the machines, under the terminals, headed and folded as they are: a
+   row per transfer, its name and `via relay`, the machines, a bar, how far, and its buttons. */
+.transfers-group {
+  margin-top: 8px;
+}
+
+.transfer-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 2px 10px 0;
+}
+
+.transfer {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.transfer-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.transfer-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--ink);
+}
+
+.transfer-relay {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border: 1px solid var(--amber);
+  border-radius: 8px;
+  color: var(--amber);
+  font-size: 10.5px;
+}
+
+.transfer-route,
+.transfer-words {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.transfer[data-state="failed"] .transfer-words {
+  color: var(--rust);
+  white-space: normal;
+}
+
+.transfer[data-state="waiting"] .transfer-words {
+  color: var(--amber);
+}
+
+/* how far, `--done` of the way */
+.transfer-bar {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--line-strong);
+  overflow: hidden;
+}
+
+.transfer-fill {
+  display: block;
+  width: var(--done, 0%);
+  height: 100%;
+  background: var(--cophyla);
+  transition: width 0.4s ease-out;
+}
+
+.transfer[data-state="done"] .transfer-fill {
+  background: var(--moss);
+}
+
+.transfer[data-state="failed"] .transfer-fill,
+.transfer[data-state="waiting"] .transfer-fill {
+  background: var(--amber);
+}
+
+.transfer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.transfer-actions:not(:has(.transfer-button:not([hidden]))) {
+  display: none;
+}
+
+.transfer-button {
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+}
+
+.transfer-button:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.transfer-button:disabled {
+  opacity: 0.5;
+}
+
+/* Send to…, in the Files panel's menu's place: the computers, then the picker on the one
+   picked, whose own head the panel's stands for; and the question a big one over the relay asks. */
+.file-menu[data-send="true"] {
+  min-width: 260px;
+}
+
+.send-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.send-panel .folder-picker > .folder-head {
+  display: none;
+}
+
+.send-machines {
+  display: flex;
+  flex-direction: column;
+}
+
+.send-none {
+  margin: 4px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.send-confirm,
+.explorer-drop {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+}
+
+.explorer-drop {
+  flex: 0 0 auto;
+  margin: 4px 10px;
+}
+
+.send-confirm[hidden],
+.explorer-drop[hidden] {
+  display: none;
+}
+
+.send-confirm-words,
+.explorer-drop-words {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+}
+
+.send-confirm-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.send-confirm-yes,
+.send-confirm-no {
+  padding: 3px 10px;
+  border: 0;
+  border-radius: 3px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.send-confirm-yes {
+  background: var(--cophyla);
+  color: #fff;
+}
+
+.send-confirm-no {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+/* where files dragged in from the desktop would be copied to, while a drag is over Files */
+.explorer[data-drop="1"],
+.file-row[data-drop="1"] {
+  outline: 1px dashed var(--cophyla-ink);
+  outline-offset: -1px;
+  background: var(--cophyla-wash);
+}
+
 /* --- the file viewer ----------------------------------------------------------------------- */
 
 /* A file of the agent's folder: over the pane as a sheet, the pane showing round its edge, or
