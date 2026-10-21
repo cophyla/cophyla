@@ -16,8 +16,11 @@ describe("config", () => {
     expect(c.gate.audit_result_cap).toBe(65536);
     expect(c.gate.ask_timeout_ms).toBe(0);
     expect(c.gate.policy.user).toEqual({ read: "allow", write: "allow", exec: "allow", network: "allow" });
-    expect(c.gate.policy.brain).toEqual({ read: "allow", write: "ask", exec: "ask", network: "ask" });
-    expect(c.gate.rules).toEqual({});
+    // the user's own brain and sessions are asked nothing; another machine past a read is
+    expect(c.gate.policy.brain).toEqual({ read: "allow", write: "allow", exec: "allow", network: "allow" });
+    expect(c.gate.policy.harness).toEqual({ read: "allow", write: "allow", exec: "allow", network: "allow" });
+    expect(c.gate.policy.node).toEqual({ read: "allow", write: "ask", exec: "ask", network: "ask" });
+    expect(c.gate.rules).toEqual({ "node:remote.pair": "allow" });
     expect(c.sessions).toEqual({
       poll_ms: 2000,
       codex_list_ms: 10000,
@@ -229,8 +232,8 @@ describe("config", () => {
   });
 
   test("a partial section keeps the other defaults", () => {
-    const c = parseConfig('[gate.policy.brain]\nwrite = "allow"\n[node]\nrole = "secondary"\n[node.scope]\nkind = "workspaces"\npaths = ["C:\\\\src"]\n');
-    expect(c.gate.policy.brain).toEqual({ read: "allow", write: "allow", exec: "ask", network: "ask" });
+    const c = parseConfig('[gate.policy.node]\nwrite = "allow"\n[node]\nrole = "secondary"\n[node.scope]\nkind = "workspaces"\npaths = ["C:\\\\src"]\n');
+    expect(c.gate.policy.node).toEqual({ read: "allow", write: "allow", exec: "ask", network: "ask" });
     expect(c.node.role).toBe("secondary");
     expect(c.node.scope).toEqual({ kind: "workspaces", paths: ["C:\\src"] });
     expect(c.api.port).toBe(4817);

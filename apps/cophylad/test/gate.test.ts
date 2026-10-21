@@ -18,8 +18,16 @@ const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const brain: Principal = { kind: "brain" };
 const user: Principal = { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" };
 
-function harness(toml = "") {
-  const config = Config.parse(Bun.TOML.parse(toml));
+/** Asked about anything past a read: what these tests hold the brain and the sessions to, the shipped default asking them nothing. */
+const ASKING = { read: "allow", write: "ask", exec: "ask", network: "ask" };
+
+function harness(toml = "", shipped = false) {
+  const raw = Bun.TOML.parse(toml) as { gate?: { policy?: Record<string, object> } };
+  if (!shipped) {
+    const policy = ((raw.gate ??= {}).policy ??= {});
+    for (const kind of ["brain", "harness"]) policy[kind] = { ...ASKING, ...policy[kind] };
+  }
+  const config = Config.parse(raw);
   const store = new Store(":memory:");
   store.migrate();
   const bus = new Bus();
@@ -35,6 +43,18 @@ function harness(toml = "") {
 }
 
 describe("policy precedence", () => {
+  test("by the shipped defaults the user's own brain and sessions are asked nothing, another machine past a read is, and a member's viewer pairs unasked", () => {
+    const { policy } = harness("", true);
+    expect(policy.decide({ principal: "brain", action: "session.send", risk: "write" })).toMatchObject({ decision: "allow", source: "config.class" });
+    expect(policy.decide({ principal: "brain", action: "session.spawn", risk: "exec", loosens: true })).toMatchObject({ decision: "allow", source: "config.class" });
+    expect(policy.decide({ principal: "brain", action: "tool.run", risk: "network", target: "http.get" }).decision).toBe("allow");
+    expect(policy.decide({ principal: "harness", action: "session.stop", risk: "exec" }).decision).toBe("allow");
+    expect(policy.decide({ principal: "harness", action: "agent.escalate", risk: "write" })).toMatchObject({ decision: "ask", source: "builtin.rule" });
+    expect(policy.decide({ principal: "node", action: "tool.run", risk: "exec" }).decision).toBe("ask");
+    expect(policy.decide({ principal: "node", action: "tool.run", risk: "exec", trusted: true })).toMatchObject({ decision: "allow", source: "membership" });
+    expect(policy.decide({ principal: "node", action: "remote.pair", risk: "exec", target: "laptop" })).toMatchObject({ decision: "allow", source: "config.rule", rule: "node:remote.pair" });
+  });
+
   test("class default per principal kind", () => {
     const { policy } = harness();
     expect(policy.decide({ principal: "user", action: "session.send", risk: "write" }).decision).toBe("allow");

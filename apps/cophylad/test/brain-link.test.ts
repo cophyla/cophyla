@@ -21,7 +21,7 @@ import { join } from "node:path";
 import { ConversationSpend, newId } from "@cophyla/protocol";
 import type { AuditEntry, Hit, Message, Task, TurnProgress } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
-import { brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
+import { ASKING_BRAIN, brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 import type { GeminiFake, Script } from "./fakes/gemini.ts";
 import { call as geminiCall, finish, startGeminiFake, text as geminiText } from "./fakes/gemini.ts";
 
@@ -82,6 +82,7 @@ async function start(script: object | ((ctx: { ws: string; node: string }) => ob
   const toml =
     `[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n` +
     `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n${opts.brain ?? ""}\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
+    ASKING_BRAIN +
     `[gate.rules]\n${Object.entries({ ...DEFAULT_RULES, ...opts.rules })
       .filter(([k]) => !opts.builtin?.includes(k))
       .map(([k, v]) => `"${k}" = "${v}"`)

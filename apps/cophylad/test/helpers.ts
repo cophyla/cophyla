@@ -126,6 +126,8 @@ export async function waitFor<T>(check: () => T | undefined | false | Promise<T 
 export const SAFE_SESSIONS = "[sessions]\ndiscover = false\ninstall_hooks = false\n\n";
 export const SAFE_UPDATE = "[update]\nenabled = false\n\n";
 export const SAFE_NODES = "[nodes]\ndiscovery = false\n\n";
+/** The brain asked about anything past a read: the shipped default asks it nothing, and a test of its asks says so. */
+export const ASKING_BRAIN = '[gate.policy.brain]\nwrite = "ask"\nexec = "ask"\nnetwork = "ask"\n\n';
 
 /**
  * A temporary home with a config. The path is the real one (macOS's `/var/folders` is a

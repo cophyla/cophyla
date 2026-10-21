@@ -349,9 +349,9 @@ the platform's own under `apps/cophylad/models/` when absent, fetched once by
 request is a gate action under the `brain`
 principal, so `[gate.rules] "brain:session.spawn" = "ask"` puts an agent start in front of
 the user. A start in a mode looser than manual (`acceptEdits`, `auto`, `bypassPermissions`) is
-asked about without that rule: the built-in one does not cover it (`loosens` on the gate's
-query), so the class default decides unless `[gate.rules]` or a remembered answer does. A
-workspace node refuses one from the other cluster outright.
+not covered by the built-in rule (`loosens` on the gate's query), so the class default
+decides, an allow unless `[gate.policy.brain]` asks, or `[gate.rules]` or a remembered answer
+does. A workspace node refuses one from the other cluster outright.
 
 `[brain] show_context = true` puts a Context button in the chat's composer: `brain.context` asks
 the brain what the chat's session would be told now (`assistant.context {kind: "preview"}`,

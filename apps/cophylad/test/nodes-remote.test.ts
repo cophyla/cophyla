@@ -58,7 +58,8 @@ describe("remote desktop across nodes", () => {
     const seamsP = remoteSeams();
     const seamsS = remoteSeams();
     seamsS.onPair = (_host, pin) => hostA.expectPin(pin);
-    primary = await startPrimary({ toml: `[node]\nname = "study"\n\n${remoteToml(true, seamsP)}`, daemon: { remote: seamsFor(seamsP, hostA) } });
+    // the shipped rule pairs a member's viewer unasked: the ask is put back to be seen
+    primary = await startPrimary({ toml: `[node]\nname = "study"\n\n[gate.rules]\n"node:remote.pair" = "ask"\n\n${remoteToml(true, seamsP)}`, daemon: { remote: seamsFor(seamsP, hostA) } });
     await primary.d.remote.ready();
     secondary = await startSecondary(primary, { toml: remoteToml(false, seamsS), daemon: { remote: seamsFor(seamsS) } });
     await linked(secondary);

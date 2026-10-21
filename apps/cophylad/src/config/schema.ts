@@ -47,19 +47,24 @@ export const GateConfig = z.object({
   audit_result_cap: z.number().int().nonnegative().default(65536),
   /** Milliseconds a gate ask stays open. 0 means until it is answered. */
   ask_timeout_ms: z.number().int().nonnegative().default(0),
-  /** The default decision per risk class, per principal kind. */
+  /**
+   * The default decision per risk class, per principal kind. The user's own brain and agent
+   * sessions are asked nothing; another machine is asked about all but a read, which this
+   * machine's own primary is not when it was trusted at the join, and another person's cluster
+   * never is, through a lent folder.
+   */
   policy: z
     .object({
       user: riskPolicy(ALL_ALLOW),
-      brain: riskPolicy(READ_ONLY),
+      brain: riskPolicy(ALL_ALLOW),
       node: riskPolicy(READ_ONLY),
-      harness: riskPolicy(READ_ONLY),
+      harness: riskPolicy(ALL_ALLOW),
     })
     .prefault({}),
-  /** Per-action overrides, keyed as RULE_KEY describes. */
+  /** Per-action overrides, keyed as RULE_KEY describes. A full member of the cluster, one of the user's own machines, pairs a viewer with this desktop unasked: a hands node never pairs one. */
   rules: z
     .record(z.string().regex(RULE_KEY, { message: "expected principal:action or principal:action@target" }), Decision)
-    .default({}),
+    .default({ "node:remote.pair": "allow" }),
 });
 export type GateConfig = z.infer<typeof GateConfig>;
 
@@ -731,6 +736,7 @@ audit_result_cap = 65536  # bytes kept whole in the audit table; larger results 
 ask_timeout_ms = 0        # 0: a gate ask stays open until answered
 
 # The default decision per risk class, per principal kind: allow, deny or ask.
+# You, your brain and your agent sessions are asked nothing.
 [gate.policy.user]
 read = "allow"
 write = "allow"
@@ -739,12 +745,13 @@ network = "allow"
 
 [gate.policy.brain]
 read = "allow"
-write = "ask"
-exec = "ask"
-network = "ask"
+write = "allow"
+exec = "allow"
+network = "allow"
 
 # Another machine's requests. The primary's are allowed where this says ask, unless this
-# machine answered no at the join (cophylad join --ask); a lent folder always goes by this.
+# machine answered no at the join (cophylad join --ask); a folder lent to another person's
+# cluster always goes by this.
 [gate.policy.node]
 read = "allow"
 write = "ask"
@@ -753,20 +760,17 @@ network = "ask"
 
 [gate.policy.harness]
 read = "allow"
-write = "ask"
-exec = "ask"
-network = "ask"
+write = "allow"
+exec = "allow"
+network = "allow"
 
 # Per-action overrides: "principal:action" or "principal:action@target", principal may be *.
 [gate.rules]
-# Per-action overrides, above the class defaults and the built-in rules that let the brain
-# speak, keep its tasks and threads, write memory and call the configured model without asking.
-# "brain:session.send" = "allow"
-# "brain:session.spawn" = "allow"
-# "brain:llm.complete" = "ask"
+"node:remote.pair" = "allow"        # your own machines' viewers pair with this desktop unasked; a hands node pairs none
+# "brain:session.send" = "ask"      # ask before the brain messages a session it did not start
+# "brain:session.spawn" = "ask"
 # "brain:tool.run@my.deploy" = "deny"
 # "node:session.send" = "allow"     # a node that trusts its primary: no second ask on forwarded writes
-# "node:remote.pair" = "allow"      # let any node's viewer pair with this desktop without asking
 
 [sessions]
 poll_ms = 2000             # Claude registry poll and transcript/rollout tail

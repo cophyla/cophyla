@@ -12,7 +12,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AuditEntry, EventDefinition, Task } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
-import { isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
+import { ASKING_BRAIN, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 
 const FAKE_BRAIN = join(import.meta.dir, "fakes", "brain.ts");
 const FAKE_AGENT = join(import.meta.dir, "fakes", "acp-agent.ts");
@@ -47,6 +47,7 @@ function configToml(scratch: string, rules: Record<string, string>): string {
   return (
     `[node]\ntz = "Europe/Istanbul"\n\n[nodes]\ndiscovery = false\n\n[sessions]\ndiscover = false\ninstall_hooks = false\nlaunch = "acp"\n\n[editable]\npoll_ms = 0\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(configDir)}\n\n` +
     `[brain]\ncommand = ${tomlString(FAKE_BRAIN)}\nrestart_backoff_ms = 100\nhello_timeout_ms = 5000\n\n[acp.claude]\ncommand = ${tomlString(FAKE_AGENT)}\n\n` +
+    ASKING_BRAIN +
     `[gate.rules]\n${Object.entries({ ...DEFAULT_RULES, ...rules }).map(([k, v]) => `"${k}" = "${v}"`).join("\n")}\n`
   );
 }
