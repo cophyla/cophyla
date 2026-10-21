@@ -29,7 +29,8 @@
 // - Listeners: what wakes Cophyla besides the user's messages (`listener.list`), each with why
 //   it listens, on what, how it tells and its fires, and Remove (`listener.remove`).
 // - This browser, on a host that is a paired device of its own: when its access ends, Install
-//   as an app, and Forget, asked twice.
+//   as an app, whether agents' questions show as notifications where the host can turn them
+//   off, and Forget, asked twice.
 // A node from before a page's requests says so on the page. The layer closes on its ✕, on
 // Escape and on a click outside its card, and says what failed beside what failed.
 // `settingsRows`, `chatRow`, `speechRow`, `wakeRow`, `listenerLine`, `settingsPages` and
@@ -1133,6 +1134,8 @@ export interface DeviceSettingsState {
   session?: boolean;
   /** The browser offers to install the page as an app of its own, now. */
   installable?: boolean;
+  /** Whether agents' questions show as the system's notifications here, where the host can turn them off. */
+  askPopups?: boolean;
 }
 
 /** The host as the paired device it is: what it says of itself, and how it is forgotten. */
@@ -1144,6 +1147,8 @@ export interface DeviceSettings {
   forget(): Promise<void>;
   /** Has the browser ask whether to install the page as an app of its own. */
   install?(): Promise<void>;
+  /** Turns the notifications for agents' questions on or off here; the questions stay in the view. */
+  setAskPopups?(on: boolean): void;
 }
 
 /** When a device's access ends, in words. */
@@ -1757,6 +1762,10 @@ export class SettingsPanel {
         void device.install!().catch(() => undefined);
       }, { title: "Cophyla in a window of its own, with its icon, opened from this computer's own menu" });
       rows.push(row({ label: "Keep Cophyla as an app on this computer", control: install }));
+    }
+    if (d.askPopups !== undefined && device.setAskPopups) {
+      const label = "Show agents' questions as notifications";
+      rows.push(row({ label, help: "Off, a question waits in the view, with no notification on this computer.", for: controlId("device:asks"), control: switchInput("device:asks", label, d.askPopups, (on) => device.setAskPopups!(on)) }));
     }
     rows.push(
       row({
