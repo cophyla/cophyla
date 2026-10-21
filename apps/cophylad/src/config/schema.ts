@@ -99,6 +99,13 @@ export const SessionsConfig = z.object({
    * user's own words are.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A Claude transcript names no context window, so a Claude session's stats carry no
+   * `context`. On, the window is inferred (1M for a `[1m]` model, named by the transcript or the
+   * profile's settings, or once past 200K used; else 200K) and the stats carry the effort each
+   * turn ran at.
+   */
+  claude_window_and_effort: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -781,6 +788,7 @@ install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
 brain_sends = "pipe"       # the brain's messages to a session in tether: "pipe" (as another agent's) or "typed" (as the user's)
+claude_window_and_effort = false # true: a Claude session's stats infer its context window (200K or 1M) and carry its effort
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]

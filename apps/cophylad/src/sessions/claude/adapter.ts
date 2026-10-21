@@ -16,7 +16,7 @@
 // its hooks name, its timeline and the log say so, and the registry moves it to its own profile
 // once there is one.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
@@ -27,13 +27,13 @@ import { capText, oneLine, rawIfSmall, summariseValue, toolKey, TOOL_CALL_CAP, T
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
-import { acceptsCrossSessionInbound, installClaudeHooks, uninstallClaudeHooks } from "./hooks.ts";
+import { acceptsCrossSessionInbound, installClaudeHooks, readSettings, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
 import { classify, isAlive as defaultIsAlive, jobCreatedAt, readEntry, readRegistry, statusOf, transcriptPathFor, waitingOf } from "./registry.ts";
 import type { ClaudeLive, IsAlive } from "./registry.ts";
 import { applyClaudeRow, newClaudeState, rowAt, statsFor } from "./transcript.ts";
-import type { ClaudeTranscriptState } from "./transcript.ts";
+import type { ClaudeStatsOptions, ClaudeTranscriptState } from "./transcript.ts";
 
 /** A tool result from a hook with no call id suppresses the transcript's copy of the same tool and input for this long. */
 const HOOK_TOOL_TTL_MS = 120000;
@@ -44,6 +44,31 @@ const STOP_POLL_MS = 50;
 const STOP_POLLS = 10;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** Each settings file's answer to `namesOneMModel`, by the file's size and time. */
+const oneMSeen = new Map<string, { size: number; mtimeMs: number; oneM: boolean }>();
+
+/** Whether a settings file names a model with the 1M-token window (`"model": "opus[1m]"`), which the transcript never shows; read again only when the file changes. */
+export function namesOneMModel(settingsPath: string): boolean {
+  let st: { size: number; mtimeMs: number };
+  try {
+    st = statSync(settingsPath);
+  } catch {
+    oneMSeen.delete(settingsPath);
+    return false;
+  }
+  const hit = oneMSeen.get(settingsPath);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.oneM;
+  let oneM = false;
+  try {
+    const model = readSettings(settingsPath)["model"];
+    oneM = typeof model === "string" && /\[1m\]/i.test(model);
+  } catch {
+    // unreadable or mid-write: no window named
+  }
+  oneMSeen.set(settingsPath, { size: st.size, mtimeMs: st.mtimeMs, oneM });
+  return oneM;
+}
 
 /**
  * The Claude directory a transcript is in: Claude keeps one at
@@ -484,7 +509,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     if (state.statsChanged) {
       state.statsChanged = false;
-      patch.stats = countOn(rec.statsBase, statsFor(state));
+      patch.stats = countOn(rec.statsBase, statsFor(state, this.statsOptions(rec)));
     }
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
     this.host.tailed(rec);
@@ -508,6 +533,13 @@ export class ClaudeAdapter implements HarnessAdapter {
     await this.inject(pipe, token, text);
     const held = rec.permissionMode === "bypassPermissions" && !this.acceptsInbound(rec);
     return { status: held ? "held" : "queued" };
+  }
+
+  /** With `[sessions].claude_window_and_effort`, the stats infer a context window and carry the effort; a `[1m]` model in the session's settings says which window. */
+  private statsOptions(rec: SessionRecord): ClaudeStatsOptions {
+    if (!this.host.config.claude_window_and_effort) return {};
+    const dir = rec.handles.configDir;
+    return { infer: true, ...(dir && namesOneMModel(join(dir, "settings.json")) ? { oneM: true } : {}) };
   }
 
   /** Whether the session's settings let any session's message in at once (`crossSessionInbound: "accept"`), which a bypass session otherwise holds. */
@@ -642,11 +674,13 @@ export function countOn(base: SessionStats | undefined, now: SessionStats): Sess
   const cacheRead = sum(base.tokens.cacheRead, now.tokens.cacheRead);
   const cacheWrite = sum(base.tokens.cacheWrite, now.tokens.cacheWrite);
   const model = now.model ?? base.model;
+  const effort = now.effort ?? base.effort;
   return {
     turns: base.turns + now.turns,
     cost: now.cost === 0 ? 0 : base.cost + now.cost,
     tokens: { in: base.tokens.in + now.tokens.in, out: base.tokens.out + now.tokens.out, ...(cacheRead !== undefined ? { cacheRead } : {}), ...(cacheWrite !== undefined ? { cacheWrite } : {}) },
     ...(now.context ? { context: now.context } : {}),
     ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   };
 }

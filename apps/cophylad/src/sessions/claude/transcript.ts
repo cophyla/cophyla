@@ -1,7 +1,8 @@
 // Claude Code's transcript: JSONL under `<configDir>/projects/<cwd>/<sessionId>.jsonl`. This
 // parser turns rows into normalised items and keeps the running stats. Usage is counted
 // once per message id, because one API message lands as several rows, one per content
-// block, each carrying the same usage.
+// block, each carrying the same usage. The transcript names no context window: `statsFor`
+// leaves `context` out unless asked to infer one (`[sessions].claude_window_and_effort`).
 
 import type { SessionStats } from "@cophyla/protocol";
 
@@ -25,6 +26,8 @@ export interface ClaudeTranscriptState {
   statsChanged: boolean;
   /** The model the last assistant row named: what the counters are priced at. */
   model?: string;
+  /** The reasoning effort the last assistant row ran at (`high`). */
+  effort?: string;
   /** Given a name (`--name`, `/rename`): Claude's generated title, which it keeps re-appending, no longer replaces it. */
   named?: boolean;
   /**
@@ -151,6 +154,10 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
         state.model = message["model"];
         state.statsChanged = true;
       }
+      if (typeof r["effort"] === "string" && r["effort"] !== "" && r["effort"] !== state.effort) {
+        state.effort = r["effort"];
+        state.statsChanged = true;
+      }
       if (usage && (id === undefined || !state.usageSeen.has(id))) {
         if (id !== undefined) state.usageSeen.add(id);
         const n = (k: string) => (typeof usage[k] === "number" ? (usage[k] as number) : 0);
@@ -192,14 +199,31 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
   return items;
 }
 
-/** The stats as the session entity carries them: no `context` until a limit is known, and no zero cache counts. */
-export function statsFor(state: ClaudeTranscriptState): SessionStats {
+/** Claude's context windows: the usual one, and the one a `[1m]` model has. */
+export const CLAUDE_WINDOW = 200_000;
+export const CLAUDE_WINDOW_1M = 1_000_000;
+
+/** What `statsFor` adds, with `[sessions].claude_window_and_effort`. */
+export interface ClaudeStatsOptions {
+  /** The effort, and a context window where none is known: 1M for a `[1m]` model or past 200K used, else 200K. */
+  infer?: boolean;
+  /** The session's settings name a `[1m]` model, which its transcript does not show. */
+  oneM?: boolean;
+}
+
+/** The stats as the session entity carries them: no `context` until a limit is known (or inferred), and no zero cache counts. */
+export function statsFor(state: ClaudeTranscriptState, opts: ClaudeStatsOptions = {}): SessionStats {
   const s = state.stats;
   const out: SessionStats = { turns: s.turns, cost: 0, tokens: { in: s.tokens.in, out: s.tokens.out } };
   if (s.tokens.cacheRead) out.tokens.cacheRead = s.tokens.cacheRead;
   if (s.tokens.cacheWrite) out.tokens.cacheWrite = s.tokens.cacheWrite;
   if (s.context && s.context.limit !== Number.MAX_SAFE_INTEGER) out.context = { ...s.context };
+  else if (s.context && opts.infer) {
+    const big = opts.oneM === true || /\[1m\]/i.test(state.model ?? "") || s.context.used > CLAUDE_WINDOW;
+    out.context = { used: s.context.used, limit: big ? CLAUDE_WINDOW_1M : CLAUDE_WINDOW };
+  }
   if (state.model !== undefined) out.model = state.model;
+  if (opts.infer && state.effort !== undefined) out.effort = state.effort;
   return out;
 }
 

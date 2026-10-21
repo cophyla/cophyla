@@ -31,6 +31,7 @@ describe("config", () => {
       discover: true,
       launch: "terminal",
       brain_sends: "pipe",
+      claude_window_and_effort: false,
     });
     expect(c.tether).toEqual({ idle_exit_s: 600, window: "auto", window_on_start: false, profiles: true, on_path: true });
     expect(c.profiles).toEqual([]);
