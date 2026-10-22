@@ -95,7 +95,7 @@ describe("a node link through the server relay", () => {
     expect(fake.used["relay_messages"]).toBe(frames);
     // the server's method surface for the run
     const surface = [...new Set(fake.seen)].sort();
-    for (const m of surface) expect(["auth", "entitlement.refresh", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.auth", "relay.open", "relay", "relay.close", "backup.status"]).toContain(m);
+    for (const m of surface) expect(["auth", "entitlement.refresh", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.auth", "relay.open", "relay", "relay.close", "backup.status", "identity.attest"]).toContain(m);
     // the secondary leaves: the primary hears, the row goes offline, the tunnel is gone
     await stopAll(secondary);
     secondary = undefined;
