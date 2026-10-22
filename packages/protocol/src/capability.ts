@@ -7,6 +7,7 @@ import {
   AgentMode,
   AgentRef,
   ConnectionSender,
+  TeammateSender,
   Ask,
   AskAnswer,
   ClosedSession,
@@ -46,7 +47,7 @@ import {
   PressureResource,
   Terminal,
 } from "./entities.ts";
-import { AgentMessageId, AskId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
+import { AgentMessageId, AskId, GroupId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
 /** The protocol version this package describes. Bumped only for incompatible change. */
@@ -422,8 +423,10 @@ export const capabilityRequests = {
       agent: z
         .object({
           from: AgentRef.optional(),
-          /** The message came in on a connection from another user's terminal: who it is from, set by the primary. */
-          peer: ConnectionSender.optional(),
+          /** The message came from another user's agent, on a connection or from a teammate: who it is from, set by the primary. */
+          peer: z.union([ConnectionSender, TeammateSender]).optional(),
+          /** A group chat's notice or gathered posts, from cophyla: the group it is about. */
+          group: z.object({ id: GroupId, name: z.string().min(1).max(80) }).optional(),
           messageId: AgentMessageId,
           replyTo: AgentMessageId.optional(),
           mode: AgentMode.optional(),

@@ -21,6 +21,11 @@ import {
   Controller,
   DirectState,
   EventDefinition,
+  Focus,
+  Group,
+  GroupMemberKey,
+  GroupNotify,
+  GroupPost,
   Grant,
   GrantKind,
   GrantRole,
@@ -42,6 +47,8 @@ import {
   SessionEvent,
   SpendTotals,
   Task,
+  Teammate,
+  TeammateShare,
   Terminal,
   TerminalRef,
   Thread,
@@ -54,7 +61,7 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, TransferId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateId, ThreadId, Timestamp, TransferId, WorkspaceId } from "./ids.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
@@ -188,6 +195,29 @@ export type ConnectionEndpoint = z.infer<typeof ConnectionEndpoint>;
 /** A connection's invite as the node that minted it hands it out, once: the code to give the other person, and its end. */
 export const ConnectionInvite = z.object({ code: z.string(), expiresAt: Timestamp });
 export type ConnectionInvite = z.infer<typeof ConnectionInvite>;
+
+/** A teammate's invite as the primary hands it out, once: the code to give the other person, and when it runs out. */
+export const TeammateInvite = z.object({ code: z.string(), expiresAt: Timestamp });
+export type TeammateInvite = z.infer<typeof TeammateInvite>;
+
+/** An agent to put in a group: one of the user's own sessions, or a teammate's open agent by its name in their directory. */
+export const GroupMemberRef = z.union([z.object({ session: SessionId }), z.object({ teammate: TeammateId, name: z.string().min(1).max(120) })]);
+export type GroupMemberRef = z.infer<typeof GroupMemberRef>;
+
+/** An agent a group may take, as the picker shows it: what to add it by, its handle, harness, owner, workspace, folder and machine (the user's own alone), and how it stands. */
+export const GroupCandidate = z.object({
+  ref: GroupMemberRef,
+  handle: z.string().min(1).max(200),
+  harness: z.string().max(40).optional(),
+  user: z.string().max(64).optional(),
+  workspace: z.string().max(200).optional(),
+  folder: z.string().max(200).optional(),
+  node: NodeId.optional(),
+  machine: z.string().max(120).optional(),
+  status: z.string().max(40).optional(),
+  intent: z.string().max(300).optional(),
+});
+export type GroupCandidate = z.infer<typeof GroupCandidate>;
 
 /** A six-digit pairing code, shown on the desktop and typed on the phone. */
 export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six digits" });
@@ -1061,6 +1091,67 @@ export const clientRequests = {
   "connection.accept": { params: ConnectionEndpoint.extend({ code: z.string().min(1).max(4096) }), result: z.object({ connection: Connection }) },
   /** Ends a connection at both ends, or cancels a pending one's invite. */
   "connection.end": { params: z.object({ id: ConnectionId }), result: Empty },
+  /** The group chats this side keeps, each with this side's user's unread and tagged counts. */
+  "group.list": { params: Empty, result: z.object({ groups: z.array(Group) }) },
+  /**
+   * The agents a group may take: the user's own live ones on every machine, and each
+   * teammate's agents open to this user now. `ref` is what `group.create` and
+   * `group.member.add` take.
+   */
+  "group.candidates": { params: Empty, result: z.object({ agents: z.array(GroupCandidate) }) },
+  /** A page of a group's posts, oldest first: the latest `limit` (fifty without it), or those before post number `before`. */
+  "group.posts": {
+    params: z.object({ group: GroupId, before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(200).optional() }),
+    result: z.object({ posts: z.array(GroupPost), more: z.boolean() }),
+  },
+  /** A new group chat with these agents in it, made by this side's user, who is in it too. `notify` is what an agent added starts with: tags only without it. */
+  "group.create": {
+    params: z.object({ name: z.string().trim().min(1).max(80), purpose: z.string().trim().max(300).optional(), notify: GroupNotify.optional(), members: z.array(GroupMemberRef).max(32) }),
+    result: z.object({ group: Group }),
+  },
+  /** A group's name, purpose, or the setting new agents start with; any person in it may change them. An empty purpose clears it. */
+  "group.update": {
+    params: z.object({ group: GroupId, name: z.string().trim().min(1).max(80).optional(), purpose: z.string().trim().max(300).optional(), notify: GroupNotify.optional() }),
+    result: z.object({ group: Group }),
+  },
+  /** This side's user posts in a group: tags are read out of the text (`@handle`, `@agents`, `@users`, `@everyone`), and one that names no member refuses the post. */
+  "group.post": { params: z.object({ group: GroupId, text: z.string().min(1).max(16_000), replyTo: GroupPostId.optional() }), result: z.object({ post: GroupPost }) },
+  /** This side's user's thumbs up on a post, or taken back; it tells no one. */
+  "group.react": { params: z.object({ group: GroupId, post: GroupPostId, on: z.boolean() }), result: Empty },
+  /** This side's user has read a group up to post number `upTo`. */
+  "group.read": { params: z.object({ group: GroupId, upTo: z.number().int().nonnegative() }), result: Empty },
+  /** Ends a group for everyone in it: read only from then on. Its maker alone. */
+  "group.end": { params: z.object({ group: GroupId }), result: Empty },
+  /** Drops this side's copy of a group, taking this side's user and agents out of it. */
+  "group.delete": { params: z.object({ group: GroupId }), result: Empty },
+  /** Puts agents in a group: the user's own, or a teammate's open to this user. */
+  "group.member.add": { params: z.object({ group: GroupId, members: z.array(GroupMemberRef).min(1).max(32) }), result: z.object({ group: Group }) },
+  /** Takes a member out: one of this side's own agents, or anyone for the group's maker. */
+  "group.member.remove": { params: z.object({ group: GroupId, member: GroupMemberKey }), result: z.object({ group: Group }) },
+  /** How one of this side's own agents is told of the group's posts: every post, or tags only. */
+  "group.member.set": { params: z.object({ group: GroupId, member: GroupMemberKey, notify: GroupNotify }), result: z.object({ group: Group }) },
+  /** The agents in focus now, on every machine, with until when and why. */
+  "focus.list": { params: Empty, result: z.object({ focus: z.array(z.object({ session: SessionId, focus: Focus })) }) },
+  /** Ends an agent's focus: what was held for it reaches it now. */
+  "focus.end": { params: z.object({ session: SessionId }), result: Empty },
+  /** This user's teammates, pending and active. */
+  "teammate.list": { params: Empty, result: z.object({ teammates: z.array(Teammate) }) },
+  /**
+   * A code for another Cophyla user to become this user's teammate, sharing `share` with them:
+   * good for 24 hours or until it is used, and cancelled with `teammate.cancel`. Needs this
+   * account signed in, with the relay.
+   */
+  "teammate.invite": { params: z.object({ share: TeammateShare }), result: z.object({ teammate: Teammate, invite: TeammateInvite }) },
+  /** Uses another user's teammate code, sharing `share` with them; answered once both sides keep the teammate. */
+  "teammate.accept": { params: z.object({ code: z.string().min(1).max(4096), share: TeammateShare }), result: z.object({ teammate: Teammate }) },
+  /** Changes what this side shares with a teammate. */
+  "teammate.update": { params: z.object({ id: TeammateId, share: TeammateShare }), result: z.object({ teammate: Teammate }) },
+  /** Opens one agent to a teammate by hand, or closes it again: under `chosen`, or in a workspace shared closed. */
+  "teammate.open": { params: z.object({ teammate: TeammateId, session: SessionId, on: z.boolean() }), result: z.object({ teammate: Teammate }) },
+  /** Cancels a code that waits to be used. */
+  "teammate.cancel": { params: z.object({ id: TeammateId }), result: Empty },
+  /** Ends a teammate at both sides: their agents leave every group and nothing reaches either side any more. */
+  "teammate.end": { params: z.object({ id: TeammateId }), result: Empty },
   /**
    * Sends a file or a folder from one of the user's machines (`from.path`, absolute there) to
    * a folder on another (`to.dir`, absolute there; its Downloads folder without it), or to
@@ -1348,6 +1439,14 @@ export const clientNotifications = {
   "remote.pipe.close": PipeClose,
   /** A connection's row when it is made, used, changes end or ends (`state: ended`, the last word about it). */
   "connection.state": Connection,
+  /** A group's row when it is made, changes, or this side's copy goes (`left`, the last word about it). */
+  "group.state": Group.extend({ left: z.boolean().optional() }),
+  /** A post in a group, new or changed (a thumbs up, an answer), as this side shows it. */
+  "group.posted": z.object({ group: GroupId, post: GroupPost }),
+  /** An agent took focus, or came out of it (no `focus`). */
+  "focus.state": z.object({ session: SessionId, focus: Focus.optional() }),
+  /** A teammate's row when it is made, used, changes or ends (`state: ended`, the last word about it). */
+  "teammate.state": Teammate,
   /** A transfer's row, when it starts, ends or changes state, and about once a second while its bytes come. */
   "transfer.state": Transfer,
   "update.state": z.object({

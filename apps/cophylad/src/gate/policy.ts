@@ -87,6 +87,14 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:connection.invite": "allow",
   "harness:connection.accept": "allow",
   "harness:connection.end": "allow",
+  // An agent reading and posting in the group chats the user put it in, and its thumbs up: the
+  // user's word that the group's agents may talk. Its focus, taken or ended. Its message to a
+  // teammate's agent, which the teammate's own side checks against what it shares.
+  "harness:group.read": "allow",
+  "harness:group.post": "allow",
+  "harness:group.ack": "allow",
+  "harness:agent.focus": "allow",
+  "harness:teammate.send": "allow",
   // An agent sending a file or a folder to another of the user's machines (`send_file`): asked
   // about, unless the agent runs without permission prompts, which its harness would not ask.
   "harness:transfer.send": "ask",

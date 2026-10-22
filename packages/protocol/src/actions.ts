@@ -186,6 +186,39 @@ export const actions = {
   "connection.end": { risk: "write" },
   "connection.send": { risk: "network" },
   "connection.deliver": { risk: "write" },
+  // Group chats: the app's requests, and an agent's tools as the actions they are gated as
+  // (`group.read` an agent reading, `group.post` its post, `group.ack` its thumbs up). A notice
+  // or gathered posts into a session is `group.deliver`, the system's.
+  "group.list": { risk: "read" },
+  "group.candidates": { risk: "read" },
+  "group.posts": { risk: "read" },
+  "group.create": { risk: "write" },
+  "group.update": { risk: "write" },
+  "group.post": { risk: "write" },
+  "group.react": { risk: "write" },
+  "group.read": { risk: "read" },
+  "group.end": { risk: "write" },
+  "group.delete": { risk: "write" },
+  "group.member.add": { risk: "write" },
+  "group.member.remove": { risk: "write" },
+  "group.member.set": { risk: "write" },
+  "group.ack": { risk: "write" },
+  "group.deliver": { risk: "write" },
+  // An agent's focus: taken or ended by the agent (`agent.focus`), ended by the user (`focus.end`).
+  "focus.list": { risk: "read" },
+  "focus.end": { risk: "write" },
+  "agent.focus": { risk: "write" },
+  // Teammates: the app's requests; `teammate.send` an agent's message to a teammate's agent,
+  // `teammate.deliver` one coming in.
+  "teammate.list": { risk: "read" },
+  "teammate.invite": { risk: "exec" },
+  "teammate.accept": { risk: "exec" },
+  "teammate.update": { risk: "exec" },
+  "teammate.open": { risk: "exec" },
+  "teammate.cancel": { risk: "write" },
+  "teammate.end": { risk: "write" },
+  "teammate.send": { risk: "network" },
+  "teammate.deliver": { risk: "write" },
   // Files and folders between the user's machines. Starting one writes on the receiving machine;
   // the sending one reads what the receiving one asks of it (the node link's `files.*`). An
   // agent's `send_file` is also `transfer.send`, which a built-in rule asks about unless the

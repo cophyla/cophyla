@@ -117,6 +117,12 @@ for (const [name, def] of Object.entries(registry.connectionLink.requests)) {
   add(`connectionLink.requests.${name}.result`, def.result, cl.requests[name]?.results);
 }
 
+const tl = read("teammate-link.json") as { requests: Record<string, { params: unknown; results: unknown }> };
+for (const [name, def] of Object.entries(registry.teammateLink.requests)) {
+  add(`teammateLink.requests.${name}.params`, def.params, tl.requests[name]?.params);
+  add(`teammateLink.requests.${name}.result`, def.result, tl.requests[name]?.results);
+}
+
 // --- orphan fixtures: names in a fixture file with no schema ---------------------------
 
 const known = new Set(cases.map((c) => c.path));
@@ -143,6 +149,7 @@ for (const name of Object.keys(nl.frames)) check(`nodeLink.frames.${name}`);
 for (const name of Object.keys(rp.requests)) check(`relayPeer.requests.${name}.params`);
 for (const name of Object.keys(rp.frames)) check(`relayPeer.frames.${name}`);
 for (const name of Object.keys(cl.requests)) check(`connectionLink.requests.${name}.params`);
+for (const name of Object.keys(tl.requests)) check(`teammateLink.requests.${name}.params`);
 
 // --- tests -----------------------------------------------------------------------------
 

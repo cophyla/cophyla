@@ -9,7 +9,7 @@
 
 import { z } from "zod";
 import { GrantKind } from "./entities.ts";
-import { ConnectionId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { ConnectionId, GrantRef, NodeId, TeammateId, Timestamp } from "./ids.ts";
 
 export const INVITE_TEXT_PREFIX = "cophyla-invite:";
 export const INVITE_LINK_PREFIX = "cophyla://invite?i=";
@@ -125,7 +125,7 @@ export function connectionInviteText(body: ConnectionInviteBody): string {
 /** A connection's invite read back from its code, whatever whitespace a paste brought; throws `InviteError` on anything else. */
 export function parseConnectionInvite(input: string): ConnectionInviteBody {
   const compact = input.replace(/\s+/g, "");
-  if (!compact.startsWith(CONNECT_PREFIX)) throw new InviteError(compact.startsWith(INVITE_TEXT_PREFIX) || compact.startsWith(INVITE_LINK_PREFIX) ? "that is an invite for a phone or a machine, not a connection's" : "not a Cophyla connection code");
+  if (!compact.startsWith(CONNECT_PREFIX)) throw new InviteError(compact.startsWith(INVITE_TEXT_PREFIX) || compact.startsWith(INVITE_LINK_PREFIX) ? "that is an invite for a phone or a machine, not a connection's" : compact.startsWith(TEAM_PREFIX) ? "that is a teammate's code: enter it under Teammates" : "not a Cophyla connection code");
   let json: unknown;
   try {
     json = JSON.parse(fromBase64Url(compact.slice(CONNECT_PREFIX.length)));
@@ -133,6 +133,49 @@ export function parseConnectionInvite(input: string): ConnectionInviteBody {
     throw e instanceof InviteError ? e : new InviteError("the code is damaged");
   }
   const parsed = ConnectionInviteBody.safeParse(json);
+  if (!parsed.success) throw new InviteError("the code is damaged or from another version");
+  return parsed.data;
+}
+
+// --- a teammate's code -------------------------------------------------------------------
+//
+// Another Cophyla user is made a teammate with a code one of them makes and the other enters,
+// shaped as a connection's but for a standing link between the two accounts: good for a day,
+// or until it is used, and cancelled at will while it waits.
+//
+//   code = "cophyla-team:" base64url(json)
+
+export const TEAM_PREFIX = "cophyla-team:";
+
+export const TeammateInviteBody = z.object({
+  v: z.literal(1),
+  /** The pending teammate it redeems: the id both sides keep it under. */
+  id: TeammateId,
+  secret: Secret,
+  expiresAt: Timestamp,
+  /** The invite's throwaway relay peer, a connection's kind on the server. */
+  relay: ConnectionRelay,
+});
+export type TeammateInviteBody = z.infer<typeof TeammateInviteBody>;
+
+/** A teammate's invite as the code to hand the other person. */
+export function teammateInviteText(body: TeammateInviteBody): string {
+  return TEAM_PREFIX + toBase64Url(JSON.stringify(body));
+}
+
+/** A teammate's invite read back from its code, whatever whitespace a paste brought; throws `InviteError` on anything else. */
+export function parseTeammateInvite(input: string): TeammateInviteBody {
+  const compact = input.replace(/\s+/g, "");
+  if (!compact.startsWith(TEAM_PREFIX)) {
+    throw new InviteError(compact.startsWith(CONNECT_PREFIX) ? "that is a code to connect one terminal, not a teammate's: use it under Connect in a session's header" : compact.startsWith(INVITE_TEXT_PREFIX) || compact.startsWith(INVITE_LINK_PREFIX) ? "that is an invite for a phone or a machine, not a teammate's" : "not a Cophyla teammate code");
+  }
+  let json: unknown;
+  try {
+    json = JSON.parse(fromBase64Url(compact.slice(TEAM_PREFIX.length)));
+  } catch (e) {
+    throw e instanceof InviteError ? e : new InviteError("the code is damaged");
+  }
+  const parsed = TeammateInviteBody.safeParse(json);
   if (!parsed.success) throw new InviteError("the code is damaged or from another version");
   return parsed.data;
 }

@@ -75,6 +75,16 @@ export const PushAsk = z.object({
 });
 export type PushAsk = z.infer<typeof PushAsk>;
 
+/** A tag of the user in a group chat, as it travels in a push: the group, who tagged them, and how the post starts. */
+export const PushMention = z.object({
+  group: z.string().min(1).max(40),
+  name: z.string().max(80),
+  from: z.string().max(200),
+  text: z.string().max(300),
+  node: NodeId,
+});
+export type PushMention = z.infer<typeof PushMention>;
+
 /** Requests the daemon sends to the server. */
 export const serverLinkRequests = {
   auth: {
@@ -212,8 +222,9 @@ export const serverLinkRequests = {
   "push.unregister": { params: z.object({ peer: ControllerId }), result: Empty },
   /**
    * A push to a peer's device. `kind: ask` carries the ask for the phone to show with its
-   * buttons; `dismiss` withdraws it once answered elsewhere. `title` and `body` are the
-   * plain notification for a phone that cannot build one.
+   * buttons; `dismiss` withdraws it once answered elsewhere; `mention`, a tag of the user in a
+   * group chat (Server 0.9.0). `title` and `body` are the plain notification for a phone that
+   * cannot build one.
    */
   "push.send": {
     params: z.object({
@@ -221,8 +232,9 @@ export const serverLinkRequests = {
       body: z.string(),
       device: z.string().optional(),
       peer: ControllerId.optional(),
-      kind: z.enum(["ask", "dismiss"]).optional(),
+      kind: z.enum(["ask", "dismiss", "mention"]).optional(),
       ask: PushAsk.optional(),
+      mention: PushMention.optional(),
     }),
     result: Empty,
   },

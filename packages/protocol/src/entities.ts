@@ -9,12 +9,15 @@ import {
   ConnectionId,
   ControllerId,
   GrantRef,
+  GroupId,
+  GroupPostId,
   ListenerId,
   MessageId,
   NodeId,
   ProfileId,
   SessionId,
   TaskId,
+  TeammateId,
   ThreadId,
   Timestamp,
   TransferId,
@@ -373,12 +376,26 @@ export const AgentRef = z.object({
 });
 export type AgentRef = z.infer<typeof AgentRef>;
 
+/**
+ * An agent in focus: it took an hour or two to work undisturbed, and nothing from other agents
+ * or a group reaches it until `until`, its next plain idle, its session's end, or it or the
+ * user ending it. `reason` is the line it gave: the work it is on. The primary keeps it.
+ */
+export const Focus = z.object({
+  since: Timestamp,
+  until: Timestamp,
+  reason: z.string().min(1).max(200),
+});
+export type Focus = z.infer<typeof Focus>;
+
 /** A row of the agent directory: who it is, and what it is doing now. */
 export const AgentListing = AgentRef.extend({
   status: SessionStatus,
   waiting: SessionWaiting.optional(),
   /** What the session is for, on one line. */
   intent: z.string().optional(),
+  /** It is in focus: a message to it is held until it comes out. */
+  focus: Focus.optional(),
 });
 export type AgentListing = z.infer<typeof AgentListing>;
 
@@ -481,6 +498,198 @@ export const Connection = z.object({
   reason: z.string().optional(),
 });
 export type Connection = z.infer<typeof Connection>;
+
+// ---------------------------------------------------------------------------------------
+// Teammates
+
+/** A folder on one of the user's machines, as a teammate's share names it. */
+export const TeammatePlace = z.object({ node: NodeId, path: z.string().min(1).max(4096) });
+export type TeammatePlace = z.infer<typeof TeammatePlace>;
+
+/** How open a share's agents are: `always`, every agent working in a shared folder; `chosen`, the ones opened by hand. */
+export const TeammateOpen = z.enum(["always", "chosen"]);
+export type TeammateOpen = z.infer<typeof TeammateOpen>;
+
+/**
+ * What one side shares with a teammate. `include`: the folders named, each with every folder
+ * under it; `exclude`: every workspace but those named and what is under them, a workspace that
+ * appears later shared `closed` until the user opens or excludes it. `opened`: agents opened by
+ * hand, under `chosen` or in a closed workspace. A folder the session scope hides is never
+ * shared, whatever the share says.
+ */
+export const TeammateShare = z.object({
+  mode: z.enum(["include", "exclude"]),
+  folders: z.array(TeammatePlace).max(200),
+  open: TeammateOpen,
+  opened: z.array(SessionId).max(500).optional(),
+  closed: z.array(TeammatePlace).max(500).optional(),
+});
+export type TeammateShare = z.infer<typeof TeammateShare>;
+
+/** What the teammate shares with this side, as their Cophyla said: how open, and their workspaces by name alone. */
+export const TeammateTheirs = z.object({
+  open: TeammateOpen,
+  workspaces: z.array(z.string().min(1).max(200)).max(500),
+});
+export type TeammateTheirs = z.infer<typeof TeammateTheirs>;
+
+export const TeammateState = z.enum(["pending", "active", "ended"]);
+export type TeammateState = z.infer<typeof TeammateState>;
+
+/**
+ * Another Cophyla user made a teammate: a standing link between the two accounts' primaries,
+ * through which each side's agents reach the other's in the folders they share. `user` is
+ * their GitHub login, as the server vouched (absent while the code waits). A pending one's code
+ * runs out at `expiresAt`. `queued` counts messages waiting to go, either way; `reason`, in the
+ * last notice about one, why it ended.
+ */
+export const Teammate = z.object({
+  id: TeammateId,
+  state: TeammateState,
+  user: z.string().min(1).max(64).optional(),
+  share: TeammateShare,
+  theirs: TeammateTheirs.optional(),
+  createdAt: Timestamp,
+  expiresAt: Timestamp.optional(),
+  acceptedAt: Timestamp.optional(),
+  lastAt: Timestamp.optional(),
+  seenAt: Timestamp.optional(),
+  sent: z.number().int().nonnegative(),
+  received: z.number().int().nonnegative(),
+  queued: z.number().int().nonnegative().optional(),
+  reason: z.string().optional(),
+});
+export type Teammate = z.infer<typeof Teammate>;
+
+/**
+ * An open agent of a teammate's, as `list_agents` gives it: the name to send to
+ * (`<user>/<name>`), its harness, the name of its workspace (never a path or a machine), how it
+ * stands, what it is for and its focus, as their Cophyla last said.
+ */
+export const TeammateListing = z.object({
+  teammate: TeammateId,
+  alias: z.string().min(1).max(200),
+  user: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+  workspace: z.string().max(200).optional(),
+  status: SessionStatus.optional(),
+  intent: z.string().max(300).optional(),
+  focus: Focus.optional(),
+});
+export type TeammateListing = z.infer<typeof TeammateListing>;
+
+/** Who a message from a teammate's agent is from, as the session it reaches records it; set from the teammate, not the far end's word. */
+export const TeammateSender = z.object({
+  teammate: TeammateId,
+  user: z.string().min(1).max(64),
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+});
+export type TeammateSender = z.infer<typeof TeammateSender>;
+
+// ---------------------------------------------------------------------------------------
+// Group chats
+
+/** How an agent member is told of posts: every post, gathered when it is free, or only the ones that tag it. */
+export const GroupNotify = z.enum(["all", "tags"]);
+export type GroupNotify = z.infer<typeof GroupNotify>;
+
+/** A member's key, the same on every side: `agent:<sess_…>`, or `person:<account>` (`person:me` for this side's user while signed out). */
+export const GroupMemberKey = z.string().min(1).max(120);
+
+/**
+ * A member of a group chat as this side shows it. An agent is its session record, so a
+ * `/clear`, a restarted harness and a resume keep it; `gone` while its session has ended.
+ * `handle` is what it is tagged by here; `user` its owner's login (absent for this side's own
+ * while signed out); `mine` an agent of this side's user, whose `notify` this side sets.
+ * `readTo` is the number of the last post it read; `held` says its notices wait in its own
+ * terminal (Claude holds a message into a session that bypasses prompts until the bypass
+ * switch is on).
+ */
+export const GroupMember = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("agent"),
+    key: GroupMemberKey,
+    session: SessionId,
+    user: z.string().max(64).optional(),
+    handle: z.string().min(1).max(200),
+    harness: HarnessKind,
+    workspace: z.string().max(200).optional(),
+    notify: GroupNotify,
+    readTo: z.number().int().nonnegative(),
+    unread: z.number().int().nonnegative(),
+    mine: z.boolean().optional(),
+    gone: z.boolean().optional(),
+    focus: Focus.optional(),
+    held: z.boolean().optional(),
+    addedBy: z.string().max(64),
+    addedAt: Timestamp,
+  }),
+  z.object({
+    kind: z.literal("person"),
+    key: GroupMemberKey,
+    user: z.string().min(1).max(64),
+    readTo: z.number().int().nonnegative(),
+    me: z.boolean().optional(),
+  }),
+]);
+export type GroupMember = z.infer<typeof GroupMember>;
+
+/**
+ * A group chat as this side keeps it: its name and purpose (one line on what it is for), who
+ * made it, the notify setting a new agent member starts with, the members, where the rail puts
+ * it on this side (`home`, the folder of the first of this side's agents added), and this side's
+ * user's unread and tagged counts. An ended one is read only.
+ */
+export const Group = z.object({
+  id: GroupId,
+  name: z.string().min(1).max(80),
+  purpose: z.string().max(300).optional(),
+  by: z.string().min(1).max(64),
+  notify: GroupNotify,
+  members: z.array(GroupMember),
+  home: TeammatePlace.optional(),
+  unread: z.number().int().nonnegative(),
+  tagged: z.number().int().nonnegative(),
+  lastAt: Timestamp.optional(),
+  ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
+  createdAt: Timestamp,
+});
+export type Group = z.infer<typeof Group>;
+
+/** Whom a post tags: one member, or everyone, every agent or every person in the group. */
+export const GroupMention = z.union([z.object({ member: GroupMemberKey }), z.object({ all: z.enum(["everyone", "agents", "users"]) })]);
+export type GroupMention = z.infer<typeof GroupMention>;
+
+/** Who wrote a post: an agent member, a person, or cophyla itself (who joined or left). */
+export const GroupPostFrom = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("agent"), key: GroupMemberKey, session: SessionId, user: z.string().max(64).optional(), handle: z.string().min(1).max(200), harness: HarnessKind }),
+  z.object({ kind: z.literal("person"), key: GroupMemberKey, user: z.string().min(1).max(64) }),
+  z.object({ kind: z.literal("cophyla") }),
+]);
+export type GroupPostFrom = z.infer<typeof GroupPostFrom>;
+
+/**
+ * One post in a group chat, as this side shows it: `n` its number here, in the order it
+ * arrived, so one that came late after a disconnect is unread rather than skipped; `text` with
+ * each tag written as this side names the member; `expectsReply` until a reply comes
+ * (`answered`); `acks`, the handles that gave it a thumbs up.
+ */
+export const GroupPost = z.object({
+  id: GroupPostId,
+  group: GroupId,
+  n: z.number().int().positive(),
+  from: GroupPostFrom,
+  text: z.string().max(20_000),
+  mentions: z.array(GroupMention),
+  replyTo: GroupPostId.optional(),
+  expectsReply: z.boolean().optional(),
+  answered: z.boolean().optional(),
+  acks: z.array(z.string().max(200)),
+  at: Timestamp,
+});
+export type GroupPost = z.infer<typeof GroupPost>;
 
 // ---------------------------------------------------------------------------------------
 // Transfer
@@ -1595,6 +1804,17 @@ export const entities = {
   ConnectionPeer,
   ConnectionSender,
   ConnectionState,
+  Focus,
+  Teammate,
+  TeammateShare,
+  TeammatePlace,
+  TeammateTheirs,
+  TeammateListing,
+  TeammateSender,
+  Group,
+  GroupMember,
+  GroupPost,
+  GroupMention,
   Transfer,
   TransferState,
   TransferVia,

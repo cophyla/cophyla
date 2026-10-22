@@ -11,8 +11,8 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, Terminal, Transfer, Workspace } from "./entities.ts";
-import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, Timestamp } from "./ids.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, Workspace } from "./entities.ts";
+import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 
@@ -276,7 +276,10 @@ export const nodeLinkRequests = {
    * secondary's, may message, every node's, with the aliases the primary gives them. Refused
    * for a session the primary does not hold as the secondary's.
    */
-  "agent.list": { params: z.object({ caller: SessionId }), result: z.object({ agents: z.array(AgentListing), connections: z.array(ConnectionListing).optional(), machines: z.array(MachineListing).optional() }) },
+  "agent.list": {
+    params: z.object({ caller: SessionId }),
+    result: z.object({ agents: z.array(AgentListing), connections: z.array(ConnectionListing).optional(), machines: z.array(MachineListing).optional(), teammates: z.array(TeammateListing).optional() }),
+  },
   /**
    * Secondary → primary, agent messaging: `caller`'s message to the agent `to` names (an
    * alias, `alias@machine` or a session id), `mode` its permission class as the secondary
@@ -287,13 +290,18 @@ export const nodeLinkRequests = {
   "agent.send": {
     params: z.object({ caller: SessionId, mode: AgentMode, to: z.string().min(1).max(200), text: z.string().min(1), replyTo: AgentMessageId.optional() }),
     result: z.object({
-      /** `queued`: kept until the other user's Cophyla is reached; `waiting`: there, kept until an agent runs in its terminal. */
-      status: z.enum(["sent", "held", "pending", "queued", "waiting"]),
+      /**
+       * `queued`: kept until the other user's Cophyla is reached; `waiting`: there, kept until an
+       * agent runs in its terminal; `focus`: held until the receiving agent comes out of focus.
+       */
+      status: z.enum(["sent", "held", "pending", "queued", "waiting", "focus"]),
       id: AgentMessageId,
-      /** One of the user's sessions; or, for a message on a connection, `peer`. */
+      /** One of the user's sessions; or, for a message to another user's agent, `peer`: a connection's or a teammate's. */
       to: AgentRef.optional(),
-      peer: z.object({ connection: ConnectionId, alias: z.string() }).optional(),
+      peer: z.object({ connection: ConnectionId.optional(), teammate: TeammateId.optional(), alias: z.string() }).optional(),
       ask: AskId.optional(),
+      /** The receiving agent's focus, while it holds the message. */
+      focus: Focus.optional(),
     }),
   },
   /**
@@ -303,6 +311,15 @@ export const nodeLinkRequests = {
    */
   "connection.tool": {
     params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["create_invite", "accept_invite", "end_connection"]), args: z.record(z.string(), z.unknown()) }),
+    result: z.object({ text: z.string(), isError: z.boolean().optional() }),
+  },
+  /**
+   * Secondary → primary: one of the group chat tools (`read_group`, `post_group`, `ack_post`)
+   * or `focus`, called by `caller`, a live session of the secondary's. Groups and focus live on
+   * the primary; the answer is the text the model reads.
+   */
+  "group.tool": {
+    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "post_group", "ack_post", "focus"]), args: z.record(z.string(), z.unknown()) }),
     result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
 } as const;

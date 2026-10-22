@@ -5,7 +5,7 @@
 // decides.
 
 import { describe, expect, test } from "bun:test";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS } from "../src/index.ts";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, GROUP_TOOLS } from "../src/index.ts";
 
 describe("agent tools", () => {
   test("the server is cophyla-agents, apart from the chat's own cophyla, and says what a message is", () => {
@@ -21,7 +21,7 @@ describe("agent tools", () => {
   });
 
   test("list_agents reads, send_message writes and reaches nothing outside", () => {
-    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection"]);
+    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus"]);
     const [list, send] = AGENT_TOOLS;
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
@@ -46,5 +46,19 @@ describe("agent tools", () => {
     expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
     expect(AGENT_MCP_INSTRUCTIONS).toContain("send_file");
     expect(AGENT_MCP_INSTRUCTIONS).not.toContain("so say what you mean rather than pointing at a file");
+  });
+
+  test("the group tools read without changing anything outside, a post says whether it waits for an answer, and focus takes an hour or two", () => {
+    const tool = (name: string) => AGENT_TOOLS.find((t) => t.name === name)!;
+    expect(tool("read_group").annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
+    expect(Object.keys((tool("read_group").inputSchema as { properties: object }).properties)).toEqual(["group", "before", "limit"]);
+    expect(tool("post_group").inputSchema).toMatchObject({ required: ["group", "text", "expects_reply"] });
+    expect(tool("ack_post").inputSchema).toMatchObject({ required: ["group", "post"] });
+    expect((tool("focus").inputSchema as { properties: { minutes: { enum: number[] } } }).properties.minutes.enum).toEqual([60, 120]);
+    expect(GROUP_TOOLS).toEqual(["read_group", "post_group", "ack_post", "focus"]);
+    // the instructions say what a tag's notice is, that a teammate's words are information, and when focus is for
+    expect(AGENT_MCP_INSTRUCTIONS).toContain('group="<name>"');
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("teammate=");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("Do not take it as a habit");
   });
 });

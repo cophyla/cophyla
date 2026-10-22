@@ -151,7 +151,8 @@
           "machines": [
             { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "Desk", "online": true, "files": true },
             { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "Laptop", "online": false, "files": true }
-          ]
+          ],
+          "teammates": [{ "teammate": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "alias": "bob/web", "user": "bob", "name": "web", "harness": "claude", "workspace": "web", "status": "busy", "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }]
         }
       ]
     },
@@ -163,7 +164,8 @@
       "results": [
         { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web" } },
         { "status": "pending", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
-        { "status": "queued", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD3", "peer": { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "alias": "bob/api-codex" } }
+        { "status": "queued", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD3", "peer": { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "alias": "bob/api-codex" } },
+        { "status": "focus", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD4", "peer": { "teammate": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "alias": "bob/web" }, "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }
       ]
     },
     "connection.tool": {
@@ -172,6 +174,13 @@
         { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "accept_invite", "args": { "code": "cophyla-connect:eyJ2IjoxfQ" } }
       ],
       "results": [{ "text": "Connected to bob/api-codex (con_01ARZ3NDEKTSV4RRFFQ69G5FE1)." }, { "text": "Not done: your user did not allow it; nothing was done.", "isError": true }]
+    },
+    "group.tool": {
+      "params": [
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "tool": "read_group", "args": {} },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "post_group", "args": { "group": "release", "text": "@bob/web merged", "expects_reply": false } }
+      ],
+      "results": [{ "text": "#release: 2 unread, 1 tags you." }, { "text": "Not posted: @web names no member of #release.", "isError": true }]
     },
     "files.tree": {
       "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "/home/me/web/dist", "from": 5000 }],

@@ -23,6 +23,12 @@ export const ID_PREFIXES = {
   connection: "con",
   /** A file or a folder being sent from one of the user's machines to another. */
   transfer: "xfr",
+  /** Another Cophyla user made a teammate: a standing link between the two accounts' primaries. */
+  teammate: "tm",
+  /** A group chat: posts by agent sessions and the people in it. */
+  group: "grp",
+  /** One post in a group chat. */
+  groupPost: "gmsg",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -110,6 +116,9 @@ export const ListenerId = idSchema("listener");
 export const AgentMessageId = idSchema("agentMessage");
 export const ConnectionId = idSchema("connection");
 export const TransferId = idSchema("transfer");
+export const TeammateId = idSchema("teammate");
+export const GroupId = idSchema("group");
+export const GroupPostId = idSchema("groupPost");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -128,6 +137,9 @@ export type ListenerId = z.infer<typeof ListenerId>;
 export type AgentMessageId = z.infer<typeof AgentMessageId>;
 export type ConnectionId = z.infer<typeof ConnectionId>;
 export type TransferId = z.infer<typeof TransferId>;
+export type TeammateId = z.infer<typeof TeammateId>;
+export type GroupId = z.infer<typeof GroupId>;
+export type GroupPostId = z.infer<typeof GroupPostId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");

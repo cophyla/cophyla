@@ -1,0 +1,39 @@
+{
+  "requests": {
+    "team.redeem": {
+      "params": [{ "id": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "identity": "eyJhbGciOiJFZERTQSJ9.eyJ0eXAiOiJjb3BoeWxhLWlkZW50aXR5In0.c2ln", "theirs": { "open": "always", "workspaces": ["api", "docs"] }, "relay": { "url": "https://orc.example", "peer": "con_01ARZ3NDEKTSV4RRFFQ69G5FE4", "token": "rly_9f86d081884c7d659a2feaa0c55ad015" } }],
+      "results": [{ "identity": "eyJhbGciOiJFZERTQSJ9.eyJ0eXAiOiJjb3BoeWxhLWlkZW50aXR5In0.c2ln", "theirs": { "open": "chosen", "workspaces": [] }, "relay": { "url": "https://orc.example", "peer": "con_01ARZ3NDEKTSV4RRFFQ69G5FE4", "token": "rly_9f86d081884c7d659a2feaa0c55ad015" }, "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }]
+    },
+    "team.confirm": { "params": [{ "id": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1" }], "results": [{}] },
+    "team.directory": {
+      "params": [{}],
+      "results": [{ "agents": [{ "name": "api-codex", "harness": "codex", "workspace": "api", "status": "idle", "intent": "the v2 schema" }, { "name": "web", "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }], "theirs": { "open": "always", "workspaces": ["api", "docs"] } }, { "agents": [], "theirs": { "open": "chosen", "workspaces": [] } }]
+    },
+    "team.share": { "params": [{ "open": "always", "workspaces": ["api", "docs"] }], "results": [{}] },
+    "team.send": {
+      "params": [{ "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "to": "api-codex", "text": "Is the schema merged?", "from": { "name": "web", "harness": "claude" }, "sentAt": 1758196800000 }, { "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": "web", "text": "Yes, a1b2c3.", "replyTo": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "from": { "name": "api-codex" }, "sentAt": 1758196810000 }],
+      "results": [{ "status": "sent" }, { "status": "focus", "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }]
+    },
+    "team.notice": { "params": [{ "about": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "why": "no agent called api-codex is open to you" }], "results": [{}] },
+    "team.end": { "params": [{ "reason": "ended by the user" }], "results": [{}] },
+    "team.group": {
+      "params": [
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 1, "entry": { "kind": "snapshot", "group": { "id": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "name": "release", "purpose": "Ship 0.18", "by": "ferit", "notify": "tags", "createdAt": 1758196700000, "members": [{ "kind": "agent", "key": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "owner": "usr_FERIT", "user": "ferit", "name": "api-codex", "harness": "codex", "workspace": "api", "notify": "tags", "addedBy": "ferit", "addedAt": 1758196700000 }, { "kind": "person", "key": "person:usr_BOB", "owner": "usr_BOB", "user": "bob" }], "posts": [{ "id": "gmsg_01ARZ3NDEKTSV4RRFFQ69G5GM1", "from": { "kind": "agent", "key": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "user": "ferit", "name": "api-codex", "harness": "codex" }, "text": "@[agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2] is it merged?", "mentions": [{ "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }], "expectsReply": true, "at": 1758196800000 }] } } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 2, "entry": { "kind": "post", "post": { "id": "gmsg_01ARZ3NDEKTSV4RRFFQ69G5GM1", "from": { "kind": "agent", "key": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "user": "ferit", "name": "api-codex", "harness": "codex" }, "text": "@[agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2] is it merged?", "mentions": [{ "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }], "expectsReply": true, "at": 1758196800000 } } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 3, "entry": { "kind": "ack", "post": "gmsg_01ARZ3NDEKTSV4RRFFQ69G5GM1", "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 4, "entry": { "kind": "read", "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "post": "gmsg_01ARZ3NDEKTSV4RRFFQ69G5GM1" } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 5, "entry": { "kind": "member.add", "member": { "kind": "agent", "key": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "owner": "usr_FERIT", "user": "ferit", "name": "api-codex", "harness": "codex", "workspace": "api", "notify": "tags", "addedBy": "ferit", "addedAt": 1758196700000 } } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 6, "entry": { "kind": "member.remove", "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "why": "removed by ferit" } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 7, "entry": { "kind": "member.state", "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "gone": true } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 8, "entry": { "kind": "update", "name": "release-0.18" } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 9, "entry": { "kind": "end", "by": "ferit" } },
+        { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "seq": 10, "entry": { "kind": "leave", "person": "person:usr_BOB" } }
+      ],
+      "results": [{}]
+    },
+    "team.group.sync": {
+      "params": [{ "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "after": 0 }],
+      "results": [{ "entries": [{ "seq": 1, "entry": { "kind": "post", "post": { "id": "gmsg_01ARZ3NDEKTSV4RRFFQ69G5GM1", "from": { "kind": "agent", "key": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "user": "ferit", "name": "api-codex", "harness": "codex" }, "text": "@[agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2] is it merged?", "mentions": [{ "member": "agent:sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }], "expectsReply": true, "at": 1758196800000 } } }], "more": false }, { "entries": [] }]
+    }
+  }
+}

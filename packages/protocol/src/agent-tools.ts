@@ -1,13 +1,18 @@
 // The `cophyla-agents` MCP server's words, defined once in `agent-tools.json`: its name, the
 // instructions every session is given with it, and its tools: listing and messaging the
-// user's other sessions, sending a file or a folder to one or to another of the user's
-// machines, and making, using and ending a connection to another user's. The
+// user's other sessions (and teammates' open agents), sending a file or a folder to one or to
+// another of the user's machines, making, using and ending a connection to another user's,
+// reading and posting in group chats, and taking focus. The
 // native shim (`apps/mcp`) embeds the same file, to answer a session started while the daemon
 // is down; cophylad serves it otherwise.
 
 import definition from "../agent-tools.json";
 
-export type AgentToolName = "list_agents" | "send_message" | "send_file" | "create_invite" | "accept_invite" | "end_connection";
+export type AgentToolName = "list_agents" | "send_message" | "send_file" | "create_invite" | "accept_invite" | "end_connection" | "read_group" | "post_group" | "ack_post" | "focus";
+
+/** The group chat tools and focus, kept by the primary with the groups. */
+export const GROUP_TOOLS = ["read_group", "post_group", "ack_post", "focus"] as const;
+export type GroupToolName = (typeof GROUP_TOOLS)[number];
 
 export interface AgentTool {
   name: AgentToolName;

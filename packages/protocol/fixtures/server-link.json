@@ -117,6 +117,13 @@
       "params": [
         { "title": "Permission needed", "body": "Write x.txt", "device": "phone" },
         {
+          "title": "#release",
+          "body": "api-codex: @ferit the build is green",
+          "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
+          "kind": "mention",
+          "mention": { "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "name": "release", "from": "api-codex", "text": "@ferit the build is green", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }
+        },
+        {
           "title": "Permission needed",
           "body": "Write x.txt",
           "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1",
