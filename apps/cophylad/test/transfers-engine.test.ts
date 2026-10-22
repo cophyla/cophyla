@@ -7,15 +7,16 @@
 // user's word; an agent session it was sent to is told where it landed.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, parse } from "node:path";
 import type { NodeRecord, Transfer } from "@cophyla/protocol";
 import { PROTOCOL_VERSION } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import { PipeHub } from "../src/remote/pipes.ts";
 import type { End, FilePipe, FileTarget } from "../src/remote/pipes.ts";
-import { PART, Transfers } from "../src/transfers/index.ts";
+import { ensureDir, PART, Transfers } from "../src/transfers/index.ts";
 import type { Hop } from "../src/transfers/index.ts";
 import { openSource } from "../src/transfers/source.ts";
 import { TreeCache } from "../src/transfers/tree.ts";
@@ -370,5 +371,32 @@ describe("the transfer engine", () => {
     writeFileSync(join(r.home, "a-file"), "x");
     await expect(start(r, join(r.home, "a-file"), join(r.home, "a-file", "under"))).rejects.toThrow("no folder to put it in");
     await expect(start(r, join(r.home, "a-file"), "relative-dir")).rejects.toThrow("not an absolute path");
+  });
+
+  test("a start is kept on disk before it is answered: a daemon that stops a moment after still has it", async () => {
+    const r = rig();
+    writeFileSync(join(r.home, "keep.txt"), "kept");
+    const { transfer } = await start(r, join(r.home, "keep.txt"), join(r.home, "in-keep"));
+    const kept = JSON.parse(readFileSync(join(r.dataDir, "transfers.json"), "utf8")) as { rows: { t: Transfer }[] };
+    expect(kept.rows.map((x) => x.t.id)).toContain(transfer!.id);
+  });
+
+  // Windows marks Downloads and the other known folders read-only, where Bun's recursive mkdir
+  // says EEXIST of the folder that is there; and a drive's root, where it says EPERM.
+  test.if(process.platform === "win32")("it lands in a folder Windows marks read-only, as Downloads is, and takes a drive's root as a folder", async () => {
+    const r = rig();
+    const marked = join(r.home, "Downloads");
+    mkdirSync(marked);
+    spawnSync("attrib", ["+r", marked], { windowsHide: true });
+    try {
+      writeFileSync(join(r.home, "ro.txt"), "into a read-only folder");
+      const { transfer } = await start(r, join(r.home, "ro.txt"), marked);
+      await waitFor(() => ended(state(r, transfer!.id)));
+      expect(state(r, transfer!.id)).toBe("done");
+      expect(readFileSync(join(marked, "ro.txt"), "utf8")).toBe("into a read-only folder");
+      await ensureDir(parse(r.home).root);
+    } finally {
+      spawnSync("attrib", ["-r", marked], { windowsHide: true });
+    }
   });
 });

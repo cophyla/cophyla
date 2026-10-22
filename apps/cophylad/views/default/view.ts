@@ -2190,7 +2190,10 @@ async function transferAction(id: string, action: "cancel" | "retry" | "dismiss"
   try {
     await rpc.request(`transfer.${action}`, { id });
   } catch (e) {
-    fail(action === "reveal" ? "show" : action, e);
+    // no machine holds it any more: there is nothing to cancel, retry or keep, so its row goes
+    const t = state.transfers.get(id);
+    if (e instanceof ViewRpcError && e.code === "not_found" && t && action !== "reveal") dispatch({ type: "transfer.state", params: { ...t, dismissed: true } });
+    else fail(action === "reveal" ? "show" : action, e);
   } finally {
     busy.delete(id);
     draw();

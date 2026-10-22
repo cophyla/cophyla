@@ -158,6 +158,20 @@ export function freeName(dir: string, name: string, file: boolean, skip: (path: 
   }
 }
 
+/**
+ * Makes a folder unless it is one already. Bun's recursive mkdir (1.3.14) fails on a folder that
+ * exists when Windows marks it read-only, as it does Downloads and the other known folders
+ * ("EEXIST"), and on a drive's root ("EPERM"), where Node's succeeds.
+ */
+export async function ensureDir(dir: string): Promise<void> {
+  try {
+    if ((await stat(dir)).isDirectory()) return;
+  } catch {
+    // not there yet
+  }
+  await mkdir(dir, { recursive: true });
+}
+
 /** Bytes as a person reads them, as the views say them: gigabytes to one place, the rest whole. */
 export function sizeText(n: number): string {
   if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
@@ -259,11 +273,19 @@ export class Transfers {
 
   // --- rows out --------------------------------------------------------------------------------
 
-  /** A row's changes: out at once when its state moved, else at most once a second, and kept. */
+  /**
+   * A row's changes: out at once when its state moved, else at most once a second; kept at once
+   * when its state moved, so a start answered is never lost to a daemon that stops a moment
+   * after, else with the next second's.
+   */
   private changed(row: Row, now = false): void {
-    if (now) this.emit(row);
-    else this.emitSoon(row);
-    this.persistSoon();
+    if (now) {
+      this.emit(row);
+      this.persistNow();
+    } else {
+      this.emitSoon(row);
+      this.persistSoon();
+    }
   }
 
   private emit(row: Row): void {
@@ -345,7 +367,7 @@ export class Transfers {
     if (!isAbsolute(dir)) throw new RpcError("invalid", `${dir}: not an absolute path`);
     this.deps.require?.(dir);
     try {
-      await mkdir(dir, { recursive: true });
+      await ensureDir(dir);
       if (!(await stat(dir)).isDirectory()) throw new Error("not a folder");
     } catch (e) {
       throw new RpcError("invalid", `${dir}: no folder to put it in (${message(e)})`);
@@ -549,7 +571,7 @@ export class Transfers {
     this.set(row, { state: "running", ...(via ? { via } : {}) }, ["error"]);
     try {
       const entries = this.readEntries(row.t.id);
-      if (row.t.kind === "folder") await mkdir(row.part, { recursive: true });
+      if (row.t.kind === "folder") await ensureDir(row.part);
       let bytes = 0;
       let done = 0;
       for (let i = 0; i < row.cursor && i < entries.length; i++) {
@@ -561,7 +583,7 @@ export class Transfers {
       for (let i = row.cursor; i < entries.length; i++) {
         if (r.ctl.signal.aborted) throw new Stopped();
         const e = entries[i]!;
-        if (e.dir) await mkdir(join(row.part, ...e.rel.split("/")), { recursive: true });
+        if (e.dir) await ensureDir(join(row.part, ...e.rel.split("/")));
         else {
           await this.pull(r, e, entries);
           if (row.t.files) row.t = { ...row.t, files: { done: row.t.files.done + 1, total: row.t.files.total } };

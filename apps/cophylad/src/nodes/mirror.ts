@@ -21,6 +21,12 @@ interface NodeMirror {
 
 const fresh = (): NodeMirror => ({ sessions: new Map(), asks: new Map(), workspaces: new Map(), terminals: new Map(), updates: new Map(), transfers: new Map() });
 
+/** A transfer its machine came back without: it failed there, and its row goes from every list. */
+function lost(t: Transfer, now: number): Transfer {
+  const { rate: _rate, ...rest } = t;
+  return { ...rest, state: "failed", error: "its machine stopped before it kept this transfer: send it again", endedAt: now, dismissed: true };
+}
+
 /** A transfer whose machine went away, as its row says until the machine is back. */
 function away(t: Transfer): Transfer {
   if (t.state !== "running" && t.state !== "queued" && t.state !== "waiting") return t;
@@ -40,7 +46,14 @@ export class Mirror {
   }
 
   /** A node's lists at its join, replacing whatever was mirrored before. */
-  fill(node: string, lists: { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] }): void {
+  /**
+   * A node's rows at its join, replacing what was mirrored of it. Returns the transfers it was
+   * known to hold under way that its join no longer lists, ended as failed and dismissed: its
+   * machine stopped before it kept them, and no one could cancel or retry them there. A node
+   * whose join lists no transfers at all (an older one) loses none.
+   */
+  fill(node: string, lists: { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] }, now = Date.now()): Transfer[] {
+    const before = [...(this.nodes.get(node)?.transfers.values() ?? []), ...(this.gone.get(node)?.values() ?? [])];
     const m = fresh();
     for (const s of lists.sessions) if (s.status !== "ended") m.sessions.set(s.id, s);
     for (const w of lists.workspaces) m.workspaces.set(w.id, w);
@@ -49,6 +62,9 @@ export class Mirror {
     for (const t of lists.transfers ?? []) if (!t.dismissed) m.transfers.set(t.id, t);
     this.nodes.set(node, m);
     this.gone.delete(node);
+    if (!lists.transfers) return [];
+    const listed = new Set(lists.transfers.map((t) => t.id));
+    return before.filter((t) => !listed.has(t.id) && (t.state === "queued" || t.state === "running" || t.state === "waiting")).map((t) => lost(t, now));
   }
 
   /** One upward notification: the row it carries replaces the mirrored one, or drops it when it ended or closed. */

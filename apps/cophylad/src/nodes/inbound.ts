@@ -572,7 +572,9 @@ export class Inbound {
       const transfers = own(p.transfers ?? [], (t) => ({ node: t.to.node }));
       const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) + (p.transfers?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length - transfers.length;
       if (dropped > 0) this.log.warn("join rows refused: not the joiner's", { node: p.node.id, count: dropped });
-      this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals, transfers });
+      const lost = this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals, transfers }, this.now());
+      if (lost.length > 0) this.log.warn("transfers its machine came back without", { node: p.node.id, ids: lost.map((t) => t.id) });
+      for (const t of lost) this.deps.bus.emit("transfer.state", t);
       for (const s of sessions) if (s.status !== "ended") this.deps.bus.emit("session.state", s);
       for (const t of terminals) if (t.status === "running") this.deps.bus.emit("terminal.state", t);
       for (const t of transfers) this.deps.bus.emit("transfer.state", t);
