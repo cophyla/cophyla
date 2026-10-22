@@ -67,8 +67,8 @@ export interface GroupTeams {
   teammateOf(owner: string): { id: string; user: string } | undefined;
   /** A teammate by id: their account and login. */
   teammate(id: string): { owner: string; user: string } | undefined;
-  /** A teammate's agents open to this user now, as their side says. */
-  agents(teammate: string): Promise<TeamAgent[]>;
+  /** A teammate's agents open to this user now, as their side says; `fresh` asks again rather than take what was kept. */
+  agents(teammate: string, fresh?: boolean): Promise<TeamAgent[]>;
   /** Whether one of this side's agents is open to the teammate with this account now. */
   openTo(session: string, owner: string): boolean;
   /** Sends one entry of this side's log to a side; false when it could not be reached now. */
@@ -500,8 +500,8 @@ export class Groups {
         const teams = this.deps.teams?.();
         const t = teams?.teammate(ref.teammate);
         if (!teams || !t) throw new RpcError("not_found", `no teammate ${ref.teammate}`);
-        const agents = await teams.agents(ref.teammate);
-        const a = agents.find((x) => x.name === ref.name);
+        let a = (await teams.agents(ref.teammate)).find((x) => x.name === ref.name);
+        if (!a) a = (await teams.agents(ref.teammate, true)).find((x) => x.name === ref.name);
         if (!a || !a.session) throw new RpcError("not_found", `${t.user}/${ref.name} is not open to you now`);
         if (g.members.some((m) => m.key === agentKey(a.session!))) continue;
         // every person in a group is a teammate of every other

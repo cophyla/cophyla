@@ -108,6 +108,8 @@ import type { EnvelopeInfo } from "./agentmsg/envelope.ts";
 import { Groups } from "./groups/index.ts";
 import { groupMethods } from "./groups/methods.ts";
 import { SelfLogin } from "./teammates/login.ts";
+import { Teammates } from "./teammates/index.ts";
+import { teammateMethods } from "./teammates/methods.ts";
 import { Transfers } from "./transfers/index.ts";
 import { transferMethods } from "./transfers/methods.ts";
 import { openSource } from "./transfers/source.ts";
@@ -304,6 +306,8 @@ export interface Daemon {
   focus: Focuses;
   /** The group chats. */
   groups: Groups;
+  /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
+  teammates: Teammates;
   views: Views;
   chat: Chat;
   activity: Activity;
@@ -417,6 +421,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let guests: Guests | undefined;
   /** The connections to other users' terminals, built with the terminals; the relay reaches them through the cloud. */
   let connections: Connections | undefined;
+  /** The teammates, built with the groups; the relay reaches them through the cloud as it does connections. */
+  let teammates: Teammates | undefined;
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
   let backup: BackupSync | undefined;
@@ -519,8 +525,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       const invite = { grant: row.id, peer };
       return { psk: pskFromHex(row.invite.secretHash), accept: (sock) => api!.acceptTunnel(sock, { invite }) };
     },
-    // another user's Cophyla on one of this node's connections, or redeeming one's invite
-    acceptConnection: (peer) => connections?.acceptTunnel(peer),
+    // another user's Cophyla on one of this node's connections or teammates, or redeeming one's invite
+    acceptConnection: (peer) => connections?.acceptTunnel(peer) ?? teammates?.acceptTunnel(peer),
   });
   // The vendors' keys: typed in the app, config.toml's, or the environment's, asked at every call.
   const keys = openProviderKeys({ dataDir: p.data, config: config.providers, env, log: log.child("keys") });
@@ -1166,6 +1172,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     connections: () => connections,
     focus: () => focusLive,
     groups: () => groupsLive,
+    teammates: () => (routesHere() ? teammatesLive : undefined),
     files: () => agentFiles,
     asks,
     ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
@@ -1388,9 +1395,49 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     },
     linked: (n) => n === identity.id || forwardHost.linked(n),
     focus: focusLive,
+    teams: () => teammatesLive.forGroups(),
     push: (m) => push.mention(m.group.id, m.group.name, m.from, m.text),
   });
   groupsLive.start();
+  // A machine's platform as paths there are compared: this one's own, another's from its row.
+  const platformOf = (n: string): string => {
+    if (n === identity.id) return process.platform;
+    const p = forwardHost.registryList().find((x) => x.id === n)?.platform;
+    return p === "windows" ? "win32" : p === "macos" ? "darwin" : "linux";
+  };
+  // Teammates: other Cophyla users whose agents reach this user's in the folders shared; kept by the primary.
+  const teammatesLive: Teammates = new Teammates({
+    store,
+    bus,
+    log: log.child("teammates"),
+    gate,
+    routes: routesHere,
+    cloud: {
+      allowed: () => cloud.hostedAllowed("relay"),
+      subject: () => cloud.account,
+      serverUrl: () => config.cloud.url,
+      relayGrant: (peer, o) => cloud.relayGrant(peer, o),
+      revokeRelay: (peer) => cloud.revokeRelay(peer),
+      attest: (aud) => cloud.attest(aud),
+      verifyIdentity: (token, aud) => cloud.verifyIdentity(token, aud),
+    },
+    sessions: knownSessions,
+    names: () => agentMessages.agentNames(),
+    place: (s) => {
+      const w = s.workspace ? workspaces.getAny(s.workspace) : undefined;
+      return w ? { workspace: w.name, path: w.path } : { path: s.cwd };
+    },
+    places: () => workspaces.list().map((w) => ({ node: w.node, path: w.path, name: w.name })),
+    platformOf,
+    deliver: (s, text, info) => deliverAnywhere(s, text, info),
+    focus: focusLive,
+    groups: () => groupsLive,
+    linked: (n) => n === identity.id || forwardHost.linked(n),
+  });
+  teammates = teammatesLive;
+  groupsLive.teammateList = () => teammatesLive.active();
+  teammatesLive.start();
+  const offTeammatesUp = cloud.onUp(() => teammatesLive.linkUp());
   // Connections to other users' terminals, kept by the primary: the agents in two terminals of
   // two users message each other through the relay, and reach nothing else.
   const connectionsLive = new Connections({
@@ -1563,6 +1610,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
     ...connectionMethods({ connections: () => connections }),
     ...groupMethods({ groups: () => (routesHere() ? groupsLive : undefined), focus: () => (routesHere() ? focusLive : undefined) }),
+    ...teammateMethods({ teammates: () => (routesHere() ? teammatesLive : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
   }, forwardHost);
@@ -1828,6 +1876,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     connections: connectionsLive,
     focus: focusLive,
     groups: groupsLive,
+    teammates: teammatesLive,
     views,
     chat,
     activity,
@@ -1878,6 +1927,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       offConnectionsUp();
       connectionsLive.stop();
       offSelfLogin();
+      offTeammatesUp();
+      teammatesLive.stop();
       groupsLive.stop();
       focusLive.stop();
       await cloud.stop();

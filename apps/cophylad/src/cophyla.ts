@@ -14,6 +14,8 @@
 //   cophyla connections [list|invite|accept|end]
 //                                             the user's agents connected to other
 //                                             people's (`connection.*`, on the primary)
+//   cophyla teammates [list|invite|accept|end] the user's teammates, and what is shared
+//                                             with each (`teammate.*`, on the primary)
 //   cophyla invite | join | leave             as `cophylad invite | join | leave`
 //   cophyla agents uninstall                  takes the agents' MCP server out of every
 //                                             profile, with no daemon running (the
@@ -92,6 +94,76 @@ async function connectionsCommand(argv: string[]): Promise<number> {
   }
 }
 
+function teammateLine(t: ClientResult<"teammate.list">["teammates"][number]): string {
+  const who = t.state === "pending" ? `(a code${t.expiresAt !== undefined ? `, until ${new Date(t.expiresAt).toLocaleString()}` : ""})` : (t.user ?? "?");
+  const share = `${t.share.mode === "include" ? "shares" : "shares all but"} ${t.share.folders.map((f) => f.path).join(", ") || "nothing"}, ${t.share.open === "always" ? "always open" : "opened by hand"}`;
+  const theirs = t.theirs ? `; theirs: ${t.theirs.workspaces.join(", ") || "nothing"} (${t.theirs.open === "always" ? "always open" : "opened by hand"})` : "";
+  return [t.id, t.state, who, share + theirs].join("\t");
+}
+
+/**
+ * `cophyla teammates [list] | invite (--folder P)… [--exclude] [--chosen] | accept (--folder P)… [--exclude] [--chosen] [--file F|-] | end <id>`:
+ * the user's teammates. A folder is a path on this machine, shared with every folder under it;
+ * --exclude shares every workspace but those named; --chosen opens agents by hand only. Asked
+ * of the primary, which keeps them; a code is read from F or stdin, never the command line.
+ */
+async function teammatesCommand(argv: string[]): Promise<number> {
+  let verb = "";
+  try {
+    const { values, positionals } = parseArgs({
+      args: argv,
+      options: { home: { type: "string" }, port: { type: "string" }, folder: { type: "string", multiple: true }, node: { type: "string" }, exclude: { type: "boolean" }, chosen: { type: "boolean" }, file: { type: "string" } },
+      allowPositionals: true,
+      strict: true,
+    });
+    verb = positionals[0] ?? "list";
+    const where = { ...(values.home !== undefined ? { home: values.home } : {}), ...(values.port !== undefined ? { port: values.port } : {}) };
+    const how = { name: "cophyla" };
+    const share = async () => {
+      let node = values.node;
+      if (!node) await call(where, "node.list", {}, { ...how, local: true, onHello: (h) => (node = h.node) });
+      if (!node) throw new Error("this machine's node is not known: give it with --node");
+      const folders = (values.folder ?? []).map((f) => ({ node, path: resolve(f) }));
+      if (!values.exclude && folders.length === 0) throw new Error(`name what to share: cophyla teammates ${verb} --folder <path> (or --exclude to share every workspace but those named)`);
+      return { mode: values.exclude ? ("exclude" as const) : ("include" as const), folders, open: values.chosen ? ("chosen" as const) : ("always" as const) };
+    };
+    switch (verb) {
+      case "list": {
+        const r = await call(where, "teammate.list", {}, how);
+        if (r.teammates.length === 0) process.stdout.write("You have no teammates yet.\n");
+        else process.stdout.write(r.teammates.map(teammateLine).join("\n") + "\n");
+        return 0;
+      }
+      case "invite": {
+        const r = await call(where, "teammate.invite", { share: await share() }, how);
+        process.stderr.write(`A teammate's code, good once until ${new Date(r.invite.expiresAt).toLocaleString()}. Give it to the other person:\n`);
+        process.stdout.write(r.invite.code + "\n");
+        return 0;
+      }
+      case "accept": {
+        const s = await share();
+        const code = await readInvite(values.file);
+        const r = await call(where, "teammate.accept", { code: code.trim(), share: s }, how);
+        process.stdout.write(`${r.teammate.user ?? "They"} and you are teammates (${r.teammate.id}).\n`);
+        return 0;
+      }
+      case "end": {
+        const id = positionals[1];
+        if (!id) throw new Error("give the teammate: cophyla teammates end <tm_…>");
+        await call(where, "teammate.end", { id }, how);
+        process.stdout.write(`${id} has ended at both sides.\n`);
+        return 0;
+      }
+      default:
+        process.stderr.write(`cophyla teammates: no command ${verb}\n\n${HELP}`);
+        return 2;
+    }
+  } catch (e) {
+    process.stderr.write(`cophyla teammates${verb ? ` ${verb}` : ""}: ${e instanceof Error ? e.message : String(e)}\n`);
+    return 1;
+  }
+}
+
 /** `cophyla agents uninstall [--home H]`. */
 async function agentsCommand(argv: string[]): Promise<number> {
   const { values, positionals } = parseArgs({ args: argv, allowPositionals: true, options: { home: { type: "string" } }, strict: true });
@@ -128,6 +200,17 @@ const HELP = `cophyla: the Cophyla commands, for the daemon running on this mach
                  from F or stdin
   cophyla connections end <con_…>
                  end a connection at both ends, or cancel a code
+
+  cophyla teammates [list]
+                 your teammates, what you share with each and what they share with you
+  cophyla teammates invite --folder <path>… [--exclude] [--chosen]
+                 a code another Cophyla user enters to become your teammate, good for a
+                 day; the folders shared (each with every folder under it), or with
+                 --exclude every workspace but those; --chosen opens agents by hand only
+  cophyla teammates accept --folder <path>… [--exclude] [--chosen] [--file F|-]
+                 become the teammate of the person whose code is read from F or stdin
+  cophyla teammates end <tm_…>
+                 end a teammate at both sides, or cancel a code
 
   cophyla invite | join | leave
                  as cophylad invite | join | leave
@@ -168,6 +251,7 @@ export async function main(argv: string[]): Promise<number> {
   if ((COMMANDS as readonly string[]).includes(group)) return runCommand(group as Command, rest, { local: true, prog: "cophyla" });
   if (group === "agents") return agentsCommand(rest);
   if (group === "connections") return connectionsCommand(rest);
+  if (group === "teammates") return teammatesCommand(rest);
   if (group !== "node") {
     process.stderr.write(`cophyla: no command ${group}\n\n${HELP}`);
     return 2;

@@ -71,7 +71,7 @@ export function terminalQr(text: string): string {
  * One request to the daemon on loopback, after hello; rejects with the daemon's message.
  * `local`: served by this machine's daemon even while it is a node of a cluster.
  */
-export async function call<N extends ClientRequestName>(opts: { home?: string; port?: string }, method: N, params: unknown, how: { local?: boolean; name?: string } = {}): Promise<ClientResult<N>> {
+export async function call<N extends ClientRequestName>(opts: { home?: string; port?: string }, method: N, params: unknown, how: { local?: boolean; name?: string; onHello?: (hello: { node: string }) => void } = {}): Promise<ClientResult<N>> {
   const p = paths(resolveHome(opts.home));
   const config = loadConfig(p, { writeDefault: false });
   const port = opts.port !== undefined ? Number(opts.port) : config.api.port;
@@ -103,7 +103,8 @@ export async function call<N extends ClientRequestName>(opts: { home?: string; p
       ws.send(JSON.stringify(request(id, m, prm)));
     });
   try {
-    await send("hello", { token, kind: "ui", name: how.name ?? "cophylad cli", audio: { in: false, out: false }, ...(how.local ? { local: true } : {}) });
+    const hello = (await send("hello", { token, kind: "ui", name: how.name ?? "cophylad cli", audio: { in: false, out: false }, ...(how.local ? { local: true } : {}) })) as { node: string };
+    how.onHello?.(hello);
     return (await send(method, params)) as ClientResult<N>;
   } finally {
     ws.close();
@@ -131,7 +132,7 @@ export async function readInvite(file: string | undefined, questions?: Questions
     for await (const chunk of process.stdin) {
       text += String(chunk);
       // The invite is one line: the first line that holds one is enough.
-      if (/cophyla(-invite:|-connect:|:\/\/invite)\S+\s*\n/.test(text)) break;
+      if (/cophyla(-invite:|-connect:|-team:|:\/\/invite)\S+\s*\n/.test(text)) break;
     }
   }
   if (!text.trim()) throw new Error(`no invite ${file !== undefined && file !== "-" ? `in ${file}` : "on stdin"}: give it the line \`cophylad invite\` printed on the primary`);

@@ -324,7 +324,7 @@ describe("a group chat", () => {
       r.set(web, { status: "idle" });
       await waitFor(() => r.delivered.some((d) => d.session === web.id));
       expect(r.delivered.find((d) => d.session === web.id)!.text).toContain("tagged you in #release");
-      expect(r.groups.list()[0]!.members.find((m) => m.key === `agent:${web.id}`)!.gone).toBeUndefined();
+      expect(r.groups.list()[0]!.members.find((m) => m.key === `agent:${web.id}`)).not.toHaveProperty("gone");
       void g;
     } finally {
       r.stop();
