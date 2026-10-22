@@ -33,7 +33,7 @@ import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
 import { GroupStore } from "./store.ts";
 import type { GroupRow, MemberRow, PostRow } from "./store.ts";
-import { preview, reaches, readTags, writeTags } from "./text.ts";
+import { keepMarkers, preview, reaches, readTags, writeTags } from "./text.ts";
 import type { HandleTable } from "./text.ts";
 
 /** How many posts a group keeps. */
@@ -59,6 +59,15 @@ const SWEEP_MS = 30_000;
 const CATCH_UP_MS = 10 * 60_000;
 const NAME_CHARS = 80;
 const PURPOSE_CHARS = 300;
+/** What one teammate's side may send in a minute as it happens (catching up is apart), and how many groups it may hand this side. */
+const TEAM_ENTRIES_MINUTE = 240;
+const TEAM_GROUPS_MAX = 50;
+/** How far ahead of this side's clock another side's time is taken, so a time from the future cannot pin a row. */
+const CLOCK_SKEW_MS = 60_000;
+/** The most tags one post carries. */
+const MENTIONS_MAX = 100;
+/** One push to the phones per group in this long. */
+const PUSH_GAP_MS = 20_000;
 
 const HARNESS_WORDS: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "ACP" };
 
@@ -131,11 +140,13 @@ export class Groups {
   private groupRecent = new Map<string, number[]>();
   /** Gathers waiting to go, per group and member. */
   private gathering = new Map<string, ReturnType<typeof setTimeout>>();
-  /** Sessions as last seen, for their ends and returns. */
-  private lastStatus = new Map<string, string>();
   private syncing = new Set<string>();
   /** When each group last asked the other sides for what it missed. */
   private lastCatchUp = new Map<string, number>();
+  /** The entries each other side sent in the last minute, by account. */
+  private inbound = new Map<string, number[]>();
+  /** When each group last pushed a tag of the user to the phones. */
+  private pushedAt = new Map<string, number>();
 
   constructor(deps: GroupsDeps) {
     this.deps = deps;
@@ -233,6 +244,13 @@ export class Groups {
       add(this.handle(m, names), m.key);
       if (m.kind === "agent" && this.mine(m)) for (const f of names.get(m.session!)?.forms ?? []) add(f, m.key);
       if (m.kind === "agent" && !this.mine(m) && m.name) add(`${m.user}/${m.name}`, m.key);
+    }
+    // a gone agent keeps the name it had, which a live one may answer to now: the live one takes it
+    const gone = new Set(g.members.filter((m) => m.kind === "agent" && (this.mine(m) ? !names.has(m.session!) : m.gone)).map((m) => m.key));
+    for (const [form, keys] of table) {
+      if (keys.length < 2) continue;
+      const live = keys.filter((k) => !gone.has(k));
+      if (live.length === 1) table.set(form, live);
     }
     return table;
   }
@@ -489,6 +507,8 @@ export class Groups {
         const s = this.session(ref.session);
         if (!s || s.status === "ended") throw new RpcError("not_found", `no live agent session ${ref.session}`);
         if (s.role === "assistant") throw new RpcError("invalid", "the chat's own session is no member of a group");
+        // only one the agents' directory lists: never a session on a folder lent here by another person
+        if (!this.deps.names().has(s.id)) throw new RpcError("denied", `${ref.session} is not one of the agents your agents can reach`);
         if (g.members.some((m) => m.key === agentKey(s.id))) continue;
         const place = this.deps.place(s);
         const m: MemberRow = {
@@ -573,8 +593,9 @@ export class Groups {
     const maker = g.byOwner === me.owner || g.byOwner === "me";
     if (!this.mine(m) && !maker) throw new RpcError("denied", "only the group's maker takes another person's agent out");
     if (m.kind === "person" && this.mine(m)) throw new RpcError("invalid", "leave the group with Delete instead");
-    this.drop(g, key);
+    // logged before it is dropped, so a side taken out with it is told too
     this.logEntry(g, { kind: "member.remove", member: key, why: `taken out by ${me.user}` }, this.now());
+    this.drop(g, key);
     this.emit(g);
     return this.client(g);
   }
@@ -622,11 +643,20 @@ export class Groups {
     this.routing();
     const g = this.must(id);
     const me = this.deps.me();
+    let left: { seq: number; at: number; person: string; owners: string[] } | undefined;
     if (Object.keys(g.sides).length > 0) {
-      this.logEntry(g, { kind: "leave", person: personKey(me.owner) }, this.now());
+      const at = this.now();
+      const person = personKey(me.owner);
+      this.logEntry(g, { kind: "leave", person }, at);
+      left = { seq: g.seq, at, person, owners: Object.keys(g.sides) };
     }
     for (const m of g.members) this.cancelGather(g.id, m.key);
     this.rows.delete(g.id);
+    // what is left of it: the leave, for a side that was away when it went
+    if (left) this.rows.putLeft(g.id, left);
+    this.lastCatchUp.delete(g.id);
+    this.groupRecent.delete(g.id);
+    this.pushedAt.delete(g.id);
     this.deps.bus.emit("group.state", { ...this.client(g), left: true });
     this.log.info("group deleted here", { id });
   }
@@ -673,12 +703,13 @@ export class Groups {
       at: now,
     };
     g.lastAt = now;
-    // the writer has read up to its own post
+    // the writer has read up to its own post only when it had read all before it: one that answers
+    // a notice without reading keeps the posts it did not read, and the tags in them
     if (from.kind !== "cophyla") {
       const w = g.members.find((m) => m.key === from.key);
-      if (w) {
+      if (w && w.readTo === g.n - 1) {
         w.readTo = g.n;
-        if (w.noticeAt !== undefined) delete w.noticeAt;
+        if (w.noticeAt !== undefined && w.noticeAt <= w.readTo) delete w.noticeAt;
       }
     }
     this.rows.put(g);
@@ -727,7 +758,12 @@ export class Groups {
       if (!this.mine(m)) continue;
       const tagged = this.tags(g, p, m);
       if (m.kind === "person") {
-        if (tagged && p.from.kind !== "cophyla") this.deps.push?.({ group: g, post: p, from: this.writer(g, p), text: preview(writeTags(p.text, this.handleOf(g)), 200) });
+        // one push per group in a while: the phone shows the latest, and a busy group is not a buzzing phone
+        const now = this.now();
+        if (tagged && p.from.kind !== "cophyla" && now - (this.pushedAt.get(g.id) ?? 0) >= PUSH_GAP_MS) {
+          this.pushedAt.set(g.id, now);
+          this.deps.push?.({ group: g, post: p, from: this.writer(g, p), text: preview(writeTags(p.text, this.handleOf(g)), 200) });
+        }
         continue;
       }
       if (p.from.kind !== "cophyla" && p.from.key === m.key) continue;
@@ -779,12 +815,35 @@ export class Groups {
     if (reminder) m.reminded = true;
     else delete m.reminded;
     this.rows.put(g);
-    await this.send(g, s, text);
+    await this.send(g, s, text, this.externalOf(g, [p]));
   }
 
-  /** Delivers cophyla's own words about a group into one of this side's agents, as the system. */
-  private async send(g: GroupRow, s: Session, text: string): Promise<void> {
-    const info: EnvelopeInfo = { messageId: newId("agentMessage"), group: { id: g.id, name: g.name } };
+  /** The other people whose words these posts are, by login: what a notice carrying them is marked external for. */
+  private externalOf(g: GroupRow, posts: PostRow[]): string[] {
+    const out = new Set<string>();
+    for (const p of posts) {
+      if (p.from.kind === "cophyla") continue;
+      const from = p.from;
+      const w = g.members.find((m) => m.key === from.key);
+      if (w ? !this.mine(w) : from.kind === "person" ? from.key !== personKey(this.deps.me().owner) : this.session(from.session) === undefined) out.add(w?.user ?? from.user ?? "someone");
+    }
+    return [...out];
+  }
+
+  /**
+   * Delivers cophyla's own words about a group into one of this side's agents, as the system,
+   * marked external with the other people whose words it carries. `hold`: one in focus gets it
+   * when its focus ends, rather than not at all.
+   */
+  private async send(g: GroupRow, s: Session, text: string, external: string[] = [], hold = false): Promise<void> {
+    const info: EnvelopeInfo = { messageId: newId("agentMessage"), group: { id: g.id, name: g.name, ...(external.length > 0 ? { external: external.slice(0, 16) } : {}) } };
+    if (hold && this.deps.focus.holding(s.id)) {
+      try {
+        if (this.deps.focus.hold(s, text, info, `#${g.name}`)) return;
+      } catch {
+        return; // it holds all it may: the group's posts wait for read_group
+      }
+    }
     try {
       await this.deps.gate.run({ principal: { kind: "system" }, action: "group.deliver", target: s.id, args: { group: g.id, name: g.name, text: cap(text, 2000), id: info.messageId } }, () => this.deps.deliver(s, text, info));
     } catch (e) {
@@ -799,12 +858,14 @@ export class Groups {
     if (!g || !m) return;
     const s = this.session(m.session);
     if (!s || s.status === "ended" || !this.deps.linked(s.node)) return;
-    if (this.deps.focus.noteGroup(s.id, g, "post")) return;
     const names = this.deps.names();
     const others = g.members.filter((x) => x.key !== key).map((x) => `@${this.handle(x, names)}${x.kind === "person" ? (this.mine(x) ? " (your user)" : " (a person)") : ""}`);
     const told = (m.notify ?? g.notify) === "all" ? "You are told of every post, gathered when your turn is over." : "You are told only when someone tags you.";
     const text = `${m.addedBy === "you" ? "Your user" : m.addedBy} put you in the group chat #${g.name}${g.purpose ? `: ${g.purpose}` : ""}. You are @${this.handle(m, names)} there; with you: ${others.join(", ") || "no one yet"}. ${told} read_group shows it, post_group posts in it.`;
-    await this.send(g, s, text);
+    // made or filled by another person: their words (the purpose among them) are information, not instructions
+    const me = this.deps.me();
+    const external = [...new Set([...(this.mine({ owner: g.byOwner }) ? [] : [g.by]), ...(m.addedBy !== me.user && m.addedBy !== "you" ? [m.addedBy] : [])])];
+    await this.send(g, s, text, external, true);
   }
 
   // --- gathering, for an agent told of every post ------------------------------------------------------------
@@ -835,7 +896,8 @@ export class Groups {
     if (!g || !m || m.kind !== "agent" || (m.notify ?? g.notify) !== "all") return;
     const s = this.session(m.session);
     if (!s || s.status === "ended" || !this.deps.linked(s.node)) return;
-    if (this.deps.focus.get(s.id)) return;
+    // never into a turn: a prompt that came after the timer was set gathers at its end instead
+    if (this.deps.focus.holding(s.id) || !plainIdle(s)) return;
     const posts = this.rows.after(g.id, m.readTo).filter((p) => p.from.kind === "cophyla" || p.from.key !== m.key);
     if (posts.length === 0) return;
     const shown = posts.slice(-GATHER_MAX);
@@ -855,7 +917,7 @@ export class Groups {
     this.rows.put(g);
     this.logEntry(g, { kind: "read", member: m.key, post: posts[posts.length - 1]!.id }, this.now());
     this.emit(g);
-    await this.send(g, s, text);
+    await this.send(g, s, text, this.externalOf(g, posts));
   }
 
   // --- reading and posting, for an agent -----------------------------------------------------------------------
@@ -1023,6 +1085,12 @@ export class Groups {
         m.readTo = lastShown.n;
         if (m.noticeAt !== undefined && m.noticeAt <= m.readTo) delete m.noticeAt;
         delete m.reminded;
+        // a tag past what was shown: it was told there is more, and is reminded of it if it stays unread
+        const later = left > 0 ? unread.slice(posts.length).filter((p) => this.tags(g, p, m)).pop() : undefined;
+        if (later && m.noticeAt === undefined) {
+          m.noticeAt = later.n;
+          m.noticeTime = now;
+        }
         this.rows.put(g);
         this.logEntry(g, { kind: "read", member: m.key, post: lastShown.id }, now);
         this.emit(g);
@@ -1102,9 +1170,6 @@ export class Groups {
   /** A session's row: one that ended is gone from its groups, one back is there again; at its turn's end, what it was gathered goes. */
   private onSession(s: Session): void {
     if (!this.deps.routes()) return;
-    const before = this.lastStatus.get(s.id);
-    this.lastStatus.set(s.id, s.status);
-    if (this.lastStatus.size > 5000) this.lastStatus.delete(this.lastStatus.keys().next().value!);
     const key = agentKey(s.id);
     for (const g of this.all()) {
       const m = g.members.find((x) => x.key === key);
@@ -1117,7 +1182,8 @@ export class Groups {
         this.rows.put(g);
         this.logEntry(g, { kind: "member.state", member: key, gone: ended }, m.at);
         this.emit(g);
-        if (!ended && before === "ended") void this.backAgain(g.id, key);
+        // gone, and back: a resume, or its machine's link come back (this holds across a restart of this daemon)
+        if (!ended) void this.backAgain(g.id, key);
       }
       if (!ended && plainIdle(s) && (m.notify ?? g.notify) === "all") this.gatherSoon(g.id, key, 0);
     }
@@ -1130,6 +1196,8 @@ export class Groups {
     if (!g || !m) return;
     const last = this.rows.after(g.id, m.readTo).filter((p) => this.tags(g, p, m)).pop();
     if (!last) return;
+    // told of it already, before it went: a resumed conversation still holds that notice
+    if (m.noticeAt !== undefined && m.noticeAt >= last.n) return;
     delete m.noticeAt;
     this.rows.put(g);
     await this.notice(g.id, key, last.n, false);
@@ -1157,6 +1225,10 @@ export class Groups {
   async sweep(): Promise<void> {
     if (!this.deps.routes()) return;
     const now = this.now();
+    // the limits' memory of agents and sides that went quiet
+    for (const [k, rs] of [...this.recent]) if (!rs.some((r) => now - r.at < DUPLICATE_MS)) this.recent.delete(k);
+    for (const [k, ts] of [...this.groupRecent]) if (!ts.some((t) => now - t < 60_000)) this.groupRecent.delete(k);
+    for (const [k, ts] of [...this.inbound]) if (!ts.some((t) => now - t < 60_000)) this.inbound.delete(k);
     for (const g of this.all()) {
       for (const m of g.members) {
         if (m.kind !== "agent" || !this.mine(m) || m.noticeAt === undefined || m.reminded) continue;
@@ -1277,8 +1349,18 @@ export class Groups {
           const taken = cur?.sides[owner]?.taken ?? 0;
           const r = await teams.sync(side.teammate, id, taken).catch(() => undefined);
           if (!r || r.entries.length === 0) break;
-          for (const e of r.entries) await this.take(owner, id, e.seq, e.entry, e.at, true);
-          if (!r.more) break;
+          let stopped = false;
+          for (const e of r.entries) {
+            try {
+              await this.take(owner, id, e.seq, e.entry, e.at, true);
+            } catch (err) {
+              // a gap or an entry refused: this side is left for the next catch-up, the others go on
+              this.log.info("a side's entries stopped short", { group: id, owner, seq: e.seq, error: message(err) });
+              stopped = true;
+              break;
+            }
+          }
+          if (stopped || !r.more || !this.get(id)?.sides[owner]) break;
         }
       }
     } finally {
@@ -1289,8 +1371,31 @@ export class Groups {
   /** This side's log after `after`, for a side catching up: refused to a side not in the group. */
   entriesFor(owner: string, id: string, after: number): { entries: { seq: number; entry: GroupEntry; at: number }[]; more: boolean } {
     const g = this.get(id);
+    if (!g) {
+      // a group this side left: the leave is all that is left of its log
+      const left = this.rows.left(id);
+      if (left && left.owners.includes(owner)) return { entries: after < left.seq ? [{ seq: left.seq, entry: { kind: "leave", person: left.person }, at: left.at }] : [], more: false };
+    }
     if (!g || !g.sides[owner]) throw new RpcError("not_found", "no such group with you in it");
     return this.rows.entries(id, after, 200);
+  }
+
+  /** Counts an entry another side sent as it happened; refused past the minute's most, to be asked for later. */
+  private countIn(owner: string): void {
+    const now = this.now();
+    const recent = (this.inbound.get(owner) ?? []).filter((t) => now - t < 60_000);
+    if (recent.length >= TEAM_ENTRIES_MINUTE) throw new RpcError("denied", `${TEAM_ENTRIES_MINUTE} group entries a minute is the most a side takes; the rest are asked for later`);
+    recent.push(now);
+    this.inbound.set(owner, recent);
+  }
+
+  /** Tells a side that still writes to a group this side left that it left, once more. */
+  private resendLeave(owner: string, id: string): void {
+    const left = this.rows.left(id);
+    const teams = this.deps.teams?.();
+    const t = teams?.teammateOf(owner);
+    if (!left || !teams || !t || !left.owners.includes(owner)) return;
+    void teams.send(t.id, id, left.seq, { kind: "leave", person: left.person }, left.at).catch(() => undefined);
   }
 
   /**
@@ -1303,19 +1408,29 @@ export class Groups {
     const teams = this.deps.teams?.();
     const t = teams?.teammateOf(owner);
     if (!teams || !t) throw new RpcError("denied", "you are not this user's teammate");
-    let g = this.get(id);
+    if (entry.kind === "snapshot" && entry.group.id !== id) throw new RpcError("invalid", "a snapshot of another group");
+    // a time from the far future would pin every row it touches
+    at = Math.min(at, this.now() + CLOCK_SKEW_MS);
+    if (!syncing) this.countIn(owner);
+    const g = this.get(id);
     if (!g) {
+      if (this.rows.left(id)) {
+        this.resendLeave(owner, id);
+        throw new RpcError("denied", "this side left that group");
+      }
       if (entry.kind !== "snapshot") {
         if (!syncing) void this.adopt(owner, t.id, id);
         throw new RpcError("conflict", "this side does not hold that group yet");
       }
-      g = this.fromSnapshot(owner, t, entry.group, seq);
+      if (this.all().filter((x) => x.byOwner === owner).length >= TEAM_GROUPS_MAX) throw new RpcError("denied", `a teammate hands this side ${TEAM_GROUPS_MAX} groups at most`);
+      this.fromSnapshot(owner, t, entry.group, seq);
       return;
     }
     const side = g.sides[owner];
     if (!side) throw new RpcError("denied", "you are not in that group");
     if (seq <= side.taken) return;
-    if (seq > side.taken + 1 && entry.kind !== "snapshot") {
+    // a leave is a side's last word: taken even after a gap, since nothing it wrote after it matters
+    if (seq > side.taken + 1 && entry.kind !== "snapshot" && entry.kind !== "leave") {
       if (!syncing) void this.catchUp(id);
       throw new RpcError("conflict", `entry ${seq} came before ${side.taken + 1}`);
     }
@@ -1358,18 +1473,20 @@ export class Groups {
       sides: { [owner]: { teammate: t.id, user: t.user, taken: seq } },
     };
     const refused: string[] = [];
+    // the other sides it reaches: the sender, and any third person this side is a teammate of
+    const teams = this.deps.teams?.();
+    const reach = new Set<string>([owner]);
+    for (const em of s.members) if (em.owner !== me.owner && em.owner !== "me" && em.owner !== owner && teams?.teammateOf(em.owner)) reach.add(em.owner);
     for (const em of s.members) {
+      if (g.members.some((x) => x.key === em.key)) continue;
+      if (!this.trusted(em, owner, [...reach])) {
+        if (em.owner === me.owner && em.kind === "agent") refused.push(em.key);
+        continue;
+      }
+      if (em.kind === "agent" && g.members.filter((x) => x.kind === "agent").length >= AGENTS_MAX) continue;
       const m = this.fromEntryMember(em, g.n);
-      if (m.owner === me.owner && m.kind === "agent" && !this.deps.teams?.()?.openTo(m.session!, owner)) {
-        refused.push(m.key);
-        continue;
-      }
-      if (m.owner !== me.owner && m.owner !== owner && !this.deps.teams?.()?.teammateOf(m.owner)) {
-        // a person this side is no teammate of: not this side's to reach
-        continue;
-      }
       if (m.owner !== me.owner && m.owner !== owner && !g.sides[m.owner]) {
-        const other = this.deps.teams!()!.teammateOf(m.owner)!;
+        const other = teams!.teammateOf(m.owner)!;
         g.sides[m.owner] = { teammate: other.id, user: other.user, taken: 0 };
       }
       g.members.push(m);
@@ -1380,7 +1497,10 @@ export class Groups {
     }
     if (!g.members.some((m) => m.kind === "person" && m.owner === me.owner)) g.members.push({ key: personKey(me.owner), kind: "person", owner: me.owner, user: me.user, readTo: 0, addedBy: s.by, addedAt: now, at: now });
     this.rows.put(g);
-    for (const p of s.posts) this.takePost(g, p, false);
+    for (const p of s.posts) {
+      const ok = this.remotePost(g, owner, p, true);
+      if (ok) this.takePost(g, ok, false);
+    }
     const fresh = this.get(g.id)!;
     // whoever is in it has read what came before them
     for (const m of fresh.members) if (m.owner === me.owner) m.readTo = fresh.n;
@@ -1416,7 +1536,55 @@ export class Groups {
     };
   }
 
-  /** A post written on another side: numbered here as it arrives, kept once by its id. */
+  /**
+   * Whether a member another side tells of may be taken: named by its own key, owned by the
+   * sender, by this side, or by a third person this side is a teammate of; one of this side's own
+   * agents only as a live session open to every other side in `reach`. A side writes its own
+   * part alone, so nothing it says makes a member this side's that this side did not open.
+   */
+  private trusted(em: GroupEntryMember, owner: string, reach: string[]): boolean {
+    const me = this.deps.me();
+    if (em.owner === "me" || em.key !== (em.kind === "person" ? personKey(em.owner) : agentKey(em.session))) return false;
+    const teams = this.deps.teams?.();
+    if (em.owner === me.owner) {
+      if (em.kind === "person") return true;
+      const s = this.session(em.session);
+      return s !== undefined && s.role !== "assistant" && teams !== undefined && reach.every((o) => teams.openTo(em.session, o));
+    }
+    return em.owner === owner || teams?.teammateOf(em.owner) !== undefined;
+  }
+
+  /**
+   * A post another side sent, as this side keeps it, or undefined when it is not that side's to
+   * write. As it happens a side sends only what its own people and agents wrote; a snapshot also
+   * carries what others wrote, but never what this side did. The writer's login is the one this
+   * side knows its side by, and `@everyone` is a person's alone.
+   */
+  private remotePost(g: GroupRow, owner: string, ep: GroupEntryPost, snapshot: boolean): GroupEntryPost | undefined {
+    const me = this.deps.me();
+    if (ep.from.kind === "cophyla" || ep.mentions.length > MENTIONS_MAX) return undefined;
+    const from = ep.from;
+    const writer = g.members.find((m) => m.key === from.key);
+    const sideUser = g.sides[owner]?.user;
+    let user: string;
+    if (from.kind === "person") {
+      const o = from.key.startsWith("person:") ? from.key.slice("person:".length) : "";
+      if (!o || o === "me" || o === me.owner) return undefined;
+      if (o !== owner && (!snapshot || !this.deps.teams?.()?.teammateOf(o))) return undefined;
+      user = o === owner ? (sideUser ?? from.user) : (writer?.user ?? from.user);
+    } else {
+      // never one of this side's own sessions, nor another side's member
+      if (from.key !== agentKey(from.session) || this.session(from.session) !== undefined) return undefined;
+      if (writer && (this.mine(writer) || (!snapshot && writer.owner !== owner))) return undefined;
+      user = writer ? writer.user : snapshot ? from.user : (sideUser ?? from.user);
+    }
+    const mentions = from.kind === "person" ? ep.mentions : ep.mentions.filter((m) => !("all" in m && m.all === "everyone"));
+    // a marker shows a tag only for a member the post tags
+    const tagged = new Set(mentions.flatMap((m) => ("member" in m ? [m.member] : [])));
+    return { ...ep, from: { ...from, user }, text: keepMarkers(ep.text, tagged), mentions };
+  }
+
+  /** A post written on another side, checked by `remotePost`: numbered here as it arrives, kept once by its id. */
   private takePost(g: GroupRow, ep: GroupEntryPost, tell: boolean): PostRow | undefined {
     if (this.rows.byId(g.id, ep.id)) return undefined;
     g.n++;
@@ -1432,9 +1600,10 @@ export class Groups {
       acks: [],
       at: ep.at,
     };
-    g.lastAt = Math.max(g.lastAt ?? 0, ep.at);
+    g.lastAt = Math.max(g.lastAt ?? 0, Math.min(ep.at, this.now() + CLOCK_SKEW_MS));
     this.rows.put(g);
     this.rows.putPost(p);
+    if (g.n % 100 === 0) this.rows.trim(g.id, POSTS_MAX);
     if (ep.replyTo) {
       const r = this.rows.byId(g.id, ep.replyTo);
       if (r && r.expectsReply && !r.answered) {
@@ -1452,20 +1621,33 @@ export class Groups {
     const me = this.deps.me();
     switch (entry.kind) {
       case "snapshot": {
-        // a side handed over the group again: its members and posts not held yet are taken
+        // a side handed over the group again: the members and posts not held yet are taken, never
+        // one of this side's own agents (those come by a `member.add` it can check) nor a new side
+        const reach = Object.keys(g.sides);
         for (const em of entry.group.members) {
           if (g.members.some((m) => m.key === em.key)) continue;
-          if (em.owner === me.owner && em.kind === "agent" && !this.deps.teams?.()?.openTo(em.session, owner)) continue;
+          if (em.owner === me.owner || (em.owner !== owner && !g.sides[em.owner])) continue;
+          if (!this.trusted(em, owner, reach)) continue;
+          if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) continue;
           g.members.push(this.fromEntryMember(em, g.n));
         }
         this.rows.put(g);
-        for (const p of entry.group.posts) this.takePost(g, p, false);
+        for (const p of entry.group.posts) {
+          const ok = this.remotePost(g, owner, p, true);
+          if (ok) this.takePost(g, ok, false);
+        }
         break;
       }
-      case "post":
-        this.takePost(g, entry.post, true);
+      case "post": {
+        const ok = this.remotePost(g, owner, entry.post, false);
+        if (ok) this.takePost(g, ok, true);
+        else this.log.info("a side's post refused: not its own to write", { group: g.id, owner, post: entry.post.id });
         break;
+      }
       case "ack": {
+        // a side gives thumbs up for its own people and agents alone
+        const who = g.members.find((x) => x.key === entry.member);
+        if (!who || who.owner !== owner) break;
         const p = this.rows.byId(g.id, entry.post);
         if (p && !p.acks.includes(entry.member)) {
           p.acks.push(entry.member);
@@ -1485,19 +1667,25 @@ export class Groups {
       }
       case "member.add": {
         const em = entry.member;
+        const third = em.owner !== me.owner && em.owner !== owner && !g.sides[em.owner];
+        const reach = [...Object.keys(g.sides), ...(third ? [em.owner] : [])];
+        const ok = this.trusted(em, owner, reach);
         const existing = g.members.find((m) => m.key === em.key);
         if (existing) {
-          if ((em.kind === "agent" ? (em.at ?? 0) : 0) > existing.at) Object.assign(existing, this.fromEntryMember(em, existing.readTo));
-          this.rows.put(g);
+          // a side changes its own members' rows alone, never this side's
+          if (ok && existing.owner === owner && em.owner === owner && !this.mine(existing) && (em.kind === "agent" ? Math.min(em.at ?? 0, this.now() + CLOCK_SKEW_MS) : 0) > existing.at) {
+            Object.assign(existing, this.fromEntryMember(em, existing.readTo));
+            this.rows.put(g);
+          }
           break;
         }
-        // one of this side's agents, put in by another side: only while it is open to that side
-        if (em.owner === me.owner) {
-          if (em.kind === "agent" && !this.deps.teams?.()?.openTo(em.session, owner)) {
-            this.logEntry(g, { kind: "member.remove", member: em.key, why: `not open to ${g.sides[owner]?.user ?? "them"}` }, this.now());
-            break;
-          }
-        } else if (em.owner !== owner && !g.sides[em.owner]) {
+        if (!ok) {
+          // one of this side's agents, put in by another side, that is not open to everyone in it
+          if (em.owner === me.owner && em.kind === "agent") this.logEntry(g, { kind: "member.remove", member: em.key, why: `not open to ${g.sides[owner]?.user ?? "them"}` }, this.now());
+          break;
+        }
+        if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) break;
+        if (third) {
           const other = this.deps.teams?.()?.teammateOf(em.owner);
           if (!other) break;
           g.sides[em.owner] = { teammate: other.id, user: other.user, taken: 0 };
@@ -1517,8 +1705,9 @@ export class Groups {
         break;
       }
       case "member.remove": {
+        // a side takes out its own; the group's maker, anyone (as the maker may on its own side)
         const m = g.members.find((x) => x.key === entry.member);
-        if (m && (m.owner === owner || g.byOwner === owner || m.owner === me.owner)) this.drop(g, entry.member);
+        if (m && (m.owner === owner || (g.byOwner === owner && g.byOwner !== me.owner))) this.drop(g, entry.member);
         break;
       }
       case "member.state": {
@@ -1554,7 +1743,7 @@ export class Groups {
         break;
       case "leave": {
         const m = g.members.find((x) => x.key === entry.person);
-        if (m && m.owner === owner) this.drop(g, entry.person);
+        if (m && m.owner === owner && entry.person === personKey(owner)) this.drop(g, entry.person);
         break;
       }
     }

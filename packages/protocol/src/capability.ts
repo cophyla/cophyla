@@ -425,8 +425,8 @@ export const capabilityRequests = {
           from: AgentRef.optional(),
           /** The message came from another user's agent, on a connection or from a teammate: who it is from, set by the primary. */
           peer: z.union([ConnectionSender, TeammateSender]).optional(),
-          /** A group chat's notice or gathered posts, from cophyla: the group it is about. */
-          group: z.object({ id: GroupId, name: z.string().min(1).max(80) }).optional(),
+          /** A group chat's notice or gathered posts, from cophyla: the group it is about, and the other people whose words it carries (marked external). */
+          group: z.object({ id: GroupId, name: z.string().min(1).max(80), external: z.array(z.string().min(1).max(64)).max(16).optional() }).optional(),
           messageId: AgentMessageId,
           replyTo: AgentMessageId.optional(),
           mode: AgentMode.optional(),

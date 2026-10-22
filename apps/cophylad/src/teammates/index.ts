@@ -467,7 +467,10 @@ export class Teammates {
     if (!row) throw new RpcError("not_found", `no teammate ${id}`);
     if (row.state === "pending") {
       this.rows.delete(id);
+      // a redemption under way had a relay peer minted for it: it goes too
+      const hold = this.redeeming.get(id);
       this.redeeming.delete(id);
+      if (hold) void this.deps.cloud.revokeRelay(hold.inbound);
       if (row.invite) void this.deps.cloud.revokeRelay(row.invite.peer);
       this.emitEnded(row, reason);
       this.log.info("teammate invite cancelled", { id, reason });
@@ -600,9 +603,12 @@ export class Teammates {
       case "team.send":
         return this.receive(row, parsed.data as { id: string; to: string; text: string; replyTo?: string; from: { name: string; harness?: Session["harness"] }; sentAt: number });
       case "team.notice": {
+        // only about a message this side sent this teammate, once, and in this side's own words
         const n = parsed.data as { about: string; why: string };
         const by = this.sentBy.get(n.about);
-        await this.notify(by?.session, `Your message ${n.about} to ${row.peer.user} was not delivered: ${n.why}.`, n.about);
+        if (!by || by.teammate !== row.id) return {};
+        this.sentBy.delete(n.about);
+        await this.notify(by.session, `Your message ${n.about} to ${row.peer.user} was not delivered: their side could not hand it over.`, n.about);
         return {};
       }
       case "team.end": {
@@ -865,6 +871,7 @@ export class Teammates {
     if (!seen) this.seen.set(row.id, (seen = new Set()));
     if (seen.has(p.id)) return { status: "sent" };
     const target = this.target(row, p.to, p.replyTo);
+    const seenIt = seen;
     if (!target) throw new RpcError("not_found", `no agent called ${p.to} is open to you`);
     const remote = `R:${row.id}:${p.from.name}`;
     const local = `L:${row.id}:${target.id}`;
@@ -881,14 +888,24 @@ export class Teammates {
     this.count(`in:${row.id}`);
     day.in++;
     const info: EnvelopeInfo = { peer: { teammate: row.id, user: row.peer!.user, name: p.from.name, ...(p.from.harness ? { harness: p.from.harness } : {}) }, messageId: p.id, ...(p.replyTo ? { replyTo: p.replyTo } : {}) };
-    const status = await this.deps.gate.run(
-      { principal: { kind: "system" }, action: "teammate.deliver", target: target.id, args: { teammate: row.id, from: `${row.peer!.user}/${p.from.name}`, text: cap(p.text), id: p.id } },
-      async () => {
-        if (this.deps.focus.hold(target, p.text, info, `${row.peer!.user}/${p.from.name}`)) return { status: "focus" as const, focus: this.deps.focus.get(target.id)! };
-        const r = await this.deps.deliver(target, p.text, info);
-        return { status: r.status === "held" ? ("held" as const) : ("sent" as const) };
-      },
-    );
+    let status: { status: "sent" | "held" | "focus"; focus?: Focus };
+    try {
+      status = await this.deps.gate.run(
+        { principal: { kind: "system" }, action: "teammate.deliver", target: target.id, args: { teammate: row.id, from: `${row.peer!.user}/${p.from.name}`, text: cap(p.text), id: p.id } },
+        async () => {
+          if (this.deps.focus.hold(target, p.text, info, `${row.peer!.user}/${p.from.name}`)) {
+            const f = this.deps.focus.get(target.id);
+            return f ? { status: "focus" as const, focus: f } : { status: "sent" as const };
+          }
+          const r = await this.deps.deliver(target, p.text, info);
+          return { status: r.status === "held" ? ("held" as const) : ("sent" as const) };
+        },
+      );
+    } catch (e) {
+      // not delivered: the sender may send it again, and this side takes it then
+      seenIt.delete(p.id);
+      throw e;
+    }
     this.update2(row.id, (x) => {
       x.received++;
       x.lastAt = this.now();
@@ -1036,7 +1053,11 @@ export class Teammates {
   async sweep(): Promise<void> {
     if (!this.deps.routes()) return;
     const now = this.now();
-    for (const [id, hold] of [...this.redeeming]) if (now - hold.at > REDEEM_MS) this.redeeming.delete(id);
+    for (const [id, hold] of [...this.redeeming]) {
+      if (now - hold.at <= REDEEM_MS) continue;
+      this.redeeming.delete(id);
+      void this.deps.cloud.revokeRelay(hold.inbound);
+    }
     for (const row of this.rows.list()) {
       if (row.state === "pending") {
         if ((row.expiresAt ?? 0) <= now && !this.redeeming.has(row.id)) await this.end(row.id, "its code ran out").catch(() => undefined);

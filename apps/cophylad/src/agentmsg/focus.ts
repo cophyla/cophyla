@@ -48,6 +48,8 @@ export interface FocusRow {
   held: HeldMessage[];
   /** Per group, what came meanwhile: tags of the agent and posts, by the group's name. */
   groups: Record<string, { name: string; tags: number; posts: number }>;
+  /** Focus has ended and what was held is being handed over: what comes meanwhile queues behind it. */
+  draining?: boolean;
 }
 
 /** Why focus ended, in the words the agent is told. */
@@ -137,8 +139,15 @@ export class Focuses {
   get(session: string): Focus | undefined {
     if (!this.deps.routes()) return undefined;
     const r = this.row(session);
-    if (!r || r.until <= this.now()) return undefined;
+    if (!r || r.draining || r.until <= this.now()) return undefined;
     return { since: r.since, until: r.until, reason: r.reason };
+  }
+
+  /** Whether what comes for an agent waits here now: it is in focus, or what was held for it is still being handed over. */
+  holding(session: string): boolean {
+    if (!this.deps.routes()) return false;
+    const r = this.row(session);
+    return r !== undefined && (r.draining === true || r.until > this.now());
   }
 
   /** Every agent in focus now. */
@@ -146,7 +155,7 @@ export class Focuses {
     if (!this.deps.routes()) return [];
     const now = this.now();
     return this.rows()
-      .filter((r) => r.until > now)
+      .filter((r) => !r.draining && r.until > now)
       .map((r) => ({ session: r.session, focus: { since: r.since, until: r.until, reason: r.reason } }));
   }
 
@@ -159,6 +168,7 @@ export class Focuses {
     if (!why) throw new RpcError("invalid", "focus needs reason: one line on the work you are on, which the others are shown");
     const now = this.now();
     const prev = this.row(s.id);
+    if (prev?.draining) throw new RpcError("conflict", "your last focus is still handing over what came meanwhile; take focus again in a moment");
     const row: FocusRow = {
       session: s.id,
       since: prev?.since ?? now,
@@ -180,19 +190,23 @@ export class Focuses {
    */
   async end(session: string, why: FocusEnd): Promise<boolean> {
     const row = this.row(session);
-    if (!row || this.ending.has(session)) return false;
+    if (!row || row.draining || this.ending.has(session)) return false;
     this.ending.add(session);
     try {
-      this.deps.store.kv.delete(FOCUS_KV_NS, session);
-      this.deps.bus.emit("focus.state", { session });
-      this.log.info("an agent's focus ended", { session, why, held: row.held.length });
       const s = this.deps.sessions().find((x) => x.id === session);
       const live = s !== undefined && s.status !== "ended" && this.deps.linked(s.node);
+      this.log.info("an agent's focus ended", { session, why, held: row.held.length });
       if (!live) {
+        this.deps.store.kv.delete(FOCUS_KV_NS, session);
+        this.deps.bus.emit("focus.state", { session });
         for (const h of row.held) await this.dropped(h, session);
         this.deps.ended?.(session, false);
         return true;
       }
+      // out of focus from here, but what comes now queues behind what was held, so nothing overtakes it
+      row.draining = true;
+      this.put(row);
+      this.deps.bus.emit("focus.state", { session });
       const text = catchUp(row, why);
       if (text) {
         try {
@@ -202,7 +216,11 @@ export class Focuses {
         }
       }
       this.deps.ended?.(session, text !== undefined);
-      for (const h of row.held) {
+      for (;;) {
+        const cur = this.row(session);
+        const h = cur?.held.shift();
+        if (!cur || !h) break;
+        this.put(cur);
         try {
           await this.deps.deliver(s, h.text, h.info);
         } catch (e) {
@@ -210,10 +228,19 @@ export class Focuses {
           await this.dropped(h, session, e instanceof Error ? e.message : String(e));
         }
       }
+      // nothing waits between the last look and this: what comes after goes straight in
+      if (this.row(session)?.draining) this.deps.store.kv.delete(FOCUS_KV_NS, session);
       return true;
     } finally {
       this.ending.delete(session);
     }
+  }
+
+  /** Ends `session`'s focus without waiting for what was held to be handed over: for a tool or a request that must answer now. */
+  release(session: string, why: FocusEnd): boolean {
+    if (!this.holding(session) || this.row(session)?.draining) return false;
+    void this.end(session, why).catch((e: unknown) => this.log.warn("an agent's focus did not end cleanly", { session, error: e instanceof Error ? e.message : String(e) }));
+    return true;
   }
 
   /** Tells the agent that sent a held message, when it is one of the user's own, that it never arrived. */
@@ -237,8 +264,8 @@ export class Focuses {
   hold(s: Session, text: string, info: EnvelopeInfo, label: string, sender?: string): boolean {
     if (!this.deps.routes()) return false;
     const row = this.row(s.id);
-    if (!row || row.until <= this.now()) return false;
-    if (row.held.length >= HELD_MAX) throw new RpcError("unavailable", `it is in focus until ${clockTime(row.until)} and already holds ${HELD_MAX} messages; not sent`);
+    if (!row || (!row.draining && row.until <= this.now())) return false;
+    if (row.held.length >= (row.draining ? HELD_MAX * 2 : HELD_MAX)) throw new RpcError("unavailable", row.draining ? "it is still being handed what came while it was in focus; send again in a minute" : `it is in focus until ${clockTime(row.until)} and already holds ${HELD_MAX} messages; not sent`);
     row.held.push({ text, info, at: this.now(), label, ...(sender ? { sender } : {}) });
     this.put(row);
     this.log.info("a message held for an agent in focus", { session: s.id, id: info.messageId, held: row.held.length });
@@ -249,7 +276,7 @@ export class Focuses {
   noteGroup(session: string, group: { id: string; name: string }, kind: "tag" | "post"): boolean {
     if (!this.deps.routes()) return false;
     const row = this.row(session);
-    if (!row || row.until <= this.now()) return false;
+    if (!row || row.draining || row.until <= this.now()) return false;
     const g = (row.groups[group.id] ??= { name: group.name, tags: 0, posts: 0 });
     g.name = group.name;
     if (kind === "tag") g.tags++;
@@ -263,17 +290,28 @@ export class Focuses {
   private onSession(s: Session): void {
     if (!this.deps.routes()) return;
     const row = this.row(s.id);
-    if (!row) return;
-    if (s.status === "ended") void this.end(s.id, "ended");
-    else if (plainIdle(s)) void this.end(s.id, "idle");
+    if (!row || row.draining) return;
+    // a machine whose link dropped lists its sessions as ended: focus waits for it to come back, or for its time
+    if (s.status === "ended") {
+      if (this.deps.linked(s.node)) void this.end(s.id, "ended");
+    } else if (plainIdle(s)) void this.end(s.id, "idle");
   }
 
-  /** Ends what ran out of time, and what belongs to a session gone from every list. */
+  /** Ends what ran out of time and what belongs to a session that ended; hands over again what a restart cut short. */
   async sweep(): Promise<void> {
     if (!this.deps.routes()) return;
     const now = this.now();
     for (const row of this.rows()) {
+      if (row.draining) {
+        if (this.ending.has(row.session)) continue;
+        row.draining = false;
+        this.put(row);
+        await this.end(row.session, "time");
+        continue;
+      }
+      const s = this.deps.sessions().find((x) => x.id === row.session);
       if (row.until <= now) await this.end(row.session, "time");
+      else if (s && s.status === "ended" && this.deps.linked(s.node)) await this.end(row.session, "ended");
     }
   }
 }

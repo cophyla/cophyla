@@ -21,9 +21,11 @@
 //   <cophyla-message from="bob/web" harness="claude" user="bob" teammate="tm_…" external="true" id="pmsg_…">
 //
 // and a group chat's notice, or the posts gathered for an agent told of every post, comes from
-// cophyla with the group's name:
+// cophyla with the group's name, and, when it carries another person's words (a teammate's
+// post, or a group a teammate put the agent in), their logins, marked external:
 //
 //   <cophyla-message from="cophyla" group="release" id="pmsg_…">
+//   <cophyla-message from="cophyla" group="release" user="bob" external="true" id="pmsg_…">
 
 import type { AgentRef, ConnectionSender, TeammateSender } from "@cophyla/protocol";
 import { capText } from "../sessions/model.ts";
@@ -41,8 +43,8 @@ export interface EnvelopeInfo {
   from?: AgentRef;
   /** The message came from another user's agent: on a connection, or from a teammate. */
   peer?: ConnectionSender | TeammateSender;
-  /** A group chat's notice or gathered posts, from cophyla: the group it is about. */
-  group?: { id: string; name: string };
+  /** A group chat's notice or gathered posts, from cophyla: the group it is about, and the other people whose words it carries. */
+  group?: { id: string; name: string; external?: string[] };
   messageId: string;
   replyTo?: string;
 }
@@ -92,6 +94,12 @@ export function envelope(info: EnvelopeInfo, text: string): string {
       ? [
           ["from", NOTICE_FROM],
           ["group", info.group.name],
+          ...(info.group.external && info.group.external.length > 0
+            ? ([
+                ["user", info.group.external.join(" ")],
+                ["external", "true"],
+              ] as [string, string][])
+            : []),
         ]
       : info.from
       ? [

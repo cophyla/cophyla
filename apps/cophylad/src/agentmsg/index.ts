@@ -313,7 +313,8 @@ export class AgentMessages {
     const focus = this.deps.focus?.();
     if (!focus) throw new RpcError("unavailable", "focus is off on this machine");
     if (args["off"] === true) {
-      const ended = await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.focus", args: { off: true }, sessionKey: caller.id }, () => focus.end(caller.id, "agent"));
+      // not awaited past the end itself: what was held follows as messages once this tool has answered
+      const ended = await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.focus", args: { off: true }, sessionKey: caller.id }, () => focus.release(caller.id, "agent"));
       return ended ? "Your focus has ended; what came meanwhile follows as messages." : "You were not in focus.";
     }
     const minutes = args["minutes"] === undefined ? 60 : args["minutes"];
@@ -487,15 +488,21 @@ export class AgentMessages {
     const agent: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
 
     // the receiver in focus: held for it, its sender told at once until when and why
+    // (or what was held for it still being handed over, which this queues behind)
     const focus = this.deps.focus?.();
     const inFocus = focus?.get(target.session.id);
-    if (focus && inFocus) {
-      await this.deps.gate.run(
+    if (focus && (inFocus || focus.holding(target.session.id))) {
+      const heldIt = await this.deps.gate.run(
         { principal: { kind: "harness", session: caller.id }, action: "agent.send", target: target.session.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, focus: true }, sessionKey: caller.id },
         () => focus.hold(target.session, p.text, agent, from.alias, caller.id),
       );
-      this.log.info("agent message held for focus", { id, from: caller.id, to: target.session.id });
-      return { status: "focus", id, to, focus: inFocus };
+      if (heldIt) {
+        this.log.info("agent message held for focus", { id, from: caller.id, to: target.session.id });
+        const still = focus.get(target.session.id);
+        if (still) return { status: "focus", id, to, focus: still };
+        return { status: "sent", id, to };
+      }
+      // its focus ended while this was asked about: sent as ever, below
     }
 
     let held: (ask: Ask) => void = () => undefined;
@@ -743,7 +750,10 @@ export class AgentMessages {
       if (!parsed.success) throw new RpcError("invalid", "bad group.tool", parsed.error.issues);
       const p = parsed.data;
       const caller = this.callerOf(peer, p.caller);
-      if (peer.grant === undefined || !this.deps.cluster.grant(peer.grant)) throw new RpcError("denied", "the node's grant is not known here");
+      const grant = peer.grant !== undefined ? this.deps.cluster.grant(peer.grant) : undefined;
+      if (!grant) throw new RpcError("denied", "the node's grant is not known here");
+      // a post tells other agents, as a message does: the machine's access must let its sessions start one
+      if (p.tool === "post_group" && !mayMessage(grant.access, "initiate")) return { text: "Not posted: this machine's access lets its sessions start no conversations with other agents.", isError: true };
       try {
         return { text: await this.groupToolHere(caller, p.tool, p.args) };
       } catch (e) {

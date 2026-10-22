@@ -187,6 +187,15 @@ export class GroupStore {
 
   // --- this side's log, for teammates ---------------------------------------------------------------
 
+  /** A group this side left while other sides were in it: its leave, kept for a side that was away (`<group>/left`). */
+  putLeft(group: string, left: { seq: number; at: number; person: string; owners: string[] }): void {
+    this.store.kv.put(GROUP_LOG_KV_NS, `${group}/left`, left);
+  }
+
+  left(group: string): { seq: number; at: number; person: string; owners: string[] } | undefined {
+    return this.store.kv.get(GROUP_LOG_KV_NS, `${group}/left`) as { seq: number; at: number; person: string; owners: string[] } | undefined;
+  }
+
   putEntry(group: string, seq: number, entry: GroupEntry, at: number): void {
     this.store.kv.put(GROUP_LOG_KV_NS, `${group}/${pad(seq)}`, { seq, entry, at });
   }

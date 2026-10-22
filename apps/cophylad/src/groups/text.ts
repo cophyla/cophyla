@@ -12,7 +12,17 @@ export type AllTag = (typeof ALL_TAGS)[number];
 
 /** Where in a text a tag may start: not after a letter, a digit or the parts of a handle, so an e-mail address tags no one. */
 const TAG = /(^|[^\p{L}\p{N}_@./\\-])@([\p{L}\p{N}][\p{L}\p{N}_.-]*(?:\/[\p{L}\p{N}_.-]+)?(?:@[\p{L}\p{N}_.-]+)?)/gu;
-const MARKER = /@\[([^\]\s]{1,120})\]/g;
+const MARKER = /@\[((?:agent|person):[^\]\s]{1,120})\]/g;
+/** Where a typed text holds what would read as a marker. */
+const TYPED_MARKER = /@\[(?=(?:agent|person):)/g;
+
+/** A marker typed by hand, or one that tags no one: broken with a zero-width space, so it never shows as a tag. */
+const BREAK = "@\u200b[";
+
+/** The text with every marker but those of `keep` broken, so a post cannot show a tag it did not make. */
+export function keepMarkers(text: string, keep: ReadonlySet<string>): string {
+  return text.replace(MARKER, (whole, key: string) => (keep.has(key) ? whole : BREAK + whole.slice(2)));
+}
 
 /** The text with its code (fenced blocks and backtick spans) blanked to spaces, so its positions hold. */
 export function blankCode(text: string): string {
@@ -61,7 +71,7 @@ export function readTags(text: string, table: HandleTable, opts: { person: boole
       continue;
     }
     const key = keys[0]!;
-    out += text.slice(last, start) + `@[${key}]`;
+    out += text.slice(last, start).replace(TYPED_MARKER, BREAK) + `@[${key}]`;
     last = end;
     if (!seen.has(key)) {
       seen.add(key);
@@ -76,7 +86,7 @@ export function readTags(text: string, table: HandleTable, opts: { person: boole
     if (ambiguous.length > 0) bits.push(`${[...new Set(ambiguous)].join(", ")} ${ambiguous.length === 1 ? "names" : "name"} more than one member`);
     return { error: bits.join("; "), unknown: [...new Set([...unknown, ...ambiguous])] };
   }
-  out += text.slice(last);
+  out += text.slice(last).replace(TYPED_MARKER, BREAK);
   return { text: out, mentions, tagged };
 }
 

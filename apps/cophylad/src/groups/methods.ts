@@ -83,8 +83,9 @@ export function groupMethods(deps: { groups: () => Groups | undefined; focus: ()
     "focus.list": { handler: () => ({ focus: deps.focus()?.list() ?? [] }) },
     "focus.end": {
       target: (p) => p.session,
-      handler: async (p) => {
-        await focus().end(p.session, "user");
+      handler: (p) => {
+        // answered at once; what was held follows the agent's catch-up notice in the background
+        focus().release(p.session, "user");
         return {};
       },
     },

@@ -73,7 +73,7 @@ export const GroupEntryPost = z.object({
     z.object({ kind: z.literal("cophyla") }),
   ]),
   text: z.string().max(20_000),
-  mentions: z.array(GroupMention),
+  mentions: z.array(GroupMention).max(100),
   replyTo: GroupPostId.optional(),
   expectsReply: z.boolean().optional(),
   at: Timestamp,
