@@ -298,7 +298,7 @@ daemon's, which runs every CLI's threads. The README of a shipped build says so.
 
 `[sessions]` in `config.toml` tunes it: `poll_ms`, `codex_list_ms`, `hook_timeout_s`,
 `receipt_timeout_ms`, `codex_recent_ms`, `claude_hook_grace_ms`, `install_hooks`,
-`discover`, `launch`, `brain_sends`, and a repeatable `[[profiles]]` block for an
+`discover`, `launch`, `brain_sends`, `resume_takes_terminal` (a Claude CLI that resumes another thread in a terminal takes the terminal to it; off), and a repeatable `[[profiles]]` block for an
 installation beyond the discovered one. `[tether]` names the binary (`command`), tether's state folder (`dir`), a
 host's idle exit (`idle_exit_s`, 600), where a window opens (`window`: `auto`, `wt`,
 `console`, `conhost` or `none`), whether a session cophylad starts gets one at once
