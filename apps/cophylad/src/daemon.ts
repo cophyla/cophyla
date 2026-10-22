@@ -1436,6 +1436,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: focusLive,
     groups: () => groupsLive,
     linked: (n) => n === identity.id || forwardHost.linked(n),
+    asks,
+    self: () => ({ id: identity.id }),
   });
   teammates = teammatesLive;
   groupsLive.teammateList = () => teammatesLive.active();

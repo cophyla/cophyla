@@ -6,7 +6,7 @@
 // and the messages waiting for the far side to be reached. The rows replicate to the backups;
 // they are reserved from the brain and kept out of the cloud backup (`grants/namespaces.ts`).
 
-import type { ConnectionRelay, Teammate, TeammateShare, TeammateTheirs } from "@cophyla/protocol";
+import type { ConnectionRelay, Teammate, TeammateConnection, TeammateShare, TeammateTheirs } from "@cophyla/protocol";
 import { TEAMMATES_KV_NS } from "../grants/namespaces.ts";
 import type { Store } from "../store/index.ts";
 
@@ -20,6 +20,27 @@ export interface TeamQueued {
   at: number;
   /** The session that sent it, told if it never goes. */
   sender: string;
+  /** The far agent's session, when a teammate connection joins the sender to it. */
+  toSession?: string;
+}
+
+/** A teammate connection as this side keeps it: what the apps see, and the ask it raised and its words. */
+export interface TeammateConnectionRow extends TeammateConnection {
+  /** An ask of this side's user, open while the connection is `asked` by the other side. */
+  askId?: string;
+  /** What the asking side said its agent is working on, for the ask's words. */
+  intent?: string;
+  /** The machine this side's agent works on, so a session missing from a machine that is up is told from one whose machine is away. */
+  node?: string;
+}
+
+/** Something this side owes the far side about a connection, kept until it is reached: its user's answer, or an end. */
+export interface TeammateTell {
+  id: string;
+  kind: "state" | "disconnect";
+  state?: "active" | "declined";
+  reason?: string;
+  at: number;
 }
 
 export interface TeammateRow {
@@ -43,6 +64,10 @@ export interface TeammateRow {
   lastAt?: number;
   seenAt?: number;
   outbox: TeamQueued[];
+  /** This side's agents joined to one of theirs, asked for, or declined lately. */
+  connections?: TeammateConnectionRow[];
+  /** What the far side has yet to be told about a connection. */
+  tells?: TeammateTell[];
 }
 
 /** The row a client sees: no key, no token, no secret, no queued text. */
@@ -61,7 +86,14 @@ export function clientTeammate(row: TeammateRow): Teammate {
     sent: row.sent,
     received: row.received,
     ...(row.outbox.length > 0 ? { queued: row.outbox.length } : {}),
+    ...(row.connections && row.connections.length > 0 ? { connections: row.connections.map(clientConnection) } : {}),
   };
+}
+
+/** A connection as the apps see it: no ask id, no words of the far side's. */
+export function clientConnection(c: TeammateConnectionRow): TeammateConnection {
+  const { askId: _ask, intent: _intent, node: _node, ...rest } = c;
+  return rest;
 }
 
 const SELF = "self";
