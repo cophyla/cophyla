@@ -323,6 +323,15 @@ export const nodeLinkRequests = {
     params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "post_group", "ack_post", "focus"]), args: z.record(z.string(), z.unknown()) }),
     result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
+  /**
+   * What a secondary's session has not read in its group chats and was not told yet, for the
+   * prompt it is given or a tool's answer: one line, said once per batch of posts (asking marks
+   * it told). None when there is nothing new, the session is in focus or told of every post.
+   */
+  "group.note": {
+    params: z.object({ caller: SessionId }),
+    result: z.object({ text: z.string().max(4000).optional() }),
+  },
 } as const;
 
 export type NodeLinkRequestName = keyof typeof nodeLinkRequests;

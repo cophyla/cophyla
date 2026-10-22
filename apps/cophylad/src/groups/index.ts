@@ -1100,6 +1100,37 @@ export class Groups {
     return `${head.join("\n")}\n\n${lines.join("\n")}${lines.length > 0 ? "\n\n" : ""}${note}`;
   }
 
+  /**
+   * What one of this side's agents has not read in its groups and was not told of yet, as one
+   * line: said beside a prompt it is given anyway (its harness's prompt hook) or a tool's answer,
+   * so posts that tag no one reach an agent told of tags alone without a turn of their own.
+   * Nothing for an agent told of every post (the posts reach it), one in focus, or a group
+   * `skip` names; `consume` marks what it says told, so each batch is said once.
+   */
+  unreadNote(session: string, opts: { consume: boolean; skip?: string } = { consume: true }): string | undefined {
+    if (!this.deps.routes() || this.deps.focus.holding(session)) return undefined;
+    const key = agentKey(session);
+    const lines: string[] = [];
+    const told: GroupRow[] = [];
+    for (const g of this.all()) {
+      if (g.ended || g.id === opts.skip) continue;
+      const m = g.members.find((x) => x.key === key);
+      if (!m || !this.mine(m) || (m.notify ?? g.notify) === "all") continue;
+      const from = Math.max(m.readTo, m.nudgedTo ?? 0);
+      if (from >= g.n) continue;
+      const posts = this.rows.after(g.id, from, 500).filter((p) => p.from.kind === "cophyla" || p.from.key !== key);
+      if (posts.length === 0) continue;
+      const tags = posts.filter((p) => this.tags(g, p, m)).length;
+      lines.push(`#${g.name}: ${posts.length} new ${posts.length === 1 ? "post" : "posts"}${tags > 0 ? ` (${tags} tagging you)` : ""}`);
+      if (opts.consume) {
+        m.nudgedTo = g.n;
+        told.push(g);
+      }
+    }
+    for (const g of told) this.rows.put(g);
+    return lines.length > 0 ? `Unread in your group chats, which read_group shows when it suits your work: ${lines.join("; ")}.` : undefined;
+  }
+
   /** A thumbs up on a post, given or taken back, telling no one. */
   private ack(g: GroupRow, key: string, postId: string, on: boolean): PostRow {
     const p = this.rows.byId(g.id, postId);

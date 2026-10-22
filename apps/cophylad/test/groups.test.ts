@@ -251,7 +251,7 @@ describe("a group chat", () => {
       // a thumbs up wakes no one
       r.delivered.length = 0;
       const ack = await r.call(api, "ack_post", { group: "release", post: r.groups.posts(g.id).posts[1]!.id });
-      expect(ack.text).toBe("Thumbs up on post 2 in #release; no one was woken.");
+      expect(ack.text).toStartWith("Thumbs up on post 2 in #release; no one was woken.");
       expect(r.groups.posts(g.id).posts[1]!.acks).toEqual(["api-codex"]);
       await Bun.sleep(20);
       expect(r.delivered).toHaveLength(0);
@@ -287,6 +287,25 @@ describe("a group chat", () => {
       r.groups.postAsUser(g.id, "third");
       await waitFor(() => r.delivered.filter((d) => d.session === web.id).length === 2);
       expect(r.delivered.filter((d) => d.session === web.id)[1]!.text).toContain("third");
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("a tool's answer carries what the agent has not read in its groups, once; a read's does not", async () => {
+    const api = sess("codex", "C:/code/api");
+    const web = sess("claude", "C:/code/web");
+    const r = rig([api, web]);
+    try {
+      await r.groups.create({ name: "release", members: [{ session: api.id }, { session: web.id }] });
+      r.groups.postAsUser([...r.groups.list()][0]!.id, "the release branch is cut");
+      const listed = await r.call(web, "list_agents", {});
+      expect(listed.text).toContain("Unread in your group chats, which read_group shows when it suits your work: #release: 1 new post.");
+      expect((await r.call(web, "list_agents", {})).text).not.toContain("Unread in your group chats");
+      r.groups.postAsUser([...r.groups.list()][0]!.id, "and tagged 0.18.0");
+      const read = await r.call(web, "read_group", { group: "release" });
+      expect(read.text).not.toContain("Unread in your group chats");
+      expect((await r.call(web, "list_agents", {})).text).not.toContain("Unread in your group chats");
     } finally {
       r.stop();
     }

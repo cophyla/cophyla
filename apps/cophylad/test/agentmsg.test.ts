@@ -251,7 +251,7 @@ interface Rig {
   call: (caller: Session, tool: string, args: Record<string, unknown>, meta?: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
 }
 
-function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean }): Rig {
+function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean; notes?: (session: string) => string | undefined; primary?: (method: string, params: unknown) => Promise<unknown> }): Rig {
   const config = Config.parse(Bun.TOML.parse(opts.toml ?? ""));
   const store = new Store(":memory:");
   store.migrate();
@@ -291,13 +291,16 @@ function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?
       forwarded.push({ node, params: params as Record<string, unknown> });
       return { status: "queued", ref: "cophylad-2" };
     },
-    requestPrimary: async () => {
+    requestPrimary: async (method, params) => {
+      if (opts.primary) return opts.primary(method, params);
       throw new Error("no primary in this rig");
     },
     grant: (id) => (opts.grants?.[id] ? { access: opts.grants[id]! } : undefined),
   };
   const cfg = (): AgentMessagesConfig => config.agent_messages;
-  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test" });
+  const notes = opts.notes;
+  const groups = notes ? () => ({ unreadNote: (session: string) => notes(session) }) as never : undefined;
+  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test", ...(groups ? { groups } : {}) });
   const call: Rig["call"] = async (caller, tool, args, meta) => {
     const answer = (await router.mcp({ harness: caller.harness, ...(caller.native.pid ? { ppid: caller.native.pid } : {}) }, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: tool, arguments: args, ...(meta ? { _meta: meta } : {}) } })) as { result: { content: { text: string }[]; isError?: boolean } };
     return { text: answer.result.content[0]!.text, ...(answer.result.isError ? { isError: true } : {}) };
@@ -429,6 +432,22 @@ describe("the router", () => {
     expect(r.forwarded[0]).toMatchObject({ node: LAPTOP, params: { id: remote.id, text: "hi", as: "agent", agent: { replyTo: "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD0", mode: "prompting", from: { alias: "web-claude" } } } });
     const off = rig({ local: [me], mirror: [remote], nodes: [node(LAPTOP, "Laptop", { status: "offline" })] });
     expect(await off.call(me, "send_message", { to: "api-codex", text: "hi" })).toEqual({ text: "Laptop is offline; not sent.", isError: true });
+  });
+
+  test("what a secondary's session has not read in its groups: asked of the primary, which answers for a session the node holds", async () => {
+    const theirs = sess("claude", "/home/me/app", { node: LAPTOP });
+    const full: Access = { scopes: ["sessions:read", "sessions:write"], messages: "send" };
+    const primary = rig({ local: [], mirror: [theirs], nodes: [node(LAPTOP, "Laptop")], grants: { grt_full: full }, notes: (s) => (s === theirs.id ? "Unread in your group chats, which read_group shows when it suits your work: #team: 1 new post." : undefined) });
+    expect(await primary.router.upwardRequest({ id: LAPTOP, grant: "grt_full" }, "group.note", { caller: theirs.id })).toEqual({ text: "Unread in your group chats, which read_group shows when it suits your work: #team: 1 new post." });
+    await expect(primary.router.upwardRequest({ id: "node_01ARZ3NDEKTSV4RRFFQ69G5FAX", grant: "grt_full" }, "group.note", { caller: theirs.id })).rejects.toThrow();
+    // the secondary's side: its prompt hook asks, and a primary that cannot say leaves the prompt as it is
+    const here = sess("claude", "/home/me/app", { node: LAPTOP });
+    const secondary = rig({ local: [here], routes: false, primary: async (method, params) => (method === "group.note" && (params as { caller: string }).caller === here.id ? { text: "#team: 1 new post." } : {}) });
+    expect(await secondary.router.promptNote(here)).toBe("#team: 1 new post.");
+    const silent = rig({ local: [here], routes: false, primary: async () => {
+      throw new Error("timed out");
+    } });
+    expect(await silent.router.promptNote(here)).toBeUndefined();
   });
 
   test("a secondary's request is refused for a session it does not hold, and as far as its grant's messaging says", async () => {

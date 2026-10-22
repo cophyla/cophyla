@@ -154,6 +154,8 @@ const GROUP_TOOL_NAMES = new Set<string>(GROUP_TOOLS);
 const AUDIT_TEXT = 2000;
 /** How long an upward request may take; a send is answered at once, held or not. */
 const UPWARD_MS = 30_000;
+/** How long a prompt waits on the primary for what its session has not read in its groups: a prompt is not held up for it. */
+const NOTE_MS = 1_500;
 /** How long `send_file` waits for its transfer to land before it answers, and tells the outcome later; an upward one a little longer. */
 const FILE_WAIT_MS = 90_000;
 const FILE_UPWARD_MS = 120_000;
@@ -237,6 +239,32 @@ export class AgentMessages {
       return { text: `${who.error}.`, isError: true };
     }
     const caller = who.session;
+    const r = await this.callAs(caller, name, args, meta);
+    // what is unread in its groups rides along, said once: not beside a read, which shows it, nor focus
+    if (r.isError || name === "read_group" || name === "focus") return r;
+    const note = await this.promptNote(caller);
+    return note ? { ...r, text: `${r.text}\n\n${note}` } : r;
+  }
+
+  /**
+   * What `s` has not read in its group chats and was not told of yet, for the prompt its harness
+   * is about to start a turn with (the prompt hook's added context) or a tool's answer: from the
+   * groups here, or asked of the primary, which keeps them, for a moment only, since a prompt
+   * waits on it. Marked told once given.
+   */
+  async promptNote(s: Session): Promise<string | undefined> {
+    try {
+      if (this.deps.cluster.routes()) return this.deps.groups?.()?.unreadNote(s.id, { consume: true });
+      if (!this.deps.cluster.primaryLinked()) return undefined;
+      const r = nodeLinkRequests["group.note"].result.parse(await this.upward("group.note", { caller: s.id }, NOTE_MS));
+      return r.text;
+    } catch (e) {
+      this.log.debug("no group note for a prompt", { session: s.id, error: message(e) });
+      return undefined;
+    }
+  }
+
+  private async callAs(caller: Session, name: string, args: Json, meta: Json | undefined): Promise<{ text: string; isError?: boolean }> {
     if (CONNECTION_TOOLS.has(name)) {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.connectionTool(caller, mode, name as "create_invite" | "accept_invite" | "end_connection", args);
@@ -372,7 +400,7 @@ export class AgentMessages {
   }
 
   /** One request to the primary's router; what it refuses comes back as it said it. */
-  private async upward(method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
+  private async upward(method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
     const noLink = () => new RpcError("unavailable", `this machine has no link to ${this.deps.cluster.primaryName() ?? "the primary"}, which carries agents' messages, so nothing was sent`);
     if (!this.deps.cluster.primaryLinked()) throw noLink();
     try {
@@ -736,7 +764,7 @@ export class AgentMessages {
    * the primary does not hold as that node's, and a send as far as the node's grant may
    * message; gated as the session, never as the node.
    */
-  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "file.send", params: unknown): Promise<unknown> {
+  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown): Promise<unknown> {
     if (!this.deps.config().enabled) throw new RpcError("unavailable", "agent messaging is off on the primary");
     if (method === "agent.list") {
       const parsed = nodeLinkRequests["agent.list"].params.safeParse(params ?? {});
@@ -761,6 +789,14 @@ export class AgentMessages {
       } catch (e) {
         return { text: groupRefusal(e), isError: true };
       }
+    }
+    if (method === "group.note") {
+      const parsed = nodeLinkRequests["group.note"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad group.note", parsed.error.issues);
+      const caller = this.callerOf(peer, parsed.data.caller);
+      if (peer.grant === undefined || !this.deps.cluster.grant(peer.grant)) throw new RpcError("denied", "the node's grant is not known here");
+      const text = this.deps.groups?.()?.unreadNote(caller.id, { consume: true });
+      return text ? { text } : {};
     }
     if (method === "file.send") {
       const parsed = nodeLinkRequests["file.send"].params.safeParse(params ?? {});

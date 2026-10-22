@@ -583,6 +583,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     store,
     bus,
     asks,
+    // what a session has not read in its group chats, beside the prompt it is given (the router is made further down)
+    promptNote: (s) => (config.agent_messages.enabled ? agentMessages.promptNote(s) : Promise.resolve(undefined)),
     config: config.sessions,
     nodeId: identity.id,
     log: sessionsLog,

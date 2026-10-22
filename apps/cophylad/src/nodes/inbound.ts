@@ -707,6 +707,7 @@ export class Inbound {
       case "agent.send":
       case "connection.tool":
       case "group.tool":
+      case "group.note":
       case "file.send": {
         // Checked and gated as the node's session, never as the node; answered at once, held or not.
         const agents = this.deps.agents?.();

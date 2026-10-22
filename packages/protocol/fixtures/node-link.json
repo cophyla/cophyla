@@ -182,6 +182,10 @@
       ],
       "results": [{ "text": "#release: 2 unread, 1 tags you." }, { "text": "Not posted: @web names no member of #release.", "isError": true }]
     },
+    "group.note": {
+      "params": [{ "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],
+      "results": [{ "text": "Unread in your group chats, which read_group shows when it suits your work: #release: 4 new posts (1 tagging you)." }, {}]
+    },
     "files.tree": {
       "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:\\Users\\me\\build.zip" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "/home/me/web/dist", "from": 5000 }],
       "results": [

@@ -31,6 +31,8 @@ export interface MemberRow {
   noticeTime?: number;
   /** It was reminded once of the tag its notice was for. */
   reminded?: boolean;
+  /** An agent of this side's: the last post a line of what is unread, beside a prompt or a tool's answer, told it of. */
+  nudgedTo?: number;
   /** Its session ended; kept, with its read point. */
   gone?: boolean;
   /** Another side's agent's focus, as its side said. */

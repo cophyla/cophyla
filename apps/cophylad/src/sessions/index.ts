@@ -98,6 +98,12 @@ export interface SessionsDeps {
   store: Store;
   bus: Bus;
   asks: Asks;
+  /**
+   * A line a session is told beside the prompt its harness is about to start a turn with: what
+   * it has not read in its group chats (`agentmsg`), on a harness whose prompt hook takes added
+   * context (Claude, Codex). Asked as the hook waits, so it answers quickly or not at all.
+   */
+  promptNote?: (s: Session) => Promise<string | undefined>;
   config: SessionsConfig;
   nodeId: NodeId;
   log: Logger;
@@ -2045,6 +2051,13 @@ export class Sessions implements SessionHost {
   }
 
   /** Whether a Claude session's settings take any session's message in at once, which one in bypass otherwise holds. */
+  /** What a prompt hook of a session other than the chat's answers: what it has not read in its groups, as added context, or nothing. */
+  private async promptHook(s: Session): Promise<unknown> {
+    if ((s.harness !== "claude" && s.harness !== "codex") || !this.deps.promptNote) return {};
+    const text = await this.deps.promptNote(s).catch(() => undefined);
+    return text ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } } : {};
+  }
+
   acceptsInbound(id: string): boolean {
     const rec = this.byId.get(id);
     if (!rec || rec.session.harness !== "claude") return false;
@@ -3616,7 +3629,7 @@ export class Sessions implements SessionHost {
           }
         }
         this.setStatus(rec, "busy", now);
-        return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : {};
+        return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : this.promptHook(rec.session);
       }
       // A session outside the scope asks in its own window: no answer here.
       case "PermissionRequest":

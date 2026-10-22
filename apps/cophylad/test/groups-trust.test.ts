@@ -307,6 +307,39 @@ describe("reading, gathering and focus at their edges", () => {
   });
 });
 
+describe("what an agent has not read, beside its prompts", () => {
+  test("posts that tag no one are said once per batch; not to one told of every post, nor in focus, nor past a read", async () => {
+    const a0 = sess("C:/code/api");
+    const a1 = sess("C:/code/web");
+    const a2 = sess("C:/code/docs");
+    const r = rig([a0, a1, a2], new Set());
+    try {
+      const g = await r.groups.create({ name: "team", members: [{ session: a0.id }, { session: a1.id }, { session: a2.id }] });
+      r.groups.setNotify(g.id, `agent:${a2.id}`, "all");
+      await r.groups.tool(a0, "post_group", { group: "team", text: "the build is green", expects_reply: false });
+      await r.groups.tool(a0, "post_group", { group: "team", text: "@a1 can you look at the login page?", expects_reply: true });
+      expect(r.groups.unreadNote(a1.id, { consume: false })).toBe("Unread in your group chats, which read_group shows when it suits your work: #team: 2 new posts (1 tagging you).");
+      expect(r.groups.unreadNote(a1.id)).toContain("#team: 2 new posts");
+      // said once
+      expect(r.groups.unreadNote(a1.id)).toBeUndefined();
+      await r.groups.tool(a0, "post_group", { group: "team", text: "and the docs too", expects_reply: false });
+      expect(r.groups.unreadNote(a1.id)).toContain("#team: 1 new post.");
+      // the writer is not told of its own posts; one told of every post gets the posts themselves
+      expect(r.groups.unreadNote(a0.id)).toBeUndefined();
+      expect(r.groups.unreadNote(a2.id)).toBeUndefined();
+      // in focus, nothing; a read clears what was new
+      r.focus.take(a1, 60, "deep work");
+      await r.groups.tool(a0, "post_group", { group: "team", text: "one more", expects_reply: false });
+      expect(r.groups.unreadNote(a1.id)).toBeUndefined();
+      await r.focus.end(a1.id, "user");
+      await r.groups.tool(a1, "read_group", { group: "team" });
+      expect(r.groups.unreadNote(a1.id)).toBeUndefined();
+    } finally {
+      r.stop();
+    }
+  });
+});
+
 describe("tags in text", () => {
   test("a typed marker never reads as a tag; code like x@[i] is left alone", () => {
     const table = new Map([["web", ["agent:sess_1"]]]);
