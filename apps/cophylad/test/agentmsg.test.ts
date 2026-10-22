@@ -176,6 +176,22 @@ describe("the directory", () => {
     expect(to("nobody")).toContain("list_agents shows who you can message");
   });
 
+  test("a Codex thread with a name goes by it, as the rail shows it; one without, by its folder", () => {
+    const named = sess("codex", "C:\\TTLM\\UnrealEngine", { title: "amanita" });
+    const titled = sess("codex", "C:\\work\\soft-tech", { title: "Set up Higgsfield CLI" });
+    const unnamed = sess("codex", "C:\\work\\soft-tech");
+    // a title is a Codex thread's alone: another harness's goes by its folder still
+    const muse = sess("muse", "C:\\work\\web", { title: "Something" });
+    const d = directory([named, titled, unnamed, muse].map((session) => ({ session, nodeName: "Desk" })));
+    const alias = (s: Session) => d.aliases.get(s.id)!.alias;
+    expect(alias(named)).toBe("amanita");
+    expect(alias(titled)).toBe("set-up-higgsfield-cli");
+    expect(alias(unnamed)).toBe("soft-tech-codex");
+    expect(alias(muse)).toBe("web-muse");
+    const r = resolve(d, "Amanita");
+    expect("error" in r ? r.error : r.session.id).toBe(named.id);
+  });
+
   test("the chat's own session, an ended one, a workspace node's and one on a node with no agent messaging are no one to message", () => {
     expect(eligible(sess("claude", "/a", { role: "assistant" }), "self")).toBe(false);
     expect(eligible(sess("claude", "/a", { status: "ended" }), "self")).toBe(false);

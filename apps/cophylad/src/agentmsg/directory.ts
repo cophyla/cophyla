@@ -1,6 +1,7 @@
 // The agent directory: the user's live agent sessions on every node, each under a short alias
-// another agent addresses it by. A Claude session's alias is the name its registry gave it;
-// any other's is `<folder>-<harness>`. Two that would meet are told apart by `@machine`, then
+// another agent addresses it by. A Claude session's alias is the name its registry gave it, a
+// Codex session's its thread's name; one without a name, or of another harness, is
+// `<folder>-<harness>`. Two that would meet are told apart by `@machine`, then
 // by four characters of the id, the older session keeping the plainer form, so an alias given
 // out stays its session's while that session lives. A renamed session goes by its new name and
 // still answers to the forms it had before, as long as no other session has taken them. `to`
@@ -46,9 +47,14 @@ export function folderOf(cwd: string): string | undefined {
   return parts[parts.length - 1];
 }
 
-/** A session's alias before anything tells it apart from another: its Claude name, else `<folder>-<harness>`. */
+/**
+ * A session's alias before anything tells it apart from another: its name as the rail shows it
+ * (a Claude session's from its registry, a Codex thread's own, which Codex gives it after its
+ * first turn or the user sets), else `<folder>-<harness>`.
+ */
 export function base(s: Session): string {
-  const named = s.harness === "claude" && s.name ? slug(s.name) : "";
+  const given = s.harness === "claude" ? s.name : s.harness === "codex" ? s.title : undefined;
+  const named = given ? slug(given) : "";
   if (named) return named;
   return `${slug(folderOf(s.cwd) ?? "") || "home"}-${s.harness}`;
 }

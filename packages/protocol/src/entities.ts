@@ -317,7 +317,8 @@ export const Session = z.object({
   title: z.string().optional(),
   /**
    * A Claude session's name as its registry gives it now, a rename included, which its alias in
-   * agent messaging is made from. It is not stored: a restart reads it again from the registry.
+   * agent messaging is made from (a Codex session's is made from its `title`, its thread's name).
+   * It is not stored: a restart reads it again from the registry.
    */
   name: z.string().optional(),
   intent: z.string().optional(),
