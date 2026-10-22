@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewContent } from "@cophyla/protocol";
-import { AskNotifier, Connection, SnapshotCache, ViewHost } from "@cophyla/viewhost";
+import { AskNotifier, Connection, MentionNotifier, SnapshotCache, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
@@ -92,6 +92,14 @@ const notifier = new AskNotifier({
   node: () => conn.state.hello?.client.node ?? conn.state.hello?.node,
 });
 
+// a tag of the user in a group chat: toasted like an ask, without buttons, where someone is
+const mentions = new MentionNotifier({
+  notify: (toast) => io.invoke<void>("notify_ask", { ask: toast }),
+  dismiss: (id) => io.invoke<void>("dismiss_ask", { ask: id }),
+  onError: (m) => note(m),
+  idleMs: async () => (await io.invoke<number | null>("user_idle_ms")) ?? undefined,
+});
+
 let lastNote = "";
 let loaded = false;
 
@@ -146,6 +154,7 @@ conn.onFrame((frame) => {
     if (voice.handleFrame(frame)) return;
     cache.upsert(frame);
     notifier.onNotification(frame);
+    mentions.onNotification(frame);
     if (frame.method === "session.state") renderTitle();
     if (frame.method === "view.changed") viewhost.onChanged((frame.params as { id: string }).id);
   }
