@@ -31,10 +31,19 @@ export class SelfLogin {
 
   /** The login of the account signed in now, when known. */
   login(): string | undefined {
+    return this.kept()?.login;
+  }
+
+  /** The account as the server's word names it to others: what a teammate knows this user by. */
+  identity(): string | undefined {
+    return this.kept()?.identity;
+  }
+
+  private kept(): { subject: string; login: string; identity?: string } | undefined {
     const account = this.deps.account();
     if (!account) return undefined;
-    const kept = this.deps.store.kv.get(TEAMMATES_KV_NS, KEY) as { subject: string; login: string } | undefined;
-    return kept && kept.subject === account ? kept.login : undefined;
+    const kept = this.deps.store.kv.get(TEAMMATES_KV_NS, KEY) as { subject: string; login: string; identity?: string } | undefined;
+    return kept && kept.subject === account ? kept : undefined;
   }
 
   /** Asks the server again; quiet when it cannot be reached or the plan has no relay. */
@@ -44,13 +53,15 @@ export class SelfLogin {
   }
 
   private async ask(): Promise<void> {
-    if (!this.deps.account()) return;
+    const account = this.deps.account();
+    if (!account) return;
     try {
       const token = await this.deps.attest(SELF_AUDIENCE);
       const who = this.deps.verify(token, SELF_AUDIENCE);
-      const kept = this.deps.store.kv.get(TEAMMATES_KV_NS, KEY) as { subject: string; login: string } | undefined;
-      if (kept?.subject === who.subject && kept.login === who.login) return;
-      this.deps.store.kv.put(TEAMMATES_KV_NS, KEY, { subject: who.subject, login: who.login });
+      // kept for the account this node is signed in to, as it names it
+      const kept = this.deps.store.kv.get(TEAMMATES_KV_NS, KEY) as { subject: string; login: string; identity?: string } | undefined;
+      if (kept?.subject === account && kept.login === who.login && kept.identity === who.subject) return;
+      this.deps.store.kv.put(TEAMMATES_KV_NS, KEY, { subject: account, login: who.login, identity: who.subject });
       this.deps.log.info("the account's login is known", { login: who.login });
     } catch (e) {
       this.deps.log.debug("the account's login was not asked now", { error: e instanceof Error ? e.message : String(e) });

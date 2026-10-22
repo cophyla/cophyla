@@ -1359,6 +1359,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // The user's own GitHub login, from the server's word on this account, for their name in group chats and to teammates.
   const selfLogin = new SelfLogin({ store, log: log.child("account"), account: () => cloud.account, attest: (aud) => cloud.attest(aud), verify: (token, aud) => cloud.verifyIdentity(token, aud) });
   const offSelfLogin = cloud.onUp(() => void selfLogin.refresh());
+  void selfLogin.refresh();
   // Focus: an agent out of reach of other agents for an hour or two, or until its turn ends; kept by the primary.
   const focusLive = new Focuses({
     store,
@@ -1378,7 +1379,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("groups"),
     gate,
     routes: routesHere,
-    me: () => ({ owner: cloud.account ?? "me", user: selfLogin.login() ?? "you" }),
+    me: () => ({ owner: selfLogin.identity() ?? cloud.account ?? "me", user: selfLogin.login() ?? "you" }),
     sessions: knownSessions,
     names: () => agentMessages.agentNames(),
     nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),

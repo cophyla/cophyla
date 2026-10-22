@@ -177,14 +177,22 @@ export class Groups {
     if (me.owner === "me") return g;
     let changed = false;
     for (const m of g.members) {
-      if (m.owner !== "me") continue;
-      m.owner = me.owner;
-      m.user = me.user;
-      if (m.kind === "person") m.key = personKey(me.owner);
-      changed = true;
+      // made while signed out, or before the login was known: named as the account is now
+      if (m.owner === "me") {
+        m.owner = me.owner;
+        if (m.kind === "person") m.key = personKey(me.owner);
+        changed = true;
+      }
+      if (m.owner === me.owner && me.user !== "you" && m.user !== me.user) {
+        m.user = me.user;
+        changed = true;
+      }
     }
     if (g.byOwner === "me") {
       g.byOwner = me.owner;
+      changed = true;
+    }
+    if (g.byOwner === me.owner && me.user !== "you" && g.by !== me.user) {
       g.by = me.user;
       changed = true;
     }
