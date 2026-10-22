@@ -34,6 +34,11 @@ export interface ForwardHost {
   registryList(): NodeRecord[];
   /** Whether the node is linked now, so a forward can fail fast. */
   linked(node: string): boolean;
+  /**
+   * A cancel or dismiss of a transfer of offline machine `node`: it goes from every list now, and
+   * is ended on that machine when it is back. Undefined when this node holds no row of it.
+   */
+  endTransferAway(node: string, id: string, cancel: boolean): Record<string, never> | undefined;
   forward(node: string, method: string, params: unknown, opts: { signal?: AbortSignal; onPending?: (ask: Ask) => void }): Promise<unknown>;
   /** The same request to every linked node; a node that fails or times out is left out. */
   fanout(method: string, params: unknown): Promise<Map<string, unknown>>;
@@ -296,6 +301,8 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
             if (ask && !ask.answerableBy.includes(by)) throw new RpcError("denied", `ask ${ask.id} is not answerable by the ${by}`);
           }
           if (!host.linked(route.node)) {
+            const ended = name === "transfer.cancel" || name === "transfer.dismiss" ? host.endTransferAway(route.node, P(p)["id"] as string, name === "transfer.cancel") : undefined;
+            if (ended) return ended;
             const known = host.registryList().some((n) => n.id === route.node);
             throw known ? new RpcError("unavailable", `node ${route.node} is not linked`) : new RpcError("not_found", `no node ${route.node}`);
           }

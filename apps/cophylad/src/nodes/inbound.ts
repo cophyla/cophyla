@@ -31,7 +31,7 @@
 // forgets the cluster on the primary's word and no one else's.
 
 import { capabilityEvents, failure, newId, nodeLinkFrames, nodeLinkRequests, nodeLinkUpward, NODE_LINK_REFUSED, NODE_LINK_REVOKED, PROTOCOL_VERSION, protocolError, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityEventParams, IceServer, MetricsSample, NodeRecord, RpcId, Session, SpendTotals, Terminal } from "@cophyla/protocol";
+import type { Ask, CapabilityEventParams, IceServer, MetricsSample, NodeRecord, RpcId, Session, SpendTotals, Terminal, Transfer } from "@cophyla/protocol";
 import { parseSealedHello, sealedRefusal, sealedRespond, SealedSocket } from "@cophyla/relay";
 import type { Psk, SealedKind } from "@cophyla/relay";
 import type { z } from "zod";
@@ -87,6 +87,11 @@ export interface InboundDeps {
   enroll?: (grant: GrantRow, node: { id: string; name: string }, account?: string) => Promise<EnrollResult>;
   /** A full node took the replica: its grant is marked, so removing it re-keys the others. */
   onBackupAttached?: (grant: string) => void;
+  /**
+   * At a join: the ids of the transfers it lists that the user ended while the node was away.
+   * They are held out of the lists, and ended there once the join is answered.
+   */
+  transfersBack?: (node: string, listed: Transfer[]) => string[];
   /** An invite's link closed, redeemed or not: what it came through may be let go. */
   onEnrollClosed?: (grant: GrantRow) => void;
   selfId: () => string;
@@ -572,12 +577,13 @@ export class Inbound {
       const transfers = own(p.transfers ?? [], (t) => ({ node: t.to.node }));
       const dropped = p.sessions.length + p.workspaces.length + p.asks.length + (p.terminals?.length ?? 0) + (p.transfers?.length ?? 0) - sessions.length - workspaces.length - asks.length - terminals.length - transfers.length;
       if (dropped > 0) this.log.warn("join rows refused: not the joiner's", { node: p.node.id, count: dropped });
-      const lost = this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals, transfers }, this.now());
+      const held = this.deps.transfersBack?.(p.node.id, transfers) ?? [];
+      const lost = this.deps.mirror.fill(p.node.id, { sessions, workspaces, asks, terminals, transfers }, this.now(), held);
       if (lost.length > 0) this.log.warn("transfers its machine came back without", { node: p.node.id, ids: lost.map((t) => t.id) });
       for (const t of lost) this.deps.bus.emit("transfer.state", t);
       for (const s of sessions) if (s.status !== "ended") this.deps.bus.emit("session.state", s);
       for (const t of terminals) if (t.status === "running") this.deps.bus.emit("terminal.state", t);
-      for (const t of transfers) this.deps.bus.emit("transfer.state", t);
+      for (const t of transfers) if (!held.includes(t.id)) this.deps.bus.emit("transfer.state", t);
       for (const w of workspaces) this.deps.bus.emit("workspace.state", w);
       for (const a of asks) if (a.status === "open") this.deps.bus.emit("ask.state", a);
       if (backup) {
@@ -794,6 +800,8 @@ export class Inbound {
       }
       // A node on an older build tells each frame of a CLI's spinner: with it off, a row that only spun is nothing new.
       if (name === "terminal.state" && JSON.stringify(this.deps.mirror.terminal(peer.id, (value as Terminal).id)) === JSON.stringify(value)) return;
+      // a transfer the user ended while its machine was away is not news until it ends there
+      if (name === "transfer.state" && this.deps.mirror.holds(value as Transfer)) return;
       this.deps.mirror.apply(peer.id, method, value);
       if (name === "node.state") {
         // The node's own row changed (a voice stage, its desktop host): the registry's copy

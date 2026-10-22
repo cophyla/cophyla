@@ -34,6 +34,11 @@ export const HANDS_PULLS_NS = "hands-pulls";
 /** How long a hands node may pull what it was sent, failed and retried included. */
 const HANDS_PULL_MS = 7 * 24 * 60 * 60_000;
 
+/** The kv namespace of transfers the user ended while their machine was offline, by transfer id. */
+export const TRANSFER_ENDS_NS = "transfer-ends";
+/** How long such an end waits for its machine to come back. */
+const TRANSFER_END_MS = 30 * 24 * 60 * 60_000;
+
 /** The node on the link a transfer request came from; `hands` when it joined as hands. */
 export interface TransferFrom extends LinkFrom {
   hands?: boolean;
@@ -44,6 +49,48 @@ interface HandsPull {
   node: string;
   path: string;
   until: number;
+}
+
+interface TransferEnd {
+  node: string;
+  cancel: boolean;
+  until: number;
+}
+
+/**
+ * At the primary, what the user asked of a transfer while its machine was offline: the transfer
+ * goes from every list at once, and is cancelled and dismissed on that machine when it is back.
+ * Kept in the store, so a restart here brings no cancelled transfer back to life; forgotten
+ * after 30 days.
+ */
+export class TransferEnds {
+  private kv: Store["kv"];
+  private now: () => number;
+
+  constructor(kv: Store["kv"], now: () => number = Date.now) {
+    this.kv = kv;
+    this.now = now;
+  }
+
+  /** The user cancelled (`cancel`) or dismissed transfer `id` of offline machine `node`. */
+  asked(node: string, id: string, cancel: boolean): void {
+    const was = this.kv.get(TRANSFER_ENDS_NS, id) as TransferEnd | undefined;
+    this.kv.put(TRANSFER_ENDS_NS, id, { node, cancel: cancel || was?.cancel === true, until: this.now() + TRANSFER_END_MS } satisfies TransferEnd);
+  }
+
+  /** What was asked of `node`'s transfers, taken from the store: it is back. */
+  take(node: string): { id: string; cancel: boolean }[] {
+    const at = this.now();
+    const taken: { id: string; cancel: boolean }[] = [];
+    for (const id of this.kv.list(TRANSFER_ENDS_NS)) {
+      const v = this.kv.get(TRANSFER_ENDS_NS, id) as TransferEnd | undefined;
+      if (!v) continue;
+      if (v.until > at && v.node !== node) continue;
+      this.kv.delete(TRANSFER_ENDS_NS, id);
+      if (v.until > at) taken.push({ id, cancel: v.cancel });
+    }
+    return taken;
+  }
 }
 
 /**

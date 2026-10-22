@@ -38,6 +38,8 @@ export class Mirror {
   private nodes = new Map<string, NodeMirror>();
   /** The transfers of nodes that went, by node. */
   private gone = new Map<string, Map<string, Transfer>>();
+  /** Transfers the user ended while their machine was away: held out of every list until they end there. */
+  private held = new Set<string>();
 
   private of(node: string): NodeMirror {
     let m = this.nodes.get(node);
@@ -52,14 +54,15 @@ export class Mirror {
    * machine stopped before it kept them, and no one could cancel or retry them there. A node
    * whose join lists no transfers at all (an older one) loses none.
    */
-  fill(node: string, lists: { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] }, now = Date.now()): Transfer[] {
+  fill(node: string, lists: { sessions: Session[]; workspaces: Workspace[]; asks: Ask[]; terminals?: Terminal[]; transfers?: Transfer[] }, now = Date.now(), held: string[] = []): Transfer[] {
+    for (const id of held) this.held.add(id);
     const before = [...(this.nodes.get(node)?.transfers.values() ?? []), ...(this.gone.get(node)?.values() ?? [])];
     const m = fresh();
     for (const s of lists.sessions) if (s.status !== "ended") m.sessions.set(s.id, s);
     for (const w of lists.workspaces) m.workspaces.set(w.id, w);
     for (const a of lists.asks) if (a.status === "open") m.asks.set(a.id, a);
     for (const t of lists.terminals ?? []) if (t.status === "running") m.terminals.set(t.id, t);
-    for (const t of lists.transfers ?? []) if (!t.dismissed) m.transfers.set(t.id, t);
+    for (const t of lists.transfers ?? []) if (!t.dismissed && !this.held.has(t.id)) m.transfers.set(t.id, t);
     this.nodes.set(node, m);
     this.gone.delete(node);
     if (!lists.transfers) return [];
@@ -150,6 +153,35 @@ export class Mirror {
     for (const [node, m] of this.nodes) if (m.transfers.has(id)) return node;
     for (const [node, kept] of this.gone) if (kept.has(id)) return node;
     return undefined;
+  }
+
+  /** A transfer of a node that went, as its row last stood. */
+  goneTransfer(id: string): { node: string; transfer: Transfer } | undefined {
+    for (const [node, kept] of this.gone) {
+      const transfer = kept.get(id);
+      if (transfer) return { node, transfer };
+    }
+    return undefined;
+  }
+
+  /** Forgets a gone node's transfer: the user ended it here. */
+  forgetGone(id: string): void {
+    for (const [node, kept] of this.gone) if (kept.delete(id) && kept.size === 0) this.gone.delete(node);
+  }
+
+  /**
+   * Whether `t` is held out of the lists: what its machine says of it before it ends there is
+   * not news. Its dismissal lets the hold go.
+   */
+  holds(t: Transfer): boolean {
+    if (!this.held.has(t.id)) return false;
+    if (t.dismissed) this.held.delete(t.id);
+    return true;
+  }
+
+  /** Lets a hold go: the transfer could not be ended on its machine, so the user sees it again. */
+  release(id: string): void {
+    this.held.delete(id);
   }
 
   /** Every linked node's transfers, and those of nodes that went. */

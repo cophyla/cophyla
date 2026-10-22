@@ -92,7 +92,7 @@ import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
 import type { NodeTerminals, TerminalViews } from "./terminals.ts";
-import { HandsPulls, TransferLinks } from "./transfers.ts";
+import { HandsPulls, TransferEnds, TransferLinks } from "./transfers.ts";
 import { TreeCache } from "../transfers/tree.ts";
 import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
 import type { Hop, Transfers } from "../transfers/index.ts";
@@ -226,6 +226,7 @@ export class Nodes {
   private trees: TreeCache;
   /** What this node, as the primary, sent its hands nodes: what they may pull. */
   private handsPulls: HandsPulls;
+  private transferEnds: TransferEnds;
   private replicator: Replicator;
   private replica?: Replica;
   private discovery?: DiscoverySocket;
@@ -298,6 +299,7 @@ export class Nodes {
     });
     this.trees = new TreeCache(deps.now);
     this.handsPulls = new HandsPulls(deps.store.kv, deps.now);
+    this.transferEnds = new TransferEnds(deps.store.kv, deps.now);
     // what the primary sent a hands node is pulled no more once it ends, wherever that is heard
     deps.bus.on("transfer.state", (t) => {
       if (t.dismissed || t.state === "done" || t.state === "cancelled") this.handsPulls.ended(t.id);
@@ -328,6 +330,7 @@ export class Nodes {
       onEnrollClosed: (grant) => this.onEnrollClosed(grant),
       onLeft: (node, grant) => this.onLeft(node, grant),
       onBackupAttached: (grant) => this.deps.grants.markReplica(grant),
+      transfersBack: (node, listed) => this.transfersBack(node, listed),
       ...(deps.turn ? { turn: deps.turn } : {}),
       selfId: () => deps.identity.id,
       role: () => this.role.role,
@@ -632,6 +635,49 @@ export class Nodes {
     }
   }
 
+  /**
+   * A cancel or dismiss of a transfer whose machine is offline: it goes from every list now, as
+   * cancelled or as it stood, and is ended on that machine when it is back.
+   */
+  private endAway(node: string, t: Transfer, cancel: boolean): Record<string, never> {
+    if (cancel && (t.state === "done" || t.state === "cancelled")) throw new RpcError("conflict", `${t.name} has ended: dismiss it instead`);
+    if (!cancel && t.state !== "done" && t.state !== "failed" && t.state !== "cancelled") throw new RpcError("conflict", `${t.name} has not ended: cancel it first`);
+    this.mirror.forgetGone(t.id);
+    this.transferEnds.asked(node, t.id, cancel);
+    const { rate: _rate, error: _error, ...rest } = t;
+    this.deps.bus.emit("transfer.state", cancel ? { ...rest, state: "cancelled", endedAt: (this.deps.now ?? Date.now)(), dismissed: true } : { ...t, dismissed: true });
+    this.log.info("a transfer ended while its machine is offline", { node, id: t.id, cancel });
+    return {};
+  }
+
+  /** At a join: what the user ended of the node's transfers while it was away, held out of the lists and ended there once the join is answered. */
+  private transfersBack(node: string, listed: Transfer[]): string[] {
+    const ends = this.transferEnds.take(node).filter((e) => listed.some((t) => t.id === e.id));
+    if (ends.length > 0) setTimeout(() => void this.endOnReturn(node, ends, listed), 0);
+    return ends.map((e) => e.id);
+  }
+
+  private async endOnReturn(node: string, ends: { id: string; cancel: boolean }[], listed: Transfer[]): Promise<void> {
+    for (const e of ends) {
+      const t = listed.find((x) => x.id === e.id);
+      try {
+        if (e.cancel && t && t.state !== "done" && t.state !== "failed" && t.state !== "cancelled") {
+          // it may have landed in the moment before: then it is only dismissed
+          await this.inbound.forward(node, "transfer.cancel", { id: e.id }, {}).catch((err: unknown) => {
+            if (!(err instanceof RpcError && err.error.code === "conflict")) throw err;
+          });
+        }
+        await this.inbound.forward(node, "transfer.dismiss", { id: e.id }, {});
+        this.log.info("a transfer ended while its machine was away, ended there", { node, id: e.id, cancel: e.cancel });
+      } catch (err) {
+        // the link went again: at the next join; else the user sees it again, to end it there
+        if (err instanceof RpcError && err.error.code === "unavailable") this.transferEnds.asked(node, e.id, e.cancel);
+        else this.mirror.release(e.id);
+        this.log.warn("a transfer ended while its machine was away could not be ended there", { node, id: e.id, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
   /** How other nodes reach this one: the LAN listener on every address, the LAN ones first. */
   selfEndpoints(): string[] {
     const port = this.deps.lanPort();
@@ -737,6 +783,10 @@ export class Nodes {
       mirrorTerminals: () => this.mirror.terminals(),
       registryList: () => this.registry.list(),
       linked: (node) => this.inbound.linked(node),
+      endTransferAway: (node, id, cancel) => {
+        const away = this.mirror.goneTransfer(id);
+        return away?.node === node ? this.endAway(node, away.transfer, cancel) : undefined;
+      },
       forward: (node, method, params, opts) => this.forwardNoting(node, method, params, opts),
       fanout: (method, params) => this.inbound.fanout(method, params),
       remoteMetrics: {

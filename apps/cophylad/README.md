@@ -895,7 +895,10 @@ over the node links, through the primary between two secondaries. It lands in th
 picked, or that machine's Downloads folder, as `<name>.cophyla-part` until it is all there,
 then under the first free of `name`, `name (1)`, …; nothing is overwritten. A link that drops
 or a daemon that restarts leaves it `waiting`, and it carries on from what came. Cancel deletes
-what came; a failed one keeps it for Retry until it is dismissed. Over 1 GiB through the relay
+what came; a failed one keeps it for Retry until it is dismissed. Cancel or Dismiss of one whose
+machine is offline takes it from every list at once; the primary keeps what was asked (kv
+`transfer-ends`, 30 days) and does it on that machine when it rejoins. One a machine came back
+without, its daemon having stopped before it kept it, ends as failed. Over 1 GiB through the relay
 asks first, since the relay counts what it carries. The rows are in `<data>/transfers.json`.
 
 A machine that shares folders alone (`--workspace`) sends and receives inside them, a workspace
