@@ -715,14 +715,21 @@ export const TransferBy = z.discriminatedUnion("kind", [
 ]);
 export type TransferBy = z.infer<typeof TransferBy>;
 
+/** The most a transfer's reason holds: a line, not a note. */
+export const TRANSFER_REASON_MAX = 120;
+
+/** Why a transfer was sent, in a few words, as the user reads it beside its name: `nightly backup of fauna-core`. */
+export const TransferReason = z.string().min(1).max(TRANSFER_REASON_MAX);
+
 /**
  * A file or a folder sent from one of the user's machines (`from`) to a folder on another
- * (`to.dir`), kept by the receiving machine, which pulls it. `to.path` is where it landed,
- * once it is done: the first of `name`, `name (1)`, … that was free, never over anything.
- * `total` and `bytes` count the bytes to send and the bytes come; a folder counts its files
- * too (`files`). `rate` is bytes a second lately, while it runs. `via` is the slowest way its
- * bytes take. `error` says why it failed, or what it waits for. `dismissed` is its last row:
- * the user took it off the list.
+ * (`to.dir`), kept by the receiving machine, which pulls it. `name` is the file's or the
+ * folder's own name. `to.path` is where it landed, once it is done: the first of `name`,
+ * `name (1)`, … that was free, never over anything. `reason` is why it was sent, when the
+ * sender said: an agent's `send_file` asks for one. `total` and `bytes` count the bytes to
+ * send and the bytes come; a folder counts its files too (`files`). `rate` is bytes a second
+ * lately, while it runs. `via` is the slowest way its bytes take. `error` says why it failed,
+ * or what it waits for. `dismissed` is its last row: the user took it off the list.
  */
 export const Transfer = z.object({
   id: TransferId,
@@ -730,6 +737,7 @@ export const Transfer = z.object({
   to: z.object({ node: NodeId, dir: z.string().min(1), path: z.string().optional() }),
   kind: z.enum(["file", "folder"]),
   name: z.string().min(1),
+  reason: TransferReason.optional(),
   total: z.number().int().nonnegative(),
   bytes: z.number().int().nonnegative(),
   files: z.object({ done: z.number().int().nonnegative(), total: z.number().int().nonnegative() }).optional(),

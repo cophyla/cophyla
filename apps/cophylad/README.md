@@ -901,6 +901,12 @@ machine is offline takes it from every list at once; the primary keeps what was 
 without, its daemon having stopped before it kept it, ends as failed. Over 1 GiB through the relay
 asks first, since the relay counts what it carries. The rows are in `<data>/transfers.json`.
 
+An agent's `send_file` says why it sends (`reason`, one line of at most 120 characters, folded
+and cut by the daemon): the user's ask shows it, the agent session it is sent to is told it
+with where it landed, and the rail lists it under the file's or folder's name, above who sent
+it between which machines. Dismiss all beside the Transfers heading dismisses every one that
+ended, one `transfer.dismiss` each on the machine that keeps it.
+
 A machine that shares folders alone (`--workspace`) sends and receives inside them, a workspace
 node lending another person's folder neither, and a machine on an older Cophyla is named as
 one to update. A hands machine sends and receives too, but pulls only what its primary sent it:

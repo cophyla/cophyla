@@ -106,9 +106,10 @@ describe("agent messages across nodes", () => {
     // the machines are listed for it, by name
     expect((await callAs(alpha, a, "list_agents", {})).text).toContain("Machines (send_file with to set to the name):");
     // the session prompts: the primary asks the user first
-    const sending = callAs(alpha, a, "send_file", { path: "out/report.txt", to: b.id, dir: "inbox" });
+    const sending = callAs(alpha, a, "send_file", { path: "out/report.txt", to: b.id, dir: "inbox", reason: "Test results for review" });
     const ask = await waitFor(() => primary!.d.asks.listOpen().find((x) => x.title.startsWith("Let ")), 10_000);
     expect(ask.title).toMatch(/send report\.txt \(9 B\) to .+ on Beta\?$/);
+    expect(ask.detail).toStartWith("Test results for review\n");
     primary.d.asks.answer(ask.id, { option: "allow" }, { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" });
     const sent = await sending;
     expect(sent.isError).toBeUndefined();
@@ -118,9 +119,13 @@ describe("agent messages across nodes", () => {
     // the receiving session hears where, from cophyla
     const told = await waitFor(() => beta!.store.sessionEvents.history(b.id, { limit: 200 }).find((e) => e.kind === "user_turn" && String((e.payload as { text?: string }).text ?? "").includes("sent you report.txt")), 10_000);
     expect((told.payload as { text: string }).text).toContain(landed);
-    // the transfer was Beta's, started as the agent's, gated on Beta as the primary's node
+    expect((told.payload as { text: string }).text).toContain('("Test results for review")');
+    // the transfer was Beta's, started as the agent's with its reason, gated on Beta as the primary's node
     const row = beta.transfers.list()[0]!;
-    expect(row).toMatchObject({ state: "done", by: { kind: "agent", session: a.id }, from: { node: alpha.identity.id } });
+    expect(row).toMatchObject({ state: "done", reason: "Test results for review", by: { kind: "agent", session: a.id }, from: { node: alpha.identity.id } });
+    // and the primary's apps see the reason in the row Beta lists
+    await waitFor(() => primary!.d.nodes.mirror.transfers().find((t) => t.id === row.id && t.state === "done"), 10_000);
+    expect(primary.d.nodes.mirror.transfers().find((t) => t.id === row.id)!.reason).toBe("Test results for review");
     expect(beta.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "transfer.start")).toMatchObject({ principal: { kind: "node", id: primary.d.identity.id }, outcome: "ok" });
   }, 60_000);
 

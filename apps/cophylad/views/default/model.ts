@@ -4588,18 +4588,23 @@ export function triggerWords(task: Task): string {
 
 // --- transfers -------------------------------------------------------------------------------
 
-/** A transfer's row under Transfers: what it is, between which machines, how far, and what may be done with it. */
+/** A transfer's row under Transfers: what it is and why, who sent it between which machines, how far, and what may be done with it. */
 export interface TransferRow {
   id: string;
+  /** The file's or the folder's own name. */
   name: string;
+  /** Why it was sent, when the sender said. */
+  reason?: string;
   /** Its path where it came from, and the folder it goes to: the row's hover. */
   title: string;
-  /** From which machine to which: `Desk → Laptop`, one name for a copy on the same one. */
-  route: string;
+  /** Who sent it, from which machine to which, and once it ended how big it is: `fauna-core · ansar → Agha · 552 KB`. */
+  meta: string;
+  /** When it ended; none while it is under way. */
+  endedAt?: number;
   state: Transfer["state"];
   /** How far it is, 0 to 1. */
   done: number;
-  /** What came of how much, with the speed and the time left while it runs; why it waits or failed. */
+  /** What came of how much, with the speed and the time left while it runs; why it waits or failed; nothing once it landed. */
   words: string;
   /** Its bytes ride the server's relay. */
   relay: boolean;
@@ -4629,10 +4634,20 @@ export function etaWords(seconds: number): string {
   return m > 0 && m < 60 ? `${h} h ${m} min left` : `${h} h left`;
 }
 
-/** What a transfer's row says under its bar. */
+/** A transfer that ended: landed, failed or cancelled. Dismiss takes it off the list. */
+export function transferEnded(t: Pick<Transfer, "state">): boolean {
+  return t.state === "done" || t.state === "failed" || t.state === "cancelled";
+}
+
+/** How big a transfer is: its bytes, and a folder's files. */
+function transferSize(t: Transfer): string {
+  return `${bytesWords(t.total)}${t.files && t.files.total > 1 ? `, ${t.files.total} files` : ""}`;
+}
+
+/** What a transfer's row says under its bar: nothing once it landed, its size being in the line above. */
 export function transferWords(t: Transfer): string {
   const of = `${bytesWords(t.bytes)} of ${bytesWords(t.total)}`;
-  const files = t.files && t.files.total > 1 ? `, ${t.files.done} of ${t.files.total} files` : "";
+  const files = t.files && t.files.total > 1 ? ` · ${t.files.done} of ${t.files.total} files` : "";
   switch (t.state) {
     case "running": {
       const rate = t.rate !== undefined && t.rate > 0 ? t.rate : undefined;
@@ -4640,16 +4655,22 @@ export function transferWords(t: Transfer): string {
       return [`${of}${files}`, ...(rate ? [`${bytesWords(rate)}/s`] : []), ...(left ? [left] : [])].join(" · ");
     }
     case "queued":
-      return `${bytesWords(t.total)} · after the one before it`;
+      return `${transferSize(t)} · after the one before it`;
     case "waiting":
       return `${t.error ? t.error.charAt(0).toUpperCase() + t.error.slice(1) : "Waiting"} · ${of}${files}`;
     case "done":
-      return `${bytesWords(t.total)}${t.files && t.files.total > 1 ? `, ${t.files.total} files` : ""} · done`;
+      return "";
     case "failed":
       return `Failed: ${t.error ?? "it did not finish"}`;
     case "cancelled":
       return "Cancelled";
   }
+}
+
+/** Who sent a transfer, from which machine to which, and once it ended how big it is. */
+export function transferMeta(state: ViewState, t: Transfer): string {
+  const who = t.by.kind === "agent" ? t.by.alias : "You";
+  return [who, transferRoute(state, t), ...(transferEnded(t) ? [transferSize(t)] : [])].join(" · ");
 }
 
 /** Every transfer as the rail lists them. */
@@ -4660,15 +4681,17 @@ export function selectTransfers(state: ViewState): TransferRow[] {
     .map((t) => ({
       id: t.id,
       name: t.name,
+      ...(t.reason ? { reason: t.reason } : {}),
       title: `${t.from.path}\n→ ${t.to.path ?? t.to.dir}`,
-      route: transferRoute(state, t),
+      meta: transferMeta(state, t),
+      ...(transferEnded(t) && t.endedAt !== undefined ? { endedAt: t.endedAt } : {}),
       state: t.state,
       done: t.state === "done" ? 1 : t.total > 0 ? Math.min(1, t.bytes / t.total) : 0,
       words: transferWords(t),
       relay: t.via === "relay",
       cancel: t.state === "queued" || t.state === "running" || t.state === "waiting",
       retry: t.state === "failed",
-      dismiss: t.state === "done" || t.state === "failed" || t.state === "cancelled",
+      dismiss: transferEnded(t),
       reveal: t.state === "done" && state.hostFilePaths && here !== undefined && t.to.node === here && t.to.path !== undefined,
     }));
 }

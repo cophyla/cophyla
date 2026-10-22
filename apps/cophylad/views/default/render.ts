@@ -729,19 +729,36 @@ const TERMINALS_GROUP = "terminals";
 /** And of the Transfers heading. */
 const TRANSFERS_GROUP = "transfers";
 
+/** A transfer's state, as its dot says it. */
+const TRANSFER_STATE_WORDS: Record<TransferRow["state"], string> = { running: "Sending", queued: "Queued", waiting: "Waiting", done: "Landed", failed: "Failed", cancelled: "Cancelled" };
+
+/** A line of `a · b · c` that wraps between its pieces alone, never inside `552 KB` or `6 MB/s`, each `·` kept with the piece before it. */
+function setPieces(node: HTMLElement, text: string): void {
+  if (node.dataset["text"] === text) return;
+  node.dataset["text"] = text;
+  const pieces = text === "" ? [] : text.split(" · ");
+  node.replaceChildren(...pieces.flatMap((p, i) => [...(i > 0 ? [" "] : []), el("span", "transfer-piece", i < pieces.length - 1 ? `${p} ·` : p)]));
+}
+
 /**
- * Transfers, while there are any: a heading folded like a folder's, and a row per transfer,
- * the ones under way first: its name, `via relay` when its bytes ride the server's relay, the
- * machines it goes between, a bar, how far with the speed and the time left (or why it waits
- * or failed), and what may be done with it: Show where it landed on this computer, Retry,
- * Cancel, Dismiss.
+ * Transfers, while there are any: a heading folded like a folder's, with Dismiss all while
+ * some ended, and a row per transfer, the ones under way first: a dot for its state, the
+ * file's or the folder's name, `via relay` when its bytes ride the server's relay, × to
+ * dismiss one that ended; why it was sent; who sent it between which machines, with its size
+ * and the time once it ended; while under way a bar; how far with the speed and the time
+ * left, or why it waits or failed, beside Cancel or Retry; Show in folder where it landed on
+ * this computer.
  */
 function renderTransfers(node: HTMLElement, rows: TransferRow[], state: ViewState, ui: UiState): void {
   setHidden(node, rows.length === 0);
-  const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
+  const name = node.querySelector<HTMLElement>(":scope > .transfers-head > .tab-group-name")!;
   const folded = ui.folded.has(TRANSFERS_GROUP);
   setText(name, groupHeading("Transfers", rows.length, folded));
   name.setAttribute("aria-expanded", folded ? "false" : "true");
+  const ended = rows.filter((r) => r.dismiss);
+  const clear = node.querySelector<HTMLButtonElement>(":scope > .transfers-head > .transfers-clear")!;
+  setHidden(clear, ended.length === 0);
+  clear.disabled = !state.connected || ended.every((r) => ui.transferBusy?.has(r.id) === true);
   const list = node.querySelector<HTMLElement>(":scope > .transfer-list")!;
   setHidden(list, folded);
   reconcile(list, rows, (r) => r.id, createTransfer, (n, r) => updateTransfer(n, r, state, ui));
@@ -750,39 +767,55 @@ function renderTransfers(node: HTMLElement, rows: TransferRow[], state: ViewStat
 function createTransfer(): HTMLElement {
   const row = el("div", "transfer");
   const head = el("div", "transfer-head");
-  head.append(el("span", "transfer-name"), el("span", "transfer-relay", "via relay"));
+  const dot = el("span", "transfer-dot");
+  dot.setAttribute("role", "img");
+  const dismiss = actionButton("transfer-button transfer-x", "×", "transfer-dismiss");
+  dismiss.title = "Dismiss: take it off the list";
+  head.append(dot, el("span", "transfer-name"), el("span", "transfer-relay", "via relay"), dismiss);
   const bar = el("div", "transfer-bar");
   bar.setAttribute("role", "progressbar");
   bar.setAttribute("aria-valuemin", "0");
   bar.setAttribute("aria-valuemax", "100");
   bar.append(el("span", "transfer-fill"));
-  const actions = el("div", "transfer-actions");
-  const show = actionButton("transfer-button", "Show", "transfer-reveal");
+  const foot = el("div", "transfer-foot");
+  const show = actionButton("transfer-button transfer-show", "Show in folder", "transfer-reveal");
   show.title = "Show it in this computer's file manager";
   const retry = actionButton("transfer-button", "Retry", "transfer-retry");
   retry.title = "Try again from what came";
   const cancel = actionButton("transfer-button", "Cancel", "transfer-cancel");
   cancel.title = "Stop it and delete what came";
-  const dismiss = actionButton("transfer-button", "Dismiss", "transfer-dismiss");
-  dismiss.title = "Take it off the list";
-  actions.append(show, retry, cancel, dismiss);
-  row.append(head, el("div", "transfer-route"), bar, el("div", "transfer-words"), actions);
+  foot.append(el("div", "transfer-words"), show, retry, cancel);
+  row.append(head, el("div", "transfer-reason"), el("div", "transfer-meta"), bar, foot);
   return row;
 }
 
 function updateTransfer(row: HTMLElement, r: TransferRow, state: ViewState, ui: UiState): void {
   setData(row, "state", r.state);
   row.title = r.title;
+  const dot = row.querySelector<HTMLElement>(".transfer-dot")!;
+  if (dot.getAttribute("aria-label") !== TRANSFER_STATE_WORDS[r.state]) {
+    dot.setAttribute("aria-label", TRANSFER_STATE_WORDS[r.state]);
+    dot.title = TRANSFER_STATE_WORDS[r.state];
+  }
   setText(row.querySelector(".transfer-name")!, r.name);
   setHidden(row.querySelector<HTMLElement>(".transfer-relay")!, !r.relay);
-  setText(row.querySelector(".transfer-route")!, r.route);
+  const reason = row.querySelector<HTMLElement>(".transfer-reason")!;
+  setText(reason, r.reason ?? "");
+  setHidden(reason, r.reason === undefined);
+  setPieces(row.querySelector<HTMLElement>(".transfer-meta")!, r.endedAt !== undefined ? `${r.meta} · ${clock(r.endedAt)}` : r.meta);
   const bar = row.querySelector<HTMLElement>(".transfer-bar")!;
-  setHidden(bar, r.state === "cancelled");
+  setHidden(bar, r.state !== "running" && r.state !== "queued" && r.state !== "waiting");
   const percent = String(Math.round(r.done * 1000) / 10);
   bar.setAttribute("aria-valuenow", percent);
   bar.setAttribute("aria-label", `${r.name}: ${percent}%`);
   if (bar.style.getPropertyValue("--done") !== `${percent}%`) bar.style.setProperty("--done", `${percent}%`);
-  setText(row.querySelector(".transfer-words")!, r.words);
+  const words = row.querySelector<HTMLElement>(".transfer-words")!;
+  // why it failed is a sentence, wrapped as one; how far one is goes in pieces
+  if (r.state === "failed") {
+    delete words.dataset["text"];
+    setText(words, r.words);
+  } else setPieces(words, r.words);
+  setHidden(words, r.words === "");
   const busy = ui.transferBusy?.has(r.id) === true || !state.connected;
   for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>(".transfer-button"))) {
     setData(b, "id", r.id);
@@ -790,6 +823,9 @@ function updateTransfer(row: HTMLElement, r: TransferRow, state: ViewState, ui: 
     setHidden(b, !(action === "transfer-reveal" ? r.reveal : action === "transfer-retry" ? r.retry : action === "transfer-cancel" ? r.cancel : r.dismiss));
     b.disabled = busy;
   }
+  const x = row.querySelector<HTMLElement>(".transfer-x")!;
+  const label = `Dismiss ${r.name}`;
+  if (x.getAttribute("aria-label") !== label) x.setAttribute("aria-label", label);
 }
 /** A machine's under Terminals. */
 const machineGroupKey = (node: string): string => `${TERMINALS_GROUP}:${node}`;
@@ -1914,12 +1950,16 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     terminalsName.dataset["group"] = TERMINALS_GROUP;
     terminalsName.title = "Terminals no agent session runs in";
     terminals.append(terminalsName, el("div", "tab-terminals"), el("div", "tab-subgroups terminal-machines"));
-    // The files on their way between the machines, and the ones that came, under a heading folded the same way.
+    // The files on their way between the machines, and the ones that came, under a heading folded the same way, with Dismiss all beside it.
     const transfers = el("div", "tab-group transfers-group");
+    const transfersHead = el("div", "transfers-head");
     const transfersName = actionButton("tab-group-name", "Transfers", "group-fold");
     transfersName.dataset["group"] = TRANSFERS_GROUP;
     transfersName.title = "Files and folders sent between your computers";
-    transfers.append(transfersName, el("div", "transfer-list"));
+    const transfersClear = actionButton("transfers-clear", "Dismiss all", "transfer-dismiss-all");
+    transfersClear.title = "Take every transfer that ended off the list: the ones that landed, failed or were cancelled";
+    transfersHead.append(transfersName, transfersClear);
+    transfers.append(transfersHead, el("div", "transfer-list"));
     list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), createGroupsHeading(), terminals, transfers);
     // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
     const cards = createStatus();

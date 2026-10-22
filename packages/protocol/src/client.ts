@@ -54,6 +54,7 @@ import {
   Thread,
   Transfer,
   TransferBy,
+  TransferReason,
   Usage,
   ViewManifest,
   VoiceState,
@@ -1158,14 +1159,15 @@ export const clientRequests = {
    * another folder on the same one. The receiving machine keeps the transfer and pulls it,
    * one at a time per machine; it lands beside what is there, never over it. Over 1 GB with
    * a hop through the server's relay, it is answered `confirm` and not started, unless
-   * `relayOk`. `by` and `notify` are what the primary carries for an agent's `send_file`
-   * (who sent it, and the agent session told where it landed); a client's own are dropped.
-   * Answered by the receiving machine.
+   * `relayOk`. `reason` is why it is sent, shown beside its name. `by` and `notify` are what
+   * the primary carries for an agent's `send_file` (who sent it, and the agent session told
+   * where it landed); a client's own are dropped. Answered by the receiving machine.
    */
   "transfer.start": {
     params: z.object({
       from: z.object({ node: NodeId, path: z.string().min(1).max(4096) }),
       to: z.object({ node: NodeId, dir: z.string().min(1).max(4096).optional() }),
+      reason: TransferReason.optional(),
       relayOk: z.boolean().optional(),
       by: TransferBy.optional(),
       notify: SessionId.optional(),

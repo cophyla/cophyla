@@ -25,15 +25,16 @@
     },
     {
       "name": "send_file",
-      "description": "Copy a file or a folder from this machine to another of the user's machines, or to another of the user's agent sessions there. It lands in dir when you give one, else in that machine's Downloads folder, beside what is there and never over it; a session it is sent to is told where it landed. A long one carries on after you are answered, and you are told when it lands.",
+      "description": "Copy a file or a folder from this machine to another of the user's machines, or to another of the user's agent sessions there. It lands in dir when you give one, else in that machine's Downloads folder, beside what is there and never over it; a session it is sent to is told where it landed, and why. A long one carries on after you are answered, and you are told when it lands. The user sees it in Cophyla's list of transfers by its name, with your reason under it.",
       "inputSchema": {
         "type": "object",
         "properties": {
           "path": { "type": "string", "description": "The file or folder on this machine: an absolute path, or one under your working folder." },
           "to": { "type": "string", "description": "An agent session as list_agents names it, or one of the user's machines by its name (list_agents lists them)." },
+          "reason": { "type": "string", "maxLength": 120, "description": "Why you send it, in a few words the user reads beside it: nightly backup of fauna-core, build for the API session to test." },
           "dir": { "type": "string", "description": "The folder on the receiving machine to put it in: an absolute path, or, when to is a session, one under that session's folder." }
         },
-        "required": ["path", "to"],
+        "required": ["path", "to", "reason"],
         "additionalProperties": false
       },
       "annotations": { "title": "Send a file to another machine", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }

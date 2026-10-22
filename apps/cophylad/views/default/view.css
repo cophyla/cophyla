@@ -5766,17 +5766,51 @@ button:disabled {
 
 /* --- transfers ------------------------------------------------------------------------------ */
 
-/* Files and folders between the machines, under the terminals, headed and folded as they are: a
-   row per transfer, its name and `via relay`, the machines, a bar, how far, and its buttons. */
+/* Files and folders between the machines, under the terminals, headed and folded as they are,
+   with Dismiss all beside the heading while some ended. A row per transfer, a line between
+   them: a dot for its state, the file's or the folder's name, `via relay` and × to dismiss
+   it; why it was sent; who sent it between which machines; while under way a bar; how far, or
+   why it waits or failed, beside Cancel or Retry; Show in folder where it landed here. */
 .transfers-group {
   margin-top: 8px;
+}
+
+.transfers-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding-right: 10px;
+}
+
+.transfers-head > .tab-group-name {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.transfers-clear {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.transfers-clear:hover:not(:disabled) {
+  color: var(--ink);
+  text-decoration: underline;
+}
+
+.transfers-clear:disabled {
+  opacity: 0.5;
 }
 
 .transfer-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  padding: 2px 10px 0;
+  padding: 0 10px;
 }
 
 .transfer {
@@ -5784,26 +5818,71 @@ button:disabled {
   flex-direction: column;
   gap: 2px;
   min-width: 0;
+  padding: 7px 0;
   font-size: 12.5px;
 }
 
-.transfer-head {
+.transfer + .transfer {
+  border-top: 1px solid var(--line);
+}
+
+.transfer-head,
+.transfer-foot {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 6px;
   min-width: 0;
 }
 
+/* a row that landed has no foot: nothing under way, no button */
+.transfer-foot:not(:has(> :not([hidden]))) {
+  display: none;
+}
+
+/* the state, on the name's first line: green landed, purple sending, amber waiting, red failed */
+.transfer-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin: 6px 1px 0 0;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.transfer[data-state="running"] .transfer-dot {
+  background: var(--cophyla);
+}
+
+.transfer:is([data-state="queued"], [data-state="waiting"]) .transfer-dot {
+  background: var(--amber);
+}
+
+.transfer[data-state="done"] .transfer-dot {
+  background: var(--moss);
+}
+
+.transfer[data-state="failed"] .transfer-dot {
+  background: var(--rust);
+}
+
+/* the whole name, never cut: a long one breaks anywhere */
 .transfer-name {
+  flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   color: var(--ink);
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.transfer[data-state="cancelled"] .transfer-name {
+  color: var(--muted);
+  font-weight: 400;
 }
 
 .transfer-relay {
   flex: 0 0 auto;
+  margin-top: 1px;
   padding: 0 5px;
   border: 1px solid var(--amber);
   border-radius: 8px;
@@ -5811,19 +5890,45 @@ button:disabled {
   font-size: 10.5px;
 }
 
-.transfer-route,
+/* the reason, the line under it, the bar and the foot line up under the name, past the dot */
+.transfer-reason,
+.transfer-meta,
+.transfer-bar,
+.transfer-foot {
+  margin-left: 14px;
+}
+
+/* a line at most TRANSFER_REASON_MAX long: read whole */
+.transfer-reason {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  opacity: 0.85;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* read whole, on a second line when the rail is narrow, never cut */
+.transfer-meta,
 .transfer-words {
   min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
   color: var(--muted);
   font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.transfer-words {
+  flex: 1 1 auto;
+}
+
+/* a piece goes to the next line whole, and breaks only when it is longer than a line */
+.transfer-piece {
+  display: inline-block;
+  max-width: 100%;
 }
 
 .transfer[data-state="failed"] .transfer-words {
   color: var(--rust);
-  white-space: normal;
 }
 
 .transfer[data-state="waiting"] .transfer-words {
@@ -5833,6 +5938,7 @@ button:disabled {
 /* how far, `--done` of the way */
 .transfer-bar {
   height: 4px;
+  margin-top: 3px;
   border-radius: 2px;
   background: var(--line-strong);
   overflow: hidden;
@@ -5846,32 +5952,20 @@ button:disabled {
   transition: width 0.4s ease-out;
 }
 
-.transfer[data-state="done"] .transfer-fill {
-  background: var(--moss);
-}
-
-.transfer[data-state="failed"] .transfer-fill,
 .transfer[data-state="waiting"] .transfer-fill {
   background: var(--amber);
 }
 
-.transfer-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.transfer-actions:not(:has(.transfer-button:not([hidden]))) {
-  display: none;
-}
-
-.transfer-button {
-  padding: 1px 8px;
+/* Retry and Cancel beside how far it got: small, at the end of the line */
+.transfer-button:not(.transfer-x, .transfer-show) {
+  flex: 0 0 auto;
+  padding: 0 7px;
   border: 1px solid var(--line-strong);
   border-radius: 3px;
   background: transparent;
   color: var(--muted);
-  font-size: 11.5px;
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .transfer-button:hover:not(:disabled) {
@@ -5881,6 +5975,39 @@ button:disabled {
 
 .transfer-button:disabled {
   opacity: 0.5;
+}
+
+/* where it landed, as a link under the line above */
+.transfer-show {
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cophyla-ink);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+
+.transfer-show:hover:not(:disabled) {
+  background: none;
+  color: var(--cophyla-ink);
+  text-decoration: underline;
+}
+
+/* × beside the name, for a transfer that ended */
+.transfer-x {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: -1px -3px 0 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: none;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 18px;
+  text-align: center;
 }
 
 /* Send to…, in the Files panel's menu's place: the computers, then the picker on the one

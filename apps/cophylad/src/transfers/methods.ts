@@ -15,9 +15,9 @@ export function lastName(path: string): string {
   return parts[parts.length - 1] || path;
 }
 
-/** What starting a transfer asks, where policy asks: what comes, from where, into which folder. */
-export function transferAsk(p: { from: { node: string; path: string }; to: { node: string; dir?: string } }): { title: string; detail?: string } {
-  return { title: `Copy ${lastName(p.from.path)} to this machine?`, detail: `${p.from.path}, into ${p.to.dir ?? "the Downloads folder"}.` };
+/** What starting a transfer asks, where policy asks: what comes, from where, into which folder, and why when it says. */
+export function transferAsk(p: { from: { node: string; path: string }; to: { node: string; dir?: string }; reason?: string }): { title: string; detail?: string } {
+  return { title: `Copy ${lastName(p.from.path)} to this machine?`, detail: `${p.reason ? `${p.reason}\n` : ""}${p.from.path}, into ${p.to.dir ?? "the Downloads folder"}.` };
 }
 
 export function transferMethods(deps: { transfers: () => Transfers | undefined; nodeId: string; revealer?: Revealer }): MethodTable {
@@ -30,7 +30,7 @@ export function transferMethods(deps: { transfers: () => Transfers | undefined; 
     "transfer.start": {
       target: (p) => p.from.path,
       ask: (p) => transferAsk(p),
-      handler: (p) => get().begin({ from: p.from, to: p.to, ...(p.relayOk ? { relayOk: true } : {}), by: { kind: "user" } }),
+      handler: (p) => get().begin({ from: p.from, to: p.to, ...(p.reason ? { reason: p.reason } : {}), ...(p.relayOk ? { relayOk: true } : {}), by: { kind: "user" } }),
     },
     "transfer.cancel": {
       target: (p) => p.id,

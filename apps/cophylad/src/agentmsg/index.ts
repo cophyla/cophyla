@@ -25,7 +25,7 @@ import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { SendOptions } from "../sessions/index.ts";
-import { sizeText } from "../transfers/index.ts";
+import { reasonOf, sizeText } from "../transfers/index.ts";
 import { identify, senderBypasses } from "./caller.ts";
 import type { CallerLookup, Evidence } from "./caller.ts";
 import { agentRef, directory, eligible, folderOf, listing, listingText, resolve, slug } from "./directory.ts";
@@ -105,7 +105,7 @@ export interface AgentFiles {
   /** What `path` on `node` holds; refuses what is not there or may not be sent. */
   peek(node: string, path: string): Promise<{ kind: "file" | "folder"; name: string; total: number; files: number }>;
   /** Starts a transfer on the machine it goes to, here or forwarded there. */
-  start(params: { from: { node: string; path: string }; to: { node: string; dir?: string }; relayOk?: boolean; by: TransferBy; notify?: string }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm }>;
+  start(params: { from: { node: string; path: string }; to: { node: string; dir?: string }; reason?: string; relayOk?: boolean; by: TransferBy; notify?: string }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm }>;
   /** The transfer once it has ended. */
   ended(id: string): Promise<Transfer>;
 }
@@ -339,11 +339,13 @@ export class AgentMessages {
     const path = typeof args["path"] === "string" ? args["path"].trim() : "";
     const to = typeof args["to"] === "string" ? args["to"].trim() : "";
     const dir = typeof args["dir"] === "string" && args["dir"].trim() ? args["dir"].trim() : undefined;
+    const reason = reasonOf(typeof args["reason"] === "string" ? args["reason"] : undefined);
     if (!path) return { text: "send_file needs path: the file or folder on this machine.", isError: true };
     if (!to) return { text: "send_file needs to: an agent session or a machine, by the name list_agents gives it.", isError: true };
+    const p = { path, to, ...(dir ? { dir } : {}), ...(reason ? { reason } : {}) };
     try {
-      if (this.deps.cluster.routes()) return { text: await this.sendFile(caller, mode, { path, to, ...(dir ? { dir } : {}) }) };
-      return nodeLinkRequests["file.send"].result.parse(await this.upward("file.send", { caller: caller.id, mode, path, to, ...(dir ? { dir } : {}) }, FILE_UPWARD_MS));
+      if (this.deps.cluster.routes()) return { text: await this.sendFile(caller, mode, p) };
+      return nodeLinkRequests["file.send"].result.parse(await this.upward("file.send", { caller: caller.id, mode, ...p }, FILE_UPWARD_MS));
     } catch (e) {
       return { text: refusalText(e), isError: true };
     }
@@ -623,7 +625,7 @@ export class AgentMessages {
    * user too, never remembered. Answered once it lands, or, when it takes longer, at once with
    * what is happening and later with how it ended.
    */
-  async sendFile(caller: Session, mode: AgentMode, p: { path: string; to: string; dir?: string }): Promise<string> {
+  async sendFile(caller: Session, mode: AgentMode, p: { path: string; to: string; dir?: string; reason?: string }): Promise<string> {
     const files = this.deps.files?.();
     if (!files) throw new RpcError("unavailable", "sending files is off on this machine");
     const from = caller.node;
@@ -656,9 +658,9 @@ export class AgentMessages {
           principal: { kind: "harness", session: caller.id },
           action: "transfer.send",
           target: target.node,
-          args: { path, to: p.to, ...(dir ? { dir } : {}), bytes: what.total },
+          args: { path, to: p.to, ...(dir ? { dir } : {}), ...(p.reason ? { reason: p.reason } : {}), bytes: what.total },
           sessionKey: caller.id,
-          ask: { title: `Let ${alias} send ${label} to ${where}?`, detail: `${path} on ${fromName}, into ${dir ?? "the Downloads folder"} on ${target.nodeName}.` },
+          ask: { title: `Let ${alias} send ${label} to ${where}?`, detail: `${p.reason ? `${p.reason}\n` : ""}${path} on ${fromName}, into ${dir ?? "the Downloads folder"} on ${target.nodeName}.` },
           ...(mode === "bypass" ? { unprompted: true } : {}),
         },
         () => undefined,
@@ -666,7 +668,7 @@ export class AgentMessages {
       );
       asking = false;
       const by: TransferBy = { kind: "agent", alias, session: caller.id };
-      const params = { from: { node: from, path }, to: { node: target.node, ...(dir ? { dir } : {}) }, by, ...(target.agent ? { notify: target.agent.session } : {}) };
+      const params = { from: { node: from, path }, to: { node: target.node, ...(dir ? { dir } : {}) }, ...(p.reason ? { reason: p.reason } : {}), by, ...(target.agent ? { notify: target.agent.session } : {}) };
       let started = await files.start(params);
       if (started.confirm) {
         asking = true;
@@ -767,7 +769,7 @@ export class AgentMessages {
       const caller = this.callerOf(peer, p.caller);
       if (peer.grant === undefined || !this.deps.cluster.grant(peer.grant)) throw new RpcError("denied", "the node's grant is not known here");
       try {
-        return { text: await this.sendFile(caller, p.mode, { path: p.path, to: p.to, ...(p.dir !== undefined ? { dir: p.dir } : {}) }) };
+        return { text: await this.sendFile(caller, p.mode, { path: p.path, to: p.to, ...(p.dir !== undefined ? { dir: p.dir } : {}), ...(p.reason !== undefined ? { reason: p.reason } : {}) }) };
       } catch (e) {
         return { text: refusalText(e), isError: true };
       }

@@ -4,7 +4,8 @@
 // goes on from the partial's size; a file that changed since the walk starts again from
 // nothing; a daemon that stops and starts again carries on with what it kept; a cancel
 // deletes the partial, a failure keeps it for a retry; a big one over the relay waits for the
-// user's word; an agent session it was sent to is told where it landed.
+// user's word; an agent session it was sent to is told where it landed, and why when the
+// sender said: a reason kept as one line, cut to its most.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
@@ -12,7 +13,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { join, parse } from "node:path";
 import type { NodeRecord, Transfer } from "@cophyla/protocol";
-import { PROTOCOL_VERSION } from "@cophyla/protocol";
+import { PROTOCOL_VERSION, TRANSFER_REASON_MAX } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import { PipeHub } from "../src/remote/pipes.ts";
 import type { End, FilePipe, FileTarget } from "../src/remote/pipes.ts";
@@ -358,6 +359,29 @@ describe("the transfer engine", () => {
     await waitFor(() => r.told.length > 0, 10_000);
     expect(r.t.get(t.id)!.by).toEqual({ kind: "agent", alias: "api-codex", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" });
     expect(r.told).toEqual([{ session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", text: `api-codex sent you the folder dist: ${join(r.home, "in", "dist")}` }]);
+  });
+
+  test("a reason is kept as one line, cut to its most, and the session it was sent to is told it", async () => {
+    const r = rig();
+    const src = join(r.home, "src");
+    mkdirSync(src);
+    writeFileSync(join(src, "a.bundle"), "a");
+    writeFileSync(join(src, "b.bundle"), "b");
+    writeFileSync(join(src, "c.bundle"), "c");
+    const by = { kind: "agent", alias: "fauna-core", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" };
+    const a = (await start(r, join(src, "a.bundle"), join(r.home, "in"), { by, notify: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", reason: "  Nightly backup\n  of fauna-core " })).transfer!;
+    expect(a.reason).toBe("Nightly backup of fauna-core");
+    const long = (await start(r, join(src, "b.bundle"), join(r.home, "in"), { reason: "x ".repeat(100) })).transfer!;
+    expect(long.reason).toHaveLength(TRANSFER_REASON_MAX);
+    expect(long.reason!.endsWith("…")).toBe(true);
+    expect("reason" in (await start(r, join(src, "c.bundle"), join(r.home, "in"), { reason: " \n " })).transfer!).toBe(false);
+    await waitFor(() => r.told.length > 0, 10_000);
+    expect(r.told[0]).toEqual({ session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", text: `fauna-core sent you a.bundle ("Nightly backup of fauna-core"): ${join(r.home, "in", "a.bundle")}` });
+    // kept by the next daemon, as the rest of the row is
+    await waitFor(() => ended(state(r, long.id)), 10_000);
+    await r.t.stop();
+    r.t = r.make();
+    expect(r.t.get(a.id)!.reason).toBe("Nightly backup of fauna-core");
   });
 
   test("a start is refused for a machine that sends no files, a folder that cannot be made, and a relative path", async () => {

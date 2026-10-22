@@ -6,6 +6,7 @@
 // folder or an absolute one, into the Downloads folder or the folder named; what lands soon
 // is answered, what takes longer is told later. A machine on an older Cophyla, one that is
 // away, and a relative folder for a machine are refused. `list_agents` names the machines.
+// Its reason, folded to one line, goes with the transfer and into the ask.
 
 import { describe, expect, test } from "bun:test";
 import { newId } from "@cophyla/protocol";
@@ -161,24 +162,24 @@ describe("send_file", () => {
     const me = sess("claude", "C:\\work\\web", { native: { id: "c-me", pid: 4100, transport: "pipe" }, name: "web" });
     const remote = sess("codex", "/home/me/api", { node: LAPTOP });
     const r = rig({ local: [me], mirror: [remote], nodes: [node(DESK, "Desk", { role: "primary", platform: "windows" }), node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: true } });
-    const answer = await r.call(me, "send_file", { path: "dist\\build.zip", to: "api-codex" });
+    const answer = await r.call(me, "send_file", { path: "dist\\build.zip", to: "api-codex", reason: " Build for\n the API tests " });
     expect(answer.isError).toBeUndefined();
     expect(answer.text).toBe("Sent build.zip (48 MB) to api-codex on Laptop: it landed at /home/me/Downloads/build.zip. api-codex was told where it landed.");
     expect(r.asks.listOpen()).toEqual([]);
     expect(r.files.peeked).toEqual([{ node: DESK, path: "C:\\work\\web\\dist\\build.zip" }]);
-    expect(r.files.started).toEqual([{ from: { node: DESK, path: "C:\\work\\web\\dist\\build.zip" }, to: { node: LAPTOP }, by: { kind: "agent", alias: "web", session: me.id }, notify: remote.id }]);
+    expect(r.files.started).toEqual([{ from: { node: DESK, path: "C:\\work\\web\\dist\\build.zip" }, to: { node: LAPTOP }, reason: "Build for the API tests", by: { kind: "agent", alias: "web", session: me.id }, notify: remote.id }]);
     const row = r.store.audit.list({ limit: 10 }).find((e) => e.action === "transfer.send")!;
-    expect(row).toMatchObject({ principal: { kind: "harness", session: me.id }, decision: "allow", target: LAPTOP, outcome: "ok" });
+    expect(row).toMatchObject({ principal: { kind: "harness", session: me.id }, decision: "allow", target: LAPTOP, outcome: "ok", args: { reason: "Build for the API tests" } });
   });
 
   test("a session that prompts is asked about first; a relative folder is under the receiving agent's", async () => {
     const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" }, name: "web" });
     const remote = sess("codex", "/home/me/api", { node: LAPTOP });
     const r = rig({ local: [me], mirror: [remote], nodes: [node(DESK, "Desk", { role: "primary", platform: "windows" }), node(LAPTOP, "Laptop")], linked: new Set([LAPTOP]), bypass: { [me.id]: false } });
-    const pending = r.call(me, "send_file", { path: "C:/work/web/build.zip", to: "api-codex", dir: "incoming" });
+    const pending = r.call(me, "send_file", { path: "C:/work/web/build.zip", to: "api-codex", dir: "incoming", reason: "Build for the API tests" });
     const ask = await waitFor(() => r.asks.listOpen()[0]);
     expect(ask.title).toBe("Let web send build.zip (48 MB) to api-codex on Laptop?");
-    expect(ask.detail).toBe("C:/work/web/build.zip on Desk, into /home/me/api/incoming on Laptop.");
+    expect(ask.detail).toBe("Build for the API tests\nC:/work/web/build.zip on Desk, into /home/me/api/incoming on Laptop.");
     expect(r.files.started).toEqual([]);
     r.asks.answer(ask.id, { option: "allow" }, USER);
     const answer = await pending;
@@ -200,6 +201,8 @@ describe("send_file", () => {
     expect((await allowed.call(me, "send_file", { path: "C:/work/web/build.zip", to: "laptop", dir: "/srv/in" })).text).toBe("Sent build.zip (48 MB) to Laptop: it landed at /srv/in/build.zip.");
     expect(allowed.files.started[0]).toMatchObject({ to: { node: LAPTOP, dir: "/srv/in" } });
     expect(allowed.files.started[0]!.notify).toBeUndefined();
+    // a session given the tool before it took a reason sends without one
+    expect("reason" in allowed.files.started[0]!).toBe(false);
   });
 
   test("a big one through the relay asks the user even for a session that runs without prompts", async () => {
@@ -243,9 +246,9 @@ describe("send_file", () => {
   test("a secondary's session sends through the primary, as itself, as far as the node's grant goes", async () => {
     const remote = sess("claude", "/home/me/app", { node: LAPTOP, name: "app" });
     const r = rig({ local: [], mirror: [remote], nodes: [node(DESK, "Desk", { role: "primary", platform: "windows" }), node(LAPTOP, "Laptop", { platform: "linux" })], linked: new Set([LAPTOP]), grants: { grt_01ARZ3NDEKTSV4RRFFQ69G5FC1: { scopes: ["sessions:read"], messages: "send" } } });
-    const answer = (await r.router.upwardRequest({ id: LAPTOP, grant: "grt_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, "file.send", { caller: remote.id, mode: "bypass", path: "out/report.pdf", to: "Desk", dir: "C:\\Users\\me\\Desktop" })) as { text: string; isError?: boolean };
+    const answer = (await r.router.upwardRequest({ id: LAPTOP, grant: "grt_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, "file.send", { caller: remote.id, mode: "bypass", path: "out/report.pdf", to: "Desk", dir: "C:\\Users\\me\\Desktop", reason: "The report you asked for" })) as { text: string; isError?: boolean };
     expect(answer.isError).toBeUndefined();
-    expect(r.files.started[0]).toMatchObject({ from: { node: LAPTOP, path: "/home/me/app/out/report.pdf" }, to: { node: DESK, dir: "C:\\Users\\me\\Desktop" }, by: { kind: "agent", alias: "app", session: remote.id } });
+    expect(r.files.started[0]).toMatchObject({ from: { node: LAPTOP, path: "/home/me/app/out/report.pdf" }, to: { node: DESK, dir: "C:\\Users\\me\\Desktop" }, reason: "The report you asked for", by: { kind: "agent", alias: "app", session: remote.id } });
     // a session the node does not hold, or a node with no grant here, is refused
     await expect(r.router.upwardRequest({ id: OLD, grant: "grt_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, "file.send", { caller: remote.id, mode: "bypass", path: "x", to: "Desk" })).rejects.toThrow("not a live session of the asking node");
     await expect(r.router.upwardRequest({ id: LAPTOP }, "file.send", { caller: remote.id, mode: "bypass", path: "x", to: "Desk" })).rejects.toThrow("grant is not known");

@@ -61,7 +61,7 @@
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote } from "./model.ts";
-import { downloadsIn, machineName } from "./model.ts";
+import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
@@ -2240,6 +2240,11 @@ async function transferAction(id: string, action: "cancel" | "retry" | "dismiss"
   }
 }
 
+/** Dismiss all: every transfer that ended goes, each asked of the machine that keeps it. */
+async function dismissEnded(): Promise<void> {
+  await Promise.all([...state.transfers.values()].filter(transferEnded).map((t) => transferAction(t.id, "dismiss")));
+}
+
 /** When the keyboard opened the menu last: the `contextmenu` the same key sends after is not a second opening. */
 let keyedMenuAt = 0;
 
@@ -3250,6 +3255,9 @@ document.addEventListener("click", (ev) => {
     case "transfer-dismiss":
     case "transfer-reveal":
       if (target.dataset["id"]) void transferAction(target.dataset["id"], target.dataset["action"].slice("transfer-".length) as "cancel" | "retry" | "dismiss" | "reveal");
+      return;
+    case "transfer-dismiss-all":
+      void dismissEnded();
       return;
     case "new-terminal-here": {
       const b = ui.newTerminal?.browse;

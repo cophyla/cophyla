@@ -125,4 +125,6 @@ process. They are the public contract; the design notes behind them are kept pri
   answer (`MachineListing`), and a `pipe.data` cap of 180 000 characters, which only file pipes
   reach, between nodes that send files. `actions.ts` gains the `transfer.*` actions,
   `transfer.send` (an agent's) and `files.tree` and `files.pipe.open`. The agent tools gain
-  `send_file`. All additive.
+  `send_file`. All additive. Later, a transfer's `reason` (`TransferReason`, at most
+  `TRANSFER_REASON_MAX` characters): optional in `Transfer`, `transfer.start` and `file.send`,
+  and asked of every `send_file`. Additive: an older peer drops it.

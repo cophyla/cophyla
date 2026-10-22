@@ -1,12 +1,13 @@
-// The default view's transfers, pure: the rows Transfers shows (the ones under way first, how
-// far each is, its speed and the time left, why it waits or failed, `via relay`, and what may be
-// done with it), a row going once it is dismissed and every row with the line, the machines a
-// file can be sent to, and where Send to…'s picker starts.
+// The default view's transfers, pure: the rows Transfers shows (the ones under way first, the
+// file's or folder's name, why it was sent, who sent it between which machines, how far each
+// is, its speed and the time left, why it waits or failed, `via relay`, and what may be done
+// with it), the ones Dismiss all takes, a row going once it is dismissed and every row with
+// the line, the machines a file can be sent to, and where Send to…'s picker starts.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Node, Transfer } from "@cophyla/protocol";
-import { apply, downloadsIn, etaWords, initialState, selectTransfers, sendBlocked, sendTargets, transferRoute } from "../views/default/model.ts";
+import { apply, downloadsIn, etaWords, initialState, selectTransfers, sendBlocked, sendTargets, transferEnded, transferRoute } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -46,18 +47,37 @@ describe("transfers in the view", () => {
     apply(state, { type: "transfers", transfers: [older, done, waiting, running] });
     const rows = selectTransfers(state);
     expect(rows.map((r) => r.state)).toEqual(["running", "waiting", "done", "cancelled"]);
-    expect(rows[0]).toMatchObject({ name: "build.zip", route: "Laptop → Desk", done: 0.25, relay: true, words: "25 MB of 100 MB · 5 MB/s · 15 s left", cancel: true, retry: false, dismiss: false, reveal: false });
+    expect(rows[0]).toMatchObject({ name: "build.zip", meta: "You · Laptop → Desk", done: 0.25, relay: true, words: "25 MB of 100 MB · 5 MB/s · 15 s left", cancel: true, retry: false, dismiss: false, reveal: false });
+    expect(rows[0]!.endedAt).toBeUndefined();
     expect(rows[1]).toMatchObject({ words: "Waiting for Laptop · 50 MB of 100 MB", cancel: true });
-    expect(rows[2]).toMatchObject({ done: 1, words: "100 MB · done", dismiss: true, reveal: true, title: "/home/me/build.zip\n→ C:\\in\\build (1).zip" });
-    expect(rows[3]).toMatchObject({ route: "Desk → Laptop", words: "Cancelled", reveal: false, dismiss: true });
+    // one that landed says how big it is and when, and nothing under it
+    expect(rows[2]).toMatchObject({ done: 1, meta: "You · Laptop → Desk · 100 MB", endedAt: 5000, words: "", dismiss: true, reveal: true, title: "/home/me/build.zip\n→ C:\\in\\build (1).zip" });
+    expect(rows[3]).toMatchObject({ name: "notes", meta: "You · Desk → Laptop · 100 MB, 4 files", words: "Cancelled", reveal: false, dismiss: true });
+  });
+
+  test("an agent's says who sent it and why; the user's says You and has no reason", () => {
+    const state = connected();
+    const landed = base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX6", state: "done", bytes: 565435, total: 565435, from: { node: AGHA, path: "C:\\D\\bundles\\fauna-core.bundle" }, name: "fauna-core.bundle", by: { kind: "agent", alias: "fauna-core", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, reason: "Nightly backup of fauna-core", endedAt: 9000 });
+    apply(state, { type: "transfers", transfers: [landed, base({ state: "running", bytes: 1 })] });
+    const [running, done] = selectTransfers(state);
+    expect(done).toMatchObject({ name: "fauna-core.bundle", reason: "Nightly backup of fauna-core", meta: "fauna-core · Agha → Desk · 552 KB", endedAt: 9000 });
+    expect(running!.meta).toBe("You · Laptop → Desk");
+    expect("reason" in running!).toBe(false);
+  });
+
+  test("Dismiss all takes the ones that ended: landed, failed and cancelled, never one under way", () => {
+    expect((["queued", "running", "waiting", "done", "failed", "cancelled"] as const).filter((s) => transferEnded({ state: s }))).toEqual(["done", "failed", "cancelled"]);
+    const state = connected();
+    apply(state, { type: "transfers", transfers: [base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX7", state: "done" }), base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX8", state: "failed" }), base({ state: "running" })] });
+    expect(selectTransfers(state).filter((r) => r.dismiss).map((r) => r.id)).toEqual(["xfr_01ARZ3NDEKTSV4RRFFQ69G5FX8", "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX7"]);
   });
 
   test("a failed one says why and offers Retry and Dismiss; a folder counts its files", () => {
     const state = connected();
     apply(state, { type: "transfer.state", params: base({ state: "failed", error: "the disk is full", kind: "folder", name: "dist", files: { done: 2, total: 9 }, bytes: 10 }) });
-    expect(selectTransfers(state)[0]).toMatchObject({ words: "Failed: the disk is full", retry: true, dismiss: true, cancel: false });
+    expect(selectTransfers(state)[0]).toMatchObject({ words: "Failed: the disk is full", meta: "You · Laptop → Desk · 100 MB, 9 files", retry: true, dismiss: true, cancel: false });
     apply(state, { type: "transfer.state", params: base({ state: "running", kind: "folder", name: "dist", files: { done: 2, total: 9 }, bytes: 1024 * 1024 }) });
-    expect(selectTransfers(state)[0]!.words).toBe("1 MB of 100 MB, 2 of 9 files");
+    expect(selectTransfers(state)[0]!.words).toBe("1 MB of 100 MB · 2 of 9 files");
   });
 
   test("Show is for what landed on this computer, in the desktop app alone", () => {

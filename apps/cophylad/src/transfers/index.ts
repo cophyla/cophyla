@@ -24,7 +24,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, sta
 import { mkdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, extname, isAbsolute, join } from "node:path";
-import { newId, RpcError, Transfer as TransferRow } from "@cophyla/protocol";
+import { newId, RpcError, TRANSFER_REASON_MAX, Transfer as TransferRow } from "@cophyla/protocol";
 import type { NodeRecord, Transfer, TransferBy, TransferConfirm, TransferVia, TreeEntry } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Logger } from "../log.ts";
@@ -63,9 +63,18 @@ export type Hop = "lan" | "direct" | "relay";
 
 const RANK: Record<Hop, number> = { lan: 0, direct: 1, relay: 2 };
 
+/** A reason as a transfer keeps it: one line, its spaces folded, cut to TRANSFER_REASON_MAX; none when nothing is left. */
+export function reasonOf(text: string | undefined): string | undefined {
+  const line = (text ?? "").replace(/\s+/g, " ").trim();
+  if (!line) return undefined;
+  return line.length <= TRANSFER_REASON_MAX ? line : `${line.slice(0, TRANSFER_REASON_MAX - 1).trimEnd()}…`;
+}
+
 export interface StartParams {
   from: { node: string; path: string };
   to: { node: string; dir?: string };
+  /** Why it is sent, shown beside its name. */
+  reason?: string;
   relayOk?: boolean;
   by?: TransferBy;
   notify?: string;
@@ -378,12 +387,14 @@ export class Transfers {
     const id = newId("transfer");
     const via = this.viaOf(source);
     const folder = tree.kind === "folder";
+    const reason = reasonOf(p.reason);
     const t: Transfer = {
       id,
       from: { node: source, path: p.from.path },
       to: { node: self, dir },
       kind: tree.kind,
       name: tree.name,
+      ...(reason ? { reason } : {}),
       total: tree.total,
       bytes: 0,
       ...(folder ? { files: { done: 0, total: tree.files } } : {}),
@@ -716,7 +727,8 @@ export class Transfers {
     if (row.notify && this.deps.tell) {
       const by = row.t.by.kind === "agent" ? row.t.by.alias : "The user";
       const what = row.t.kind === "folder" ? `the folder ${row.t.name}` : row.t.name;
-      void this.deps.tell(row.notify, `${by} sent you ${what}: ${final}`).catch((e: unknown) => this.log.warn("the receiving session could not be told", { id: row.t.id, error: message(e) }));
+      const why = row.t.reason ? ` (${JSON.stringify(row.t.reason)})` : "";
+      void this.deps.tell(row.notify, `${by} sent you ${what}${why}: ${final}`).catch((e: unknown) => this.log.warn("the receiving session could not be told", { id: row.t.id, error: message(e) }));
     }
   }
 

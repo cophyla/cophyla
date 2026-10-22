@@ -11,7 +11,7 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, Workspace } from "./entities.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, TransferReason, Workspace } from "./entities.ts";
 import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
@@ -265,10 +265,11 @@ export const nodeLinkRequests = {
   /**
    * Secondary → primary: `caller`, a live session of the secondary's, sends `path` (on its own
    * machine) to `to`, an agent or a machine, with the `send_file` tool. Transfers start where
-   * they land, from the primary; the answer is the text the model reads.
+   * they land, from the primary; the answer is the text the model reads. `reason` is the
+   * tool's, as the secondary kept it.
    */
   "file.send": {
-    params: z.object({ caller: SessionId, mode: AgentMode, path: z.string().min(1).max(4096), to: z.string().min(1).max(200), dir: z.string().min(1).max(4096).optional() }),
+    params: z.object({ caller: SessionId, mode: AgentMode, path: z.string().min(1).max(4096), to: z.string().min(1).max(200), dir: z.string().min(1).max(4096).optional(), reason: TransferReason.optional() }),
     result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
   /**
