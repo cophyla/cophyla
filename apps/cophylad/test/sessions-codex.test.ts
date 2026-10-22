@@ -480,6 +480,29 @@ describe("codex adapter over the fake app-server", () => {
     const unseen = mini.sessions.list().find((x) => x.native.id === "unseen-parent")!;
     expect(unseen.transcript?.path).not.toBe(childPath);
   });
+
+  test("with [sessions].record_sent_text, a message's receipts carry the text the user sent", async () => {
+    const s = mini.sessions.list().find((x) => x.native.id === THREAD)!;
+    mini.sessions.config.record_sent_text = true;
+    try {
+      const r = await mini.sessions.send(s.id, "keep this in the history");
+      const queued = await waitFor(() => readJson<{ op: string; clientUserMessageId?: string; input?: { text: string }[] }[]>(join(home, "queue.json"), []).find((q) => q.op === "add" && q.clientUserMessageId === r.ref));
+      const row = { timestamp: "2026-09-17T13:07:10.000Z", ordinal: 30, type: "event_msg", payload: { type: "item_completed", thread_id: THREAD, turn_id: "01a0af7a-4000-7000-8000-000000000004", item: { type: "UserMessage", id: "01a0af7a-2703-7000-8000-000000000004", client_id: r.ref, content: [{ type: "text", text: queued.input![0]!.text, text_elements: [] }] } } };
+      writeFileSync(rolloutPath, JSON.stringify(row) + "\n", { flag: "a" });
+      await mini.sessions.tick();
+      const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);
+      expect(n?.payload).toEqual({ type: "message", ref: r.ref, state: "delivered", text: "keep this in the history" });
+
+      // One the thread never takes is withdrawn, with its words.
+      await mini.sessions.onHook("codex", { hook_event_name: "Stop", session_id: THREAD, turn_id: "t3", cwd, last_assistant_message: "ok", stop_hook_active: false }, { via: "command" });
+      expect(mini.store.sessions.get(s.id)?.status).toBe("idle");
+      const w = await mini.sessions.send(s.id, "and this one");
+      const m = await waitFor(() => events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === w.ref), 3000);
+      expect(m.payload).toEqual({ type: "message", ref: w.ref, state: "withdrawn", text: "and this one" });
+    } finally {
+      mini.sessions.config.record_sent_text = false;
+    }
+  });
 });
 
 describe("codex profiles that change after start", () => {
