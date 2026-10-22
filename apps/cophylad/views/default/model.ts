@@ -27,7 +27,7 @@
 // under Groups; a share's broad folders (a home, a drive) are asked about before it is sent.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, SessionStatus, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
@@ -3296,6 +3296,8 @@ export interface HeadConnect {
   mode: "invite" | "accept";
   made?: string;
   error?: string;
+  /** Someone else (a code) opened by the user while it would be folded. */
+  others?: boolean;
 }
 
 /**
@@ -5325,31 +5327,274 @@ export function inShare(share: TeammateShare, folder: TeammatePlace, platform?: 
   return share.mode === "include" ? named : !named;
 }
 
-/** A session's switch in its Connect panel for one teammate: whether it is open to them by hand now, and why it is asked. */
-export interface TeammateToggle {
-  teammate: string;
-  login: string;
-  on: boolean;
-  why: string;
+// --- a session's Connect panel ------------------------------------------------------------------
+
+/** A teammate's agents as the Connect panel last had them (`teammate.agents`): when they came, while asked, and why they could not be had. */
+export interface TeamAgentsSeen {
+  at?: number;
+  agents: TeamAgent[];
+  closed: TeamClosedAgent[];
+  loading?: boolean;
+  error?: string;
 }
 
-/**
- * The teammates a session may be opened to by hand: each active one whose share is opened by
- * hand and holds the session's folder, or holds it shared closed.
- */
-export function teammateToggles(state: Pick<ViewState, "teammates" | "workspaces" | "nodes">, s: Pick<Session, "id" | "node" | "cwd" | "workspace">): TeammateToggle[] {
+/** The folder a session works in: its workspace's, else its own. */
+export function sessionFolder(state: Pick<ViewState, "workspaces">, s: Pick<Session, "node" | "cwd" | "workspace">): { place: TeammatePlace; name: string } {
   const w = s.workspace ? state.workspaces.get(s.workspace) : undefined;
-  const folder = { node: s.node, path: w?.path ?? s.cwd };
+  const path = w?.path ?? s.cwd;
+  return { place: { node: s.node, path }, name: w?.name ?? folderName(path) };
+}
+
+/** How a session stands with one teammate, in words: the first ones said strongly, what changes it named by `kind`. */
+export interface ConnectStanding {
+  /**
+   * `outside`: its folder is in nothing this side shares with them (Share it…); `shared-closed`:
+   * in a workspace shared closed (Open | Exclude); `always`: open with the rest (nothing to
+   * press); `opened`: opened by hand (Close); `closed`: shared but closed (Open to all).
+   */
+  kind: "outside" | "shared-closed" | "always" | "opened" | "closed";
+  lead: string;
+  rest: string;
+  /** The button's words, when there is one to press besides Open | Exclude. */
+  label?: string;
+  /** `shared-closed`: the Status line's key, which Open and Exclude act on. */
+  placeKey?: string;
+}
+
+export function connectStanding(state: Pick<ViewState, "workspaces" | "nodes">, t: Teammate, s: Pick<Session, "id" | "node" | "cwd" | "workspace">): ConnectStanding {
+  const login = t.user ?? "them";
+  const { place, name } = sessionFolder(state, s);
   const platform = state.nodes.get(s.node)?.platform;
-  const out: TeammateToggle[] = [];
-  for (const t of state.teammates.values()) {
-    if (t.state !== "active" || !t.user) continue;
-    const closed = (t.share.closed ?? []).some((p) => samePlaceOrUnder(folder, p, platform));
-    const chosen = t.share.open === "chosen" && inShare(t.share, folder, platform);
-    if (!closed && !chosen) continue;
-    out.push({ teammate: t.id, login: t.user, on: t.share.opened?.includes(s.id) === true, why: closed ? "its folder is shared closed with them" : "they see the agents you open to them" });
+  const opened = t.share.opened?.includes(s.id) === true;
+  if (!inShare(t.share, place, platform)) return { kind: "outside", lead: `Not shared with ${login}.`, rest: `This agent works in ${name}, which you don't share with them.`, label: `Share ${name} with ${login}…` };
+  if (opened) return { kind: "opened", lead: `Open to ${login}.`, rest: "All their agents can message this one.", label: "Close" };
+  const closedAt = (t.share.closed ?? []).find((p) => samePlaceOrUnder(place, p, platform));
+  if (closedAt) return { kind: "shared-closed", lead: `${name} is shared closed with ${login}.`, rest: "Their agents reach none of yours in it until you open it or exclude it.", placeKey: `${t.id}\n${closedAt.node}\n${closedAt.path}` };
+  if (t.share.open === "always") return { kind: "always", lead: `Open to ${login}.`, rest: `You share every agent in ${name} with them.` };
+  return { kind: "closed", lead: `Closed to ${login}.`, rest: "Only the agents you connect can message this one.", label: `Open to all of ${login}'s agents` };
+}
+
+/** One of a teammate's agents in the Connect panel: what it is, and what pressing its row does or how it stands with this agent. */
+export interface ConnectAgentRow {
+  key: string;
+  /** Its session on their side, which Connect names it by; an open one from a Cophyla too old to say has none. */
+  session?: string;
+  name: string;
+  /** "Claude · api" */
+  meta: string;
+  /** The dot: how it stands, or `closed`. */
+  tone: "busy" | "idle" | "waiting" | "closed" | "unknown";
+  /** "working", "idle", "closed: bob decides"… */
+  doing: string;
+  intent?: string;
+  open: boolean;
+  /** `connect` or `ask` to press; or how it stands with this agent already. */
+  action?: { kind: "connect" | "ask"; label: string } | { kind: "state"; words: string; tone: "ok" | "wait" | "no" };
+}
+
+function statusDoing(status: SessionStatus | undefined): { tone: ConnectAgentRow["tone"]; doing: string } {
+  if (status === "busy") return { tone: "busy", doing: "working" };
+  if (status === "idle") return { tone: "idle", doing: "idle" };
+  if (status === "needs_permission" || status === "needs_input") return { tone: "waiting", doing: "waiting on its user" };
+  if (status === "ended") return { tone: "unknown", doing: "ended" };
+  return { tone: "unknown", doing: "" };
+}
+
+/** The teammate connection between a session of this side's and one of theirs, if any. */
+export function connectionBetween(t: Pick<Teammate, "connections">, session: string, agent: string): TeammateConnection | undefined {
+  return (t.connections ?? []).find((c) => c.session === session && c.agent.session === agent);
+}
+
+/** A teammate's agents as rows for one session of this side's: the open ones, then the closed ones, each by name; `filter` keeps those whose name, harness or workspace holds it. */
+export function connectAgentRows(t: Teammate, s: Pick<Session, "id">, seen: Pick<TeamAgentsSeen, "agents" | "closed">, filter = ""): ConnectAgentRow[] {
+  const login = t.user ?? "them";
+  const rows: ConnectAgentRow[] = [];
+  const action = (agent: string | undefined, open: boolean): ConnectAgentRow["action"] => {
+    const c = agent ? connectionBetween(t, s.id, agent) : undefined;
+    if (c?.state === "active") return { kind: "state", words: "Connected", tone: "ok" };
+    if (c?.state === "asked") return { kind: "state", words: c.by === "us" ? "Asked" : "Asks you", tone: "wait" };
+    if (c?.state === "declined") return { kind: "state", words: "Declined", tone: "no" };
+    if (!agent) return undefined;
+    return open ? { kind: "connect", label: "Connect" } : { kind: "ask", label: `Ask ${login}` };
+  };
+  const withAction = (act: ConnectAgentRow["action"]): Pick<ConnectAgentRow, "action"> => (act ? { action: act } : {});
+  const meta = (harness?: string, workspace?: string) => [harness ? (HARNESS_NAMES[harness as keyof typeof HARNESS_NAMES] ?? harness) : "", workspace ?? ""].filter(Boolean).join(" · ");
+  const seenSessions = new Set<string>();
+  for (const a of [...seen.agents].sort((x, y) => x.name.localeCompare(y.name))) {
+    const st = statusDoing(a.status);
+    if (a.session) seenSessions.add(a.session);
+    rows.push({
+      key: a.session ?? `name:${a.name}`,
+      ...(a.session ? { session: a.session } : {}),
+      name: a.name,
+      meta: meta(a.harness, a.workspace),
+      tone: st.tone,
+      doing: a.focus ? "in focus" : st.doing,
+      ...(a.intent ? { intent: a.intent } : {}),
+      open: true,
+      ...withAction(action(a.session, true)),
+    });
   }
-  return out.sort((a, b) => a.login.localeCompare(b.login));
+  for (const a of [...seen.closed].sort((x, y) => x.name.localeCompare(y.name))) {
+    if (seenSessions.has(a.session)) continue;
+    const st = statusDoing(a.status);
+    const known = a.connected === true && a.status !== undefined;
+    rows.push({
+      key: a.session,
+      session: a.session,
+      name: a.name,
+      meta: meta(a.harness, a.workspace),
+      tone: known ? st.tone : "closed",
+      doing: known ? st.doing : `closed: ${login} decides`,
+      ...(a.connected && a.intent ? { intent: a.intent } : {}),
+      open: false,
+      ...withAction(action(a.session, false)),
+    });
+  }
+  const f = filter.trim().toLowerCase();
+  return f === "" ? rows : rows.filter((r) => `${r.name} ${r.meta}`.toLowerCase().includes(f));
+}
+
+/** A row under Connected: a connection made with a code, or a teammate connection, with what may be pressed on it. */
+export type ConnectedRow =
+  | { kind: "code"; id: string; who: string; words: string }
+  | {
+      kind: "teammate";
+      id: string;
+      teammate: string;
+      state: TeammateConnection["state"];
+      by: TeammateConnection["by"];
+      who: string;
+      words: string;
+      /** For a yes on an ask the teammate made: the two agents. */
+      session: string;
+      agent: string;
+      buttons: ("end" | "cancel" | "connect" | "decline" | "dismiss")[];
+    };
+
+/** What a session is joined to, and what waits: its code connections, then its teammate connections, the live ones first. */
+export function connectedRows(state: Pick<ViewState, "connections" | "teammates">, s: Pick<Session, "id">): ConnectedRow[] {
+  const out: ConnectedRow[] = [];
+  for (const c of state.connections.values()) {
+    if (c.state !== "active" || c.session !== s.id || !c.peer) continue;
+    const agent = c.peer.live === false ? "no agent in their terminal now" : c.peer.harness ? HARNESS_NAMES[c.peer.harness] : "";
+    out.push({ kind: "code", id: c.id, who: `${c.peer.user}/${c.peer.name}`, words: [agent, "connected with a code"].filter(Boolean).join(" · ") });
+  }
+  const order = { active: 0, asked: 1, declined: 2 } as const;
+  const teams: Extract<ConnectedRow, { kind: "teammate" }>[] = [];
+  for (const t of state.teammates.values()) {
+    if (t.state !== "active") continue;
+    const login = t.user ?? "a teammate";
+    for (const c of t.connections ?? []) {
+      if (c.session !== s.id) continue;
+      const theirs = `${login}/${c.agent.name}`;
+      const where = [c.agent.harness ? HARNESS_NAMES[c.agent.harness] : "", c.agent.workspace ?? ""].filter(Boolean).join(" · ");
+      const base = { kind: "teammate" as const, id: c.id, teammate: t.id, state: c.state, by: c.by, session: c.session, agent: c.agent.session };
+      if (c.state === "active") teams.push({ ...base, who: theirs, words: [where, "connected both ways"].filter(Boolean).join(" · "), buttons: ["end"] });
+      else if (c.state === "asked" && c.by === "us") teams.push({ ...base, who: theirs, words: `asked ${login} · waiting for their answer`, buttons: ["cancel"] });
+      else if (c.state === "asked") teams.push({ ...base, who: theirs, words: `${login} asks to connect their agent ${c.agent.name} to this one${where ? ` (${where})` : ""}`, buttons: ["connect", "decline"] });
+      else teams.push({ ...base, who: theirs, words: c.by === "us" ? `${login} declined${c.reason && !/declined$/.test(c.reason) ? `: ${c.reason}` : ""}` : `you declined ${login}'s ask`, buttons: ["dismiss"] });
+    }
+  }
+  teams.sort((a, b) => order[a.state] - order[b.state] || a.who.localeCompare(b.who));
+  return [...out, ...teams];
+}
+
+/** The names a session's head pill gives: its code connections' and its live teammate connections'. */
+export function sessionLinks(state: Pick<ViewState, "connections" | "teammates">, session: string): string[] {
+  const names = sessionConnections(state, session);
+  for (const t of state.teammates.values()) {
+    if (t.state !== "active") continue;
+    for (const c of t.connections ?? []) if (c.session === session && c.state === "active") names.push(`${t.user ?? "teammate"}/${c.agent.name}`);
+  }
+  return names;
+}
+
+/** A teammate's block in the Connect panel: who, what they share, how this agent stands with them, and their agents when it may reach any. */
+export interface ConnectTeamBlock {
+  teammate: string;
+  login: string;
+  theirs: string;
+  standing: ConnectStanding;
+  /** Their agents, when this agent is in what this side shares; with why there are none, or are not here yet. */
+  agents?: { rows: ConnectAgentRow[]; total: number; words?: string; filter: boolean };
+}
+
+/** Past this many agents, a teammate's block has a filter. */
+export const CONNECT_FILTER_AT = 8;
+
+/** The active teammates, by login, each as its block for session `s`. */
+export function connectTeamBlocks(state: Pick<ViewState, "teammates" | "workspaces" | "nodes">, s: Pick<Session, "id" | "node" | "cwd" | "workspace">, seen: ReadonlyMap<string, TeamAgentsSeen>, filters: ReadonlyMap<string, string> = new Map()): ConnectTeamBlock[] {
+  const active = [...state.teammates.values()].filter((t) => t.state === "active" && t.user).sort((a, b) => a.user!.localeCompare(b.user!));
+  return active.map((t) => {
+    const login = t.user!;
+    const theirs = t.theirs
+      ? [t.theirs.workspaces.length === 0 ? "shares nothing yet" : `shares ${t.theirs.workspaces.slice(0, 4).join(", ")}${t.theirs.workspaces.length > 4 ? ` +${t.theirs.workspaces.length - 4}` : ""}`, t.theirs.open === "always" ? "every agent open" : "opens agents by hand"].join(" · ")
+      : "";
+    const standing = connectStanding(state, t, s);
+    const block: ConnectTeamBlock = { teammate: t.id, login, theirs, standing };
+    if (standing.kind === "outside") return block;
+    const got = seen.get(t.id);
+    const all = got ? connectAgentRows(t, s, got) : [];
+    const rows = got ? connectAgentRows(t, s, got, filters.get(t.id) ?? "") : [];
+    const words =
+      got === undefined || (got.loading && got.at === undefined)
+        ? `Asking ${login}'s Cophyla…`
+        : got.error !== undefined && got.at === undefined
+          ? got.error
+          : all.length === 0
+            ? `None of ${login}'s agents is in what they share now.`
+            : rows.length === 0
+              ? "None matches."
+              : undefined;
+    block.agents = { rows, total: all.length, ...(words !== undefined ? { words } : {}), filter: all.length > CONNECT_FILTER_AT };
+    return block;
+  });
+}
+
+/** Why a Connect panel has no teammate to offer: none yet, or no account; undefined while there are. */
+export function connectNoTeam(state: Pick<ViewState, "teammates" | "account">): string | undefined {
+  if ([...state.teammates.values()].some((t) => t.state === "active" && t.user)) return undefined;
+  if (state.account?.subject === undefined) return "Teammates need a Cophyla account.";
+  return "Teammates connect agents without a code.";
+}
+
+/** Whether Someone else (a code) is folded to its heading: while the user has a teammate, unless they opened it or a code or its error shows. */
+export function connectElseFolded(state: Pick<ViewState, "teammates">, open: Pick<HeadConnect, "others" | "made" | "error">): boolean {
+  if (open.others === true || open.made !== undefined || open.error !== undefined) return false;
+  return [...state.teammates.values()].some((t) => t.state === "active" && t.user);
+}
+
+/** A teammate's connections as the Teammates page lists them under the teammate: which agent of this side's, joined to which of theirs, and what may be pressed. */
+export interface TeamConnectionRow {
+  id: string;
+  teammate: string;
+  words: string;
+  state: TeammateConnection["state"];
+  session: string;
+  agent: string;
+  buttons: ("end" | "cancel" | "connect" | "decline" | "dismiss")[];
+}
+
+export function teamConnectionRows(state: Pick<ViewState, "teammates" | "sessions">, teammate: string): TeamConnectionRow[] {
+  const t = state.teammates.get(teammate);
+  if (!t || t.state !== "active") return [];
+  const login = t.user ?? "them";
+  const mine = (session: string) => {
+    const card = state.sessions.get(session);
+    return card ? sessionLabel(card.session) : "an agent of yours";
+  };
+  const order = { active: 0, asked: 1, declined: 2 } as const;
+  return [...(t.connections ?? [])]
+    .sort((a, b) => order[a.state] - order[b.state] || a.createdAt - b.createdAt)
+    .map((c): TeamConnectionRow => {
+      const pair = `${mine(c.session)} ⇄ ${login}/${c.agent.name}`;
+      const base = { id: c.id, teammate: t.id, state: c.state, session: c.session, agent: c.agent.session };
+      if (c.state === "active") return { ...base, words: pair, buttons: ["end"] };
+      if (c.state === "asked" && c.by === "us") return { ...base, words: `${pair} · asked, waiting for ${login}`, buttons: ["cancel"] };
+      if (c.state === "asked") return { ...base, words: `${pair} · ${login} asks you`, buttons: ["connect", "decline"] };
+      return { ...base, words: `${pair} · ${c.by === "us" ? `${login} declined` : "you declined"}`, buttons: ["dismiss"] };
+    });
 }
 
 /**

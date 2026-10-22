@@ -3785,7 +3785,7 @@ button:disabled {
 }
 
 .session-connect > :not(.session-connect-top) {
-  max-width: 720px;
+  max-width: 860px;
 }
 
 .session-connect-top {
@@ -3920,6 +3920,458 @@ button:disabled {
 
 .session-connect-done {
   align-items: flex-start;
+}
+
+/* "Connect this agent": Connected, Teammates, then Someone else; words before marks. */
+.session-connect-title {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.session-connect > .connect-section {
+  max-width: 860px;
+}
+
+.connect-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.connect-heading {
+  margin: 2px 0 2px;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.connect-rows,
+.connect-teams,
+.connect-agents {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.connect-teams {
+  gap: 8px;
+}
+
+/* A row: a dot, a name, what it is, what it does, and what to press, at the far end. */
+.connect-row {
+  display: grid;
+  grid-template-columns: 12px minmax(90px, max-content) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  min-height: 30px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+
+.connect-agent {
+  grid-template-columns: 12px minmax(90px, 140px) minmax(90px, 150px) minmax(0, 1fr) auto;
+}
+
+.connect-row:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.connect-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--faint);
+}
+
+.connect-dot[data-tone="live"] {
+  background: var(--cophyla-ink);
+}
+
+.connect-dot[data-tone="idle"] {
+  background: var(--moss);
+}
+
+.connect-dot[data-tone="busy"] {
+  background: var(--amber);
+}
+
+.connect-dot[data-tone="waiting"] {
+  background: var(--cophyla);
+}
+
+.connect-dot[data-tone="wait"],
+.connect-dot[data-tone="closed"],
+.connect-dot[data-tone="off"] {
+  box-sizing: border-box;
+  border: 1.5px solid var(--faint);
+  background: transparent;
+}
+
+.connect-dot[data-tone="wait"] {
+  border-color: var(--amber);
+}
+
+.connect-who,
+.connect-name {
+  overflow: hidden;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.connect-meta {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.connect-words,
+.connect-doing {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.connect-doing-intent {
+  color: var(--ink);
+}
+
+.connect-acts {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 6px;
+}
+
+.connect-acts[hidden],
+.connect-ask[hidden],
+.connect-agents[hidden],
+.connect-filter[hidden] {
+  display: none;
+}
+
+.connect-ask {
+  grid-column: 2 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.connect-conn .connect-ask {
+  grid-column: 4;
+}
+
+.connect-state {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.connect-state[data-tone="ok"] {
+  color: var(--moss);
+}
+
+.connect-state[data-tone="wait"] {
+  color: var(--amber);
+}
+
+.connect-state[data-tone="no"] {
+  color: var(--faint);
+}
+
+.session-connect button.connect-go,
+.session-connect button.connect-agent-go[data-kind="connect"] {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.session-connect button.connect-danger,
+.team-conns button.connect-danger {
+  border-color: var(--rust);
+  color: var(--rust);
+}
+
+/* A teammate's block: who and what they share, how this agent stands with them, their agents. */
+.connect-team {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  padding: 6px 4px 6px;
+}
+
+.connect-team-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 2px 6px 4px;
+}
+
+.connect-login {
+  font-weight: 600;
+}
+
+.connect-theirs {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-connect button.connect-link {
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 2px;
+}
+
+.session-connect button.connect-link:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.connect-stand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 0 6px 4px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--well);
+}
+
+.connect-stand-words {
+  flex: 1 1 260px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.connect-stand-lead {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.connect-team[data-standing="always"] .connect-stand-lead,
+.connect-team[data-standing="opened"] .connect-stand-lead {
+  color: var(--moss);
+}
+
+.connect-stand-acts {
+  display: flex;
+  gap: 6px;
+}
+
+.connect-stand-acts[hidden] {
+  display: none;
+}
+
+.connect-filter {
+  margin: 2px 8px 4px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.connect-agents-note,
+.connect-noteam {
+  margin: 0;
+  padding: 2px 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.connect-noteam {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+}
+
+.connect-noteam .connect-link {
+  margin-left: 0;
+}
+
+/* Someone else: the code, folded under its heading while the user has a teammate. */
+.connect-else {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.session-connect button.connect-else-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.session-connect button.connect-else-toggle:hover {
+  color: var(--ink);
+}
+
+.connect-else-mark {
+  width: 10px;
+  color: var(--faint);
+  font-family: var(--mono);
+}
+
+.connect-else-label {
+  color: var(--ink);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.connect-else-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+
+.connect-else-body[hidden] {
+  display: none;
+}
+
+/* The Teammates page: under a teammate, the agents of the user's joined to theirs. */
+.team-conns {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 2px;
+}
+
+.team-conns[hidden] {
+  display: none;
+}
+
+.team-conns-head {
+  margin: 0;
+  color: var(--faint);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.team-conn {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 2px 0;
+}
+
+.team-conn-words {
+  flex: 1 1 220px;
+  min-width: 0;
+  font-size: 12.5px;
+}
+
+.team-conn-acts {
+  display: flex;
+  gap: 6px;
+}
+
+.team-conn-acts[hidden] {
+  display: none;
+}
+
+.team-conns .connect-ask {
+  grid-column: auto;
+}
+
+.team-conns button {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-conns button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--line-strong);
+}
+
+.team-conns button.connect-go {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+/* A phone's width: a row's name and button on one line, what it is and does under them. */
+@media (max-width: 640px) {
+  .connect-row,
+  .connect-agent {
+    grid-template-columns: 12px minmax(0, 1fr) auto;
+  }
+
+  .connect-row > .connect-dot {
+    grid-row: 1;
+  }
+
+  .connect-row > .connect-who,
+  .connect-row > .connect-name {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .connect-row > .connect-acts {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+  }
+
+  .connect-row > .connect-meta {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .connect-row > .connect-words {
+    grid-column: 2;
+    grid-row: 2;
+    white-space: normal;
+  }
+
+  .connect-row > .connect-doing {
+    grid-column: 2 / -1;
+    grid-row: 3;
+  }
+
+  .connect-conn .connect-ask,
+  .connect-row > .connect-ask {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-content: flex-start;
+  }
+
+  .connect-theirs {
+    white-space: normal;
+  }
 }
 
 .devices-view .controller-sub {
@@ -7697,32 +8149,6 @@ button:disabled {
 .session-focus-end:hover:not(:disabled) {
   color: var(--ink);
   border-color: var(--muted);
-}
-
-/* In a session's Connect panel: Open to <login>, a switch per teammate it may be opened to. */
-.session-teammates {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-}
-
-.session-teammates-head {
-  color: var(--muted);
-  font-size: 11.5px;
-  font-weight: 600;
-}
-
-.session-teammates-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.session-connect button.session-teammate[aria-pressed="true"] {
-  border-color: var(--moss);
-  color: var(--moss);
 }
 
 /* Under the rail's Status: a folder shared closed with a teammate, with Open and Exclude. */

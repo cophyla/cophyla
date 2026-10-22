@@ -1,8 +1,10 @@
 // The default view's teammates, pure: the rows Teammates shows (what each side shares, the
 // codes not used yet with the time they hold), a row going when the node says it ended, the
 // code on show until it is used, the folders shared closed and what Open and Exclude send, the
-// switches a session's Connect panel offers, the share a form makes, and the question a share
-// of a whole home folder or drive asks before it goes.
+// Connect panel of a session (how it stands with each teammate in words, their agents with
+// Connect or Ask, what it is joined to, Someone else folded), the head's pill, a teammate's
+// connections on the Teammates page, the share a form makes, and the question a share of a
+// whole home folder or drive asks before it goes.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
@@ -20,8 +22,15 @@ import {
   openPlace,
   selectTeammates,
   teamBlock,
-  teammateToggles,
   teamShareWords,
+  connectStanding,
+  connectAgentRows,
+  connectedRows,
+  sessionLinks,
+  connectTeamBlocks,
+  connectNoTeam,
+  connectElseFolded,
+  teamConnectionRows,
 } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
@@ -114,7 +123,7 @@ describe("teammates in the view", () => {
     });
   });
 
-  test("a session's Connect panel offers Open to <login> where the share is opened by hand and holds its folder, or holds it closed", () => {
+  test("a session's Connect panel says in words how it stands with each teammate, and what changes it", () => {
     const state = connected();
     apply(state, {
       type: "teammates",
@@ -123,14 +132,179 @@ describe("teammates in the view", () => {
         teammate(2, { user: "carol", share: { mode: "exclude", folders: [{ node: DESK, path: "C:\\secret" }], open: "always", closed: [{ node: DESK, path: "C:\\work\\new" }] } }),
         teammate(3, { user: "dave", share: { mode: "include", folders: [{ node: DESK, path: "C:\\other" }], open: "chosen" } }),
         teammate(4, { user: "erin", share: { mode: "include", folders: [{ node: DESK, path: "C:\\work" }], open: "always" } }),
-        teammate(5, { state: "pending", user: undefined, share: { mode: "include", folders: [{ node: DESK, path: "C:\\work" }], open: "chosen" } }),
+        teammate(5, { user: "finn", share: { mode: "include", folders: [{ node: DESK, path: "C:\\work" }], open: "chosen" } }),
       ],
     });
-    expect(teammateToggles(state, session(A, { cwd: "C:\\work\\web\\src" }))).toEqual([{ teammate: TM(1), login: "bob", on: true, why: "they see the agents you open to them" }]);
-    expect(teammateToggles(state, session(B, { cwd: "C:\\Work\\New\\x" }))).toEqual([{ teammate: TM(2), login: "carol", on: false, why: "its folder is shared closed with them" }]);
-    // by its workspace's folder, not its cwd
-    apply(state, { type: "workspace.state", params: { id: "ws_01ARZ3NDEKTSV4RRFFQ69G5FD2", node: DESK, path: "C:\\other", name: "other", origin: "user", lastActivity: 1 } as Workspace });
-    expect(teammateToggles(state, session(B, { workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FD2", cwd: "C:\\elsewhere" })).map((t) => t.login)).toEqual(["dave"]);
+    const web = session(A, { cwd: "C:\\work\\web\\src" });
+    const t = (n: number) => state.teammates.get(TM(n))!;
+    expect(connectStanding(state, t(1), web)).toEqual({ kind: "opened", lead: "Open to bob.", rest: "All their agents can message this one.", label: "Close" });
+    expect(connectStanding(state, t(3), web)).toEqual({ kind: "outside", lead: "Not shared with dave.", rest: "This agent works in src, which you don't share with them.", label: "Share src with dave…" });
+    expect(connectStanding(state, t(4), web)).toEqual({ kind: "always", lead: "Open to erin.", rest: "You share every agent in src with them." });
+    expect(connectStanding(state, t(5), web)).toEqual({ kind: "closed", lead: "Closed to finn.", rest: "Only the agents you connect can message this one.", label: "Open to all of finn's agents" });
+    // shared closed: Open | Exclude act on the Status line's key
+    const fresh = session(B, { cwd: "C:\\Work\\New\\x" });
+    expect(connectStanding(state, t(2), fresh)).toEqual({ kind: "shared-closed", lead: "x is shared closed with carol.", rest: "Their agents reach none of yours in it until you open it or exclude it.", placeKey: `${TM(2)}\n${DESK}\nC:\\work\\new` });
+    // by its workspace's folder and name, not its cwd
+    const inWs = session(A, { workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FD1", cwd: "C:\\elsewhere" });
+    expect(connectStanding(state, t(3), inWs).rest).toBe("This agent works in web, which you don't share with them.");
+  });
+
+  test("a teammate's agents: the open ones to Connect, the closed ones to ask for, and how each stands with this agent", () => {
+    const S1 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const S2 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC2";
+    const S3 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC3";
+    const S4 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC4";
+    const t = teammate(1, {
+      share: { mode: "include", folders: [{ node: DESK, path: "C:\\work" }], open: "chosen" },
+      connections: [
+        { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC1", state: "active", session: A, agent: { session: S1, name: "api" }, by: "us", createdAt: NOW },
+        { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC2", state: "asked", session: A, agent: { session: S3, name: "deploy" }, by: "us", createdAt: NOW },
+        { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC3", state: "active", session: B, agent: { session: S2, name: "infra-bot" }, by: "us", createdAt: NOW },
+      ],
+    });
+    const seen = {
+      agents: [
+        { session: S2, name: "infra-bot", harness: "codex" as const, workspace: "infra", status: "idle" as const, intent: "Terraform plan" },
+        { session: S1, name: "api", harness: "claude" as const, workspace: "api", status: "busy" as const, intent: "Fix the auth tests" },
+        { name: "old", status: "idle" as const },
+      ],
+      closed: [
+        { session: S4, name: "notes", harness: "claude" as const, workspace: "api" },
+        { session: S3, name: "deploy", harness: "codex" as const, workspace: "infra" },
+      ],
+    };
+    const rows = connectAgentRows(t, { id: A }, seen);
+    expect(rows.map((r) => [r.name, r.meta, r.tone, r.doing, r.action])).toEqual([
+      ["api", "Claude · api", "busy", "working", { kind: "state", words: "Connected", tone: "ok" }],
+      ["infra-bot", "Codex · infra", "idle", "idle", { kind: "connect", label: "Connect" }],
+      // one from a Cophyla too old to name its session cannot be connected
+      ["old", "", "idle", "idle", undefined],
+      ["deploy", "Codex · infra", "closed", "closed: bob decides", { kind: "state", words: "Asked", tone: "wait" }],
+      ["notes", "Claude · api", "closed", "closed: bob decides", { kind: "ask", label: "Ask bob" }],
+    ]);
+    expect(rows[1]!.intent).toBe("Terraform plan");
+    // a closed one shows nothing of what it does
+    expect(rows[4]!.intent).toBeUndefined();
+    // the filter, by name, harness or workspace
+    expect(connectAgentRows(t, { id: A }, seen, "INFRA").map((r) => r.name)).toEqual(["infra-bot", "deploy"]);
+    // another agent of this side has its own connections
+    expect(connectAgentRows(t, { id: B }, seen).find((r) => r.name === "infra-bot")?.action).toEqual({ kind: "state", words: "Connected", tone: "ok" });
+  });
+
+  test("Connected: the code connections, then the teammate ones, live first, each with what may be pressed; the pill names the live ones", () => {
+    const state = connected();
+    const S1 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1";
+    const S2 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FC2";
+    apply(state, {
+      type: "connections",
+      connections: [
+        { id: "con_01ARZ3NDEKTSV4RRFFQ69G5CN1", state: "active", node: DESK, session: A, peer: { user: "zoe", name: "cli", harness: "codex", live: true }, by: "app", createdAt: NOW, sent: 0, received: 0 },
+        { id: "con_01ARZ3NDEKTSV4RRFFQ69G5CN2", state: "pending", node: DESK, session: A, by: "app", createdAt: NOW, sent: 0, received: 0 },
+      ],
+    } as never);
+    apply(state, {
+      type: "teammates",
+      teammates: [
+        teammate(1, {
+          user: "bob",
+          connections: [
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC2", state: "asked", session: A, agent: { session: S2, name: "notes", harness: "claude", workspace: "api" }, by: "them", createdAt: NOW, expiresAt: NOW + 86_400_000 },
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC1", state: "active", session: A, agent: { session: S1, name: "api", harness: "claude", workspace: "api" }, by: "us", createdAt: NOW },
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC3", state: "declined", session: A, agent: { session: S1, name: "deploy" }, by: "us", createdAt: NOW, reason: "bob declined" },
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC4", state: "active", session: B, agent: { session: S1, name: "web" }, by: "us", createdAt: NOW },
+          ],
+        }),
+        teammate(2, { user: "carol", connections: [{ id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC5", state: "asked", session: A, agent: { session: S1, name: "ui-kit" }, by: "us", createdAt: NOW }] }),
+      ],
+    });
+    const rows = connectedRows(state, { id: A });
+    expect(rows.map((r) => [r.kind, r.who, r.words, r.kind === "teammate" ? r.buttons : []])).toEqual([
+      ["code", "zoe/cli", "Codex · connected with a code", []],
+      ["teammate", "bob/api", "Claude · api · connected both ways", ["end"]],
+      ["teammate", "bob/notes", "bob asks to connect their agent notes to this one (Claude · api)", ["connect", "decline"]],
+      ["teammate", "carol/ui-kit", "asked carol · waiting for their answer", ["cancel"]],
+      ["teammate", "bob/deploy", "bob declined", ["dismiss"]],
+    ]);
+    // a yes on their ask names the two agents
+    expect(rows[2]).toMatchObject({ teammate: TM(1), session: A, agent: S2 });
+    expect(sessionLinks(state, A)).toEqual(["zoe/cli", "bob/api"]);
+    expect(sessionLinks(state, B)).toEqual(["bob/web"]);
+  });
+
+  test("the teammates' blocks: by login, their agents only where this agent is shared, with words while they come or when none are", () => {
+    const state = connected();
+    apply(state, {
+      type: "teammates",
+      teammates: [
+        teammate(1, { user: "carol", theirs: { open: "always", workspaces: ["web"] } }),
+        teammate(2, { user: "bob", share: { mode: "include", folders: [{ node: DESK, path: "C:\\work\\web" }], open: "chosen" }, theirs: { open: "chosen", workspaces: ["api", "infra"] } }),
+        teammate(3, { user: "dave", share: { mode: "include", folders: [{ node: DESK, path: "C:\\other" }], open: "chosen" } }),
+        teammate(4, { state: "pending", user: undefined }),
+      ],
+    });
+    const s = session(A);
+    const seen = new Map([
+      [TM(2), { at: NOW, agents: [{ session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1", name: "api", status: "idle" as const }], closed: [] }],
+      [TM(1), { at: NOW, agents: [], closed: [] }],
+    ]);
+    const blocks = connectTeamBlocks(state, s, seen);
+    expect(blocks.map((b) => [b.login, b.theirs, b.standing.kind])).toEqual([
+      ["bob", "shares api, infra · opens agents by hand", "closed"],
+      ["carol", "shares web · every agent open", "always"],
+      ["dave", "", "outside"],
+    ]);
+    expect(blocks[0]!.agents).toMatchObject({ total: 1, filter: false });
+    expect(blocks[0]!.agents!.words).toBeUndefined();
+    expect(blocks[1]!.agents).toMatchObject({ rows: [], words: "None of carol's agents is in what they share now." });
+    // outside what is shared with them: no list at all
+    expect(blocks[2]!.agents).toBeUndefined();
+    // not asked yet, or their side could not be reached
+    expect(connectTeamBlocks(state, s, new Map())[0]!.agents!.words).toBe("Asking bob's Cophyla…");
+    expect(connectTeamBlocks(state, s, new Map([[TM(2), { agents: [], closed: [], error: "bob's Cophyla can't be reached now." }]]))[0]!.agents!.words).toBe("bob's Cophyla can't be reached now.");
+    // what came before stands while a later ask fails
+    expect(connectTeamBlocks(state, s, new Map([[TM(2), { ...seen.get(TM(2))!, error: "x" }]]))[0]!.agents!.rows.map((r) => r.name)).toEqual(["api"]);
+    // past eight agents, a filter
+    const many = new Map([[TM(2), { at: NOW, agents: Array.from({ length: 9 }, (_, i) => ({ session: `sess_01ARZ3NDEKTSV4RRFFQ69G5FD${i}`, name: `a${i}` })), closed: [] }]]);
+    expect(connectTeamBlocks(state, s, many)[0]!.agents!.filter).toBe(true);
+    expect(connectTeamBlocks(state, s, many, new Map([[TM(2), "a3"]]))[0]!.agents).toMatchObject({ total: 9, rows: [{ name: "a3" }] });
+  });
+
+  test("with no teammate, a line says what teammates are; Someone else is folded while there is one", () => {
+    const state = connected();
+    expect(connectNoTeam(state)).toBe("Teammates need a Cophyla account.");
+    apply(state, { type: "account.state", params: { plan: "pro", limits: {}, subject: "usr_alice" } });
+    expect(connectNoTeam(state)).toBe("Teammates connect agents without a code.");
+    expect(connectElseFolded(state, {})).toBe(false);
+    apply(state, { type: "teammates", teammates: [teammate(1), teammate(2, { state: "pending", user: undefined })] });
+    expect(connectNoTeam(state)).toBeUndefined();
+    expect(connectElseFolded(state, {})).toBe(true);
+    // opened by the user, or showing a code or why one failed
+    expect(connectElseFolded(state, { others: true })).toBe(false);
+    expect(connectElseFolded(state, { made: "con_01ARZ3NDEKTSV4RRFFQ69G5CN1" })).toBe(false);
+    expect(connectElseFolded(state, { error: "no" })).toBe(false);
+  });
+
+  test("the Teammates page lists a teammate's connections by the user's agent and theirs", () => {
+    const state = connected();
+    apply(state, { type: "session.state", params: session(A, { title: "Login page" }) });
+    apply(state, {
+      type: "teammates",
+      teammates: [
+        teammate(1, {
+          connections: [
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC2", state: "asked", session: A, agent: { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC2", name: "notes" }, by: "them", createdAt: NOW },
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC1", state: "active", session: A, agent: { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1", name: "api" }, by: "us", createdAt: NOW },
+            { id: "tc_01ARZ3NDEKTSV4RRFFQ69G5TC3", state: "asked", session: B, agent: { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1", name: "api" }, by: "us", createdAt: NOW + 1 },
+          ],
+        }),
+      ],
+    });
+    expect(teamConnectionRows(state, TM(1)).map((r) => [r.words, r.buttons])).toEqual([
+      ["Login page ⇄ bob/api", ["end"]],
+      ["Login page ⇄ bob/notes · bob asks you", ["connect", "decline"]],
+      ["an agent of yours ⇄ bob/api · asked, waiting for bob", ["cancel"]],
+    ]);
+    expect(teamConnectionRows(state, TM(9))).toEqual([]);
   });
 
   test("what a share holds: under a folder an include names, or under none an exclude names", () => {

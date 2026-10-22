@@ -14,11 +14,14 @@
 // ⋮ → New group lays a form over the panes: name, purpose, how agents added are told, and the
 // agents to put in, the user's own by machine and folder and teammates' under their login.
 // ⋮ → Teammates lays a page over them, as Devices does: each teammate with what each side
-// shares, Edit and End; the codes not used yet; Invite a teammate and Enter a code, each with
-// the share form, which asks before it shares a whole home folder or drive.
+// shares, Edit and End, and the agents of the user's joined to theirs, with End and the asks;
+// the codes not used yet; Invite a teammate and Enter a code, each with the share form, which
+// asks before it shares a whole home folder or drive.
 //
-// A session in focus has a mark on its tab and a line under its pane's head, with End focus;
-// its Connect panel opens it to a teammate by hand where that teammate's share asks it. Under
+// A session in focus has a mark on its tab and a line under its pane's head, with End focus.
+// Its Connect panel, "Connect this agent", has what it is joined to (Connected), a block per
+// teammate saying in words how it stands with them and what changes it, with their agents to
+// Connect or to ask for, and Someone else, the code for a person who is not a teammate. Under
 // the rail's Status, a workspace shared closed with a teammate is a line with Open and Exclude.
 
 import type { Group, GroupCandidate, GroupNotify, ClientSession as Session, TeammatePlace, ClientWorkspace as Workspace } from "@cophyla/protocol";
@@ -40,9 +43,12 @@ import {
   selectTeammates,
   sessionFocus,
   teamBlock,
-  teammateToggles,
+  teamConnectionRows,
+  connectNoTeam,
+  connectTeamBlocks,
+  connectedRows,
 } from "./model.ts";
-import type { BroadPlace, CandidateGroup, CandidateItem, ClosedPlace, MemberChip, PostView, TeammateRow, TeammateToggle, ViewState } from "./model.ts";
+import type { BroadPlace, CandidateGroup, CandidateItem, ClosedPlace, ConnectAgentRow, ConnectedRow, ConnectTeamBlock, MemberChip, PostView, TeamAgentsSeen, TeamConnectionRow, TeammateRow, ViewState } from "./model.ts";
 import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, sectionHead, setData, setHidden, setText } from "./render.ts";
 import type { FolderBrowse, UiState } from "./render.ts";
 
@@ -116,6 +122,13 @@ export interface TeamUi {
   workspaces?: Workspace[];
   /** The last `group.read` sent, per group. */
   readSent: Map<string, number>;
+  /**
+   * The Connect panel's teammates, while it is open: the session it is open for, each
+   * teammate's agents as last asked of their side, when each was last asked, and the filters typed.
+   */
+  connect?: { session: string; seen: Map<string, TeamAgentsSeen>; asked: Map<string, number>; filters: Map<string, string> };
+  /** A teammate connection being ended: asked in place, in the Connect panel or on the Teammates page. */
+  connEnding?: string;
 }
 
 export function newTeamUi(): TeamUi {
@@ -271,27 +284,212 @@ export function updateSessionFocus(line: HTMLElement, s: Session, state: ViewSta
   end.disabled = !state.connected || ui.team.busy.has(`focus:${s.id}`);
 }
 
-/** In the Connect panel: a switch per teammate this session may be opened to by hand. */
+/** The Connect panel's Connected part: what the session is joined to now, and the asks either way. */
+export function createConnectConnected(): HTMLElement {
+  const section = el("section", "connect-section connect-connected");
+  section.append(el("h4", "connect-heading", "Connected"), el("div", "connect-rows"));
+  return section;
+}
+
+export function updateConnectConnected(section: HTMLElement, s: Session, state: ViewState, ui: UiState): void {
+  const rows = connectedRows(state, s);
+  setHidden(section, rows.length === 0);
+  reconcile(section.querySelector<HTMLElement>(".connect-rows")!, rows, (r) => `${r.kind}:${r.id}`, createConnectedRow, (n, r) => updateConnectedRow(n, r, state, ui));
+}
+
+function createConnectedRow(r: ConnectedRow): HTMLElement {
+  const row = el("div", "connect-row connect-conn");
+  const dot = el("span", "connect-dot");
+  dot.setAttribute("aria-hidden", "true");
+  row.append(dot, el("span", "connect-who"), el("span", "connect-words"));
+  const acts = el("div", "connect-acts");
+  const ask = el("div", "connect-ask");
+  ask.setAttribute("role", "alert");
+  if (r.kind === "code") {
+    const end = actionButton("connect-btn connect-end", "End", "connection-end");
+    end.title = "End the connection at both ends";
+    acts.append(end);
+    ask.append(el("span", "connect-ask-words", "End it at both ends?"), actionButton("connect-btn connect-danger", "End", "connection-end-confirm"), actionButton("connect-btn", "Keep", "connection-end-cancel"));
+  } else {
+    const connect = actionButton("connect-btn connect-go connect-yes", "Connect", "tc-connect");
+    connect.title = "Let the two agents message each other, and no other";
+    const decline = actionButton("connect-btn connect-decline", "Decline", "tc-decline");
+    const cancel = actionButton("connect-btn connect-cancel", "Cancel", "tc-cancel");
+    cancel.title = "Take the ask back";
+    const end = actionButton("connect-btn connect-end", "End", "tc-end");
+    end.title = "End it at both sides: both agents are told";
+    const dismiss = actionButton("connect-btn connect-dismiss", "Dismiss", "tc-dismiss");
+    acts.append(connect, decline, cancel, end, dismiss);
+    ask.append(el("span", "connect-ask-words", "End it? Both agents are told."), actionButton("connect-btn connect-danger", "End", "tc-end-confirm"), actionButton("connect-btn", "Keep", "tc-end-cancel"));
+  }
+  row.append(acts, ask);
+  return row;
+}
+
+function updateConnectedRow(row: HTMLElement, r: ConnectedRow, state: ViewState, ui: UiState): void {
+  setText(row.querySelector(".connect-who")!, r.who);
+  setText(row.querySelector(".connect-words")!, r.words);
+  if (r.kind === "code") {
+    setData(row.querySelector<HTMLElement>(".connect-dot")!, "tone", "live");
+    const asking = ui.endingConnection === r.id;
+    for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>("button"))) {
+      setData(b, "connection", r.id);
+      b.disabled = !state.connected;
+    }
+    setHidden(row.querySelector<HTMLElement>(".connect-acts")!, asking);
+    setHidden(row.querySelector<HTMLElement>(".connect-ask")!, !asking);
+    return;
+  }
+  setData(row.querySelector<HTMLElement>(".connect-dot")!, "tone", r.state === "active" ? "live" : r.state === "asked" ? "wait" : "off");
+  setData(row, "state", r.state);
+  const asking = ui.team.connEnding === r.id;
+  const busy = !state.connected || ui.team.busy.has(`tc:${r.id}`) || ui.team.busy.has(`connect:${r.teammate}\n${r.session}\n${r.agent}`);
+  for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>("button"))) {
+    setData(b, "teammate", r.teammate);
+    setData(b, "id", r.id);
+    setData(b, "session", r.session);
+    setData(b, "agent", r.agent);
+    b.disabled = busy;
+  }
+  const shows = (cls: string, kind: (typeof r.buttons)[number]) => setHidden(row.querySelector<HTMLElement>(cls)!, !r.buttons.includes(kind));
+  shows(".connect-yes", "connect");
+  shows(".connect-decline", "decline");
+  shows(".connect-cancel", "cancel");
+  shows(".connect-end", "end");
+  shows(".connect-dismiss", "dismiss");
+  setHidden(row.querySelector<HTMLElement>(".connect-acts")!, asking);
+  setHidden(row.querySelector<HTMLElement>(".connect-ask")!, !asking);
+}
+
+/** The Connect panel's Teammates part: a block per teammate, or a line on what teammates are. */
 export function createConnectTeam(): HTMLElement {
-  const block = el("div", "session-teammates");
-  block.append(el("p", "session-teammates-head", "Teammates"), el("div", "session-teammates-list"));
+  const section = el("section", "connect-section connect-teammates");
+  const none = el("p", "connect-noteam");
+  const add = actionButton("connect-link connect-noteam-add", "Add one in Teammates", "team-open");
+  none.append(el("span", "connect-noteam-words"), add);
+  section.append(el("h4", "connect-heading", "Teammates"), el("div", "connect-teams"), none);
+  return section;
+}
+
+export function updateConnectTeam(section: HTMLElement, s: Session, state: ViewState, ui: UiState): void {
+  const none = connectNoTeam(state);
+  const line = section.querySelector<HTMLElement>(".connect-noteam")!;
+  setHidden(line, none === undefined);
+  if (none !== undefined) {
+    setText(line.querySelector(".connect-noteam-words")!, none);
+    // signed out, there is no adding one here: the line says so and no more
+    setHidden(line.querySelector<HTMLElement>(".connect-noteam-add")!, state.account?.subject === undefined);
+  }
+  const c = ui.team.connect?.session === s.id ? ui.team.connect : undefined;
+  const blocks = none !== undefined ? [] : connectTeamBlocks(state, s, c?.seen ?? new Map(), c?.filters ?? new Map());
+  reconcile(section.querySelector<HTMLElement>(".connect-teams")!, blocks, (b) => b.teammate, createTeamBlock, (n, b) => updateTeamBlock(n, b, s, state, ui));
+}
+
+function createTeamBlock(): HTMLElement {
+  const block = el("div", "connect-team");
+  const head = el("div", "connect-team-head");
+  const sharing = actionButton("connect-link connect-sharing", "Sharing", "team-open");
+  sharing.title = "What you share with them, and what they share with you";
+  head.append(el("span", "connect-login"), el("span", "connect-theirs"), sharing);
+  const stand = el("div", "connect-stand");
+  const words = el("p", "connect-stand-words");
+  words.append(el("strong", "connect-stand-lead"), el("span", "connect-stand-rest"));
+  const acts = el("div", "connect-stand-acts");
+  const main = actionButton("connect-btn connect-stand-main", "", "teammate-open");
+  const open = actionButton("connect-btn", "Open", "team-place-open");
+  open.title = "Their agents reach yours in it, as in the rest you share";
+  const exclude = actionButton("connect-btn", "Exclude", "team-place-exclude");
+  exclude.title = "Keep it from them: it joins the folders you do not share";
+  acts.append(main, open, exclude);
+  stand.append(words, acts);
+  const filter = el("input", "connect-filter");
+  filter.type = "search";
+  filter.autocomplete = "off";
+  filter.spellcheck = false;
+  block.append(head, stand, filter, el("div", "connect-agents"), el("p", "connect-agents-note"));
   return block;
 }
 
-export function updateConnectTeam(block: HTMLElement, s: Session, state: ViewState, ui: UiState): void {
-  const toggles = teammateToggles(state, s);
-  setHidden(block, toggles.length === 0);
-  reconcile(block.querySelector<HTMLElement>(".session-teammates-list")!, toggles, (t) => t.teammate, () => actionButton("session-teammate", "", "teammate-open"), (b, t) => updateToggle(b as HTMLButtonElement, t, s, state, ui));
+function updateTeamBlock(block: HTMLElement, b: ConnectTeamBlock, s: Session, state: ViewState, ui: UiState): void {
+  setData(block, "teammate", b.teammate);
+  setData(block, "standing", b.standing.kind);
+  setText(block.querySelector(".connect-login")!, b.login);
+  const theirs = block.querySelector<HTMLElement>(".connect-theirs")!;
+  setText(theirs, b.theirs);
+  setHidden(theirs, b.theirs === "");
+  setText(block.querySelector(".connect-stand-lead")!, b.standing.lead);
+  setText(block.querySelector(".connect-stand-rest")!, ` ${b.standing.rest}`);
+  const busy = !state.connected || ui.team.busy.has(`open:${b.teammate}\n${s.id}`) || (b.standing.placeKey !== undefined && ui.team.busy.has(`place:${b.standing.placeKey}`));
+  const main = block.querySelector<HTMLButtonElement>(".connect-stand-main")!;
+  const k = b.standing.kind;
+  setHidden(main, b.standing.label === undefined);
+  setText(main, b.standing.label ?? "");
+  setData(main, "action", k === "outside" ? "team-share-folder" : "teammate-open");
+  setData(main, "teammate", b.teammate);
+  setData(main, "session", s.id);
+  setData(main, "on", String(k === "closed"));
+  main.title = k === "outside" ? `Opens what you share with ${b.login}, with this folder added: you save it` : k === "opened" ? `Close it to ${b.login}'s agents: only the ones you connect can reach it` : k === "closed" ? `Any of ${b.login}'s agents may message this one, not only the ones you connect` : "";
+  main.disabled = busy;
+  for (const btn of Array.from(block.querySelectorAll<HTMLButtonElement>(".connect-stand-acts [data-action^='team-place']"))) {
+    setHidden(btn, k !== "shared-closed");
+    setData(btn, "key", b.standing.placeKey ?? "");
+    btn.disabled = busy;
+  }
+  const acts = block.querySelector<HTMLElement>(".connect-stand-acts")!;
+  setHidden(acts, b.standing.label === undefined && k !== "shared-closed");
+  const filter = block.querySelector<HTMLInputElement>(".connect-filter")!;
+  setHidden(filter, !b.agents?.filter);
+  setData(filter, "teammate", b.teammate);
+  filter.placeholder = `Filter ${b.login}'s agents`;
+  filter.setAttribute("aria-label", `Filter ${b.login}'s agents`);
+  const list = block.querySelector<HTMLElement>(".connect-agents")!;
+  setHidden(list, b.agents === undefined || b.agents.rows.length === 0);
+  reconcile(list, b.agents?.rows ?? [], (r) => r.key, createAgentRow, (n, r) => updateAgentRow(n, r, b, s, state, ui));
+  const note = block.querySelector<HTMLElement>(".connect-agents-note")!;
+  setText(note, b.agents?.words ?? "");
+  setHidden(note, b.agents?.words === undefined);
 }
 
-function updateToggle(b: HTMLButtonElement, t: TeammateToggle, s: Session, state: ViewState, ui: UiState): void {
-  setData(b, "teammate", t.teammate);
-  setData(b, "session", s.id);
-  setData(b, "on", String(!t.on));
-  b.setAttribute("aria-pressed", String(t.on));
-  setText(b, t.on ? `Open to ${t.login}` : `Open to ${t.login}?`);
-  b.title = t.on ? `Open to ${t.login}: their agents can message this one. Press to close it to them.` : `Open this agent to ${t.login}: ${t.why}`;
-  b.disabled = !state.connected || ui.team.busy.has(`open:${t.teammate}\n${s.id}`);
+function createAgentRow(): HTMLElement {
+  const row = el("div", "connect-row connect-agent");
+  const dot = el("span", "connect-dot");
+  dot.setAttribute("aria-hidden", "true");
+  const doing = el("span", "connect-doing");
+  doing.append(el("span", "connect-doing-state"), el("span", "connect-doing-intent"));
+  const act = el("div", "connect-acts");
+  act.append(actionButton("connect-btn connect-agent-go", "", "tc-connect-agent"), el("span", "connect-state"));
+  row.append(dot, el("span", "connect-name"), el("span", "connect-meta"), doing, act);
+  return row;
+}
+
+function updateAgentRow(row: HTMLElement, r: ConnectAgentRow, b: ConnectTeamBlock, s: Session, state: ViewState, ui: UiState): void {
+  setData(row.querySelector<HTMLElement>(".connect-dot")!, "tone", r.tone);
+  setData(row, "open", String(r.open));
+  setText(row.querySelector(".connect-name")!, r.name);
+  setText(row.querySelector(".connect-meta")!, r.meta);
+  setText(row.querySelector(".connect-doing-state")!, r.doing);
+  const intent = row.querySelector<HTMLElement>(".connect-doing-intent")!;
+  setText(intent, r.intent ? `${r.doing ? " · " : ""}${r.intent}` : "");
+  row.title = r.intent ? `${r.name}: ${r.intent}` : r.name;
+  const go = row.querySelector<HTMLButtonElement>(".connect-agent-go")!;
+  const state2 = row.querySelector<HTMLElement>(".connect-state")!;
+  const a = r.action;
+  const pressable = a !== undefined && a.kind !== "state";
+  setHidden(go, !pressable);
+  setHidden(state2, a === undefined || a.kind !== "state");
+  if (a && a.kind !== "state") {
+    setText(go, a.label);
+    setData(go, "kind", a.kind);
+    go.title = a.kind === "connect" ? `${r.name} and this agent may message each other, and no other agent of either of you` : `${b.login} is asked first: ${r.name} is closed to you`;
+  }
+  if (a && a.kind === "state") {
+    setText(state2, a.words);
+    setData(state2, "tone", a.tone);
+  }
+  setData(go, "teammate", b.teammate);
+  setData(go, "session", s.id);
+  setData(go, "agent", r.session ?? "");
+  go.disabled = !state.connected || r.session === undefined || ui.team.busy.has(`connect:${b.teammate}\n${s.id}\n${r.session}`);
 }
 
 // --- the group's pane --------------------------------------------------------------------------------
@@ -972,8 +1170,49 @@ function createTeammateRow(): HTMLElement {
   const ask = el("div", "team-end-ask");
   ask.setAttribute("role", "alert");
   ask.append(el("span", "team-end-words"), actionButton("team-end-confirm", "End", "team-end-confirm"), actionButton("team-end-cancel", "Keep", "team-end-cancel"));
-  row.append(head, el("p", "team-line team-mine"), el("p", "team-line team-theirs"), actions, ask, el("div", "team-share-slot"));
+  const conns = el("div", "team-conns");
+  conns.append(el("p", "team-conns-head", "Connected agents"), el("div", "team-conn-rows"));
+  row.append(head, el("p", "team-line team-mine"), el("p", "team-line team-theirs"), conns, actions, ask, el("div", "team-share-slot"));
   return row;
+}
+
+function createTeamConnRow(): HTMLElement {
+  const row = el("div", "team-conn");
+  const acts = el("div", "team-conn-acts");
+  acts.append(
+    actionButton("connect-btn connect-go connect-yes", "Connect", "tc-connect"),
+    actionButton("connect-btn connect-decline", "Decline", "tc-decline"),
+    actionButton("connect-btn connect-cancel", "Cancel", "tc-cancel"),
+    actionButton("connect-btn connect-end", "End", "tc-end"),
+    actionButton("connect-btn connect-dismiss", "Dismiss", "tc-dismiss"),
+  );
+  const ask = el("div", "connect-ask");
+  ask.setAttribute("role", "alert");
+  ask.append(el("span", "connect-ask-words", "End it? Both agents are told."), actionButton("connect-btn connect-danger", "End", "tc-end-confirm"), actionButton("connect-btn", "Keep", "tc-end-cancel"));
+  row.append(el("span", "team-conn-words"), acts, ask);
+  return row;
+}
+
+function updateTeamConnRow(row: HTMLElement, r: TeamConnectionRow, state: ViewState, ui: UiState): void {
+  setData(row, "state", r.state);
+  setText(row.querySelector(".team-conn-words")!, r.words);
+  const asking = ui.team.connEnding === r.id;
+  const busy = !state.connected || ui.team.busy.has(`tc:${r.id}`) || ui.team.busy.has(`connect:${r.teammate}\n${r.session}\n${r.agent}`);
+  for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>("button"))) {
+    setData(b, "teammate", r.teammate);
+    setData(b, "id", r.id);
+    setData(b, "session", r.session);
+    setData(b, "agent", r.agent);
+    b.disabled = busy;
+  }
+  const shows = (cls: string, kind: TeamConnectionRow["buttons"][number]) => setHidden(row.querySelector<HTMLElement>(cls)!, !r.buttons.includes(kind));
+  shows(".connect-yes", "connect");
+  shows(".connect-decline", "decline");
+  shows(".connect-cancel", "cancel");
+  shows(".connect-end", "end");
+  shows(".connect-dismiss", "dismiss");
+  setHidden(row.querySelector<HTMLElement>(".team-conn-acts")!, asking);
+  setHidden(row.querySelector<HTMLElement>(".connect-ask")!, !asking);
 }
 
 function updateTeammateRow(row: HTMLElement, r: TeammateRow, state: ViewState, ui: UiState): void {
@@ -986,10 +1225,14 @@ function updateTeammateRow(row: HTMLElement, r: TeammateRow, state: ViewState, u
   const theirs = row.querySelector<HTMLElement>(".team-theirs")!;
   setText(theirs, r.theirs !== undefined ? `They share ${r.theirs}` : "");
   setHidden(theirs, r.theirs === undefined);
+  const conns = row.querySelector<HTMLElement>(".team-conns")!;
+  const connRows = r.state === "active" ? teamConnectionRows(state, r.id) : [];
+  setHidden(conns, connRows.length === 0);
+  reconcile(conns.querySelector<HTMLElement>(".team-conn-rows")!, connRows, (c) => c.id, createTeamConnRow, (n, c) => updateTeamConnRow(n, c, state, ui));
   const busy = !state.connected || ui.team.pageBusy === true;
   const editing = ui.team.share?.kind === "edit" && ui.team.share.teammate === r.id;
   const asking = ui.team.ending === r.id;
-  for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>("button"))) {
+  for (const b of Array.from(row.querySelectorAll<HTMLButtonElement>(".team-row-actions button, .team-end-ask button"))) {
     setData(b, "id", r.id);
     b.disabled = busy;
   }
