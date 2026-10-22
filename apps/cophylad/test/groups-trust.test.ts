@@ -38,6 +38,7 @@ interface Delivery {
   session: string;
   text: string;
   info: EnvelopeInfo;
+  quiet?: boolean;
 }
 
 /** This side (ferit) with its agents, and bob as a teammate whose side is played by the test. */
@@ -54,8 +55,8 @@ function rig(local: Session[], open: Set<string>) {
   const sentEntries: { seq: number; entry: GroupEntry }[] = [];
   const clock = { t: 1_758_000_000_000 };
   const links = new Set<string>([DESK, LAPTOP]);
-  const deliver = async (s: Session, text: string, info: EnvelopeInfo) => {
-    delivered.push({ session: s.id, text, info });
+  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: { quiet?: boolean }) => {
+    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}) });
     return { status: "queued" as const };
   };
   let groups: Groups;
@@ -133,8 +134,10 @@ describe("a teammate's side writes its own part alone", () => {
       expect(posts).toHaveLength(1);
       expect(posts[0]!.from).toMatchObject({ kind: "person", user: "bob" });
       await waitFor(() => r.delivered.length === 1);
-      // its notice carries another person's words: marked external
-      expect(r.delivered[0]!.info.group?.external).toEqual(["bob"]);
+      // its notice names bob and carries none of his words: nothing in it to mark external
+      expect(r.delivered[0]!.text).toContain("bob (a person) tagged you in #");
+      expect(r.delivered[0]!.text).not.toContain("please look");
+      expect(r.delivered[0]!.info.group?.external).toBeUndefined();
     } finally {
       r.stop();
     }
@@ -317,10 +320,13 @@ describe("what an agent has not read, beside its prompts", () => {
       const g = await r.groups.create({ name: "team", members: [{ session: a0.id }, { session: a1.id }, { session: a2.id }] });
       r.groups.setNotify(g.id, `agent:${a2.id}`, "all");
       await r.groups.tool(a0, "post_group", { group: "team", text: "the build is green", expects_reply: false });
-      await r.groups.tool(a0, "post_group", { group: "team", text: "@a1 can you look at the login page?", expects_reply: true });
-      expect(r.groups.unreadNote(a1.id, { consume: false })).toBe("Unread in your group chats, which read_group shows when it suits your work: #team: 2 new posts (1 tagging you).");
-      expect(r.groups.unreadNote(a1.id)).toContain("#team: 2 new posts");
+      expect(r.groups.unreadNote(a1.id, { consume: false })).toBe("Unread in your group chats, which read_group shows when it suits your work: #team: 1 new post.");
+      expect(r.groups.unreadNote(a1.id)).toContain("#team: 1 new post");
       // said once
+      expect(r.groups.unreadNote(a1.id)).toBeUndefined();
+      // a tag's notice gives the counts, the post before it among them: the line does not say them again
+      await r.groups.tool(a0, "post_group", { group: "team", text: "@a1 can you look at the login page?", expects_reply: true });
+      await waitFor(() => r.delivered.some((d) => d.session === a1.id && d.text.includes("tagged you in #team (2 unread, 1 tagging you)")));
       expect(r.groups.unreadNote(a1.id)).toBeUndefined();
       await r.groups.tool(a0, "post_group", { group: "team", text: "and the docs too", expects_reply: false });
       expect(r.groups.unreadNote(a1.id)).toContain("#team: 1 new post.");

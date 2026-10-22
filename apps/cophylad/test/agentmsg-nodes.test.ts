@@ -129,6 +129,25 @@ describe("agent messages across nodes", () => {
     expect(beta.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "transfer.start")).toMatchObject({ principal: { kind: "node", id: primary.d.identity.id }, outcome: "ok" });
   }, 60_000);
 
+  test("a group's tag reaches a secondary's session as a quiet notice, with none of the post's words; its own node decides how it goes", async () => {
+    primary = await startPrimary();
+    beta = await startSecondary(primary, { agent: true, node: 'name = "Beta"\n' });
+    await linked(beta);
+    await waitFor(() => primary!.d.nodes.linkedTo(beta!.identity.id));
+    const b = await spawnOn(beta);
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfSession(b.id) === beta!.identity.id, 10_000);
+    const g = await primary.d.groups.create({ name: "release", members: [{ session: b.id }] });
+    const handle = g.members.find((m) => m.kind === "agent")!;
+    await waitFor(() => agentTurns(beta!, b).some((e) => String((e.payload as { text?: string }).text ?? "").includes("put you in the group chat #release")), 10_000);
+    await waitFor(() => beta!.sessions.get(b.id)?.status === "idle", 10_000);
+    primary.d.groups.postAsUser(g.id, `@${handle.kind === "agent" ? handle.handle : ""} is the schema merged?`);
+    const notice = await waitFor(() => agentTurns(beta!, b).find((e) => String((e.payload as { text?: string }).text ?? "").includes("tagged you in #release")), 10_000);
+    expect((notice.payload as { text: string }).text).not.toContain("schema");
+    // forwarded quiet; a session started over ACP answers no hooks here, so it went as a message
+    const sends = beta.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.send");
+    expect(sends.map((e) => e.args)).toContainEqual(expect.objectContaining({ as: "agent", agent: expect.objectContaining({ group: expect.objectContaining({ name: "release" }), quiet: true }) }));
+  });
+
   test("the bypass switch is set on the node an app on the primary names, and that node's row says so", async () => {
     primary = await startPrimary();
     alpha = await startSecondary(primary, { node: 'name = "Alpha"\n' });

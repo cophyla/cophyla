@@ -122,6 +122,8 @@ export interface NormalisedHook {
   error?: string;
   /** Claude: the sub-agent that ran the tool, whose own transcript holds the call. */
   agentId?: string;
+  /** Codex: a sub-agent's hook, under its parent thread's id with the sub-agent's own rollout. */
+  subAgent?: boolean;
   message?: string;
   notificationType?: string;
   source?: string;
@@ -156,6 +158,7 @@ export function normaliseHook(harness: AttachedHarness, e: ClaudeHookEvent | Cod
   // A Codex sub-agent's hooks come under its parent thread's id, with the sub-agent's own
   // rollout: the hook is the parent's, the rollout is not its transcript.
   if (harness !== "codex" || !otherThreadsRollout(e.transcript_path, e.session_id)) set("transcriptPath", e.transcript_path);
+  else n.subAgent = true;
   set("permissionMode", e.permission_mode);
   set("prompt", e.prompt);
   set("toolName", e.tool_name);

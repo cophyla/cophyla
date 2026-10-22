@@ -1348,7 +1348,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   };
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
   // Delivery into a session wherever it is, past focus: here, or forwarded to its node.
-  const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode }): Promise<{ status: "queued" | "held" }> => {
+  const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }): Promise<{ status: "queued" | "held" }> => {
     if (s.node === identity.id) return agentMessages.deliverHere(s.id, text, info);
     return (await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" };
   };
@@ -1389,7 +1389,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       const w = s.workspace ? workspaces.getAny(s.workspace) : undefined;
       return w ? { workspace: w.name, path: w.path } : { path: s.cwd };
     },
-    deliver: (s, text, info) => deliverAnywhere(s, text, info),
+    deliver: (s, text, info, opts) => deliverAnywhere(s, text, { ...info, ...(opts?.quiet ? { quiet: true } : {}) }),
     holds: (s) => {
       if (s.harness !== "claude") return false;
       if (s.node === identity.id) return sessions.bypasses(s.id) === true && !sessions.acceptsInbound(s.id);

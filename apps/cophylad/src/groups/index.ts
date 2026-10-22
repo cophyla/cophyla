@@ -5,11 +5,14 @@
 // restarted and a resume after the machine restarted keep it in its groups; while its session
 // has ended it is gone, kept with its read point and told nothing.
 //
-// An agent is not handed a post that tags it: it gets a notice through its harness's own way
-// in (the envelope from cophyla with `group`), naming the group, who tagged it, the post's
-// first words and the counts, and reads with `read_group` when it chooses. While one waits
-// unread no other is sent for that group; one more is sent if a tag is still unread ten
-// minutes later and the agent is at a plain idle. An agent its owner set to every post gets the
+// An agent is not handed a post that tags it: it gets a notice (the envelope from cophyla with
+// `group`) naming the group, who tagged it and the counts, never the post's words, and reads
+// with `read_group` when it chooses, where a post is a group's and says whose it is. The notice
+// is quiet: while the agent works, its session's node hands it over in the agent's next hook
+// (beside a tool's answer, at its turn's end, beside its next prompt), so it starts no turn of
+// its own; an agent at rest, or one whose hooks do not reach its node, gets it as a message.
+// While one waits unread no other is sent for that group; one more is sent if a tag is still
+// unread ten minutes later and the agent is at a plain idle. An agent its owner set to every post gets the
 // posts themselves, gathered into one message when its turn is over. Nothing reaches an agent
 // in focus until it ends (`agentmsg/focus.ts`). Agents' posts are kept to rate limits; nothing
 // else stops agents that answer each other, at the user's word: a post says whether it waits
@@ -103,8 +106,8 @@ export interface GroupsDeps {
   nodeName: (node: string) => string;
   /** The workspace a session works in (its name), and the folder the rail puts its groups under. */
   place: (s: Session) => { workspace?: string; path: string };
-  /** Delivers into a session wherever it is, past focus. */
-  deliver: (s: Session, text: string, info: EnvelopeInfo) => Promise<unknown>;
+  /** Delivers into a session wherever it is, past focus; `quiet`: by the session's next hook while it works (`session.send`'s `agent.quiet`). */
+  deliver: (s: Session, text: string, info: EnvelopeInfo, opts?: { quiet?: boolean }) => Promise<unknown>;
   /** Whether a session holds cophyla's messages in its own terminal: Claude, without prompts, the bypass switch off. */
   holds: (s: Session) => boolean;
   linked: (node: string) => boolean;
@@ -803,19 +806,23 @@ export class Groups {
     if (!s || s.status === "ended" || !this.deps.linked(s.node)) return;
     const counts = this.unreadFor(g, m);
     if (counts.tags === 0) return;
-    const who = p.from.kind === "cophyla" ? "cophyla" : `@${this.writer(g, p)}`;
-    const quoted = preview(writeTags(p.text, this.handleOf(g)));
-    const waits = p.expectsReply && !p.answered ? " It waits for an answer." : "";
+    // who and how many, never the post's words: read_group shows them, as a group's, saying whose they are;
+    // the writer as read_group names it, so the agent knows its own user's tag from another person's
+    const words = this.writerWords(g, p, m);
+    const who = words === "you (your user)" ? "Your user" : words;
+    const waits = p.expectsReply && !p.answered ? " It waits for your answer." : "";
     const more = `${counts.unread} unread, ${counts.tags} tagging you`;
     const text = reminder
-      ? `Reminder: ${who} tagged you in #${g.name} and it is still unread: "${quoted}" (${more}). Read it with read_group when it suits your work.`
-      : `${who} tagged you in #${g.name}: "${quoted}" (${more}).${waits} Read it with read_group when it suits your work; answer with post_group.`;
+      ? `Reminder: ${who} tagged you in #${g.name} and it is still unread (${more}). read_group shows it when it suits your work.`
+      : `${who} tagged you in #${g.name} (${more}).${waits} read_group shows it when it suits your work; answer with post_group.`;
     m.noticeAt = n;
     m.noticeTime = this.now();
+    // the counts it gives stand for the posts that tag no one, too: the unread line does not say them again
+    m.nudgedTo = Math.max(m.nudgedTo ?? 0, g.n);
     if (reminder) m.reminded = true;
     else delete m.reminded;
     this.rows.put(g);
-    await this.send(g, s, text, this.externalOf(g, [p]));
+    await this.send(g, s, text, [], false, true);
   }
 
   /** The other people whose words these posts are, by login: what a notice carrying them is marked external for. */
@@ -833,9 +840,10 @@ export class Groups {
   /**
    * Delivers cophyla's own words about a group into one of this side's agents, as the system,
    * marked external with the other people whose words it carries. `hold`: one in focus gets it
-   * when its focus ends, rather than not at all.
+   * when its focus ends, rather than not at all. `quiet`: a notice, which a working agent gets
+   * by its next hook rather than as a message.
    */
-  private async send(g: GroupRow, s: Session, text: string, external: string[] = [], hold = false): Promise<void> {
+  private async send(g: GroupRow, s: Session, text: string, external: string[] = [], hold = false, quiet = false): Promise<void> {
     const info: EnvelopeInfo = { messageId: newId("agentMessage"), group: { id: g.id, name: g.name, ...(external.length > 0 ? { external: external.slice(0, 16) } : {}) } };
     if (hold && this.deps.focus.holding(s.id)) {
       try {
@@ -845,7 +853,7 @@ export class Groups {
       }
     }
     try {
-      await this.deps.gate.run({ principal: { kind: "system" }, action: "group.deliver", target: s.id, args: { group: g.id, name: g.name, text: cap(text, 2000), id: info.messageId } }, () => this.deps.deliver(s, text, info));
+      await this.deps.gate.run({ principal: { kind: "system" }, action: "group.deliver", target: s.id, args: { group: g.id, name: g.name, text: cap(text, 2000), id: info.messageId } }, () => this.deps.deliver(s, text, info, quiet ? { quiet: true } : undefined));
     } catch (e) {
       this.log.warn("a group's notice could not be delivered", { group: g.id, session: s.id, error: message(e) });
     }

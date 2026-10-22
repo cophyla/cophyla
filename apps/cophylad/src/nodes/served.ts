@@ -148,8 +148,8 @@ export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: 
         const agents = opts.agents?.();
         if (!agents) throw new RpcError("unavailable", "agent messaging is off on this node");
         if (!p.agent) throw new RpcError("invalid", "an agent's message says who it is from");
-        const { from, peer, group, messageId, replyTo, mode } = p.agent;
-        return agents.deliverHere(p.id, p.text, { ...(from ? { from } : {}), ...(peer ? { peer } : {}), ...(group ? { group } : {}), messageId, ...(replyTo !== undefined ? { replyTo } : {}), ...(mode ? { mode } : {}) }, ctx.onPending);
+        const { from, peer, group, messageId, replyTo, mode, quiet } = p.agent;
+        return agents.deliverHere(p.id, p.text, { ...(from ? { from } : {}), ...(peer ? { peer } : {}), ...(group ? { group } : {}), messageId, ...(replyTo !== undefined ? { replyTo } : {}), ...(mode ? { mode } : {}), ...(quiet ? { quiet: true } : {}) }, ctx.onPending);
       }
       return deps.sessions.send(p.id, p.text, sendOptions(p, p.as ?? "brain"));
     },

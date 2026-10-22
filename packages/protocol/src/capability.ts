@@ -430,6 +430,13 @@ export const capabilityRequests = {
           messageId: AgentMessageId,
           replyTo: AgentMessageId.optional(),
           mode: AgentMode.optional(),
+          /**
+           * A notice that need not start a turn (a group chat's tag): while the session works, its
+           * next hook carries it (a tool's answer, its turn's end, its next prompt); one at rest, or
+           * one whose hooks do not reach its node, gets it as a message. A node that does not know
+           * it sends a message.
+           */
+          quiet: z.boolean().optional(),
         })
         .optional(),
       /** The task the session works on from this message: it becomes the session's `task`. */

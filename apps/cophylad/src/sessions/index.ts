@@ -206,6 +206,13 @@ export interface SendOptions {
   from?: "user" | "brain" | "agent";
   /** With `from: agent`: who it is from, its id and what it answers, which its envelope names. */
   agent?: EnvelopeInfo;
+  /**
+   * With `from: agent`: a notice that need not start a turn. While the session works, and its
+   * hooks reach this node, it waits for the session's next hook, which hands it over (beside a
+   * tool's answer, at its turn's end, beside its next prompt); a session at rest gets it as a
+   * message, and so does one that comes to rest with it still waiting.
+   */
+  quiet?: boolean;
   task?: string;
   clear?: boolean;
   mode?: WorkMode;
@@ -306,6 +313,25 @@ interface LiveRecord extends SessionRecord {
   calls?: Set<string>;
   /** When its current life began: the record made, met again from the store, or resumed. A newer one may take an older one's CLI. */
   since?: number;
+  /** Quiet notices waiting for the session's next hook to hand them over (`SendOptions.quiet`). */
+  notes?: QuietNote[];
+}
+
+/** A quiet notice for a working session: its words and envelope, and when it came. */
+interface QuietNote {
+  text: string;
+  info: EnvelopeInfo;
+  at: number;
+}
+
+/** The most quiet notices one session keeps waiting; older ones go. */
+const NOTES_MAX = 8;
+
+/** The group a `read_group` call read (by name or id), when the tool is one: a notice about it is stale. */
+function readsGroup(tool: string | undefined, input: unknown): string | undefined {
+  if (!tool || !/(^|__)read_group$/.test(tool) || input === null || typeof input !== "object") return undefined;
+  const g = (input as Record<string, unknown>)["group"];
+  return typeof g === "string" && g.trim() ? g.trim() : undefined;
 }
 
 /** A hook's tool result, held until its call is recorded. */
@@ -1755,7 +1781,10 @@ export class Sessions implements SessionHost {
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
     this.deps.store.sessions.update(rec.session);
     this.event(rec, "status", { status, ...(waiting ? { waiting } : {}), ...(rec.session.native.pid !== undefined ? { pid: rec.session.native.pid } : {}), ...(said?.payload ?? {}) }, said?.raw, at);
-    if (status === "idle" && was !== "idle") this.injections.rearm(rec.session.id);
+    if (status === "idle" && was !== "idle") {
+      this.injections.rearm(rec.session.id);
+      this.flushNotes(live);
+    }
     this.broadcast(rec);
     return true;
   }
@@ -1841,6 +1870,8 @@ export class Sessions implements SessionHost {
   end(rec: SessionRecord, reason: string, at = this.now()): void {
     const live = rec as LiveRecord;
     if (rec.session.status === "ended" || live.draining) return;
+    // notices for a session that ended are not kept: its groups tell it again when it is back
+    delete live.notes;
     // The transcript's last lines are recorded before the end, and where they stop is where a
     // resume will be told apart from a finished session.
     const adapter = rec.session.native.transport === "acp" ? undefined : this.adapters.get(rec.session.harness as AttachedHarness);
@@ -2050,14 +2081,68 @@ export class Sessions implements SessionHost {
     return undefined;
   }
 
-  /** Whether a Claude session's settings take any session's message in at once, which one in bypass otherwise holds. */
-  /** What a prompt hook of a session other than the chat's answers: what it has not read in its groups, as added context, or nothing. */
-  private async promptHook(s: Session): Promise<unknown> {
-    if ((s.harness !== "claude" && s.harness !== "codex") || !this.deps.promptNote) return {};
-    const text = await this.deps.promptNote(s).catch(() => undefined);
+  /**
+   * What a prompt hook of a session other than the chat's answers, as added context: the quiet
+   * notices waiting for it, and what it has not read in its groups; or nothing.
+   */
+  private async promptHook(rec: LiveRecord): Promise<unknown> {
+    const s = rec.session;
+    if (s.harness !== "claude" && s.harness !== "codex") return {};
+    const unread = this.deps.promptNote ? await this.deps.promptNote(s).catch(() => undefined) : undefined;
+    const text = [this.takeNotes(rec), unread].filter(Boolean).join("\n\n");
     return text ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: text } } : {};
   }
 
+  // --- quiet notices: handed over by a working session's next hook --------------------------------------
+
+  /**
+   * Whether a session's hooks hand quiet notices over: a Claude session in a terminal or a Codex
+   * one, its hooks heard here since this daemon started; never the chat's own, nor an ACP child,
+   * whose hooks this node does not answer.
+   */
+  private hookCarries(rec: LiveRecord): boolean {
+    const s = rec.session;
+    if (s.role === "assistant" || (rec.hooks ?? 0) === 0) return false;
+    return (s.harness === "claude" && s.native.transport === "pipe") || s.harness === "codex";
+  }
+
+  private holdNote(rec: LiveRecord, text: string, info: EnvelopeInfo): { status: "queued"; ref: string } {
+    const notes = (rec.notes ??= []);
+    notes.push({ text, info, at: this.now() });
+    if (notes.length > NOTES_MAX) notes.shift();
+    this.log.info("a notice waits for the session's next hook", { session: rec.session.id, id: info.messageId, waiting: notes.length });
+    return { status: "queued", ref: `note-${info.messageId}` };
+  }
+
+  /**
+   * The notices waiting for a session, in their envelopes, recorded as handed over; none waits
+   * after. One about the group `read` names is dropped: the session has just read that group.
+   */
+  private takeNotes(rec: LiveRecord, read?: string): string | undefined {
+    const notes = rec.notes;
+    if (!notes || notes.length === 0) return undefined;
+    delete rec.notes;
+    const want = read?.replace(/^#/, "").toLowerCase();
+    const told = notes.filter((n) => !want || (n.info.group?.name.toLowerCase() !== want && n.info.group?.id.toLowerCase() !== want));
+    for (const n of told) {
+      if (!this.agentSeen(rec.session.id, n.info.messageId)) this.event(rec, "user_turn", { ...agentTurn(n.info, n.text), hook: true });
+    }
+    if (told.length === 0) return undefined;
+    this.log.info("notices handed over by a hook", { session: rec.session.id, count: told.length });
+    return told.map((n) => envelope(n.info, n.text)).join("\n\n");
+  }
+
+  /** A session came to rest with notices still waiting (a turn cut short, a hook that never came): they go as messages. */
+  private flushNotes(rec: LiveRecord): void {
+    const notes = rec.notes;
+    if (!notes || notes.length === 0) return;
+    delete rec.notes;
+    for (const n of notes) {
+      this.send(rec.session.id, n.text, { from: "agent", agent: n.info }).catch((e: unknown) => this.log.warn("a waiting notice could not be sent", { session: rec.session.id, id: n.info.messageId, error: e instanceof Error ? e.message : String(e) }));
+    }
+  }
+
+  /** Whether a Claude session's settings take any session's message in at once, which one in bypass otherwise holds. */
   acceptsInbound(id: string): boolean {
     const rec = this.byId.get(id);
     if (!rec || rec.session.harness !== "claude") return false;
@@ -3165,6 +3250,8 @@ export class Sessions implements SessionHost {
     if (prepares && text === "") return { status: "queued" };
     const agent = opts.from === "agent" ? opts.agent : undefined;
     if (opts.from === "agent" && !agent) throw new RpcError("invalid", "an agent's message says who it is from");
+    // A quiet notice for a session at work waits for its next hook rather than start a turn.
+    if (opts.quiet && agent && rec.session.status !== "idle" && this.hookCarries(rec)) return this.holdNote(rec, text, agent);
     // An agent's message reaches Muse typed, which has no other way in, and never a Claude session.
     const typed = this.typesInto(rec) && (agent ? rec.session.harness === "muse" : opts.from !== "brain" || this.config.brain_sends === "typed" || rec.session.harness === "muse");
     const wrapped = agent ? { info: agent, text } : undefined;
@@ -3629,7 +3716,7 @@ export class Sessions implements SessionHost {
           }
         }
         this.setStatus(rec, "busy", now);
-        return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : this.promptHook(rec.session);
+        return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : this.promptHook(rec);
       }
       // A session outside the scope asks in its own window: no answer here.
       case "PermissionRequest":
@@ -3662,6 +3749,11 @@ export class Sessions implements SessionHost {
         else this.event(rec, "tool_result", payload, raw, now);
         if (rec.session.status !== "needs_permission" && rec.session.status !== "needs_input") this.setStatus(rec, "busy", now);
         if (own) void this.assistantHook(hook);
+        // A notice waiting goes beside this tool's answer; a sub-agent's tool would hand it to the sub-agent.
+        if (!own && hook.name === "PostToolUse" && !hook.agentId && !hook.subAgent) {
+          const note = this.takeNotes(rec, readsGroup(hook.toolName, hook.toolInput));
+          if (note) return { hookSpecificOutput: { hookEventName: "PostToolUse", additionalContext: note } };
+        }
         return {};
       }
       case "Notification": {
@@ -3674,6 +3766,11 @@ export class Sessions implements SessionHost {
       // over all the same, its words are the harness's for the error, and the error goes with them.
       case "Stop":
       case "StopFailure": {
+        // Notices waiting keep the turn going with them, rather than wake it again as a message.
+        if (hook.name === "Stop" && !own && !(rec.held && !rec.held.settled)) {
+          const note = this.takeNotes(rec);
+          if (note) return { decision: "block", reason: note };
+        }
         // The turn ended, so a prompt still held was answered in the terminal.
         if (rec.held && !rec.held.settled) this.closeHeld(rec, "stopped", "idle");
         const stopped = rec;

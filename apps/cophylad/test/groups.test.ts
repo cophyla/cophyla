@@ -40,6 +40,7 @@ interface Delivery {
   session: string;
   text: string;
   info: EnvelopeInfo;
+  quiet?: boolean;
 }
 
 function rig(local: Session[]) {
@@ -72,8 +73,8 @@ function rig(local: Session[]) {
     acceptsInbound: () => false,
   };
   let groups: Groups;
-  const deliver = async (s: Session, text: string, info: EnvelopeInfo) => {
-    delivered.push({ session: s.id, text, info });
+  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: { quiet?: boolean }) => {
+    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}) });
     return { status: "queued" as const };
   };
   const focus = new Focuses({ store, bus, log: silentLogger, routes: () => true, sessions: () => local, deliver, linked: () => true, ended: (s, told) => groups.focusEnded(s, told), now: () => clock.t, sweepMs: 60_000 });
@@ -191,8 +192,10 @@ describe("a group chat", () => {
       await waitFor(() => r.delivered.length === 1);
       const n = r.delivered[0]!;
       expect(n.session).toBe(api.id);
-      expect(n.text).toContain('tagged you in #release: "@api-codex is the schema merged?"');
-      expect(n.text).toContain("1 unread, 1 tagging you");
+      // who and how many, never the words: read_group shows them; quiet, so a working agent gets it by a hook
+      expect(n.text).toBe("ferit (your user) tagged you in #release (1 unread, 1 tagging you). read_group shows it when it suits your work; answer with post_group.");
+      expect(n.text).not.toContain("schema");
+      expect(n.quiet).toBe(true);
       expect(n.info.from).toBeUndefined();
 
       // three more before it reads: no second notice
@@ -241,7 +244,8 @@ describe("a group chat", () => {
       const asked = await r.call(api, "post_group", { group: "release", text: "@web-claude can you run the login test?", expects_reply: true });
       expect(asked.text).toMatch(/Posted in #release as post 1 \(gmsg_\w+\)\. Told: @web-claude\. Any answer comes to you as a tag/);
       await waitFor(() => r.delivered.length === 1);
-      expect(r.delivered[0]!.text).toContain("It waits for an answer.");
+      expect(r.delivered[0]!.text).toContain("It waits for your answer.");
+      expect(r.delivered[0]!.text).not.toContain("login test");
       const postId = /\((gmsg_\w+)\)/.exec(asked.text)![1]!;
       const answer = await r.call(web, "post_group", { group: "release", text: "Passed: 14 tests.", expects_reply: false, reply_to: postId });
       expect(answer.text).toContain("Told: @api-codex.");

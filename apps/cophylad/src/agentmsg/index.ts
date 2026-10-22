@@ -584,7 +584,7 @@ export class AgentMessages {
    * without prompts, is asked about first (the parity rule), unless the session is a Claude one
    * that holds such a message in its own terminal: asking twice would be wrong.
    */
-  async deliverHere(targetId: string, text: string, agent: EnvelopeInfo & { mode?: AgentMode }, onPending?: (ask: Ask) => void): Promise<{ status: "queued" | "held"; ref?: string }> {
+  async deliverHere(targetId: string, text: string, agent: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }, onPending?: (ask: Ask) => void): Promise<{ status: "queued" | "held"; ref?: string }> {
     const s = this.deps.sessions.get(targetId);
     if (!s || s.status === "ended") throw new RpcError("not_found", "that session has ended; not sent");
     if (agent.from && agent.mode !== "bypass" && this.deps.sessions.bypasses(targetId) === true) {
@@ -605,8 +605,8 @@ export class AgentMessages {
         );
       }
     }
-    const { mode: _mode, ...info } = agent;
-    return this.deps.sessions.send(targetId, text, { from: "agent", agent: info });
+    const { mode: _mode, quiet, ...info } = agent;
+    return this.deps.sessions.send(targetId, text, { from: "agent", agent: info, ...(quiet ? { quiet: true } : {}) });
   }
 
   /** Tells the sender, in its own session, that its message was not delivered. */
