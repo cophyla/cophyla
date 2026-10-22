@@ -1809,6 +1809,12 @@ async function send(session: string, text: string): Promise<void> {
   try {
     const r = await rpc.request<{ status: "queued" | "held"; ref: string }>("session.send", { id: session, text: trimmed });
     dispatch({ type: "send.result", session, ref: r.ref, text: trimmed, at: Date.now(), status: r.status });
+    // The model just cleared the draft, but renderSend leaves a focused field alone, and after Enter it is focused.
+    const input = document.querySelector<HTMLTextAreaElement>(`form.send[data-session="${CSS.escape(session)}"] .send-text`);
+    if (input && input.value === text) {
+      input.value = "";
+      fitField(input);
+    }
   } catch (e) {
     fail("send", e);
   }
