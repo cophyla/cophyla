@@ -20,7 +20,8 @@
 // file opens about as fast as a short one. A copy takes the file's own text between the ends of
 // what is selected, not what the page draws of it. Markdown shows drawn, as a README is on
 // GitHub (markdown.ts, its fenced code coloured too), its images in the file's folder read and
-// drawn with it, or as written, and an SVG drawn or as written the same way. An image comes
+// drawn with it, its links followed as a drawn page's are (one to a heading of its own scrolled
+// to, as GitHub names its headings), or as written, and an SVG drawn or as written the same way. An image comes
 // whole, a piece at a time (`whole` in the ask, `image` too for an older node, which sends a
 // small one at once), a TIFF or a HEIC as the PNG its node's codecs make of it, and is drawn
 // fitted to the viewer, a click showing it at its own size. A PDF comes whole the same way and
@@ -33,7 +34,7 @@
 
 import type { FileText } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { bytesOf, fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
+import { bytesOf, fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
 import type { ViewerDock, ViewerSource } from "./model.ts";
 import { inlineDocument } from "./htmldoc.ts";
 import type { Asset } from "./htmldoc.ts";
@@ -56,6 +57,8 @@ const LAZY_LINE_MAX = 400;
 const FLASH_MS = 1600;
 /** Images a drawn markdown file reads, at most: past them, the rest are their alt text. */
 const MD_IMAGES_MAX = 100;
+/** Pixels left above a heading a drawn markdown file's link scrolls to. */
+const HEADING_GAP = 12;
 /** Times a whole read starts again because the file changed under it, before it gives up. */
 const WHOLE_RETRIES = 2;
 /** How long a click on a PDF waits for a second one before it switches the fit. */
@@ -399,6 +402,12 @@ export class FileViewer {
     // switches once no second click follows, since two select a word.
     this.body.addEventListener("click", (ev) => {
       const target = ev.target as Element | null;
+      const link = target?.closest<HTMLElement>(".viewer-md a[data-href]");
+      if (link) {
+        // A drag that selected the link's words is no click on it.
+        if (getSelection()?.isCollapsed ?? true) this.followMd(link.dataset["href"]!);
+        return;
+      }
       const box = target?.closest<HTMLElement>(".viewer-image");
       if (box) {
         box.dataset["fit"] = box.dataset["fit"] === "1" ? "0" : "1";
@@ -407,6 +416,12 @@ export class FileViewer {
       clearTimeout(this.fitTimer);
       if (!target?.closest(".viewer-pdf") || target.closest(".textLayer span") || ev.detail > 1 || !(getSelection()?.isCollapsed ?? true)) return;
       this.fitTimer = setTimeout(() => this.pdf?.toggleFit(), PDF_CLICK_MS);
+    });
+    this.body.addEventListener("keydown", (ev) => {
+      const link = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-md a[data-href]");
+      if (ev.key !== "Enter" || !link) return;
+      ev.preventDefault();
+      this.followMd(link.dataset["href"]!);
     });
   }
 
@@ -817,6 +832,25 @@ export class FileViewer {
     }
     const rel = resolveRel(target.rel, href);
     if (rel !== undefined) this.open(target, rel);
+  }
+
+  /** A link clicked in a drawn markdown file: one to a heading of its own scrolled to, its top for a bare `#`, the rest followed as a drawn page's are. */
+  private followMd(href: string): void {
+    if (!href.startsWith("#")) return this.follow(href);
+    let want = href.slice(1);
+    try {
+      want = decodeURIComponent(want);
+    } catch {
+      // Left as written.
+    }
+    if (want === "") {
+      this.body.scrollTop = 0;
+      return;
+    }
+    const headings = Array.from(this.body.querySelectorAll<HTMLElement>(".viewer-md :is(h1, h2, h3, h4, h5, h6)"));
+    const heading = headings[headingAnchors(headings.map((h) => h.textContent ?? "")).indexOf(want.toLowerCase())];
+    if (!heading) return;
+    this.body.scrollTop += heading.getBoundingClientRect().top - this.body.getBoundingClientRect().top - HEADING_GAP;
   }
 
   /** A PDF opened by pdf.js and its pages laid out in the body, the place kept when it is drawn again; why not, when it cannot be. */

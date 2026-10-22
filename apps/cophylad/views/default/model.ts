@@ -2203,6 +2203,26 @@ export function resolveRel(fileRel: string, href: string): string | undefined {
   return parts.length > 0 ? parts.join("/") : undefined;
 }
 
+/**
+ * The anchors GitHub gives a markdown file's headings, from their words in order: lower-cased,
+ * what is not a letter, a digit, a space, `-` or `_` dropped, and each space a `-`; one already
+ * taken gets `-1`, `-2` and on after it.
+ */
+export function headingAnchors(headings: string[]): string[] {
+  const taken = new Map<string, number>();
+  return headings.map((words) => {
+    const base = words.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replace(/ /g, "-");
+    let anchor = base;
+    while (taken.has(anchor)) {
+      const n = taken.get(base)! + 1;
+      taken.set(base, n);
+      anchor = `${base}-${n}`;
+    }
+    taken.set(anchor, 0);
+    return anchor;
+  });
+}
+
 /** Past this many matches a search stops counting: marking more costs and helps nobody. */
 export const FIND_MAX = 5000;
 
