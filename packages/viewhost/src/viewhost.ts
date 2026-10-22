@@ -33,6 +33,7 @@ import { Bridge, envelope, isEnvelope } from "./bridge.ts";
 import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
 import { SettingsPanel } from "./settings.ts";
+import type { UpdateChecker } from "./updates.ts";
 import { SetupPanel } from "./setup.ts";
 import type { DeviceSettings, VoiceSettings } from "./settings.ts";
 import type { Connection, LinkSnapshot } from "./connection.ts";
@@ -79,6 +80,8 @@ export interface ViewHostDeps {
   desk?: boolean;
   /** The host as the paired device it is, for a section of its own in the settings: a browser on another computer. */
   device?: DeviceSettings;
+  /** Checking for a new Cophyla by hand, for the settings' Updates page: the desktop app. */
+  updates?: UpdateChecker;
   onError?: (message: string) => void;
 }
 
@@ -208,6 +211,7 @@ export class ViewHost {
       onToggle: () => this.overlay(),
       ...(deps.voice ? { voice: deps.voice } : {}),
       ...(deps.device ? { device: deps.device } : {}),
+      ...(deps.updates ? { updates: deps.updates } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
     });
     this.setup = new SetupPanel({ request: (method, params) => deps.conn.request(method, params) });

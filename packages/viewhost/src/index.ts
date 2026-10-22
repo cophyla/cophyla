@@ -14,4 +14,5 @@ export * from "./chooser.ts";
 export * from "./settings.ts";
 export * from "./notify.ts";
 export * from "./mentions.ts";
+export * from "./updates.ts";
 export * from "./place.ts";

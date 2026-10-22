@@ -28,6 +28,9 @@
 //   page once it is sent).
 // - Listeners: what wakes Cophyla besides the user's messages (`listener.list`), each with why
 //   it listens, on what, how it tells and its fires, and Remove (`listener.remove`).
+// - Updates, on a host that can check (the desktop app): the version the node runs, Check for
+//   updates (`update.check`, `updates.ts`) and what it found, and Update now once a release is
+//   ready (`update.apply` when nothing waits).
 // - This browser, on a host that is a paired device of its own: when its access ends, Install
 //   as an app, and Forget, asked twice.
 // A node from before a page's requests says so on the page. The layer closes on its ✕, on
@@ -39,6 +42,8 @@
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
 import type { FolderDrafts } from "./scope.ts";
+import { checkWords, outcomeOf } from "./updates.ts";
+import type { UpdateChecker } from "./updates.ts";
 import { block, button, checkRow, controlId, el, group, keepFocus, message, pill, row, select, span, switchInput } from "./ui.ts";
 
 export type SettingsRequest = <T>(method: string, params: unknown) => Promise<T>;
@@ -1166,6 +1171,8 @@ export interface SettingsPanelDeps {
   voice?: VoiceSettings;
   /** The host as a paired device of its own, when it is one: its page shows last. */
   device?: DeviceSettings;
+  /** Checking for a new Cophyla by hand, on a host that can: the Updates page. */
+  updates?: UpdateChecker;
   /** Where the layer goes; the page's body when absent. */
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
@@ -1177,7 +1184,7 @@ export interface SettingsPanelDeps {
 }
 
 /** The pages of the settings, in the order the side list shows them. */
-export type SettingsPage = "sessions" | "accounts" | "chat" | "voice" | "listeners" | "device";
+export type SettingsPage = "sessions" | "accounts" | "chat" | "voice" | "listeners" | "updates" | "device";
 
 export interface PageEntry {
   id: SettingsPage;
@@ -1186,8 +1193,8 @@ export interface PageEntry {
   lead: string;
 }
 
-/** The pages a host shows: every one, and the paired device's only on a host that is one. */
-export function settingsPages(o: { device: boolean; microphone: boolean }): PageEntry[] {
+/** The pages a host shows: every one, Updates on a host that can check, and the paired device's only on a host that is one. */
+export function settingsPages(o: { device: boolean; microphone: boolean; updates?: boolean }): PageEntry[] {
   const pages: PageEntry[] = [
     { id: "sessions", label: "Sessions", lead: "Which of your agent sessions Cophyla connects to. A session that is not connected stays out of its lists, its chat and other agents' messages, and asks its questions in its own window." },
     { id: "accounts", label: "Accounts", lead: "The accounts sessions start under, and how Cophyla starts them. It uses the usual account, and another signed-in one only when that one nears its limit." },
@@ -1199,6 +1206,7 @@ export function settingsPages(o: { device: boolean; microphone: boolean }): Page
     },
     { id: "listeners", label: "Listeners", lead: "What wakes Cophyla besides your messages: what it set itself to hear when you asked, and the agents it started. Each wake-up is a model call." },
   ];
+  if (o.updates) pages.push({ id: "updates", label: "Updates", lead: "Cophyla reads its release feed every hour and gets a new version ready by itself. Check now to get one at once." });
   if (o.device) pages.push({ id: "device", label: "This browser", lead: "This page is paired with the node as a device of its own. What it may do was decided where it was added, and ends by itself." });
   return pages;
 }
@@ -1229,6 +1237,7 @@ export class SettingsPanel {
   private forgetNote = "";
   private unsubscribe?: () => void;
   private unsubscribeDevice?: () => void;
+  private unsubscribeUpdates?: () => void;
   private onKey = (ev: KeyboardEvent): void => {
     if (ev.key === "Escape") this.close();
   };
@@ -1287,8 +1296,9 @@ export class SettingsPanel {
     document.addEventListener("keydown", this.onKey);
     this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
     this.unsubscribeDevice = this.deps.device?.subscribe?.(() => this.render());
+    this.unsubscribeUpdates = this.deps.updates?.subscribe(() => this.render());
     this.deps.voice?.listMics?.();
-    if (this.page === "device" && !this.deps.device) this.page = "sessions";
+    if ((this.page === "device" && !this.deps.device) || (this.page === "updates" && !this.deps.updates)) this.page = "sessions";
     this.render();
     layer.querySelector<HTMLElement>(`[data-page="${this.page}"]`)?.focus();
     this.deps.onToggle?.(true);
@@ -1310,6 +1320,8 @@ export class SettingsPanel {
     this.unsubscribe = undefined;
     this.unsubscribeDevice?.();
     this.unsubscribeDevice = undefined;
+    this.unsubscribeUpdates?.();
+    this.unsubscribeUpdates = undefined;
     this.forgetAsked = false;
     this.forgetNote = "";
     this.keyDraft = undefined;
@@ -1348,7 +1360,7 @@ export class SettingsPanel {
     const layer = this.layer;
     const model = this.model;
     if (!layer || !model) return;
-    const pages = settingsPages({ device: this.deps.device !== undefined, microphone: this.deps.voice !== undefined });
+    const pages = settingsPages({ device: this.deps.device !== undefined, microphone: this.deps.voice !== undefined, updates: this.deps.updates !== undefined });
     const entry = pages.find((p) => p.id === this.page) ?? pages[0]!;
     const body = layer.querySelector<HTMLElement>(".host-settings-page")!;
     const scrolled = body.scrollTop;
@@ -1386,6 +1398,8 @@ export class SettingsPanel {
         return this.voicePage(model);
       case "listeners":
         return this.listenersPage(model);
+      case "updates":
+        return this.deps.updates ? this.updatesPage(this.deps.updates) : [];
       case "device":
         return this.deps.device ? this.devicePage(this.deps.device) : [];
     }
@@ -1717,6 +1731,31 @@ export class SettingsPanel {
         }),
       ),
     ];
+  }
+
+  // --- Updates --------------------------------------------------------------------------
+
+  /** The version that runs, Check for updates and what it found, and Update now once a release is ready. */
+  private updatesPage(u: UpdateChecker): HTMLElement[] {
+    const current = u.current();
+    const state = u.platform();
+    const now = outcomeOf(state, current);
+    const check = button("updates:check", u.checking ? "Checking…" : "Check for updates", "secondary", () => void u.check(), { disabled: u.checking });
+    const rows: (HTMLElement | undefined)[] = [row({ label: "This version", help: current ? `Cophyla ${current}` : "Not known yet", control: check })];
+    // what the last check here said, or what the node has found by itself since
+    const shown = now.kind === "found" ? now : u.last;
+    // a ready release has its own row below, with Update now
+    if (shown && !(shown.kind === "found" && shown.ready)) {
+      const words = checkWords(shown);
+      rows.push(statusRow(`${words.title}. ${words.detail}`, shown.kind === "failed" ? "trouble" : shown.kind === "found" && shown.ready ? "ok" : "idle"));
+    }
+    if (now.kind === "found" && now.ready) {
+      const waiting = state?.waiting && state.waiting.length > 0 ? `It restarts once these finish: ${state.waiting.join(", ")}.` : "";
+      const restarting = state?.restarting === true;
+      const apply = button("updates:apply", restarting ? "Restarting…" : u.applying ? "Waiting…" : "Update now", "primary", () => void u.apply(), { disabled: u.applying || restarting });
+      rows.push(row({ label: `Cophyla ${now.version}`, help: "Cophyla restarts into it as soon as nothing waits on it: an open question, or a turn under way.", control: apply, ...(waiting || u.applyNote ? { note: waiting || u.applyNote } : {}) }));
+    }
+    return [group(undefined, rows)];
   }
 
   // --- This browser ---------------------------------------------------------------------

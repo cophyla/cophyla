@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewContent } from "@cophyla/protocol";
-import { AskNotifier, Connection, MentionNotifier, SnapshotCache, ViewHost } from "@cophyla/viewhost";
+import { AskNotifier, checkWords, Connection, MentionNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
@@ -56,6 +56,23 @@ const streams = new StreamWindows({
   onClosed: (stream) => viewhost.streamClosed(stream),
   log: (m) => console.warn(m),
 });
+// Check for updates, from the tray and the settings' Updates page: what the node found comes
+// back as a notification (no buttons; a click shows the window), and so does a release it found
+// that finished downloading.
+const UPDATE_TOAST = "update-check";
+function updateToast(title: string, detail: string): void {
+  void io.invoke<void>("dismiss_ask", { ask: UPDATE_TOAST }).catch(() => undefined);
+  void io.invoke<void>("notify_ask", { ask: { id: UPDATE_TOAST, title, detail, options: [], multiple: true } }).catch((e: unknown) => note(`update notice: ${e instanceof Error ? e.message : String(e)}`));
+}
+const updates = new UpdateChecker({
+  request: (method, params) => conn.request(method, params),
+  node: () => conn.state.hello?.node,
+  version: () => conn.state.hello?.platformVersion,
+  onReady: (v) => {
+    const w = checkWords({ kind: "found", version: v, current: "", ready: true });
+    updateToast(w.title, w.detail);
+  },
+});
 // The view's files come over the host's connection and are staged on the shell's native side.
 const viewhost = new ViewHost({
   conn,
@@ -66,6 +83,7 @@ const viewhost = new ViewHost({
   embed: true,
   onOverlay: (open) => streams.overlay(open),
   onUnmount: () => streams.unmounted(),
+  updates,
   openLink: (url) => io.invoke<void>("open_link", { url }),
   // With no names on Linux, whose web view shows a page no dropped file (dropped.rs).
   filePaths: (names) => io.invoke<string[]>("dropped_paths", { names: names ?? null }),
@@ -155,6 +173,7 @@ conn.onFrame((frame) => {
     cache.upsert(frame);
     notifier.onNotification(frame);
     mentions.onNotification(frame);
+    updates.onNotification(frame);
     if (frame.method === "session.state") renderTitle();
     if (frame.method === "view.changed") viewhost.onChanged((frame.params as { id: string }).id);
   }
@@ -200,6 +219,13 @@ conn.onState((s) => {
 
 void io.listen<Activated>("ask:activated", (a) => void notifier.onActivated(a));
 void io.listen<{ stream: string }>("stream:closed", (e) => streams.closed(e.stream));
+// The tray's Check for updates: the node reads the feed now, and what it found is told.
+void io.listen("tray:check-updates", () => {
+  void updates.check().then((o) => {
+    const w = checkWords(o);
+    updateToast(w.title, w.detail);
+  });
+});
 
 // Where the wake word and the voice's audio stand, for Playwright over the web view's debugger.
 Object.assign(window, {

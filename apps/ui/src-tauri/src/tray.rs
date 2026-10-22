@@ -1,5 +1,6 @@
 // The tray icon: Open, Launch at login, Restart to update <v> (only while a platform release
-// is staged), Quit. A left click shows the window; only Quit ends the process, and cophylad
+// is staged), Check for updates (the host page asks the node to read the feed now and says what
+// it found), Quit. A left click shows the window; only Quit ends the process, and cophylad
 // keeps running either way. Launch at login registers the launcher when installed (the
 // fixed entry point that survives updates), this executable from a checkout: a Run-key
 // entry on Windows, a launch agent plist (`com.fareaststudios.cophyla.launcher`) on macOS, an autostart
@@ -22,7 +23,7 @@ use std::sync::Mutex;
 use auto_launch::{AutoLaunch, AutoLaunchBuilder};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{App, AppHandle, Manager, Runtime};
+use tauri::{App, AppHandle, Emitter, Manager, Runtime};
 
 use crate::install::Install;
 use crate::cophylad::{Link, Paths, HOST_LABEL};
@@ -38,8 +39,11 @@ pub const AUTOSTART_NAME: &str = "Cophyla";
 const OPEN: &str = "open";
 const AUTOSTART: &str = "autostart";
 const UPDATE: &str = "update";
+const CHECK: &str = "check";
 const QUIT: &str = "quit";
-/// Where the update item sits in the menu when a release is staged: under Launch at login.
+/// The host page's event for Check for updates: it asks the node and tells what it found.
+pub const EVENT_CHECK_UPDATES: &str = "tray:check-updates";
+/// Where the update item sits in the menu when a release is staged: under Launch at login, above Check for updates.
 const UPDATE_POSITION: usize = 2;
 
 pub fn show_window<R: Runtime>(app: &AppHandle<R>) {
@@ -179,8 +183,9 @@ pub fn build<R: Runtime>(app: &App<R>, install: Option<&Install>) -> tauri::Resu
     let open = MenuItem::with_id(app, OPEN, "Open", true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(app, AUTOSTART, "Launch at login", launcher.is_some(), on, None::<&str>)?;
     let update = MenuItem::with_id(app, UPDATE, "Restart to update", true, None::<&str>)?;
+    let check = MenuItem::with_id(app, CHECK, "Check for updates", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, QUIT, "Quit", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open, &autostart_item, &PredefinedMenuItem::separator(app)?, &quit])?;
+    let menu = Menu::with_items(app, &[&open, &autostart_item, &check, &PredefinedMenuItem::separator(app)?, &quit])?;
     app.manage(UpdateMenu { menu: menu.clone(), item: update, shown: Mutex::new(false) });
 
     let icon = app.default_window_icon().cloned().ok_or_else(|| tauri::Error::AssetNotFound("window icon".into()))?;
@@ -211,6 +216,12 @@ pub fn build<R: Runtime>(app: &App<R>, install: Option<&Install>) -> tauri::Resu
                 // it waits); the link then relaunches through the launcher, which rotates the pointers.
                 if let Err(e) = app.state::<Link>().request_platform_apply() {
                     log::warn!("restart to update: {e}");
+                }
+            }
+            CHECK => {
+                // the host page holds the link's state and the notifications: it asks and tells
+                if let Err(e) = app.emit_to(HOST_LABEL, EVENT_CHECK_UPDATES, ()) {
+                    log::warn!("check for updates: {e}");
                 }
             }
             QUIT => app.exit(0),
