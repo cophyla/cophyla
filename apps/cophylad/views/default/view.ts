@@ -45,7 +45,9 @@
 // Restart chat agent in the ⋮ menu ends it and starts it again (`assistant.restart`). Runs in a
 // sandboxed frame with no
 // network: the host is its whole world, but for where dropped files are in WebView2, which
-// it asks the shell past the host (dropped.ts).
+// it asks the shell past the host (dropped.ts). Group chats, focus and teammates are
+// teamctl.ts's: what they ask of the node and what their notices fold in; a group chat's tab
+// shows its pane where the chat's would be, and New group and Teammates lie over the panes.
 //
 // The view pulls only what it shows. The node streams a session's events only while its
 // tab is open (`session.watch`, sent again on every connect), and leaving a tab drops its
@@ -72,6 +74,8 @@ import type { RemoteCover } from "./remoteview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
+import { TeamControl } from "./teamctl.ts";
+import { newTeamUi } from "./teamview.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -100,7 +104,20 @@ const ui: UiState = {
   viewerWidth: VIEWER_WIDTH.usual,
   viewerWrap: false,
   viewerSource: false,
+  team: newTeamUi(),
 };
+// A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
+// over them, beside Devices: index.html has neither, so they are made here.
+const groupPane = document.createElement("article");
+groupPane.className = "group-pane";
+groupPane.setAttribute("aria-label", "A group chat");
+groupPane.hidden = true;
+document.getElementById("sessions")!.after(groupPane);
+const teamOverlay = document.createElement("section");
+teamOverlay.className = "devices-view team-view";
+teamOverlay.setAttribute("aria-label", "Group chats and teammates");
+teamOverlay.hidden = true;
+document.getElementById("devices")!.after(teamOverlay);
 const roots: Roots = {
   app: document.getElementById("app")!,
   railbar: document.getElementById("railbar")!,
@@ -112,7 +129,20 @@ const roots: Roots = {
   terminal: document.getElementById("terminal")!,
   composer: document.getElementById("composer")!,
   devices: document.getElementById("devices")!,
+  groups: groupPane,
+  team: teamOverlay,
 };
+const team = new TeamControl({
+  rpc,
+  state,
+  ui,
+  roots,
+  dispatch: (action, opts) => dispatch(action, opts),
+  draw: () => draw(),
+  selectGroup: (id) => selectGroup(id),
+  putRailAway: () => putRailAway(),
+  phone: () => phone.matches,
+});
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
 const viewer = new FileViewer(
   rpc,
@@ -146,6 +176,7 @@ function draw(opts: RenderOptions = {}): void {
   syncContext();
   syncRemote();
   revealListed();
+  team.afterDraw();
 }
 
 /** Whether the rail shows: as the user left it, else beside the pane on a desk and away on a phone. */
@@ -295,6 +326,7 @@ rpc.onNotification((n) => {
         void loadTerminals();
         void loadTransfers();
         void loadContextOn();
+        team.connected();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -310,6 +342,7 @@ rpc.onNotification((n) => {
         watched.clear();
         ui.opening.clear();
         ui.newTerminal = undefined;
+        team.disconnected();
         activeAt = 0;
       }
       return;
@@ -445,6 +478,12 @@ rpc.onNotification((n) => {
     case "audit.entry":
       dispatch({ type: n.method, params: n.params } as Action);
       return;
+    case "group.state":
+    case "group.posted":
+    case "focus.state":
+    case "teammate.state":
+      team.notification(n.method, n.params);
+      return;
     default:
       return;
   }
@@ -504,9 +543,9 @@ function closeContext(): void {
   draw();
 }
 
-/** Whether the chat is the pane that shows: no session's tab and no terminal's is. */
+/** Whether the chat is the pane that shows: no session's tab, no terminal's and no group's is. */
 function chatShown(): boolean {
-  return ui.selected === undefined && ui.terminal === undefined;
+  return ui.selected === undefined && ui.terminal === undefined && ui.group === undefined;
 }
 
 /**
@@ -526,8 +565,9 @@ function syncContext(): void {
  * to that card and marks it a moment; from its link, it opens at its top.
  */
 function openDevices(focus?: string): void {
-  // Devices lies over the panes: the context, under it, goes (the draw below takes it away).
+  // Devices lies over the panes: the context, under it, goes (the draw below takes it away), and so do New group and Teammates.
   ui.contextOpen = false;
+  team.closeOverlay();
   ui.devices ??= { errorsAt: state.errorsSeen };
   putRailAway();
   void loadLan();
@@ -1842,7 +1882,7 @@ const FLASH_MS = 1500;
 
 /** Brings what a chat chip names into view and outlines it a moment: a thread (or a message in it), a task, an audit row, or an open prompt. */
 function goto(kind: string, id: string, message?: string): void {
-  if (ui.selected !== undefined || ui.terminal !== undefined) select(undefined);
+  if (ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined) select(undefined);
   let target: HTMLElement | null = null;
   switch (kind) {
     case "thread":
@@ -2957,11 +2997,13 @@ function openTab(): void {
 /** Shows a session's tab, or the chat when `session` is undefined, and puts the cursor in its input. Says whether another tab was showing. */
 function select(session: string | undefined): boolean {
   if (session !== undefined && !state.sessions.has(session)) return false;
-  const changed = session !== ui.selected || ui.terminal !== undefined;
+  const changed = session !== ui.selected || ui.terminal !== undefined || ui.group !== undefined;
   ui.selected = session;
   ui.terminal = undefined;
-  // A tab picked is what the pane is to show: Devices goes from over it.
+  ui.group = undefined;
+  // A tab picked is what the pane is to show: Devices, New group and Teammates go from over it.
   ui.devices = undefined;
+  team.closeOverlay();
   putRailAway();
   if (changed) openTab();
   draw();
@@ -2972,14 +3014,36 @@ function select(session: string | undefined): boolean {
 /** Shows a bare terminal's tab: no session's events stream meanwhile. */
 function selectTerminal(id: string): void {
   if (!state.terminals.has(id)) return;
-  const changed = ui.terminal !== id || ui.selected !== undefined;
+  const changed = ui.terminal !== id || ui.selected !== undefined || ui.group !== undefined;
   ui.selected = undefined;
   ui.terminal = id;
+  ui.group = undefined;
   ui.devices = undefined;
+  team.closeOverlay();
   putRailAway();
   if (changed) openTab();
   draw();
   terminal.focus();
+}
+
+/** Shows a group chat's tab, or the chat with none: no session's events stream meanwhile, and its posts are asked for unless they are here. */
+function selectGroup(id: string | undefined): void {
+  if (id === undefined) {
+    select(undefined);
+    return;
+  }
+  if (!state.groups.has(id)) return;
+  const changed = ui.group !== id || ui.selected !== undefined || ui.terminal !== undefined;
+  ui.selected = undefined;
+  ui.terminal = undefined;
+  ui.group = id;
+  ui.devices = undefined;
+  team.closeOverlay();
+  putRailAway();
+  if (changed) openTab();
+  team.opened(id);
+  draw();
+  if (!phone.matches) roots.groups.querySelector<HTMLTextAreaElement>(".group-text:not(:disabled)")?.focus();
 }
 
 document.addEventListener("click", (ev) => {
@@ -2990,8 +3054,11 @@ document.addEventListener("click", (ev) => {
     draw();
   }
   if (ui.fileMenu && !(ev.target as Element | null)?.closest(".file-menu")) closeFileMenu();
+  team.outside(ev.target as Element | null);
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
+  // Group chats' and teammates' own, and the share form's folder picker.
+  if (team.click(target)) return;
   switch (target.dataset["action"]) {
     case "answer": {
       const form = target.closest<HTMLFormElement>("form.ask-form");
@@ -3571,6 +3638,10 @@ document.addEventListener("click", (ev) => {
 
 document.addEventListener("submit", (ev) => {
   const form = ev.target as HTMLFormElement;
+  if (team.submit(form)) {
+    ev.preventDefault();
+    return;
+  }
   if (form.classList.contains("ask-form")) {
     // Enter in the text box, or the Answer button: what is ticked and typed.
     ev.preventDefault();
@@ -3669,6 +3740,11 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 
+// In a group's composer, the tags offered take the arrow keys, Enter and Tab; else Enter posts.
+document.addEventListener("keydown", (ev) => {
+  team.keydown(ev);
+});
+
 // In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
 document.addEventListener("keydown", (ev) => {
   const input = ev.target as HTMLElement | null;
@@ -3679,6 +3755,7 @@ document.addEventListener("keydown", (ev) => {
 
 document.addEventListener("input", (ev) => {
   const input = ev.target as HTMLInputElement | HTMLTextAreaElement;
+  if (team.input(input)) return;
   if (input.classList.contains("new-terminal-filter")) {
     filterNewTerminal(input.value);
     return;
@@ -3700,11 +3777,22 @@ document.addEventListener("input", (ev) => {
 });
 
 document.addEventListener("change", (ev) => {
+  if (team.change(ev.target as HTMLElement)) return;
   const askForm = (ev.target as HTMLElement | null)?.closest<HTMLFormElement>("form.ask-form");
   if (askForm) refreshAskForm(askForm, state);
   // one session on a shared computer has no length to pick
   if ((ev.target as HTMLElement | null)?.closest("form.browser-invite-form")) draw();
 });
+
+// A group's posts scrolled to their end, or the window shown again: what the user read is told.
+document.addEventListener(
+  "scroll",
+  (ev) => {
+    if ((ev.target as HTMLElement | null)?.classList?.contains("group-stream")) team.syncRead();
+  },
+  true,
+);
+document.addEventListener("visibilitychange", () => team.syncRead());
 
 // The focus follows a sequence of asks only while the user stays in the pinned prompts.
 document.addEventListener("focusin", (ev) => {
@@ -3749,6 +3837,9 @@ document.addEventListener("keydown", (ev) => {
     ui.railMenu = undefined;
     draw();
     roots.tabs.querySelector<HTMLButtonElement>(".rail-more")?.focus();
+  } else if (team.escape()) {
+    // the tags offered, a group's ⋮ or forms, the share form's parts, New group or Teammates
+    ev.preventDefault();
   } else if (phone.matches && ui.rail === "open") {
     putRailAway();
     draw();

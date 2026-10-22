@@ -51,6 +51,8 @@
 // to copy, its QR code, how long it holds) until Done or until it is used; the invites still
 // open, each with Cancel; and on the desktop, for this node itself, Join another computer
 // while it is alone and Leave once it joined one.
+// Group chats are tabs too, a group's pane showing in the chat's place with its own composer;
+// New group and Teammates lie over the panes as Devices does (teamview.ts draws them all).
 
 import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
@@ -65,6 +67,10 @@ import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.
 import type { SendTarget, TransferRow } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
+import { placeGroupChats } from "./model.ts";
+import type { Group } from "@cophyla/protocol";
+import { createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, createStatusTeam, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderStatusTeam, renderTeamOverlay, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
+import type { TeamUi } from "./teamview.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
@@ -82,10 +88,14 @@ export function railSplit(value: unknown): number {
 export interface UiState {
   /** Collapsibles the user opened: `<card key>/<row key>`, and the rail's folds. */
   expanded: Set<string>;
-  /** The session whose tab is selected; undefined is the chat, unless a bare terminal's is. */
+  /** The session whose tab is selected; undefined is the chat, unless a bare terminal's or a group's is. */
   selected?: string;
   /** The bare terminal whose tab is selected. */
   terminal?: string;
+  /** The group chat whose tab is selected: its pane shows in the chat's place. */
+  group?: string;
+  /** Group chats' and teammates' forms and requests (teamview.ts). */
+  team: TeamUi;
   /** What the user chose a session's pane to show, when it runs in a terminal; the terminal until they choose (`paneMode`). */
   modes: Map<string, "timeline" | "terminal">;
   /** What the user chose the chat's pane to show: the conversation until they choose its session's terminal (`chatMode`). */
@@ -278,26 +288,30 @@ export interface Roots {
   composer: HTMLElement;
   /** Devices, over the panes while it is open. */
   devices: HTMLElement;
+  /** The pane a group chat shows in. */
+  groups: HTMLElement;
+  /** New group's form or Teammates, over the panes while one is open. */
+  team: HTMLElement;
 }
 
 // --- helpers ---------------------------------------------------------------------------------
 
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
+export function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
   const e = document.createElement(tag);
   if (className) e.className = className;
   if (text !== undefined) e.textContent = text;
   return e;
 }
 
-function setText(node: Element, text: string): void {
+export function setText(node: Element, text: string): void {
   if (node.textContent !== text) node.textContent = text;
 }
 
-function setHidden(node: HTMLElement, hidden: boolean): void {
+export function setHidden(node: HTMLElement, hidden: boolean): void {
   if (node.hidden !== hidden) node.hidden = hidden;
 }
 
-function setData(node: HTMLElement, name: string, value: string): void {
+export function setData(node: HTMLElement, name: string, value: string): void {
   if (node.dataset[name] !== value) node.dataset[name] = value;
 }
 
@@ -623,7 +637,12 @@ function createTab(): HTMLElement {
   const icon = el("span", "agent-icon");
   icon.setAttribute("role", "img");
   icon.append(el("span", "agent-mark"));
-  tab.append(icon, el("span", "tab-title"));
+  // A crescent while the session is in focus.
+  const focus = el("span", "tab-focus");
+  focus.setAttribute("role", "img");
+  focus.setAttribute("aria-label", "in focus");
+  focus.hidden = true;
+  tab.append(icon, el("span", "tab-title"), focus);
   return tab;
 }
 
@@ -643,7 +662,8 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
   icon.setAttribute("aria-label", words);
   setText(tab.querySelector(".tab-title")!, sessionLabel(s));
   const ws = workspaceName(state, s);
-  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}`;
+  const focus = updateTabFocus(tab, state, s.id);
+  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}${focus ? `\n${focus}` : ""}`;
 }
 
 /**
@@ -653,11 +673,12 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
 function createGroup(): HTMLElement {
   const group = el("div", "tab-group");
   // The name folds the group's tabs and the groups inside it away and back.
-  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"), el("div", "tab-group-list tab-group-waiting"), el("div", "tab-subgroups"));
+  // After the sessions' tabs and the waiting CLIs', the group chats whose home is this folder.
+  group.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-list"), el("div", "tab-group-list tab-group-waiting"), el("div", "tab-group-chats"), el("div", "tab-subgroups"));
   return group;
 }
 
-function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, ui: UiState): void {
+function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, ui: UiState, chats: Map<string, Group[]>): void {
   // Its own parts only: the groups inside it hold the same ones.
   const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
   const folded = ui.folded.has(group.key);
@@ -671,9 +692,10 @@ function updateGroup(node: HTMLElement, group: SessionGroup, state: ViewState, u
   const waiting = node.querySelector<HTMLElement>(":scope > .tab-group-waiting")!;
   setHidden(waiting, folded || group.terminals.length === 0);
   reconcile(waiting, group.terminals, (t) => t.id, createTermTab, (tab, t) => updateTermTab(tab, t, state, ui, false, true));
+  renderGroupChats(node.querySelector<HTMLElement>(":scope > .tab-group-chats")!, chats.get(group.key) ?? [], folded, ui);
   const inner = node.querySelector<HTMLElement>(":scope > .tab-subgroups")!;
   setHidden(inner, folded || group.groups.length === 0);
-  reconcile(inner, group.groups, (g) => g.key, createGroup, (n, g) => updateGroup(n, g, state, ui));
+  reconcile(inner, group.groups, (g) => g.key, createGroup, (n, g) => updateGroup(n, g, state, ui, chats));
 }
 
 function createTermTab(): HTMLElement {
@@ -1078,7 +1100,7 @@ function updateRestart(block: HTMLElement, card: NodeCard, state: ViewState, ui:
 
 // --- a node's desktop: its host, who views it, and the ways in ------------------------------
 
-function actionButton(className: string, text: string, action: string): HTMLButtonElement {
+export function actionButton(className: string, text: string, action: string): HTMLButtonElement {
   const b = el("button", className, text);
   b.type = "button";
   b.dataset["action"] = action;
@@ -1853,7 +1875,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     const restart = actionButton("rail-menu-item chat-restart", "Restart chat agent", "chat-restart");
     restart.setAttribute("role", "menuitem");
     restart.title = "End the agent session the chat runs in and start it again, with the conversation it had";
-    moreMenu.append(change, settings, restart, el("p", "rail-menu-note"));
+    moreMenu.append(...createMenuItems(), change, settings, restart, el("p", "rail-menu-note"));
     // After the speaker, New terminal: + starts a shell at once where its title says, ⌄ opens the menu of places.
     const newTerminal = el("div", "new-terminal");
     newTerminal.setAttribute("role", "group");
@@ -1898,7 +1920,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     transfersName.dataset["group"] = TRANSFERS_GROUP;
     transfersName.title = "Files and folders sent between your computers";
     transfers.append(transfersName, el("div", "transfer-list"));
-    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), terminals, transfers);
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), createGroupsHeading(), terminals, transfers);
     // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
     const cards = createStatus();
     // While an agent's tab is selected they are the Status tab, beside its folder's files.
@@ -1936,7 +1958,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     dot.title = link.title;
     dot.setAttribute("aria-label", link.title);
   }
-  chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined ? "true" : "false");
+  chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined && ui.group === undefined ? "true" : "false");
   renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
@@ -1949,8 +1971,11 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   const canTerminal = state.scopes.includes("terminal");
   // An agent CLI waiting for its first prompt stands with the sessions in its folder.
   const groups = selectGroups(state, canTerminal ? selectWaitingAgents(state) : []);
-  reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui));
-  setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0);
+  // A group chat stands under the folder its home names, or under Groups when none here holds it.
+  const chats = placeGroupChats(state, groups);
+  reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui, chats.placed));
+  setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0 || chats.loose.length > 0);
+  renderGroupsHeading(root.querySelector<HTMLElement>(".groups-group")!, chats.loose, ui, groupHeading);
   renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
   renderTransfers(root.querySelector<HTMLElement>(".transfers-group")!, canTerminal ? selectTransfers(state) : [], state, ui);
   renderNewTerminal(root, state, ui, canTerminal);
@@ -2042,7 +2067,7 @@ function createStatus(): HTMLElement {
   const devices = actionButton("status-devices", "", "devices-open");
   devices.title = "Every computer and phone, what each can do, and the account";
   devices.append(el("span", "status-devices-label", "Devices and account"), el("span", "status-devices-count"), el("span", "chevron-mark"));
-  cards.append(machines, usage, phones, devices);
+  cards.append(machines, usage, phones, createStatusTeam(), devices);
   return cards;
 }
 
@@ -2059,6 +2084,7 @@ function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
   const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
   setHidden(phoneSection, phones.length === 0);
   reconcile(phoneSection.querySelector<HTMLElement>(".status-phone-rows")!, phones, (p) => p.id, createStatusPhone, updateStatusPhone);
+  renderStatusTeam(cards.querySelector<HTMLElement>(".status-team")!, state, ui);
   const devices = cards.querySelector<HTMLButtonElement>(".status-devices")!;
   setHidden(devices, !devicesShown(state));
   devices.setAttribute("aria-pressed", ui.devices ? "true" : "false");
@@ -2244,7 +2270,7 @@ function createDevices(root: HTMLElement): void {
   root.append(head, note, body);
 }
 
-function sectionHead(title: string, lede: string): HTMLElement {
+export function sectionHead(title: string, lede: string): HTMLElement {
   const head = el("div", "devices-section-head");
   head.append(el("h3", "devices-heading", title), el("p", "devices-lede", lede));
   return head;
@@ -2796,6 +2822,7 @@ function renderRailMenu(root: HTMLElement, state: ViewState, ui: UiState): void 
   const menu = root.querySelector<HTMLElement>(".rail-menu")!;
   setHidden(menu, !ui.railMenu);
   for (const item of menu.querySelectorAll<HTMLButtonElement>(".rail-menu-item")) item.disabled = !state.connected;
+  renderMenuItems(menu, state);
   const restart = menu.querySelector<HTMLButtonElement>(".chat-restart")!;
   // Only where the node runs the chat in a session and this view may start it again.
   setHidden(restart, !canRestartChat(state));
@@ -2821,7 +2848,9 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   toggle.setAttribute("aria-expanded", shown ? "true" : "false");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
-  setText(root.querySelector(".railbar-title")!, ui.devices ? "Devices" : card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : "Cophyla Chat");
+  const chat = ui.group !== undefined ? state.groups.get(ui.group) : undefined;
+  const over = ui.devices ? "Devices" : ui.team.newGroup ? "New group" : ui.team.page ? "Teammates" : undefined;
+  setText(root.querySelector(".railbar-title")!, over ?? (card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : chat ? chat.name : "Cophyla Chat"));
 }
 
 /**
@@ -2933,7 +2962,7 @@ function updatePlace(b: HTMLButtonElement, p: PlaceRow, machine: TerminalMachine
  * and the roots, its folders, and the button that does it there (`here`, its `action`): Open
  * terminal here in New terminal's menu, Send here in Send to….
  */
-function createFolderPicker(here = "Open terminal here", action = "new-terminal-here"): HTMLElement {
+export function createFolderPicker(here = "Open terminal here", action = "new-terminal-here"): HTMLElement {
   const picker = el("div", "folder-picker");
   const head = el("div", "folder-head");
   const back = actionButton("folder-back", "‹", "folder-back");
@@ -2956,7 +2985,7 @@ function createFolderPicker(here = "Open terminal here", action = "new-terminal-
 }
 
 /** What a picker's head and its button say: the head's words, the button's, its hover for the folder shown, and whether it waits. */
-interface PickerWords {
+export interface PickerWords {
   title: (name: string) => string;
   here: string;
   hereTitle: (path: string) => string;
@@ -2971,7 +3000,7 @@ interface FolderRow {
   up?: true;
 }
 
-function renderFolderPicker(picker: HTMLElement, b: FolderBrowse | undefined, say: PickerWords): void {
+export function renderFolderPicker(picker: HTMLElement, b: FolderBrowse | undefined, say: PickerWords): void {
   setHidden(picker, !b);
   if (!b) return;
   const listing = b.listing;
@@ -3072,7 +3101,7 @@ function createPane(): HTMLElement {
   actions.append(modes, el("span", "session-term-slot"), connect, kill);
   // The other people's agents this session is connected to, when it is: a press opens them in Devices.
   const links = actionButton("session-links", "", "connections-open");
-  head.append(fold, chip, links, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createHeadConnect());
+  head.append(fold, chip, links, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
@@ -3104,6 +3133,7 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
     b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
   }
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
+  updateSessionFocus(node.querySelector<HTMLElement>(".session-focus")!, s, state, ui);
   updateHeadConnect(node, s, state, ui);
   const linked = sessionConnections(state, s.id);
   const links = node.querySelector<HTMLButtonElement>(".session-links")!;
@@ -3217,7 +3247,7 @@ function createHeadConnect(): HTMLElement {
 
   const error = el("p", "session-connect-error");
   error.setAttribute("role", "alert");
-  panel.append(top, el("p", "session-connect-why"), invite, accept, error, el("p", "session-connect-note"), issued, done);
+  panel.append(top, el("p", "session-connect-why"), invite, accept, error, el("p", "session-connect-note"), issued, done, createConnectTeam());
   return panel;
 }
 
@@ -3263,6 +3293,8 @@ function updateHeadConnect(node: HTMLElement, s: Session, state: ViewState, ui: 
     setText(issued.querySelector(".invite-left")!, [v.expired ? "this code has run out" : `good for ${v.left}`, copied ? (copied.ok ? "copied" : "select the text and copy it") : ""].filter(Boolean).join(" · "));
     setData(issued, "expired", v.expired ? "1" : "0");
   }
+  // Under it, the teammates this session may be opened to by hand.
+  updateConnectTeam(panel.querySelector<HTMLElement>(".session-teammates")!, s, state, ui);
   const done = panel.querySelector<HTMLElement>(".session-connect-done")!;
   setHidden(done, v.kind !== "connected");
   setText(done.querySelector(".session-connect-done-words")!, v.kind === "connected" ? `Connected to ${v.peer}: their agent and this one can message each other now, until the terminal closes or either of you ends it.` : "");
@@ -3890,7 +3922,7 @@ function terminalSession(state: ViewState, ui: UiState): string | undefined {
 
 /** The chat's pane shows its session's own terminal: the chat's tab, and the user chose it. */
 export function chatTerminal(state: ViewState, ui: UiState): string | undefined {
-  if (ui.selected !== undefined || ui.terminal !== undefined) return undefined;
+  if (ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined) return undefined;
   return chatMode(ui.chatMode, state) === "terminal" ? chatHead(state)?.terminal : undefined;
 }
 
@@ -3960,7 +3992,7 @@ function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void 
  * A message field: a textarea a line high, over an unseen copy of its text that grows it with
  * its lines (view.css). Enter sends, Shift+Enter starts a line.
  */
-function messageField(className: string, placeholder: string): HTMLElement {
+export function messageField(className: string, placeholder: string): HTMLElement {
   const box = el("div", "field");
   const copy = el("div", "field-copy");
   copy.setAttribute("aria-hidden", "true");
@@ -4011,7 +4043,8 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
-  setHidden(form, ui.selected !== undefined || ui.terminal !== undefined);
+  // A group's pane has its own composer.
+  setHidden(form, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   const canChat = state.connected && state.scopes.includes("chat");
   const input = form.querySelector<HTMLTextAreaElement>(".composer-text")!;
   input.disabled = !canChat;
@@ -4075,6 +4108,8 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
 /** The pane that shows: the chat stream or the selected session's. */
 export function activePane(roots: Roots): HTMLElement | undefined {
   if (!roots.chat.hidden) return roots.stream;
+  const group = groupStream(roots.groups);
+  if (group) return group;
   for (const child of Array.from(roots.sessions.children) as HTMLElement[]) if (!child.hidden) return child;
   return undefined;
 }
@@ -4082,6 +4117,7 @@ export function activePane(roots: Roots): HTMLElement | undefined {
 export function render(roots: Roots, state: ViewState, ui: UiState, opts: RenderOptions = {}): void {
   if (ui.selected !== undefined && !state.sessions.has(ui.selected)) ui.selected = undefined;
   if (ui.terminal !== undefined && (!state.terminals.has(ui.terminal) || !state.scopes.includes("terminal"))) ui.terminal = undefined;
+  if (ui.group !== undefined && !state.groups.has(ui.group)) ui.group = undefined;
   const before = activePane(roots);
   const atBottom = before !== undefined && before.scrollHeight - before.scrollTop - before.clientHeight < 8;
   const heightBefore = before?.scrollHeight ?? 0;
@@ -4096,7 +4132,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   renderRailbar(roots.railbar, state, ui, opts.railShown ?? false);
   renderTabs(roots.tabs, state, ui);
   renderFileMenu(roots.app, state, ui);
-  setHidden(roots.chat, ui.selected !== undefined || ui.terminal !== undefined);
+  setHidden(roots.chat, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   renderChatHead(roots.chat, state, ui);
   setHidden(roots.terminal, ui.terminal === undefined);
   ensureEmpty(roots.stream, state);
@@ -4111,8 +4147,10 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   const chat = opts.chat ?? "all";
   if (chat !== "none") reconcile(holder, items, keyOf, createItem, (node, item) => drawItem(node, item, state, ui, chat));
   reconcile(roots.sessions, [...state.sessions.values()], (c) => c.session.id, createPane, (node, c) => updatePane(node, c, state, ui));
+  renderGroupPane(roots.groups, state, ui);
   renderComposer(roots.composer, state, ui);
   renderDevices(roots.devices, state, ui);
+  renderTeamOverlay(roots.team, state, ui);
 
   // A pane just switched to opens at its newest; one that stayed keeps the user's place.
   const after = activePane(roots);

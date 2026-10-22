@@ -7432,3 +7432,1194 @@ button:disabled {
 .connection-form-error[hidden] {
   display: none;
 }
+
+/* --- group chats, focus and teammates ------------------------------------------------------- */
+
+/* Two heads, the group's mark: on its tab, in its pane's head, and over New group and Teammates. */
+:root {
+  --group-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 18 18' fill='none' stroke='%23000' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='6.5' cy='6' r='2.6'/%3E%3Ccircle cx='12.4' cy='6.8' r='2.1'/%3E%3Cpath d='M1.8 15c.4-2.9 2.3-4.5 4.7-4.5s4.3 1.6 4.7 4.5'/%3E%3Cpath d='M12.2 10.6c2 0 3.6 1.4 4 4'/%3E%3C/svg%3E");
+  --focus-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23000' d='M9.6 1.8A6.3 6.3 0 1 0 14.2 11 5.2 5.2 0 0 1 9.6 1.8z'/%3E%3C/svg%3E");
+}
+
+.group-mark {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 18px;
+  background-color: var(--cophyla-ink);
+  -webkit-mask: var(--group-glyph) center / 17px no-repeat;
+  mask: var(--group-glyph) center / 17px no-repeat;
+}
+
+/* A group's tab: the mark, the name, its unread count at the right, and a cophyla dot while the
+   user is tagged in it. An ended one is quieter. */
+.group-tab .tab-title {
+  flex: 1 1 auto;
+}
+
+.group-unread {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--raised);
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  text-align: center;
+}
+
+.group-tab[aria-current="true"] .group-unread {
+  background: var(--line-strong);
+}
+
+.group-tagged {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cophyla);
+  box-shadow: 0 0 0 2px var(--cophyla-wash);
+}
+
+.group-tab[data-ended="true"] {
+  opacity: 0.6;
+}
+
+.group-tab[data-ended="true"] .group-mark {
+  background-color: var(--faint);
+}
+
+.tab-group-chats {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.tab-group-list + .tab-group-chats,
+.tab-group-waiting + .tab-group-chats {
+  margin-top: 2px;
+}
+
+.groups-group {
+  margin-top: 8px;
+}
+
+.groups-group .tab {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+/* A session in focus: a crescent after its name, in amber. */
+.tab-focus {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  margin-left: auto;
+  background-color: var(--amber);
+  -webkit-mask: var(--focus-glyph) center / contain no-repeat;
+  mask: var(--focus-glyph) center / contain no-repeat;
+}
+
+/* Under a session's head while it is in focus: the crescent, until when and why, End focus. */
+.session-focus {
+  flex: 0 0 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 2px 0 0;
+  color: var(--amber);
+  font-size: 12.5px;
+}
+
+.session-focus-mark {
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  background-color: var(--amber);
+  -webkit-mask: var(--focus-glyph) center / contain no-repeat;
+  mask: var(--focus-glyph) center / contain no-repeat;
+}
+
+.session-focus-words {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.session-focus-end {
+  flex: 0 0 auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.session-focus-end:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+/* In a session's Connect panel: Open to <login>, a switch per teammate it may be opened to. */
+.session-teammates {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
+}
+
+.session-teammates-head {
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.session-teammates-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.session-connect button.session-teammate[aria-pressed="true"] {
+  border-color: var(--moss);
+  color: var(--moss);
+}
+
+/* Under the rail's Status: a folder shared closed with a teammate, with Open and Exclude. */
+.status-team-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.status-team-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.status-team-words {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.status-team-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.status-team-button {
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.status-team-button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+/* --- a group's pane: its head, its posts and its composer ---------------------------------- */
+
+.group-pane {
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+.group-head {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+}
+
+.group-head-top {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+
+.group-titles {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.group-name {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-purpose {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.group-tool {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-tool:hover:not(:disabled),
+.group-tool[aria-expanded="true"] {
+  border-color: var(--line-strong);
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.group-more {
+  padding: 0;
+}
+
+/* The group's ⋮ drops under its button, as the rail's does. */
+.group-menu {
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 160px;
+}
+
+.group-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--rust);
+  border-radius: 6px;
+  background: rgba(239, 114, 89, 0.08);
+  font-size: 12.5px;
+}
+
+.group-ask-words {
+  flex: 1 1 240px;
+}
+
+.group-ask button {
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-ask .group-ask-confirm {
+  border-color: var(--rust-fill);
+  background: var(--rust-fill);
+  color: #fff;
+}
+
+.group-edit-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.group-edit-form input,
+.group-new-form input {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--well);
+}
+
+.group-edit-name {
+  flex: 1 1 160px;
+}
+
+.group-edit-purpose {
+  flex: 3 1 280px;
+}
+
+.group-edit-form input:focus,
+.group-new-form input:focus,
+.team-code-input:focus {
+  outline: none;
+  border-color: var(--cophyla);
+}
+
+.group-form-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.group-form-buttons button,
+.team-start,
+.team-other {
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.group-form-buttons button:hover:not(:disabled),
+.team-start:hover:not(:disabled),
+.team-other:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.group-form-buttons :is(.group-edit-save, .group-add-confirm, .team-submit, .team-broad-ok) {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.group-form-buttons button:disabled,
+.team-start:disabled {
+  opacity: 0.55;
+}
+
+.group-form-error {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--rust);
+  font-size: 12px;
+}
+
+/* The members: a chip each, the user's own agents with how they are told and ×, then + Add. */
+.group-member-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.group-members {
+  display: contents;
+}
+
+.group-member {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 4px 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--raised);
+  font-size: 12.5px;
+}
+
+.group-member .agent-icon {
+  width: 16px;
+  height: 14px;
+}
+
+.group-member .agent-mark {
+  width: 13px;
+  height: 13px;
+}
+
+.group-member-name {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-member[data-me="true"] .group-member-name {
+  color: var(--cophyla-ink);
+}
+
+.group-member[data-status="gone"] {
+  opacity: 0.6;
+}
+
+.group-member[data-status="gone"] .group-member-name {
+  text-decoration: line-through;
+}
+
+.group-member-focus {
+  color: var(--amber);
+  font-size: 11.5px;
+}
+
+.group-member-held {
+  padding: 0 5px;
+  border: 1px dashed var(--amber);
+  border-radius: 4px;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.group-member-unread {
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--line-strong);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+.group-member-notify {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+.group-member-notify-option {
+  padding: 0 7px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.group-member-notify-option[aria-pressed="true"] {
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.group-member-remove {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--faint);
+  font-size: 13px;
+  line-height: 1;
+}
+
+.group-member-remove:hover:not(:disabled) {
+  background: var(--line-strong);
+  color: var(--ink);
+}
+
+.group-add-start {
+  padding: 2px 10px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.group-add-start:hover:not(:disabled) {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.group-add {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--cophyla);
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+.group-add .agent-pick {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+.group-ended {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* A picker of agents: a heading per machine and folder, or per teammate, a box per agent. */
+.agent-pick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-pick-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.agent-pick-status[data-error="true"] {
+  color: var(--rust);
+}
+
+.agent-pick-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.agent-pick-group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.agent-pick-title {
+  padding: 0;
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.agent-pick-group[data-own="false"] .agent-pick-title {
+  color: var(--cophyla-ink);
+}
+
+.agent-pick-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.agent-pick-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 4px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.agent-pick-item:hover {
+  background: var(--raised);
+}
+
+.agent-pick-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.agent-pick-handle {
+  font-size: 13px;
+}
+
+.agent-pick-words {
+  color: var(--muted);
+  font-size: 11.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* The posts: each a block with who wrote it and when, what it answers quoted over it, its text
+   as markdown, and under it the thumbs up, Reply and who has not read it yet. */
+.group-stream {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 12px 20px 20px;
+}
+
+.group-stream:focus {
+  outline: none;
+}
+
+.group-stream > * {
+  max-width: 960px;
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.group-empty {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.group-posts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.group-post {
+  padding: 8px 14px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+}
+
+.group-post[data-mine="true"] {
+  border-color: var(--line-strong);
+  background: var(--raised);
+}
+
+.group-post[data-awaiting="true"] {
+  border-left: 3px solid var(--amber);
+}
+
+.group-post[data-replying="true"] {
+  border-color: var(--cophyla);
+}
+
+/* Cophyla's own line, who joined or left: one quiet line. */
+.group-post[data-kind="cophyla"] {
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.group-post[data-kind="cophyla"] .group-post-head {
+  display: none;
+}
+
+.group-post-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.group-post-head .agent-icon {
+  width: 16px;
+  height: 14px;
+}
+
+.group-post-head .agent-mark {
+  width: 13px;
+  height: 13px;
+}
+
+.group-post-who {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.group-post[data-kind="person"] .group-post-who {
+  color: var(--cophyla-ink);
+}
+
+.group-post-time {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--faint);
+}
+
+.group-post-awaiting {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--amber);
+  border-radius: 4px;
+  color: var(--amber);
+  font-size: 11px;
+}
+
+.group-post-quote {
+  margin: 0 0 6px;
+  padding: 2px 8px;
+  border-left: 2px solid var(--line-strong);
+  color: var(--muted);
+  font-size: 12.5px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-post-quote-who {
+  margin-right: 6px;
+  font-weight: 600;
+}
+
+.group-post-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.group-post-text.md {
+  white-space: normal;
+}
+
+/* A tag, lit; the user's own brighter. */
+.group-tag {
+  padding: 0 3px;
+  border-radius: 3px;
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+  font-weight: 600;
+}
+
+.group-tag[data-own="true"] {
+  background: var(--cophyla);
+  color: #fff;
+}
+
+.group-post-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.group-post-ack,
+.group-post-reply {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 20px;
+}
+
+.group-post-ack:hover:not(:disabled),
+.group-post-reply:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+
+.group-post-ack[aria-pressed="true"] {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.group-post-ack-count:empty {
+  display: none;
+}
+
+.group-post-unread {
+  color: var(--faint);
+  font-size: 11.5px;
+}
+
+/* The composer: what it answers, why the last post was refused, the tags offered over it, then
+   the field and Send; an ended group's says so instead. */
+.group-composer {
+  position: relative;
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  max-width: 960px;
+  margin: 0 auto;
+  padding: 8px 20px 12px;
+}
+
+.group-composer-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.group-composer-row > button {
+  min-height: 37px;
+}
+
+.group-send {
+  padding: 0 14px;
+  border: 1px solid var(--cophyla);
+  border-radius: 4px;
+  background: var(--cophyla);
+  color: #fff;
+}
+
+.group-send:disabled {
+  opacity: 0.5;
+}
+
+.group-reply {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 8px;
+  border-left: 2px solid var(--cophyla);
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.group-reply-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.group-reply-cancel {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.group-post-error {
+  margin: 0;
+  color: var(--rust);
+  font-size: 12.5px;
+}
+
+.group-complete {
+  position: absolute;
+  bottom: calc(100% - 4px);
+  left: 20px;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  max-width: calc(100% - 40px);
+  padding: 4px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.group-complete-option {
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  font-size: 13px;
+  text-align: left;
+}
+
+.group-complete-option:hover,
+.group-complete-option[aria-selected="true"] {
+  background: var(--raised);
+}
+
+.group-closed {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+/* --- New group and Teammates, over the panes as Devices is ----------------------------------- */
+
+.team-head-mark {
+  flex: 0 0 18px;
+}
+
+.team-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-field-label {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.team-choice {
+  display: inline-flex;
+  align-self: flex-start;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.team-choice-option {
+  padding: 3px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.team-choice-option + .team-choice-option {
+  border-left: 1px solid var(--line-strong);
+}
+
+.team-choice-option[aria-pressed="true"] {
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.team-blocked {
+  border-style: solid;
+  border-color: var(--amber);
+  color: var(--amber);
+}
+
+.team-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.team-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-who {
+  font-weight: 600;
+}
+
+.team-row[data-state="pending"] .team-who {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.team-words {
+  margin-left: auto;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.team-line {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.team-row-actions button,
+.team-end-ask button {
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-row-actions button:hover:not(:disabled),
+.team-end-ask button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.team-end-ask {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12.5px;
+}
+
+.team-end-words {
+  flex: 1 1 240px;
+}
+
+.team-end-ask .team-end-confirm {
+  border-color: var(--rust-fill);
+  background: var(--rust-fill);
+  color: #fff;
+}
+
+.team-start {
+  align-self: flex-start;
+}
+
+.team-share-slot:empty {
+  display: none;
+}
+
+/* The share form: the code (to use one), Include | Exclude, each machine's folders, Other
+   folder…'s picker, Always open | Chosen, the question a broad share asks, and its buttons. */
+.team-share {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--cophyla);
+  border-radius: 6px;
+  background: var(--raised);
+}
+
+.team-code-input {
+  width: 100%;
+  padding: 5px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--well);
+  font-family: var(--mono);
+  font-size: 12px;
+  resize: vertical;
+}
+
+.team-share-lede {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.team-machines {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-machine {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.team-machine-name {
+  padding: 0;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.team-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.team-folder {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 3px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.team-folder:hover {
+  background: var(--card);
+}
+
+.team-folder-name {
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+
+.team-folder-path {
+  min-width: 0;
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  direction: rtl;
+  text-align: left;
+}
+
+.team-other {
+  align-self: flex-start;
+  font-size: 12px;
+}
+
+.team-share .folder-picker {
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--card);
+}
+
+.team-share .folder-here {
+  box-shadow: none;
+}
+
+.team-broad {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--amber);
+  border-radius: 6px;
+  background: rgba(226, 174, 77, 0.08);
+}
+
+.team-broad-words {
+  margin: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.team-code {
+  margin-top: 4px;
+}
+
+.group-new-form {
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .group-head,
+  .group-stream {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .group-composer {
+    padding-right: 12px;
+    padding-left: 12px;
+  }
+
+  .group-complete {
+    left: 12px;
+  }
+
+  .agent-pick-item,
+  .team-folder {
+    padding-top: 8px;
+    padding-bottom: 8px;
+  }
+}

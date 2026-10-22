@@ -22,8 +22,12 @@
 // down, and one the node stopped before the user did says so until the next. The speaker
 // beside the chat's tab says whether the next reply is read out (`voice.next`), and where.
 // What the chat's session is told (`brain.context`) is shown part by part, in words.
+// The group chats are rows too, each with the posts loaded so far, and so are the agents in
+// focus and the user's teammates: a group's tab stands under the folder its home names, or
+// under Groups; a share's broad folders (a home, a drive) are asked about before it is sent.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
+import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
@@ -255,6 +259,16 @@ export interface ViewState {
   connectionCode?: IssuedCode;
   /** Files and folders on their way between the user's machines, and the ones that came, from `transfer.list` and `transfer.state`, while connected. */
   transfers: Map<string, Transfer>;
+  /** The group chats this side keeps, from `group.list` and `group.state`: kept through a disconnect, until the next list replaces them. */
+  groups: Map<string, Group>;
+  /** Each group's posts loaded so far, by group: a group's are asked for as it opens. */
+  groupPosts: Map<string, GroupPage>;
+  /** The agents in focus now, by session, from `focus.list` and `focus.state`, while connected. */
+  focus: Map<string, Focus>;
+  /** This user's teammates, pending and active, from `teammate.list` and `teammate.state`. */
+  teammates: Map<string, Teammate>;
+  /** A teammate's code just made, while its panel shows. */
+  teammateCode?: IssuedCode;
   /** The node this client's socket is on, on its own network (`lan.info`); none from a node that does not say. */
   lan?: LanState;
   /** Every node of the user, from `node.list` and `node.state`. */
@@ -352,6 +366,22 @@ export type Action =
   | { type: "connection.state"; params: Connection }
   /** A connection's code came back from `connection.invite`, or its panel closed. */
   | { type: "connection.code"; code?: IssuedCode }
+  | { type: "groups"; groups: Group[] }
+  /** A group was made, changed, posted in or read (its counts), or this side left it (`left`, which takes it away). */
+  | { type: "group.state"; params: Group & { left?: boolean } }
+  | { type: "group.posts.loading"; group: string }
+  | { type: "group.posts.failed"; group: string }
+  /** A page of a group's posts: the latest, or (`before`) the ones before those shown. */
+  | { type: "group.posts"; group: string; posts: GroupPost[]; more: boolean; before?: number }
+  | { type: "group.posted"; params: { group: string; post: GroupPost } }
+  | { type: "focus"; focus: { session: string; focus: Focus }[] }
+  /** An agent took focus, or its focus ended (`focus` absent). */
+  | { type: "focus.state"; params: { session: string; focus?: Focus } }
+  | { type: "teammates"; teammates: Teammate[] }
+  /** A teammate was made, used, changed or ended (`state: ended`, which takes its row away). */
+  | { type: "teammate.state"; params: Teammate }
+  /** A teammate's code came back from `teammate.invite`, or its panel closed. */
+  | { type: "teammate.code"; code?: IssuedCode }
   | { type: "transfers"; transfers: Transfer[] }
   /** A transfer started, moved on, ended, or was dismissed (`dismissed`, which takes its row away). */
   | { type: "transfer.state"; params: Transfer }
@@ -409,6 +439,10 @@ export function initialState(): ViewState {
     grants: new Map(),
     connections: new Map(),
     transfers: new Map(),
+    groups: new Map(),
+    groupPosts: new Map(),
+    focus: new Map(),
+    teammates: new Map(),
     nodes: new Map(),
     metrics: new Map(),
     spend: new Map(),
@@ -612,6 +646,7 @@ function addEvent(c: SessionCard, e: SessionEvent): void {
 
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
+  if (applyTeam(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -653,6 +688,12 @@ export function apply(state: ViewState, action: Action): ViewState {
         // Every terminal comes again with the next `terminal.list`, and every transfer with `transfer.list`.
         state.terminals.clear();
         state.transfers.clear();
+        // The focus comes again with `focus.list`; the posts shown stay, and are asked for again as their group shows.
+        state.focus.clear();
+        for (const page of state.groupPosts.values()) {
+          page.stale = true;
+          page.loading = false;
+        }
       }
       return state;
     case "session.state": {
@@ -1014,6 +1055,19 @@ export function apply(state: ViewState, action: Action): ViewState {
       if (action.node) state.remotePin = action.node;
       else delete state.remotePin;
       return state;
+    case "groups":
+    case "group.state":
+    case "group.posts.loading":
+    case "group.posts.failed":
+    case "group.posts":
+    case "group.posted":
+    case "focus":
+    case "focus.state":
+    case "teammates":
+    case "teammate.state":
+    case "teammate.code":
+      // folded by applyTeam, above
+      return state;
     case "error":
       state.errors.push(action.message);
       state.errorsSeen++;
@@ -1047,6 +1101,17 @@ export function chatDraw(action: Action): ChatDraw {
     case "update.state":
     case "transfers":
     case "transfer.state":
+    case "groups":
+    case "group.state":
+    case "group.posts.loading":
+    case "group.posts.failed":
+    case "group.posts":
+    case "group.posted":
+    case "focus":
+    case "focus.state":
+    case "teammates":
+    case "teammate.state":
+    case "teammate.code":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -4618,4 +4683,684 @@ export function sendBlocked(state: ViewState, source: NodeId): string | undefine
 /** The Downloads folder in a home folder's listing, where Send to… starts. */
 export function downloadsIn(listing: Pick<FolderPick, "folders">): string | undefined {
   return listing.folders.find((f) => f.name.toLowerCase() === "downloads")?.path;
+}
+
+// --- group chats, focus and teammates ---------------------------------------------------------
+
+/** A group's posts as loaded so far, oldest first: whether earlier ones are left, a page on its way, and whether a lost line left them behind. */
+export interface GroupPage {
+  posts: GroupPost[];
+  more: boolean;
+  loaded: boolean;
+  loading?: boolean;
+  /** The line dropped since they were loaded: the latest page is asked for again when the group shows. */
+  stale?: boolean;
+}
+
+type PersonMember = Extract<GroupMember, { kind: "person" }>;
+type AgentMember = Extract<GroupMember, { kind: "agent" }>;
+
+const byNumber = (a: GroupPost, b: GroupPost) => a.n - b.n || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+/** Posts in number order, each once: a later copy of one (its thumbs, its answer) over an earlier. */
+function mergePosts(...lists: GroupPost[][]): GroupPost[] {
+  const out = new Map<string, GroupPost>();
+  for (const list of lists) for (const p of list) out.set(p.id, p);
+  return [...out.values()].sort(byNumber);
+}
+
+/** Folds a group, focus or teammate action in; false when the action is none of them. */
+function applyTeam(state: ViewState, action: Action): boolean {
+  switch (action.type) {
+    case "groups":
+      state.groups = new Map(action.groups.map((g) => [g.id, g]));
+      for (const id of [...state.groupPosts.keys()]) if (!state.groups.has(id)) state.groupPosts.delete(id);
+      return true;
+    case "group.state": {
+      const { left, ...g } = action.params;
+      if (left) {
+        state.groups.delete(g.id);
+        state.groupPosts.delete(g.id);
+      } else state.groups.set(g.id, g);
+      return true;
+    }
+    case "group.posts.loading": {
+      const page = state.groupPosts.get(action.group) ?? { posts: [], more: false, loaded: false };
+      page.loading = true;
+      state.groupPosts.set(action.group, page);
+      return true;
+    }
+    case "group.posts.failed": {
+      const page = state.groupPosts.get(action.group);
+      if (page) page.loading = false;
+      return true;
+    }
+    case "group.posts": {
+      const page = state.groupPosts.get(action.group);
+      if (action.before !== undefined && page?.loaded && !page.stale) {
+        // a page from before the ones shown
+        page.posts = mergePosts(action.posts, page.posts);
+        page.more = action.more;
+        page.loading = false;
+        return true;
+      }
+      // The latest page: what came in while it was asked for, newer than any in it, stays too.
+      const last = action.posts.reduce((n, p) => Math.max(n, p.n), 0);
+      const since = page ? page.posts.filter((p) => p.n > last) : [];
+      state.groupPosts.set(action.group, { posts: mergePosts(action.posts, since), more: action.more, loaded: true });
+      return true;
+    }
+    case "group.posted": {
+      // Kept where the group's posts are loaded or on their way; a group never opened loads them when it is.
+      const page = state.groupPosts.get(action.params.group);
+      if (page) page.posts = mergePosts(page.posts, [action.params.post]);
+      return true;
+    }
+    case "focus":
+      state.focus = new Map(action.focus.map((f) => [f.session, f.focus]));
+      return true;
+    case "focus.state":
+      if (action.params.focus) state.focus.set(action.params.session, action.params.focus);
+      else state.focus.delete(action.params.session);
+      return true;
+    case "teammates":
+      state.teammates = new Map(action.teammates.filter((t) => t.state !== "ended").map((t) => [t.id, t]));
+      if (state.teammateCode && state.teammates.get(state.teammateCode.id)?.state !== "pending") delete state.teammateCode;
+      return true;
+    case "teammate.state":
+      if (action.params.state === "ended") state.teammates.delete(action.params.id);
+      else state.teammates.set(action.params.id, action.params);
+      // the code on show was used, or cancelled: its panel has done its job
+      if (state.teammateCode?.id === action.params.id && action.params.state !== "pending") delete state.teammateCode;
+      return true;
+    case "teammate.code":
+      if (action.code) state.teammateCode = action.code;
+      else delete state.teammateCode;
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** This side's user in a group: the person member marked `me`. */
+export function groupMe(g: Pick<Group, "members">): PersonMember | undefined {
+  return g.members.find((m): m is PersonMember => m.kind === "person" && m.me === true);
+}
+
+/** Whether this side's user made the group: the maker alone ends it, and may take anyone out. */
+export function groupMaker(g: Pick<Group, "members" | "by">): boolean {
+  const me = groupMe(g);
+  return me !== undefined && g.by === me.user;
+}
+
+/** Whether End group is offered: to its maker, while it runs. */
+export function canEndGroup(g: Pick<Group, "members" | "by" | "ended">): boolean {
+  return g.ended === undefined && groupMaker(g);
+}
+
+/** A group's tab: its hover, and the words its mark is read as. */
+export function groupTabWords(g: Group): { title: string; label: string } {
+  const counts = [g.ended ? "ended, read only" : "", g.unread > 0 ? `${g.unread} unread` : "", g.tagged > 0 ? "you are tagged" : ""].filter((w) => w !== "");
+  const label = ["Group chat", ...counts].join(", ");
+  const people = g.members.filter((m) => m.kind === "agent" && !m.gone).length;
+  const title = [g.purpose ? `${g.name}: ${g.purpose}` : g.name, `${people} agent${people === 1 ? "" : "s"}${counts.length > 0 ? ` · ${counts.join(" · ")}` : ""}`].join("\n");
+  return { title, label };
+}
+
+/**
+ * Where each group chat's tab stands in the rail: under the folder group its home names, the
+ * innermost one at or around that folder on its machine, counted in that group's heading and
+ * in every heading around it; with no home, or no group there now, under Groups. In the order
+ * they were made, so nothing moves as they are posted in. `groups` is `selectGroups`' tree, whose
+ * counts this adds to.
+ */
+export function placeGroupChats(state: Pick<ViewState, "groups" | "nodes">, groups: SessionGroup[]): { placed: Map<string, Group[]>; loose: Group[] } {
+  const placed = new Map<string, Group[]>();
+  const loose: Group[] = [];
+  const chats = [...state.groups.values()].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+  for (const chat of chats) {
+    const home = chat.home;
+    const path = home ? groupPathTo(groups, home.node, placeKey(home.path, state.nodes.get(home.node)?.platform)) : [];
+    const at = path.at(-1);
+    if (!at) {
+      loose.push(chat);
+      continue;
+    }
+    const list = placed.get(at.key) ?? [];
+    list.push(chat);
+    placed.set(at.key, list);
+    for (const g of path) g.count += 1;
+  }
+  return { placed, loose };
+}
+
+/** The folder groups from the outermost to the innermost that hold folder `key` on `node`. */
+function groupPathTo(level: SessionGroup[], node: string, key: string): SessionGroup[] {
+  for (const g of level) {
+    const cut = g.key.indexOf("\n");
+    const gNode = g.key.slice(0, cut);
+    const gKey = g.key.slice(cut + 1);
+    if (gNode !== node || (key !== gKey && !key.startsWith(gKey + "/"))) continue;
+    return [g, ...groupPathTo(g.groups, node, key)];
+  }
+  return [];
+}
+
+/** Who wrote a post, as its head says it: an agent's handle with its harness, a person's login, or cophyla. */
+export interface PostWriter {
+  kind: GroupPostFrom["kind"];
+  name: string;
+  harness?: string;
+  title: string;
+}
+
+export function postWriter(from: GroupPostFrom): PostWriter {
+  if (from.kind === "cophyla") return { kind: "cophyla", name: "cophyla", title: "Cophyla, saying who joined or left" };
+  if (from.kind === "person") return { kind: "person", name: from.user, title: `${from.user}, a person` };
+  const harness = HARNESS_NAMES[from.harness as keyof typeof HARNESS_NAMES] ?? from.harness;
+  return { kind: "agent", name: from.handle, harness: from.harness, title: `${from.handle}: ${harness}${from.user ? `, ${from.user}'s` : ""}` };
+}
+
+/** A tag in a post: the words as written, and whether it names this side's user (themselves, every person, or everyone). */
+export interface PostTag {
+  label: string;
+  own: boolean;
+}
+
+/** What a group's posts may tag, lowercased, longest first, each with whether it names this side's user. */
+function tagLabels(g: Pick<Group, "members">): [string, boolean][] {
+  const me = groupMe(g)?.user;
+  const labels = new Map<string, boolean>();
+  for (const m of g.members) {
+    if (m.kind === "agent") labels.set(m.handle.toLowerCase(), labels.get(m.handle.toLowerCase()) ?? false);
+    else labels.set(m.user.toLowerCase(), m.user === me);
+  }
+  labels.set("agents", false);
+  labels.set("users", true);
+  labels.set("everyone", true);
+  return [...labels.entries()].sort((a, b) => b[0].length - a[0].length);
+}
+
+/** A tag goes on past `len` characters: a handle's next character, not the punctuation after it. */
+const continues = (rest: string, len: number): boolean => /^(?:[\w/-]|\.\w)/.test(rest.slice(len));
+
+/**
+ * A post's text with each tag in it a slot (`slot(i)`), outside code: an `@` not after a word,
+ * then a member's handle or login, or agents, users or everyone, the longest that fits; and the
+ * tags in their order, each with the words as written and whether it is this side's user's.
+ */
+export function tagSlots(text: string, g: Pick<Group, "members">): { text: string; tags: PostTag[] } {
+  const labels = tagLabels(g);
+  const tags: PostTag[] = [];
+  // Odd parts are code: a fenced block, or a span in backticks.
+  const parts = text.split(/(```[\s\S]*?(?:```|$)|`[^`\n]*`)/);
+  const out = parts.map((part, i) => {
+    if (i % 2 === 1) return part;
+    let s = "";
+    let at = 0;
+    for (;;) {
+      const tag = part.indexOf("@", at);
+      if (tag < 0) return s + part.slice(at);
+      s += part.slice(at, tag);
+      const before = tag > 0 ? part[tag - 1]! : "";
+      const rest = part.slice(tag + 1);
+      const lower = rest.toLowerCase();
+      const hit = /[\w@/.-]/.test(before) ? undefined : labels.find(([l]) => lower.startsWith(l) && !continues(rest, l.length));
+      if (!hit) {
+        s += "@";
+        at = tag + 1;
+        continue;
+      }
+      tags.push({ label: `@${rest.slice(0, hit[0].length)}`, own: hit[1] });
+      s += slot(tags.length - 1);
+      at = tag + 1 + hit[0].length;
+    }
+  });
+  return { text: out.join(""), tags };
+}
+
+/** The agents a post tags that have not read it yet, by handle: its writer aside, and the ones gone. */
+export function unreadBy(g: Pick<Group, "members">, post: Pick<GroupPost, "mentions" | "from" | "n">): string[] {
+  const tagged = new Set<string>();
+  let all = false;
+  for (const m of post.mentions) {
+    if ("member" in m) tagged.add(m.member);
+    else if (m.all === "everyone" || m.all === "agents") all = true;
+  }
+  const writer = post.from.kind === "cophyla" ? undefined : post.from.key;
+  return g.members.filter((m): m is AgentMember => m.kind === "agent" && !m.gone && m.key !== writer && (all || tagged.has(m.key)) && m.readTo < post.n).map((m) => m.handle);
+}
+
+/** A post as the group's pane draws it. */
+export interface PostView {
+  id: string;
+  n: number;
+  writer: PostWriter;
+  at: number;
+  /** Its text with the tags as slots, and the tags. */
+  text: string;
+  tags: PostTag[];
+  /** The post it answers: who wrote it and how it starts, or that it is further back than what is loaded. */
+  quote?: { name?: string; excerpt: string };
+  /** It asked for a reply and none came yet. */
+  awaiting: boolean;
+  /** Its thumbs up: how many, who, and whether this side's user gave one. */
+  acks: number;
+  ackTitle: string;
+  acked: boolean;
+  /** The agents it tags that have not read it yet. */
+  unreadBy: string[];
+  /** This side's user wrote it. */
+  mine: boolean;
+}
+
+/** A text's first line without its markdown's bold and code marks, cut to `max` characters. */
+export function postExcerpt(text: string, max = 120): string {
+  const line = (text.split(/\r?\n/).find((l) => l.trim() !== "")?.trim() ?? "").replace(/\*\*|__|`/g, "");
+  return line.length > max ? line.slice(0, max - 1) + "…" : line;
+}
+
+export function postView(g: Group, post: GroupPost, page: Pick<GroupPage, "posts"> | undefined): PostView {
+  const me = groupMe(g)?.user;
+  const { text, tags } = tagSlots(post.text, g);
+  let quote: PostView["quote"];
+  if (post.replyTo !== undefined) {
+    const answered = page?.posts.find((p) => p.id === post.replyTo);
+    quote = answered ? { name: postWriter(answered.from).name, excerpt: postExcerpt(answered.text) } : { excerpt: "an earlier post" };
+  }
+  return {
+    id: post.id,
+    n: post.n,
+    writer: postWriter(post.from),
+    at: post.at,
+    text,
+    tags,
+    ...(quote ? { quote } : {}),
+    awaiting: post.expectsReply === true && post.answered !== true,
+    acks: post.acks.length,
+    ackTitle: post.acks.length === 0 ? "Thumbs up" : `Thumbs up from ${post.acks.join(", ")}`,
+    acked: me !== undefined && post.acks.includes(me),
+    unreadBy: unreadBy(g, post),
+    mine: post.from.kind === "person" && post.from.user === me && me !== undefined,
+  };
+}
+
+/** The number of the last post loaded, when this side's user has not read up to it. */
+export function readUpTo(g: Pick<Group, "members">, page: Pick<GroupPage, "posts"> | undefined): number | undefined {
+  const last = page?.posts.at(-1)?.n;
+  if (last === undefined) return undefined;
+  const me = groupMe(g);
+  return me === undefined || me.readTo < last ? last : undefined;
+}
+
+/** An hour of the day, as `HH:MM`. */
+function hhmm(at: number): string {
+  const d = new Date(at);
+  return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/** An agent's focus in words: until when, and why. */
+export function focusWords(f: Pick<Focus, "until" | "reason">): string {
+  return `Focus until ${hhmm(f.until)} — ${f.reason}`;
+}
+
+/** A session's focus while it holds: none once its hour has passed, whatever the node said last. */
+export function sessionFocus(state: Pick<ViewState, "focus">, session: string, now: number): Focus | undefined {
+  const f = state.focus.get(session);
+  return f && f.until > now ? f : undefined;
+}
+
+/** A member as the group's head shows it: a chip with what it is doing, and what may be done with it. */
+export interface MemberChip {
+  key: string;
+  kind: "agent" | "person";
+  name: string;
+  harness?: string;
+  /** An agent's: working, idle, its session ended, or not known here (a teammate's); a person's own. */
+  status: "busy" | "idle" | "gone" | "unknown" | "person";
+  focus?: string;
+  held: boolean;
+  unread: number;
+  /** One of this side's user's agents: how it is told is set here. */
+  mine: boolean;
+  notify?: GroupNotify;
+  /** This side's user. */
+  me: boolean;
+  /** Remove is offered: on one's own agents, and on any agent for the group's maker, while the group runs. */
+  removable: boolean;
+  title: string;
+}
+
+export function memberChips(state: Pick<ViewState, "sessions" | "focus">, g: Group, now: number): MemberChip[] {
+  const maker = groupMaker(g);
+  const open = g.ended === undefined;
+  return g.members.map((m): MemberChip => {
+    if (m.kind === "person") {
+      return { key: m.key, kind: "person", name: m.user, status: "person", held: false, unread: 0, mine: false, me: m.me === true, removable: false, title: m.me ? `${m.user}, you` : `${m.user}, a person` };
+    }
+    const own = state.sessions.get(m.session)?.session;
+    const status: MemberChip["status"] = m.gone ? "gone" : own ? (own.status === "ended" ? "gone" : own.status === "idle" ? "idle" : "busy") : "unknown";
+    const f = m.focus && m.focus.until > now ? m.focus : sessionFocus(state, m.session, now);
+    const harness = HARNESS_NAMES[m.harness as keyof typeof HARNESS_NAMES] ?? m.harness;
+    const statusWord = status === "gone" ? "its session ended" : status === "busy" ? "working" : status === "idle" ? "idle" : "";
+    const title = [
+      `${m.handle}: ${harness}${m.user && !m.mine ? `, ${m.user}'s` : ""}${m.workspace ? ` in ${m.workspace}` : ""}`,
+      statusWord,
+      f ? focusWords(f) : "",
+      m.held ? "its notices wait in its terminal until it lets messages in" : "",
+      m.unread > 0 ? `${m.unread} unread` : "",
+      m.mine ? (m.notify === "all" ? "told of every post" : "told of the posts that tag it") : "",
+    ].filter((w) => w !== "");
+    return {
+      key: m.key,
+      kind: "agent",
+      name: m.handle,
+      harness: m.harness,
+      status,
+      ...(f ? { focus: focusWords(f) } : {}),
+      held: m.held === true,
+      unread: m.unread,
+      mine: m.mine === true,
+      notify: m.notify,
+      me: false,
+      removable: open && !m.gone && (m.mine === true || maker),
+      title: title.join("\n"),
+    };
+  });
+}
+
+/**
+ * What the composer offers for the `@` just typed before the caret: the agents' handles, the
+ * other people's logins, then agents, users and everyone, those that start with what follows
+ * the `@`, at most eight. None once what is typed is the one it would offer.
+ */
+export function tagCompletion(g: Pick<Group, "members">, text: string, caret: number): { start: number; options: string[] } | undefined {
+  const m = /(^|[^\w@/.-])@([\w./-]*)$/.exec(text.slice(0, caret));
+  if (!m) return undefined;
+  const typed = m[2]!;
+  const query = typed.toLowerCase();
+  const me = groupMe(g)?.user;
+  const names = [
+    ...g.members.filter((x): x is AgentMember => x.kind === "agent" && !x.gone).map((x) => x.handle),
+    ...g.members.filter((x): x is PersonMember => x.kind === "person" && x.user !== me).map((x) => x.user),
+    "agents",
+    "users",
+    "everyone",
+  ];
+  const options = [...new Set(names)].filter((n) => n.toLowerCase().startsWith(query)).slice(0, 8);
+  if (options.length === 0 || (options.length === 1 && options[0]!.toLowerCase() === query)) return undefined;
+  return { start: caret - typed.length - 1, options };
+}
+
+/** The text with the tag being typed (from `start` to the caret) completed to `choice`, a space after it, and where the caret goes. */
+export function completeTag(text: string, start: number, caret: number, choice: string): { text: string; caret: number } {
+  const tag = `@${choice} `;
+  return { text: text.slice(0, start) + tag + text.slice(caret), caret: start + tag.length };
+}
+
+/** What a picker keeps an agent by: its own session, or a teammate's agent by name. */
+export function candidateKey(ref: GroupMemberRef): string {
+  return "session" in ref ? `s:${ref.session}` : `t:${ref.teammate}:${ref.name}`;
+}
+
+/** An agent in the picker, and its heading: the user's own by machine and folder, a teammate's under their login. */
+export interface CandidateItem {
+  key: string;
+  ref: GroupMemberRef;
+  handle: string;
+  harness?: string;
+  words: string;
+}
+
+export interface CandidateGroup {
+  key: string;
+  title: string;
+  own: boolean;
+  items: CandidateItem[];
+}
+
+/** The picker's agents under their headings, the user's own first; one already in `g` is left out. */
+export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">): CandidateGroup[] {
+  const sessions = new Set<string>();
+  const handles = new Set<string>();
+  for (const m of g?.members ?? []) {
+    if (m.kind !== "agent" || m.gone) continue;
+    sessions.add(m.session);
+    handles.add(m.handle);
+  }
+  const groups = new Map<string, CandidateGroup>();
+  for (const c of cands) {
+    const own = "session" in c.ref;
+    if ("session" in c.ref ? sessions.has(c.ref.session) : handles.has(c.handle)) continue;
+    const folder = c.folder ?? c.workspace;
+    const key = own ? `own:${c.node ?? ""}\n${folder ?? ""}` : `user:${c.user ?? ""}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { key, own, title: own ? `${folder ?? "No folder"}${c.machine ? ` · ${c.machine}` : ""}` : `${c.user ?? "A teammate"}'s agents`, items: [] };
+      groups.set(key, group);
+    }
+    const harness = c.harness ? (HARNESS_NAMES[c.harness as keyof typeof HARNESS_NAMES] ?? c.harness) : undefined;
+    const words = [harness, c.status, own ? undefined : c.workspace, c.intent].filter((w): w is string => w !== undefined && w !== "").join(" · ");
+    group.items.push({ key: candidateKey(c.ref), ref: c.ref, handle: c.handle, ...(c.harness ? { harness: c.harness } : {}), words });
+  }
+  return [...groups.values()].sort((a, b) => Number(b.own) - Number(a.own) || a.title.localeCompare(b.title));
+}
+
+/** What `group.create` is sent from New group's form, or why it is not: a group needs a name. */
+export function groupCreateParams(
+  form: { name: string; purpose: string; notify: GroupNotify; picked: Iterable<string> },
+  cands: GroupCandidate[],
+): { params: { name: string; purpose?: string; notify: GroupNotify; members: GroupMemberRef[] } } | { error: string } {
+  const name = form.name.trim();
+  if (name === "") return { error: "Name the group." };
+  const picked = new Set(form.picked);
+  const members = cands.filter((c) => picked.has(candidateKey(c.ref))).map((c) => c.ref);
+  if (members.length > 32) return { error: "A group takes at most 32 agents at a time." };
+  const purpose = form.purpose.trim();
+  return { params: { name, ...(purpose ? { purpose } : {}), notify: form.notify, members } };
+}
+
+/**
+ * A group or teammate request that failed, in words the user can act on: an app built before
+ * them refuses the request itself ("unknown method"), and a daemon from before them answers
+ * `unsupported` too; both mean updating, as with connections.
+ */
+export function teamworkFailure(code: string | undefined, message: string): string {
+  if (code === "unsupported" && /^unknown method (group|focus|teammate)\./.test(message)) return "This Cophyla app is older than group chats and teammates: update it, or open it again after an update, then try again.";
+  if (code === "unsupported" && /(group|focus|teammate)\./.test(message)) return "Cophyla on this computer is older than group chats and teammates: update it, then try again.";
+  return message;
+}
+
+/** Why this view makes no teammate, when it does not: one that may not manage devices, or a node signed out of its account. */
+export function teamBlock(state: Pick<ViewState, "scopes" | "account">): string | undefined {
+  if (!state.scopes.includes("controllers")) return "This device may not manage teammates.";
+  if (state.account?.subject === undefined) return "Teammates need a Cophyla account: sign in under Devices → Account, then invite someone or enter their code.";
+  return undefined;
+}
+
+/** Whether `inner` is `outer` or inside it, on one machine, as that machine compares paths. */
+export function samePlaceOrUnder(inner: TeammatePlace, outer: TeammatePlace, platform?: Platform): boolean {
+  if (inner.node !== outer.node) return false;
+  const i = placeKey(inner.path, platform);
+  const o = placeKey(outer.path, platform);
+  return i === o || i.startsWith(o + "/");
+}
+
+/** Two places as one machine compares them. */
+export function sameFolder(a: TeammatePlace, b: TeammatePlace, platform?: Platform): boolean {
+  return a.node === b.node && placeKey(a.path, platform) === placeKey(b.path, platform);
+}
+
+/** A shared folder by name: its workspace's, else its last part; with its machine's where there are several. */
+export function placeName(state: Pick<ViewState, "workspaces" | "nodes" | "node">, place: TeammatePlace): string {
+  const platform = state.nodes.get(place.node)?.platform;
+  let name: string | undefined;
+  for (const w of state.workspaces.values()) if (sameFolder(w, place, platform)) name = w.name;
+  name ??= lastPart(place.path);
+  return state.nodes.size > 1 ? `${name} on ${machineName(state as ViewState, place.node)}` : name;
+}
+
+/** What one side shares, in words: which folders, how open, and how many wait shared closed. */
+export function teamShareWords(state: Pick<ViewState, "workspaces" | "nodes" | "node">, share: TeammateShare): string {
+  const names = share.folders.map((f) => placeName(state, f));
+  const what =
+    share.mode === "include" ? (names.length === 0 ? "nothing yet" : `${names.join(", ")}, and every folder under them`) : names.length === 0 ? "every workspace" : `every workspace but ${names.join(", ")}`;
+  const closed = share.closed?.length ?? 0;
+  return [what, share.open === "always" ? "always open" : "opened by hand", closed > 0 ? `${closed} shared closed` : ""].filter((w) => w !== "").join(" · ");
+}
+
+/** How long a code holds, in words: hours while there are some, then minutes. */
+export function holdWords(until: number, now: number): { words: string; expired: boolean } {
+  const left = until - now;
+  if (left <= 0) return { words: "ran out", expired: true };
+  const minutes = Math.ceil(left / 60_000);
+  return { words: minutes >= 60 ? `${Math.floor(minutes / 60)} h left` : `${minutes} min left`, expired: false };
+}
+
+/** A teammate as the Teammates page shows it. */
+export interface TeammateRow {
+  id: string;
+  state: "pending" | "active";
+  who: string;
+  /** What this side shares with them. */
+  share: string;
+  /** What they share with this side, once they said. */
+  theirs?: string;
+  words: string;
+  expired: boolean;
+}
+
+/** The teammates: the active ones by login, then the codes not used yet, newest first. */
+export function selectTeammates(state: Pick<ViewState, "teammates" | "workspaces" | "nodes" | "node">, now: number): TeammateRow[] {
+  const all = [...state.teammates.values()].filter((t) => t.state !== "ended");
+  const active = all.filter((t) => t.state === "active").sort((a, b) => (a.user ?? "").localeCompare(b.user ?? "") || (a.id < b.id ? -1 : 1));
+  const pending = all.filter((t) => t.state === "pending").sort((a, b) => b.createdAt - a.createdAt);
+  return [...active, ...pending].map((t): TeammateRow => {
+    if (t.state === "pending") {
+      const hold = t.expiresAt !== undefined ? holdWords(t.expiresAt, now) : { words: "", expired: false };
+      return { id: t.id, state: "pending", who: "A code not used yet", share: teamShareWords(state, t.share), words: hold.expired ? "the code ran out" : hold.words ? `the code holds, ${hold.words}` : "", expired: hold.expired };
+    }
+    const theirs = t.theirs ? `${t.theirs.workspaces.length === 0 ? "nothing yet" : t.theirs.workspaces.join(", ")} · ${t.theirs.open === "always" ? "always open" : "opened by hand"}` : undefined;
+    const words = [`${t.sent} sent, ${t.received} received`, t.queued ? `${t.queued} waiting` : ""].filter((w) => w !== "").join(" · ");
+    return { id: t.id, state: "active", who: t.user ?? "A teammate", share: teamShareWords(state, t.share), ...(theirs !== undefined ? { theirs } : {}), words, expired: false };
+  });
+}
+
+/** A workspace shared closed with a teammate: one that appeared after an exclude share, which their agents see none of until the user opens or excludes it. */
+export interface ClosedPlace {
+  key: string;
+  teammate: string;
+  login: string;
+  place: TeammatePlace;
+  words: string;
+}
+
+export function closedPlaces(state: Pick<ViewState, "teammates" | "workspaces" | "nodes" | "node">): ClosedPlace[] {
+  const out: ClosedPlace[] = [];
+  for (const t of state.teammates.values()) {
+    if (t.state !== "active") continue;
+    const login = t.user ?? "a teammate";
+    for (const place of t.share.closed ?? []) out.push({ key: `${t.id}\n${place.node}\n${place.path}`, teammate: t.id, login, place, words: `${placeName(state, place)} is shared closed with ${login}` });
+  }
+  return out.sort((a, b) => a.words.localeCompare(b.words));
+}
+
+/** A share with `place` open: off the closed list. */
+export function openPlace(share: TeammateShare, place: TeammatePlace, platform?: Platform): TeammateShare {
+  return { ...share, closed: (share.closed ?? []).filter((p) => !sameFolder(p, place, platform)) };
+}
+
+/** A share with `place` excluded: among the folders an exclude share names, and off the closed list. */
+export function excludePlace(share: TeammateShare, place: TeammatePlace, platform?: Platform): TeammateShare {
+  const folders = share.folders.some((f) => sameFolder(f, place, platform)) ? share.folders : [...share.folders, place];
+  return { ...share, mode: "exclude", folders, closed: (share.closed ?? []).filter((p) => !sameFolder(p, place, platform)) };
+}
+
+/** Whether a folder is in what a share shares at all: under one it names, or under none it excludes. */
+export function inShare(share: TeammateShare, folder: TeammatePlace, platform?: Platform): boolean {
+  const named = share.folders.some((f) => samePlaceOrUnder(folder, f, platform));
+  return share.mode === "include" ? named : !named;
+}
+
+/** A session's switch in its Connect panel for one teammate: whether it is open to them by hand now, and why it is asked. */
+export interface TeammateToggle {
+  teammate: string;
+  login: string;
+  on: boolean;
+  why: string;
+}
+
+/**
+ * The teammates a session may be opened to by hand: each active one whose share is opened by
+ * hand and holds the session's folder, or holds it shared closed.
+ */
+export function teammateToggles(state: Pick<ViewState, "teammates" | "workspaces" | "nodes">, s: Pick<Session, "id" | "node" | "cwd" | "workspace">): TeammateToggle[] {
+  const w = s.workspace ? state.workspaces.get(s.workspace) : undefined;
+  const folder = { node: s.node, path: w?.path ?? s.cwd };
+  const platform = state.nodes.get(s.node)?.platform;
+  const out: TeammateToggle[] = [];
+  for (const t of state.teammates.values()) {
+    if (t.state !== "active" || !t.user) continue;
+    const closed = (t.share.closed ?? []).some((p) => samePlaceOrUnder(folder, p, platform));
+    const chosen = t.share.open === "chosen" && inShare(t.share, folder, platform);
+    if (!closed && !chosen) continue;
+    out.push({ teammate: t.id, login: t.user, on: t.share.opened?.includes(s.id) === true, why: closed ? "its folder is shared closed with them" : "they see the agents you open to them" });
+  }
+  return out.sort((a, b) => a.login.localeCompare(b.login));
+}
+
+/**
+ * The share a form makes: the folders picked, each once, how open; a share being changed keeps
+ * the agents opened by hand, and (excluding) the closed folders it does not now exclude.
+ */
+export function buildShare(mode: TeammateShare["mode"], picked: TeammatePlace[], open: TeammateShare["open"], keep?: TeammateShare): TeammateShare {
+  const folders: TeammatePlace[] = [];
+  for (const p of picked) if (!folders.some((f) => sameFolder(f, p))) folders.push({ node: p.node, path: p.path });
+  const share: TeammateShare = { mode, folders, open };
+  if (keep?.opened && keep.opened.length > 0) share.opened = keep.opened;
+  if (mode === "exclude" && keep?.closed) {
+    const closed = keep.closed.filter((c) => !folders.some((f) => sameFolder(f, c)));
+    if (closed.length > 0) share.closed = closed;
+  }
+  return share;
+}
+
+/** A folder that holds a whole machine's projects: its home folder, or a drive's root. */
+export interface BroadPlace {
+  node: string;
+  path: string;
+  kind: "home" | "root";
+}
+
+/** The usual home folders, as `placeKey` writes them: `C:/Users/<name>`, `/home/<name>`, `/Users/<name>`, `/root`. */
+const USUAL_HOME = /^(?:[a-z]:\/users\/[^/]+|\/home\/[^/]+|\/users\/[^/]+|\/root)$/i;
+
+/**
+ * The folders an Include share names that open every project on a machine: its home folder or
+ * a drive's root (`C:\`, `/`), asked about before the share is sent. A machine's home and roots
+ * are known from its folder listing (`homes`, as New terminal's picker lists them); without
+ * one, the usual homes are taken for it. An Exclude share names what is kept back, so none.
+ */
+export function broadShares(share: Pick<TeammateShare, "mode" | "folders">, homes: ReadonlyMap<string, { home: string; roots?: string[] }>, platformOf: (node: string) => Platform | undefined = () => undefined): BroadPlace[] {
+  if (share.mode !== "include") return [];
+  const out: BroadPlace[] = [];
+  for (const f of share.folders) {
+    const platform = platformOf(f.node);
+    const key = placeKey(f.path, platform);
+    const known = homes.get(f.node);
+    const root = key === "" || /^[a-z]:$/i.test(key) || (known?.roots ?? []).some((r) => placeKey(r, platform) === key);
+    const home = known ? placeKey(known.home, platform) === key : USUAL_HOME.test(key);
+    if (root) out.push({ node: f.node, path: f.path, kind: "root" });
+    else if (home) out.push({ node: f.node, path: f.path, kind: "home" });
+  }
+  return out;
+}
+
+/** The question a broad share asks before it is sent, naming whom it is shared with (`login`; whoever uses the code without one). */
+export function broadWords(places: BroadPlace[], login: string | undefined, several = false, machine: (node: string) => string = () => ""): string {
+  const who = login ?? "whoever uses the code";
+  const on = (p: BroadPlace) => (several && machine(p.node) ? ` on ${machine(p.node)}` : "");
+  const named = places.map((p) => (p.kind === "home" ? `your whole home folder${on(p)}` : `all of ${p.path}${on(p)}`));
+  if (places.length === 1) return `Share ${named[0]} with ${who}? Every project ${places[0]!.kind === "home" ? "under" : "on"} it is open to them.`;
+  return `Share ${named.slice(0, -1).join(", ")} and ${named.at(-1)} with ${who}? Every project under them is open to them.`;
 }
