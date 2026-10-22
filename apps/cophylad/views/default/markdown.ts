@@ -4,8 +4,9 @@
 // HTML, so raw HTML in it shows as the text it is. GitHub's flavour (tables, task lists,
 // strikethrough, bare links), and a single newline is a line break, as a chat means it; in a
 // file the viewer shows, as in a README on GitHub, it is not. A
-// link is drawn as one with its address for a title, and goes nowhere: only a terminal's
-// links open (`host.openLink`). An image is its alt text, its title and address in its tooltip:
+// link is drawn as one with its address for a title; in a chat it goes nowhere, and in a file
+// it carries its address (`data-href`) and takes the focus, for the viewer to follow on a click
+// (fileview.ts). An image is its alt text, its title and address in its tooltip:
 // the frame has no network. A file's markdown may be given a hook that draws an image itself
 // (the viewer's, which reads one in the file's folder whole and draws it as data); what the
 // hook declines, an image on the web, stays its alt text. The top-level blocks are
@@ -34,6 +35,8 @@ export type ImageHook = (href: string, alt: string, title: string | null) => HTM
 
 /** The hook of the file being rendered, while it renders: the rendering is synchronous, so none leaks to another. */
 let imageHook: ImageHook | undefined;
+/** Whether the text being rendered is a file's, whose links the viewer follows: set while it renders, as the hook is. */
+let fileLinks = false;
 
 
 /** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill. */
@@ -93,6 +96,10 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
       case "link": {
         const a = inline(el("a", "md-link"), t.tokens);
         a.title = t.href;
+        if (fileLinks) {
+          a.dataset["href"] = t.href;
+          a.tabIndex = 0;
+        }
         parent.append(a);
         break;
       }
@@ -218,13 +225,14 @@ function renderMarkdown(container: HTMLElement, text: string, options: typeof OP
 /**
  * Sets a container's text: as markdown (class `md`) when a model wrote it, else as it was
  * typed, for `white-space: pre-wrap` to show. Text that marked cannot read is shown as typed.
- * A `file`'s markdown keeps a single newline inside its paragraph, and its images are drawn by
- * `image` when it is given one.
+ * A `file`'s markdown keeps a single newline inside its paragraph, its links carry where they
+ * go, and its images are drawn by `image` when it is given one.
  */
 export function renderText(container: HTMLElement, text: string, markdown: boolean, opts: { file?: boolean; image?: ImageHook } = {}): void {
   if (markdown && sources.get(container) === text) return;
   if (markdown) {
     imageHook = opts.file ? opts.image : undefined;
+    fileLinks = opts.file === true;
     try {
       renderMarkdown(container, text, opts.file ? FILE_OPTIONS : OPTIONS);
       container.classList.add("md");
@@ -233,6 +241,7 @@ export function renderText(container: HTMLElement, text: string, markdown: boole
       // Falls through to the text as typed.
     } finally {
       imageHook = undefined;
+      fileLinks = false;
     }
   }
   container.classList.remove("md");

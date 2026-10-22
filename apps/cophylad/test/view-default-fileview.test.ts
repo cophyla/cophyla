@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { FileText } from "@cophyla/protocol";
 import { VENDOR_DIR } from "../scripts/vendor-view.ts";
-import { bytesOf, FIND_MAX, fileErrorWords, fileLanguage, fileLines, findInLines, findWords, GRAMMARS, grammarName, imageKind, isHtml, isPdf, linesBetween, listedKind, pathsIn, readsWhole, relativeFile, relUnder, resolveRel, underListedFolder, VIEWER_WIDTH, viewerMeta, viewerNote, viewerTab, viewerWidth } from "../views/default/model.ts";
+import { bytesOf, FIND_MAX, fileErrorWords, fileLanguage, fileLines, findInLines, findWords, GRAMMARS, grammarName, headingAnchors, imageKind, isHtml, isPdf, linesBetween, listedKind, pathsIn, readsWhole, relativeFile, relUnder, resolveRel, underListedFolder, VIEWER_WIDTH, viewerMeta, viewerNote, viewerTab, viewerWidth } from "../views/default/model.ts";
 
 const file = (over: Partial<FileText>): FileText => ({ path: "src/main.py", size: 1200, modified: 1, text: "x", ...over });
 
@@ -232,6 +232,22 @@ describe("view default file viewer", () => {
     expect(resolveRel("docs/doc.md", "data:image/png;base64,AAAA")).toBeUndefined();
     expect(resolveRel("docs/doc.md", "C:/Windows/x.png")).toBeUndefined();
     expect(resolveRel("docs/doc.md", "#top")).toBeUndefined();
+  });
+
+  test("a markdown file's headings get GitHub's anchors: lower case, punctuation gone, spaces hyphens, repeats numbered", () => {
+    expect(headingAnchors(["Getting Started", "What's new?", "`tether` on PATH", "Café & Crème", "snake_case-ok", "Setup", "Setup", "Setup-1", "Setup", "🚀 Launch", ""])).toEqual([
+      "getting-started",
+      "whats-new",
+      "tether-on-path",
+      "café--crème",
+      "snake_case-ok",
+      "setup",
+      "setup-1",
+      "setup-1-1",
+      "setup-2",
+      "-launch",
+      "",
+    ]);
   });
 
   test("a search's matches by line, any case unless asked, the words taken as written; its count", () => {

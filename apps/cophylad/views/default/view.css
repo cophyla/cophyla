@@ -6608,6 +6608,15 @@ button:disabled {
   line-height: 1.55;
 }
 
+/* A file's link goes where it points on a click: to the browser, another file, a heading. */
+.viewer-md .md-link[data-href] {
+  cursor: pointer;
+}
+
+.viewer-md .md-link[data-href]:hover {
+  text-decoration-color: currentColor;
+}
+
 /* An image in the file's folder, drawn where the markdown puts it, no wider than the measure;
    a faint box holds its place while it is read. */
 .viewer-md .md-img {
