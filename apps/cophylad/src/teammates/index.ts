@@ -852,7 +852,7 @@ export class Teammates {
   linkUp(): void {
     this.retryMs = 30_000;
     for (const r of this.rows.list()) if (r.state === "active" && r.outbox.length > 0) void this.flushOutbox(r.id);
-    void this.deps.groups()?.sweep();
+    this.deps.groups()?.catchUpAll();
   }
 
   /**

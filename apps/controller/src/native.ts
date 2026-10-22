@@ -196,6 +196,11 @@ const app = boot({
         void signedIn(grant);
         return;
       }
+      // a tag in a group chat: the app comes back, and the group shows its unread posts
+      if (url.startsWith("cophyla://group/")) {
+        a.io.resume();
+        return;
+      }
       if (push.onLink(url)) a.io.resume();
     };
     void CapApp.addListener("appUrlOpen", (e) => onUrl(e.url));

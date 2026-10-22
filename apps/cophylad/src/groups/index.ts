@@ -55,7 +55,8 @@ const GATHER_MS = 5_000;
 const GATHER_MAX = 30;
 const GATHER_CHARS = 14_000;
 const SWEEP_MS = 30_000;
-/** How long a teammate's open agents are kept once asked for. */
+/** How often a group with other sides asks them for what it may have missed, besides at a link's return and at a gap. */
+const CATCH_UP_MS = 10 * 60_000;
 const NAME_CHARS = 80;
 const PURPOSE_CHARS = 300;
 
@@ -133,6 +134,8 @@ export class Groups {
   /** Sessions as last seen, for their ends and returns. */
   private lastStatus = new Map<string, string>();
   private syncing = new Set<string>();
+  /** When each group last asked the other sides for what it missed. */
+  private lastCatchUp = new Map<string, number>();
 
   constructor(deps: GroupsDeps) {
     this.deps = deps;
@@ -441,7 +444,13 @@ export class Groups {
       sides: {},
     };
     this.rows.put(g);
-    if (p.members.length > 0) await this.addMembers(g.id, p.members, { quiet: true });
+    try {
+      if (p.members.length > 0) await this.addMembers(g.id, p.members, { quiet: true });
+    } catch (e) {
+      // an agent it could not take: no group is left half made
+      this.rows.delete(g.id);
+      throw e;
+    }
     const made = this.must(g.id);
     this.emit(made);
     this.log.info("group made", { id: g.id, members: made.members.length });
@@ -1156,7 +1165,11 @@ export class Groups {
         if (!s || !plainIdle(s) || this.deps.focus.get(s.id)) continue;
         await this.notice(g.id, m.key, m.noticeAt, true);
       }
-      if (Object.keys(g.sides).length > 0) void this.catchUp(g.id);
+      // a side that missed an entry asks at once (a gap); this is the slow net under that
+      if (Object.keys(g.sides).length > 0 && now - (this.lastCatchUp.get(g.id) ?? 0) >= CATCH_UP_MS) {
+        this.lastCatchUp.set(g.id, now);
+        void this.catchUp(g.id);
+      }
     }
   }
 
@@ -1232,13 +1245,21 @@ export class Groups {
         posts: page.posts.map((p) => this.entryPost(g, p)),
       },
     };
-    // a snapshot goes to the new side alone; the others learn of its members from it in turn
+    // every side gets it: the new side takes the group in, the others take its new members
     g.seq++;
     this.rows.put(g);
     this.rows.putEntry(g.id, g.seq, entry, this.now());
-    for (const [o, side] of Object.entries(g.sides)) {
-      const e: GroupEntry = o === owner ? entry : { kind: "member.add", member: this.entryMember(g, g.members.find((m) => m.kind === "person" && m.owner === owner)!) };
-      void this.deps.teams?.()?.send(side.teammate, g.id, g.seq, e, this.now()).catch(() => undefined);
+    for (const side of Object.values(g.sides)) void this.deps.teams?.()?.send(side.teammate, g.id, g.seq, entry, this.now()).catch(() => undefined);
+  }
+
+  /** The link to the server came back: every group with other sides asks them for what it missed. */
+  catchUpAll(): void {
+    if (!this.deps.routes()) return;
+    const now = this.now();
+    for (const g of this.all()) {
+      if (Object.keys(g.sides).length === 0) continue;
+      this.lastCatchUp.set(g.id, now);
+      void this.catchUp(g.id);
     }
   }
 

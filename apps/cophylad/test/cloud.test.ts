@@ -385,8 +385,9 @@ describe("cloud", () => {
     await d.llm.complete(ask("x"));
     d.bus.emit("session.state", { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", node: d.identity.id, harness: "claude", profile: "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", native: { id: "x", transport: "pipe" }, origin: "user", cwd: ".", tags: [], status: "idle", startedAt: 1, lastActivity: 1 } as never);
     await sleep(200);
-    // the hosted capabilities, the entitlement, since milestone 12 the registry, the relay and push, since 13 the backup: never a session, a metric or a chat
-    const allowed = new Set(["auth", "entitlement.refresh", "llm.complete", "stt.transcribe", "stt.stream", "stt.audio", "stt.end", "tts.speak", "cancel", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.open", "relay", "relay.close", "push.register", "push.unregister", "push.send", "backup.status"]);
+    // the hosted capabilities, the entitlement, since milestone 12 the registry, the relay and push, since 13 the backup, since
+    // the teammates the server's word on the account's own login: never a session, a metric or a chat
+    const allowed = new Set(["auth", "entitlement.refresh", "llm.complete", "stt.transcribe", "stt.stream", "stt.audio", "stt.end", "tts.speak", "cancel", "registry.register", "registry.heartbeat", "registry.claim", "relay.grant", "relay.revoke", "relay.open", "relay", "relay.close", "push.register", "push.unregister", "push.send", "backup.status", "identity.attest"]);
     expect([...new Set(fake.seen)].filter((m) => !allowed.has(m))).toEqual([]);
     // a signed-in primary registered itself and was granted the role
     expect(fake.seen).toContain("registry.register");
