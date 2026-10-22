@@ -218,6 +218,11 @@ export const HarnessProfile = z.object({
    * account ids, never the ids. Absent for a key, Muse, or no login.
    */
   account: z.string().optional(),
+  /**
+   * The login's own name for it, its email, so the user can tell accounts apart: set only
+   * where the node allows it (`[accounts] show_email`), which is off by default.
+   */
+  accountLabel: z.string().optional(),
 });
 export type HarnessProfile = z.infer<typeof HarnessProfile>;
 

@@ -77,6 +77,7 @@
       "defaultBy": "recent",
       "automatic": "recent",
       "status": "ok",
+      "accountLabel": "me@example.com",
       "launch": { "mode": "auto", "args": ["--settings", "C:\\Users\\me\\.claude\\settings.json"], "source": "mirrored", "at": 1758196000000 }
     },
     {
