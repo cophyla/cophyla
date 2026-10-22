@@ -17,6 +17,7 @@ import {
   ProfileId,
   SessionId,
   TaskId,
+  TeammateConnectionId,
   TeammateId,
   ThreadId,
   Timestamp,
@@ -538,6 +539,42 @@ export const TeammateState = z.enum(["pending", "active", "ended"]);
 export type TeammateState = z.infer<typeof TeammateState>;
 
 /**
+ * Where a connection between two teammates' agents stands: `asked` while the side whose agent
+ * was closed asks its user; `active` once both agents may message each other; `declined` kept a
+ * day, so the asking side sees it and the asked side is not asked again for that day. An ended
+ * one is dropped, and said once in the teammate's next notice.
+ */
+export const TeammateConnectionState = z.enum(["asked", "active", "declined"]);
+export type TeammateConnectionState = z.infer<typeof TeammateConnectionState>;
+
+/** The other side's agent in a teammate connection: its session on their side, its alias there, its harness and its workspace's name. */
+export const TeammateConnectionAgent = z.object({
+  session: SessionId,
+  name: z.string().min(1).max(120),
+  harness: HarnessKind.optional(),
+  workspace: z.string().max(200).optional(),
+});
+export type TeammateConnectionAgent = z.infer<typeof TeammateConnectionAgent>;
+
+/**
+ * One agent of this side's joined to one of a teammate's, so the two message each other both
+ * ways and no other agent is let in. `session` is this side's agent; `agent` theirs. `by`: which
+ * side made it, or asked for it. An ask runs out at `expiresAt`, a decline is forgotten then.
+ */
+export const TeammateConnection = z.object({
+  id: TeammateConnectionId,
+  state: TeammateConnectionState,
+  session: SessionId,
+  agent: TeammateConnectionAgent,
+  by: z.enum(["us", "them"]),
+  createdAt: Timestamp,
+  expiresAt: Timestamp.optional(),
+  activeAt: Timestamp.optional(),
+  reason: z.string().max(300).optional(),
+});
+export type TeammateConnection = z.infer<typeof TeammateConnection>;
+
+/**
  * Another Cophyla user made a teammate: a standing link between the two accounts' primaries,
  * through which each side's agents reach the other's in the folders they share. `user` is
  * their GitHub login, as the server vouched (absent while the code waits). A pending one's code
@@ -558,14 +595,17 @@ export const Teammate = z.object({
   sent: z.number().int().nonnegative(),
   received: z.number().int().nonnegative(),
   queued: z.number().int().nonnegative().optional(),
+  /** This side's agents joined to one of theirs, asked for, or declined lately. */
+  connections: z.array(TeammateConnection).max(500).optional(),
   reason: z.string().optional(),
 });
 export type Teammate = z.infer<typeof Teammate>;
 
 /**
- * An open agent of a teammate's, as `list_agents` gives it: the name to send to
- * (`<user>/<name>`), its harness, the name of its workspace (never a path or a machine), how it
- * stands, what it is for and its focus, as their Cophyla last said.
+ * An open agent of a teammate's, or one connected to the caller, as `list_agents` gives it: the
+ * name to send to (`<user>/<name>`), its harness, the name of its workspace (never a path or a
+ * machine), how it stands, what it is for and its focus, as their Cophyla last said.
+ * `connected`: a teammate connection joins it to the caller.
  */
 export const TeammateListing = z.object({
   teammate: TeammateId,
@@ -577,6 +617,7 @@ export const TeammateListing = z.object({
   status: SessionStatus.optional(),
   intent: z.string().max(300).optional(),
   focus: Focus.optional(),
+  connected: z.boolean().optional(),
 });
 export type TeammateListing = z.infer<typeof TeammateListing>;
 
@@ -1815,6 +1856,7 @@ export const entities = {
   ConnectionState,
   Focus,
   Teammate,
+  TeammateConnection,
   TeammateShare,
   TeammatePlace,
   TeammateTheirs,
