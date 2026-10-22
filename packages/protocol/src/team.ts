@@ -24,6 +24,8 @@ export const GROUP_POST_MAX_CHARS = 16_000;
 
 /** An open agent as its own side tells the other: its name there, its harness, its workspace's name, how it stands, what it is for, its focus. */
 export const TeamAgent = z.object({
+  /** Its session record, which a group chat keeps it by on every side. */
+  session: SessionId.optional(),
   name: z.string().min(1).max(120),
   harness: HarnessKind.optional(),
   workspace: z.string().max(200).optional(),
@@ -55,6 +57,8 @@ export const GroupEntryMember = z.discriminatedUnion("kind", [
     addedAt: Timestamp,
     gone: z.boolean().optional(),
     focus: Focus.optional(),
+    /** When its row last changed, by its writer's clock. */
+    at: Timestamp.optional(),
   }),
   z.object({ kind: z.literal("person"), key: z.string().min(1).max(120), owner: z.string().min(1).max(120), user: z.string().min(1).max(64) }),
 ]);
@@ -84,6 +88,8 @@ export const GroupSnapshot = z.object({
   by: z.string().min(1).max(64),
   notify: GroupNotify,
   createdAt: Timestamp,
+  /** When its name, purpose or setting last changed. */
+  updatedAt: Timestamp.optional(),
   ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
   members: z.array(GroupEntryMember).max(64),
   posts: z.array(GroupEntryPost).max(200),
@@ -143,15 +149,19 @@ export const teammateLinkRequests = {
   "team.notice": { params: z.object({ about: AgentMessageId, why: z.string().min(1).max(300) }), result: z.object({}) },
   /** The sending side ended the teammate. */
   "team.end": { params: z.object({ reason: z.string().min(1).max(200) }), result: z.object({}) },
-  /** One entry of the sending side's log for a group both are in, in order; a gap is answered `conflict`, and the receiver syncs. */
+  /**
+   * One entry of the sending side's log for a group both are in, in order, with when it was
+   * written by the writer's clock (of two changes to one thing, the later stands). A gap is
+   * answered `conflict`, and the receiver catches up with `team.group.sync`.
+   */
   "team.group": {
-    params: z.object({ group: GroupId, seq: z.number().int().positive(), entry: GroupEntry }),
+    params: z.object({ group: GroupId, seq: z.number().int().positive(), entry: GroupEntry, at: Timestamp }),
     result: z.object({}),
   },
   /** This side's entries for a group after `after`, in order, at most two hundred at a time. */
   "team.group.sync": {
     params: z.object({ group: GroupId, after: z.number().int().nonnegative() }),
-    result: z.object({ entries: z.array(z.object({ seq: z.number().int().positive(), entry: GroupEntry })).max(200), more: z.boolean().optional() }),
+    result: z.object({ entries: z.array(z.object({ seq: z.number().int().positive(), entry: GroupEntry, at: Timestamp })).max(200), more: z.boolean().optional() }),
   },
 } as const;
 

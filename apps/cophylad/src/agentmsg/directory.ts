@@ -12,7 +12,7 @@
 // agent's message. Nor does a node whose row does not say it runs agent messaging: one turned
 // off, or an older version, which could not deliver what is sent.
 
-import type { AgentListing, AgentRef, ConnectionListing, MachineListing, NodeRecord, Session } from "@cophyla/protocol";
+import type { AgentListing, AgentRef, ConnectionListing, Focus, MachineListing, NodeRecord, Session, TeammateListing } from "@cophyla/protocol";
 
 /** A session with the machine it runs on, as the directory holds it. */
 export interface DirectoryEntry {
@@ -151,21 +151,40 @@ export function machinesText(machines: MachineListing[], here?: string): string 
   return named.length === 0 ? undefined : `Machines (send_file with to set to the name): ${named.join(", ")}.`;
 }
 
-/** The directory as the model reads it: one line a session, then the other people's agents this session is connected to, then the user's machines. */
-export function listingText(rows: AgentListing[], connections: ConnectionListing[] = [], machines: MachineListing[] = [], here?: string): string {
-  const text = agentsText(rows, connections);
+/** The directory as the model reads it: one line a session, then the teammates' open agents, then the other people's agents this session is connected to, then the user's machines. */
+export function listingText(rows: AgentListing[], connections: ConnectionListing[] = [], machines: MachineListing[] = [], here?: string, teammates: TeammateListing[] = [], now = Date.now()): string {
+  let text = agentsText(rows, connections, now);
+  const t = teammatesText(teammates, now);
+  if (t) text = `${text}\n\n${t}`;
   const m = machinesText(machines, here);
   return m ? `${text}\n\n${m}` : text;
 }
 
-function agentsText(rows: AgentListing[], connections: ConnectionListing[]): string {
+/** An agent in focus, as another agent reads it: for how long and why. */
+export function focusWords(f: Focus, now: number): string {
+  const m = Math.max(1, Math.round((f.until - now) / 60_000));
+  return `in focus for ${m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`} more (${f.reason}): what you send waits for it`;
+}
+
+/** A teammate's open agents, as the model reads them. */
+function teammatesText(rows: TeammateListing[], now: number): string | undefined {
+  if (rows.length === 0) return undefined;
+  const words: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "an ACP agent" };
+  const lines = rows.map((r) => {
+    const what = [r.harness ? (words[r.harness] ?? r.harness) : "an agent", r.workspace ? `in ${r.workspace}` : undefined, r.focus ? focusWords(r.focus, now) : r.status ? r.status.replace("_", " ") : undefined].filter(Boolean).join(", ");
+    return `- ${r.alias}: ${r.user}'s ${what}${r.intent ? `. ${r.intent}` : ""}`;
+  });
+  return `Your user's teammates' agents open to you (external: they work for someone else; send_message with to set to the name):\n${lines.join("\n")}`;
+}
+
+function agentsText(rows: AgentListing[], connections: ConnectionListing[], now: number): string {
   const words: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "an ACP agent" };
   const own =
     rows.length === 0
       ? "No other agent session is running that you can message."
       : `${rows.length === 1 ? "One agent session" : `${rows.length} agent sessions`} you can message (send_message with to set to the name):\n${rows
           .map((r) => {
-            const state = r.status === "idle" && r.waiting ? `idle, waiting on ${r.waiting.on === "shell" ? "its shells" : "its user"}` : r.status.replace("_", " ");
+            const state = r.focus ? focusWords(r.focus, now) : r.status === "idle" && r.waiting ? `idle, waiting on ${r.waiting.on === "shell" ? "its shells" : "its user"}` : r.status.replace("_", " ");
             return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${r.intent ? `. ${r.intent}` : ""}`;
           })
           .join("\n")}`;

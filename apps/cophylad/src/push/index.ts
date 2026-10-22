@@ -194,6 +194,40 @@ export class Push {
     }
   }
 
+  // --- a tag of the user in a group chat -------------------------------------------------------
+
+  /**
+   * A tag of the user in a group chat reaches the phones that have nothing open here and whose
+   * access reaches the groups (a whole account's: a group spans workspaces). Server 0.9.0 takes
+   * it; an older server refuses the kind, which is logged once and changes nothing.
+   */
+  mention(group: string, name: string, from: string, text: string): void {
+    if (!this.deps.config.enabled) return;
+    const why = this.deps.cloud.hostedAllowed("push");
+    if (why) {
+      this.skipped(why.message);
+      return;
+    }
+    const targets = this.deps.grants
+      .withPush()
+      .filter((c) => this.deps.clients.byController(c.id).length === 0)
+      .filter((c) => c.access.scopes.includes("sessions:read") && allowsNotification(c.access, "group.posted", { group, post: {} } as never, this.deps.clients.look));
+    if (targets.length === 0) return;
+    const title = oneLine(`#${name}`, MAX_TITLE);
+    const body = oneLine(`${from}: ${text}`, MAX_DETAIL);
+    for (const t of targets) {
+      void this.deps.cloud
+        .pushRequest("push.send", { title, body, peer: t.id, kind: "mention", mention: { group, name: oneLine(name, 80), from: oneLine(from, 200), text: oneLine(text, 300), node: this.deps.nodeId } })
+        .then(() => this.log.info("push sent", { peer: t.id, kind: "mention", group }))
+        .catch((e: unknown) => {
+          const last = this.failedAt.get(t.id) ?? 0;
+          if (this.now() - last < FAILURE_LOG_MS) return;
+          this.failedAt.set(t.id, this.now());
+          this.log.info("a tag's push was not sent (a server before 0.9.0 takes none)", { peer: t.id, error: e instanceof Error ? e.message : String(e) });
+        });
+    }
+  }
+
   /** For the tests: the peers an ask was pushed to. */
   pushedTo(askId: string): string[] {
     return [...(this.pushed.get(askId) ?? [])];

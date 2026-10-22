@@ -73,6 +73,14 @@ export interface BusEvents {
   "terminal.state": Terminal;
   /** A connection to another user's terminal was made, used, changed end or ended. */
   "connection.state": Connection;
+  /** A group chat was made or changed, or this side's copy went (`left`). */
+  "group.state": ClientNotificationParams<"group.state">;
+  /** A post in a group chat, new or changed. */
+  "group.posted": ClientNotificationParams<"group.posted">;
+  /** An agent took focus, or came out of it. */
+  "focus.state": ClientNotificationParams<"focus.state">;
+  /** A teammate was made, used, changed or ended. */
+  "teammate.state": ClientNotificationParams<"teammate.state">;
   /** A transfer this machine receives changed, or one a linked node receives, carried up; `dismissed` its last row. */
   "transfer.state": Transfer;
   "workspace.state": Workspace;

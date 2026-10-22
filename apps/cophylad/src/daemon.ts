@@ -10,7 +10,7 @@
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { newId, RpcError } from "@cophyla/protocol";
-import type { Client, Node, PairedLan, RelayAccess, Transfer } from "@cophyla/protocol";
+import type { AgentMode, Client, Node, PairedLan, RelayAccess, Session, Transfer } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
 import { accountMethods, assistantMethods, attachMethods, backupMethods, brainContextMethods, chatMethods, chatSignals, eventMethods, fileMethods, foundationMethods, listenerMethods, metricsMethods, pairAsk, pairingMethods, pipeSignals, remoteMethods, taskMethods, terminalMethods, terminalSignals, updateMethods, viewMethods, viewStageMethods, voiceMethods, voiceSignals } from "./api/methods.ts";
@@ -102,6 +102,12 @@ import { locateMcp, stageMcp } from "./agentmsg/locate.ts";
 import { agentMethods } from "./agentmsg/methods.ts";
 import { Connections } from "./connections/index.ts";
 import { connectionMethods } from "./connections/methods.ts";
+import { Focuses } from "./agentmsg/focus.ts";
+import { peerAlias } from "./agentmsg/envelope.ts";
+import type { EnvelopeInfo } from "./agentmsg/envelope.ts";
+import { Groups } from "./groups/index.ts";
+import { groupMethods } from "./groups/methods.ts";
+import { SelfLogin } from "./teammates/login.ts";
 import { Transfers } from "./transfers/index.ts";
 import { transferMethods } from "./transfers/methods.ts";
 import { openSource } from "./transfers/source.ts";
@@ -294,6 +300,10 @@ export interface Daemon {
   agentMessages: AgentMessages;
   /** Connections between this user's terminals and other users'. */
   connections: Connections;
+  /** The agents in focus, and what waits for each. */
+  focus: Focuses;
+  /** The group chats. */
+  groups: Groups;
   views: Views;
   chat: Chat;
   activity: Activity;
@@ -1154,6 +1164,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("agentmsg"),
     version: PLATFORM_VERSION,
     connections: () => connections,
+    focus: () => focusLive,
+    groups: () => groupsLive,
     files: () => agentFiles,
     asks,
     ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
@@ -1326,6 +1338,59 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     send: (id, method, params) => (id.startsWith(LINK_VIEWER) ? (nodes?.linkViewers.send(id.slice(LINK_VIEWER.length), params) ?? false) : clients.send(id, method, params)),
   };
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
+  // Delivery into a session wherever it is, past focus: here, or forwarded to its node.
+  const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode }): Promise<{ status: "queued" | "held" }> => {
+    if (s.node === identity.id) return agentMessages.deliverHere(s.id, text, info);
+    return (await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" };
+  };
+  const knownSessions = (): Session[] => {
+    const own = sessions.list();
+    const ids = new Set(own.map((s) => s.id));
+    return [...own, ...forwardHost.mirrorSessions().filter((s) => !ids.has(s.id))];
+  };
+  const routesHere = () => nodes!.roleOf() === "primary" || nodes!.member() === undefined;
+  // The user's own GitHub login, from the server's word on this account, for their name in group chats and to teammates.
+  const selfLogin = new SelfLogin({ store, log: log.child("account"), account: () => cloud.account, attest: (aud) => cloud.attest(aud), verify: (token, aud) => cloud.verifyIdentity(token, aud) });
+  const offSelfLogin = cloud.onUp(() => void selfLogin.refresh());
+  // Focus: an agent out of reach of other agents for an hour or two, or until its turn ends; kept by the primary.
+  const focusLive = new Focuses({
+    store,
+    bus,
+    log: log.child("focus"),
+    routes: routesHere,
+    sessions: knownSessions,
+    deliver: (s, text, info) => deliverAnywhere(s, text, info),
+    linked: (n) => n === identity.id || forwardHost.linked(n),
+    ended: (session, told) => groupsLive.focusEnded(session, told),
+  });
+  focusLive.start();
+  // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
+  const groupsLive: Groups = new Groups({
+    store,
+    bus,
+    log: log.child("groups"),
+    gate,
+    routes: routesHere,
+    me: () => ({ owner: cloud.account ?? "me", user: selfLogin.login() ?? "you" }),
+    sessions: knownSessions,
+    names: () => agentMessages.agentNames(),
+    nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),
+    place: (s) => {
+      const w = s.workspace ? workspaces.getAny(s.workspace) : undefined;
+      return w ? { workspace: w.name, path: w.path } : { path: s.cwd };
+    },
+    deliver: (s, text, info) => deliverAnywhere(s, text, info),
+    holds: (s) => {
+      if (s.harness !== "claude") return false;
+      if (s.node === identity.id) return sessions.bypasses(s.id) === true && !sessions.acceptsInbound(s.id);
+      const row = forwardHost.registryList().find((x) => x.id === s.node);
+      return s.mode === "bypassPermissions" && row?.capabilities.agents?.acceptInBypass !== true;
+    },
+    linked: (n) => n === identity.id || forwardHost.linked(n),
+    focus: focusLive,
+    push: (m) => push.mention(m.group.id, m.group.name, m.from, m.text),
+  });
+  groupsLive.start();
   // Connections to other users' terminals, kept by the primary: the agents in two terminals of
   // two users message each other through the relay, and reach nothing else.
   const connectionsLive = new Connections({
@@ -1345,16 +1410,13 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       attest: (aud) => cloud.attest(aud),
       verifyIdentity: (token, aud) => cloud.verifyIdentity(token, aud),
     },
-    sessions: () => {
-      const own = sessions.list();
-      const ids = new Set(own.map((s) => s.id));
-      return [...own, ...forwardHost.mirrorSessions().filter((s) => !ids.has(s.id))];
-    },
+    sessions: knownSessions,
     // this node's own as its records say; another node's as its row says, which tells a Claude session in bypass
     bypasses: (s) => (s.node === identity.id ? sessions.bypasses(s.id) === true : s.mode === "bypassPermissions"),
+    // another person's agent's message waits for an agent in focus, as everyone else's does
     deliver: async (s, text, info) => {
-      if (s.node === identity.id) return agentMessages.deliverHere(s.id, text, info);
-      return (await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" };
+      if (info.peer && focusLive.hold(s, text, info, peerAlias(info.peer))) return { status: "held" as const };
+      return deliverAnywhere(s, text, info);
     },
     linked: (n) => n === identity.id || forwardHost.linked(n),
     terminals: (n) => (n === identity.id ? terminalRows?.list() : forwardHost.linked(n) ? forwardHost.mirrorTerminals().filter((t) => t.node === n) : undefined),
@@ -1500,6 +1562,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...directMethods({ direct, clients: directClients }),
     ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
     ...connectionMethods({ connections: () => connections }),
+    ...groupMethods({ groups: () => (routesHere() ? groupsLive : undefined), focus: () => (routesHere() ? focusLive : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
   }, forwardHost);
@@ -1763,6 +1826,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     sessions,
     agentMessages,
     connections: connectionsLive,
+    focus: focusLive,
+    groups: groupsLive,
     views,
     chat,
     activity,
@@ -1812,6 +1877,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       push.dispose();
       offConnectionsUp();
       connectionsLive.stop();
+      offSelfLogin();
+      groupsLive.stop();
+      focusLive.stop();
       await cloud.stop();
       metrics.dispose();
       update.dispose();

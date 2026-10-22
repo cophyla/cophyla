@@ -32,5 +32,36 @@ export const CONNECTIONS_KV_NS = "connections";
 /** Which of the user's own sessions the node connects to (see `sessions/scope.ts`): the user's word alone. */
 export const SESSION_SCOPE_NS = "sessions.scope";
 
+/**
+ * The group chats (see `groups/`): each group's row, and its posts under `groups.posts`, one key
+ * per post. Replicated to the backups; never the brain's, never in the cloud backup, since a
+ * group holds other people's words once teammates are in it.
+ */
+export const GROUPS_KV_NS = "groups";
+export const GROUP_POSTS_KV_NS = "groups.posts";
+/** Each group's log of what this side's people and agents did, which teammates catch up from. */
+export const GROUP_LOG_KV_NS = "groups.log";
+
+/** The agents in focus and what waits for each (see `agentmsg/focus.ts`). */
+export const FOCUS_KV_NS = "focus";
+
+/** The teammates (see `teammates/`): their keys, relay tokens, what each side shares, and messages waiting. */
+export const TEAMMATES_KV_NS = "teammates";
+
 /** The namespaces no store request of the brain may read or write. */
-export const RESERVED_KV_NS: readonly string[] = [GRANTS_NS, LOCAL_GRANTS_NS, CLUSTER_NS, LEGACY_CONTROLLERS_NS, LISTENERS_NS, VOICE_ORIGINS_NS, ASSISTANT_NS, CONNECTIONS_KV_NS, SESSION_SCOPE_NS];
+export const RESERVED_KV_NS: readonly string[] = [
+  GRANTS_NS,
+  LOCAL_GRANTS_NS,
+  CLUSTER_NS,
+  LEGACY_CONTROLLERS_NS,
+  LISTENERS_NS,
+  VOICE_ORIGINS_NS,
+  ASSISTANT_NS,
+  CONNECTIONS_KV_NS,
+  SESSION_SCOPE_NS,
+  GROUPS_KV_NS,
+  GROUP_POSTS_KV_NS,
+  GROUP_LOG_KV_NS,
+  FOCUS_KV_NS,
+  TEAMMATES_KV_NS,
+];

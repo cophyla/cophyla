@@ -301,7 +301,7 @@ describe("the router", () => {
     expect(init.result).toMatchObject({ protocolVersion: "2025-11-25", serverInfo: { name: "cophyla-agents" }, capabilities: { tools: {} } });
     expect(init.result.instructions).toContain("never the user's");
     const list = (await r.router.mcp({}, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection"]);
+    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus"]);
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: 2, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 2, result: {} });
     expect(await r.router.mcp({}, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: "d", method: "server/discover" })).toEqual({ jsonrpc: "2.0", id: "d", error: { code: -32601, message: "method not found: server/discover" } });

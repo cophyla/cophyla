@@ -17,9 +17,10 @@
 // notice in the same envelope, from cophyla, so it never waits for an answer that will not come.
 
 import { posix, win32 } from "node:path";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, MachineListing, NodeRecord, Session, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
+import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, Session, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { Connections } from "../connections/index.ts";
+import type { Groups } from "../groups/index.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
@@ -30,6 +31,8 @@ import type { CallerLookup, Evidence } from "./caller.ts";
 import { agentRef, directory, eligible, folderOf, listing, listingText, resolve, slug } from "./directory.ts";
 import type { Directory, DirectoryEntry } from "./directory.ts";
 import type { EnvelopeInfo } from "./envelope.ts";
+import { clockTime, minutesLeft } from "./focus.ts";
+import type { Focuses } from "./focus.ts";
 import { Limits } from "./limits.ts";
 import type { LimitsConfig } from "./limits.ts";
 
@@ -82,6 +85,12 @@ export interface AgentMessagesDeps {
   accept?: (on: boolean) => void;
   /** The connections to other users' terminals, on the node that routes. */
   connections?: () => Connections | undefined;
+  /** The agents in focus, on the node that routes. */
+  focus?: () => Focuses | undefined;
+  /** The group chats, on the node that routes. */
+  groups?: () => Groups | undefined;
+  /** The teammates' agents, on the node that routes. */
+  teammates?: () => AgentTeammates | undefined;
   /** Sending files for an agent (`send_file`), on the node that routes. */
   files?: () => AgentFiles | undefined;
   /** For what only the user answers, never remembered: a big transfer through the relay. */
@@ -101,6 +110,16 @@ export interface AgentFiles {
   ended(id: string): Promise<Transfer>;
 }
 
+/** What the router needs of the teammates: their open agents as a session lists them, and a message to one. */
+export interface AgentTeammates {
+  /** The teammates' agents open to `caller` now, as their sides last said. */
+  listing(caller: Session): Promise<TeammateListing[]>;
+  /** Whether `to` names a teammate's agent: `<login>/<name>` with a teammate's login, or a `tm_` id. */
+  names(to: string): boolean;
+  /** A message from `caller` to a teammate's agent. */
+  send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }): Promise<{ status: "sent" | "held" | "queued" | "focus"; id: string; teammate: string; alias: string; focus?: Focus }>;
+}
+
 /** Where a `send_file` goes: a machine, and the agent session there it is for, when it is. */
 interface Receiver {
   node: string;
@@ -116,16 +135,20 @@ interface Receiver {
  * is reached (`queued`) or until an agent runs in its terminal (`waiting`).
  */
 export interface SendAnswer {
-  status: "sent" | "held" | "pending" | "queued" | "waiting";
+  status: "sent" | "held" | "pending" | "queued" | "waiting" | "focus";
   id: string;
   to?: AgentRef;
-  /** A message on a connection: to another user's agent. */
-  peer?: { connection: string; alias: string };
+  /** A message to another user's agent: on a connection, or a teammate's. */
+  peer?: { connection?: string; teammate?: string; alias: string };
   ask?: string;
+  /** The receiver's focus, while it holds the message. */
+  focus?: Focus;
 }
 
 /** The connection tools, which a secondary's sessions call through the primary. */
 const CONNECTION_TOOLS = new Set(["create_invite", "accept_invite", "end_connection"]);
+/** The group tools and focus, which live on the primary too. */
+const GROUP_TOOL_NAMES = new Set<string>(GROUP_TOOLS);
 
 /** A send's text as the audit row and an ask keep it. */
 const AUDIT_TEXT = 2000;
@@ -206,7 +229,7 @@ export class AgentMessages {
 
   /** A tool call, as the model reads its answer. */
   private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<{ text: string; isError?: boolean }> {
-    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && !CONNECTION_TOOLS.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
+    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
     if (!this.deps.config().enabled) return { text: "Agent messaging is off on this machine ([agent_messages] enabled = false); nothing was sent.", isError: true };
     const who = identify(evidence, meta, this.deps.sessions);
     if ("error" in who) {
@@ -222,10 +245,14 @@ export class AgentMessages {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.fileTool(caller, mode, args);
     }
+    if (GROUP_TOOL_NAMES.has(name)) {
+      const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
+      return this.groupTool(caller, mode, name as GroupToolName, args);
+    }
     try {
       if (name === "list_agents") {
         const listed = await this.listFrom(caller);
-        return { text: listingText(listed.agents, listed.connections, listed.machines, caller.node) };
+        return { text: listingText(listed.agents, listed.connections, listed.machines, caller.node, listed.teammates, this.now()) };
       }
       const to = typeof args["to"] === "string" ? args["to"].trim() : "";
       const text = typeof args["text"] === "string" ? args["text"] : "";
@@ -235,17 +262,65 @@ export class AgentMessages {
       if (replyTo !== undefined && replyTo !== "" && !AgentMessageId.safeParse(replyTo).success) return { text: "reply_to is the id (pmsg_…) of the message you are answering, from its envelope.", isError: true };
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       const answer = await this.sendFrom(caller, mode, { to, text, ...(typeof replyTo === "string" && replyTo !== "" ? { replyTo } : {}) });
-      return { text: answerText(answer) };
+      return { text: answerText(answer, this.now()) };
     } catch (e) {
       return { text: refusalText(e), isError: true };
     }
   }
 
-  /** The directory as `caller` sees it, its connections to other users' agents, and the user's machines, from here or from the primary. */
-  private async listFrom(caller: Session): Promise<{ agents: AgentListing[]; connections: ConnectionListing[]; machines: MachineListing[] }> {
-    if (this.deps.cluster.routes()) return { agents: await this.list(caller), connections: this.deps.connections?.()?.listing(caller) ?? [], machines: this.machines() };
+  /** The directory as `caller` sees it, its connections to other users' agents, the teammates' open agents, and the user's machines, from here or from the primary. */
+  private async listFrom(caller: Session): Promise<{ agents: AgentListing[]; connections: ConnectionListing[]; machines: MachineListing[]; teammates: TeammateListing[] }> {
+    if (this.deps.cluster.routes()) return { agents: await this.list(caller), connections: this.deps.connections?.()?.listing(caller) ?? [], machines: this.machines(), teammates: await this.teammatesOf(caller) };
     const r = nodeLinkRequests["agent.list"].result.parse(await this.upward("agent.list", { caller: caller.id }));
-    return { agents: r.agents, connections: r.connections ?? [], machines: r.machines ?? [] };
+    return { agents: r.agents, connections: r.connections ?? [], machines: r.machines ?? [], teammates: r.teammates ?? [] };
+  }
+
+  /** The teammates' agents open to `caller`, or none when they cannot be asked now. */
+  private async teammatesOf(caller: Session): Promise<TeammateListing[]> {
+    const t = this.deps.teammates?.();
+    if (!t) return [];
+    try {
+      return await t.listing(caller);
+    } catch (e) {
+      this.log.info("the teammates' agents could not be listed", { error: message(e) });
+      return [];
+    }
+  }
+
+  private now(): number {
+    return (this.deps.now ?? Date.now)();
+  }
+
+  /** One of the group tools or `focus`, on the primary's groups, here or through the link. */
+  private async groupTool(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<{ text: string; isError?: boolean }> {
+    try {
+      if (this.deps.cluster.routes()) return { text: await this.groupToolHere(caller, tool, args) };
+      return nodeLinkRequests["group.tool"].result.parse(await this.upward("group.tool", { caller: caller.id, mode, tool, args }));
+    } catch (e) {
+      return { text: groupRefusal(e), isError: true };
+    }
+  }
+
+  private async groupToolHere(caller: Session, tool: GroupToolName, args: Json): Promise<string> {
+    if (tool === "focus") return this.focusTool(caller, args);
+    const groups = this.deps.groups?.();
+    if (!groups) throw new RpcError("unavailable", "group chats are off on this machine");
+    return groups.tool(caller, tool, args);
+  }
+
+  /** `focus`: taken for an hour or two, or ended. */
+  private async focusTool(caller: Session, args: Json): Promise<string> {
+    const focus = this.deps.focus?.();
+    if (!focus) throw new RpcError("unavailable", "focus is off on this machine");
+    if (args["off"] === true) {
+      const ended = await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.focus", args: { off: true }, sessionKey: caller.id }, () => focus.end(caller.id, "agent"));
+      return ended ? "Your focus has ended; what came meanwhile follows as messages." : "You were not in focus.";
+    }
+    const minutes = args["minutes"] === undefined ? 60 : args["minutes"];
+    if (minutes !== 60 && minutes !== 120) throw new RpcError("invalid", "minutes is 60 or 120");
+    const reason = typeof args["reason"] === "string" ? args["reason"] : "";
+    const f = await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.focus", args: { minutes, reason: reason.slice(0, 200) }, sessionKey: caller.id }, () => focus.take(caller, minutes, reason));
+    return `You are in focus until ${clockTime(f.until)} (${minutes} minutes), or until your turn ends: messages from other agents and group chats are held, and their senders are told until when and why. You get what came when it ends. Your own user still reaches you. focus with off: true ends it sooner.`;
   }
 
   /** The user's machines a file may be sent to, hands ones too, never another person's folders lent here: whether it is there now and whether it takes files. */
@@ -294,7 +369,7 @@ export class AgentMessages {
   }
 
   /** One request to the primary's router; what it refuses comes back as it said it. */
-  private async upward(method: "agent.list" | "agent.send" | "connection.tool" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
+  private async upward(method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
     const noLink = () => new RpcError("unavailable", `this machine has no link to ${this.deps.cluster.primaryName() ?? "the primary"}, which carries agents' messages, so nothing was sent`);
     if (!this.deps.cluster.primaryLinked()) throw noLink();
     try {
@@ -350,8 +425,23 @@ export class AgentMessages {
   async list(caller: Session): Promise<AgentListing[]> {
     return this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.list", args: {}, sessionKey: caller.id }, () => {
       const d = this.directory();
-      return d.entries.filter((e) => e.session.id !== caller.id).map((e) => listing(d, e));
+      const focus = this.deps.focus?.();
+      return d.entries
+        .filter((e) => e.session.id !== caller.id)
+        .map((e) => {
+          const row = listing(d, e);
+          const f = focus?.get(e.session.id);
+          return f ? { ...row, focus: f } : row;
+        });
     });
+  }
+
+  /** Every live agent of the user's with its alias now and every form it answers to: what a group chat tags them by. */
+  agentNames(): Map<string, { alias: string; forms: string[] }> {
+    const d = this.directory();
+    const out = new Map<string, { alias: string; forms: string[] }>();
+    for (const [id, a] of d.aliases) out.set(id, { alias: a.alias, forms: [...new Set([a.alias, ...a.forms, ...a.former])] });
+    return out;
   }
 
   /**
@@ -363,6 +453,12 @@ export class AgentMessages {
   async send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }, access?: Access): Promise<SendAnswer> {
     // another user's agent, on a connection of the caller's terminal: carried by the connection alone
     const connections = this.deps.connections?.();
+    const teammates = this.deps.teammates?.();
+    if (teammates && !connections?.resolveFor(caller, p.to) && teammates.names(p.to)) {
+      if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
+      const sent = await teammates.send(caller, mode, p);
+      return { status: sent.status, id: sent.id, peer: { teammate: sent.teammate, alias: sent.alias }, ...(sent.focus ? { focus: sent.focus } : {}) };
+    }
     if (connections && (connections.resolveFor(caller, p.to) || Connections.names(p.to))) {
       if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
       const sent = await connections.send(caller, p);
@@ -389,6 +485,18 @@ export class AgentMessages {
     const id = newId("agentMessage");
     this.limits.record(id, caller.id, target.session.id, p.text, hops);
     const agent: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
+
+    // the receiver in focus: held for it, its sender told at once until when and why
+    const focus = this.deps.focus?.();
+    const inFocus = focus?.get(target.session.id);
+    if (focus && inFocus) {
+      await this.deps.gate.run(
+        { principal: { kind: "harness", session: caller.id }, action: "agent.send", target: target.session.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, focus: true }, sessionKey: caller.id },
+        () => focus.hold(target.session, p.text, agent, from.alias, caller.id),
+      );
+      this.log.info("agent message held for focus", { id, from: caller.id, to: target.session.id });
+      return { status: "focus", id, to, focus: inFocus };
+    }
 
     let held: (ask: Ask) => void = () => undefined;
     const pending = new Promise<Ask>((r) => (held = r));
@@ -619,7 +727,7 @@ export class AgentMessages {
    * the primary does not hold as that node's, and a send as far as the node's grant may
    * message; gated as the session, never as the node.
    */
-  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool" | "file.send", params: unknown): Promise<unknown> {
+  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "file.send", params: unknown): Promise<unknown> {
     if (!this.deps.config().enabled) throw new RpcError("unavailable", "agent messaging is off on the primary");
     if (method === "agent.list") {
       const parsed = nodeLinkRequests["agent.list"].params.safeParse(params ?? {});
@@ -627,7 +735,20 @@ export class AgentMessages {
       const caller = this.callerOf(peer, parsed.data.caller);
       const connections = this.deps.connections?.()?.listing(caller) ?? [];
       const machines = this.machines();
-      return { agents: await this.list(caller), ...(connections.length > 0 ? { connections } : {}), ...(machines.length > 0 ? { machines } : {}) };
+      const teammates = await this.teammatesOf(caller);
+      return { agents: await this.list(caller), ...(connections.length > 0 ? { connections } : {}), ...(machines.length > 0 ? { machines } : {}), ...(teammates.length > 0 ? { teammates } : {}) };
+    }
+    if (method === "group.tool") {
+      const parsed = nodeLinkRequests["group.tool"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad group.tool", parsed.error.issues);
+      const p = parsed.data;
+      const caller = this.callerOf(peer, p.caller);
+      if (peer.grant === undefined || !this.deps.cluster.grant(peer.grant)) throw new RpcError("denied", "the node's grant is not known here");
+      try {
+        return { text: await this.groupToolHere(caller, p.tool, p.args) };
+      } catch (e) {
+        return { text: groupRefusal(e), isError: true };
+      }
     }
     if (method === "file.send") {
       const parsed = nodeLinkRequests["file.send"].params.safeParse(params ?? {});
@@ -682,7 +803,7 @@ export class AgentMessages {
 }
 
 /** A send's answer, as the model reads it. */
-export function answerText(a: SendAnswer): string {
+export function answerText(a: SendAnswer, now = Date.now()): string {
   const to = a.peer?.alias ?? a.to?.alias ?? "the session";
   switch (a.status) {
     case "sent":
@@ -697,7 +818,18 @@ export function answerText(a: SendAnswer): string {
       return `Kept to send (${a.id}): the other person's Cophyla cannot be reached now (asleep, or offline). It goes to ${to} once it can be, within a day; if it cannot, you will be told.`;
     case "waiting":
       return `Delivered to ${to}'s Cophyla (${a.id}), but no agent runs in that terminal now: it waits there for one, up to a day.`;
+    case "focus":
+      return a.focus
+        ? `Held for ${to} (${a.id}): it is in focus until ${clockTime(a.focus.until)}, ${minutesLeft(a.focus.until, now)} from now, or until its turn ends (${a.focus.reason}). It gets your message then; its answer, if any, comes to you as a <cophyla-message>. Do not wait for it in a loop.`
+        : `Held for ${to} (${a.id}): it is in focus, and gets your message when it comes out.`;
   }
+}
+
+/** The group tools and focus, as the model is told they were refused. */
+function groupRefusal(e: unknown): string {
+  const text = message(e);
+  const why = text.endsWith(".") ? text.slice(0, -1) : text;
+  return /^not posted|nothing was|not done/i.test(why) ? `${why.charAt(0).toUpperCase()}${why.slice(1)}.` : `Not done: ${why}.`;
 }
 
 /** How a `send_file` ended, as the model reads it. */
