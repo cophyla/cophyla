@@ -65,6 +65,14 @@ describe("config", () => {
     expect(c.controller.app_dir).toBeUndefined();
   });
 
+  test("the feed is read every hour; the six hours an older config.toml was written with reads as the hour", () => {
+    expect(parseConfig("").update.check_interval_ms).toBe(3_600_000);
+    expect(parseConfig(DEFAULT_CONFIG_TOML).update.check_interval_ms).toBe(3_600_000);
+    expect(parseConfig("[update]\ncheck_interval_ms = 21600000   # six hours\n").update.check_interval_ms).toBe(3_600_000);
+    expect(parseConfig("[update]\ncheck_interval_ms = 600000\n").update.check_interval_ms).toBe(600_000);
+    expect(parseConfig("[update]\ncheck_interval_ms = 43200000\n").update.check_interval_ms).toBe(43_200_000);
+  });
+
   test("the node's zone must be one Intl knows; the editable poll may be off", () => {
     expect(parseConfig('[node]\ntz = "Europe/Istanbul"\n').node.tz).toBe("Europe/Istanbul");
     expect(() => parseConfig('[node]\ntz = "Mars/Olympus"\n')).toThrow(/node.tz/);

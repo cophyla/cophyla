@@ -301,6 +301,14 @@ export const EditableConfig = z.object({
 });
 export type EditableConfig = z.infer<typeof EditableConfig>;
 
+/** How often the feed is read: an hour, one small request for a file the CDN serves. */
+export const CHECK_INTERVAL_MS = 3_600_000;
+/**
+ * Six hours, the default until 0.18.1, which every config.toml written before it carries; read
+ * as the hour it became, so installs made then check as often as new ones.
+ */
+const OLD_CHECK_INTERVAL_MS = 21_600_000;
+
 /** The `update` module: the public release feed and how often it is read. */
 export const UpdateConfig = z.object({
   /** Poll the feed on a schedule. Off, `update.check` still works by hand. */
@@ -308,7 +316,12 @@ export const UpdateConfig = z.object({
   channel: BrainChannel.default("stable"),
   /** The feed root; the request is `<feed>/<channel>/<os>-<arch>.json` and nothing else. */
   feed: z.string().url().default("https://feed.getcophyla.com"),
-  check_interval_ms: z.number().int().positive().default(21600000),
+  check_interval_ms: z
+    .number()
+    .int()
+    .positive()
+    .default(CHECK_INTERVAL_MS)
+    .transform((ms) => (ms === OLD_CHECK_INTERVAL_MS ? CHECK_INTERVAL_MS : ms)),
   first_check_delay_ms: z.number().int().nonnegative().default(30000),
   /** Apply a staged brain when the brain is idle, and a staged platform when nothing waits and no desktop app is attached. */
   auto_apply: z.boolean().default(true),
@@ -916,7 +929,7 @@ poll_ms = 10000                # 0 turns the safety poll off
 enabled = true
 channel = "stable"             # stable | beta
 feed = "https://feed.getcophyla.com"
-check_interval_ms = 21600000   # six hours
+check_interval_ms = 3600000    # an hour
 first_check_delay_ms = 30000
 auto_apply = true              # a staged brain when idle; a staged platform when idle and no desktop app is attached
 allow_insecure_feed = false    # http off loopback, for a LAN feed while testing
