@@ -55,6 +55,16 @@ describe("transfers in the view", () => {
     expect(rows[3]).toMatchObject({ name: "notes", meta: "You · Desk → Laptop · 100 MB, 4 files", words: "Cancelled", reveal: false, dismiss: true });
   });
 
+  test("one from another person says who sent it and from whom it comes", () => {
+    const state = connected();
+    const theirs = base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX9", from: { node: DESK, path: "schema.sql" }, to: { node: LAPTOP, dir: "/home/me/Downloads" }, name: "schema.sql", via: "relay", peer: { user: "bob", agent: "web" }, reason: "the schema for the web client" });
+    const saved = base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FXA", from: { node: DESK, path: "dump.sql" }, name: "dump.sql", via: "relay", peer: { user: "bob" }, state: "done", endedAt: 9000, bytes: 100 * 1024 * 1024 });
+    apply(state, { type: "transfers", transfers: [theirs, saved] });
+    const rows = selectTransfers(state);
+    expect(rows.find((r) => r.name === "schema.sql")).toMatchObject({ meta: "bob/web · bob → Laptop", relay: true, reason: "the schema for the web client" });
+    expect(rows.find((r) => r.name === "dump.sql")).toMatchObject({ meta: "bob · bob → Desk · 100 MB" });
+  });
+
   test("an agent's says who sent it and why; the user's says You and has no reason", () => {
     const state = connected();
     const landed = base({ id: "xfr_01ARZ3NDEKTSV4RRFFQ69G5FX6", state: "done", bytes: 565435, total: 565435, from: { node: AGHA, path: "C:\\D\\bundles\\fauna-core.bundle" }, name: "fauna-core.bundle", by: { kind: "agent", alias: "fauna-core", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, reason: "Nightly backup of fauna-core", endedAt: 9000 });

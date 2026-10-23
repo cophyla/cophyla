@@ -2873,7 +2873,49 @@ function dropTarget(target: EventTarget | null): "terminal" | "field" | "pane" |
   return undefined;
 }
 
+/**
+ * A drag over the group shown, which takes photos and files: a row of Files by its path, files
+ * from the desktop by theirs where the host can say them (they stay where they are), and files
+ * from a phone's or a browser's own picker as bytes, uploaded. Handled here, before the rest.
+ */
+function groupDrop(ev: DragEvent, drop: boolean): boolean {
+  const node = ev.target instanceof Element ? ev.target : null;
+  const group = node?.closest(".group-pane") ? team.mayAttach() : undefined;
+  const data = ev.dataTransfer;
+  if (group === undefined || !data || !(data.types.includes(PATH_TYPE) || data.types.includes("Files"))) return false;
+  ev.preventDefault();
+  data.dropEffect = "copy";
+  if (!drop) return true;
+  const row = data.getData(PATH_TYPE);
+  const s = shownExplorer();
+  if (row && s) {
+    team.media.paths(group, s.node, [row]);
+    return true;
+  }
+  const files = Array.from(data.files);
+  const here = state.client?.node;
+  if (state.hostFilePaths && here !== undefined && files.length > 0) {
+    dropped.paths(files).then(
+      (paths) => team.media.paths(group, here, paths),
+      (e: unknown) => fail("attach", e),
+    );
+    return true;
+  }
+  team.media.pick(group, files, true);
+  return true;
+}
+
+// A photo pasted into a group's composer is attached, not its file name typed.
+document.addEventListener("paste", (ev) => {
+  const group = (ev.target as Element | null)?.matches?.(".group-text") ? team.mayAttach() : undefined;
+  const files = Array.from(ev.clipboardData?.files ?? []);
+  if (group === undefined || files.length === 0) return;
+  ev.preventDefault();
+  team.media.pick(group, files, true);
+});
+
 document.addEventListener("dragover", (ev) => {
+  if (groupDrop(ev, false)) return;
   const kind = dragKind(ev.dataTransfer);
   if (!kind) return;
   const where = dropTarget(ev.target);
@@ -2907,6 +2949,7 @@ function markDrop(el: HTMLElement | undefined): void {
 
 document.addEventListener("drop", (ev) => {
   markDrop(undefined);
+  if (groupDrop(ev, true)) return;
   const kind = dragKind(ev.dataTransfer);
   if (!kind) return;
   const where = dropTarget(ev.target);

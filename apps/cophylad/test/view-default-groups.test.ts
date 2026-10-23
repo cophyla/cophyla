@@ -31,6 +31,7 @@ import {
   unreadBy,
 } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
+import { attachParams, isImagePath, toBase64 } from "../views/default/attach.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -292,5 +293,39 @@ describe("group chats in the view", () => {
     expect(teamworkFailure("unsupported", "unknown method group.list")).toBe("This Cophyla app is older than group chats and teammates: update it, or open it again after an update, then try again.");
     expect(teamworkFailure("unsupported", "the node cannot do teammate.invite")).toBe("Cophyla on this computer is older than group chats and teammates: update it, then try again.");
     expect(teamworkFailure("invalid", "the post tags no member")).toBe("the post tags no member");
+  });
+});
+
+describe("photos and files in the view", () => {
+  test("a post carries its photos and files to the pane, and one with only a photo has no words", () => {
+    const g = group();
+    const photo = { id: "gph_01ARZ3NDEKTSV4RRFFQ69G5PH1", type: "image/png" as const, bytes: 70, width: 1, height: 1, name: "board.png" };
+    const file = { id: "gfile_01ARZ3NDEKTSV4RRFFQ69G5GF1", name: "schema.sql", kind: "file" as const, bytes: 1234, machine: "Desk" };
+    const v = postView(g, post(4, { text: "", photos: [photo], files: [file] }), undefined);
+    expect(v.text).toBe("");
+    expect(v.photos).toEqual([photo]);
+    expect(v.files).toEqual([file]);
+    expect(postView(g, post(5), undefined)).toMatchObject({ photos: [], files: [] });
+  });
+
+  test("the composer posts once every attachment is there: an upload done, a path as it is; one that failed or still goes says so", () => {
+    expect(attachParams([])).toEqual({ photos: [], files: [] });
+    expect(
+      attachParams([
+        { key: "a1", kind: "photo", name: "board.jpg", upload: "upl_01ARZ3NDEKTSV4RRFFQ69G5XP1", done: true },
+        { key: "a2", kind: "file", name: "schema.sql", node: DESK, path: "C:\work\schema.sql" },
+      ]),
+    ).toEqual({ photos: [{ upload: "upl_01ARZ3NDEKTSV4RRFFQ69G5XP1" }], files: [{ node: DESK, path: "C:\work\schema.sql" }] });
+    expect(attachParams([{ key: "a1", kind: "file", name: "big.iso", upload: "upl_01ARZ3NDEKTSV4RRFFQ69G5XP1", sent: 10, bytes: 100 }])).toEqual({ wait: "big.iso is still uploading" });
+    expect(attachParams([{ key: "a1", kind: "photo", name: "x.heic", error: "this kind of image cannot be read here: attach it as a file" }])).toEqual({ wait: "x.heic: this kind of image cannot be read here: attach it as a file. Take it off to post." });
+    expect(isImagePath("C:\shots\Screen Shot.PNG")).toBe(true);
+    expect(isImagePath("/home/me/IMG_0001.heic")).toBe(true);
+    expect(isImagePath("/home/me/report.pdf")).toBe(false);
+    expect(toBase64(new Uint8Array([1, 2, 3, 250]))).toBe(Buffer.from([1, 2, 3, 250]).toString("base64"));
+  });
+
+  test("an app or a node older than photos and files in group chats is named as the one to update", () => {
+    expect(teamworkFailure("unsupported", "unknown method group.upload")).toContain("This Cophyla app is older than photos and files");
+    expect(teamworkFailure("unsupported", "unsupported: group.photo")).toContain("Cophyla on this computer is older than photos and files");
   });
 });

@@ -29,7 +29,7 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
@@ -4708,8 +4708,10 @@ export function transferWords(t: Transfer): string {
 
 /** Who sent a transfer, from which machine to which, and once it ended how big it is. */
 export function transferMeta(state: ViewState, t: Transfer): string {
-  const who = t.by.kind === "agent" ? t.by.alias : "You";
-  return [who, transferRoute(state, t), ...(transferEnded(t) ? [transferSize(t)] : [])].join(" · ");
+  // from another person: who sent it, and from them to the machine it goes to
+  const who = t.peer ? (t.peer.agent ? `${t.peer.user}/${t.peer.agent}` : t.peer.user) : t.by.kind === "agent" ? t.by.alias : "You";
+  const route = t.peer ? `${t.peer.user} → ${machineName(state, t.to.node)}` : transferRoute(state, t);
+  return [who, route, ...(transferEnded(t) ? [transferSize(t)] : [])].join(" · ");
 }
 
 /** Every transfer as the rail lists them. */
@@ -5034,6 +5036,9 @@ export interface PostView {
   unreadBy: string[];
   /** This side's user wrote it. */
   mine: boolean;
+  /** What it carries. */
+  photos: GroupPhoto[];
+  files: GroupFile[];
 }
 
 /** A text's first line without its markdown's bold and code marks, cut to `max` characters. */
@@ -5064,6 +5069,8 @@ export function postView(g: Group, post: GroupPost, page: Pick<GroupPage, "posts
     acked: me !== undefined && post.acks.includes(me),
     unreadBy: unreadBy(g, post),
     mine: post.from.kind === "person" && post.from.user === me && me !== undefined,
+    photos: post.photos ?? [],
+    files: post.files ?? [],
   };
 }
 
@@ -5248,6 +5255,8 @@ export function groupCreateParams(
  * `unsupported` too; both mean updating, as with connections.
  */
 export function teamworkFailure(code: string | undefined, message: string): string {
+  if (code === "unsupported" && /^unknown method group\.(upload|photo|file\.save)/.test(message)) return "This Cophyla app is older than photos and files in group chats: update it, or open it again after an update, then try again.";
+  if (code === "unsupported" && /group\.(upload|photo|file\.save)/.test(message)) return "Cophyla on this computer is older than photos and files in group chats: update it, then try again.";
   if (code === "unsupported" && /^unknown method (group|focus|teammate)\./.test(message)) return "This Cophyla app is older than group chats and teammates: update it, or open it again after an update, then try again.";
   if (code === "unsupported" && /(group|focus|teammate)\./.test(message)) return "Cophyla on this computer is older than group chats and teammates: update it, then try again.";
   return message;

@@ -22,6 +22,8 @@
 // the rail's Status, a workspace shared closed with a teammate is a line with Open and Exclude.
 
 import type { Group, GroupCandidate, GroupNotify, ClientSession as Session, TeammatePlace, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { createAttach, createPostMedia, newMediaUi, renderAttach, renderPostMedia, renderViewer } from "./groupmedia.ts";
+import type { MediaUi } from "./groupmedia.ts";
 import { renderText } from "./markdown.ts";
 import {
   broadWords,
@@ -116,10 +118,12 @@ export interface TeamUi {
   workspaces?: Workspace[];
   /** The last `group.read` sent, per group. */
   readSent: Map<string, number>;
+  /** Photos and files: what each composer attaches, the photos drawn, a file being saved. */
+  media: MediaUi;
 }
 
 export function newTeamUi(): TeamUi {
-  return { drafts: new Map(), busy: new Set(), homes: new Map(), readSent: new Map() };
+  return { drafts: new Map(), busy: new Set(), homes: new Map(), readSent: new Map(), media: newMediaUi() };
 }
 
 /** A folder as the share form keys it: its machine and its path as that machine compares paths. */
@@ -382,8 +386,9 @@ function createGroupComposer(): HTMLElement {
   const row = el("div", "group-composer-row");
   const send = el("button", "group-send", "Send");
   send.type = "submit";
-  row.append(messageField("group-text", "Post"), send);
-  form.append(reply, error, complete, row, el("p", "group-closed"));
+  const attach = createAttach();
+  row.append(attach.buttons, messageField("group-text", "Post"), send);
+  form.append(reply, error, complete, attach.strip, row, el("p", "group-closed"));
   return form;
 }
 
@@ -454,6 +459,7 @@ export function renderGroupPane(root: HTMLElement, state: ViewState, ui: UiState
   renderGroupHead(root.querySelector<HTMLElement>(".group-head")!, g, state, ui, canWrite);
   renderGroupStream(root.querySelector<HTMLElement>(".group-stream")!, g, state, ui);
   renderGroupComposer(root.querySelector<HTMLFormElement>(".group-composer")!, g, state, ui, canWrite);
+  renderViewer(root, ui.team.media, g.id);
 }
 
 function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiState, canWrite: boolean): void {
@@ -618,7 +624,7 @@ function createPost(): HTMLElement {
   const reply = actionButton("group-post-reply", "Reply", "group-reply");
   reply.title = "Answer this post";
   foot.append(ack, reply, el("span", "group-post-unread"));
-  li.append(head, quote, el("div", "group-post-text"), foot);
+  li.append(head, quote, el("div", "group-post-text"), ...createPostMedia(), foot);
   return li;
 }
 
@@ -649,6 +655,7 @@ function updatePost(li: HTMLElement, v: PostView, g: Group, state: ViewState, ui
     setText(quote.querySelector(".group-post-quote-text")!, v.quote.excerpt);
   }
   const text = li.querySelector<HTMLElement>(".group-post-text")!;
+  setHidden(text, v.text === "" && v.tags.length === 0);
   renderText(text, v.text, v.writer.kind !== "cophyla");
   v.tags.forEach((tag, i) => {
     let holder = text.querySelector<HTMLElement>(`.slot[data-slot="${i}"]`);
@@ -682,6 +689,7 @@ function updatePost(li: HTMLElement, v: PostView, g: Group, state: ViewState, ui
   const unread = foot.querySelector<HTMLElement>(".group-post-unread")!;
   setText(unread, v.unreadBy.length > 0 ? `not read yet by ${v.unreadBy.join(", ")}` : "");
   setHidden(unread, v.unreadBy.length === 0);
+  renderPostMedia(li, g.id, v.id, v.photos, v.files, state, ui.team.media);
 }
 
 function renderGroupComposer(form: HTMLFormElement, g: Group, state: ViewState, ui: UiState, canWrite: boolean): void {
@@ -696,6 +704,7 @@ function renderGroupComposer(form: HTMLFormElement, g: Group, state: ViewState, 
   input.disabled = !mayPost;
   input.placeholder = ended ? "This group ended" : !state.connected ? "Waiting for cophylad" : !state.scopes.includes("sessions:write") ? "This view may not post" : `Post in ${g.name}: @ tags an agent`;
   form.querySelector<HTMLButtonElement>(".group-send")!.disabled = !mayPost || ui.team.posting === g.id;
+  renderAttach(form, ui.team.media.attached.get(g.id) ?? [], mayPost);
   setText(form.querySelector(".group-send")!, ui.team.posting === g.id ? "Sending…" : "Send");
   const closed = form.querySelector<HTMLElement>(".group-closed")!;
   setText(closed, ended ? "This group ended: it is read only." : "");

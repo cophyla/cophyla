@@ -13,6 +13,7 @@ import { fitField } from "./render.ts";
 import type { Roots, UiState } from "./render.ts";
 import type { HostRpc } from "./rpc.ts";
 import { ViewRpcError } from "./rpc.ts";
+import { MediaControl } from "./groupmedia.ts";
 import { folderKey, groupStream } from "./teamview.ts";
 import type { AgentPick, NewGroupForm, ShareForm } from "./teamview.ts";
 
@@ -36,8 +37,20 @@ export class TeamControl {
   /** The user's own post just went: the group's posts scroll to their end once drawn. */
   private toEnd = false;
 
+  /** The composer's photos and files, and the posts'. */
+  readonly media: MediaControl;
+
   constructor(deps: TeamDeps) {
     this.d = deps;
+    this.media = new MediaControl({ rpc: deps.rpc, state: deps.state, media: deps.ui.team.media, draw: () => deps.draw(), dispatch: (a) => deps.dispatch(a), words: (e) => this.words(e) });
+  }
+
+  /** Whether the group shown takes photos and files now: its composer may post. */
+  mayAttach(): string | undefined {
+    const { state, ui } = this.d;
+    const g = ui.group !== undefined ? state.groups.get(ui.group) : undefined;
+    if (!g || g.ended || !state.connected || !state.scopes.includes("sessions:write")) return undefined;
+    return g.id;
   }
 
   // --- the line ------------------------------------------------------------------------------------
@@ -200,14 +213,28 @@ export class TeamControl {
     const input = form.querySelector<HTMLTextAreaElement>(".group-text");
     if (!group || !input || input.disabled || ui.team.posting !== undefined) return;
     const text = input.value;
-    if (text.trim() === "") return;
+    const attached = this.media.forPost(group);
+    if ("wait" in attached) {
+      ui.team.postError = { group, text: attached.wait };
+      this.d.draw();
+      return;
+    }
+    const carries = attached.photos.length > 0 || attached.files.length > 0;
+    if (text.trim() === "" && !carries) return;
     const replyTo = ui.team.replyTo?.group === group ? ui.team.replyTo.post : undefined;
     ui.team.posting = group;
     ui.team.postError = undefined;
     ui.team.complete = undefined;
     this.d.draw();
     try {
-      const { post } = await this.d.rpc.request<{ post: GroupPost }>("group.post", { group, text, ...(replyTo ? { replyTo } : {}) });
+      const { post } = await this.d.rpc.request<{ post: GroupPost }>("group.post", {
+        group,
+        ...(text.trim() !== "" ? { text } : {}),
+        ...(replyTo ? { replyTo } : {}),
+        ...(attached.photos.length > 0 ? { photos: attached.photos } : {}),
+        ...(attached.files.length > 0 ? { files: attached.files } : {}),
+      });
+      this.media.posted(group);
       this.d.dispatch({ type: "group.posted", params: { group, post } });
       if (input.value === text) {
         input.value = "";
@@ -734,6 +761,7 @@ export class TeamControl {
     const { ui } = this.d;
     const t = ui.team;
     const data = target.dataset;
+    if (this.media.click(target, ui.group)) return true;
     switch (data["action"]) {
       // the share form's folder picker, which New terminal's and Send to…'s are too
       case "folder-open":
@@ -941,6 +969,7 @@ export class TeamControl {
   /** A box ticked: an agent for a group, or a folder to share. */
   change(target: HTMLElement): boolean {
     const { ui } = this.d;
+    if (this.media.change(target, ui.group)) return true;
     if (target.classList.contains("agent-pick-check")) {
       const key = target.dataset["key"];
       const p = target.closest<HTMLElement>(".agent-pick")?.dataset["for"] === "new" ? ui.team.newGroup : ui.team.addMembers;
@@ -1006,6 +1035,7 @@ export class TeamControl {
       t.complete = undefined;
       return draw();
     }
+    if (this.media.escape()) return true;
     if (this.overlayShown()) {
       if (t.share?.broad) t.share.broad = undefined;
       else if (t.share?.browse) t.share.browse = undefined;

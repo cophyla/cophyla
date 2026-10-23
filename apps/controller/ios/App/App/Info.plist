@@ -56,5 +56,9 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Take a photo to post in a group chat.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Pick photos to post in a group chat.</string>
 </dict>
 </plist>
