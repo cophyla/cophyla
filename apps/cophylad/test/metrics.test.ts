@@ -210,10 +210,27 @@ describe("metrics module", () => {
     r.dispose();
   });
 
+  test("a restart spends nothing of what the sessions announce before the priming reading: their whole history, read again", async () => {
+    const history: Session = { id: SESSION, node: NODE, harness: "claude", profile: PROFILE, native: { id: "n", pid: 30, transport: "pipe" }, origin: "user", cwd: "/w", tags: [], status: "busy", startedAt: 1, lastActivity: 2, stats: { turns: 40, cost: 1250, tokens: { in: 5000, out: 900_000, cacheRead: 2_000_000_000 } } };
+    const r = rig("", { sessions: [history] });
+    // The sessions module starts first: each transcript read again whole, each session announced with all of it.
+    r.bus.emit("session.state", history);
+    await r.metrics.start();
+    r.bus.emit("session.state", history);
+    const s1 = (await r.step())!;
+    expect(s1.profiles).toBeUndefined();
+    // What it spends from here is spend.
+    r.bus.emit("session.state", { ...history, stats: { turns: 41, cost: 1251.5, tokens: { in: 5010, out: 901_000, cacheRead: 2_000_100_000 } } });
+    const s2 = (await r.step())!;
+    expect(s2.profiles).toEqual({ [PROFILE]: { in: 10, out: 1000, cached: 100_000, cost: 1.5 } });
+    expect(r.metrics.spend(NODE, { from: 0 }).profiles).toEqual({ [PROFILE]: { in: 10, out: 1000, cached: 100_000, cost: 1.5 } });
+    r.dispose();
+  });
+
   test("a slow subscriber is sent every count of the samples it skipped, and subscribing again counts none twice", async () => {
     const r = rig();
     let total = 0;
-    const spendTo = (n: number) => r.bus.emit("session.state", { ...liveSession, stats: { turns: 1, cost: n / 1000, tokens: { in: n, out: 0 } } });
+    const spendTo = (n: number) => r.bus.emit("session.state", { ...liveSession, startedAt: r.clock.now, stats: { turns: 1, cost: n / 1000, tokens: { in: n, out: 0 } } });
     await r.step();
     await r.step();
     r.metrics.subscribe("fast", 1000);
@@ -276,7 +293,7 @@ describe("metrics module", () => {
   test("a subscription's spend sums the stored minutes and the open minute; its totals plus what the subscriber is sent after `at` is every token, subscribing again too", async () => {
     const r = rig();
     let total = 0;
-    const spendTo = (n: number) => r.bus.emit("session.state", { ...liveSession, stats: { turns: 1, cost: n / 1000, tokens: { in: n, out: 0 } } });
+    const spendTo = (n: number) => r.bus.emit("session.state", { ...liveSession, startedAt: r.clock.now, stats: { turns: 1, cost: n / 1000, tokens: { in: n, out: 0 } } });
     const sentAfter = (at: number) => r.delivered.get("view")!.filter((s) => s.at > at).reduce((a, s) => a + (s.profiles?.[PROFILE]?.in ?? 0), 0);
     // Quiet seconds past the interval: whatever the feed still holds is sent.
     const settle = async () => {

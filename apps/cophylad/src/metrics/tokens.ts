@@ -2,10 +2,18 @@
 // routed, by `vendor/model`, and hands the sums over at the next sample. `ProfileSpend`
 // watches the sessions' running stats: each `session.state` is diffed against the last
 // counts seen for that session id, the delta credited to the session's harness profile, so
-// a session that reports cumulative totals is counted once however often it is announced,
-// and a session that ended is credited its last delta and then forgotten. The counts kept
-// are the highest seen: totals that read lower for a while (a transcript read again, another
-// thread's stats briefly in their place) are not spent again when they climb back.
+// a session that reports cumulative totals is counted once however often it is announced. A
+// session that ended keeps its counts, for a resume under the same id to count on from, and is
+// still credited what its totals climb by after the end (Claude's cost record, read as the
+// session leaves). The counts kept are the highest seen: totals that read lower
+// for a while (a transcript read again, another thread's stats briefly in their place) are not
+// spent again when they climb back. Nothing
+// is credited until `prime`: the sessions announce themselves as the daemon starts, each
+// transcript read again whole, and those totals are what was spent before this run, not spend
+// of it. Counted, every restart would spend every live session's whole history again. For the
+// same reason a session met for the first time after it, but started before it or already
+// ended (one closed before the daemon started, reopened or announced again), counts from what
+// it shows then.
 
 import type { Session } from "@cophyla/protocol";
 import type { LlmCounts, ProfileCounts } from "./sampler.ts";
@@ -41,27 +49,48 @@ const seenOf = (s: Session): Seen | undefined => {
 
 const highest = (a: Seen, b: Seen): Seen => ({ in: Math.max(a.in, b.in), out: Math.max(a.out, b.out), cached: Math.max(a.cached, b.cached), cost: Math.max(a.cost, b.cost) });
 
-/** Ended session ids remembered, so a repeated `ended` announcement is not counted again. */
+/**
+ * How many ended sessions keep their counts, so a late climb (a cost record) or a resume under
+ * the same id counts on from where they stood; the oldest is forgotten past it.
+ */
 const ENDED_CAP = 1024;
 
 export class ProfileSpend {
   private last = new Map<string, Seen>();
   private ended = new Set<string>();
+  /** The sessions whose growth is spend of this run: live at priming, or met live since. */
+  private counting = new Set<string>();
   private pending: ProfileCounts = {};
+  private primed = false;
+  private primedAt = -Infinity;
 
-  /** The sessions live at start: their totals are the baseline, not spend of this run. */
-  prime(sessions: Session[]): void {
+  /**
+   * The sessions live at start: their totals as they stand now are the baseline, not spend of
+   * this run, whatever they were announced as before; spend counts from here, `at`.
+   */
+  prime(sessions: Session[], at = Date.now()): void {
     for (const s of sessions) {
-      const seen = seenOf(s);
-      if (seen) this.last.set(s.id, seen);
+      this.last.set(s.id, seenOf(s) ?? { in: 0, out: 0, cached: 0, cost: 0 });
+      this.counting.add(s.id);
     }
+    this.pending = {};
+    this.primed = true;
+    this.primedAt = at;
   }
 
   observe(session: Session): void {
-    if (this.ended.has(session.id)) return;
+    const ended = session.status === "ended";
+    // Resumed: what it spends from here is past the counts it ended with.
+    if (!ended) this.ended.delete(session.id);
     const now = seenOf(session);
-    const was = this.last.get(session.id);
-    if (now) {
+    let was = this.last.get(session.id);
+    if (this.primed && !this.counting.has(session.id) && !ended) {
+      // Met live for the first time since priming. Started before it (running unseen, or closed
+      // before the daemon started and reopened), what it shows was spent before: the baseline.
+      this.counting.add(session.id);
+      if (session.startedAt < this.primedAt && now) was = was ? highest(was, now) : now;
+    }
+    if (now && this.counting.has(session.id)) {
       const delta = {
         in: Math.max(0, now.in - (was?.in ?? 0)),
         out: Math.max(0, now.out - (was?.out ?? 0)),
@@ -73,11 +102,16 @@ export class ProfileSpend {
         this.pending[session.profile] = { in: cur.in + delta.in, out: cur.out + delta.out, cached: cur.cached + delta.cached, cost: (cur.cost ?? 0) + delta.cost };
       }
     }
-    if (session.status === "ended") {
-      this.last.delete(session.id);
+    if (now) this.last.set(session.id, was ? highest(was, now) : now);
+    if (ended && !this.ended.has(session.id)) {
       this.ended.add(session.id);
-      if (this.ended.size > ENDED_CAP) this.ended.delete(this.ended.values().next().value!);
-    } else if (now) this.last.set(session.id, was ? highest(was, now) : now);
+      if (this.ended.size > ENDED_CAP) {
+        const oldest = this.ended.values().next().value!;
+        this.ended.delete(oldest);
+        this.last.delete(oldest);
+        this.counting.delete(oldest);
+      }
+    }
   }
 
   /** The per-profile deltas since the last drain; undefined when there were none. */

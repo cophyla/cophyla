@@ -259,6 +259,12 @@ export interface HarnessAdapter {
   /** One tail pass over a record about to end, so its transcript's last lines are recorded before the end. */
   drain?(rec: SessionRecord, now: number): void;
   /**
+   * The record is about to leave its transcript for another (re-keyed: a cleared context, or
+   * another conversation resumed in the same process): its last lines are read before the
+   * host drops the tail. Claude only.
+   */
+  leave?(rec: SessionRecord, now: number): void;
+  /**
    * A synchronous catch-up read of the session's log, before a hook's tool result is recorded:
    * what the log holds before the result, its call included, is recorded first. Claude and
    * Codex only; Muse's view is read over RPC and gives a call and its result together.

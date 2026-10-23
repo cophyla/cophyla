@@ -569,7 +569,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     if (opts.adapters) return opts.adapters(host, sessionsLog);
     muse = new MuseAdapter({ host, log: sessionsLog.child("muse"), version: PLATFORM_VERSION, dataDir: p.data, raiser, isAlive, asks, askTimeoutS: config.sessions.hook_timeout_s, env });
     return [
-      new ClaudeAdapter({ host, log: sessionsLog.child("claude"), raiser }),
+      // A Claude session's cost is each model's tokens at that model's prices, its sub-agents' among them.
+      new ClaudeAdapter({ host, log: sessionsLog.child("claude"), raiser, price: (model, tokens) => pricer.cost(model, tokens) }),
       // A Codex session known by its hooks and its process ends when the process does, SessionEnd or not.
       // Its questions to the user are asks; a dialog's answers are typed into its terminal.
       new CodexAdapter({ host, log: sessionsLog.child("codex"), version: PLATFORM_VERSION, raiser, isAlive, asks, askTimeoutS: config.sessions.hook_timeout_s, ...(tether ? { terminal: tether } : {}) }),
@@ -577,6 +578,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ];
   };
   // The price table prices a harness session's tokens where the harness states no cost, and the brain's calls in the samples.
+  // (The adapters above are made inside `new Sessions`, after it.)
   const prices = priceTable(config.metrics.prices);
   const pricer = new Pricer(prices, log.child("metrics"));
   const sessions = new Sessions({

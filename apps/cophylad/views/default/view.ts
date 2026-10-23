@@ -59,7 +59,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, SPEND_WINDOW_MS, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
@@ -1616,20 +1616,36 @@ const METRICS_INTERVAL_MS = 2000;
 /** Each node's latest subscription: an answer to an earlier one, overtaken by a reconnect, is dropped. */
 const watchGeneration = new Map<string, number>();
 
+/** Today starts over at local midnight: every node watched is subscribed to again, its spend summed from the new day. */
+let dayTimer: ReturnType<typeof setTimeout> | undefined;
+function armDay(): void {
+  if (dayTimer !== undefined) clearTimeout(dayTimer);
+  dayTimer = setTimeout(() => {
+    dayTimer = undefined;
+    for (const id of [...watched]) {
+      const node = state.nodes.get(id);
+      watched.delete(id);
+      if (node) void watchNode(node);
+    }
+    armDay();
+  }, untilTomorrow(Date.now()) + 1000);
+}
+
 /**
  * Subscribes to a node's samples, their processes summed per owner (all its card shows),
- * with its spend over the day summed as the subscription starts: every token before the
+ * with its spend since midnight summed as the subscription starts: every token before the
  * totals is in them, every one after in the samples. The samples that land before the
  * answer are held, and counted once it arrives if the totals do not already hold them.
  */
 async function watchNode(node: CophylaNode): Promise<void> {
   if (!state.connected || !state.scopes.includes("metrics:read") || node.status !== "online" || watched.has(node.id)) return;
   watched.add(node.id);
+  if (dayTimer === undefined) armDay();
   const generation = (watchGeneration.get(node.id) ?? 0) + 1;
   watchGeneration.set(node.id, generation);
   dispatch({ type: "spend.loading", node: node.id });
   try {
-    const { spend } = await rpc.request<{ spend?: SpendTotals }>("metrics.subscribe", { node: node.id, intervalMs: METRICS_INTERVAL_MS, processes: "owners", spend: { from: Date.now() - SPEND_WINDOW_MS } });
+    const { spend } = await rpc.request<{ spend?: SpendTotals }>("metrics.subscribe", { node: node.id, intervalMs: METRICS_INTERVAL_MS, processes: "owners", spend: { from: spendFrom(Date.now()) } });
     if (watchGeneration.get(node.id) !== generation) return;
     dispatch({ type: "metrics.spend", node: node.id, ...(spend ? { totals: spend } : {}) });
   } catch (e) {

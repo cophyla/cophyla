@@ -118,7 +118,7 @@ describe("metrics across the link", () => {
     await secondary.metrics.tick();
     const sid = secondary.identity.id;
     const profile = "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8";
-    const session = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", node: sid, harness: "claude" as const, profile, native: { id: "n", pid: 30, transport: "pipe" as const }, origin: "user" as const, cwd: "/w", tags: [], status: "busy" as const, startedAt: 1, lastActivity: 2 };
+    const session = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", node: sid, harness: "claude" as const, profile, native: { id: "n", pid: 30, transport: "pipe" as const }, origin: "user" as const, cwd: "/w", tags: [], status: "busy" as const, startedAt: T0 + 60_000, lastActivity: T0 + 60_000 };
     let total = 0;
     const spendTo = (n: number) => secondary!.bus.emit("session.state", { ...session, stats: { turns: 1, cost: 0, tokens: { in: n, out: 0 } } });
     const fast = await client(primary.d, "fast");

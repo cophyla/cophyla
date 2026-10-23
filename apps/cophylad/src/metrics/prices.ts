@@ -3,7 +3,8 @@
 // them. A model is looked up as `vendor/model`, then by its bare name, then by the longest
 // key that prefixes it (a dated `claude-sonnet-5-20260801` finds `claude-sonnet-5`). An
 // unknown model prices to nothing and is logged once. The table dates itself: prices move,
-// and the built-in ones are the September 2026 list prices.
+// and the built-in ones are the October 2026 list prices. A Claude cache write costs more
+// when it is kept an hour (Claude Code keeps its for an hour) than for the default five minutes.
 
 import type { Logger } from "../log.ts";
 
@@ -11,14 +12,20 @@ export interface Price {
   input: number;
   output: number;
   cache_read?: number;
+  /** A cache write; for Claude, one kept five minutes. */
   cache_write?: number;
+  /** A Claude cache write kept an hour; `cache_write` when not given. */
+  cache_write_1h?: number;
 }
 
 export interface Tokens {
   in: number;
   out: number;
   cacheRead?: number;
+  /** Every cache write, those kept an hour among them. */
   cacheWrite?: number;
+  /** The part of `cacheWrite` kept an hour. */
+  cacheWrite1h?: number;
 }
 
 /** USD per million tokens, at each provider's list prices. */
@@ -29,9 +36,15 @@ export const BUILTIN_PRICES: Record<string, Price> = {
   "gemini/gemini-3.7-flash": { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0.75 },
   "gemini/gemini-3.6-flash": { input: 0.75, output: 3.75, cache_read: 0.075, cache_write: 0.75 },
   "gemini/gemini-3.1-pro-preview": { input: 2, output: 12, cache_read: 0.2, cache_write: 2 },
-  "anthropic/claude-sonnet-5": { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5 },
-  "anthropic/claude-opus-5": { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25 },
-  "anthropic/claude-haiku-4-5": { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25 },
+  // Each Claude model by its own name: the prefix rule would price a newer one (claude-opus-5-5) as its family's first (claude-opus-5).
+  "anthropic/claude-fable-5-1": { input: 10, output: 50, cache_read: 0.25, cache_write: 12.5, cache_write_1h: 20 },
+  "anthropic/claude-fable-5": { input: 10, output: 50, cache_read: 1, cache_write: 12.5, cache_write_1h: 20 },
+  "anthropic/claude-opus-5-5": { input: 4, output: 20, cache_read: 0.2, cache_write: 5, cache_write_1h: 8 },
+  "anthropic/claude-opus-5": { input: 5, output: 25, cache_read: 0.5, cache_write: 6.25, cache_write_1h: 10 },
+  "anthropic/claude-sonnet-5-5": { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5, cache_write_1h: 4 },
+  "anthropic/claude-sonnet-5": { input: 2, output: 10, cache_read: 0.2, cache_write: 2.5, cache_write_1h: 4 },
+  "anthropic/claude-haiku-5-5": { input: 0.1, output: 0.5, cache_read: 0.01, cache_write: 0.125, cache_write_1h: 0.2 },
+  "anthropic/claude-haiku-4-5": { input: 1, output: 5, cache_read: 0.1, cache_write: 1.25, cache_write_1h: 2 },
   "openai/gpt-5.6-terra": { input: 2, output: 12, cache_read: 0.2 },
 };
 
@@ -62,12 +75,16 @@ export function priceOf(table: PriceTable, model: string): Price | undefined {
   return best?.price;
 }
 
-/** USD for the tokens at the price; a missing cache price falls back to input (read) or nothing (write). */
+/** USD for the tokens at the price; a missing cache price falls back to input, and an hour's write to the five minutes'. */
 export function costOf(price: Price, tokens: Tokens): number {
   const per = 1_000_000;
   let usd = (tokens.in * price.input + tokens.out * price.output) / per;
   if (tokens.cacheRead) usd += (tokens.cacheRead * (price.cache_read ?? price.input)) / per;
-  if (tokens.cacheWrite) usd += (tokens.cacheWrite * (price.cache_write ?? price.input)) / per;
+  if (tokens.cacheWrite) {
+    const write = price.cache_write ?? price.input;
+    const hour = Math.min(tokens.cacheWrite1h ?? 0, tokens.cacheWrite);
+    usd += ((tokens.cacheWrite - hour) * write + hour * (price.cache_write_1h ?? write)) / per;
+  }
   return usd;
 }
 

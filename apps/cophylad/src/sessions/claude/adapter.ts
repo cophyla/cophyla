@@ -16,7 +16,8 @@
 // its hooks name, its timeline and the log say so, and the registry moves it to its own profile
 // once there is one.
 
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
+import type { Dirent } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
@@ -27,13 +28,14 @@ import { capText, oneLine, rawIfSmall, summariseValue, toolKey, TOOL_CALL_CAP, T
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
+import { Tail } from "../tail.ts";
 import { acceptsCrossSessionInbound, installClaudeHooks, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
 import { classify, isAlive as defaultIsAlive, jobCreatedAt, readEntry, readRegistry, statusOf, transcriptPathFor, waitingOf } from "./registry.ts";
 import type { ClaudeLive, IsAlive } from "./registry.ts";
-import { applyClaudeRow, newClaudeState, rowAt, statsFor } from "./transcript.ts";
-import type { ClaudeTranscriptState } from "./transcript.ts";
+import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, isCostRecord, newClaudeState, rowAt, statsFor } from "./transcript.ts";
+import type { ClaudePrice, ClaudeTranscriptState } from "./transcript.ts";
 
 /** A tool result from a hook with no call id suppresses the transcript's copy of the same tool and input for this long. */
 const HOOK_TOOL_TTL_MS = 120000;
@@ -42,8 +44,58 @@ const CONTINUE_GRACE_MS = 60000;
 /** How long a turn's Stop waits for the registry to say what the session waits on, a read at a time. */
 const STOP_POLL_MS = 50;
 const STOP_POLLS = 10;
+/** How often a session's sub-agents' transcripts are read: a sub-agent works while its session waits, its own transcript still. */
+const SUBAGENT_READ_MS = 10000;
+/** How long a transcript left behind (the session ended, cleared, or resumed another) is read on for Claude's cost record. */
+const CLOSING_READ_MS = 30000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/**
+ * A session's sub-agents' transcripts: `<session>/subagents/*.jsonl` beside its own, and a
+ * workflow's agents' a folder further down, `subagents/workflows/<run>/agent-*.jsonl`.
+ */
+export function subagentTranscripts(transcript: string): string[] {
+  const list = (dir: string): Dirent[] => {
+    try {
+      return readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return [];
+    }
+  };
+  const dir = join(dirname(transcript), basename(transcript, ".jsonl"), "subagents");
+  const out: string[] = [];
+  for (const e of list(dir)) {
+    if (e.isFile() && e.name.endsWith(".jsonl")) out.push(join(dir, e.name));
+    else if (e.isDirectory() && e.name === "workflows") {
+      for (const run of list(join(dir, "workflows"))) {
+        if (!run.isDirectory()) continue;
+        for (const f of list(join(dir, "workflows", run.name))) if (f.isFile() && f.name.startsWith("agent-") && f.name.endsWith(".jsonl")) out.push(join(dir, "workflows", run.name, f.name));
+      }
+    }
+  }
+  return out;
+}
+
+/** The sub-agents' transcripts read into one parser's usage, and when they were last read. */
+interface SubagentTails {
+  tails: Map<string, Tail>;
+  readAt: number;
+}
+
+/**
+ * A transcript its record has left (ended, cleared, resumed another) before Claude's cost
+ * record was read: Claude writes the record as it leaves, sometimes just after. Read on until
+ * the record turns up or `until`. With `tail`, the record moved on to another transcript, and
+ * `counted` is the old one's stats as the record last had them; without, it ended, its own tail read on.
+ */
+interface Closing {
+  rec: SessionRecord;
+  tail?: Tail;
+  state: ClaudeTranscriptState;
+  counted?: SessionStats;
+  until: number;
+}
 
 /**
  * The Claude directory a transcript is in: Claude keeps one at
@@ -70,6 +122,8 @@ export interface ClaudeAdapterOptions {
   sharedSettings?: string;
   /** The process tree: a command-mode hook says its shim's parent pid, and the `claude` ancestor is the session's process. */
   raiser?: ProcessTree;
+  /** Prices each model's tokens in a session's cost; without it the host prices them all at the session's model. */
+  price?: ClaudePrice;
 }
 
 /**
@@ -102,6 +156,10 @@ export class ClaudeAdapter implements HarnessAdapter {
   private installed = new Map<string, ClaudeHookOwner[]>();
   /** What `checkAccount` has logged: a directory no profile has, a profile and the one its hooks named. */
   private logged = new Set<string>();
+  private price: ClaudePrice | undefined;
+  /** By the parser they feed: a parser made again (a cleared context, a transcript read again) reads them again from the start. */
+  private subagents = new WeakMap<ClaudeTranscriptState, SubagentTails>();
+  private closing: Closing[] = [];
 
   constructor(opts: ClaudeAdapterOptions) {
     this.host = opts.host;
@@ -110,6 +168,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.inject = opts.inject ?? injectClaude;
     this.sharedSettings = opts.sharedSettings ?? join(homedir(), ".claude", "settings.json");
     this.raiser = opts.raiser;
+    this.price = opts.price;
   }
 
   /** Says that a session with this id is being started in a terminal, and what for. */
@@ -236,6 +295,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       if (now - last > this.host.config.claude_hook_grace_ms) this.host.end(rec, "inactive", now);
     }
     for (const rec of this.host.records("claude")) this.tailTranscript(rec, now);
+    this.readClosing(now);
   }
 
   /**
@@ -409,8 +469,16 @@ export class ClaudeAdapter implements HarnessAdapter {
       this.host.watch(dirname(path));
     }
     const state = rec.parser as ClaudeTranscriptState;
+    this.tailSubagents(state, path, now);
     const lines = tail.read();
-    if (lines.length === 0) return;
+    if (lines.length === 0) {
+      // A sub-agent's usage alone: the stats move, nothing else does.
+      if (state.statsChanged) {
+        state.statsChanged = false;
+        this.host.patch(rec, { stats: countOn(rec.statsBase, statsFor(state, this.price)) }, now);
+      }
+      return;
+    }
     const recordFrom = tail.recordFrom;
     const patch: Partial<Session> = {};
     for (const line of lines) {
@@ -421,6 +489,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         continue;
       }
       const record = line.offset >= recordFrom;
+      if (isCostRecord(row)) this.settleCost(state, path, row, now);
       // History a job was forked with: counted in its stats, but recorded under the old id already.
       const copied = rec.copiedBefore !== undefined && (rowAt(row) ?? Infinity) < rec.copiedBefore;
       for (const item of applyClaudeRow(state, row)) {
@@ -484,7 +553,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     if (state.statsChanged) {
       state.statsChanged = false;
-      patch.stats = countOn(rec.statsBase, statsFor(state));
+      patch.stats = countOn(rec.statsBase, statsFor(state, this.price));
     }
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
     this.host.tailed(rec);
@@ -493,8 +562,95 @@ export class ClaudeAdapter implements HarnessAdapter {
     else if (rec.continuing) delete rec.continuing;
   }
 
+  /**
+   * Reads the session's sub-agents' transcripts into its usage: at once for a parser that has
+   * not read them, then every `SUBAGENT_READ_MS`, the folders looked in again each time for a
+   * sub-agent started since.
+   */
+  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): void {
+    let subs = this.subagents.get(state);
+    if (!subs) {
+      subs = { tails: new Map(), readAt: -Infinity };
+      this.subagents.set(state, subs);
+    }
+    if (!force && now - subs.readAt < SUBAGENT_READ_MS) return;
+    subs.readAt = now;
+    for (const file of subagentTranscripts(path)) {
+      let tail = subs.tails.get(file);
+      if (!tail) subs.tails.set(file, (tail = new Tail(file)));
+      for (const line of tail.read()) {
+        try {
+          applyClaudeUsage(state, JSON.parse(line.text));
+        } catch {
+          // a line that is not JSON counts nothing
+        }
+      }
+    }
+  }
+
+  /**
+   * Claude's cost record, met in a transcript: its sub-agents' transcripts are read up to now
+   * first, so the record is set against all the usage it covers, then what it holds beyond
+   * that counts as the session's (`applyClaudeCostRecord`).
+   */
+  private settleCost(state: ClaudeTranscriptState, path: string, row: unknown, now: number): void {
+    if (!this.price) return;
+    this.tailSubagents(state, path, now, true);
+    applyClaudeCostRecord(state, row, this.price);
+  }
+
+  /**
+   * A transcript its record has just left, read on a while if Claude's cost record for it has
+   * not been read: `tail` given, the record has moved on to another transcript (cleared, or
+   * resumed another conversation); none, it ended, its own tail read on.
+   */
+  private closeLater(rec: SessionRecord, tail: Tail | undefined, state: ClaudeTranscriptState | undefined, now: number): void {
+    if (!this.price || !state?.stats || state.settled) return;
+    this.closing.push({ rec, state, until: now + CLOSING_READ_MS, ...(tail ? { tail, counted: statsFor(state, this.price) } : {}) });
+  }
+
+  /** The transcripts left behind, read on for a cost record, until one turns up or their time is up. */
+  private readClosing(now: number): void {
+    if (this.closing.length === 0) return;
+    this.closing = this.closing.filter((c) => {
+      if (!c.tail) {
+        // Ended: read on through its own tail, unless it came back and reads on by itself.
+        if (c.rec.session.status !== "ended" || c.rec.parser !== c.state) return false;
+        this.tailTranscript(c.rec, now);
+        return !c.state.settled && now < c.until;
+      }
+      for (const line of c.tail.read()) {
+        let row: unknown;
+        try {
+          row = JSON.parse(line.text);
+        } catch {
+          continue;
+        }
+        if (isCostRecord(row)) this.settleCost(c.state, c.tail.path, row, now);
+        else applyClaudeUsage(c.state, row);
+      }
+      if (c.state.statsChanged && c.counted) {
+        c.state.statsChanged = false;
+        const after = statsFor(c.state, this.price);
+        const more = statsDelta(after, c.counted);
+        c.counted = after;
+        // What the old transcript turned out to have spent is part of the base the new one counts on from.
+        c.rec.statsBase = plusStats(c.rec.statsBase, more);
+        this.host.patch(c.rec, { stats: plusStats(c.rec.session.stats, more) }, now);
+      }
+      return !c.state.settled && now < c.until;
+    });
+  }
+
   drain(rec: SessionRecord, now: number): void {
     this.tailTranscript(rec, now);
+    this.closeLater(rec, undefined, rec.parser as ClaudeTranscriptState | undefined, now);
+  }
+
+  /** The old transcript's last lines, Claude's cost record for it among them when written yet; read on a while when not. */
+  leave(rec: SessionRecord, now: number): void {
+    this.tailTranscript(rec, now);
+    if (rec.tail) this.closeLater(rec, rec.tail, rec.parser as ClaudeTranscriptState | undefined, now);
   }
 
   readNow(rec: SessionRecord, now: number): void {
@@ -633,8 +789,9 @@ export class ClaudeAdapter implements HarnessAdapter {
 
 /**
  * A session's stats counted on from what it spent before its context was cleared: turns and
- * tokens add up, the context window is the new transcript's own. A cost of 0 is left for the
- * price table to fill from the summed tokens.
+ * tokens add up, the context window is the new transcript's own. The new transcript's tokens
+ * at no cost (a model with no price) leave the cost at 0 for the price table to fill from the
+ * summed tokens; a new transcript with no tokens yet keeps the cost spent before.
  */
 export function countOn(base: SessionStats | undefined, now: SessionStats): SessionStats {
   if (!base) return now;
@@ -642,11 +799,30 @@ export function countOn(base: SessionStats | undefined, now: SessionStats): Sess
   const cacheRead = sum(base.tokens.cacheRead, now.tokens.cacheRead);
   const cacheWrite = sum(base.tokens.cacheWrite, now.tokens.cacheWrite);
   const model = now.model ?? base.model;
+  const unpriced = now.cost === 0 && now.tokens.in + now.tokens.out + (now.tokens.cacheRead ?? 0) + (now.tokens.cacheWrite ?? 0) > 0;
   return {
     turns: base.turns + now.turns,
-    cost: now.cost === 0 ? 0 : base.cost + now.cost,
+    cost: unpriced ? 0 : base.cost + now.cost,
     tokens: { in: base.tokens.in + now.tokens.in, out: base.tokens.out + now.tokens.out, ...(cacheRead !== undefined ? { cacheRead } : {}), ...(cacheWrite !== undefined ? { cacheWrite } : {}) },
     ...(now.context ? { context: now.context } : {}),
     ...(model !== undefined ? { model } : {}),
+  };
+}
+
+/** What `after` holds beyond `before`: cost and tokens, none of them below 0. */
+function statsDelta(after: SessionStats, before: SessionStats): { cost: number; in: number; out: number; cacheRead: number; cacheWrite: number } {
+  const d = (a = 0, b = 0) => Math.max(0, a - b);
+  return { cost: d(after.cost, before.cost), in: d(after.tokens.in, before.tokens.in), out: d(after.tokens.out, before.tokens.out), cacheRead: d(after.tokens.cacheRead, before.tokens.cacheRead), cacheWrite: d(after.tokens.cacheWrite, before.tokens.cacheWrite) };
+}
+
+/** Stats with more spent added: turns, window and model as they were. */
+function plusStats(stats: SessionStats | undefined, more: ReturnType<typeof statsDelta>): SessionStats {
+  const s = stats ?? { turns: 0, cost: 0, tokens: { in: 0, out: 0 } };
+  const cacheRead = (s.tokens.cacheRead ?? 0) + more.cacheRead;
+  const cacheWrite = (s.tokens.cacheWrite ?? 0) + more.cacheWrite;
+  return {
+    ...s,
+    cost: Math.round((s.cost + more.cost) * 1e6) / 1e6,
+    tokens: { in: s.tokens.in + more.in, out: s.tokens.out + more.out, ...(cacheRead ? { cacheRead } : {}), ...(cacheWrite ? { cacheWrite } : {}) },
   };
 }

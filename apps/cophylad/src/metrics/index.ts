@@ -83,6 +83,7 @@ export class Metrics {
   private pressure: PressureTracker;
   private llm = new LlmCounter();
   private profileSpend = new ProfileSpend();
+  private spendPrimed = false;
   private ring: MetricsSample[] = [];
   private open: MetricsSample[] = [];
   private openMinute?: number;
@@ -130,7 +131,6 @@ export class Metrics {
   async start(): Promise<void> {
     if (!this.enabled || this.started || this.disposed) return;
     this.started = true;
-    this.profileSpend.prime(this.deps.sessions.list());
     await this.tick();
     this.arm();
     this.log.info("metrics on", { engine: this.deps.engine.name, idleMs: this.deps.config.idle_interval_ms, retentionDays: this.deps.config.retention_days });
@@ -185,6 +185,12 @@ export class Metrics {
       brain: this.deps.brainPid(),
       sidecars: this.deps.sidecarPids(),
     };
+    // The sessions' spend counts from the priming reading: what they announced before it (all of
+    // it, as the daemon starts) was spent before this run.
+    if (!this.spendPrimed) {
+      this.spendPrimed = true;
+      this.profileSpend.prime(this.deps.sessions.list(), this.now());
+    }
     // The counters are drained only into a sample: what was counted before the priming reading belongs to no sample.
     const primed = this.sampler.primed;
     const whole = this.sampler.build(raw, roots, primed ? this.llm.drain() : {}, primed ? this.profileSpend.drain() : undefined);

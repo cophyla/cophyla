@@ -1081,7 +1081,13 @@ export class Sessions implements SessionHost {
       clearTimeout(live.clearing);
       live.clearing = undefined;
     }
-    // The old transcript is read no further.
+    // The old transcript's last lines, then it is read no further (but by the adapter, for what it still needs of it).
+    const adapter = rec.session.native.transport === "acp" ? undefined : this.adapters.get(rec.session.harness as AttachedHarness);
+    try {
+      adapter?.leave?.(rec, at);
+    } catch (e) {
+      this.log.warn("last pass over a transcript left behind failed", { id: rec.session.id, error: e instanceof Error ? e.message : String(e) });
+    }
     this.flushResults(live);
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
     rec.session.native = { ...rec.session.native, id: nativeId };

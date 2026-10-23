@@ -487,6 +487,8 @@ export const PriceConfig = z.object({
   output: z.number().nonnegative(),
   cache_read: z.number().nonnegative().optional(),
   cache_write: z.number().nonnegative().optional(),
+  /** A Claude cache write kept an hour; `cache_write` when not given. */
+  cache_write_1h: z.number().nonnegative().optional(),
 });
 export type PriceConfig = z.infer<typeof PriceConfig>;
 

@@ -412,8 +412,19 @@ export const ERRORS_KEEP = 20;
 export const HISTORY_PAGE = 50;
 export const THREAD_PAGE = 1;
 
-/** How far back the spend reaches: the node's totals over this window are its base. */
-export const SPEND_WINDOW_MS = 24 * 60 * 60 * 1000;
+/** Where the spend starts: the last local midnight, so Today is the calendar day's. */
+export function spendFrom(now: number): number {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+/** Milliseconds until the next local midnight, when Today starts over. */
+export function untilTomorrow(now: number): number {
+  const d = new Date(now);
+  d.setHours(24, 0, 0, 0);
+  return d.getTime() - now;
+}
 
 export function initialState(): ViewState {
   return {

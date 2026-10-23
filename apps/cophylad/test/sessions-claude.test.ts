@@ -10,17 +10,17 @@
 // and once in the log, and moved to its own profile once a restart declares it.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Session, SessionEvent } from "@cophyla/protocol";
 import { createLogger } from "../src/log.ts";
-import { ClaudeAdapter, claudeConfigDirOf } from "../src/sessions/claude/adapter.ts";
+import { ClaudeAdapter, claudeConfigDirOf, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
 import { installClaudeHooks, isCophyladGroup, isOwnGroup, readSettings, uninstallClaudeHooks, withCophyladHooks, withoutCophyladHooks } from "../src/sessions/claude/hooks.ts";
 import { claudeFrames, injectClaude } from "../src/sessions/claude/inject.ts";
 import { readRegistry, transcriptDirName, transcriptPathFor } from "../src/sessions/claude/registry.ts";
-import { applyClaudeRow, newClaudeState, statsFor } from "../src/sessions/claude/transcript.ts";
+import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, newClaudeState, statsFor } from "../src/sessions/claude/transcript.ts";
 import type { ClaudeItem } from "../src/sessions/claude/transcript.ts";
 import { clearRegistry, miniSessions, removeSocket, sleep, tempHome, testSocketPath, tomlString, waitFor, writeRegistry } from "./helpers.ts";
 import type { Mini } from "./helpers.ts";
@@ -137,6 +137,116 @@ describe("claude transcript parser", () => {
     expect(stats.cost).toBe(0);
     expect(stats.context).toBeUndefined();
     expect(state.stats.context?.used).toBe(31005);
+  });
+
+  const assistant = (id: string, model: string, usage: Record<string, unknown>) => ({ type: "assistant", timestamp: "2026-10-23T05:00:00.000Z", message: { id, model, role: "assistant", content: [], usage } });
+
+  test("prices each model's tokens at its own rates, the cache writes kept an hour apart", () => {
+    const s = newClaudeState();
+    applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 4000, cache_creation: { ephemeral_1h_input_tokens: 3000, ephemeral_5m_input_tokens: 1000 } }));
+    // The same message again (another content block of it): counted once.
+    applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000, cache_read_input_tokens: 100_000, cache_creation_input_tokens: 4000, cache_creation: { ephemeral_1h_input_tokens: 3000, ephemeral_5m_input_tokens: 1000 } }));
+    applyClaudeRow(s, assistant("msg_2", "claude-sonnet-5-5", { input_tokens: 20, output_tokens: 500, cache_read_input_tokens: 0, cache_creation_input_tokens: 2000 }));
+    expect([...s.byModel]).toEqual([
+      ["claude-opus-5-5", { in: 10, out: 1000, cacheRead: 100_000, cacheWrite: 4000, cacheWrite1h: 3000 }],
+      ["claude-sonnet-5-5", { in: 20, out: 500, cacheRead: 0, cacheWrite: 2000, cacheWrite1h: 0 }],
+    ]);
+    const prices: Record<string, number[]> = { "claude-opus-5-5": [4, 20, 0.2, 5, 8], "claude-sonnet-5-5": [2, 10, 0.2, 2.5, 4] };
+    const price = (model: string, t: { in: number; out: number; cacheRead: number; cacheWrite: number; cacheWrite1h: number }) => {
+      const p = prices[model];
+      return p ? (t.in * p[0]! + t.out * p[1]! + t.cacheRead * p[2]! + (t.cacheWrite - t.cacheWrite1h) * p[3]! + t.cacheWrite1h * p[4]!) / 1e6 : undefined;
+    };
+    const opus = (10 * 4 + 1000 * 20 + 100_000 * 0.2 + 1000 * 5 + 3000 * 8) / 1e6;
+    const sonnet = (20 * 2 + 500 * 10 + 2000 * 2.5) / 1e6;
+    const stats = statsFor(s, price);
+    expect(stats.cost).toBeCloseTo(opus + sonnet, 6);
+    expect(stats.tokens).toEqual({ in: 30, out: 1500, cacheRead: 100_000, cacheWrite: 6000 });
+    expect(stats.model).toBe("claude-sonnet-5-5");
+    // A model with no price adds nothing; without a price the cost is left to the host.
+    applyClaudeRow(s, assistant("msg_3", "claude-future-9", { input_tokens: 1_000_000, output_tokens: 0 }));
+    expect(statsFor(s, price).cost).toBeCloseTo(opus + sonnet, 6);
+    expect(statsFor(s).cost).toBe(0);
+  });
+
+  test("a message's later rows add the output its first row had not counted yet, and nothing else", () => {
+    const s = newClaudeState();
+    const usage = (out: number) => ({ input_tokens: 6, output_tokens: out, cache_read_input_tokens: 50_000, cache_creation_input_tokens: 900, cache_creation: { ephemeral_1h_input_tokens: 900 } });
+    // Thinking, then text, then a tool call: one message, its output count growing row by row.
+    expect(applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", usage(8)))).toEqual([]);
+    const context = s.stats.context;
+    applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", usage(8)));
+    applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", usage(410)));
+    expect(s.statsChanged).toBe(true);
+    s.statsChanged = false;
+    // A copy with less (a fork's, written before the message ended) changes nothing.
+    applyClaudeUsage(s, { ...assistant("msg_1", "claude-opus-5-5", usage(8)), isSidechain: true });
+    expect(s.statsChanged).toBe(false);
+    expect(s.stats.tokens).toEqual({ in: 6, out: 410, cacheRead: 50_000, cacheWrite: 900 });
+    expect(s.byModel.get("claude-opus-5-5")).toEqual({ in: 6, out: 410, cacheRead: 50_000, cacheWrite: 900, cacheWrite1h: 900 });
+    expect(s.stats.context).toEqual(context);
+  });
+
+  test("Claude's cost record: what it holds beyond the usage counted is kept, the most any record showed", () => {
+    const s = newClaudeState();
+    const price = (_m: string, t: { in: number; out: number }) => (t.in * 4 + t.out * 20) / 1e6;
+    applyClaudeRow(s, assistant("msg_1", "claude-opus-5-5", { input_tokens: 100, output_tokens: 1000 }));
+    expect(s.settled).toBe(false);
+    const counted = (100 * 4 + 1000 * 20) / 1e6;
+    const record = (total: number, input: number) => ({ type: "cost-state", totalCostUSD: total, modelUsage: { "claude-opus-5-5": { inputTokens: input, outputTokens: 1000, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUSD: total } } });
+    // The parser alone counts no record: its row yields nothing.
+    expect(applyClaudeRow(s, record(1, 1))).toEqual([]);
+    expect(applyClaudeCostRecord(s, record(counted + 0.1, 600), price)).toBe(true);
+    expect(s.settled).toBe(true);
+    expect(statsFor(s, price).cost).toBeCloseTo(counted + 0.1, 6);
+    expect(statsFor(s, price).tokens).toEqual({ in: 600, out: 1000 });
+    // Unpriced, the record's cost is left out, its tokens not.
+    expect(statsFor(s).cost).toBe(0);
+    // Lower (its totals not restored on a resume): nothing taken back, nothing changes.
+    expect(applyClaudeCostRecord(s, record(0.001, 1), price)).toBe(false);
+    expect(statsFor(s, price).cost).toBeCloseTo(counted + 0.1, 6);
+    // Usage after it: no longer settled; a later record counts on top of all of it.
+    applyClaudeRow(s, assistant("msg_2", "claude-opus-5-5", { input_tokens: 0, output_tokens: 1000 }));
+    expect(s.settled).toBe(false);
+    expect(applyClaudeCostRecord(s, record(counted + 0.02 + 0.3, 600), price)).toBe(true);
+    expect(statsFor(s, price).cost).toBeCloseTo(counted + 0.02 + 0.3, 6);
+    expect(applyClaudeCostRecord(s, { type: "cost-state", totalCostUSD: "x" }, price)).toBe(false);
+  });
+
+  test("a sub-agent's rows add their usage alone, and a fork's copy of the message it came from is not counted again", () => {
+    const s = newClaudeState();
+    applyClaudeRow(s, { type: "user", timestamp: "2026-10-23T05:00:00.000Z", message: { role: "user", content: "review this" } });
+    applyClaudeRow(s, assistant("msg_parent", "claude-opus-5-5", { input_tokens: 5, output_tokens: 50, cache_read_input_tokens: 1000 }));
+    const contextBefore = s.stats.context;
+    // The fork's transcript: its reference row, the parent's message copied, then its own work on another model.
+    applyClaudeUsage(s, { type: "fork-context-ref", agentId: "a1", parentSessionId: "p" });
+    applyClaudeUsage(s, { ...assistant("msg_parent", "claude-opus-5-5", { input_tokens: 5, output_tokens: 50, cache_read_input_tokens: 1000 }), isSidechain: true });
+    applyClaudeUsage(s, { ...assistant("msg_sub", "claude-sonnet-5-5", { input_tokens: 7, output_tokens: 70, cache_read_input_tokens: 9000 }), isSidechain: true });
+    applyClaudeUsage(s, { type: "user", isSidechain: true, message: { role: "user", content: "a sub-agent's prompt" } });
+    expect(s.stats.tokens).toEqual({ in: 12, out: 120, cacheRead: 10_000, cacheWrite: 0 });
+    expect(s.byModel.get("claude-sonnet-5-5")).toEqual({ in: 7, out: 70, cacheRead: 9000, cacheWrite: 0, cacheWrite1h: 0 });
+    // Its turns, its window and its model are the session's own.
+    expect(s.stats.turns).toBe(1);
+    expect(s.stats.context).toEqual(contextBefore);
+    expect(s.model).toBe("claude-opus-5-5");
+  });
+});
+
+describe("claude sub-agent transcripts", () => {
+  test("are found beside the session's, a workflow's agents a folder further down", () => {
+    const dir = join(tempHome(), "projects", "C--w");
+    mkdirSync(dir, { recursive: true });
+    const transcript = join(dir, "sess-1.jsonl");
+    writeFileSync(transcript, "");
+    expect(subagentTranscripts(transcript)).toEqual([]);
+    const subs = join(dir, "sess-1", "subagents");
+    mkdirSync(join(subs, "workflows", "wf_1"), { recursive: true });
+    writeFileSync(join(subs, "agent-a.jsonl"), "");
+    writeFileSync(join(subs, "agent-a.meta.json"), "{}");
+    writeFileSync(join(subs, "workflows", "wf_1", "agent-b.jsonl"), "");
+    writeFileSync(join(subs, "workflows", "wf_1", "journal.jsonl"), "");
+    mkdirSync(join(dir, "sess-1", "tool-results"), { recursive: true });
+    writeFileSync(join(dir, "sess-1", "tool-results", "x.jsonl"), "");
+    expect(subagentTranscripts(transcript).sort()).toEqual([join(subs, "agent-a.jsonl"), join(subs, "workflows", "wf_1", "agent-b.jsonl")].sort());
   });
 });
 
@@ -332,6 +442,180 @@ describe("claude pipe injection", () => {
 
   test("a pipe nobody serves is an error, not a hang", async () => {
     await expect(injectClaude(testSocketPath("none"), "t", "x", { connectTimeoutMs: 500 })).rejects.toThrow();
+  });
+});
+
+describe("claude adapter prices a session with its sub-agents", () => {
+  let mini: Mini;
+  let profileDir: string;
+  let registry: string;
+  let cwd: string;
+  let clock = Date.parse("2026-10-23T05:00:00.000Z");
+  const alive = new Set([500]);
+  const PRICES: Record<string, number[]> = { "claude-opus-5-5": [4, 20, 0.2, 5, 8], "claude-sonnet-5-5": [2, 10, 0.2, 2.5, 4] };
+
+  beforeAll(async () => {
+    const scratch = tempHome();
+    profileDir = join(scratch, "claude-profile");
+    registry = join(profileDir, "sessions");
+    cwd = join(scratch, "work");
+    mkdirSync(registry, { recursive: true });
+    mkdirSync(cwd, { recursive: true });
+    mini = await miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(profileDir)}\n`,
+      (host, log) => [
+        new ClaudeAdapter({
+          host,
+          log,
+          isAlive: (pid) => alive.has(pid),
+          sharedSettings: join(profileDir, "no-such-shared-settings.json"),
+          price: (model, t) => {
+            const p = PRICES[model];
+            return p ? (t.in * p[0]! + t.out * p[1]! + t.cacheRead * p[2]! + (t.cacheWrite - t.cacheWrite1h) * p[3]! + t.cacheWrite1h * p[4]!) / 1e6 : undefined;
+          },
+        }),
+      ],
+      { deps: { now: () => clock } },
+    );
+  });
+  afterAll(() => mini.stop());
+
+  const row = (id: string, model: string, usage: Record<string, unknown>, extra: Record<string, unknown> = {}) =>
+    JSON.stringify({ type: "assistant", timestamp: new Date(clock).toISOString(), message: { id, model, role: "assistant", content: [{ type: "text", text: `${id} says hi` }], usage }, ...extra });
+
+  test("its sub-agents' usage counts towards its stats, priced by model, and none of their rows becomes an event", async () => {
+    writeRegistry(registry, { pid: 500, sessionId: "sess-p", cwd, status: "busy" });
+    const path = transcriptPathFor(profileDir, cwd, "sess-p");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    mkdirSync(subs, { recursive: true });
+    const parent = row("msg_p", "claude-opus-5-5", { input_tokens: 10, output_tokens: 100, cache_read_input_tokens: 10_000, cache_creation_input_tokens: 1000, cache_creation: { ephemeral_1h_input_tokens: 1000 } });
+    writeFileSync(path, parent + "\n");
+    // A fork: the message it came from copied, then its own on Sonnet.
+    writeFileSync(join(subs, "agent-a1.jsonl"), [JSON.stringify({ type: "fork-context-ref", agentId: "a1" }), parent, row("msg_s1", "claude-sonnet-5-5", { input_tokens: 5, output_tokens: 50, cache_read_input_tokens: 2000 }, { isSidechain: true })].join("\n") + "\n");
+    await mini.sessions.tick();
+    const s = mini.sessions.list().find((x) => x.native.id === "sess-p")!;
+    const opus = (10 * 4 + 100 * 20 + 10_000 * 0.2 + 1000 * 8) / 1e6;
+    const sonnet = (5 * 2 + 50 * 10 + 2000 * 0.2) / 1e6;
+    expect(s.stats?.tokens).toEqual({ in: 15, out: 150, cacheRead: 12_000, cacheWrite: 1000 });
+    expect(s.stats?.cost).toBeCloseTo(opus + sonnet, 6);
+    expect(s.stats?.model).toBe("claude-opus-5-5");
+    const texts = mini.store.sessionEvents.history(s.id, { limit: 50 }).filter((e) => e.kind === "assistant_text").map((e) => (e.payload as { text: string }).text);
+    expect(texts).toEqual(["msg_p says hi"]);
+  });
+
+  test("a sub-agent that works while its session's transcript is still is read again after a while", async () => {
+    const path = transcriptPathFor(profileDir, cwd, "sess-p");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    const before = mini.sessions.list().find((x) => x.native.id === "sess-p")!.stats!.cost;
+    writeFileSync(join(subs, "agent-a2.jsonl"), row("msg_s2", "claude-sonnet-5-5", { input_tokens: 1000, output_tokens: 1000 }, { isSidechain: true }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.list().find((x) => x.native.id === "sess-p")!.stats!.cost).toBe(before);
+    clock += 10_000;
+    await mini.sessions.tick();
+    const s = mini.sessions.list().find((x) => x.native.id === "sess-p")!;
+    expect(s.stats!.cost).toBeCloseTo(before + (1000 * 2 + 1000 * 10) / 1e6, 6);
+    expect(s.stats!.tokens.in).toBe(1015);
+  });
+
+  const costRecord = (sessionId: string, total: number, usage: Record<string, { in: number; out: number; read?: number }> = {}) =>
+    JSON.stringify({
+      type: "cost-state",
+      sessionId,
+      totalCostUSD: total,
+      startTime: clock,
+      modelUsage: Object.fromEntries(Object.entries(usage).map(([m, u]) => [m, { inputTokens: u.in, outputTokens: u.out, cacheReadInputTokens: u.read ?? 0, cacheCreationInputTokens: 0, webSearchRequests: 0, costUSD: 0 }])),
+    });
+
+  test("Claude's cost record adds what it holds beyond the transcripts, its sub-agents read up to it first", async () => {
+    alive.add(501);
+    writeRegistry(registry, { pid: 501, sessionId: "sess-q", cwd });
+    const path = transcriptPathFor(profileDir, cwd, "sess-q");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    mkdirSync(subs, { recursive: true });
+    writeFileSync(path, row("msg_q1", "claude-opus-5-5", { input_tokens: 10, output_tokens: 1000 }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    const id = mini.sessions.list().find((x) => x.native.id === "sess-q")!.id;
+    const opus = (10 * 4 + 1000 * 20) / 1e6;
+    const sonnet = (100 * 2 + 100 * 10) / 1e6;
+    // A sub-agent's work its folder was read too recently to see, then the record as the session exits.
+    writeFileSync(join(subs, "agent-q.jsonl"), row("msg_q2", "claude-sonnet-5-5", { input_tokens: 100, output_tokens: 100 }, { isSidechain: true }) + "\n");
+    appendFileSync(path, costRecord("sess-q", opus + sonnet + 0.5, { "claude-opus-5-5": { in: 2010, out: 1000, read: 50_000 }, "claude-sonnet-5-5": { in: 100, out: 100 } }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    let s = mini.sessions.get(id)!;
+    expect(s.stats!.cost).toBeCloseTo(opus + sonnet + 0.5, 6);
+    expect(s.stats!.tokens).toEqual({ in: 2110, out: 1100, cacheRead: 50_000 });
+    // A later record holding less (a resume that did not restore Claude's totals) takes nothing back.
+    appendFileSync(path, costRecord("sess-q", 0.01, { "claude-opus-5-5": { in: 5, out: 5 } }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    s = mini.sessions.get(id)!;
+    expect(s.stats!.cost).toBeCloseTo(opus + sonnet + 0.5, 6);
+    expect(s.stats!.tokens).toEqual({ in: 2110, out: 1100, cacheRead: 50_000 });
+  });
+
+  test("a record Claude writes just after a clear is read from the transcript left behind, and the new one counts on from it", async () => {
+    alive.add(502);
+    writeRegistry(registry, { pid: 502, sessionId: "sess-r", cwd });
+    const old = transcriptPathFor(profileDir, cwd, "sess-r");
+    writeFileSync(old, row("msg_r1", "claude-opus-5-5", { input_tokens: 0, output_tokens: 1000 }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    const id = mini.sessions.list().find((x) => x.native.id === "sess-r")!.id;
+    // Cleared: the entry rewritten under the new id before the old transcript has its record.
+    clearRegistry(registry, 502);
+    writeRegistry(registry, { pid: 502, sessionId: "sess-r2", cwd });
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(id)!.native.id).toBe("sess-r2");
+    expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(0.02, 6);
+    appendFileSync(old, costRecord("sess-r", 0.27) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(0.27, 6);
+    writeFileSync(transcriptPathFor(profileDir, cwd, "sess-r2"), row("msg_r2", "claude-opus-5-5", { input_tokens: 0, output_tokens: 500 }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(0.28, 6);
+  });
+
+  test("a session that ends before Claude writes its record is credited it once written, but not past the wait", async () => {
+    alive.add(503);
+    writeRegistry(registry, { pid: 503, sessionId: "sess-t", cwd });
+    const path = transcriptPathFor(profileDir, cwd, "sess-t");
+    writeFileSync(path, row("msg_t1", "claude-opus-5-5", { input_tokens: 0, output_tokens: 1000 }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    const id = mini.sessions.list().find((x) => x.native.id === "sess-t")!.id;
+    alive.delete(503);
+    clearRegistry(registry, 503);
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(id)!.status).toBe("ended");
+    appendFileSync(path, costRecord("sess-t", 0.05) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(id)!.stats!.cost).toBeCloseTo(0.05, 6);
+
+    // Another that ended, its record written only after the wait: not looked for any more.
+    alive.add(504);
+    writeRegistry(registry, { pid: 504, sessionId: "sess-u", cwd });
+    const late = transcriptPathFor(profileDir, cwd, "sess-u");
+    writeFileSync(late, row("msg_u1", "claude-opus-5-5", { input_tokens: 0, output_tokens: 1000 }) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    const lateId = mini.sessions.list().find((x) => x.native.id === "sess-u")!.id;
+    alive.delete(504);
+    clearRegistry(registry, 504);
+    await mini.sessions.tick();
+    clock += 31_000;
+    await mini.sessions.tick();
+    appendFileSync(late, costRecord("sess-u", 0.05) + "\n");
+    clock += 1000;
+    await mini.sessions.tick();
+    expect(mini.sessions.get(lateId)!.stats!.cost).toBeCloseTo(0.02, 6);
   });
 });
 
