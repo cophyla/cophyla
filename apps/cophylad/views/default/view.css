@@ -2830,6 +2830,32 @@ button:disabled {
   font-weight: 600;
 }
 
+/* Under the logins, the way to the settings' Usage page: quiet, at the right. */
+.spend-details {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+  margin-top: 3px;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.spend-details:hover {
+  color: var(--ink);
+}
+
+.spend-details .chevron-mark {
+  width: 5px;
+  height: 5px;
+  margin-right: 4px;
+}
+
 
 /* The way into Devices, at the foot: what it holds over how many there are, and an arrow. */
 .status-devices {

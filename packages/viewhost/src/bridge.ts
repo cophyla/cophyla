@@ -117,8 +117,8 @@ export interface BridgeConfig {
   talk?: boolean;
   /** Shows the host's view picker (`host.chooseView`); absent, it answers `unsupported`. */
   chooseView?: () => void;
-  /** Shows the host's settings (`host.settings`); absent, it answers `unsupported`. */
-  openSettings?: () => void;
+  /** Shows the host's settings (`host.settings`), at the page a view names when it names one; absent, it answers `unsupported`. */
+  openSettings?: (page?: string) => void;
   /** Opens a web page in the user's browser (`host.openLink`); absent, it answers `unsupported`. */
   openLink?: (url: string) => Promise<void>;
   /** Keeps the view's prefs (`host.savePrefs`); absent, it answers `unsupported`. */
@@ -229,8 +229,9 @@ export class Bridge {
     }
     const settings = cfg.openSettings;
     if (settings) {
-      this.settings = async () => {
-        settings();
+      this.settings = async (_method, params) => {
+        const page = (params as { page?: unknown } | undefined)?.page;
+        settings(typeof page === "string" ? page : undefined);
         return {};
       };
     }

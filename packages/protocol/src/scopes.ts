@@ -103,6 +103,7 @@ export const requestScopes = {
   "metrics.subscribe": "metrics:read",
   "metrics.unsubscribe": "metrics:read",
   "metrics.history": "metrics:read",
+  "usage.report": "metrics:read",
   "remote.pair": "remote",
   "remote.invite": "remote",
   "remote.open": "remote",

@@ -176,7 +176,7 @@ describe("config", () => {
 
   test("the metrics section: defaults, the price table over the built-in one, critical above warn", () => {
     const c = parseConfig("");
-    expect(c.metrics).toEqual({ enabled: true, idle_interval_ms: 15000, min_interval_ms: 1000, retention_days: 7, warn: 80, critical: 95, gpu: true, limits: true, prices: {} });
+    expect(c.metrics).toEqual({ enabled: true, idle_interval_ms: 15000, min_interval_ms: 1000, retention_days: 7, spend_retention_days: 90, warn: 80, critical: 95, gpu: true, limits: true, prices: {} });
     const priced = parseConfig('[metrics]\nwarn = 50\ncritical = 60\n[metrics.prices."gemini/gemini-3.8-flash"]\ninput = 1.5\noutput = 7.5\ncache_read = 0.15\n');
     expect(priced.metrics.warn).toBe(50);
     expect(priced.metrics.critical).toBe(60);

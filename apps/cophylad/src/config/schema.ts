@@ -503,6 +503,8 @@ export const MetricsConfig = z
     min_interval_ms: z.number().int().positive().default(1000),
     /** Days of per-minute rollups kept in the store. */
     retention_days: z.number().int().positive().default(7),
+    /** Days of the spend ledger's hours kept: what the Usage page reads. */
+    spend_retention_days: z.number().int().positive().default(90),
     /** Percent of a resource at which `node.pressure` says `warn`, and `critical`. */
     warn: z.number().min(0).max(100).default(80),
     critical: z.number().min(0).max(100).default(95),
@@ -1022,6 +1024,7 @@ enabled = true
 idle_interval_ms = 15000       # between samples while no client is subscribed
 min_interval_ms = 1000         # the floor under a subscriber's interval
 retention_days = 7             # per-minute rollups kept
+spend_retention_days = 90      # the spend ledger's hours, which the Usage page reads
 warn = 80                      # percent at which node.pressure says warn
 critical = 95                  # and critical
 gpu = true                     # read the GPU: NVML for NVIDIA's, Windows' GPU counters for any other

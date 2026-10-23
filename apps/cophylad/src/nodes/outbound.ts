@@ -147,6 +147,7 @@ export interface OutboundDeps {
   /** The table served to the primary, built once its id is known. */
   served: (primaryId: string) => BrainMethodTable;
   metrics?: ServeDeps["metrics"];
+  usage?: ServeDeps["usage"];
   /** The metrics subscriber a link's samples are delivered under: `link:<id>` for the machine's own. */
   metricsSubscriber?: (linkId: string) => string;
   /** What a row going up looks like: a workspace node's leave out where the machine keeps its terminals and transcripts. */
@@ -417,6 +418,7 @@ export class Outbound {
         log: this.log,
         onPending: (id, ask) => void peer.notify("pending", { id, ask, at: this.now() }),
         ...(this.deps.metrics ? { metrics: this.deps.metrics } : {}),
+        ...(this.deps.usage ? { usage: this.deps.usage } : {}),
         metricsSubscriber: this.subscriberFor(j.linkId),
         ...(this.deps.remote ? { remote: this.deps.remote } : {}),
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),

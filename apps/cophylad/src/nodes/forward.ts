@@ -123,6 +123,8 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "recall":
     case "metrics.query":
     case "metrics.history":
+    // What a node's sessions spent is that node's ledger's.
+    case "usage.report":
     // The desktop's owner pairs, invites, revokes, captures and switches sharing; `remote.open` runs where the client is and is never here.
     case "remote.pair":
     case "remote.invite":

@@ -16,8 +16,7 @@
 // its hooks name, its timeline and the log say so, and the registry moves it to its own profile
 // once there is one.
 
-import { existsSync, readdirSync } from "node:fs";
-import type { Dirent } from "node:fs";
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
@@ -34,8 +33,14 @@ import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
 import { classify, isAlive as defaultIsAlive, jobCreatedAt, readEntry, readRegistry, statusOf, transcriptPathFor, waitingOf } from "./registry.ts";
 import type { ClaudeLive, IsAlive } from "./registry.ts";
+import { conversationKey } from "../../usage/ledger.ts";
+import type { SideSpend, SpendCall, SpendSink } from "../../usage/ledger.ts";
+import { subagentInfo, subagentTranscripts } from "./subagents.ts";
+import type { SubagentInfo } from "./subagents.ts";
 import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, isCostRecord, newClaudeState, rowAt, statsFor } from "./transcript.ts";
 import type { ClaudePrice, ClaudeTranscriptState } from "./transcript.ts";
+
+export { subagentTranscripts };
 
 /** A tool result from a hook with no call id suppresses the transcript's copy of the same tool and input for this long. */
 const HOOK_TOOL_TTL_MS = 120000;
@@ -51,36 +56,26 @@ const CLOSING_READ_MS = 30000;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/**
- * A session's sub-agents' transcripts: `<session>/subagents/*.jsonl` beside its own, and a
- * workflow's agents' a folder further down, `subagents/workflows/<run>/agent-*.jsonl`.
- */
-export function subagentTranscripts(transcript: string): string[] {
-  const list = (dir: string): Dirent[] => {
-    try {
-      return readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-  };
-  const dir = join(dirname(transcript), basename(transcript, ".jsonl"), "subagents");
-  const out: string[] = [];
-  for (const e of list(dir)) {
-    if (e.isFile() && e.name.endsWith(".jsonl")) out.push(join(dir, e.name));
-    else if (e.isDirectory() && e.name === "workflows") {
-      for (const run of list(join(dir, "workflows"))) {
-        if (!run.isDirectory()) continue;
-        for (const f of list(join(dir, "workflows", run.name))) if (f.isFile() && f.name.startsWith("agent-") && f.name.endsWith(".jsonl")) out.push(join(dir, "workflows", run.name, f.name));
-      }
-    }
-  }
-  return out;
-}
-
 /** The sub-agents' transcripts read into one parser's usage, and when they were last read. */
 interface SubagentTails {
   tails: Map<string, Tail>;
   readAt: number;
+  /** What each is, how far the spend ledger has it, and what started the turn it was first seen in. */
+  info: Map<string, SubagentInfo & { mark: number; trigger: string }>;
+}
+
+/**
+ * What one parser feeds the spend ledger: its conversation, how far the ledger has its own
+ * transcript, and what a pass counted past the marks, written at the pass's end.
+ */
+interface SpendFeed {
+  key: string;
+  mark: number;
+  calls: SpendCall[];
+  side: SideSpend[];
+  marks: Map<string, number>;
+  /** When the last row read was written: a cost record's time, which it does not say. */
+  lastAt?: number;
 }
 
 /**
@@ -124,6 +119,8 @@ export interface ClaudeAdapterOptions {
   raiser?: ProcessTree;
   /** Prices each model's tokens in a session's cost; without it the host prices them all at the session's model. */
   price?: ClaudePrice;
+  /** The spend ledger, fed every call counted past its marks. */
+  ledger?: SpendSink;
 }
 
 /**
@@ -160,6 +157,9 @@ export class ClaudeAdapter implements HarnessAdapter {
   /** By the parser they feed: a parser made again (a cleared context, a transcript read again) reads them again from the start. */
   private subagents = new WeakMap<ClaudeTranscriptState, SubagentTails>();
   private closing: Closing[] = [];
+  private ledger: SpendSink | undefined;
+  /** By the parser that feeds it. */
+  private feeds = new WeakMap<ClaudeTranscriptState, SpendFeed>();
 
   constructor(opts: ClaudeAdapterOptions) {
     this.host = opts.host;
@@ -169,6 +169,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.sharedSettings = opts.sharedSettings ?? join(homedir(), ".claude", "settings.json");
     this.raiser = opts.raiser;
     this.price = opts.price;
+    this.ledger = opts.ledger;
   }
 
   /** Says that a session with this id is being started in a terminal, and what for. */
@@ -469,16 +470,8 @@ export class ClaudeAdapter implements HarnessAdapter {
       this.host.watch(dirname(path));
     }
     const state = rec.parser as ClaudeTranscriptState;
-    this.tailSubagents(state, path, now);
+    const feed = this.feedOf(state, path);
     const lines = tail.read();
-    if (lines.length === 0) {
-      // A sub-agent's usage alone: the stats move, nothing else does.
-      if (state.statsChanged) {
-        state.statsChanged = false;
-        this.host.patch(rec, { stats: countOn(rec.statsBase, statsFor(state, this.price)) }, now);
-      }
-      return;
-    }
     const recordFrom = tail.recordFrom;
     const patch: Partial<Session> = {};
     for (const line of lines) {
@@ -489,9 +482,11 @@ export class ClaudeAdapter implements HarnessAdapter {
         continue;
       }
       const record = line.offset >= recordFrom;
-      if (isCostRecord(row)) this.settleCost(state, path, row, now);
       // History a job was forked with: counted in its stats, but recorded under the old id already.
       const copied = rec.copiedBefore !== undefined && (rowAt(row) ?? Infinity) < rec.copiedBefore;
+      // The ledger has what is before its mark, and the history a job was forked with is its parent's.
+      if (feed) this.feedLine(state, feed, row, line.offset >= feed.mark && !copied);
+      if (isCostRecord(row)) this.settleCost(state, path, row, now);
       for (const item of applyClaudeRow(state, row)) {
         if (copied) continue;
         switch (item.kind) {
@@ -551,15 +546,68 @@ export class ClaudeAdapter implements HarnessAdapter {
         }
       }
     }
+    state.onUsage = undefined;
+    // Its sub-agents after its own lines: the launches those name are known by then.
+    this.tailSubagents(state, path, now);
     if (state.statsChanged) {
       state.statsChanged = false;
       patch.stats = countOn(rec.statsBase, statsFor(state, this.price));
     }
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
+    this.commitSpend(rec, state, now);
+    if (lines.length === 0) return;
     this.host.tailed(rec);
     if (state.continuedIn) this.continued(rec, state.continuedIn, now);
     // A turn taken here since: the conversation goes on in its window after all.
     else if (rec.continuing) delete rec.continuing;
+  }
+
+  /** The ledger's feed for a parser, made with the marks the ledger holds; none without a ledger. */
+  private feedOf(state: ClaudeTranscriptState, path: string): SpendFeed | undefined {
+    if (!this.ledger) return undefined;
+    let feed = this.feeds.get(state);
+    if (!feed) {
+      const key = conversationKey("claude", basename(path, ".jsonl"));
+      feed = { key, mark: this.ledger.marks([key]).get(key) ?? 0, calls: [], side: [], marks: new Map() };
+      this.feeds.set(state, feed);
+      this.ledger.claim(key);
+    }
+    return feed;
+  }
+
+  /** Before a line of a conversation's own transcript: whether what it counts goes to the ledger. */
+  private feedLine(state: ClaudeTranscriptState, feed: SpendFeed, row: unknown, counts: boolean): void {
+    const at = rowAt(row);
+    if (at !== undefined) feed.lastAt = at;
+    state.onUsage = counts ? (u) => feed.calls.push(u) : undefined;
+  }
+
+  /** After a pass: its own transcript's mark moves to where the tail is, then the pass is written. */
+  private commitSpend(rec: SessionRecord, state: ClaudeTranscriptState, now: number, tail: Tail | undefined = rec.tail): void {
+    state.onUsage = undefined;
+    const feed = this.feeds.get(state);
+    if (!feed || !this.ledger) return;
+    if (tail && tail.consumed > feed.mark) {
+      feed.mark = tail.consumed;
+      feed.marks.set(feed.key, tail.consumed);
+    }
+    if (feed.calls.length === 0 && feed.side.length === 0 && feed.marks.size === 0) return;
+    const s = rec.session;
+    const title = s.name ?? s.title;
+    const at = feed.lastAt ?? now;
+    try {
+      this.ledger.commit({
+        conversation: { conversation: feed.key, harness: "claude", session: s.id, profile: s.profile, cwd: s.cwd, ...(title ? { title } : {}), firstAt: at, lastAt: at },
+        calls: feed.calls,
+        side: feed.side,
+        marks: feed.marks,
+      });
+    } catch (e) {
+      this.log.warn("spend ledger write failed", { session: s.id, error: e instanceof Error ? e.message : String(e) });
+    }
+    feed.calls = [];
+    feed.side = [];
+    feed.marks = new Map();
   }
 
   /**
@@ -570,22 +618,42 @@ export class ClaudeAdapter implements HarnessAdapter {
   private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): void {
     let subs = this.subagents.get(state);
     if (!subs) {
-      subs = { tails: new Map(), readAt: -Infinity };
+      subs = { tails: new Map(), readAt: -Infinity, info: new Map() };
       this.subagents.set(state, subs);
     }
     if (!force && now - subs.readAt < SUBAGENT_READ_MS) return;
     subs.readAt = now;
-    for (const file of subagentTranscripts(path)) {
-      let tail = subs.tails.get(file);
-      if (!tail) subs.tails.set(file, (tail = new Tail(file)));
+    const feed = this.feeds.get(state);
+    const files = subagentTranscripts(path);
+    const fresh = files.filter((f) => !subs.tails.has(f));
+    if (fresh.length > 0) {
+      const infos = fresh.map((f) => subagentInfo(path, f));
+      const marks = feed && this.ledger ? this.ledger.marks(infos.map((i) => `${feed.key}/${i.key}`)) : new Map<string, number>();
+      fresh.forEach((f, i) => {
+        subs.tails.set(f, new Tail(f));
+        const info = infos[i]!;
+        subs.info.set(f, { ...info, mark: feed ? (marks.get(`${feed.key}/${info.key}`) ?? 0) : 0, trigger: state.trigger });
+      });
+    }
+    // A line of the conversation's own may be counting for the ledger: kept for it after.
+    const keep = state.onUsage;
+    for (const file of files) {
+      const tail = subs.tails.get(file)!;
+      const info = subs.info.get(file)!;
       for (const line of tail.read()) {
+        state.onUsage = feed && line.offset >= info.mark ? (u) => feed.calls.push(u) : undefined;
         try {
-          applyClaudeUsage(state, JSON.parse(line.text));
+          applyClaudeUsage(state, JSON.parse(line.text), { agent: info.agent, trigger: state.agentTriggers.get(info.id) ?? info.trigger });
         } catch {
           // a line that is not JSON counts nothing
         }
       }
+      if (feed && tail.consumed > info.mark) {
+        info.mark = tail.consumed;
+        feed.marks.set(`${feed.key}/${info.key}`, tail.consumed);
+      }
     }
+    state.onUsage = keep;
   }
 
   /**
@@ -595,8 +663,19 @@ export class ClaudeAdapter implements HarnessAdapter {
    */
   private settleCost(state: ClaudeTranscriptState, path: string, row: unknown, now: number): void {
     if (!this.price) return;
+    const counts = state.onUsage !== undefined;
     this.tailSubagents(state, path, now, true);
-    applyClaudeCostRecord(state, row, this.price);
+    const was = state.unrecorded ?? { cost: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
+    if (!applyClaudeCostRecord(state, row, this.price)) return;
+    const feed = this.feeds.get(state);
+    const u = state.unrecorded;
+    if (!counts || !feed || !u) return;
+    feed.side.push({
+      at: feed.lastAt ?? now,
+      model: state.model ?? "unknown",
+      cost: Math.max(0, u.cost - was.cost),
+      tokens: { in: u.in - was.in, out: u.out - was.out, cacheRead: u.cacheRead - was.cacheRead, cacheWrite: u.cacheWrite - was.cacheWrite },
+    });
   }
 
   /**
@@ -619,6 +698,7 @@ export class ClaudeAdapter implements HarnessAdapter {
         this.tailTranscript(c.rec, now);
         return !c.state.settled && now < c.until;
       }
+      const feed = this.feeds.get(c.state);
       for (const line of c.tail.read()) {
         let row: unknown;
         try {
@@ -626,9 +706,11 @@ export class ClaudeAdapter implements HarnessAdapter {
         } catch {
           continue;
         }
+        if (feed) this.feedLine(c.state, feed, row, line.offset >= feed.mark);
         if (isCostRecord(row)) this.settleCost(c.state, c.tail.path, row, now);
-        else applyClaudeUsage(c.state, row);
+        else applyClaudeUsage(c.state, row, { agent: "main", trigger: c.state.trigger });
       }
+      this.commitSpend(c.rec, c.state, now, c.tail);
       if (c.state.statsChanged && c.counted) {
         c.state.statsChanged = false;
         const after = statsFor(c.state, this.price);

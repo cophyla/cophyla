@@ -100,6 +100,7 @@ export const actions = {
   "metrics.subscribe": { risk: "read" },
   "metrics.unsubscribe": { risk: "read" },
   "metrics.history": { risk: "read" },
+  "usage.report": { risk: "read" },
   "remote.pair": { risk: "exec" },
   "remote.invite": { risk: "exec" },
   "remote.open": { risk: "exec" },

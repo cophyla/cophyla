@@ -82,6 +82,6 @@ describe("checking for updates by hand", () => {
 
   test("the settings show Updates only on a host that can check", () => {
     expect(settingsPages({ device: false, microphone: true }).map((p) => p.id)).not.toContain("updates");
-    expect(settingsPages({ device: true, microphone: true, updates: true }).map((p) => p.id)).toEqual(["sessions", "accounts", "chat", "voice", "listeners", "updates", "device"]);
+    expect(settingsPages({ device: true, microphone: true, updates: true }).map((p) => p.id)).toEqual(["sessions", "accounts", "usage", "chat", "voice", "listeners", "updates", "device"]);
   });
 });

@@ -143,6 +143,18 @@ describe("bridge", () => {
     expect(toView.find((f) => (f as { id: unknown }).id === "r2")).toMatchObject({ error: { data: { code: "unsupported" } } });
   });
 
+  test("host.settings passes on the page a view names, and nothing for one that is not text", async () => {
+    const pages: (string | undefined)[] = [];
+    const toView: RpcMessage[] = [];
+    const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 3, openSettings: (page) => pages.push(page) }, { toCophylad: () => {}, toView: (f) => toView.push(f) });
+    bridge.fromView(req("p1", "host.settings", { page: "usage" }));
+    bridge.fromView(req("p2", "host.settings", { page: 7 }));
+    bridge.fromView(req("p3", "host.settings", {}));
+    await Bun.sleep(0);
+    expect(pages).toEqual(["usage", undefined, undefined]);
+    expect(toView.map((f) => (f as { result?: unknown }).result)).toEqual([{}, {}, {}]);
+  });
+
   test("host.openLink opens a web page for any view where the host has the seam, never reaches cophylad, and refuses anything but http and https", async () => {
     const opened: string[] = [];
     const toCophylad: unknown[] = [];

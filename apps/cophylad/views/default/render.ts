@@ -2100,7 +2100,11 @@ function createStatus(): HTMLElement {
   const usageHead = el("div", "spend-row spend-head");
   usageHead.title = "Each login's share of its session (five-hour) and weekly limits, and what its sessions spent today";
   usageHead.append(el("h3", "status-heading spend-title", "Usage"), el("span", "spend-limit", "Session"), el("span", "spend-limit", "Week"), el("span", "spend-cost", "Today"));
-  usage.append(usageHead, el("div", "spend-rows"));
+  // the way to the settings' Usage page: where the spend went, not only how much
+  const details = actionButton("spend-details", "", "usage-details");
+  details.title = "Where the spend went: by project, account, model and what started it, and the sessions that spent most";
+  details.append(el("span", "spend-details-label", "Where it went"), el("span", "chevron-mark"));
+  usage.append(usageHead, el("div", "spend-rows"), details);
   const phones = el("section", "status-section status-phones");
   phones.setAttribute("aria-label", "Phones");
   phones.append(el("h3", "status-heading", "Phones"), el("div", "status-phone-rows"));

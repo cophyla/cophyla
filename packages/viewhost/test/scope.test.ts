@@ -268,8 +268,8 @@ describe("the scope model", () => {
 
 describe("the settings' pages", () => {
   test("Sessions first; the paired device's page only on a host that is one; Voice says what it holds", () => {
-    expect(settingsPages({ device: false, microphone: true }).map((p) => p.id)).toEqual(["sessions", "accounts", "chat", "voice", "listeners"]);
-    expect(settingsPages({ device: true, microphone: false }).map((p) => p.label)).toEqual(["Sessions", "Accounts", "Chat", "Voice", "Listeners", "This browser"]);
+    expect(settingsPages({ device: false, microphone: true }).map((p) => p.id)).toEqual(["sessions", "accounts", "usage", "chat", "voice", "listeners"]);
+    expect(settingsPages({ device: true, microphone: false }).map((p) => p.label)).toEqual(["Sessions", "Accounts", "Usage", "Chat", "Voice", "Listeners", "This browser"]);
     expect(settingsPages({ device: false, microphone: true }).find((p) => p.id === "voice")!.lead).toContain("talk key");
     expect(settingsPages({ device: false, microphone: false }).find((p) => p.id === "voice")!.lead).not.toContain("talk key");
   });

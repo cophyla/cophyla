@@ -62,6 +62,35 @@ export interface ClaudeTranscriptState {
   unrecorded?: UnrecordedSpend;
   /** A cost record was read and no usage counted since: nothing Claude spent is left to come. */
   settled?: boolean;
+  /** What started the turn the conversation is in (`UsageDimension` `trigger`): `other` before any. */
+  trigger: string;
+  /** What started the turn each sub-agent was launched in, by its agent id. */
+  agentTriggers: Map<string, string>;
+  /** Hears each call's usage as it is counted, while set: the spend ledger's feed. */
+  onUsage?: (u: CountedUsage) => void;
+}
+
+/**
+ * A model call's usage as it is counted: its message's first row (`first`), or the output a
+ * later row of it adds.
+ */
+export interface CountedUsage {
+  at: number;
+  model: string;
+  /** `main`, or the sub-agent its row came from (`sub:<type>`). */
+  agent: string;
+  /** What started the turn the call was made in. */
+  trigger: string;
+  /** What the call carried of context: input, cache read and cache write. */
+  context: number;
+  first: boolean;
+  tokens: ModelTokens;
+}
+
+/** Who made a sub-agent's calls and what started the turn it was launched in. */
+export interface UsageOrigin {
+  agent: string;
+  trigger: string;
 }
 
 /** Spend a conversation's cost record holds that its transcripts do not. */
@@ -74,7 +103,7 @@ export interface UnrecordedSpend {
 }
 
 export function newClaudeState(): ClaudeTranscriptState {
-  return { usageSeen: new Map(), toolUses: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 } }, byModel: new Map(), statsChanged: false };
+  return { usageSeen: new Map(), toolUses: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0, cacheRead: 0, cacheWrite: 0 } }, byModel: new Map(), statsChanged: false, trigger: "other", agentTriggers: new Map() };
 }
 
 /**
@@ -83,13 +112,14 @@ export function newClaudeState(): ClaudeTranscriptState {
  * context the message filled (input, cache read and cache write), or undefined when the
  * message was counted before.
  */
-function countUsage(state: ClaudeTranscriptState, message: Row): number | undefined {
+function countUsage(state: ClaudeTranscriptState, message: Row, when: number, origin: UsageOrigin): number | undefined {
   const usage = message["usage"] as Row | undefined;
   if (!usage) return undefined;
   const id = typeof message["id"] === "string" ? message["id"] : undefined;
   const n = (from: Row | undefined, k: string) => (from && typeof from[k] === "number" ? (from[k] as number) : 0);
   const out = n(usage, "output_tokens");
   const model = typeof message["model"] === "string" ? message["model"] : "unknown";
+  const context = n(usage, "input_tokens") + n(usage, "cache_read_input_tokens") + n(usage, "cache_creation_input_tokens");
   const counted = id !== undefined ? state.usageSeen.get(id) : undefined;
   if (counted !== undefined) {
     if (out > counted) {
@@ -100,6 +130,7 @@ function countUsage(state: ClaudeTranscriptState, message: Row): number | undefi
       else state.byModel.set(model, { in: 0, out: out - counted, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 });
       state.statsChanged = true;
       state.settled = false;
+      state.onUsage?.({ at: when, model, ...origin, context, first: false, tokens: { in: 0, out: out - counted, cacheRead: 0, cacheWrite: 0, cacheWrite1h: 0 } });
     }
     return undefined;
   }
@@ -123,14 +154,36 @@ function countUsage(state: ClaudeTranscriptState, message: Row): number | undefi
   }
   state.statsChanged = true;
   state.settled = false;
+  state.onUsage?.({ at: when, model, ...origin, context, first: true, tokens: add });
   return add.in + add.cacheRead + add.cacheWrite;
 }
 
-/** Feeds one row of a sub-agent's transcript: its usage counts towards the session's, and nothing else of it does. */
-export function applyClaudeUsage(state: ClaudeTranscriptState, row: unknown): void {
+/**
+ * Feeds one row of a sub-agent's transcript: its usage counts towards the session's, and
+ * nothing else of it does. `origin` says which sub-agent made the call and what started the
+ * turn it was launched in, for the ledger; `sub` and the conversation's turn when not given.
+ */
+export function applyClaudeUsage(state: ClaudeTranscriptState, row: unknown, origin?: UsageOrigin): void {
   if (row === null || typeof row !== "object" || (row as Row)["type"] !== "assistant") return;
   const message = (row as Row)["message"] as Row | undefined;
-  if (message) countUsage(state, message);
+  if (message) countUsage(state, message, at(row as Row), origin ?? { agent: "sub", trigger: state.trigger });
+}
+
+/**
+ * What started a turn, from the row that opened it (`UsageDimension` `trigger`), or undefined
+ * for a row that opens none: a tool's result, a note the harness adds, an echo.
+ */
+function turnTrigger(row: Row, content: unknown): string | undefined {
+  const origin = row["origin"] as Row | undefined;
+  const kind = origin?.["kind"];
+  const text = textOf(content).trimStart();
+  if (kind === "peer" || kind === "coordinator" || text.startsWith("<cophyla-message")) return "peer";
+  if (kind === "task-notification" || text.startsWith("<task-notification")) return text.includes("<event>") || text.includes("<summary>Monitor ") ? "monitor" : "task";
+  if (text.startsWith("This session is being continued from a previous conversation")) return "compact";
+  if (kind === "auto-continuation") return "typed";
+  if (text.startsWith("<command-name>")) return "command";
+  if (isHumanTurn(row, content) && text.length > 0) return "typed";
+  return undefined;
 }
 
 /** A row of Claude's own cost record (`cost-state`), written as a conversation exits, clears or resumes another. */
@@ -249,8 +302,13 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
           if (b["is_error"] === true) item.isError = true;
           items.push(item);
         }
+        // A sub-agent launched: its calls belong to the turn that launched it.
+        const launched = (r["toolUseResult"] as Row | undefined)?.["agentId"];
+        if (typeof launched === "string") state.agentTriggers.set(launched, state.trigger);
         if (results.length > 0) break;
       }
+      const trigger = turnTrigger(r, content);
+      if (trigger !== undefined) state.trigger = trigger;
       const origin = r["origin"] as Row | undefined;
       if (origin && origin["kind"] === "peer") {
         items.push({ kind: "peer", from: String(origin["from"] ?? "unknown"), text: textOf(content), at: when });
@@ -294,7 +352,7 @@ export function applyClaudeRow(state: ClaudeTranscriptState, row: unknown): Clau
         state.model = message["model"];
         state.statsChanged = true;
       }
-      const used = countUsage(state, message);
+      const used = countUsage(state, message, when, { agent: "main", trigger: state.trigger });
       if (used !== undefined && used > 0) state.stats.context = { used, limit: state.stats.context?.limit ?? Number.MAX_SAFE_INTEGER };
       break;
     }

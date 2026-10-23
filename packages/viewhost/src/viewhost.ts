@@ -32,7 +32,7 @@ import type { RpcMessage, SessionScopeState, ViewManifest } from "@cophyla/proto
 import { Bridge, envelope, isEnvelope } from "./bridge.ts";
 import type { HostMic, HostRequests, PrefsStore, ViewPrefs } from "./bridge.ts";
 import { ViewChooser } from "./chooser.ts";
-import { SettingsPanel } from "./settings.ts";
+import { isSettingsPage, SettingsPanel } from "./settings.ts";
 import type { UpdateChecker } from "./updates.ts";
 import { SetupPanel } from "./setup.ts";
 import type { DeviceSettings, VoiceSettings } from "./settings.ts";
@@ -263,7 +263,7 @@ export class ViewHost {
         ...(this.deps.menu ? { menu: true } : {}),
         ...(this.deps.talk ? { talk: true } : {}),
         chooseView: () => this.chooseView(),
-        openSettings: () => this.openSettings(),
+        openSettings: (page?: string) => this.openSettings(page),
         ...(this.deps.openLink ? { openLink: (url: string) => this.openLink(url) } : {}),
         ...(this.deps.filePaths ? { filePaths: this.deps.filePaths } : {}),
         ...(staged.docFrame ? { docFrame: staged.docFrame } : {}),
@@ -323,9 +323,9 @@ export class ViewHost {
     this.chooser.open();
   }
 
-  /** The host's settings over the frame: what a view's `host.settings` opens. */
-  openSettings(): void {
-    this.settings.open();
+  /** The host's settings over the frame: what a view's `host.settings` opens, at the page it names when it is one. */
+  openSettings(page?: string): void {
+    this.settings.open(isSettingsPage(page) ? page : undefined);
   }
 
   /** A view's `host.openLink`, while the user's click is fresh: in a browser without the signal, as it comes. */

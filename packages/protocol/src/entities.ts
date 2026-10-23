@@ -1247,6 +1247,106 @@ export const SpendTotals = z.object({
 export type SpendTotals = z.infer<typeof SpendTotals>;
 
 // ---------------------------------------------------------------------------------------
+// Usage: where the harness sessions' spend went, from each node's spend ledger
+
+/**
+ * What a usage report is split and filtered by. `account` a profile id ("" when not known);
+ * `project` a session's folder; `session` a Cophyla session id, or `<harness>:<conversation id>`
+ * for one Cophyla never tracked; `model` the model id; `agent` who made the calls (`main`, the
+ * conversation itself; `sub:<type>`, a sub-agent of that type; `side`, the harness's own calls
+ * no transcript holds); `trigger` what started the turn (`typed`, `peer` another agent's
+ * message, `task` a background task's notice, `monitor` a Monitor's event, `compact` a
+ * compaction's carry-over, `command` a slash command, `side`, `other`); `context` the bucket
+ * of the context each call carried ("0" under 100K tokens, "1" to 200K, "2" to 300K, "3" to
+ * 500K, "4" past it).
+ */
+export const UsageDimension = z.enum(["account", "project", "session", "model", "agent", "trigger", "context"]);
+export type UsageDimension = z.infer<typeof UsageDimension>;
+
+/** The context buckets' upper bounds, in tokens: a call with this much or more falls in the next. */
+export const USAGE_CONTEXT_BOUNDS = [100_000, 200_000, 300_000, 500_000] as const;
+
+/** Keys to keep, per dimension: a row passes when, in every dimension named, its key is one of them. */
+export const UsageFilter = z.object({
+  account: z.array(z.string()).optional(),
+  project: z.array(z.string()).optional(),
+  session: z.array(z.string()).optional(),
+  model: z.array(z.string()).optional(),
+  agent: z.array(z.string()).optional(),
+  trigger: z.array(z.string()).optional(),
+  context: z.array(z.string()).optional(),
+});
+export type UsageFilter = z.infer<typeof UsageFilter>;
+
+/** Tokens by kind; `cacheWrite1h` is the part of `cacheWrite` kept an hour. */
+export const UsageTokens = z.object({
+  in: z.number().nonnegative(),
+  out: z.number().nonnegative(),
+  cacheRead: z.number().nonnegative(),
+  cacheWrite: z.number().nonnegative(),
+  cacheWrite1h: z.number().nonnegative(),
+});
+export type UsageTokens = z.infer<typeof UsageTokens>;
+
+/** Spend summed: its cost at list prices (USD), the model calls and their tokens. */
+export const UsageCell = z.object({ cost: z.number().nonnegative(), calls: z.number().int().nonnegative(), tokens: UsageTokens });
+export type UsageCell = z.infer<typeof UsageCell>;
+
+/** One key of a dimension and what it spent; `label` names it where the node knows a name (an account's, a session's). */
+export const UsageGroup = UsageCell.extend({ key: z.string(), label: z.string().optional() });
+export type UsageGroup = z.infer<typeof UsageGroup>;
+
+/** A session's line in the report: its spend and what tells it apart. */
+export const UsageSession = UsageGroup.extend({
+  harness: z.string(),
+  /** The folder it ran in. */
+  project: z.string().optional(),
+  account: z.string().optional(),
+  firstAt: Timestamp,
+  lastAt: Timestamp,
+  /** What its sub-agents spent of `cost`. */
+  subCost: z.number().nonnegative(),
+  /** What calls carried of context, on average, in tokens. */
+  contextAvg: z.number().nonnegative(),
+});
+export type UsageSession = z.infer<typeof UsageSession>;
+
+/** One bucket of the series: what one key of the split dimension spent from `at` (an hour, or a local day). */
+export const UsagePoint = z.object({ at: Timestamp, key: z.string(), cost: z.number().nonnegative() });
+export type UsagePoint = z.infer<typeof UsagePoint>;
+
+/**
+ * Where one node's harness sessions spent over a range, with the filter applied to all of it:
+ * the totals and those of the same span before it, the series split by one dimension (every
+ * key when there are at most twelve, else the twelve that spent most and `other`), every
+ * dimension's groups (the fifty that spent most each), the hundred sessions that spent most,
+ * and how much less the sub-agents' calls on a costlier model would have cost on Sonnet. `since` is the
+ * oldest hour the ledger holds; `filling` while it is still being filled from the transcripts
+ * there were before it.
+ */
+export const UsageReport = z.object({
+  node: NodeId,
+  from: Timestamp,
+  to: Timestamp,
+  totals: UsageCell,
+  previous: UsageCell,
+  split: UsageDimension,
+  series: z.array(UsagePoint),
+  groups: z.record(UsageDimension, z.array(UsageGroup)),
+  sessions: z.array(UsageSession),
+  /**
+   * What `totals.cost` was spent on: input, output, cache reads (a conversation re-read each
+   * call), cache writes, and the harness's side calls, which come as a cost alone.
+   */
+  costs: z.object({ in: z.number().nonnegative(), out: z.number().nonnegative(), cacheRead: z.number().nonnegative(), cacheWrite: z.number().nonnegative(), side: z.number().nonnegative() }).optional(),
+  /** How much less the sub-agents' calls on a costlier model would have cost on Sonnet; absent when none would. */
+  sonnetSaves: z.number().nonnegative().optional(),
+  since: Timestamp.optional(),
+  filling: z.boolean().optional(),
+});
+export type UsageReport = z.infer<typeof UsageReport>;
+
+// ---------------------------------------------------------------------------------------
 // Tools, events, prompts, memory, views
 
 export const ToolSource = z.enum(["builtin", "editable"]);

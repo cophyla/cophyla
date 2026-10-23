@@ -72,6 +72,8 @@ import { Metrics } from "./metrics/index.ts";
 import { PlanLimits } from "./metrics/limits.ts";
 import { conversationSpend } from "./metrics/conversation.ts";
 import { Pricer, priceTable } from "./metrics/prices.ts";
+import { SpendBackfill } from "./usage/backfill.ts";
+import { SpendLedger } from "./usage/ledger.ts";
 import type { DiscoveryTransport } from "./nodes/discovery.ts";
 import { withForwarding } from "./nodes/forward.ts";
 import { Nodes } from "./nodes/index.ts";
@@ -570,7 +572,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     muse = new MuseAdapter({ host, log: sessionsLog.child("muse"), version: PLATFORM_VERSION, dataDir: p.data, raiser, isAlive, asks, askTimeoutS: config.sessions.hook_timeout_s, env });
     return [
       // A Claude session's cost is each model's tokens at that model's prices, its sub-agents' among them.
-      new ClaudeAdapter({ host, log: sessionsLog.child("claude"), raiser, price: (model, tokens) => pricer.cost(model, tokens) }),
+      // Every call it counts goes to the spend ledger too, the Usage page's.
+      new ClaudeAdapter({ host, log: sessionsLog.child("claude"), raiser, price: (model, tokens) => pricer.cost(model, tokens), ledger }),
       // A Codex session known by its hooks and its process ends when the process does, SessionEnd or not.
       // Its questions to the user are asks; a dialog's answers are typed into its terminal.
       new CodexAdapter({ host, log: sessionsLog.child("codex"), version: PLATFORM_VERSION, raiser, isAlive, asks, askTimeoutS: config.sessions.hook_timeout_s, ...(tether ? { terminal: tether } : {}) }),
@@ -581,6 +584,21 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // (The adapters above are made inside `new Sessions`, after it.)
   const prices = priceTable(config.metrics.prices);
   const pricer = new Pricer(prices, log.child("metrics"));
+  // The spend ledger the Usage page reads: the Claude adapter feeds it as it reads transcripts,
+  // the backfill fills in the ones it does not read (made below, once the sessions are up).
+  const ledger = new SpendLedger({
+    store,
+    price: (model, tokens) => pricer.cost(model, tokens),
+    log: log.child("usage"),
+    retentionDays: config.metrics.spend_retention_days,
+    profiles: () => profiles.list(identity.id),
+    sessionName: (id) => {
+      const s = sessions.get(id) ?? store.sessions.get(id);
+      return s?.name ?? s?.title ?? s?.intent;
+    },
+    scope: () => sessions.scopeState().scope,
+    platform: process.platform,
+  });
   const sessions = new Sessions({
     store,
     bus,
@@ -1102,6 +1120,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     self: node,
     identity,
     metrics,
+    ledger,
     remote: () => remote,
     profiles,
     scope: sessions,
@@ -1594,7 +1613,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       push: { register: (id, device) => push.register(id, device), unregister: (id) => push.unregister(id) },
     }),
     ...voiceMethods({ voice, speech: deliver }),
-    ...metricsMethods({ metrics }),
+    ...metricsMethods({ metrics, ledger, nodeId: identity.id }),
     ...remoteMethods({ remote, pipes }),
     ...accountMethods({ cloud, keys }),
     ...backupMethods({ sync: backup }),
@@ -1765,6 +1784,26 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     if (tether.available) bus.emit("node.state", node());
   }
   await sessions.start({ port: api.port });
+  // The transcripts the adapter does not read live, read into the ledger in a worker: a test
+  // run reads none, since what it would find are the real ones.
+  const spendBackfill =
+    env["NODE_ENV"] === "test"
+      ? undefined
+      : new SpendBackfill({
+          ledger,
+          store,
+          claudeDirs: () => profiles.list(identity.id).filter((x) => x.harness === "claude").map((x) => x.configDir),
+          session: (id) => {
+            const s = sessions.get(id) ?? store.sessions.get(id);
+            if (!s) return undefined;
+            const title = s.name ?? s.title ?? s.intent;
+            return { profile: s.profile, cwd: s.cwd, ...(title ? { title } : {}) };
+          },
+          prices: [...prices],
+          retentionDays: config.metrics.spend_retention_days,
+          log: log.child("usage"),
+        });
+  spendBackfill?.start();
   if (tether?.available && config.tether.profiles) {
     void writeEntryPoints({ tether, profiles, dataDir: p.data, editorsDir: join(p.home, "editors"), log: sessionsLog.child("tether") });
   }
@@ -1957,6 +1996,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       stopRecorder();
       events.dispose();
       offProfiles();
+      spendBackfill?.stop();
       await sessions.stop();
       processEngine?.dispose?.();
       await terminalStreams?.stop();

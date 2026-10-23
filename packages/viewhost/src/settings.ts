@@ -13,6 +13,9 @@
 //   what a session cophylad starts under it is started with: a permission mode and other flags,
 //   with where the launch came from (set here, config.toml, or the user's own last session
 //   there) and a Reset, written with `profile.update`.
+// - Usage: where the agents' spend went (`usage.ts`, `usage.report` from each machine), with
+//   filters, a chart over time, a bar list per dimension, the sessions that spent most and what
+//   the numbers suggest; the card widens while it shows.
 // - Chat: where the chat's own agent session stands (`assistant.state`), the harness and the
 //   account it runs on, each left to cophylad or picked (`assistant.configure`, which starts
 //   it afresh), and Restart (`assistant.restart`), which keeps the conversation.
@@ -43,6 +46,7 @@ import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, List
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
 import type { FolderDrafts } from "./scope.ts";
 import { checkWords, outcomeOf } from "./updates.ts";
+import { UsageModel, usagePage } from "./usage.ts";
 import type { UpdateChecker } from "./updates.ts";
 import { block, button, checkRow, controlId, el, group, keepFocus, message, pill, row, select, span, switchInput } from "./ui.ts";
 
@@ -1184,7 +1188,14 @@ export interface SettingsPanelDeps {
 }
 
 /** The pages of the settings, in the order the side list shows them. */
-export type SettingsPage = "sessions" | "accounts" | "chat" | "voice" | "listeners" | "updates" | "device";
+export type SettingsPage = "sessions" | "accounts" | "usage" | "chat" | "voice" | "listeners" | "updates" | "device";
+
+const PAGES: readonly SettingsPage[] = ["sessions", "accounts", "usage", "chat", "voice", "listeners", "updates", "device"];
+
+/** Whether a page a view asked for (`host.settings` `page`) is one of these. */
+export function isSettingsPage(page: unknown): page is SettingsPage {
+  return typeof page === "string" && (PAGES as readonly string[]).includes(page);
+}
 
 export interface PageEntry {
   id: SettingsPage;
@@ -1198,6 +1209,11 @@ export function settingsPages(o: { device: boolean; microphone: boolean; updates
   const pages: PageEntry[] = [
     { id: "sessions", label: "Sessions", lead: "Which of your agent sessions Cophyla connects to. A session that is not connected stays out of its lists, its chat and other agents' messages, and asks its questions in its own window." },
     { id: "accounts", label: "Accounts", lead: "The accounts sessions start under, and how Cophyla starts them. It uses the usual account, and another signed-in one only when that one nears its limit." },
+    {
+      id: "usage",
+      label: "Usage",
+      lead: "Where your agents' spend went, priced at API list prices. Your plans charge by limits, not dollars, so read a dollar as how fast a limit drains. Click any bar, legend entry or session to look at it alone.",
+    },
     { id: "chat", label: "Chat", lead: "The chat runs in an agent session of your own, on your Claude Code or Codex plan: Cophyla starts it, gives it its tools and wakes it." },
     {
       id: "voice",
@@ -1219,6 +1235,14 @@ export class SettingsPanel {
   private layer?: HTMLElement;
   private model?: SettingsModel;
   private scope?: ScopeModel;
+  private usage?: UsageModel;
+  private resizeTimer?: ReturnType<typeof setTimeout>;
+  /** The usage chart is drawn for the page's width: a resize draws it again. */
+  private onResize = (): void => {
+    if (this.page !== "usage") return;
+    clearTimeout(this.resizeTimer);
+    this.resizeTimer = setTimeout(() => this.render(), 120);
+  };
   /** The page showing; the one left open last time when the layer opens again. */
   private page: SettingsPage = "sessions";
   /** The machine the Sessions and Accounts pages show, when there are several. */
@@ -1250,12 +1274,14 @@ export class SettingsPanel {
     return this.layer !== undefined;
   }
 
-  /** Shows the layer and reads what there is; open already, it only takes the focus. */
-  open(): void {
+  /** Shows the layer, at `page` when one is asked for, and reads what there is; open already, it shows that page or takes the focus. */
+  open(page?: SettingsPage): void {
     if (this.layer) {
-      this.layer.querySelector<HTMLElement>(".host-settings-close")?.focus();
+      if (page) this.show(page);
+      else this.layer.querySelector<HTMLElement>(".host-settings-close")?.focus();
       return;
     }
+    if (page) this.page = page;
     const layer = el("div", "host-settings");
     layer.addEventListener("click", (ev) => {
       if (ev.target === layer) this.close();
@@ -1293,7 +1319,12 @@ export class SettingsPanel {
       if (this.scope === scope) this.render();
     }, { autosave: true });
     this.scope = scope;
+    const usage = new UsageModel(this.deps.request, () => {
+      if (this.usage === usage) this.render();
+    });
+    this.usage = usage;
     document.addEventListener("keydown", this.onKey);
+    window.addEventListener("resize", this.onResize);
     this.unsubscribe = this.deps.voice?.subscribe(() => this.render());
     this.unsubscribeDevice = this.deps.device?.subscribe?.(() => this.render());
     this.unsubscribeUpdates = this.deps.updates?.subscribe(() => this.render());
@@ -1307,6 +1338,7 @@ export class SettingsPanel {
     void model.loadListeners();
     void model.loadChat();
     void scope.load();
+    if (this.page === "usage") void usage.load();
   }
 
   close(): void {
@@ -1316,6 +1348,10 @@ export class SettingsPanel {
     this.model?.dispose();
     this.model = undefined;
     this.scope = undefined;
+    this.usage?.dispose();
+    this.usage = undefined;
+    clearTimeout(this.resizeTimer);
+    window.removeEventListener("resize", this.onResize);
     this.unsubscribe?.();
     this.unsubscribe = undefined;
     this.unsubscribeDevice?.();
@@ -1337,6 +1373,7 @@ export class SettingsPanel {
   show(page: SettingsPage): void {
     if (this.page === page) return;
     this.page = page;
+    if (page === "usage" && this.usage && !this.usage.loaded) void this.usage.load();
     this.render();
     const body = this.layer?.querySelector<HTMLElement>(".host-settings-page");
     if (body) body.scrollTop = 0;
@@ -1380,6 +1417,7 @@ export class SettingsPanel {
         }),
       );
       layer.querySelector<HTMLElement>(".host-settings-page-title")!.textContent = entry.label;
+      layer.querySelector<HTMLElement>(".host-settings-card")!.dataset["page"] = entry.id;
       body.dataset["page"] = entry.id;
       body.replaceChildren(el("p", "host-settings-page-lead", entry.lead), ...this.pageBody(entry.id, model));
     });
@@ -1392,6 +1430,8 @@ export class SettingsPanel {
         return this.sessionsPage();
       case "accounts":
         return this.accountsPage(model);
+      case "usage":
+        return this.usage ? usagePage(this.usage, { width: this.pageWidth() }) : [];
       case "chat":
         return this.chatPage(model);
       case "voice":
@@ -1403,6 +1443,14 @@ export class SettingsPanel {
       case "device":
         return this.deps.device ? this.devicePage(this.deps.device) : [];
     }
+  }
+
+  /** How wide the page's content is: the body less its padding, for what is drawn to a width. */
+  private pageWidth(): number {
+    const body = this.layer?.querySelector<HTMLElement>(".host-settings-page");
+    if (!body) return 640;
+    const css = getComputedStyle(body);
+    return Math.max(260, body.clientWidth - parseFloat(css.paddingLeft || "0") - parseFloat(css.paddingRight || "0"));
   }
 
   /** A choice of machine above a page that shows one at a time, when there are several. */

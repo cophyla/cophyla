@@ -717,13 +717,14 @@ async function applyUpdate(kind: "update" | "now" | "cancel"): Promise<void> {
 
 /**
  * Settings, from the ⋮ menu: the host lays its settings over the frame — which account agents
- * start under, and with what. An older host has none, and the menu says so.
+ * start under, and with what — at `page` when one is named (the rail's Usage opens its page;
+ * an older host opens where it was). An older host has none, and the menu says so.
  */
-async function openSettings(): Promise<void> {
+async function openSettings(page?: string): Promise<void> {
   ui.railMenu = undefined;
   draw();
   try {
-    await rpc.request("host.settings", {});
+    await rpc.request("host.settings", page ? { page } : {});
   } catch (e) {
     const unsupported = e instanceof ViewRpcError && e.code === "unsupported";
     ui.railMenu = { note: unsupported ? "This app can't show settings yet: update it." : `Settings: ${e instanceof Error ? e.message : String(e)}` };
@@ -3220,6 +3221,9 @@ document.addEventListener("click", (ev) => {
       return;
     case "settings":
       void openSettings();
+      return;
+    case "usage-details":
+      void openSettings("usage");
       return;
     case "new-terminal-in":
       if (target.dataset["place"]) void newTerminal(target.dataset["place"], target.dataset["cwd"], target.dataset["key"]);

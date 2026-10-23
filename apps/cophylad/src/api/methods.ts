@@ -27,6 +27,7 @@ import type { GateContext } from "../gate/index.ts";
 import { intervalFor } from "../metrics/delivery.ts";
 import type { Listeners } from "../listeners/index.ts";
 import type { Metrics } from "../metrics/index.ts";
+import type { SpendLedger } from "../usage/ledger.ts";
 import { fileSummary, listingSummary } from "../sessions/files.ts";
 import type { SessionFiles } from "../sessions/files.ts";
 import type { Sessions } from "../sessions/index.ts";
@@ -619,6 +620,9 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
 
 export interface MetricsMethodDeps {
   metrics: Metrics;
+  /** The spend ledger `usage.report` reads; without it the request is unsupported. */
+  ledger?: SpendLedger;
+  nodeId?: string;
 }
 
 /**
@@ -644,6 +648,16 @@ export function metricsMethods(deps: MetricsMethodDeps): MethodTable {
     "metrics.history": {
       target: (p) => p.node,
       handler: (p) => ({ samples: deps.metrics.history(p.node, p.range) }),
+    },
+    // Another node's report is that node's to make: the forwarding sends it there.
+    "usage.report": {
+      target: (p) => p.node,
+      handler: (p) => {
+        if (!deps.ledger || !deps.nodeId) throw new RpcError("unsupported", "this node keeps no spend ledger");
+        if (p.node !== deps.nodeId) throw new RpcError("not_found", `node ${p.node} is not linked`);
+        if (!(p.to > p.from)) throw new RpcError("invalid", "the range ends before it starts");
+        return deps.ledger.report(p, deps.nodeId);
+      },
     },
   };
 }

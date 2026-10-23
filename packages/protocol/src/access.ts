@@ -301,6 +301,8 @@ export const requestFilters = {
   "metrics.subscribe": { names: (p, self) => [{ node: p.node ?? self, hosts: true }] },
   "metrics.unsubscribe": { names: "open" },
   "metrics.history": { names: (p) => [{ node: p.node, hosts: true }] },
+  // every session of the node, so no workspace or path limit reaches it
+  "usage.report": { names: (p) => [{ node: p.node }] },
   "remote.pair": { names: (p) => [{ node: p.node }] },
   "remote.invite": { names: (p) => [{ node: p.node }] },
   "remote.open": { names: (p) => [{ node: p.node }] },

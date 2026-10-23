@@ -62,6 +62,7 @@ import type { AgentMessages } from "../agentmsg/index.ts";
 import type { Policy } from "../gate/policy.ts";
 import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
+import type { SpendLedger } from "../usage/ledger.ts";
 import type { Direct } from "../direct/index.ts";
 import type { LinkDirectTiming } from "./direct.ts";
 import type { Remote as RemoteModule } from "../remote/index.ts";
@@ -127,6 +128,8 @@ export interface NodesDeps {
   self: () => Node;
   identity: NodeIdentity;
   metrics?: Metrics;
+  /** The spend ledger a primary's `usage.report` for this node is answered from. */
+  ledger?: SpendLedger;
   /** The remote module, once built: what the served table and the upward `remote.pair` reach. */
   remote?: () => RemoteModule | undefined;
   /** This node's profiles, which the primary's clients may set over the link. */
@@ -389,6 +392,7 @@ export class Nodes {
       gate: deps.gate,
       served: deps.served,
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
+      ...(deps.ledger ? { usage: { ledger: deps.ledger, node: deps.self().id } } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
       ...(deps.scope ? { scope: deps.scope } : {}),

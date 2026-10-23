@@ -46,6 +46,9 @@ import {
   Session,
   SessionEvent,
   SpendTotals,
+  UsageDimension,
+  UsageFilter,
+  UsageReport,
   Task,
   Teammate,
   TeammateShare,
@@ -968,6 +971,24 @@ export const clientRequests = {
   "metrics.history": {
     params: z.object({ node: NodeId, range: TimeRange }),
     result: z.object({ samples: z.array(MetricsSample) }),
+  },
+  /**
+   * Where `node`'s harness sessions spent from `from` to `to`, out of its spend ledger
+   * (`UsageReport`): the series in buckets of an hour, or of a day starting at local midnight
+   * for a client `tz` minutes east of UTC, split by `split`; `filter` applies to all of it. A
+   * page over every machine asks each and sums their reports.
+   */
+  "usage.report": {
+    params: z.object({
+      node: NodeId,
+      from: Timestamp,
+      to: Timestamp,
+      bucket: z.enum(["hour", "day"]),
+      tz: z.number().int().min(-14 * 60).max(14 * 60),
+      split: UsageDimension,
+      filter: UsageFilter.optional(),
+    }),
+    result: UsageReport,
   },
   /** Has `node`'s host accept a viewer's PIN; `name` labels the viewer in the host's list and is the gate's target. */
   "remote.pair": { params: z.object({ node: NodeId, pin: z.string(), name: z.string().optional() }), result: Empty },

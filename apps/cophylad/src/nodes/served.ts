@@ -37,6 +37,7 @@ import type { BrainMethodContext, BrainMethodDeps, BrainMethodTable } from "../b
 import type { Gate, GateContext, GateRequest, RunOptions } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
+import type { SpendLedger } from "../usage/ledger.ts";
 import type { Remote } from "../remote/index.ts";
 import { revokeAsk, shareAsk, updatePatch } from "../api/methods.ts";
 import type { Profiles } from "../sessions/profiles.ts";
@@ -84,6 +85,8 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
 
 /** The client-protocol metrics requests a node serves over the link, on top of the capability slice. */
 export const NODE_SERVED_METRICS = ["metrics.subscribe", "metrics.unsubscribe", "metrics.history"] as const;
+/** And where this node's sessions spent, from its spend ledger, for the primary's Usage page. */
+export const NODE_SERVED_USAGE = ["usage.report"] as const;
 /** The client-protocol remote requests a node serves the same way: an invite from, and a revoke on, this desktop's host, and its sharing switched. */
 export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.enable", "remote.disable"] as const;
 /** And what the user sets on this node's profiles from an app on the primary. */
@@ -177,6 +180,8 @@ export interface ServeDeps {
   /** Reports a held request up the link. */
   onPending: (id: RpcId, ask: Ask) => void;
   metrics?: Pick<Metrics, "subscribe" | "unsubscribe" | "history">;
+  /** The spend ledger `usage.report` is answered from, with this node's id. */
+  usage?: { ledger: Pick<SpendLedger, "report">; node: string };
   /** The subscriber id the metrics module delivers this link's samples to. */
   metricsSubscriber: string;
   remote?: Remote;
@@ -370,6 +375,7 @@ export class NodeServer {
   async serve(method: string, params: unknown, id: RpcId): Promise<unknown> {
     if (method === "cancel") return this.cancel(params);
     if ((NODE_SERVED_METRICS as readonly string[]).includes(method)) return this.serveMetrics(method as (typeof NODE_SERVED_METRICS)[number], params);
+    if ((NODE_SERVED_USAGE as readonly string[]).includes(method)) return this.serveUsage(params);
     if ((NODE_SERVED_REMOTE as readonly string[]).includes(method)) {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not its desktop");
       if ((method === "remote.enable" || method === "remote.disable") && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: sharing its desktop is its owner's to switch");
@@ -677,5 +683,17 @@ export class NodeServer {
       }
       return this.shape(method, { samples: metrics.history(p.node!, p.range ?? {}) });
     });
+  }
+
+  /** Where this node's sessions spent: every session's, so a node that lends folders alone keeps it. */
+  private async serveUsage(params: unknown): Promise<unknown> {
+    const usage = this.deps.usage;
+    if (!usage) throw new RpcError("unsupported", "this node keeps no spend ledger");
+    if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not what its sessions spent");
+    const parsed = clientRequests["usage.report"].params.safeParse(params ?? {});
+    if (!parsed.success) throw new RpcError("invalid", "bad params for usage.report", parsed.error.issues);
+    const p = parsed.data;
+    if (p.node !== usage.node) throw new RpcError("not_found", `this is not node ${p.node}`);
+    return this.gated({ principal: this.deps.principal, action: "usage.report", args: p, target: p.node, sessionKey: this.deps.sessionKey }, () => usage.ledger.report(p, usage.node));
   }
 }

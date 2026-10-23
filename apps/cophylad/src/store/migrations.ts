@@ -359,4 +359,42 @@ export const MIGRATIONS: string[] = [
   `
   ALTER TABLE harness_sessions ADD COLUMN role TEXT;
   `,
+  // 14: the spend ledger, which the usage page reads: what the harness sessions' model calls
+  // cost, summed per hour, conversation, model, who made them (the conversation, a sub-agent,
+  // the harness's own side calls), what started their turn and the bucket of the context they
+  // carried. A conversation is `<harness>:<its id>`, with the Cophyla session that tracked it
+  // when one did; a mark is how far each of its transcripts has been counted in, so a read
+  // again from the start (a daemon restart, the backfill) counts nothing twice.
+  `
+  CREATE TABLE spend (
+    hour INTEGER NOT NULL,
+    conversation TEXT NOT NULL,
+    model TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    trigger TEXT NOT NULL,
+    context INTEGER NOT NULL,
+    calls INTEGER NOT NULL,
+    tokens_in INTEGER NOT NULL,
+    tokens_out INTEGER NOT NULL,
+    cache_read INTEGER NOT NULL,
+    cache_write INTEGER NOT NULL,
+    cache_write_1h INTEGER NOT NULL,
+    cost REAL NOT NULL,
+    PRIMARY KEY (hour, conversation, model, agent, trigger, context)
+  );
+  CREATE TABLE spend_conversations (
+    conversation TEXT PRIMARY KEY,
+    harness TEXT NOT NULL,
+    session TEXT,
+    profile TEXT NOT NULL DEFAULT '',
+    cwd TEXT NOT NULL DEFAULT '',
+    title TEXT,
+    first_at INTEGER NOT NULL,
+    last_at INTEGER NOT NULL
+  );
+  CREATE TABLE spend_marks (
+    key TEXT PRIMARY KEY,
+    offset INTEGER NOT NULL
+  );
+  `,
 ];

@@ -897,3 +897,691 @@ p.host-settings-row-help {
     flex: 1 1 auto;
   }
 }
+
+/* --- Usage (usage.ts): one row of filters over figures, the chart, bar lists and sessions ---
+   Marks follow the dataviz rules: hairline solid grid, 2px surface gaps, thin bars with a 4px
+   rounded data-end, text in the ink tokens and never a series colour. The card widens while
+   the page shows; on a phone the figures go two a row and the table scrolls sideways. */
+
+.host-settings-card[data-page="usage"] {
+  width: min(1240px, 100%);
+  height: min(880px, 100%);
+}
+
+.host-settings-page[data-page="usage"] .host-settings-page-lead {
+  max-width: 96ch;
+  margin-bottom: 14px;
+}
+
+.host-usage-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
+.host-usage-segment {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 8px;
+  background: var(--hs-well);
+}
+
+.host-usage-segment-item {
+  min-height: 28px;
+  padding: 3px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hs-muted);
+  font-size: 13px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.host-usage-segment-item:hover {
+  background: rgba(37, 34, 46, 0.6);
+  color: var(--hs-ink);
+}
+
+.host-usage-segment-item[aria-pressed="true"] {
+  background: var(--hs-raised);
+  color: var(--hs-ink);
+  font-weight: 600;
+}
+
+.host-usage-select {
+  max-width: 230px;
+}
+
+.host-usage-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.host-usage-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 26px;
+  padding: 2px 8px 2px 10px;
+  border: 1px solid rgba(140, 82, 217, 0.55);
+  border-radius: 999px;
+  background: rgba(140, 82, 217, 0.14);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.host-usage-chip:hover {
+  background: rgba(140, 82, 217, 0.26);
+}
+
+.host-usage-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.host-usage-chip-x {
+  color: var(--hs-muted);
+  font-size: 11px;
+}
+
+.host-usage-chip-clear {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--hs-muted);
+  font-size: 12.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+.host-usage-chip-clear:hover {
+  color: var(--hs-ink);
+}
+
+.host-usage-note {
+  margin: 0 0 8px;
+}
+
+.host-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  transition: opacity 0.15s ease;
+}
+
+/* a refetch keeps what was drawn, dimmed, until the answer comes */
+.host-usage.is-loading {
+  opacity: 0.55;
+}
+
+.host-usage-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(168px, 1fr));
+  gap: 10px;
+}
+
+.host-usage-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--hs-line);
+  border-radius: 10px;
+  background: var(--hs-card);
+}
+
+.host-usage-tile-label {
+  color: var(--hs-muted);
+  font-size: 12px;
+}
+
+.host-usage-tile-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+
+.host-usage-tile.is-spend .host-usage-tile-value {
+  font-size: 28px;
+}
+
+.host-usage-tile-delta {
+  font-size: 12px;
+}
+
+.host-usage-tile-delta.is-up {
+  color: var(--hs-warn);
+}
+
+.host-usage-tile-delta.is-down {
+  color: var(--hs-ok);
+}
+
+.host-usage-tile-detail {
+  color: var(--hs-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.host-usage-card {
+  min-width: 0;
+  padding: 14px 16px 16px;
+  border: 1px solid var(--hs-line);
+  border-radius: 10px;
+  background: var(--hs-card);
+}
+
+.host-usage-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin: 0 0 10px;
+}
+
+.host-usage-card-title {
+  margin: 0 auto 0 0;
+  color: var(--hs-ink-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.host-usage-card-aside {
+  color: var(--hs-faint);
+  font-size: 12px;
+}
+
+.host-usage-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--hs-muted);
+  font-size: 12.5px;
+}
+
+.host-usage-table-toggle {
+  min-height: 28px;
+  padding: 3px 10px;
+}
+
+.host-usage-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.host-usage-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 280px;
+  padding: 2px 8px 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hs-ink-2);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+button.host-usage-legend-item:hover {
+  background: var(--hs-raised);
+}
+
+.host-usage-legend-item[aria-pressed="true"] {
+  border-color: rgba(140, 82, 217, 0.55);
+  background: rgba(140, 82, 217, 0.14);
+}
+
+.host-usage-legend-item.is-other {
+  cursor: default;
+}
+
+.host-usage-swatch {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+}
+
+.host-usage-legend-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.host-usage-legend-value {
+  color: var(--hs-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* the kinds of cost are few and named in full */
+.host-usage-cost-legend .host-usage-legend-item {
+  max-width: none;
+}
+
+/* what the spend paid for: one bar cut by kind, a 2px surface gap between cuts, its rounded end at the right */
+.host-usage-costbar {
+  display: flex;
+  gap: 2px;
+  height: 14px;
+  margin: 2px 0 10px;
+}
+
+.host-usage-costbar-seg {
+  flex: 1 1 0;
+  min-width: 2px;
+}
+
+.host-usage-costbar-seg:last-child {
+  border-radius: 0 4px 4px 0;
+}
+
+.host-usage-legend-item.is-static {
+  cursor: default;
+}
+
+.host-usage-chart {
+  position: relative;
+  border-radius: 6px;
+}
+
+.host-usage-svg {
+  display: block;
+  overflow: visible;
+}
+
+.host-usage-gridline {
+  stroke: var(--hs-line);
+  stroke-width: 1;
+}
+
+.host-usage-axis {
+  stroke: var(--hs-line-strong);
+  stroke-width: 1;
+}
+
+.host-usage-tick {
+  fill: var(--hs-faint);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.host-usage-peak {
+  fill: var(--hs-ink-2);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.host-usage-chart.is-reading .host-usage-peak {
+  display: none;
+}
+
+.host-usage-cross {
+  stroke: var(--hs-muted);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.host-usage-col {
+  transition: opacity 0.1s ease;
+}
+
+/* the column hovered stays whole; the others step back */
+.host-usage-col.is-cold {
+  opacity: 0.5;
+}
+
+.host-usage-col .is-pick {
+  cursor: pointer;
+}
+
+.host-usage-tip {
+  position: absolute;
+  z-index: 2;
+  min-width: 170px;
+  max-width: 290px;
+  padding: 8px 10px;
+  border: 1px solid var(--hs-line-strong);
+  border-radius: 8px;
+  background: var(--hs-well);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.host-usage-tip-when {
+  color: var(--hs-muted);
+}
+
+.host-usage-tip-total {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.host-usage-tip-row {
+  display: grid;
+  grid-template-columns: 12px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  line-height: 1.6;
+}
+
+.host-usage-tip-row.is-empty {
+  display: block;
+  color: var(--hs-muted);
+}
+
+.host-usage-tip-key {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+}
+
+.host-usage-tip-value {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.host-usage-tip-label {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--hs-muted);
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.host-usage-ideas-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0 0 0 22px;
+}
+
+.host-usage-idea {
+  padding-left: 4px;
+  font-size: 13px;
+}
+
+.host-usage-idea::marker {
+  color: var(--hs-orchid-ink);
+  font-weight: 600;
+}
+
+.host-usage-idea-title {
+  display: block;
+  font-weight: 600;
+}
+
+.host-usage-idea-text {
+  display: block;
+  max-width: 110ch;
+  color: var(--hs-muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* the bar lists, packed into columns so a short list leaves no hole beside a long one */
+.host-usage-grid {
+  columns: 340px 2;
+  column-gap: 14px;
+  margin-bottom: -14px;
+}
+
+.host-usage-grid > .host-usage-card {
+  margin-bottom: 14px;
+  break-inside: avoid;
+}
+
+.host-usage-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.host-usage-bar {
+  display: grid;
+  grid-template-columns: minmax(84px, 44%) minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--hs-ink-2);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.host-usage-bar:hover {
+  background: var(--hs-raised);
+}
+
+.host-usage-bar.is-active {
+  border-color: rgba(140, 82, 217, 0.55);
+  background: rgba(140, 82, 217, 0.12);
+}
+
+.host-usage-bar-label {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* the value rides the bar's tip: the bar spans the track less the room its value takes */
+.host-usage-bar-track {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.host-usage-bar-fill {
+  flex: none;
+  width: calc((100% - 108px) * var(--w, 0));
+  min-width: 2px;
+  height: 10px;
+  border-radius: 0 4px 4px 0;
+}
+
+.host-usage-bar-value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.host-usage-bar-share {
+  margin-left: 6px;
+  color: var(--hs-faint);
+}
+
+.host-usage-bar-rest {
+  padding: 4px 6px;
+  color: var(--hs-faint);
+  font-size: 12px;
+}
+
+.host-usage-table-wrap {
+  overflow-x: auto;
+}
+
+.host-usage-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.host-usage-table th {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hs-line);
+  color: var(--hs-muted);
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.host-usage-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--hs-line);
+  color: var(--hs-ink-2);
+  white-space: nowrap;
+}
+
+.host-usage-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.host-usage-table .is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.host-usage-table tbody tr:hover td {
+  background: rgba(37, 34, 46, 0.55);
+}
+
+.host-usage-table tr.is-active td {
+  background: rgba(140, 82, 217, 0.12);
+}
+
+.host-usage-sort {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.host-usage-sort:hover {
+  color: var(--hs-ink);
+}
+
+.host-usage-session-name {
+  display: block;
+  max-width: 300px;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: var(--hs-ink);
+  font: inherit;
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.host-usage-session-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.host-usage-ellipsis {
+  max-width: 170px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.host-usage-strong {
+  color: var(--hs-ink);
+  font-weight: 600;
+}
+
+.host-usage-faint {
+  color: var(--hs-faint);
+}
+
+.host-usage-more {
+  display: flex;
+  justify-content: center;
+  padding-top: 8px;
+}
+
+.host-usage-empty {
+  padding: 36px 16px;
+  border: 1px solid var(--hs-line);
+  border-radius: 10px;
+  background: var(--hs-card);
+  text-align: center;
+}
+
+.host-usage-empty-title {
+  margin: 0 0 4px;
+  font-weight: 600;
+}
+
+.host-usage-empty-text {
+  margin: 0;
+  color: var(--hs-muted);
+  font-size: 12.5px;
+}
+
+@media (max-width: 640px) {
+  .host-usage-segment {
+    width: 100%;
+  }
+
+  .host-usage-segment-item {
+    flex: 1 1 0;
+    padding: 3px 6px;
+  }
+
+  .host-usage-select {
+    flex: 1 1 140px;
+    max-width: 100%;
+  }
+
+  .host-usage-tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .host-usage-tile.is-spend {
+    grid-column: 1 / -1;
+  }
+
+  .host-usage-tile-value {
+    font-size: 19px;
+  }
+
+  .host-usage-grid {
+    columns: 1;
+  }
+
+  .host-usage-card {
+    padding: 12px;
+  }
+
+  .host-usage-bar {
+    grid-template-columns: minmax(72px, 34%) minmax(0, 1fr);
+  }
+}

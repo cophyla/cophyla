@@ -10,7 +10,7 @@
 // them away, leaving its sessions' ids as tombstones.
 
 import { Database } from "bun:sqlite";
-import type { Ask, AuditEntry, Decision, Message, MetricsSample, NodeRecord, Outcome, Principal, ReplicaSnapshot, ReplicaTable, ReplicaWrite, Session, SessionEvent, SessionStatus, Task, TaskStatus, Thread, Workspace } from "@cophyla/protocol";
+import type { Ask, AuditEntry, Decision, Message, MetricsSample, NodeRecord, Outcome, Principal, ReplicaSnapshot, ReplicaTable, ReplicaWrite, Session, SessionEvent, SessionStatus, Task, TaskStatus, Thread, UsageDimension, Workspace } from "@cophyla/protocol";
 import { SearchIndex } from "./index/index.ts";
 import { MIGRATIONS } from "./migrations.ts";
 
@@ -65,6 +65,108 @@ interface BackupSyncDbRow {
   size: number;
 }
 const backupSyncFromRow = (r: BackupSyncDbRow): BackupSyncRow => ({ kind: r.kind, key: r.key, id: r.id, version: r.version, hash: r.hash, synced: r.synced === 1, size: r.size });
+
+/** What some model calls cost, summed: their tokens by kind and their cost at list prices. */
+export interface SpendSum {
+  calls: number;
+  in: number;
+  out: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cacheWrite1h: number;
+  cost: number;
+}
+
+/** One cell of the spend ledger: what a conversation's calls of one kind cost in one hour. */
+export interface SpendRow extends SpendSum {
+  /** The hour's start. */
+  hour: number;
+  model: string;
+  agent: string;
+  trigger: string;
+  context: number;
+}
+
+/** A conversation the ledger holds: what tells it apart on the usage page. */
+export interface SpendConversation {
+  /** `<harness>:<its id>`. */
+  conversation: string;
+  harness: string;
+  /** The Cophyla session that tracked it, when one did. */
+  session?: string;
+  profile: string;
+  cwd: string;
+  title?: string;
+  firstAt: number;
+  lastAt: number;
+}
+
+/** The ledger rows a report sums: from `from` to `to`, each dimension kept to the keys given, the conversations left out. */
+export interface SpendQuery {
+  from: number;
+  to: number;
+  filter: Partial<Record<UsageDimension, string[]>>;
+  hidden: string[];
+}
+
+/** A group of the ledger rows: its key in the dimension asked, the bucket it starts, and what it spent. */
+export interface SpendGroup extends SpendSum {
+  key: string;
+  at?: number;
+}
+
+/** A session's sums for the usage page: its conversations' line beside them. */
+export interface SpendSessionGroup extends SpendSum {
+  key: string;
+  harness: string;
+  cwd: string;
+  profile: string;
+  title?: string;
+  firstAt: number;
+  lastAt: number;
+  subCost: number;
+}
+
+/** How each dimension reads from a ledger row joined to its conversation. Fixed text: no request reaches the SQL. */
+const SPEND_KEY: Record<UsageDimension, string> = {
+  account: "c.profile",
+  project: "c.cwd",
+  session: "COALESCE(c.session, s.conversation)",
+  model: "s.model",
+  agent: "s.agent",
+  trigger: "s.trigger",
+  context: "CAST(s.context AS TEXT)",
+};
+
+const SPEND_SUMS = "SUM(s.calls) AS calls, SUM(s.tokens_in) AS tin, SUM(s.tokens_out) AS tout, SUM(s.cache_read) AS cread, SUM(s.cache_write) AS cwrite, SUM(s.cache_write_1h) AS cwrite1h, SUM(s.cost) AS cost";
+
+interface SpendSumDbRow {
+  calls: number | null;
+  tin: number | null;
+  tout: number | null;
+  cread: number | null;
+  cwrite: number | null;
+  cwrite1h: number | null;
+  cost: number | null;
+}
+
+const spendSumOf = (r: SpendSumDbRow): SpendSum => ({ calls: r.calls ?? 0, in: r.tin ?? 0, out: r.tout ?? 0, cacheRead: r.cread ?? 0, cacheWrite: r.cwrite ?? 0, cacheWrite1h: r.cwrite1h ?? 0, cost: r.cost ?? 0 });
+
+/** The WHERE clause and its parameters for a query: each list passed as JSON, read back with `json_each`. */
+function spendWhere(q: SpendQuery): { sql: string; params: Record<string, string | number> } {
+  const parts = ["s.hour >= $from", "s.hour < $to"];
+  const params: Record<string, string | number> = { from: q.from, to: q.to };
+  for (const [dim, keys] of Object.entries(q.filter) as [UsageDimension, string[] | undefined][]) {
+    if (!keys || keys.length === 0) continue;
+    parts.push(`${SPEND_KEY[dim]} IN (SELECT value FROM json_each($f_${dim}))`);
+    params[`f_${dim}`] = JSON.stringify(keys);
+  }
+  if (q.hidden.length > 0) {
+    parts.push("s.conversation NOT IN (SELECT value FROM json_each($hidden))");
+    params["hidden"] = JSON.stringify(q.hidden);
+  }
+  return { sql: parts.join(" AND "), params };
+}
 
 /** One model's calls in a thread, summed: tokens as `llm.complete` reports them, `in` with the cached part among it. */
 export interface ThreadSpendRow {
@@ -886,6 +988,142 @@ export class Store {
     of: (thread: string): ThreadSpendRow[] => {
       const rows = this.db.query("SELECT model, calls, tokens_in, tokens_out, cache_read, cache_write, first_at, last_at FROM thread_spend WHERE thread = $thread ORDER BY calls DESC, model").all({ thread }) as ThreadSpendDbRow[];
       return rows.map((r) => ({ model: r.model, calls: r.calls, in: r.tokens_in, out: r.tokens_out, cacheRead: r.cache_read, cacheWrite: r.cache_write, since: r.first_at, last: r.last_at }));
+    },
+  };
+
+  // --- the spend ledger: the usage page's sums ---------------------------------------------------
+
+  readonly spend = {
+    /** How far each transcript has been counted in, by its mark key; absent for one never counted. */
+    marks: (keys: string[]): Map<string, number> => {
+      const out = new Map<string, number>();
+      if (keys.length === 0) return out;
+      const rows = this.db.query("SELECT key, offset FROM spend_marks WHERE key IN (SELECT value FROM json_each($keys))").all({ keys: JSON.stringify(keys) }) as { key: string; offset: number }[];
+      for (const r of rows) out.set(r.key, r.offset);
+      return out;
+    },
+    /**
+     * One pass over a conversation, written together: its rows added to the cells they fall in,
+     * its line (a name, folder or session given replaces the one kept; its span widens), and the
+     * marks it read to.
+     */
+    commit: (conv: SpendConversation, rows: SpendRow[], marks: [string, number][]): void => {
+      this.db.transaction(() => {
+        this.db
+          .query(
+            `INSERT INTO spend_conversations (conversation, harness, session, profile, cwd, title, first_at, last_at)
+             VALUES ($conversation, $harness, $session, $profile, $cwd, $title, $first, $last)
+             ON CONFLICT(conversation) DO UPDATE SET
+               session = COALESCE(excluded.session, session),
+               profile = CASE WHEN excluded.profile <> '' THEN excluded.profile ELSE profile END,
+               cwd = CASE WHEN excluded.cwd <> '' THEN excluded.cwd ELSE cwd END,
+               title = COALESCE(excluded.title, title),
+               first_at = MIN(first_at, excluded.first_at), last_at = MAX(last_at, excluded.last_at)`,
+          )
+          .run({ conversation: conv.conversation, harness: conv.harness, session: conv.session ?? null, profile: conv.profile, cwd: conv.cwd, title: conv.title ?? null, first: conv.firstAt, last: conv.lastAt });
+        const add = this.db.query(
+          `INSERT INTO spend (hour, conversation, model, agent, trigger, context, calls, tokens_in, tokens_out, cache_read, cache_write, cache_write_1h, cost)
+           VALUES ($hour, $conversation, $model, $agent, $trigger, $context, $calls, $in, $out, $read, $write, $write1h, $cost)
+           ON CONFLICT(hour, conversation, model, agent, trigger, context) DO UPDATE SET
+             calls = calls + excluded.calls, tokens_in = tokens_in + excluded.tokens_in, tokens_out = tokens_out + excluded.tokens_out,
+             cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write,
+             cache_write_1h = cache_write_1h + excluded.cache_write_1h, cost = cost + excluded.cost`,
+        );
+        for (const r of rows) {
+          add.run({ hour: r.hour, conversation: conv.conversation, model: r.model, agent: r.agent, trigger: r.trigger, context: r.context, calls: r.calls, in: Math.round(r.in), out: Math.round(r.out), read: Math.round(r.cacheRead), write: Math.round(r.cacheWrite), write1h: Math.round(r.cacheWrite1h), cost: r.cost });
+        }
+        const mark = this.db.query("INSERT INTO spend_marks (key, offset) VALUES ($key, $offset) ON CONFLICT(key) DO UPDATE SET offset = excluded.offset");
+        for (const [key, offset] of marks) mark.run({ key, offset });
+      })();
+    },
+    /** Every mark, by key: what the backfill's reader is handed. */
+    allMarks: (): Record<string, number> => {
+      const out: Record<string, number> = {};
+      for (const r of this.db.query("SELECT key, offset FROM spend_marks").all() as { key: string; offset: number }[]) out[r.key] = r.offset;
+      return out;
+    },
+    /**
+     * The conversations a session left behind as it was cleared, each to the session: a
+     * session's row names only the conversation it is in now, its timeline each one it left.
+     */
+    clearedFrom: (): Map<string, string> => {
+      const out = new Map<string, string>();
+      const rows = this.db.query("SELECT session, payload FROM session_events WHERE kind = 'notification' AND payload LIKE '%context_cleared%'").all() as { session: string; payload: string }[];
+      for (const r of rows) {
+        try {
+          const p = JSON.parse(r.payload) as { type?: string; from?: unknown };
+          if (p.type === "context_cleared" && typeof p.from === "string") out.set(p.from, r.session);
+        } catch {
+          // a payload that is not JSON names nothing
+        }
+      }
+      return out;
+    },
+    /** Every conversation the ledger holds. */
+    conversations: (): SpendConversation[] => {
+      const rows = this.db.query("SELECT * FROM spend_conversations").all() as { conversation: string; harness: string; session: string | null; profile: string; cwd: string; title: string | null; first_at: number; last_at: number }[];
+      return rows.map((r) => ({ conversation: r.conversation, harness: r.harness, ...(r.session ? { session: r.session } : {}), profile: r.profile, cwd: r.cwd, ...(r.title ? { title: r.title } : {}), firstAt: r.first_at, lastAt: r.last_at }));
+    },
+    /** The rows of a query summed. */
+    total: (q: SpendQuery): SpendSum => {
+      const w = spendWhere(q);
+      return spendSumOf(this.db.query(`SELECT ${SPEND_SUMS} FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql}`).get(w.params) as SpendSumDbRow);
+    },
+    /** The rows of a query summed per key of `by`, most spent first, up to `limit`. */
+    groups: (q: SpendQuery, by: UsageDimension, limit: number): SpendGroup[] => {
+      const w = spendWhere(q);
+      const rows = this.db
+        .query(`SELECT ${SPEND_KEY[by]} AS k, ${SPEND_SUMS} FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql} GROUP BY k ORDER BY cost DESC LIMIT $limit`)
+        .all({ ...w.params, limit }) as (SpendSumDbRow & { k: string | null })[];
+      return rows.map((r) => ({ key: r.k ?? "", ...spendSumOf(r) }));
+    },
+    /**
+     * The rows of a query summed per bucket and key of `by`: an hour's start, or (with `day`)
+     * the start of the day for a clock `tz` minutes east of UTC.
+     */
+    series: (q: SpendQuery, by: UsageDimension, day: boolean, tz: number): SpendGroup[] => {
+      const w = spendWhere(q);
+      const bucket = day ? "(((s.hour + $tzms) / 86400000) * 86400000 - $tzms)" : "s.hour";
+      const rows = this.db
+        .query(`SELECT ${bucket} AS at, ${SPEND_KEY[by]} AS k, ${SPEND_SUMS} FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql} GROUP BY at, k ORDER BY at`)
+        .all({ ...w.params, ...(day ? { tzms: tz * 60_000 } : {}) }) as (SpendSumDbRow & { k: string | null; at: number })[];
+      return rows.map((r) => ({ key: r.k ?? "", at: r.at, ...spendSumOf(r) }));
+    },
+    /** The rows of a query summed per session (or conversation no session tracked), most spent first, up to `limit`. */
+    sessions: (q: SpendQuery, limit: number): SpendSessionGroup[] => {
+      const w = spendWhere(q);
+      const rows = this.db
+        .query(
+          `SELECT ${SPEND_KEY.session} AS k, MAX(c.harness) AS harness, MAX(c.cwd) AS cwd, MAX(c.profile) AS profile, MAX(c.title) AS title,
+             MIN(s.hour) AS first, MAX(s.hour) AS last, SUM(CASE WHEN s.agent LIKE 'sub%' THEN s.cost ELSE 0 END) AS sub, ${SPEND_SUMS}
+           FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql} GROUP BY k ORDER BY cost DESC LIMIT $limit`,
+        )
+        .all({ ...w.params, limit }) as (SpendSumDbRow & { k: string; harness: string; cwd: string; profile: string; title: string | null; first: number; last: number; sub: number | null })[];
+      return rows.map((r) => ({ key: r.k, harness: r.harness, cwd: r.cwd, profile: r.profile, ...(r.title ? { title: r.title } : {}), firstAt: r.first, lastAt: r.last + 3_600_000, subCost: r.sub ?? 0, ...spendSumOf(r) }));
+    },
+    /** The rows of a query summed per model, the harness's side calls apart (`key` "side"): what a cost by token kind is priced from. */
+    models: (q: SpendQuery): SpendGroup[] => {
+      const w = spendWhere(q);
+      const rows = this.db
+        .query(`SELECT CASE WHEN s.agent = 'side' THEN 'side' ELSE s.model END AS k, ${SPEND_SUMS} FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql} GROUP BY k`)
+        .all(w.params) as (SpendSumDbRow & { k: string })[];
+      return rows.map((r) => ({ key: r.k, ...spendSumOf(r) }));
+    },
+    /** The sub-agents' rows of a query summed per model. */
+    subModels: (q: SpendQuery): SpendGroup[] => {
+      const w = spendWhere(q);
+      const rows = this.db
+        .query(`SELECT s.model AS k, ${SPEND_SUMS} FROM spend s JOIN spend_conversations c ON c.conversation = s.conversation WHERE ${w.sql} AND s.agent LIKE 'sub%' GROUP BY k`)
+        .all(w.params) as (SpendSumDbRow & { k: string })[];
+      return rows.map((r) => ({ key: r.k, ...spendSumOf(r) }));
+    },
+    /** The oldest hour the ledger holds. */
+    oldest: (): number | undefined => (this.db.query("SELECT MIN(hour) AS h FROM spend").get() as { h: number | null }).h ?? undefined,
+    /** Drops the hours before `before`, and the conversations left with none; the marks stay, so nothing is counted in again. */
+    prune: (before: number): number => {
+      const n = this.db.query("DELETE FROM spend WHERE hour < $before").run({ before }).changes;
+      this.db.query("DELETE FROM spend_conversations WHERE last_at < $before AND conversation NOT IN (SELECT DISTINCT conversation FROM spend)").run({ before });
+      return n;
     },
   };
 
