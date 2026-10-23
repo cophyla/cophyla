@@ -376,9 +376,11 @@ describe("photos and files in a group chat", () => {
       const plain = await r.call(api, "get_file", { group: "release", file });
       expect(plain.text).toContain("Copied schema.sql");
       expect(r.asks.listOpen()).toEqual([]);
-      const placed = r.call(api, "get_file", { group: "release", file, dir: "C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup" });
+      // a folder absolute where the tests run: the machine's own paths decide
+      const startup = process.platform === "win32" ? "C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup" : "/home/me/.config/autostart";
+      const placed = r.call(api, "get_file", { group: "release", file, dir: startup });
       const ask = await waitFor(() => r.asks.listOpen()[0]);
-      expect(ask.title).toBe("Let api-claude copy schema.sql (1 KB) from #release into C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup?");
+      expect(ask.title).toBe(`Let api-claude copy schema.sql (1 KB) from #release into ${startup}?`);
       r.asks.answer(ask.id, { option: "deny" }, USER);
       expect((await placed).isError).toBe(true);
       expect(r.started.at(-1)!.to.dir).toBeUndefined();
