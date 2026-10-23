@@ -11,7 +11,7 @@ import type { AuditEntry, ViewContent, ViewManifest, Workspace } from "@cophyla/
 import { ViewManifest as ViewManifestSchema } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
-import { isText, mimeOf, versionOf, walk } from "../src/views/files.ts";
+import { isText, mimeOf, minifyCss, versionOf, walk } from "../src/views/files.ts";
 import { BUILTIN_VIEWS_DIR, Views } from "../src/views/index.ts";
 import { normalisePath } from "../src/workspaces/index.ts";
 import { isMethod, removeHome, stopDaemon, tempHome, testDaemon, TestClient } from "./helpers.ts";
@@ -64,6 +64,27 @@ describe("views: files", () => {
     }
   });
 
+  test("walk leaves out type declarations, which only the type checker reads", () => {
+    const root = fakeViews();
+    try {
+      writeFileSync(join(root, "fake", "lib", "x.d.mts"), "export declare const x: number;\n");
+      writeFileSync(join(root, "fake", "lib", "y.d.ts"), "export declare const y: number;\n");
+      const skipped: string[] = [];
+      const files = walk(join(root, "fake"), { onSkip: (p, r) => skipped.push(`${p}:${r}`) });
+      expect(files.map((f) => f.path)).toEqual(["a.ts", "b.ts", "icon.png", "index.html", "lib/c.ts"]);
+      expect(skipped).toContain("lib/x.d.mts:declaration");
+      expect(skipped).toContain("lib/y.d.ts:declaration");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("CSS goes without its comments and indentation, a quoted string kept as it is", () => {
+    const css = '/* the rail */\n.rail {\n  color: red; /* why */\n  content: "/* not a comment */";\n  background: url(\'a.png\');\n}\n\n\n.b { margin: 0 }\n';
+    const out = minifyCss(css);
+    expect(out).toBe('.rail {\ncolor: red; \ncontent: "/* not a comment */";\nbackground: url(\'a.png\');\n}\n.b { margin: 0 }\n');
+  });
+
   test("versionOf is 16 hex, order-independent, and moves with one byte", () => {
     const a = [
       { path: "a", bytes: Buffer.from("1") },
@@ -108,13 +129,14 @@ describe("views: the module over a fake builtin directory", () => {
     expect(content.version).toBe(views.list()[0]!.version!);
     const a = content.files.find((f) => f.path === "a.ts")!;
     expect(a.mime).toBe("text/javascript");
-    expect(a.text).toContain('from "./b.ts"');
+    expect(a.text).toContain('from"./b.ts"');
     expect(a.text).not.toContain(": number");
     expect(a.text).not.toContain("as number");
     expect(a.text).not.toContain("import type");
     expect(a.text).not.toContain("@cophyla/protocol");
     const c = content.files.find((f) => f.path === "lib/c.ts")!;
-    expect(c.text).toBe("export const c = \"c\";\n");
+    // minified: what reaches a phone on the relay is one message, so whitespace is spent nowhere
+    expect(c.text?.trim()).toBe('export const c="c";');
     const png = content.files.find((f) => f.path === "icon.png")!;
     expect(png.mime).toBe("image/png");
     expect(png.base64).toBe(PNG.toString("base64"));
@@ -273,6 +295,14 @@ describe("views: the real built-in directory", () => {
       expect(sources.some((t) => t.includes('"host.chooseView"'))).toBe(true);
       expect(sources.some((t) => t.includes('"host.settings"'))).toBe(true);
     }
+  });
+
+  test("the default view fits one message through the relay: its view.get answer, sealed and in base64, under the server's 4 MiB", () => {
+    // A phone on the relay takes the view in one frame; the server closes a link sent a bigger one,
+    // and with it every tunnel on it. Room is left for the envelope and the seal.
+    const answer = JSON.stringify({ jsonrpc: "2.0", id: 1, result: views.get("default") });
+    const relayed = Math.ceil(Buffer.byteLength(answer) / 3) * 4;
+    expect(relayed).toBeLessThan(4 * 1024 * 1024 - 64 * 1024);
   });
 
   test("every src and href in the default view's entry names a served file, and every .ts transpiles", () => {

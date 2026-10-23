@@ -1,6 +1,9 @@
 // The pure part of serving a view directory: which files are served, as what type, under
 // which version. `.ts` files are type-stripped and served under their own path as
-// JavaScript, so `import "./model.ts"` in a view works with no rewriting.
+// JavaScript, so `import "./model.ts"` in a view works with no rewriting. What is served is
+// kept small, since a phone on the relay takes a view in one message of about 3 MB at most:
+// JavaScript with its whitespace and comments minified, CSS without its comments and
+// indentation, and no type declarations (`.d.ts`, `.d.mts`), which only the type checker reads.
 
 import { createHash } from "node:crypto";
 import { lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -48,7 +51,12 @@ export interface WalkedFile {
   bytes: Buffer;
 }
 
-export type SkipReason = "dotfile" | "node_modules" | "manifest" | "symlink_escape" | "too_large";
+export type SkipReason = "dotfile" | "node_modules" | "manifest" | "symlink_escape" | "too_large" | "declaration";
+
+/** A type declaration file: the type checker's alone, never loaded by a view. */
+export function isDeclaration(name: string): boolean {
+  return /\.d\.[cm]?ts$/i.test(name);
+}
 
 export interface WalkOptions {
   onSkip?: (path: string, reason: SkipReason) => void;
@@ -57,8 +65,8 @@ export interface WalkOptions {
 const byPath = (a: { path: string }, b: { path: string }) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
 
 /**
- * Every regular file under `dir`, recursively, sorted by path. Dotfiles, `node_modules` and
- * the manifest are left out; a symlink is followed only while its target stays inside the
+ * Every regular file under `dir`, recursively, sorted by path. Dotfiles, `node_modules`, type
+ * declarations and the manifest are left out; a symlink is followed only while its target stays inside the
  * directory; a file over the cap is left out.
  */
 export function walk(dir: string, opts: WalkOptions = {}): WalkedFile[] {
@@ -79,6 +87,10 @@ export function walk(dir: string, opts: WalkOptions = {}): WalkedFile[] {
       }
       if (!rel && name === MANIFEST_FILE) {
         opts.onSkip?.(relPath, "manifest");
+        continue;
+      }
+      if (isDeclaration(name)) {
+        opts.onSkip?.(relPath, "declaration");
         continue;
       }
       let target = absPath;
@@ -133,5 +145,39 @@ export function toViewFile(path: string, bytes: Buffer, transpile: Transpile): V
   const mime = mimeOf(path);
   if (!isText(mime)) return { path, mime, base64: bytes.toString("base64") };
   const source = bytes.toString("utf8");
-  return { path, mime, text: extname(path).toLowerCase() === ".ts" ? transpile(source, path) : source };
+  const ext = extname(path).toLowerCase();
+  return { path, mime, text: ext === ".ts" ? transpile(source, path) : ext === ".css" ? minifyCss(source) : source };
+}
+
+/**
+ * CSS without its comments and the indentation of its lines: what a browser reads is the same.
+ * A quoted string is copied as it is, so a `/*` inside one is never taken for a comment.
+ */
+export function minifyCss(source: string): string {
+  let out = "";
+  let i = 0;
+  while (i < source.length) {
+    const c = source[i]!;
+    if (c === "/" && source[i + 1] === "*") {
+      const end = source.indexOf("*/", i + 2);
+      i = end < 0 ? source.length : end + 2;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      let j = i + 1;
+      while (j < source.length && source[j] !== c && source[j] !== "\n") j += source[j] === "\\" ? 2 : 1;
+      out += source.slice(i, j + 1);
+      i = j + 1;
+      continue;
+    }
+    if (c === "\n") {
+      out += "\n";
+      i++;
+      while (i < source.length && (source[i] === " " || source[i] === "\t" || source[i] === "\r" || source[i] === "\n")) i++;
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out.trim() + "\n";
 }

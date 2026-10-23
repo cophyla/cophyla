@@ -49,7 +49,8 @@ export class Views {
   private deps: ViewsDeps;
   private dirs: ViewDir[];
   private log: Logger;
-  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser" });
+  /** Types stripped and whitespace minified: a phone on the relay takes the whole view in one message. */
+  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser", minifyWhitespace: true });
 
   constructor(deps: ViewsDeps) {
     this.deps = deps;
