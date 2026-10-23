@@ -3244,7 +3244,8 @@ export class Sessions implements SessionHost {
    * else goes over the harness's own channel, which a Claude session reads as another agent's
    * message: the brain's words too, when it does not lead the session. A leader's message to a
    * Claude session cophylad cannot type into is refused, as it would arrive as another
-   * agent's; an agent leader's that starts with `/` or `!` too, as it would run a command there.
+   * agent's; an agent leader's that starts with `!` too, as it would run a shell command there.
+   * One that starts with `/` runs as the user's slash command would.
    *
    * The session is prepared first, as asked: its context cleared (`/clear` typed, whoever
    * sends, since it is terminal control like Shift+Tab, and the new context awaited), then its
@@ -3315,7 +3316,7 @@ export class Sessions implements SessionHost {
   /**
    * Refuses a leader's message a session cannot take as the user's, before anything is done: a
    * Claude session cophylad cannot type into would read it as another agent's, and an agent
-   * leader's text that starts with `/` or `!` would run a command there.
+   * leader's text that starts with `!` would run a shell command there.
    */
   private canLead(rec: LiveRecord, text: string, lead: LeadInfo | undefined): void {
     if (!lead) throw new RpcError("invalid", "a leader's message says who leads the session");

@@ -1,7 +1,7 @@
 // Sessions in tether, against a fake host speaking the real protocol: a session cophylad starts
 // runs in a tether terminal with cophylad's settings, gets a window, and has its first prompt
 // typed; the user's messages are typed and land as their turns, and so do a leader's, as the
-// user's turn sent by it (an agent leader's that starts with / or ! refused); the brain's go
+// user's turn sent by it (an agent leader's that starts with ! refused, a slash command typed); the brain's go
 // over the pipe whatever the retired brain_sends says,
 // and so do another agent's, in their envelope, never typed, landing as that agent's turn (an
 // echo of one with no send waiting for it as well, once, and never as the user's);
@@ -260,15 +260,21 @@ describe("a session cophylad starts in tether", () => {
     expect(events(s.id).findLast((e) => e.kind === "user_turn")!.payload).toEqual({ text: "then the docs", source: "lead", by: "chat", ref: c.ref, promptId: "p-lead-chat" });
   });
 
-  test("an agent leader's text that starts with / or ! is refused before anything is typed", async () => {
+  test("an agent leader's text that starts with ! is refused before anything is typed; a slash command is typed", async () => {
     fs.typed.length = 0;
     const by = { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", alias: "lead-codex", harness: "codex" as const, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "Laptop" };
     const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
-    expect(await failure(mini.sessions.send(s.id, "/clear", { from: "lead", lead: { by } }))).toMatchObject({ code: "invalid", message: expect.stringContaining("slash command") });
     expect(await failure(mini.sessions.send(s.id, "  \n !rm -rf build", { from: "lead", lead: { by } }))).toMatchObject({ code: "invalid", message: expect.stringContaining("shell command") });
     expect(await failure(mini.sessions.send(s.id, "no one leads this", { from: "lead" }))).toMatchObject({ code: "invalid" });
     await sleep(300);
     expect(fs.typed).toEqual([]);
+    const r = await mini.sessions.send(s.id, "/compact", { from: "lead", lead: { by } });
+    expect(r.status).toBe("queued");
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    expect(fs.typed).toEqual(["paste:/compact", "keys:Enter"]);
+    // a slash command fires no prompt hook: it lands once the prompt lets go of it, as the user's turn sent by the leader
+    await waitFor(() => events(s.id).some((e) => e.kind === "user_turn" && (e.payload as { ref?: string }).ref === r.ref), 5000);
+    expect(events(s.id).findLast((e) => e.kind === "user_turn")!.payload).toEqual({ text: "/compact", source: "lead", by, ref: r.ref });
   });
 
   test("an agent's go over the pipe in their envelope, never typed, and land as that agent's turn", async () => {

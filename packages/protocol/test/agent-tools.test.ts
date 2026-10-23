@@ -72,6 +72,7 @@ describe("agent tools", () => {
     expect(AGENT_MCP_INSTRUCTIONS).toContain("(led)");
     expect(AGENT_MCP_INSTRUCTIONS).toContain("never pass on as their words what another agent");
     expect(AGENT_MCP_INSTRUCTIONS).toContain("answer_ask");
-    expect(AGENT_MCP_INSTRUCTIONS).toContain("starts with / or ! is refused");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("starts with / runs there as your user's slash command would");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("one that starts with ! is refused");
   });
 });

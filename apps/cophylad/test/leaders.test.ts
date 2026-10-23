@@ -453,18 +453,21 @@ describe("a leader's message", () => {
     expect(r.sent).toEqual([]);
   });
 
-  test("that starts with / or ! is refused before anything is sent or counted", async () => {
+  test("that starts with ! is refused before anything is sent or counted; one that starts with / goes, as the user's slash command", async () => {
     const lead = withPid(sess("claude", "C:/code/api"));
     const web = sess("codex", "C:/code/web");
     const r = routerRig({ local: [lead, web] });
     r.leaders.set(lead.id, [web.id]);
-    const slash = await r.call(lead, "send_message", { to: "web-codex", text: "/clear" });
-    expect(slash).toEqual({ text: expect.stringContaining("Not sent: a leader's message may not start with /"), isError: true });
     const bang = await r.call(lead, "send_message", { to: "web-codex", text: "\n  !git push --force" });
+    expect(bang).toEqual({ text: expect.stringContaining("Not sent: a leader's message may not start with !"), isError: true });
     expect(bang.text).toContain("shell command");
     expect(r.sent).toEqual([]);
     // the same text sent plainly is not taken for a duplicate of what was refused
     expect((await r.call(lead, "send_message", { to: "web-codex", text: "push when green" })).isError).toBeUndefined();
+    const slash = await r.call(lead, "send_message", { to: "web-codex", text: "/compact" });
+    expect(slash.isError).toBeUndefined();
+    expect(slash.text).toContain("as your user's own words");
+    expect(r.sent.at(-1)).toMatchObject({ id: web.id, text: "/compact", opts: { from: "lead" } });
   });
 
   test("list_agents marks the sessions the caller leads, with the ask open in each", async () => {

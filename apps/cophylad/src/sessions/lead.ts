@@ -15,10 +15,11 @@ export function leadTurn(lead: LeadInfo, text: string, ref?: string, promptId?: 
   return { text: capText(text), source: "lead", by: lead.by, ...(ref !== undefined ? { ref } : {}), ...(promptId !== undefined ? { promptId } : {}) };
 }
 
-/** Why an agent leader's text is refused before anything is typed: a slash command or a shell command would run there. */
+/**
+ * Why an agent leader's text is refused before anything is typed: a shell command would run
+ * there. A slash command goes, as the user's would (`/compact`, `/clear`).
+ */
 export function leadCommand(text: string): string | undefined {
-  const first = text.trimStart().charAt(0);
-  if (first === "/") return "a leader's message may not start with /, which would run a slash command in the session";
-  if (first === "!") return "a leader's message may not start with !, which would run a shell command in the session";
+  if (text.trimStart().charAt(0) === "!") return "a leader's message may not start with !, which would run a shell command in the session";
   return undefined;
 }
