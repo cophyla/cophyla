@@ -209,6 +209,14 @@ export const actions = {
   "focus.list": { risk: "read" },
   "focus.end": { risk: "write" },
   "agent.focus": { risk: "write" },
+  // Leaders: the app's requests (`lead.*`, the brain's `lead.list` too), an agent's message
+  // typed as the user's into a session it leads (`agent.lead`), and its answer to such a
+  // session's ask as the user (`answer_ask`, `agent.answer`). The user's promotion is the consent.
+  "lead.list": { risk: "read" },
+  "lead.set": { risk: "write" },
+  "lead.remove": { risk: "write" },
+  "agent.lead": { risk: "exec" },
+  "agent.answer": { risk: "exec" },
   // Teammates: the app's requests; `teammate.send` an agent's message to a teammate's agent,
   // `teammate.deliver` one coming in.
   "teammate.list": { risk: "read" },

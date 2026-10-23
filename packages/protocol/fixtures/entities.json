@@ -673,13 +673,16 @@
   ],
   "AgentListing": [
     { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web", "status": "busy", "intent": "Review the login page change" },
-    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex-01A9", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "user", "detail": "a question" } }
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "alias": "api-codex-01A9", "harness": "codex", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "nodeName": "Laptop", "folder": "api", "status": "idle", "waiting": { "on": "user", "detail": "a question" } },
+    { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB4", "alias": "docs", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "docs", "status": "needs_permission", "led": true, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" }
   ],
   "AgentMode": ["bypass", "prompting"],
   "MachineListing": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "Laptop", "online": true, "files": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "Studio", "online": false, "files": false }],
   "ConnectionPeer": [{ "user": "bob", "name": "api-codex", "harness": "codex", "live": true, "seenAt": 1758196800000 }, { "user": "alice", "name": "terminal" }],
   "ConnectionState": ["pending", "active", "ended"],
   "Focus": [{ "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" }],
+  "LeaderSpeaker": ["chat", "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"],
+  "Leader": [{ "speaker": "chat", "targets": "all", "since": 1758196700000 }, { "speaker": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "targets": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3"], "since": 1758196800000 }],
   "Teammate": [{ "id": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "state": "active", "user": "bob", "share": { "mode": "include", "folders": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\code\\api" }], "open": "always" }, "theirs": { "open": "chosen", "workspaces": ["web", "docs"] }, "createdAt": 1758196700000, "acceptedAt": 1758196760000, "lastAt": 1758196800000, "sent": 3, "received": 2 }, { "id": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "state": "pending", "share": { "mode": "exclude", "folders": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\code\\client-x" }], "open": "chosen", "opened": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"], "closed": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\code\\taxes" }] }, "createdAt": 1758196700000, "expiresAt": 1758283100000, "sent": 0, "received": 0 }],
   "TeammateShare": [{ "mode": "include", "folders": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\code" }], "open": "always" }],
   "TeammatePlace": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "/home/me/code" }],

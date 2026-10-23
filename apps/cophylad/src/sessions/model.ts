@@ -4,6 +4,7 @@
 
 import type { Ask, ClaudeHookEvent, CodexHookEvent, HarnessKind, HarnessProfile, MuseHookEvent, NodeId, ProfileId, Session, SessionEvent, SessionEventKind, SessionOrigin, SessionStats, SessionStatus, SessionTransport, SessionWaiting, TerminalRef } from "@cophyla/protocol";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
+import type { LeadInfo } from "./lead.ts";
 import type { HookMeta } from "../api/hooks.ts";
 import type { SessionsConfig } from "../config/schema.ts";
 import { redact } from "../gate/audit.ts";
@@ -305,7 +306,7 @@ export interface HeadlessRunner {
   owns(rec: SessionRecord): boolean;
   spawn(input: HeadlessSpawn): Promise<SessionRecord>;
   /** Queues a message behind the turn in flight; resolves once the harness took it. `agent`: another agent's, recorded as its turn. */
-  prompt(rec: SessionRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): Promise<void>;
+  prompt(rec: SessionRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): Promise<void>;
   /** Cancels the turn in flight without ending the session. */
   cancel(rec: SessionRecord): boolean;
   stop(rec: SessionRecord): Promise<void>;

@@ -111,6 +111,7 @@ export class EventStream {
       bus.on("entitlement.updated", (e) => this.emit({ name: "entitlement.updated", params: { at: e.at, token: e.token } })),
       bus.on("listener.fired", (e) => this.emit({ name: "listener.fired", params: e })),
       bus.on("listener.removed", (e) => this.emit({ name: "listener.removed", params: e })),
+      bus.on("lead.state", (e) => this.emit({ name: "lead.updated", params: { at: this.now(), leaders: e.leaders } })),
     );
   }
 

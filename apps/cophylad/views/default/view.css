@@ -8785,3 +8785,325 @@ button:disabled {
     padding-bottom: 8px;
   }
 }
+
+/* --- leaders ------------------------------------------------------------------------------------ */
+
+/* A crown, the leader's mark: on its tab, on Lead, on the chip of what it leads, and on a
+   message it typed into a session as the user. */
+:root {
+  --lead-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath fill='%23000' d='M1.4 4.6l3.5 3.1L8 2.4l3.1 5.3 3.5-3.1-1.3 7.1H2.7z'/%3E%3Crect fill='%23000' x='2.7' y='12.9' width='10.6' height='1.7' rx='.5'/%3E%3C/svg%3E");
+}
+
+.lead-glyph,
+.tab-lead {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  background-color: currentColor;
+  -webkit-mask: var(--lead-glyph) center / contain no-repeat;
+  mask: var(--lead-glyph) center / contain no-repeat;
+}
+
+/* On a tab, after its name and before the focus crescent, in the brand's ink. */
+.tab-lead {
+  margin-left: auto;
+  background-color: var(--cophyla-ink);
+}
+
+.tab-lead:not([hidden]) + .tab-focus {
+  margin-left: 0;
+}
+
+/* Lead, beside Kill (and Connect's look), and its list dropped under it. */
+.lead-control {
+  position: relative;
+  display: inline-flex;
+}
+
+.lead-start {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.lead-start[data-leads="true"] {
+  color: var(--cophyla-ink);
+}
+
+.lead-start:hover:not(:disabled),
+.lead-start[aria-expanded="true"] {
+  border-color: var(--cophyla);
+  color: var(--cophyla-ink);
+}
+
+.lead-start:disabled {
+  opacity: 0.55;
+}
+
+.session-head[data-open="false"] .lead-start {
+  padding: 1px 7px;
+  font-size: 12px;
+}
+
+/* Open, its head lies over the pane under it, a terminal's screen too. */
+.session-head:has(.lead-pop:not([hidden])) {
+  z-index: 15;
+}
+
+.chat-head:has(.lead-pop:not([hidden])) {
+  position: relative;
+  z-index: 15;
+}
+
+/* The list: New terminal's menu's look, as wide as a session's name needs and no taller than
+   the frame, scrolling in itself. */
+.lead-pop {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 360px;
+  max-width: calc(100vw - 16px);
+  max-height: min(560px, calc(100vh - 96px));
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding: 10px 10px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--card);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  white-space: normal;
+  cursor: default;
+}
+
+.lead-pop-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.lead-pop-lede {
+  margin: -4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.lead-every {
+  border: 1px solid var(--line);
+  background: var(--paper);
+}
+
+.lead-every-check,
+.lead-check {
+  flex: none;
+  margin: 0;
+  accent-color: var(--cophyla);
+}
+
+/* Every agent picked: the list shows them all held, dimmer. */
+.lead-pick[data-all="true"] .agent-pick-items {
+  opacity: 0.55;
+}
+
+/* A Claude session no one can type into: there, but not to be ticked, and why in amber. */
+.lead-item[data-blocked="true"] {
+  cursor: default;
+}
+
+.lead-item[data-blocked="true"]:hover {
+  background: none;
+}
+
+.lead-item[data-blocked="true"] .agent-pick-handle {
+  color: var(--muted);
+}
+
+.lead-item[data-blocked="true"] .agent-pick-words,
+.lead-item[data-note="true"] .agent-pick-words {
+  color: var(--amber);
+  white-space: normal;
+}
+
+.lead-pop-error {
+  margin: 0;
+  color: var(--rust);
+  font-size: 12px;
+}
+
+.lead-pop-buttons {
+  display: flex;
+  gap: 8px;
+}
+
+.lead-pop-buttons button {
+  padding: 3px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.lead-pop-buttons button:hover:not(:disabled) {
+  border-color: var(--muted);
+  color: var(--ink);
+}
+
+.lead-pop-buttons .lead-save {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.lead-pop-buttons .lead-save:hover:not(:disabled) {
+  border-color: var(--cophyla-ink);
+  color: var(--ink);
+}
+
+.lead-pop-buttons button:disabled,
+.lead-stop:disabled {
+  opacity: 0.55;
+}
+
+/* Stop leading, under the rest, across a hairline. */
+.lead-stop {
+  align-self: stretch;
+  padding: 8px 2px 0;
+  border: 0;
+  border-top: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.lead-stop:hover:not(:disabled) {
+  color: var(--rust);
+}
+
+/* The chips in a head: what a leader leads, in the brand's ink with its crown; the leaders that
+   speak to a session, quieter. Pills as the connection's is, cut short on a folded head's line. */
+.lead-chip {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.session-head[data-open="false"] .lead-chip {
+  max-width: 40%;
+}
+
+.lead-chip-words {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lead-leads {
+  border-color: color-mix(in srgb, var(--cophyla) 55%, var(--line));
+  color: var(--cophyla-ink);
+}
+
+.lead-leads .lead-glyph {
+  width: 11px;
+  height: 11px;
+}
+
+/* In the chat's head, at its end: the chip, then Lead. */
+.chat-lead {
+  display: inline-flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.chat-lead .lead-chip {
+  max-width: none;
+}
+
+.chat-context[hidden] + .chat-mode[hidden] + .chat-lead,
+.chat-head[data-agent="false"] .chat-lead {
+  margin-left: auto;
+}
+
+/* From a node that says nothing of the chat's session, Lead alone. */
+.chat-head[data-agent="false"] > :not(.chat-lead) {
+  display: none;
+}
+
+/* A leader's message in a session's timeline: the user's own turn, and under it, after the
+   crown, who sent it. */
+.row[data-lead="1"] .row-body::before {
+  content: "";
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 5px;
+  vertical-align: -1px;
+  background-color: var(--cophyla-ink);
+  -webkit-mask: var(--lead-glyph) center / contain no-repeat;
+  mask: var(--lead-glyph) center / contain no-repeat;
+}
+
+/* On a phone's width the list rises from the frame's foot, the whole width, and the folded
+   head's Lead is its crown alone, its name read aloud. */
+@media (max-width: 640px) {
+  .lead-pop {
+    position: fixed;
+    top: auto;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    width: auto;
+    max-width: none;
+    max-height: 75vh;
+    padding: 12px 12px calc(12px + env(safe-area-inset-bottom));
+    border-width: 1px 0 0;
+    border-radius: 10px 10px 0 0;
+    box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.55);
+  }
+
+  .session-head[data-open="false"] .lead-word {
+    display: none;
+  }
+
+  .session-head[data-open="false"] .lead-chip {
+    max-width: 34%;
+  }
+
+  /* The folded line keeps what it is doing: who leads it shows once the head is opened, and
+     on each message a leader sent. */
+  .session-head[data-open="false"] .lead-led {
+    display: none;
+  }
+
+  /* The chat's head has no room for it: its Lead, in the brand's ink while it leads, and the
+     crown on its tab say so. */
+  .chat-lead .lead-chip {
+    display: none;
+  }
+}

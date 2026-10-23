@@ -54,6 +54,11 @@ export interface ForwardHost {
   chat: Pick<Chat, "peek" | "touchSession">;
   /** The local workspace rows, so `workspace.list` shows this node's and the mirrors' without the stale rows of a node that is away. */
   localWorkspaces(): Workspace[];
+  /**
+   * How the chat's message reaches a session it leads: as the user's words, or as another
+   * agent's with why; undefined when the chat does not lead it.
+   */
+  chatLead?(session: string): { lead: true } | { fallback: string } | undefined;
 }
 
 /** The two tables share this shape: a target for the audit, an optional risk, the ask's words, whether it is on the caller's own, a handler. */
@@ -230,7 +235,7 @@ export const merges: Record<string, Merge> = {
 };
 
 function withoutAgent(p: Record<string, unknown>): Record<string, unknown> {
-  const { agent: _agent, ...rest } = p;
+  const { agent: _agent, lead: _lead, ...rest } = p;
   return rest;
 }
 
@@ -315,16 +320,18 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
           // The owner types a user's message and pipes the brain's, and ends a session of the
           // user's only for the user: it learns who asked from here, never from the caller. An
           // agent's message is the router's to forward (agentmsg), so a caller's `agent` is dropped.
+          // The chat's goes as the user's words to a session it leads, where the leaders say so.
           // A client's transfer is the user's: who an agent's is from is the router's to say.
+          const chat = name === "session.send" && c.principal?.kind === "brain" ? host.chatLead?.(P(p)["id"] as string) : undefined;
           const params =
             name === "session.send" || name === "session.stop"
-              ? { ...withoutAgent(P(p)), as: c.principal?.kind === "brain" ? "brain" : "user" }
+              ? { ...withoutAgent(P(p)), ...(chat && "lead" in chat ? { as: "lead", lead: { by: "chat" } } : { as: c.principal?.kind === "brain" ? "brain" : "user" }) }
               : name === "transfer.start"
                 ? { ...withoutSender(P(p)), by: { kind: "user" } }
                 : p;
           const result = await host.forward(route.node, name, params, opts);
           after[name]?.(result, p, host, route.node);
-          return result;
+          return chat && "fallback" in chat ? { ...(result as object), fallback: chat.fallback } : result;
         }
         const local = await entry.handler(p, ctx);
         if (route.kind === "merge" && merges[name]) return merges[name]!(local, p, host);

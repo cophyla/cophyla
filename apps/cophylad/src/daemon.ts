@@ -109,6 +109,9 @@ import { peerAlias } from "./agentmsg/envelope.ts";
 import type { EnvelopeInfo } from "./agentmsg/envelope.ts";
 import { Groups } from "./groups/index.ts";
 import { groupMethods } from "./groups/methods.ts";
+import { Leaders } from "./leaders/index.ts";
+import { leaderMethods } from "./leaders/methods.ts";
+import { Reports } from "./leaders/reports.ts";
 import { SelfLogin } from "./teammates/login.ts";
 import { Teammates } from "./teammates/index.ts";
 import { teammateMethods } from "./teammates/methods.ts";
@@ -236,7 +239,7 @@ export interface DaemonOptions {
     manual?: boolean;
     limitsFetch?: typeof fetch;
   };
-  /** The listeners' seams: how long an idle holds before a listener hears it (3000 ms; 0, at once, for tests that want the fire with the event). */
+  /** The listeners' seams: how long an idle holds before a listener hears it (3000 ms; 0, at once, for tests that want the fire with the event). A leader's report waits as long. */
   listeners?: { settleMs?: number };
   /** The nodes module's seams: the discovery transport (a LAN in memory for tests) and a clock. */
   nodes?: {
@@ -308,6 +311,10 @@ export interface Daemon {
   focus: Focuses;
   /** The group chats. */
   groups: Groups;
+  /** The leaders: the sessions, and the chat, that speak to a group of the user's sessions as the user. */
+  leaders: Leaders;
+  /** What a session a leader messaged does next, told to the leader. */
+  reports: Reports;
   /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
   teammates: Teammates;
   views: Views;
@@ -1040,7 +1047,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   assistant = chatAgent;
   /** The daemon is stopping: the chat's session is left running for the next one to meet again. */
   let stopping = false;
-  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, assistant: () => chatAgent, terminals: { list: () => nodeTerminals?.rows.list() ?? [] }, ...(limits ? { limits } : {}) };
+  const capDeps = { node, asks, profiles, sessions, workspaces, chat, tasks, prompts, memory, tools, catalogue, llm, store, voice, speech, metrics, remote, listeners, files, assistant: () => chatAgent, terminals: { list: () => nodeTerminals?.rows.list() ?? [] }, leaders: () => (routesHere() ? leadersLive : undefined), ...(limits ? { limits } : {}) };
   // The link is built before anything can raise an event, so a hook's first emit or a
   // trigger missed while the daemon was down waits in its outbox for the handshake; the
   // brain itself is spawned once everything it can ask for is there.
@@ -1155,6 +1162,11 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     },
     guests: () => guests,
     agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
+    // the chat's message to a session of another node: as the user's words where it leads it
+    chatLead: (id) => {
+      const s = routesHere() ? knownSessions().find((x) => x.id === id) : undefined;
+      return s ? leadersLive.route("chat", s) : undefined;
+    },
     ...(opts.nodes?.now ? { now: opts.nodes.now } : {}),
   });
   const forwardHost = nodes.forwardHost;
@@ -1188,6 +1200,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       forward: (n, method, params, o) => forwardHost.forward(n, method, params, o),
       requestPrimary: (method, params, o) => cluster.requestPrimary(method, params, o),
       grant: (id) => grants.get(id),
+      mirrorAsk: (id) => forwardHost.mirrorAsk(id),
     },
     gate,
     log: log.child("agentmsg"),
@@ -1196,6 +1209,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: () => focusLive,
     groups: () => groupsLive,
     teammates: () => (routesHere() ? teammatesLive : undefined),
+    leaders: () => (routesHere() ? leadersLive : undefined),
+    reports: () => (routesHere() ? reportsLive : undefined),
     files: () => agentFiles,
     asks,
     ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
@@ -1395,6 +1410,29 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ended: (session, told) => groupsLive.focusEnded(session, told),
   });
   focusLive.start();
+  // Leaders: the sessions, and the chat, whose words reach a group of the user's sessions as the user's; kept by the primary.
+  const leadersLive = new Leaders({
+    store,
+    bus,
+    log: log.child("leaders"),
+    routes: routesHere,
+    sessions: knownSessions,
+    node: (id) => (id === identity.id ? node() : forwardHost.registryList().find((n) => n.id === id)),
+    legacyTyped: () => config.sessions.brain_sends === "typed",
+  });
+  leadersLive.start();
+  // What a session a leader messaged does next, told to the leader as the listeners hear an idle.
+  const reportsLive = new Reports({
+    bus,
+    log: log.child("leaders"),
+    routes: routesHere,
+    linked: (n) => n === identity.id || forwardHost.linked(n),
+    leads: (leader, target) => leadersLive.leads(leader, target),
+    alias: (id) => agentMessages.agentNames().get(id)?.alias ?? id,
+    tell: (leader, text, from) => agentMessages.report(leader, text, from),
+    settleMs: opts.listeners?.settleMs ?? LISTENER_SETTLE_MS,
+  });
+  reportsLive.start();
   // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
   const groupsLive: Groups = new Groups({
     store,
@@ -1634,6 +1672,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...agentMethods({ agents: () => (config.agent_messages.enabled ? agentMessages : undefined) }),
     ...connectionMethods({ connections: () => connections }),
     ...groupMethods({ groups: () => (routesHere() ? groupsLive : undefined), focus: () => (routesHere() ? focusLive : undefined) }),
+    ...leaderMethods({ leaders: () => (routesHere() ? leadersLive : undefined) }),
     ...teammateMethods({ teammates: () => (routesHere() ? teammatesLive : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
@@ -1920,6 +1959,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     connections: connectionsLive,
     focus: focusLive,
     groups: groupsLive,
+    leaders: leadersLive,
+    reports: reportsLive,
     teammates: teammatesLive,
     views,
     chat,
@@ -1974,6 +2015,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       offTeammatesUp();
       teammatesLive.stop();
       groupsLive.stop();
+      reportsLive.stop();
+      leadersLive.stop();
       focusLive.stop();
       await cloud.stop();
       metrics.dispose();

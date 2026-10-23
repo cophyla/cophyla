@@ -48,6 +48,9 @@ export const FOCUS_KV_NS = "focus";
 /** The teammates (see `teammates/`): their keys, relay tokens, what each side shares, and messages waiting. */
 export const TEAMMATES_KV_NS = "teammates";
 
+/** The leaders (see `leaders/`): who speaks to which of the user's sessions as the user. Replicated to the backups; never the brain's, never in the cloud backup. */
+export const LEADERS_KV_NS = "leaders";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -64,4 +67,5 @@ export const RESERVED_KV_NS: readonly string[] = [
   GROUP_LOG_KV_NS,
   FOCUS_KV_NS,
   TEAMMATES_KV_NS,
+  LEADERS_KV_NS,
 ];

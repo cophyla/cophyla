@@ -15,16 +15,28 @@
 // one that holds such a message itself. Whatever waits on the user is answered at once as
 // held, and delivered once they allow it; a denial or an expiry comes back to the sender as a
 // notice in the same envelope, from cophyla, so it never waits for an answer that will not come.
+//
+// A session the user made a leader (`leaders/`) speaks to the sessions of its group as the
+// user: its message is checked against the limits as any is, gated as `agent.lead`, and typed
+// into the session as the user's own words, past focus and the parity ask, since the user's own
+// words never wait for either and the promotion is the user's consent. What the session does
+// next comes back to the leader (`leaders/reports.ts`), and the leader may answer the session's
+// asks as the user (`answer_ask`, gated as `agent.answer`). A session it leads that cannot take
+// the user's words (one cophylad cannot type into, a machine with an older Cophyla) gets the
+// message as another agent's, and the leader is told why.
 
 import { posix, win32 } from "node:path";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
 import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, Session, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { Connections } from "../connections/index.ts";
 import type { Groups } from "../groups/index.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
+import type { Leaders } from "../leaders/index.ts";
+import type { Reports } from "../leaders/reports.ts";
 import type { Logger } from "../log.ts";
 import type { SendOptions } from "../sessions/index.ts";
+import { leadCommand } from "../sessions/lead.ts";
 import { reasonOf, sizeText } from "../transfers/index.ts";
 import { identify, senderBypasses } from "./caller.ts";
 import type { CallerLookup, Evidence } from "./caller.ts";
@@ -69,6 +81,8 @@ export interface AgentCluster {
   linked(node: string): boolean;
   forward(node: string, method: string, params: unknown, opts: { onPending?: (ask: Ask) => void; timeoutMs?: number }): Promise<unknown>;
   requestPrimary(method: string, params: unknown, opts: { timeoutMs?: number }): Promise<unknown>;
+  /** An ask another node holds, as its mirror here has it. */
+  mirrorAsk?(id: string): Ask | undefined;
   /** A grant this node keeps, by id: a linked node's, whose access says how far its sessions may message. */
   grant(id: string): { access: Access } | undefined;
 }
@@ -93,8 +107,12 @@ export interface AgentMessagesDeps {
   teammates?: () => AgentTeammates | undefined;
   /** Sending files for an agent (`send_file`), on the node that routes. */
   files?: () => AgentFiles | undefined;
-  /** For what only the user answers, never remembered: a big transfer through the relay. */
-  asks?: Pick<Asks, "open" | "wait">;
+  /** For what only the user answers, never remembered: a big transfer through the relay. And this node's asks, which a leader answers as the user. */
+  asks?: Pick<Asks, "open" | "wait" | "get" | "answer">;
+  /** The leaders, on the node that routes. */
+  leaders?: () => Leaders | undefined;
+  /** What a session a leader messaged does next, told to the leader; on the node that routes. */
+  reports?: () => Reports | undefined;
   /** How long a tool call waits for what it started before it answers and tells the outcome later. */
   toolWaitMs?: number;
   now?: () => number;
@@ -143,6 +161,10 @@ export interface SendAnswer {
   ask?: string;
   /** The receiver's focus, while it holds the message. */
   focus?: Focus;
+  /** It went as the user's own words: the sender leads the session. */
+  asUser?: true;
+  /** The sender leads the session, but it went as another agent's: why. */
+  fallback?: string;
 }
 
 /** The connection tools, which a secondary's sessions call through the primary. */
@@ -231,7 +253,7 @@ export class AgentMessages {
 
   /** A tool call, as the model reads its answer. */
   private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<{ text: string; isError?: boolean }> {
-    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
+    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && name !== "answer_ask" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
     if (!this.deps.config().enabled) return { text: "Agent messaging is off on this machine ([agent_messages] enabled = false); nothing was sent.", isError: true };
     const who = identify(evidence, meta, this.deps.sessions);
     if ("error" in who) {
@@ -273,6 +295,7 @@ export class AgentMessages {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.fileTool(caller, mode, args);
     }
+    if (name === "answer_ask") return this.answerTool(caller, args);
     if (GROUP_TOOL_NAMES.has(name)) {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.groupTool(caller, mode, name as GroupToolName, args);
@@ -393,6 +416,23 @@ export class AgentMessages {
     }
   }
 
+  /** `answer_ask`: a leader answers an ask of a session it leads, as the user, here or through the primary. */
+  private async answerTool(caller: Session, args: Json): Promise<{ text: string; isError?: boolean }> {
+    const ask = typeof args["ask"] === "string" ? args["ask"].trim() : "";
+    const option = typeof args["option"] === "string" ? args["option"].trim() : "";
+    const options = Array.isArray(args["options"]) ? args["options"].filter((o): o is string => typeof o === "string" && o.trim() !== "").map((o) => o.trim()) : [];
+    const text = typeof args["text"] === "string" ? args["text"] : undefined;
+    if (!AskId.safeParse(ask).success) return { text: "answer_ask needs ask: the ask's id (ask_…), from the notice or list_agents.", isError: true };
+    if (!option) return { text: "answer_ask needs option: the id of the option you choose.", isError: true };
+    const p = { ask, option, ...(options.length > 0 ? { options: options.slice(0, 32) } : {}), ...(text !== undefined ? { text: text.slice(0, 16_000) } : {}) };
+    try {
+      if (this.deps.cluster.routes()) return { text: await this.answerAsk(caller, p) };
+      return nodeLinkRequests["agent.answer"].result.parse(await this.upward("agent.answer", { caller: caller.id, ...p }));
+    } catch (e) {
+      return { text: answerRefusal(e), isError: true };
+    }
+  }
+
   private async sendFrom(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }): Promise<SendAnswer> {
     if (this.deps.cluster.routes()) return this.send(caller, mode, p);
     const r = await this.upward("agent.send", { caller: caller.id, mode, ...p });
@@ -400,7 +440,7 @@ export class AgentMessages {
   }
 
   /** One request to the primary's router; what it refuses comes back as it said it. */
-  private async upward(method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
+  private async upward(method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
     const noLink = () => new RpcError("unavailable", `this machine has no link to ${this.deps.cluster.primaryName() ?? "the primary"}, which carries agents' messages, so nothing was sent`);
     if (!this.deps.cluster.primaryLinked()) throw noLink();
     try {
@@ -452,17 +492,21 @@ export class AgentMessages {
     return undefined;
   }
 
-  /** The directory as `caller` sees it: everyone but itself. */
+  /** The directory as `caller` sees it: everyone but itself, the sessions it leads marked, with the ask open in each. */
   async list(caller: Session): Promise<AgentListing[]> {
     return this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.list", args: {}, sessionKey: caller.id }, () => {
       const d = this.directory();
       const focus = this.deps.focus?.();
+      const leaders = this.deps.leaders?.();
       return d.entries
         .filter((e) => e.session.id !== caller.id)
         .map((e) => {
-          const row = listing(d, e);
+          let row: AgentListing = listing(d, e);
           const f = focus?.get(e.session.id);
-          return f ? { ...row, focus: f } : row;
+          if (f) row = { ...row, focus: f };
+          const lead = leaders?.route(caller.id, e.session);
+          if (lead && "lead" in lead) row = { ...row, led: true, ...(e.session.ask ? { ask: e.session.ask } : {}) };
+          return row;
         });
     });
   }
@@ -479,7 +523,9 @@ export class AgentMessages {
    * A message from `caller` to the session `to` names: refused for what it may not be, then
    * gated, then delivered. Answered as soon as it is delivered, held in the receiving terminal,
    * or waiting on the user; one that waits is delivered once allowed, and its sender is told
-   * when it is not. `access` is the grant of the node it came up from, when it did.
+   * when it is not. `access` is the grant of the node it came up from, when it did. To a
+   * session the caller leads, it goes as the user's own words (`asUser`), or as another agent's
+   * with why (`fallback`) when that session cannot take them.
    */
   async send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }, access?: Access): Promise<SendAnswer> {
     // another user's agent, on a connection of the caller's terminal: carried by the connection alone
@@ -506,6 +552,12 @@ export class AgentMessages {
     if (target.session.id === caller.id) throw new RpcError("invalid", "that is this session: send_message reaches another one");
     const from = agentRef(d, fromEntry);
     const to = agentRef(d, target);
+    // a session the caller leads takes its words as the user's; one that cannot, as another agent's, and the caller is told why
+    const lead = this.deps.leaders?.()?.route(caller.id, target.session);
+    const asLead = lead !== undefined && "lead" in lead;
+    const fallback = lead !== undefined && "fallback" in lead ? lead.fallback : undefined;
+    const command = asLead ? leadCommand(p.text) : undefined;
+    if (command) throw new RpcError("invalid", command);
     const { hops, reply } = this.limits.hops(caller.id, p.replyTo);
     if (access && !mayMessage(access, reply ? "reply" : "initiate")) {
       throw new RpcError("denied", access.messages === "none" ? `${from.nodeName}'s access lets its sessions send no messages` : `${from.nodeName}'s access lets its sessions answer messages, not start a conversation`);
@@ -515,6 +567,8 @@ export class AgentMessages {
     if (target.session.node !== this.deps.self().id && !this.deps.cluster.linked(target.session.node)) throw new RpcError("unavailable", `${to.nodeName} is offline; not sent`);
     const id = newId("agentMessage");
     this.limits.record(id, caller.id, target.session.id, p.text, hops);
+    if (asLead) return this.lead(caller, target.session, from, to, id, p, hops);
+    const told = (a: SendAnswer): SendAnswer => (fallback ? { ...a, fallback } : a);
     const agent: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
 
     // the receiver in focus: held for it, its sender told at once until when and why
@@ -529,8 +583,8 @@ export class AgentMessages {
       if (heldIt) {
         this.log.info("agent message held for focus", { id, from: caller.id, to: target.session.id });
         const still = focus.get(target.session.id);
-        if (still) return { status: "focus", id, to, focus: still };
-        return { status: "sent", id, to };
+        if (still) return told({ status: "focus", id, to, focus: still });
+        return told({ status: "sent", id, to });
       }
       // its focus ended while this was asked about: sent as ever, below
     }
@@ -559,10 +613,108 @@ export class AgentMessages {
           void this.notice(caller, id, to, e);
         },
       );
-      return { status: "pending", id, to, ask: first.ask.id };
+      return told({ status: "pending", id, to, ask: first.ask.id });
     }
-    this.log.info("agent message sent", { id, from: caller.id, to: target.session.id, status: first.done.status, hops });
-    return { status: first.done.status === "held" ? "held" : "sent", id, to };
+    this.log.info("agent message sent", { id, from: caller.id, to: target.session.id, status: first.done.status, hops, ...(fallback ? { fallback } : {}) });
+    return told({ status: first.done.status === "held" ? "held" : "sent", id, to });
+  }
+
+  /**
+   * A leader's message to a session it leads, checked and counted already: gated as
+   * `agent.lead`, and typed into the session as the user's own words. Never held by focus nor
+   * asked about for parity: the user's own words wait for neither, and the user made the caller
+   * its leader. What the session does next is told to the caller (`leaders/reports.ts`).
+   */
+  private async lead(caller: Session, target: Session, from: AgentRef, to: AgentRef, id: string, p: { text: string; replyTo?: string }, hops: number): Promise<SendAnswer> {
+    // watched before it goes: a session can take it before the send is answered
+    const going = this.deps.reports?.()?.begin(caller.id, target.id);
+    let r: { status: "queued" | "held"; ref?: string };
+    try {
+      r = await this.deps.gate.run(
+        { principal: { kind: "harness", session: caller.id }, action: "agent.lead", target: target.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id }, sessionKey: caller.id },
+        () => this.deliverAsLead(target, p.text, from),
+      );
+    } catch (e) {
+      going?.failed();
+      throw e;
+    }
+    if (r.ref) going?.sent(r.ref, id);
+    else going?.failed();
+    this.log.info("a leader's message sent as the user's words", { id, from: caller.id, to: target.id, hops, ...(r.ref ? { ref: r.ref } : {}) });
+    return { status: "sent", id, to, asUser: true };
+  }
+
+  /** Delivers a leader's message as the user's words, wherever the session is: here, or by its node, which the router knows takes it. */
+  private async deliverAsLead(target: Session, text: string, by: AgentRef): Promise<{ status: "queued" | "held"; ref?: string }> {
+    const lead = { by };
+    if (target.node === this.deps.self().id) return this.deps.sessions.send(target.id, text, { from: "lead", lead });
+    const name = this.nameOf(target.node);
+    if (!this.deps.cluster.linked(target.node)) throw new RpcError("unavailable", `${name} is offline; not sent`);
+    try {
+      return (await this.deps.cluster.forward(target.node, "session.send", { id: target.id, text, as: "lead", lead }, {})) as { status: "queued" | "held"; ref?: string };
+    } catch (e) {
+      if (e instanceof RpcError && e.code === "unavailable" && !this.deps.cluster.linked(target.node)) throw new RpcError("unavailable", `${name} is offline; not sent`);
+      throw e;
+    }
+  }
+
+  /**
+   * `answer_ask` on the router: `caller` answers an ask as the user. Refused unless the caller
+   * leads the ask's session, the ask is that session's own (its harness's permission prompt,
+   * question or plan), open, and one the user answers; gated as `agent.answer`, then answered
+   * where the ask is: here, or by its node, as the brain's answers are.
+   */
+  async answerAsk(caller: Session, p: { ask: string; option: string; options?: string[]; text?: string }): Promise<string> {
+    const leaders = this.deps.leaders?.();
+    if (!leaders) throw new RpcError("unavailable", "the leaders are kept by the primary");
+    const ask = this.deps.asks?.get(p.ask) ?? this.deps.cluster.mirrorAsk?.(p.ask);
+    if (!ask) throw new RpcError("not_found", `no ask ${p.ask} is open`);
+    if (ask.source.kind !== "harness") throw new RpcError("denied", `${p.ask} is not an agent session's ask: only your user answers it`);
+    const session = ask.source.session;
+    const alias = this.aliasOfId(session);
+    if (!leaders.leads(caller.id, session)) throw new RpcError("denied", `you do not lead ${alias}, so its asks are your user's alone`);
+    if (ask.status !== "open") throw new RpcError("conflict", `${p.ask} is ${ask.status} already`);
+    if (!ask.answerableBy.includes("user")) throw new RpcError("denied", `${p.ask} is not one your user answers`);
+    const chosen = ask.options.find((o) => o.id === p.option);
+    if (!chosen && !(p.option === ASK_TEXT_OPTION && ask.allowsText)) throw new RpcError("invalid", `${p.ask} has no option ${p.option}: its options are ${ask.options.map((o) => `${o.id} (${o.label})`).join(", ")}${ask.allowsText ? `, or ${ASK_TEXT_OPTION} with a written answer` : ""}`);
+    const input = { option: p.option, ...(p.options ? { options: p.options } : {}), ...(p.text !== undefined ? { text: p.text } : {}) };
+    await this.deps.gate.run(
+      { principal: { kind: "harness", session: caller.id }, action: "agent.answer", target: ask.id, args: { session, ...input, ...(input.text !== undefined ? { text: cap(input.text) } : {}) }, sessionKey: caller.id },
+      async () => {
+        if (ask.node === this.deps.self().id) {
+          if (!this.deps.asks) throw new RpcError("unavailable", "no ask can be answered here");
+          this.deps.asks.answer(ask.id, input, { kind: "harness", session: caller.id });
+          return;
+        }
+        if (!this.deps.cluster.linked(ask.node)) throw new RpcError("unavailable", `${this.nameOf(ask.node)} is offline; not answered`);
+        await this.deps.cluster.forward(ask.node, "ask.answer", { id: ask.id, ...input }, {});
+      },
+    );
+    this.log.info("a leader answered an ask as the user", { ask: ask.id, by: caller.id, session, option: p.option });
+    return `Answered ${ask.id} in ${alias} as your user: ${chosen ? chosen.label : "your written answer"}.`;
+  }
+
+  /**
+   * A report to a leader (`leaders/reports.ts`): a notice from cophyla, or the words of a session
+   * it leads, in that session's envelope, as information. Held by the leader's focus as any
+   * message is, and never counted against the limits.
+   */
+  async report(leaderId: string, text: string, from?: { session: string; replyTo?: string }): Promise<void> {
+    const d = this.directory();
+    const leader = d.entries.find((e) => e.session.id === leaderId)?.session;
+    if (!leader) return;
+    const fromEntry = from ? d.entries.find((e) => e.session.id === from.session) : undefined;
+    const sender = fromEntry ? agentRef(d, fromEntry) : undefined;
+    const mode: AgentMode | undefined = fromEntry ? (fromEntry.session.mode === "bypassPermissions" ? "bypass" : "prompting") : undefined;
+    const info: EnvelopeInfo & { mode?: AgentMode } = { messageId: newId("agentMessage"), ...(sender ? { from: sender } : {}), ...(from?.replyTo ? { replyTo: from.replyTo } : {}), ...(mode ? { mode } : {}) };
+    const focus = this.deps.focus?.();
+    try {
+      if (focus?.hold(leader, text, info, sender?.alias ?? "cophyla")) return;
+    } catch (e) {
+      this.log.info("a report to a leader was not held: its focus holds too much", { leader: leaderId, error: message(e) });
+      return;
+    }
+    await this.deliver(leader, text, info, () => undefined);
   }
 
   /** Delivers to the session wherever it is: here, or by its node, gated there too. */
@@ -717,8 +869,11 @@ export class AgentMessages {
 
   /** A session's alias as the directory gives it. */
   private aliasOf(s: Session): string {
-    const d = this.directory();
-    return d.aliases.get(s.id)?.alias ?? s.id;
+    return this.aliasOfId(s.id);
+  }
+
+  private aliasOfId(id: string): string {
+    return this.directory().aliases.get(id)?.alias ?? id;
   }
 
   /** Runs `work`, answering with its words when it ends soon, else with `later`, its outcome then reaching the session as a notice. */
@@ -764,8 +919,23 @@ export class AgentMessages {
    * the primary does not hold as that node's, and a send as far as the node's grant may
    * message; gated as the session, never as the node.
    */
-  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown): Promise<unknown> {
+  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown): Promise<unknown> {
     if (!this.deps.config().enabled) throw new RpcError("unavailable", "agent messaging is off on the primary");
+    if (method === "agent.answer") {
+      const parsed = nodeLinkRequests["agent.answer"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad agent.answer", parsed.error.issues);
+      const { caller: id, ...p } = parsed.data;
+      const caller = this.callerOf(peer, id);
+      const grant = peer.grant !== undefined ? this.deps.cluster.grant(peer.grant) : undefined;
+      if (!grant) throw new RpcError("denied", "the node's grant is not known here");
+      // answering as the user speaks for them, as starting a conversation does
+      if (!mayMessage(grant.access, "initiate")) return { text: "Not answered: this machine's access lets its sessions start no conversations with other agents.", isError: true };
+      try {
+        return { text: await this.answerAsk(caller, p) };
+      } catch (e) {
+        return { text: answerRefusal(e), isError: true };
+      }
+    }
     if (method === "agent.list") {
       const parsed = nodeLinkRequests["agent.list"].params.safeParse(params ?? {});
       if (!parsed.success) throw new RpcError("invalid", "bad agent.list", parsed.error.issues);
@@ -850,9 +1020,15 @@ export class AgentMessages {
   }
 }
 
-/** A send's answer, as the model reads it. */
+/** A send's answer, as the model reads it: a session the sender leads but that took it as another agent's says why. */
 export function answerText(a: SendAnswer, now = Date.now()): string {
   const to = a.peer?.alias ?? a.to?.alias ?? "the session";
+  if (a.asUser) return `Typed into ${to} as your user's own words (${a.id}). You are told when it asks something, and get its last words when it settles; do not wait for it in a loop.`;
+  const text = statusText(a, to, now);
+  return a.fallback ? `${text} You lead ${to}, but this went as another agent's message, not as your user's words: ${a.fallback}.` : text;
+}
+
+function statusText(a: SendAnswer, to: string, now: number): string {
   switch (a.status) {
     case "sent":
       return `Sent to ${to} (${a.id}). Its answer, if any, comes to you as a <cophyla-message>; do not wait for it.`;
@@ -891,6 +1067,12 @@ function refusalText(e: unknown): string {
   const text = message(e);
   const why = text.endsWith(".") ? text.slice(0, -1) : text;
   return /not sent|nothing was sent|not delivered/.test(why) ? `${why}.` : `Not sent: ${why}.`;
+}
+
+function answerRefusal(e: unknown): string {
+  const text = message(e);
+  const why = text.endsWith(".") ? text.slice(0, -1) : text;
+  return /^not answered/i.test(why) ? `${why}.` : `Not answered: ${why}.`;
 }
 
 function connectionRefusal(e: unknown): string {

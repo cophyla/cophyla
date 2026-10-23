@@ -25,9 +25,11 @@
 // The group chats are rows too, each with the posts loaded so far, and so are the agents in
 // focus and the user's teammates: a group's tab stands under the folder its home names, or
 // under Groups; a share's broad folders (a home, a drive) are asked about before it is sent.
+// The leaders are rows too: the sessions, and the chat, the user promoted to speak to a group
+// of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupMember, GroupMemberRef, GroupNotify, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
@@ -265,6 +267,10 @@ export interface ViewState {
   groupPosts: Map<string, GroupPage>;
   /** The agents in focus now, by session, from `focus.list` and `focus.state`, while connected. */
   focus: Map<string, Focus>;
+  /** The leaders, by speaker (`chat` or a session's id), from `lead.list` and `lead.state`, while connected. */
+  leaders: Map<string, Leader>;
+  /** The node keeps leaders: `lead.list` answered. Refused by an older node or app (false), or not asked yet, no lead control shows. */
+  leadOn?: boolean;
   /** This user's teammates, pending and active, from `teammate.list` and `teammate.state`. */
   teammates: Map<string, Teammate>;
   /** A teammate's code just made, while its panel shows. */
@@ -377,6 +383,14 @@ export type Action =
   | { type: "focus"; focus: { session: string; focus: Focus }[] }
   /** An agent took focus, or its focus ended (`focus` absent). */
   | { type: "focus.state"; params: { session: string; focus?: Focus } }
+  /** `lead.list`'s answer; none when the node or the app refused it, being older than leaders. */
+  | { type: "leaders"; leaders?: Leader[] }
+  /** The leaders, every one, as one was made, changed or went. */
+  | { type: "lead.state"; params: { leaders: Leader[] } }
+  /** `lead.set`'s answer: a speaker's group as it stands now. */
+  | { type: "leader"; leader: Leader }
+  /** `lead.remove` answered: the speaker leads no more. */
+  | { type: "leader.removed"; speaker: LeaderSpeaker }
   | { type: "teammates"; teammates: Teammate[] }
   /** A teammate was made, used, changed or ended (`state: ended`, which takes its row away). */
   | { type: "teammate.state"; params: Teammate }
@@ -453,6 +467,7 @@ export function initialState(): ViewState {
     groups: new Map(),
     groupPosts: new Map(),
     focus: new Map(),
+    leaders: new Map(),
     teammates: new Map(),
     nodes: new Map(),
     metrics: new Map(),
@@ -657,7 +672,7 @@ function addEvent(c: SessionCard, e: SessionEvent): void {
 
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
-  if (applyTeam(state, action)) return state;
+  if (applyTeam(state, action) || applyLead(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -699,8 +714,9 @@ export function apply(state: ViewState, action: Action): ViewState {
         // Every terminal comes again with the next `terminal.list`, and every transfer with `transfer.list`.
         state.terminals.clear();
         state.transfers.clear();
-        // The focus comes again with `focus.list`; the posts shown stay, and are asked for again as their group shows.
+        // The focus comes again with `focus.list`, and the leaders with `lead.list`; the posts shown stay, and are asked for again as their group shows.
         state.focus.clear();
+        state.leaders.clear();
         for (const page of state.groupPosts.values()) {
           page.stale = true;
           page.loading = false;
@@ -1079,6 +1095,12 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "teammate.code":
       // folded by applyTeam, above
       return state;
+    case "leaders":
+    case "lead.state":
+    case "leader":
+    case "leader.removed":
+      // folded by applyLead, above
+      return state;
     case "error":
       state.errors.push(action.message);
       state.errorsSeen++;
@@ -1120,6 +1142,10 @@ export function chatDraw(action: Action): ChatDraw {
     case "group.posted":
     case "focus":
     case "focus.state":
+    case "leaders":
+    case "lead.state":
+    case "leader":
+    case "leader.removed":
     case "teammates":
     case "teammate.state":
     case "teammate.code":
@@ -1904,8 +1930,8 @@ export function sessionWho(session: Session): string {
   return `${session.harness}${name ? `: ${name}` : ""}`;
 }
 
-/** `from`: another agent's message, labelled by who sent it (`agentLabel`). */
-export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean; from?: string } | { kind: "send"; key: string; send: PendingSend };
+/** `from`: another agent's message, labelled by who sent it (`agentLabel`). `lead`: a leader's, typed in as the user's, and who sent it (`leadNote`). */
+export type TimelineRow = { kind: "event"; key: string; event: SessionEvent; ask?: Ask; send?: PendingSend; asPeer?: boolean; from?: string; lead?: string } | { kind: "send"; key: string; send: PendingSend };
 
 /**
  * Who another agent's message to a session came from, as its turn is labelled: `@alias ·
@@ -1931,7 +1957,8 @@ export function agentLabel(payload: unknown, session: Pick<Session, "node">, sta
 /**
  * Events by seq, ask events joined to their ask, message receipts and typed turns joined to the
  * send, then sends not yet receipted. A message a Claude session in a terminal got over its
- * pipe reached it as another agent's (`asPeer`); one typed into its terminal is the user's turn.
+ * pipe reached it as another agent's (`asPeer`); one typed into its terminal is the user's turn,
+ * and so is a leader's, which says who sent it (`lead`).
  */
 export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow[] {
   const rows: TimelineRow[] = [];
@@ -1957,6 +1984,7 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
     } else if (event.kind === "user_turn") {
       const p = event.payload as { ref?: string; source?: string } | undefined;
       if (p?.source === "agent") row.from = agentLabel(p, card.session, state);
+      if (p?.source === "lead") row.lead = leadNote(p);
       const send = p && typeof p.ref === "string" ? card.sends.get(p.ref) : undefined;
       if (send) {
         row.send = send;
@@ -5417,4 +5445,216 @@ export function broadWords(places: BroadPlace[], login: string | undefined, seve
   const named = places.map((p) => (p.kind === "home" ? `your whole home folder${on(p)}` : `all of ${p.path}${on(p)}`));
   if (places.length === 1) return `Share ${named[0]} with ${who}? Every project ${places[0]!.kind === "home" ? "under" : "on"} it is open to them.`;
   return `Share ${named.slice(0, -1).join(", ")} and ${named.at(-1)} with ${who}? Every project under them is open to them.`;
+}
+
+// --- leaders -----------------------------------------------------------------------------------
+
+/** The most sessions a leader's group names: the protocol's cap. */
+export const LEAD_TARGETS_MAX = 64;
+
+/** What Cophyla's own chat is called where it leads. */
+const CHAT_NAME = "Cophyla";
+
+/** Folds a leaders' action in; false when the action is none of them. */
+function applyLead(state: ViewState, action: Action): boolean {
+  switch (action.type) {
+    case "leaders":
+      state.leadOn = action.leaders !== undefined;
+      state.leaders = new Map((action.leaders ?? []).map((l) => [l.speaker, l]));
+      return true;
+    case "lead.state":
+      state.leadOn = true;
+      state.leaders = new Map(action.params.leaders.map((l) => [l.speaker, l]));
+      return true;
+    case "leader":
+      state.leaders.set(action.leader.speaker, action.leader);
+      return true;
+    case "leader.removed":
+      state.leaders.delete(action.speaker);
+      return true;
+    default:
+      return false;
+  }
+}
+
+/** A machine that lends another person's folders as hands: its sessions neither lead nor are led. */
+function lendsFolders(node: Node | undefined): boolean {
+  return node?.hands === true && node.scope.kind === "workspaces";
+}
+
+/**
+ * Whether a session may lead, or be in a leader's group: one of the user's own live agent
+ * sessions, not the one the chat runs in, on a machine of theirs rather than one that lends
+ * another person's folders.
+ */
+export function leadable(state: Pick<ViewState, "nodes">, s: Session): boolean {
+  return s.status !== "ended" && s.role !== "assistant" && !lendsFolders(state.nodes.get(s.node));
+}
+
+/** Why a leader cannot type into a session: a Claude session read over its pipe, in no terminal Cophyla holds. */
+export function untypeable(s: Pick<Session, "harness" | "native">): string | undefined {
+  return s.harness === "claude" && s.native.transport === "pipe" && s.native.terminal === undefined ? "outside a Cophyla terminal: Reopen it here to include it" : undefined;
+}
+
+/** Whether the lead controls show: the node keeps leaders, and this view may change them. */
+export function leadOffered(state: Pick<ViewState, "leadOn" | "scopes">): boolean {
+  return state.leadOn === true && state.scopes.includes("sessions:write");
+}
+
+/** Whether a speaker's Lead shows: the chat's wherever the controls do, a session's while it may lead. */
+export function canLead(state: Pick<ViewState, "leadOn" | "scopes" | "sessions" | "nodes">, speaker: string): boolean {
+  if (!leadOffered(state)) return false;
+  if (speaker === "chat") return true;
+  const s = state.sessions.get(speaker)?.session;
+  return s !== undefined && leadable(state, s);
+}
+
+/** Whether `leader` leads `s`, as the node decides it: named in its group, or with `all` any session it may lead but itself. */
+export function leadsSession(state: Pick<ViewState, "nodes">, leader: Leader, s: Session): boolean {
+  if (leader.speaker === s.id || !leadable(state, s)) return false;
+  return leader.targets === "all" || leader.targets.includes(s.id);
+}
+
+/**
+ * Why a leader's words reach a session it leads as another agent's after all, as the node
+ * decides it: a machine that shares some folders alone, one whose Cophyla is older than
+ * leaders, or a session nothing can type into. Its leader still answers its questions as the user.
+ */
+export function leadFallback(state: Pick<ViewState, "nodes">, s: Session): string | undefined {
+  const n = state.nodes.get(s.node);
+  if (n && n.scope.kind === "workspaces") return `${n.name} shares some folders alone`;
+  if (n && n.capabilities.lead !== true) return `${n.name} runs an older Cophyla`;
+  return untypeable(s);
+}
+
+/** What a speaker is called: Cophyla for the chat, else its session's name; none for a session not here. */
+export function speakerName(state: Pick<ViewState, "sessions">, speaker: string): string | undefined {
+  if (speaker === "chat") return CHAT_NAME;
+  const s = state.sessions.get(speaker)?.session;
+  return s ? sessionLabel(s) : undefined;
+}
+
+/** A chip in a head: its words, and its hover. */
+export interface LeadChip {
+  text: string;
+  title: string;
+}
+
+/** A leader's chip: how many sessions it leads, or every agent, with their names in its hover; none while it leads no one. */
+export function leaderChip(state: Pick<ViewState, "leaders" | "sessions">, speaker: string): LeadChip | undefined {
+  const l = state.leaders.get(speaker);
+  if (!l) return undefined;
+  const as = "its messages reach them as your own words, and it may answer their questions as you";
+  if (l.targets === "all") return { text: "Leads every agent", title: `Leads every agent of yours, now and later: ${as}.` };
+  const names = l.targets.map((id) => speakerName(state, id)).filter((n): n is string => n !== undefined);
+  const gone = l.targets.length - names.length;
+  const who = [...names, ...(gone > 0 ? [`${gone} not open now`] : [])].join(", ");
+  return { text: `Leads ${l.targets.length}`, title: `Leads ${who}: ${as}.` };
+}
+
+/** A led session's chip: every leader whose group holds it, the agents first and Cophyla last; none while no one leads it. */
+export function ledByChip(state: Pick<ViewState, "leaders" | "sessions" | "nodes">, s: Session): LeadChip | undefined {
+  const by = [...state.leaders.values()].filter((l) => leadsSession(state, l, s)).sort((a, b) => Number(a.speaker === "chat") - Number(b.speaker === "chat") || a.since - b.since);
+  const names = by.map((l) => speakerName(state, l.speaker)).filter((n): n is string => n !== undefined);
+  if (names.length === 0) return undefined;
+  const one = names.length === 1;
+  const text = `Led by ${names.join(", ")}`;
+  const why = leadFallback(state, s);
+  const words = why ? `as another agent's (${why})` : "as your own words";
+  return { text, title: `${text}: ${one ? "its" : "their"} messages reach this session ${words}, and ${one ? "it" : "they"} may answer its questions as you.` };
+}
+
+/**
+ * A session in a leader's list: its name, its harness, what it is doing; why it cannot be picked
+ * when it cannot (`blocked`), or why a leader's words would reach it as another agent's (`note`).
+ */
+export interface LeadItem {
+  id: string;
+  label: string;
+  harness: string;
+  words: string;
+  blocked?: string;
+  note?: string;
+}
+
+/** A heading of the list, a folder group of the rail's, and the sessions under it. */
+export interface LeadGroup {
+  key: string;
+  title: string;
+  items: LeadItem[];
+}
+
+const LEAD_STATUS: Record<Session["status"], string> = { idle: "idle", busy: "working", needs_input: "waiting for you", needs_permission: "waiting for you", ended: "ended" };
+
+/**
+ * The sessions a speaker's group may name, under the rail's folder headings and in its order, a
+ * folder inside another named under it: the speaker itself, and the sessions no leader may lead,
+ * left out; one nothing can type into there, but blocked; one on a machine that takes no
+ * leader's words as its user's there, with why.
+ */
+export function leadTargets(state: ViewState, speaker: string): LeadGroup[] {
+  const out: LeadGroup[] = [];
+  const walk = (level: SessionGroup[], over: string): void => {
+    for (const g of level) {
+      const title = over ? `${over} › ${g.name}` : g.name;
+      const items = g.sessions
+        .map((c) => c.session)
+        .filter((s) => s.id !== speaker && leadable(state, s))
+        .map((s): LeadItem => {
+          const blocked = untypeable(s);
+          const why = blocked === undefined ? leadFallback(state, s) : undefined;
+          const note = why ? `${why}: it reads them as another agent's` : undefined;
+          return { id: s.id, label: sessionLabel(s), harness: s.harness, words: blocked ?? note ?? `${HARNESS_NAMES[s.harness]} · ${LEAD_STATUS[s.status]}`, ...(blocked ? { blocked } : {}), ...(note ? { note } : {}) };
+        });
+      if (items.length > 0) out.push({ key: g.key, title, items });
+      walk(g.groups, title);
+    }
+  };
+  walk(selectGroups(state), "");
+  return out;
+}
+
+/** The list as it opens: the speaker's group as it stands, nothing picked for one that leads no one yet. */
+export function leadDraft(state: Pick<ViewState, "leaders">, speaker: string): { all: boolean; picked: Set<string> } {
+  const l = state.leaders.get(speaker);
+  return { all: l?.targets === "all", picked: new Set(l && l.targets !== "all" ? l.targets : []) };
+}
+
+/** What `lead.set` is sent from the list, or why it is not: every agent, or the sessions picked that may still be, at most `LEAD_TARGETS_MAX`. */
+export function leadSetParams(state: ViewState, form: { speaker: LeaderSpeaker; all: boolean; picked: Iterable<string> }): { params: { speaker: LeaderSpeaker; targets: "all" | string[] } } | { error: string } {
+  if (form.all) return { params: { speaker: form.speaker, targets: "all" } };
+  const open = new Set(leadTargets(state, form.speaker).flatMap((g) => g.items.filter((i) => i.blocked === undefined).map((i) => i.id)));
+  const targets = [...form.picked].filter((id) => open.has(id));
+  if (targets.length === 0) return { error: "Pick the agents it leads, or Every agent." };
+  if (targets.length > LEAD_TARGETS_MAX) return { error: `A leader names at most ${LEAD_TARGETS_MAX} agents: pick Every agent instead.` };
+  return { params: { speaker: form.speaker, targets } };
+}
+
+/** Whether the list says what the speaker's group already is: Save would send nothing new. */
+export function leadUnchanged(state: ViewState, form: { speaker: LeaderSpeaker; all: boolean; picked: Iterable<string> }): boolean {
+  const l = state.leaders.get(form.speaker);
+  const made = leadSetParams(state, form);
+  if (!l || "error" in made) return false;
+  const t = made.params.targets;
+  if (t === "all" || l.targets === "all") return t === l.targets;
+  const had = l.targets;
+  return t.length === had.length && t.every((id) => had.includes(id));
+}
+
+/**
+ * A lead request that failed, in words the user can act on: an app from before leaders refuses
+ * the request itself ("unknown method"), and a node from before them answers `unsupported` too.
+ */
+export function leadFailure(code: string | undefined, message: string): string {
+  if (code === "unsupported" && /^unknown method lead\./.test(message)) return "This Cophyla app is older than leaders: update it, or open it again after an update, then try again.";
+  if (code === "unsupported") return "Cophyla on this computer is older than leaders: update it, then try again.";
+  return message;
+}
+
+/** Who sent a leader's message typed into a session as the user's: Cophyla for the chat, else the leading agent's alias. */
+export function leadNote(payload: unknown): string {
+  const by = (payload as { by?: unknown } | undefined)?.by;
+  const alias = by !== null && typeof by === "object" ? (by as { alias?: unknown }).alias : undefined;
+  const who = by === "chat" ? CHAT_NAME : typeof alias === "string" ? alias : "a leader";
+  return `sent by ${who} as you`;
 }

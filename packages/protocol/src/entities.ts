@@ -97,6 +97,8 @@ export const NodeCapabilities = z.object({
   agents: z.object({ acceptInBypass: z.boolean() }).optional(),
   /** It sends and receives files and folders (`transfer.*`): a member of the cluster, hands ones too, never a workspace node. */
   files: z.boolean().optional(),
+  /** It takes a leader's message as its user's words (`session.send` `as: lead`); an older node takes it as another agent's. */
+  lead: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 
@@ -397,8 +399,35 @@ export const AgentListing = AgentRef.extend({
   intent: z.string().optional(),
   /** It is in focus: a message to it is held until it comes out. */
   focus: Focus.optional(),
+  /** The caller leads it: the caller's message reaches it as the user's words. */
+  led: z.literal(true).optional(),
+  /** On a row the caller leads: the ask open in it now, which the caller may answer as the user (`answer_ask`). */
+  ask: AskId.optional(),
 });
 export type AgentListing = z.infer<typeof AgentListing>;
+
+/**
+ * Who leads: the chat (Cophyla), or one of the user's own agent sessions, by its id. Only
+ * the user promotes one, from the app.
+ */
+export const LeaderSpeaker = z.union([z.literal("chat"), SessionId]);
+export type LeaderSpeaker = z.infer<typeof LeaderSpeaker>;
+
+/** The most sessions a leader's group names; `all` names every one. */
+export const LEAD_TARGETS_MAX = 64;
+
+/**
+ * A leader: an agent session, or the chat, whose messages reach the sessions of its group as
+ * the user's own words, and who answers their asks as the user. `targets` is the group:
+ * `all`, every one of the user's own sessions now and later but the leader itself, or the
+ * sessions named. The primary keeps them; only the user's clients change them.
+ */
+export const Leader = z.object({
+  speaker: LeaderSpeaker,
+  targets: z.union([z.literal("all"), z.array(SessionId).min(1).max(LEAD_TARGETS_MAX)]),
+  since: Timestamp,
+});
+export type Leader = z.infer<typeof Leader>;
 
 /**
  * One of the user's machines as `list_agents` names it for `send_file`: whether it is
@@ -1914,6 +1943,8 @@ export const entities = {
   ConnectionSender,
   ConnectionState,
   Focus,
+  LeaderSpeaker,
+  Leader,
   Teammate,
   TeammateShare,
   TeammatePlace,

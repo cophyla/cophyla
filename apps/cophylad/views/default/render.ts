@@ -53,6 +53,8 @@
 // while it is alone and Leave once it joined one.
 // Group chats are tabs too, a group's pane showing in the chat's place with its own composer;
 // New group and Teammates lie over the panes as Devices does (teamview.ts draws them all).
+// Lead, beside Kill and at the end of the chat's head, makes a session or the chat a leader of
+// the user's other sessions, and the tabs and heads mark who leads whom (leadview.ts).
 
 import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
@@ -71,6 +73,9 @@ import { placeGroupChats } from "./model.ts";
 import type { Group } from "@cophyla/protocol";
 import { createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, createStatusTeam, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderStatusTeam, renderTeamOverlay, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
 import type { TeamUi } from "./teamview.ts";
+import { createLeadControl, createLeaderChip, createLedChip, createTabLead, updateChatLeadChip, updateLeadChips, updateLeadControl, updateTabLead } from "./leadview.ts";
+import type { LeadPop } from "./leadview.ts";
+import { canLead } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
 /** The folds the user opened, in `expanded`: a machine's processes in Devices. */
@@ -96,6 +101,8 @@ export interface UiState {
   group?: string;
   /** Group chats' and teammates' forms and requests (teamview.ts). */
   team: TeamUi;
+  /** Lead's list, open under a speaker's Lead: the session's, or the chat's (leadview.ts). */
+  lead?: LeadPop;
   /** What the user chose a session's pane to show, when it runs in a terminal; the terminal until they choose (`paneMode`). */
   modes: Map<string, "timeline" | "terminal">;
   /** What the user chose the chat's pane to show: the conversation until they choose its session's terminal (`chatMode`). */
@@ -637,12 +644,12 @@ function createTab(): HTMLElement {
   const icon = el("span", "agent-icon");
   icon.setAttribute("role", "img");
   icon.append(el("span", "agent-mark"));
-  // A crescent while the session is in focus.
+  // A crescent while the session is in focus, and before it a crown while it leads.
   const focus = el("span", "tab-focus");
   focus.setAttribute("role", "img");
   focus.setAttribute("aria-label", "in focus");
   focus.hidden = true;
-  tab.append(icon, el("span", "tab-title"), focus);
+  tab.append(icon, el("span", "tab-title"), createTabLead(), focus);
   return tab;
 }
 
@@ -663,7 +670,8 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
   setText(tab.querySelector(".tab-title")!, sessionLabel(s));
   const ws = workspaceName(state, s);
   const focus = updateTabFocus(tab, state, s.id);
-  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}${focus ? `\n${focus}` : ""}`;
+  const leads = updateTabLead(tab, state, s.id);
+  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}${leads ? `\n${leads}` : ""}${focus ? `\n${focus}` : ""}`;
 }
 
 /**
@@ -1889,7 +1897,8 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     // At its very right, the line to cophylad: a dot.
     const dot = el("span", "dot link-dot");
     dot.setAttribute("role", "img");
-    chat.append(el("span", "tab-title", "Cophyla Chat"), el("span", "pulse"), dot);
+    // After its name, a crown while the chat leads.
+    chat.append(el("span", "tab-title", "Cophyla Chat"), createTabLead(), el("span", "pulse"), dot);
     // Between the two, once the node says whether the next reply is read out: the speaker, which silences it.
     const speaker = actionButton("speak-next", "", "hush");
     speaker.append(speakerIcon());
@@ -1999,6 +2008,8 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     dot.setAttribute("aria-label", link.title);
   }
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined && ui.group === undefined ? "true" : "false");
+  const chatLeads = updateTabLead(chat, state, "chat");
+  chat.title = chatLeads ? `Cophyla Chat\n${chatLeads}` : "";
   renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
@@ -3142,10 +3153,12 @@ function createPane(): HTMLElement {
   connect.title = "Connect this session to another person's agent: make a code for them, or enter theirs";
   const actions = el("div", "session-actions");
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
-  actions.append(modes, el("span", "session-term-slot"), connect, kill);
+  // Lead, before Kill: this session a leader of the user's others, speaking to them as the user.
+  actions.append(modes, el("span", "session-term-slot"), connect, createLeadControl(), kill);
   // The other people's agents this session is connected to, when it is: a press opens them in Devices.
   const links = actionButton("session-links", "", "connections-open");
-  head.append(fold, chip, links, el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
+  // Beside them, what it leads while it leads, and the leaders that speak to it.
+  head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
@@ -3184,6 +3197,8 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   setHidden(links, linked.length === 0);
   setText(links, linked.length === 0 ? "" : `⇄ ${linked[0]}${linked.length > 1 ? ` +${linked.length - 1}` : ""}`);
   links.title = linked.length === 0 ? "" : `Connected to ${linked.join(", ")}: their agents and this one may message each other. Open Connections`;
+  updateLeadChips(head, s, state);
+  updateLeadControl(node.querySelector<HTMLElement>(".session-actions > .lead-control")!, s.id, state, ui);
   const chip = node.querySelector<HTMLElement>(".chip")!;
   setData(chip, "session", s.id);
   // The window the session runs in, raised; a session in tether that no window shows, or a
@@ -3397,6 +3412,8 @@ interface RowView {
   /** A model wrote `text`: it is drawn as markdown. */
   md?: boolean;
   body?: string;
+  /** A line under the text, as a send's receipt is: who sent a leader's message as the user. */
+  note?: string;
   error?: boolean;
   at?: number;
 }
@@ -3413,6 +3430,8 @@ function describe(row: TimelineRow): RowView {
     case "user_turn": {
       // another agent's, through cophyla: who sent it, and its text as the model wrote it
       if (row.from !== undefined) return { kind: "user", label: row.from, text: String(p["text"] ?? ""), md: true, at: e.at };
+      // a leader's, typed in as the user's: the user's own turn, and under it who sent it
+      if (row.lead !== undefined) return { kind: "user", label: "you", text: String(p["text"] ?? ""), md: true, note: row.lead, at: e.at };
       const peer = p["source"] === "peer";
       return { kind: "user", label: peer ? "another agent" : "you", text: String(p["text"] ?? ""), md: peer, at: e.at };
     }
@@ -3457,6 +3476,7 @@ function updateRow(li: HTMLElement, row: TimelineRow, cardKey: string, ui: UiSta
   setData(li, "kind", v.kind);
   setData(li, "error", v.error ? "1" : "0");
   setData(li, "md", v.md ? "1" : "0");
+  setData(li, "lead", v.note !== undefined ? "1" : "0");
   setText(li.querySelector(".row-time")!, v.at !== undefined ? clock(v.at) : "");
   const label = li.querySelector<HTMLElement>(".row-label")!;
   setText(label, v.label);
@@ -3471,8 +3491,8 @@ function updateRow(li: HTMLElement, row: TimelineRow, cardKey: string, ui: UiSta
   setData(toggle, "target", key);
   setText(toggle, open ? "Hide" : "Show");
   toggle.setAttribute("aria-expanded", open ? "true" : "false");
-  if (v.kind === "send") {
-    setText(body, v.body ?? "");
+  if (v.kind === "send" || v.note !== undefined) {
+    setText(body, v.kind === "send" ? (v.body ?? "") : (v.note ?? ""));
     setHidden(body, false);
     setData(body, "receipt", "1");
   } else {
@@ -3999,14 +4019,27 @@ function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void 
       b.dataset["mode"] = mode;
       modes.append(b);
     }
-    head.append(dot, el("span", "chat-agent"), el("span", "chat-agent-note"), held, modes);
+    // At its end, what Cophyla leads while it does, and Lead.
+    const lead = el("div", "chat-lead");
+    lead.append(createLeaderChip(), createLeadControl());
+    head.append(dot, el("span", "chat-agent"), el("span", "chat-agent-note"), held, modes, lead);
     root.prepend(head);
   }
   const h = chatHead(state);
-  setHidden(head, h === undefined);
+  // Lead shows wherever the node keeps leaders: from a node that says nothing of the chat's session, alone in the head.
+  const leads = canLead(state, "chat");
+  setHidden(head, h === undefined && !leads);
+  setData(head, "agent", String(h !== undefined));
   const mode = chatMode(ui.chatMode, state);
   setData(root, "mode", mode);
-  if (!h) return;
+  const lead = head.querySelector<HTMLElement>(".chat-lead")!;
+  setHidden(lead, !leads);
+  updateChatLeadChip(lead.querySelector<HTMLElement>(".lead-leads")!, state);
+  updateLeadControl(lead.querySelector<HTMLElement>(".lead-control")!, "chat", state, ui);
+  if (!h) {
+    head.title = "";
+    return;
+  }
   setData(head, "status", h.status);
   head.title = h.title;
   const dot = head.querySelector<HTMLElement>(".dot")!;
@@ -4162,6 +4195,8 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   if (ui.selected !== undefined && !state.sessions.has(ui.selected)) ui.selected = undefined;
   if (ui.terminal !== undefined && (!state.terminals.has(ui.terminal) || !state.scopes.includes("terminal"))) ui.terminal = undefined;
   if (ui.group !== undefined && !state.groups.has(ui.group)) ui.group = undefined;
+  // Lead's list goes with its session, or with the node's leaders.
+  if (ui.lead !== undefined && !canLead(state, ui.lead.speaker)) ui.lead = undefined;
   const before = activePane(roots);
   const atBottom = before !== undefined && before.scrollHeight - before.scrollTop - before.clientHeight < 8;
   const heightBefore = before?.scrollHeight ?? 0;

@@ -9,7 +9,8 @@
 // `voice.setup`, and a stage of it coming up raises `node.state`; its delivery `voice.next`; `metrics` raises
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
-// raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`. The
+// raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`;
+// `leaders` raises `lead.state`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
@@ -79,6 +80,8 @@ export interface BusEvents {
   "group.posted": ClientNotificationParams<"group.posted">;
   /** An agent took focus, or came out of it. */
   "focus.state": ClientNotificationParams<"focus.state">;
+  /** The leaders changed: every one now. */
+  "lead.state": ClientNotificationParams<"lead.state">;
   /** A teammate was made, used, changed or ended. */
   "teammate.state": ClientNotificationParams<"teammate.state">;
   /** A transfer this machine receives changed, or one a linked node receives, carried up; `dismissed` its last row. */

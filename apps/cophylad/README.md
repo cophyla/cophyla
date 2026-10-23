@@ -49,7 +49,8 @@ again.
 | `api/` | 0, 1, 6, 8, 12 | WebSocket server, token auth on `hello`, JSON-RPC dispatch through the gate, the `/hooks/*` ingress; `server.ts` serves one listener and a node runs one or two, both registering into one `clients.ts` registry, and accepts a relay tunnel as a socket of the `cloud` kind (`acceptTunnel`); `agents.ts` is `/mcp/agents`, where every session's `cophyla-agents` shim hands its lines; `tls.ts` makes the node's own certificate and keeps its key across re-makes, `pairing.ts` the six-digit code, `tickets.ts` a view's files under the frame policy, `static.ts` the built controller app; a limited client's welcome, broadcasts and lists cut by the protocol's filter tables, and `invite.redeem` answered before `hello` on the LAN listener or an invite's tunnel |
 | `grants/` | 17 | every credential that reaches this node from outside, a phone's or a node's, with its own key and access (`store.ts`, over the `kv` namespaces in `namespaces.ts`, the paired phones of an older install moved in place), the one timer that ends what runs out (`clock.ts`), `data/link.json` (`link-file.ts`), phone invites and their redemption (`phones.ts`), and `grant.invite`, `grant.list`, `grant.revoke`, `node.join` and `node.leave` (`methods.ts`) |
 | `sessions/` | 1, 3, 18 | every live Claude Code, Codex and Muse session in one model: discovery, tailing, injection, the ask lifecycle, profiles, focus; `acp/` spawns a harness through its ACP adapter and owns the session it made; `muse/` reads and runs Muse sessions through `muse serve` |
-| `agentmsg/` | 23 | agent messaging (`index.ts`): the `cophyla-agents` MCP server's calls from every agent session's shim, answered as MCP; who is calling, read by the harness the shim was installed for (`caller.ts`); the cluster's agent sessions under their aliases (`directory.ts`); the size, rate, duplicate and hop limits (`limits.ts`); the envelope a message travels in and the turn it is recorded as (`envelope.ts`); routing through the primary, with the parity ask on the receiver's node and a notice back when a held message is not delivered; finding and placing the shim (`locate.ts`), the bypass switch's `agents.accept` (`methods.ts`), and `cophyla agents uninstall` (`uninstall.ts`) |
+| `agentmsg/` | 23 | agent messaging (`index.ts`): the `cophyla-agents` MCP server's calls from every agent session's shim, answered as MCP; who is calling, read by the harness the shim was installed for (`caller.ts`); the cluster's agent sessions under their aliases (`directory.ts`); the size, rate, duplicate and hop limits (`limits.ts`); the envelope a message travels in and the turn it is recorded as (`envelope.ts`); routing through the primary, with the parity ask on the receiver's node and a notice back when a held message is not delivered; a leader's message to a session it leads, typed as the user's words past focus and the parity ask, and its `answer_ask` (milestone 30); finding and placing the shim (`locate.ts`), the bypass switch's `agents.accept` (`methods.ts`), and `cophyla agents uninstall` (`uninstall.ts`) |
+| `leaders/` | 30 | the leaders, on the primary (`index.ts`): the sessions, and the chat, that the user made speak to a group of their sessions as the user, in the reserved kv namespace `leaders`, changed by clients alone (`methods.ts`: `lead.list`, `lead.set`, `lead.remove`, told as `lead.state`), pruned a week after their sessions end, and the retired `brain_sends = "typed"` read once as the chat leading every agent; what a led session does next told to its leader (`reports.ts`): an ask, its last words once it settles, its end |
 | `workspaces/` | 1 | the registry of directories where work happens, from the node's scope and discovered sessions |
 | `views/` | 2 | `view.list`, `view.get` and `view.setDefault` over the built-in views in `../views/`, `.ts` type-stripped on serve |
 | `rpc/` | 3, 9 | JSON-RPC over any transport (`peer.ts`): a child process's stdio for the brain and the ACP adapters (`stdio.ts`), a WebSocket for the node link (`ws.ts`) |
@@ -179,9 +180,10 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   with no window of its own (`[tether].window_on_start` opens one at once; `session.focus`
   does when asked), and has its first prompt typed once it registers.
   A client's `session.send` is typed with no prefix, waiting while an ask is open or the
-  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen); the brain's sends
-  stay on the pipe unless `[sessions].brain_sends = "typed"`. A send may prepare the session
-  first, in order: `clear` types `/clear` whatever `brain_sends` says and waits for the new
+  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen), and so is a
+  leader's (`from: "lead"`, see `leaders/`), recorded as the user's turn sent by it; the brain's
+  sends stay on the pipe unless the user made the chat the session's leader. A send may prepare
+  the session first, in order: `clear` types `/clear` whoever sends it and waits for the new
   context, `mode` (plan or default) is set as `session.mode` sets it, and `task` is written
   on the session; empty text only prepares. A new session id in the same
   process (`/clear`, the clear-context row) re-keys the record (`Sessions.rekey`), keeping a
@@ -298,8 +300,9 @@ daemon's, which runs every CLI's threads. The README of a shipped build says so.
 
 `[sessions]` in `config.toml` tunes it: `poll_ms`, `codex_list_ms`, `hook_timeout_s`,
 `receipt_timeout_ms`, `codex_recent_ms`, `claude_hook_grace_ms`, `install_hooks`,
-`discover`, `launch`, `brain_sends`, and a repeatable `[[profiles]]` block for an
-installation beyond the discovered one. `[tether]` names the binary (`command`), tether's state folder (`dir`), a
+`discover`, `launch`, and a repeatable `[[profiles]]` block for an installation beyond the
+discovered one; the retired `brain_sends` is still read once, on the primary, where `typed`
+becomes the chat leading every agent. `[tether]` names the binary (`command`), tether's state folder (`dir`), a
 host's idle exit (`idle_exit_s`, 600), where a window opens (`window`: `auto`, `wt`,
 `console`, `conhost` or `none`), whether a session cophylad starts gets one at once
 (`window_on_start`, off), whether the entry points are written (`profiles`), and

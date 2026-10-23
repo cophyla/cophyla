@@ -417,6 +417,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("group.state", (group) => broadcast("group.state", group)),
           deps.bus.on("group.posted", (posted) => broadcast("group.posted", posted)),
           deps.bus.on("focus.state", (focus) => broadcast("focus.state", focus)),
+          deps.bus.on("lead.state", (leaders) => broadcast("lead.state", leaders)),
           deps.bus.on("teammate.state", (teammate) => broadcast("teammate.state", teammate)),
           deps.bus.on("transfer.state", (transfer) => broadcast("transfer.state", transfer)),
           deps.bus.on("workspace.state", (workspace) => registry.broadcastWorkspace(workspace)),

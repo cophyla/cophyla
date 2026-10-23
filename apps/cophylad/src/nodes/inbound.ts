@@ -705,6 +705,7 @@ export class Inbound {
       }
       case "agent.list":
       case "agent.send":
+      case "agent.answer":
       case "connection.tool":
       case "group.tool":
       case "group.note":

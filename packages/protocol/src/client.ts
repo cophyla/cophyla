@@ -23,6 +23,9 @@ import {
   EventDefinition,
   Focus,
   Group,
+  Leader,
+  LeaderSpeaker,
+  LEAD_TARGETS_MAX,
   GroupMemberKey,
   GroupNotify,
   GroupPost,
@@ -1156,6 +1159,16 @@ export const clientRequests = {
   "focus.list": { params: Empty, result: z.object({ focus: z.array(z.object({ session: SessionId, focus: Focus })) }) },
   /** Ends an agent's focus: what was held for it reaches it now. */
   "focus.end": { params: z.object({ session: SessionId }), result: Empty },
+  /** The leaders: the sessions, and the chat, that speak to their group as the user. */
+  "lead.list": { params: Empty, result: z.object({ leaders: z.array(Leader) }) },
+  /**
+   * Makes `speaker` a leader of `targets`, or changes its group: `all`, every one of the user's
+   * own sessions now and later but itself, or the sessions named. Only the user's own sessions,
+   * live ones, may lead or be led; never the chat as a target.
+   */
+  "lead.set": { params: z.object({ speaker: LeaderSpeaker, targets: z.union([z.literal("all"), z.array(SessionId).min(1).max(LEAD_TARGETS_MAX)]) }), result: z.object({ leader: Leader }) },
+  /** `speaker` leads no more: its messages reach its group as another agent's again. */
+  "lead.remove": { params: z.object({ speaker: LeaderSpeaker }), result: Empty },
   /** This user's teammates, pending and active. */
   "teammate.list": { params: Empty, result: z.object({ teammates: z.array(Teammate) }) },
   /**
@@ -1468,6 +1481,8 @@ export const clientNotifications = {
   "group.posted": z.object({ group: GroupId, post: GroupPost }),
   /** An agent took focus, or came out of it (no `focus`). */
   "focus.state": z.object({ session: SessionId, focus: Focus.optional() }),
+  /** The leaders, every one, whenever one is made, changes or goes. */
+  "lead.state": z.object({ leaders: z.array(Leader) }),
   /** A teammate's row when it is made, used, changes or ends (`state: ended`, the last word about it). */
   "teammate.state": Teammate,
   /** A transfer's row, when it starts, ends or changes state, and about once a second while its bytes come. */

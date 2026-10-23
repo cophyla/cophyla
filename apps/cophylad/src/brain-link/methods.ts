@@ -13,6 +13,7 @@ import type { EventCatalogue } from "../events/catalogue.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Prompts } from "../editable/prompts.ts";
 import type { GateContext } from "../gate/index.ts";
+import type { Leaders } from "../leaders/index.ts";
 import type { Listeners } from "../listeners/index.ts";
 import type { Llm } from "../llm/index.ts";
 import type { Metrics } from "../metrics/index.ts";
@@ -95,6 +96,8 @@ export interface BrainMethodDeps {
   terminals?: { list(): Terminal[] };
   /** The chat's own session, which a wake is handed to; absent while none runs here, and `assistant.wake` then answers that nothing took it. */
   assistant?: () => { wake(p: { id: string; text: string }): { queued: boolean } } | undefined;
+  /** The leaders, on the node that keeps them: whether the chat leads a session, and `lead.list`. */
+  leaders?: () => Leaders | undefined;
 }
 
 /** What `profile.limits` reads: `PlanLimits.fresh`. */
@@ -197,10 +200,18 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     "session.send": {
       target: (p) => p.id,
-      // A session the brain started is its own to message; the user's are asked about.
+      // A session the brain started is its own to message; the user's are asked about. The chat's
+      // words go to a session it leads as the user's, typed; to one it leads that cannot take
+      // them, as another agent's, with why.
       own: (p) => deps.sessions.get(p.id)?.origin === "orchestrator",
       ask: (p) => sendAsk(p, deps.sessions.get(p.id)),
-      handler: (p) => deps.sessions.send(p.id, p.text, sendOptions(p, "brain")),
+      handler: async (p) => {
+        const s = deps.sessions.get(p.id);
+        const lead = s ? deps.leaders?.()?.route("chat", s) : undefined;
+        if (lead && "lead" in lead) return { ...(await deps.sessions.send(p.id, p.text, { ...sendOptions(p, "brain"), from: "lead", lead: { by: "chat" } })), asUser: true as const };
+        const r = await deps.sessions.send(p.id, p.text, sendOptions(p, "brain"));
+        return lead && "fallback" in lead ? { ...r, fallback: lead.fallback } : r;
+      },
     },
     "session.spawn": {
       target: (p) => p.workspace,
@@ -448,6 +459,8 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
       },
     },
     "listener.list": { handler: () => ({ listeners: listenersOf(deps).list() }) },
+    // The leaders, read alone: only the user changes them, in the app.
+    "lead.list": { handler: () => ({ leaders: deps.leaders?.()?.list() ?? [] }) },
     // The host's own gate asks: the viewer's name is the target, so an answer can be remembered per viewer.
     "remote.pair": {
       target: (p) => p.name,

@@ -1,5 +1,5 @@
 // A message that prepares its session first: the task it works on from now written on it, its
-// context cleared (`/clear` typed into its tether terminal, whatever `brain_sends` says, and
+// context cleared (`/clear` typed into its tether terminal, whoever sends it, and
 // the record followed to the new id), then its mode set, then the text sent. What the session
 // cannot take is refused before anything is typed; empty text only prepares. A session that
 // starts again while it works is not recorded as idle. The fake tether plays Claude: `/clear`

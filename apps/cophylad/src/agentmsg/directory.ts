@@ -191,9 +191,10 @@ function agentsText(rows: AgentListing[], connections: ConnectionListing[], now:
       : `${rows.length === 1 ? "One agent session" : `${rows.length} agent sessions`} you can message (send_message with to set to the name):\n${rows
           .map((r) => {
             const state = r.focus ? focusWords(r.focus, now) : r.status === "idle" && r.waiting ? `idle, waiting on ${r.waiting.on === "shell" ? "its shells" : "its user"}` : r.status.replace("_", " ");
-            return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${r.intent ? `. ${r.intent}` : ""}`;
+            const led = r.led ? `, led by you${r.ask ? `, asking (${r.ask})` : ""}` : "";
+            return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${led}${r.intent ? `. ${r.intent}` : ""}`;
           })
-          .join("\n")}`;
+          .join("\n")}${rows.some((r) => r.led) ? "\nYour messages to a session led by you reach it as your user's own words, and answer_ask answers its ask as your user." : ""}`;
   if (connections.length === 0) return own;
   const lines = connections.map((c) => {
     const what = c.live === false ? "no agent runs in their terminal now; what you send waits there" : c.harness ? `${words[c.harness] ?? c.harness}` : "an agent";

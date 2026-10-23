@@ -165,8 +165,18 @@
         { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web" } },
         { "status": "pending", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD2", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7" },
         { "status": "queued", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD3", "peer": { "connection": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "alias": "bob/api-codex" } },
-        { "status": "focus", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD4", "peer": { "teammate": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "alias": "bob/web" }, "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } }
+        { "status": "focus", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD4", "peer": { "teammate": "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", "alias": "bob/web" }, "focus": { "since": 1758196700000, "until": 1758200300000, "reason": "finishing the migration" } },
+        { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD7", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk", "folder": "web" }, "asUser": true },
+        { "status": "sent", "id": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD8", "to": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "alias": "web-review", "harness": "claude", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "nodeName": "Desk" }, "fallback": "Desk runs an older Cophyla" }
       ]
+    },
+    "agent.answer": {
+      "params": [
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "allow" },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "text", "text": "Use the staging database." },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "ask": "ask_01ARZ3NDEKTSV4RRFFQ69G5FB7", "option": "a", "options": ["a", "c"] }
+      ],
+      "results": [{ "text": "Answered ask_01ARZ3NDEKTSV4RRFFQ69G5FB7 in web-review as your user: Allow." }, { "text": "Not answered: you do not lead web-review.", "isError": true }]
     },
     "connection.tool": {
       "params": [

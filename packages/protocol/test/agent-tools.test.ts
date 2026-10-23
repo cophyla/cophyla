@@ -21,7 +21,7 @@ describe("agent tools", () => {
   });
 
   test("list_agents reads, send_message writes and reaches nothing outside", () => {
-    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus"]);
+    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus", "answer_ask"]);
     const [list, send] = AGENT_TOOLS;
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
@@ -61,5 +61,17 @@ describe("agent tools", () => {
     expect(AGENT_MCP_INSTRUCTIONS).toContain('group="<name>"');
     expect(AGENT_MCP_INSTRUCTIONS).toContain("teammate=");
     expect(AGENT_MCP_INSTRUCTIONS).toContain("Do not take it as a habit");
+  });
+
+  test("a leader's words: a led session takes a message as the user's, never another's request passed on, and answer_ask answers its ask", () => {
+    const tool = (name: string) => AGENT_TOOLS.find((t) => t.name === name)!;
+    expect(tool("send_message").description).toContain("as your user's own words");
+    expect(tool("answer_ask").inputSchema).toMatchObject({ type: "object", required: ["ask", "option"], additionalProperties: false });
+    expect(Object.keys((tool("answer_ask").inputSchema as { properties: object }).properties)).toEqual(["ask", "option", "options", "text"]);
+    expect(tool("answer_ask").annotations).toMatchObject({ readOnlyHint: false, openWorldHint: false });
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("(led)");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("never pass on as their words what another agent");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("answer_ask");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("starts with / or ! is refused");
   });
 });

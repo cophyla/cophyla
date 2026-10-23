@@ -408,7 +408,7 @@ export class Listeners {
 }
 
 /** The later of two idles of one session, with the earlier one's last words when it has none: a Stop's idle says them, the registry's after it does not. */
-function carryLastWords(prev: Pending["event"], next: Pending["event"]): Pending["event"] {
+export function carryLastWords(prev: Pending["event"], next: Pending["event"]): Pending["event"] {
   const was = prev.params["event"] as SessionEvent | undefined;
   const now = next.params["event"] as SessionEvent | undefined;
   const words = (was?.payload as { lastAssistantMessage?: unknown } | undefined)?.lastAssistantMessage;

@@ -41,6 +41,7 @@ import {
   Workspace,
   HarnessKind,
   Tags,
+  Leader,
   Listener,
   ListenerSpec,
   PressureLevel,
@@ -164,6 +165,8 @@ export const capabilityEvents = {
   "listener.fired": event({ listener: Listener, event: z.object({ name: z.string(), params: z.record(z.string(), z.unknown()) }), last: z.boolean(), speak: z.boolean().optional() }),
   /** A listener is gone: spent, its `until` settled or ended, or removed by the user or the brain. */
   "listener.removed": event({ id: ListenerId, why: z.enum(["spent", "until", "user", "brain"]) }),
+  /** The leaders changed: every one now. The chat's own (`speaker: chat`) says which sessions take its words as the user's. */
+  "lead.updated": event({ leaders: z.array(Leader) }),
   /**
    * The chat's own session took a prompt: its turn begins, and the tool calls that follow
    * (`tool.call`) are that turn's. A user's message typed while a turn of theirs runs joins it.
@@ -391,6 +394,10 @@ export const SendResult = z.object({
   status: z.enum(["queued", "held"]),
   /** Names the message in the later `notification` event that reports its delivery. */
   ref: z.string().optional(),
+  /** It went as the user's own words: the sender leads the session. */
+  asUser: z.literal(true).optional(),
+  /** The sender leads the session, but it went as another agent's: why (no terminal to type into, an older Cophyla on its machine). */
+  fallback: z.string().optional(),
 });
 export type SendResult = z.infer<typeof SendResult>;
 
@@ -412,9 +419,15 @@ export const capabilityRequests = {
        * Whose words these are, set by a primary forwarding the message to the node that owns
        * the session: a user's are typed into a session in a tether terminal, the brain's go as
        * the harness says, an agent's (with `agent`) go wrapped in a `<cophyla-message>` and are
-       * never typed into a Claude session. The brain sending for itself cannot set it.
+       * never typed into a Claude session; a leader's (with `lead`) go as the user's own words,
+       * typed into a Claude session in a tether terminal. The brain sending for itself cannot set it.
        */
-      as: z.enum(["user", "brain", "agent"]).optional(),
+      as: z.enum(["user", "brain", "agent", "lead"]).optional(),
+      /**
+       * With `as: lead`: who leads the session, the chat or one of the user's agents, set by the
+       * primary, which keeps the leaders. A node that does not take it is never sent it.
+       */
+      lead: z.object({ by: z.union([z.literal("chat"), AgentRef]) }).optional(),
       /**
        * With `as: agent`: the session the message is from (absent: a notice of cophyla's own about
        * a message the session sent), the message's id, the message it answers, and the sender's
@@ -637,6 +650,8 @@ export const capabilityRequests = {
   "listener.add": { params: ListenerSpec, result: z.object({ listener: Listener }) },
   "listener.remove": { params: z.object({ id: ListenerId }), result: Empty },
   "listener.list": { params: Empty, result: z.object({ listeners: z.array(Listener) }) },
+  /** The leaders: the chat's own says which sessions take its words as the user's. Only the user changes them, in the app. */
+  "lead.list": { params: Empty, result: z.object({ leaders: z.array(Leader) }) },
   /**
    * Hands the chat's own session a prompt of the brain's, typed into it as the user's are: a
    * `wake` (something it listens for, a task that is due), a `notify` (to tell the user, with

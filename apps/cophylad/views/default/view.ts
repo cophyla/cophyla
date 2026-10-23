@@ -48,6 +48,8 @@
 // it asks the shell past the host (dropped.ts). Group chats, focus and teammates are
 // teamctl.ts's: what they ask of the node and what their notices fold in; a group chat's tab
 // shows its pane where the chat's would be, and New group and Teammates lie over the panes.
+// Leaders are leadctl.ts's: `lead.list` on every connect, `lead.state` folded in, and Lead's
+// list, beside a session's Kill and in the chat's head, sending `lead.set` and `lead.remove`.
 //
 // The view pulls only what it shows. The node streams a session's events only while its
 // tab is open (`session.watch`, sent again on every connect), and leaving a tab drops its
@@ -76,6 +78,7 @@ import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
 import { TeamControl } from "./teamctl.ts";
 import { newTeamUi } from "./teamview.ts";
+import { LeadControl } from "./leadctl.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -141,6 +144,15 @@ const team = new TeamControl({
   draw: () => draw(),
   selectGroup: (id) => selectGroup(id),
   putRailAway: () => putRailAway(),
+  phone: () => phone.matches,
+});
+const lead = new LeadControl({
+  rpc,
+  state,
+  ui,
+  roots,
+  dispatch: (action) => dispatch(action),
+  draw: () => draw(),
   phone: () => phone.matches,
 });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
@@ -327,6 +339,7 @@ rpc.onNotification((n) => {
         void loadTransfers();
         void loadContextOn();
         team.connected();
+        lead.connected();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -483,6 +496,9 @@ rpc.onNotification((n) => {
     case "focus.state":
     case "teammate.state":
       team.notification(n.method, n.params);
+      return;
+    case "lead.state":
+      lead.notification(n.method, n.params);
       return;
     default:
       return;
@@ -3077,10 +3093,11 @@ document.addEventListener("click", (ev) => {
   }
   if (ui.fileMenu && !(ev.target as Element | null)?.closest(".file-menu")) closeFileMenu();
   team.outside(ev.target as Element | null);
+  lead.outside(ev.target as Element | null);
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
-  // Group chats' and teammates' own, and the share form's folder picker.
-  if (team.click(target)) return;
+  // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list.
+  if (team.click(target) || lead.click(target)) return;
   switch (target.dataset["action"]) {
     case "answer": {
       const form = target.closest<HTMLFormElement>("form.ask-form");
@@ -3805,7 +3822,7 @@ document.addEventListener("input", (ev) => {
 });
 
 document.addEventListener("change", (ev) => {
-  if (team.change(ev.target as HTMLElement)) return;
+  if (team.change(ev.target as HTMLElement) || lead.change(ev.target as HTMLElement)) return;
   const askForm = (ev.target as HTMLElement | null)?.closest<HTMLFormElement>("form.ask-form");
   if (askForm) refreshAskForm(askForm, state);
   // one session on a shared computer has no length to pick
@@ -3832,8 +3849,8 @@ document.addEventListener("mousedown", (ev) => {
 
 // Escape takes back the utterance being heard or transcribed, before anything else; otherwise
 // it shrinks an invite's QR code shown large, puts away a machine's name field or its Make
-// primary question, closes the Files panel's menu, New terminal's menu
-// or the ⋮ menu, and the focus goes back to its row or its button; with none open, it puts away
+// primary question, closes the Files panel's menu, New terminal's menu, the ⋮ menu
+// or Lead's list, and the focus goes back to its row or its button; with none open, it puts away
 // the rail lying over a phone's pane, then a form open in Devices, then Devices, then the brain's
 // context, and then the file open in the viewer. A terminal keeps its own Escape: xterm stops the
 // key before it gets here.
@@ -3865,6 +3882,9 @@ document.addEventListener("keydown", (ev) => {
     ui.railMenu = undefined;
     draw();
     roots.tabs.querySelector<HTMLButtonElement>(".rail-more")?.focus();
+  } else if (lead.escape()) {
+    // Lead's list, the focus back on its Lead
+    ev.preventDefault();
   } else if (team.escape()) {
     // the tags offered, a group's ⋮ or forms, the share form's parts, New group or Teammates
     ev.preventDefault();

@@ -303,7 +303,21 @@ export const nodeLinkRequests = {
       ask: AskId.optional(),
       /** The receiving agent's focus, while it holds the message. */
       focus: Focus.optional(),
+      /** It went as the user's own words: the caller leads the session. */
+      asUser: z.literal(true).optional(),
+      /** The caller leads the session, but it went as another agent's: why. */
+      fallback: z.string().optional(),
     }),
+  },
+  /**
+   * Secondary → primary: `caller`, a live session of the secondary's, answers an ask as the
+   * user (`answer_ask`). The primary refuses it unless the caller leads the ask's session and
+   * the ask is that session's own, open, and one the user answers; the answer is the text the
+   * model reads.
+   */
+  "agent.answer": {
+    params: z.object({ caller: SessionId, ask: AskId, option: z.string().min(1).max(200), options: z.array(z.string().min(1).max(200)).max(32).optional(), text: z.string().max(16_000).optional() }),
+    result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
   /**
    * Secondary → primary: one of the connection tools (`create_invite`, `accept_invite`,

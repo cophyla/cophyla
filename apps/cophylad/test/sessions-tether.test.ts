@@ -1,6 +1,8 @@
 // Sessions in tether, against a fake host speaking the real protocol: a session cophylad starts
 // runs in a tether terminal with cophylad's settings, gets a window, and has its first prompt
-// typed; the user's messages are typed and land as their turns, the brain's go over the pipe,
+// typed; the user's messages are typed and land as their turns, and so do a leader's, as the
+// user's turn sent by it (an agent leader's that starts with / or ! refused); the brain's go
+// over the pipe whatever the retired brain_sends says,
 // and so do another agent's, in their envelope, never typed, landing as that agent's turn (an
 // echo of one with no send waiting for it as well, once, and never as the user's);
 // nothing is typed while an ask is open or the prompt holds the user's half-typed text; focus
@@ -142,7 +144,7 @@ beforeAll(async () => {
   });
   await tether.start();
   mini = await miniSessions(
-    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\nreceipt_timeout_ms = 30000\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(profileDir)}\n\n[[profiles]]\nharness = "claude"\nname = "own"\nconfig_dir = ${tomlString(ownDir)}\n\n[acp]\nspawn_timeout_ms = 5000\n`,
+    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\nreceipt_timeout_ms = 30000\nbrain_sends = "typed"\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(profileDir)}\n\n[[profiles]]\nharness = "claude"\nname = "own"\nconfig_dir = ${tomlString(ownDir)}\n\n[acp]\nspawn_timeout_ms = 5000\n`,
     (host, log) => [
       new ClaudeAdapter({
         host,
@@ -227,10 +229,46 @@ describe("a session cophylad starts in tether", () => {
     expect(events(s.id).some((e) => e.kind === "user_turn" && (e.payload as { ref?: string }).ref === r.ref)).toBe(true);
   });
 
-  test("the brain's go over the pipe, as another agent's", async () => {
+  test("the brain's go over the pipe, as another agent's, whatever the retired brain_sends says", async () => {
+    fs.typed.length = 0;
     await mini.sessions.send(s.id, "from the brain", { from: "brain" }).catch(() => undefined);
     // The fake registry carries no live pipe; the adapter was asked all the same.
     expect(injected.at(-1)?.text).toBe(`${SEND_PREFIX}\nfrom the brain`);
+    await sleep(300);
+    expect(fs.typed).toEqual([]);
+  });
+
+  test("a leader's are typed as the user's words, and land as the user's turn sent by it", async () => {
+    fs.typed.length = 0;
+    const by = { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", alias: "lead-codex", harness: "codex" as const, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "Laptop", folder: "api" };
+    const intent = mini.sessions.get(s.id)!.intent;
+    const r = await mini.sessions.send(s.id, "run the login tests", { from: "lead", lead: { by } });
+    expect(r.status).toBe("queued");
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    expect(fs.typed).toEqual(["paste:run the login tests", "keys:Enter"]);
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: "run the login tests", prompt_id: "p-lead" }), { via: "http" });
+    const turn = events(s.id).findLast((e) => e.kind === "user_turn")!;
+    expect(turn.payload).toEqual({ text: "run the login tests", source: "lead", by, ref: r.ref, promptId: "p-lead" });
+    // what the session is for is the user's to say, never its leader's
+    expect(mini.sessions.get(s.id)!.intent).toBe(intent);
+    // the chat leads as well
+    fs.typed.length = 0;
+    const c = await mini.sessions.send(s.id, "then the docs", { from: "lead", lead: { by: "chat" } });
+    await waitFor(() => fs.typed.includes("keys:Enter"), 5000);
+    expect(fs.typed).toEqual(["paste:then the docs", "keys:Enter"]);
+    await mini.sessions.onHook("claude", hook(s, "UserPromptSubmit", { prompt: "then the docs", prompt_id: "p-lead-chat" }), { via: "http" });
+    expect(events(s.id).findLast((e) => e.kind === "user_turn")!.payload).toEqual({ text: "then the docs", source: "lead", by: "chat", ref: c.ref, promptId: "p-lead-chat" });
+  });
+
+  test("an agent leader's text that starts with / or ! is refused before anything is typed", async () => {
+    fs.typed.length = 0;
+    const by = { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", alias: "lead-codex", harness: "codex" as const, node: "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", nodeName: "Laptop" };
+    const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: unknown) => e);
+    expect(await failure(mini.sessions.send(s.id, "/clear", { from: "lead", lead: { by } }))).toMatchObject({ code: "invalid", message: expect.stringContaining("slash command") });
+    expect(await failure(mini.sessions.send(s.id, "  \n !rm -rf build", { from: "lead", lead: { by } }))).toMatchObject({ code: "invalid", message: expect.stringContaining("shell command") });
+    expect(await failure(mini.sessions.send(s.id, "no one leads this", { from: "lead" }))).toMatchObject({ code: "invalid" });
+    await sleep(300);
+    expect(fs.typed).toEqual([]);
   });
 
   test("an agent's go over the pipe in their envelope, never typed, and land as that agent's turn", async () => {

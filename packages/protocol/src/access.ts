@@ -335,6 +335,10 @@ export const requestFilters = {
   "group.member.set": { names: "global" },
   "focus.list": { names: "global" },
   "focus.end": { names: "global" },
+  // a leader speaks as the user to sessions anywhere: the whole account's
+  "lead.list": { names: "global" },
+  "lead.set": { names: "global" },
+  "lead.remove": { names: "global" },
   // a teammate lets another user's agents into the folders shared: the whole account's
   "teammate.list": { names: "global" },
   "teammate.invite": { names: "global" },
@@ -402,6 +406,7 @@ export const notificationFilters = {
   "group.state": "global",
   "group.posted": "global",
   "focus.state": "global",
+  "lead.state": "global",
   "teammate.state": "global",
   "transfer.state": "global",
   "audit.entry": "global",

@@ -85,6 +85,8 @@ export function selfNode(
       terminals,
       ...(agents ? { agents: { ...agents } } : {}),
       ...(files ? { files: true } : {}),
+      // a leader's message goes in as its user's words; a node that shares some folders alone takes it as another agent's
+      ...(config.node.scope.kind === "machine" ? { lead: true } : {}),
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

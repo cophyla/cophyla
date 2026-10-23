@@ -99,9 +99,9 @@ export const SessionsConfig = z.object({
    */
   launch: z.enum(["terminal", "acp"]).default("terminal"),
   /**
-   * How the brain's messages reach a session in tether. `pipe` sends them over the harness's
-   * messaging pipe, where it treats them as another agent's; `typed` types them, as the
-   * user's own words are.
+   * Retired: whether the brain's messages to a session in tether were typed as the user's.
+   * Leaders say it now (see `leaders/`): the primary reads `typed` once, as the chat leading
+   * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
 });
@@ -801,7 +801,6 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
-brain_sends = "pipe"       # the brain's messages to a session in tether: "pipe" (as another agent's) or "typed" (as the user's)
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]

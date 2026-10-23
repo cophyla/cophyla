@@ -6,6 +6,7 @@
 // Claude or Muse gave no sign in time. The clock and timers are injected so tests can drive them.
 
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
+import type { LeadInfo } from "./lead.ts";
 
 export type SendState = "queued" | "delivered" | "withdrawn" | "unconfirmed";
 
@@ -21,6 +22,8 @@ export interface PendingSend {
   agent?: EnvelopeInfo;
   /** Typed into the session's terminal as the user's own words. */
   typed?: boolean;
+  /** A leader's message, the user's words sent by the chat or one of the user's agents: its delivery is recorded as the user's turn, sent by it. */
+  lead?: LeadInfo;
   /** Claude: the prompt it landed as, so the transcript's copy of that prompt is known for it. */
   promptId?: string;
   at: number;

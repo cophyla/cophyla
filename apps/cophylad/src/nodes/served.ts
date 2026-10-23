@@ -143,10 +143,16 @@ export function nodeServedTable(deps: BrainMethodDeps, primaryId: string, opts: 
   out["ask.answer"] = answer;
   // A message forwarded by the primary says whose it is; the brain's own table never asks. An
   // agent's is delivered in its envelope, asked about here when it reaches a session that runs
-  // without prompts from one that does not.
+  // without prompts from one that does not. A leader's goes as the user's words: the primary,
+  // which keeps the leaders, says who leads the session.
   const send: BrainMethodTable["session.send"] = {
     target: (p) => p.id,
-    handler: (p, ctx) => {
+    handler: async (p, ctx) => {
+      if (p.as === "lead") {
+        if (!p.lead) throw new RpcError("invalid", "a leader's message says who leads the session");
+        const r = await deps.sessions.send(p.id, p.text, { ...sendOptions(p, "brain"), from: "lead", lead: { by: p.lead.by } });
+        return { ...r, asUser: true as const };
+      }
       if (p.as === "agent") {
         const agents = opts.agents?.();
         if (!agents) throw new RpcError("unavailable", "agent messaging is off on this node");
@@ -276,6 +282,8 @@ export class NodeServer {
       if (ask && this.deps.answerHere?.()) throw new RpcError("denied", "this node answers its own asks");
       return;
     }
+    // A node that shares some folders alone takes no one's words as its owner's but its owner's own.
+    if (c && name === "session.send" && p["as"] === "lead") throw new RpcError("denied", "this node shares folders alone: a leader's message reaches its sessions as another agent's, never as its owner's words");
     if (!c) return;
     switch (name) {
       case "session.history":

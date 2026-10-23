@@ -4,8 +4,9 @@
 // `session.history` by id follow the session. A `[gate.rules] "node:session.send" = "ask"`
 // on the secondary opens an ask that reaches the primary's client, whose answer settles it.
 // A client's forwarded request is gated on the primary as the user and on the owner as the
-// node, and a client's `session.stop` tells the owner the user asked. `cancel` propagates. A
-// link that drops mid-forward answers `unavailable`.
+// node, and a client's `session.stop` tells the owner the user asked. The chat's send to a
+// session it leads goes as a leader's, the user's words. `cancel` propagates. A link that drops
+// mid-forward answers `unavailable`.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -139,6 +140,36 @@ describe("forwarding over the node link", () => {
     await c.next(isMethod("session.state", (p) => (p as Session).id === session.id && (p as Session).status === "ended"), 10_000);
     const stops = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.stop");
     expect(stops.map((e) => [e.principal.kind, e.args, e.outcome])).toEqual([["node", { id: session.id, as: "brain" }, "ok"]]);
+  }, 30_000);
+
+  test("the chat's forwarded send to a session it leads goes as the user's words, and as the brain's once it leads it no more", async () => {
+    primary = await startPrimary({ brain: { script } });
+    secondary = await startSecondary(primary, { agent: true, gateRules: { "node:session.send": "allow", "node:session.spawn": "allow" } });
+    await linked(secondary);
+    await waitFor(() => primary!.d.brain?.state === "up");
+    const c = await client(primary.d);
+    clients.push(c);
+    const ws = secondary.workspaces.put({ node: secondary.identity.id, path: secondary.home, name: "second" });
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfWorkspace(ws.id) === secondary!.identity.id);
+    await c.request("chat.send", { text: `start ${ws.id}` });
+    const state = await c.next(isMethod("session.state", (p) => (p as Session).node === secondary!.identity.id && (p as Session).native.transport === "acp"), 10_000);
+    const session = state.params as Session;
+    await c.next(isMethod("session.state", (p) => (p as Session).id === session.id && (p as Session).status === "idle"), 10_000);
+    // the owner says it takes a leader's message
+    expect(primary.d.nodes.registry.get(secondary.identity.id)?.capabilities.lead).toBe(true);
+    await c.request("lead.set", { speaker: "chat", targets: [session.id] });
+    await c.request("chat.send", { text: `send ${session.id}` });
+    const sends = () => secondary!.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.send" && e.outcome === "ok");
+    const led = await waitFor(() => sends().find((e) => (e.args as { as?: string }).as === "lead"), 10_000);
+    expect(led.args).toMatchObject({ id: session.id, as: "lead", lead: { by: "chat" } });
+    // the brain is told its words went as the user's
+    await waitFor(() => brainFrames(primary!.brainLog!).some((f) => f.dir === "in" && (f.frame["result"] as { asUser?: boolean } | undefined)?.asUser === true), 10_000);
+    // it leads it no more: the brain's again
+    await c.request("lead.remove", { speaker: "chat" });
+    await c.request("chat.send", { text: `send ${session.id}` });
+    const plain = await waitFor(() => sends().find((e) => (e.args as { as?: string }).as === "brain"), 10_000);
+    expect(plain.args).toMatchObject({ id: session.id, as: "brain" });
+    expect((plain.args as { lead?: unknown }).lead).toBeUndefined();
   }, 30_000);
 
   test("an ask on the owner reaches the primary's client, whose answer settles it; a forwarded write is gated on both sides", async () => {

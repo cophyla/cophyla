@@ -67,6 +67,8 @@ import { codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
 import { scrub } from "./env.ts";
 import { Injections, unpasted } from "./injections.ts";
+import { leadCommand, leadTurn } from "./lead.ts";
+import type { LeadInfo } from "./lead.ts";
 import type { PendingSend } from "./injections.ts";
 import { askShown, capText, normaliseHook, oneLine, rawIfSmall, stableStringify, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "./model.ts";
 import type { AgentInstall, AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
@@ -203,9 +205,11 @@ export interface SessionsView {
  * now, its context cleared, its mode set, in that order and before the text goes.
  */
 export interface SendOptions {
-  from?: "user" | "brain" | "agent";
+  from?: "user" | "brain" | "agent" | "lead";
   /** With `from: agent`: who it is from, its id and what it answers, which its envelope names. */
   agent?: EnvelopeInfo;
+  /** With `from: lead`: who leads the session, the chat or one of the user's agents, whose words go as the user's. */
+  lead?: LeadInfo;
   /**
    * With `from: agent`: a notice that need not start a turn. While the session works, and its
    * hooks reach this node, it waits for the session's next hook, which hands it over (beside a
@@ -3234,20 +3238,24 @@ export class Sessions implements SessionHost {
 
   /**
    * Sends a message into a session. Into a Claude session in a tether terminal, the user's
-   * words are typed, and so are the brain's when `[sessions].brain_sends` is `typed`; into a
-   * Muse session in one, everyone's are, as Muse has no other way in. A session cophylad runs
-   * headless is prompted through what runs it. Anything else goes over the harness's own
-   * channel, which a Claude session reads as another agent's message.
+   * words are typed, and so are a leader's (`from: lead`: the chat's or an agent's that the
+   * user made the session's leader); into a Muse session in one, everyone's are, as Muse has no
+   * other way in. A session cophylad runs headless is prompted through what runs it. Anything
+   * else goes over the harness's own channel, which a Claude session reads as another agent's
+   * message: the brain's words too, when it does not lead the session. A leader's message to a
+   * Claude session cophylad cannot type into is refused, as it would arrive as another
+   * agent's; an agent leader's that starts with `/` or `!` too, as it would run a command there.
    *
-   * The session is prepared first, as asked: its context cleared (`/clear` typed, whatever
-   * `brain_sends` says, since it is terminal control like Shift+Tab, and the new context
-   * awaited), then its mode set, then the task it works on from now written on it; what it
-   * cannot take is refused before anything is typed. The task goes on last, so the new
-   * context's start is not heard as the task's session going idle. Empty text with any of
-   * these only prepares.
+   * The session is prepared first, as asked: its context cleared (`/clear` typed, whoever
+   * sends, since it is terminal control like Shift+Tab, and the new context awaited), then its
+   * mode set, then the task it works on from now written on it; what it cannot take is refused
+   * before anything is typed. The task goes on last, so the new context's start is not heard
+   * as the task's session going idle. Empty text with any of these only prepares.
    */
   async send(id: string, text: string, opts: SendOptions = {}, part?: string): Promise<{ status: "queued" | "held"; ref?: string }> {
     const rec = this.must(id, part);
+    const lead = opts.from === "lead" ? opts.lead : undefined;
+    if (opts.from === "lead") this.canLead(rec, text, lead);
     const prepares = opts.clear === true || opts.mode !== undefined || opts.task !== undefined;
     if (opts.clear === true || opts.mode !== undefined) this.canPrepare(rec, opts);
     if (opts.clear === true) await this.clearContext(rec);
@@ -3258,24 +3266,25 @@ export class Sessions implements SessionHost {
     if (opts.from === "agent" && !agent) throw new RpcError("invalid", "an agent's message says who it is from");
     // A quiet notice for a session at work waits for its next hook rather than start a turn.
     if (opts.quiet && agent && rec.session.status !== "idle" && this.hookCarries(rec)) return this.holdNote(rec, text, agent);
-    // An agent's message reaches Muse typed, which has no other way in, and never a Claude session.
-    const typed = this.typesInto(rec) && (agent ? rec.session.harness === "muse" : opts.from !== "brain" || this.config.brain_sends === "typed" || rec.session.harness === "muse");
+    // An agent's message, and the brain's when it does not lead the session, reach Muse typed,
+    // which has no other way in, and never a Claude session.
+    const typed = this.typesInto(rec) && (agent || opts.from === "brain" ? rec.session.harness === "muse" : true);
     const wrapped = agent ? { info: agent, text } : undefined;
     const wire = agent ? envelope(agent, text) : text;
     if (typed) {
       const ref = `cophylad-${ulid(this.now())}`;
-      this.queueTyped(rec, wire, ref, wrapped);
-      this.log.info("message queued to be typed", { session: id, ref, from: opts.from ?? "user" });
+      this.queueTyped(rec, wire, ref, wrapped, lead);
+      this.log.info("message queued to be typed", { session: id, ref, from: opts.from ?? "user", ...(lead ? { lead: lead.by === "chat" ? "chat" : lead.by.session } : {}) });
       return { status: "queued", ref };
     }
     if (rec.session.native.transport === "acp") {
       if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
       const ref = `cophylad-${ulid(this.now())}`;
-      const { sent } = this.acp.prompt(id, wire, ref, wrapped);
+      const { sent } = this.acp.prompt(id, wire, ref, wrapped, lead);
       void sent.then(() => {
         if (rec.session.status === "ended") return;
-        // An agent's message was recorded as its turn as it went.
-        if (!agent) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
+        // An agent's message, and a leader's, were recorded as their turns as they went.
+        if (!agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
         this.log.info("prompt sent", { session: id, ref });
       });
       return { status: "queued", ref };
@@ -3284,15 +3293,15 @@ export class Sessions implements SessionHost {
     if (!adapter) throw new RpcError("unsupported", `no adapter for ${rec.session.harness}`);
     if (adapter.headless?.owns(rec)) {
       const ref = `cophylad-${ulid(this.now())}`;
-      await adapter.headless.prompt(rec, wire, ref, wrapped);
-      if (rec.session.status !== "ended" && !agent) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
+      await adapter.headless.prompt(rec, wire, ref, wrapped, lead);
+      if (rec.session.status !== "ended" && !agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
       this.log.info("prompt sent", { session: id, ref });
       return { status: "queued", ref };
     }
     const ref = `cophylad-${ulid(this.now())}`;
     // An agent's envelope names its sender, so it needs no prefix of cophylad's.
     const body = agent ? wire : `${SEND_PREFIX}\n${text}`;
-    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}) });
+    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(lead ? { lead } : {}) });
     try {
       const r = await adapter.send(rec, body, ref);
       this.log.info("message sent", { session: id, ref, status: r.status });
@@ -3301,6 +3310,19 @@ export class Sessions implements SessionHost {
       this.injections.settle(pending.ref, "withdrawn");
       throw e instanceof RpcError ? e : new RpcError("unavailable", e instanceof Error ? e.message : String(e));
     }
+  }
+
+  /**
+   * Refuses a leader's message a session cannot take as the user's, before anything is done: a
+   * Claude session cophylad cannot type into would read it as another agent's, and an agent
+   * leader's text that starts with `/` or `!` would run a command there.
+   */
+  private canLead(rec: LiveRecord, text: string, lead: LeadInfo | undefined): void {
+    if (!lead) throw new RpcError("invalid", "a leader's message says who leads the session");
+    if (rec.session.status === "ended") throw new RpcError("not_found", "the session has ended");
+    if (rec.session.harness === "claude" && rec.session.native.transport !== "acp" && !this.typesInto(rec)) throw new RpcError("unsupported", "the session runs outside a Cophyla terminal, where nothing can be typed into it");
+    const command = lead.by === "chat" ? undefined : leadCommand(text);
+    if (command) throw new RpcError("invalid", command);
   }
 
   /**
@@ -3367,12 +3389,12 @@ export class Sessions implements SessionHost {
     return rec.session.harness === "muse" ? musePromptInput(screen) : promptInput(screen);
   }
 
-  /** Types a message once those before it are typed; a message that cannot be typed is withdrawn. `agent`: an agent's, typed in its envelope. */
-  private queueTyped(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): void {
+  /** Types a message once those before it are typed; a message that cannot be typed is withdrawn. `agent`: an agent's, typed in its envelope; `lead`: a leader's, typed as the user's. */
+  private queueTyped(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): void {
     const prev = rec.typing ?? Promise.resolve();
     rec.toType = (rec.toType ?? 0) + 1;
     rec.typing = prev
-      .then(() => this.typeNow(rec, text, ref, agent))
+      .then(() => this.typeNow(rec, text, ref, agent, lead))
       .catch((e: unknown) => {
         const error = e instanceof Error ? e.message : String(e);
         this.log.warn("message not typed", { session: rec.session.id, ref, error });
@@ -3392,7 +3414,7 @@ export class Sessions implements SessionHost {
    * what is sent while it works. Then the message is pasted, Enter pressed on its own, and its
    * landing awaited; when the text still sits in the prompt, Enter is pressed once more.
    */
-  private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }): Promise<void> {
+  private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): Promise<void> {
     const tether = this.deps.tether!;
     const deadline = this.now() + this.config.hook_timeout_s * 1000;
     let term: TerminalRef | undefined;
@@ -3408,7 +3430,7 @@ export class Sessions implements SessionHost {
       await sleep(TYPE_POLL_MS);
     }
     const at = term;
-    this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}) });
+    this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}), ...(lead ? { lead } : {}) });
     await submit(await tether.client(at.host), at.id, text);
     this.log.info("message typed", { session: rec.session.id, ref, terminal: at.id });
     // The next message waits only for the prompt to be free; this one's landing is watched apart.
@@ -3504,7 +3526,8 @@ export class Sessions implements SessionHost {
 
   /**
    * A sent message showed up in the session. A typed one is the user's own turn, and is
-   * recorded as one, with the ref the sender holds; one sent over the pipe is a delivery.
+   * recorded as one, with the ref the sender holds; so is a leader's, however it went, with who
+   * sent it; one sent over the pipe is a delivery.
    */
   private delivered(rec: SessionRecord, p: PendingSend, promptId?: string): void {
     if (promptId !== undefined && p.promptId === undefined) p.promptId = promptId;
@@ -3514,6 +3537,9 @@ export class Sessions implements SessionHost {
     if (p.agent) {
       // Another agent's turn, with who it is from: never the user's, and nothing of what the session is for.
       if (!this.agentSeen(rec.session.id, p.agent.messageId)) this.event(rec, "user_turn", agentTurn(p.agent, p.text, p.ref));
+    } else if (p.lead) {
+      // The user's words, sent by their leader: what the session is for is the user's to say, not its leader's.
+      this.event(rec, "user_turn", leadTurn(p.lead, p.text, p.ref, promptId));
     } else if (p.typed) {
       this.event(rec, "user_turn", { text: capText(p.text), source: "typed", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
       // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.

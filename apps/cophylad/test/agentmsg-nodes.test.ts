@@ -2,8 +2,9 @@
 // agents and messages a session on another through the primary. The message lands there as
 // the first session's turn, gated on the primary as that session and on its node as the
 // primary's node; the answer comes back the same way, carrying what it answers; and once the
-// second node is gone, a message to its session fails at once. The ingress itself is the hook
-// token's and loopback's.
+// second node is gone, a message to its session fails at once. A session the user made the
+// leader of another's speaks to it as the user, hears what it said, and answers its ask. The
+// ingress itself is the hook token's and loopback's.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -148,6 +149,48 @@ describe("agent messages across nodes", () => {
     expect(sends.map((e) => e.args)).toContainEqual(expect.objectContaining({ as: "agent", agent: expect.objectContaining({ group: expect.objectContaining({ name: "release" }), quiet: true }) }));
   });
 
+  test("a leader on one secondary speaks as the user to a session on another, hears what it said, and answers its ask", async () => {
+    primary = await startPrimary();
+    alpha = await startSecondary(primary, { agent: true, node: 'name = "Alpha"\n' });
+    beta = await startSecondary(primary, { agent: true, node: 'name = "Beta"\n' });
+    await linked(alpha);
+    await linked(beta);
+    await waitFor(() => primary!.d.nodes.linkedTo(alpha!.identity.id) && primary!.d.nodes.linkedTo(beta!.identity.id));
+    const a = await spawnOn(alpha);
+    const b = await spawnOn(beta);
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfSession(a.id) === alpha!.identity.id && primary!.d.nodes.mirror.ownerOfSession(b.id) === beta!.identity.id, 10_000);
+    // the user makes Alpha's session the leader of Beta's, from the primary's app
+    const c = await client(primary.d);
+    await c.request("lead.set", { speaker: a.id, targets: [b.id] });
+    const listed = await callAs(alpha, a, "list_agents", {});
+    expect(listed.text).toContain("led by you");
+
+    const sent = await callAs(alpha, a, "send_message", { to: b.id, text: "Run the build and tell me if it is green." });
+    expect(sent.isError).toBeUndefined();
+    expect(sent.text).toContain("as your user's own words");
+    // it lands on Beta as the user's turn, sent by Alpha's session; forwarded as a leader's, never an agent's
+    const turn = await waitFor(() => beta!.store.sessionEvents.history(b.id, { limit: 200 }).find((e) => e.kind === "user_turn" && (e.payload as { source?: string }).source === "lead"), 10_000);
+    expect(turn.payload).toMatchObject({ text: "Run the build and tell me if it is green.", by: { session: a.id, nodeName: "Alpha" } });
+    expect(agentTurns(beta, b)).toEqual([]);
+    const there = beta.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "session.send" && (e.args as { as?: string }).as === "lead");
+    expect(there?.principal).toEqual({ kind: "node", id: primary.d.identity.id });
+    expect(primary.d.store.audit.list({ limit: 50 }).find((e: AuditEntry) => e.action === "agent.lead")?.principal).toEqual({ kind: "harness", session: a.id });
+    // once Beta's session settles, what it said comes back to the leader in its envelope
+    const back = await waitFor(() => agentTurns(alpha!, a).find((e) => (e.payload as { from?: { session?: string } }).from?.session === b.id), 15_000);
+    expect((back.payload as { text: string }).text.length).toBeGreaterThan(0);
+
+    // an ask of Beta's session is the leader's to answer as the user, through the primary to Beta
+    const ask = beta.asks.open({ type: "permission", source: { kind: "harness", session: b.id }, title: "Run npm test?", options: [{ id: "allow", label: "Allow" }, { id: "deny", label: "Deny" }], answerableBy: ["user", "brain"] }, Date.now());
+    await waitFor(() => primary!.d.nodes.mirror.ownerOfAsk(ask.id) === beta!.identity.id, 10_000);
+    const answered = await callAs(alpha, a, "answer_ask", { ask: ask.id, option: "allow" });
+    expect(answered.isError).toBeUndefined();
+    expect(answered.text).toStartWith(`Answered ${ask.id} in `);
+    expect(answered.text).toEndWith(" as your user: Allow.");
+    await waitFor(() => beta!.asks.get(ask.id)?.status === "answered", 10_000);
+    expect(beta.asks.get(ask.id)!.answer?.option).toBe("allow");
+    c.close();
+  }, 40_000);
+
   test("the bypass switch is set on the node an app on the primary names, and that node's row says so", async () => {
     primary = await startPrimary();
     alpha = await startSecondary(primary, { node: 'name = "Alpha"\n' });
@@ -178,7 +221,7 @@ describe("agent messages across nodes", () => {
     expect((await post("wrong", { jsonrpc: "2.0", id: 1, method: "ping" })).status).toBe(401);
     const list = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(list.status).toBe(200);
-    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus"]);
+    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus", "answer_ask"]);
     expect((await post(primary.d.hookToken, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(204);
     const call = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_agents", arguments: {} } });
     expect(((await call.json()) as { result: { isError: boolean; content: { text: string }[] } }).result).toMatchObject({ isError: true, content: [{ text: "Cophyla can't tell which session you are, so nothing was sent." }] });

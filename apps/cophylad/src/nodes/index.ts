@@ -185,6 +185,8 @@ export interface NodesDeps {
   guests?: () => { clusters(): string[]; knows(node: string): boolean } | undefined;
   /** The agent router, once built: what a secondary's sessions' `agent.list` and `agent.send` reach, and the switch the primary's clients may set here. */
   agents?: () => Pick<AgentMessages, "upwardRequest" | "setAccept"> | undefined;
+  /** How the chat's message reaches a session it leads, from the leaders this node keeps as the primary. */
+  chatLead?: (session: string) => { lead: true } | { fallback: string } | undefined;
   now?: () => number;
 }
 
@@ -803,6 +805,7 @@ export class Nodes {
       },
       chat: this.deps.chat,
       localWorkspaces: () => this.deps.workspaces.list({ node: this.deps.identity.id }),
+      chatLead: (session) => this.deps.chatLead?.(session),
     };
   }
 
