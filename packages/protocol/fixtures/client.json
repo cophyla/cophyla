@@ -493,6 +493,20 @@
     },
     "metrics.unsubscribe": { "params": [{}], "results": [{}] },
     "metrics.history": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "range": { "from": 1758100000000 } }], "results": [{ "samples": [] }] },
+    "usage.report": {
+      "params": [
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "from": 1758100000000, "to": 1758186400000, "bucket": "hour", "tz": 120, "split": "model" },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "from": 1758100000000, "to": 1758186400000, "bucket": "day", "tz": -300, "split": "trigger", "filter": { "project": ["C:/D/api"], "agent": ["main", "sub:Explore"] } }
+      ],
+      "results": [
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "from": 1758100000000, "to": 1758186400000, "totals": { "cost": 0, "calls": 0, "tokens": { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "cacheWrite1h": 0 } }, "previous": { "cost": 0, "calls": 0, "tokens": { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "cacheWrite1h": 0 } }, "split": "model", "series": [], "groups": { "account": [], "project": [], "session": [], "model": [], "agent": [], "trigger": [], "context": [] }, "sessions": [] },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "from": 1758100000000, "to": 1758186400000, "totals": { "cost": 4.2, "calls": 12, "tokens": { "in": 1200, "out": 3400, "cacheRead": 820000, "cacheWrite": 64000, "cacheWrite1h": 64000 } }, "previous": { "cost": 0, "calls": 0, "tokens": { "in": 0, "out": 0, "cacheRead": 0, "cacheWrite": 0, "cacheWrite1h": 0 } }, "split": "model",
+          "series": [{ "at": 1758103600000, "key": "claude-opus-5-5", "cost": 4.2 }],
+          "groups": { "account": [{ "key": "prof_work", "label": "work", "cost": 4.2, "calls": 12, "tokens": { "in": 1200, "out": 3400, "cacheRead": 820000, "cacheWrite": 64000, "cacheWrite1h": 64000 } }], "project": [{ "key": "C:/D/api", "cost": 4.2, "calls": 12, "tokens": { "in": 1200, "out": 3400, "cacheRead": 820000, "cacheWrite": 64000, "cacheWrite1h": 64000 } }], "session": [], "model": [{ "key": "claude-opus-5-5", "cost": 4.2, "calls": 12, "tokens": { "in": 1200, "out": 3400, "cacheRead": 820000, "cacheWrite": 64000, "cacheWrite1h": 64000 } }], "agent": [], "trigger": [], "context": [] },
+          "sessions": [{ "key": "ses_01ARZ3NDEKTSV4RRFFQ69G5FAV", "label": "api", "cost": 4.2, "calls": 12, "tokens": { "in": 1200, "out": 3400, "cacheRead": 820000, "cacheWrite": 64000, "cacheWrite1h": 64000 }, "harness": "claude", "project": "C:/D/api", "account": "prof_work", "firstAt": 1758103600000, "lastAt": 1758107200000, "subCost": 0.6, "contextAvg": 68000 }],
+          "costs": { "in": 0.02, "out": 0.26, "cacheRead": 0.41, "cacheWrite": 3.5, "side": 0.01 }, "sonnetSaves": 0.3, "since": 1757500000000, "filling": false }
+      ]
+    },
     "remote.pair": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234", "name": "laptop" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "pin": "1234" }], "results": [{}] },
     "remote.invite": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{ "otp": "2357", "link": "art://192.168.1.44:47989?pin=2357&passphrase=cophyla-7f3a&name=study", "passphrase": "cophyla-7f3a", "expiresAt": 1758196980000 }, { "otp": "482913" }] },
     "remote.open": {
