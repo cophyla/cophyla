@@ -34,7 +34,7 @@
 // asked about as a file sent to another person is.
 
 import { readFile } from "node:fs/promises";
-import { FILE_PIECE_BYTES, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, newId, RpcError, TRANSFER_REASON_MAX } from "@cophyla/protocol";
+import { FILE_PIECE_BYTES, GROUP_PHOTO_MAX_BYTES, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, newId, RpcError, TRANSFER_REASON_MAX } from "@cophyla/protocol";
 import type { AgentMode, Focus, Group, GroupAttach, GroupCandidate, GroupEntry, GroupEntryMember, GroupEntryPost, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPhotoType, GroupPost, PeerSource, Session, TeamAgent, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { GROUP_POST_MAX_CHARS } from "@cophyla/protocol";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
@@ -89,6 +89,8 @@ const READ_PHOTOS = 4;
 const READ_PHOTO_BYTES = 8 * 1024 * 1024;
 /** How long after a failed fetch another side's photo is asked for again. */
 const PHOTO_RETRY_MS = 60_000;
+/** How long a photo the side that posted it would not give is let be. */
+const PHOTO_GONE_MS = 24 * 60 * 60_000;
 /** The latest posts of a group whose missing photos the sweep fetches again, and how many photos are fetched at once. */
 const PHOTO_SWEEP_POSTS = 200;
 const PHOTO_FETCHES = 2;
@@ -217,7 +219,8 @@ export class Groups {
   private photoQueue: { key: string; run: () => Promise<void> }[] = [];
   private photoRunning = 0;
   /** Where this side's posted files are, by id, as far as this process met them: what another side may read. */
-  private fileIndex = new Map<string, { group: string; post: string }>();
+  /** Every photo's and file's id in a group, by the post that carries it: made whole on first need, kept as posts come and go. */
+  private mediaIds = new Map<string, Map<string, string>>();
 
   constructor(deps: GroupsDeps) {
     this.deps = deps;
@@ -646,7 +649,7 @@ export class Groups {
           g.members.push(person);
           added.push(person);
         }
-        if (!g.sides[t.owner]) g.sides[t.owner] = { teammate: ref.teammate, user: t.user, taken: 0 };
+        if (!g.sides[t.owner]) g.sides[t.owner] = { teammate: ref.teammate, user: t.user, taken: 0, since: g.n };
       }
     }
     if (g.members.filter((m) => m.kind === "agent").length > AGENTS_MAX) throw new RpcError("invalid", `a group takes ${AGENTS_MAX} agents at most`);
@@ -737,7 +740,7 @@ export class Groups {
     this.groupRecent.delete(g.id);
     this.pushedAt.delete(g.id);
     this.deps.media?.dropGroup(g.id);
-    for (const [id, at] of [...this.fileIndex]) if (at.group === g.id) this.fileIndex.delete(id);
+    this.mediaIds.delete(g.id);
     this.deps.bus.emit("group.state", { ...this.client(g), left: true });
     this.log.info("group deleted here", { id });
   }
@@ -796,6 +799,7 @@ export class Groups {
         if ("upload" in a) {
           const u = media.take(group, a.upload);
           try {
+            if (u.size > GROUP_PHOTO_MAX_BYTES) throw new RpcError("invalid", `${u.name} is too big for a photo: attach it as a file`);
             ph = checkPhoto(new Uint8Array(await readFile(u.path)), u.name);
           } finally {
             await media.discard(u.path);
@@ -842,17 +846,38 @@ export class Groups {
   private trimmed(group: string, posts: readonly PostRow[]): void {
     for (const p of posts) {
       this.unattach(group, { photos: p.photos ?? [], files: p.files ?? [] });
-      for (const f of p.files ?? []) this.fileIndex.delete(f.id);
+      const ids = this.mediaIds.get(group);
+      for (const x of [...(p.photos ?? []), ...(p.files ?? [])]) if (ids?.get(x.id) === p.id) ids.delete(x.id);
     }
   }
 
-  /** The post in a group that holds a photo: the newest first, as most asked for. */
-  private postWithPhoto(g: GroupRow, photo: string): PostRow | undefined {
-    for (const n of this.rows.numbers(g.id).reverse()) {
-      const p = this.rows.post(g.id, n);
-      if (p?.photos?.some((x) => x.id === photo)) return p;
+  /** A group's photo and file ids, by the post that carries each: one post each, the first that came. */
+  private idsOf(g: GroupRow): Map<string, string> {
+    let ids = this.mediaIds.get(g.id);
+    if (!ids) {
+      ids = new Map();
+      for (const n of this.rows.numbers(g.id)) {
+        const p = this.rows.post(g.id, n);
+        if (!p) continue;
+        for (const x of [...(p.photos ?? []), ...(p.files ?? [])]) if (!ids.has(x.id)) ids.set(x.id, p.id);
+      }
+      this.mediaIds.set(g.id, ids);
     }
-    return undefined;
+    return ids;
+  }
+
+  /** A post's photos and files, put in its group's index. */
+  private indexPost(g: GroupRow, p: PostRow): void {
+    const ids = this.mediaIds.get(g.id);
+    if (!ids) return;
+    for (const x of [...(p.photos ?? []), ...(p.files ?? [])]) if (!ids.has(x.id)) ids.set(x.id, p.id);
+  }
+
+  /** The post in a group that holds a photo. */
+  private postWithPhoto(g: GroupRow, photo: string): PostRow | undefined {
+    const at = this.idsOf(g).get(photo);
+    const p = at ? this.rows.byId(g.id, at) : undefined;
+    return p?.photos?.some((x) => x.id === photo) ? p : undefined;
   }
 
   /** The side a post of another person's came from: its writer's account, while that side is in the group. */
@@ -944,8 +969,9 @@ export class Groups {
         bytes.set(part, o);
         o += part.length;
       }
-      // the bytes must be the kind of image the post says
-      if (sniffImage(bytes)?.type !== ph.type) throw new RpcError("invalid", "the photo's bytes are not the image the post names");
+      // the bytes must be the image the post names: its kind and its size
+      const info = sniffImage(bytes);
+      if (!info || info.type !== ph.type || info.width !== ph.width || info.height !== ph.height) throw new RpcError("invalid", "the photo's bytes are not the image the post names");
       await media.putPhoto(group, ph.id, bytes);
       this.photoRetry.delete(key);
       const g = this.get(group);
@@ -953,7 +979,9 @@ export class Groups {
       // the apps draw it now it is here
       if (g && p) this.emitPost(g, p);
     } catch (e) {
-      this.photoRetry.set(key, this.now() + PHOTO_RETRY_MS);
+      // a photo that side says is not there, or sent as it was not posted, is not asked for again soon
+      const gone = e instanceof RpcError && (e.code === "not_found" || e.code === "invalid");
+      this.photoRetry.set(key, this.now() + (gone ? PHOTO_GONE_MS : PHOTO_RETRY_MS));
       this.log.info("another side's photo could not be fetched now", { group, photo: ph.id, error: message(e) });
       if (now) throw e instanceof RpcError ? e : new RpcError("unavailable", `the photo could not be fetched from the side that posted it: ${message(e)}`);
     } finally {
@@ -994,26 +1022,18 @@ export class Groups {
     if (!g || !g.sides[owner]) throw new RpcError("not_found", "no such group with you in it");
     const found = this.findFile(g, file);
     if (!found?.file.src) throw new RpcError("not_found", "no such file of this side's in the group");
+    // a side that came in later sees the post, but the file was shared with the ones there then
+    const since = g.sides[owner]!.since;
+    if (since !== undefined && found.post.n <= since) throw new RpcError("not_found", "it was posted before you were in the group");
     return found.file.src;
   }
 
-  /** A file of a group's post by its id: the post that carries it, the newest first. */
+  /** A file of a group's post by its id, and the post that carries it. */
   private findFile(g: GroupRow, file: string): { post: PostRow; file: FileRow } | undefined {
-    const at = this.fileIndex.get(file);
-    if (at && at.group === g.id) {
-      const p = this.rows.byId(g.id, at.post);
-      const f = p?.files?.find((x) => x.id === file);
-      if (p && f) return { post: p, file: f };
-    }
-    for (const n of this.rows.numbers(g.id).reverse()) {
-      const p = this.rows.post(g.id, n);
-      const f = p?.files?.find((x) => x.id === file);
-      if (p && f) {
-        this.fileIndex.set(file, { group: g.id, post: p.id });
-        return { post: p, file: f };
-      }
-    }
-    return undefined;
+    const at = this.idsOf(g).get(file);
+    const p = at ? this.rows.byId(g.id, at) : undefined;
+    const f = p?.files?.find((x) => x.id === file);
+    return p && f ? { post: p, file: f } : undefined;
   }
 
   /**
@@ -1091,7 +1111,7 @@ export class Groups {
       ...(opts.files?.length ? { files: opts.files } : {}),
       at: now,
     };
-    for (const f of post.files ?? []) this.fileIndex.set(f.id, { group: g.id, post: post.id });
+    this.indexPost(g, post);
     g.lastAt = now;
     // the writer has read up to its own post only when it had read all before it: one that answers
     // a notice without reading keeps the posts it did not read, and the tags in them
@@ -2112,9 +2132,14 @@ export class Groups {
     const mentions = from.kind === "person" ? ep.mentions : ep.mentions.filter((m) => !("all" in m && m.all === "everyone"));
     // a marker shows a tag only for a member the post tags
     const tagged = new Set(mentions.flatMap((m) => ("member" in m ? [m.member] : [])));
-    // photos and files once each, by ids no other post of this side's holds
-    const photos = uniqueBy(ep.photos ?? [], (x) => x.id);
-    const files = uniqueBy(ep.files ?? [], (x) => x.id);
+    // photos and files once each, by ids no other post here holds: a side never passes another's off as its own
+    const ids = this.idsOf(g);
+    const free = (x: { id: string }) => {
+      const at = ids.get(x.id);
+      return at === undefined || at === ep.id;
+    };
+    const photos = uniqueBy(ep.photos ?? [], (x) => x.id).filter(free);
+    const files = uniqueBy(ep.files ?? [], (x) => x.id).filter(free);
     const { photos: _p, files: _f, ...rest } = ep;
     return { ...rest, from: { ...from, user }, text: keepMarkers(ep.text, tagged), mentions, ...(photos.length > 0 ? { photos } : {}), ...(files.length > 0 ? { files } : {}) };
   }
@@ -2140,6 +2165,7 @@ export class Groups {
     g.lastAt = Math.max(g.lastAt ?? 0, Math.min(ep.at, this.now() + CLOCK_SKEW_MS));
     this.rows.put(g);
     this.rows.putPost(p);
+    this.indexPost(g, p);
     if (g.n % 100 === 0) this.trimmed(g.id, this.rows.trim(g.id, POSTS_MAX));
     if (ep.replyTo) {
       const r = this.rows.byId(g.id, ep.replyTo);
@@ -2226,7 +2252,7 @@ export class Groups {
         if (third) {
           const other = this.deps.teams?.()?.teammateOf(em.owner);
           if (!other) break;
-          g.sides[em.owner] = { teammate: other.id, user: other.user, taken: 0 };
+          g.sides[em.owner] = { teammate: other.id, user: other.user, taken: 0, since: g.n };
           void this.catchUp(g.id);
         }
         const m = this.fromEntryMember(em, g.n);

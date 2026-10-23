@@ -239,8 +239,9 @@ function withoutAgent(p: Record<string, unknown>): Record<string, unknown> {
   return rest;
 }
 
+/** A client's transfer: who sent it, who is told and another person's source are the router's to say. */
 function withoutSender(p: Record<string, unknown>): Record<string, unknown> {
-  const { by: _by, notify: _notify, ...rest } = p;
+  const { by: _by, notify: _notify, peer: _peer, ...rest } = p;
   return rest;
 }
 

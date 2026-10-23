@@ -63,8 +63,12 @@ export interface GroupRow {
   n: number;
   /** The last entry of this side's own log. */
   seq: number;
-  /** The other sides in it, by account: the teammate they are reached through, and the last entry of theirs taken. */
-  sides: Record<string, { teammate: string; user: string; taken: number }>;
+  /**
+   * The other sides in it, by account: the teammate they are reached through, the last entry of
+   * theirs taken, and, for a side that came in after the group was made here, the number of the
+   * last post before it came, whose files it is not served.
+   */
+  sides: Record<string, { teammate: string; user: string; taken: number; since?: number }>;
   lastAt?: number;
 }
 

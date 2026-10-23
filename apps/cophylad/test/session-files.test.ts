@@ -307,7 +307,13 @@ describe("a file read whole", () => {
     await tried(systemConverter(deps("darwin")));
     expect(ran.splice(0).map(([c, a]) => [c, a.slice(0, 4)])).toEqual([["sips", ["-s", "format", "png", "-Z"]]]);
     await tried(systemConverter(deps("linux", ["convert", "heif-convert"])));
-    expect(ran.splice(0).map(([c, a]) => [c, a.slice(0, 4)])).toEqual([["/usr/bin/convert", ["/in/scan.tif[0]", "-auto-orient", "-resize", "4096x4096>"]]]);
+    // read as the kind it was named, never as its bytes guess, and within a picture's limits
+    const [im] = ran.splice(0);
+    expect(im![0]).toBe("/usr/bin/convert");
+    expect(im![1].slice(0, 4)).toEqual(["-limit", "memory", "512MiB", "-limit"]);
+    const input = im![1].indexOf("tiff:/in/scan.tif[0]");
+    expect(input).toBeGreaterThan(0);
+    expect(im![1].slice(input, input + 4)).toEqual(["tiff:/in/scan.tif[0]", "-auto-orient", "-resize", "4096x4096>"]);
     await tried(systemConverter(deps("linux", ["heif-convert"])), "HEIC");
     expect(ran.splice(0).map(([c]) => c)).toEqual(["/usr/bin/heif-convert"]);
     expect(await tried(systemConverter(deps("linux", ["heif-convert"])))).toBe("This computer has no decoder for TIFF images: install ImageMagick.");

@@ -188,8 +188,74 @@ describe("transfers of another person's file", () => {
     const into = join(r.home, "in");
     mkdirSync(into, { recursive: true });
     r.tree = (p) => ({ ...p, entries: [{ rel: "../escape.txt", size: 1, mtimeMs: 1 }], count: 1 });
-    await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("outside the folder");
+    await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("a name this machine cannot hold");
+    r.tree = (p) => ({ ...p, entries: [{ rel: "a\u0007b.txt", size: 1, mtimeMs: 1 }], count: 1 });
+    await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("a name this machine cannot hold");
+    r.tree = (p) => ({ ...p, entries: [{ rel: "a.txt", size: 1, mtimeMs: 1 }, { rel: "a.txt", size: 1, mtimeMs: 1 }], count: 2 });
+    await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("twice");
     r.tree = (p) => ({ ...p, name: ".." });
     await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("named the file badly");
+  });
+
+  test("what it holds is counted here, never taken on their word, and a listing past what a walk takes is refused", async () => {
+    const dir = tempHome();
+    const theirs = join(dir, "dist");
+    mkdirSync(theirs, { recursive: true });
+    writeFileSync(join(theirs, "a.txt"), "abc");
+    writeFileSync(join(theirs, "b.txt"), "defgh");
+    const r = rig(theirs);
+    const into = join(r.home, "in");
+    mkdirSync(into, { recursive: true });
+    // their side says it is tiny and holds one file
+    r.tree = (p) => ({ ...p, total: 1, files: 1 });
+    const started = await r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC });
+    expect(started.transfer).toMatchObject({ total: 8, files: { done: 0, total: 2 } });
+    expect((await ended(r, started.transfer!.id)).state).toBe("done");
+    // a listing that never ends
+    r.t["deps"].peer!.tree = async (_src, from = 0) => ({ kind: "folder", name: "dist", entries: Array.from({ length: 5000 }, (_, i) => ({ rel: `f${from + i}`, size: 1, mtimeMs: 1 })), total: 5000, files: 5000, count: 1, skipped: 0, next: from + 5000 });
+    await expect(r.t.begin({ from: { node: SELF, path: "dist" }, to: { node: SELF, dir: into }, peer: SRC })).rejects.toThrow("more than 100,000 entries");
+  });
+
+  test("a name this machine cannot hold is made one it can", async () => {
+    const name = process.platform === "win32" ? "report.pdf:hidden" : "report\u0001.pdf";
+    const r = rig(theirFile("report.pdf", counted(10)));
+    const into = join(r.home, "in");
+    mkdirSync(into, { recursive: true });
+    r.tree = (p) => ({ ...p, name });
+    const started = await r.t.begin({ from: { node: SELF, path: name }, to: { node: SELF, dir: into }, peer: SRC });
+    const done = await ended(r, started.transfer!.id);
+    expect(done.state).toBe("done");
+    expect(done.to.path).toBe(join(into, process.platform === "win32" ? "report.pdf_hidden" : "report_.pdf"));
+  });
+
+  test("a file their side says grew past what was agreed fails, and so does one that keeps changing", async () => {
+    const r = rig(theirFile("big.bin", counted(1024 * 1024)));
+    const into = join(r.home, "in");
+    mkdirSync(into, { recursive: true });
+    // the rig asks the user past 8 MiB: a 1 MiB file that claims 20 MiB stops there
+    r.t["deps"].peer!.read = async () => ({ data: counted(FILE_PIECE_BYTES), size: 20 * 1024 * 1024, mtimeMs: 1 });
+    const grew = await r.t.begin({ from: { node: SELF, path: "big.bin" }, to: { node: SELF, dir: into }, peer: SRC });
+    const failed = await ended(r, grew.transfer!.id);
+    expect(failed.state).toBe("failed");
+    expect(failed.error).toContain("grew past 8 MB");
+    // a size that flips at every read
+    let flip = 0;
+    r.t["deps"].peer!.read = async (_src, _rel, at) => {
+      const size = 2 * FILE_PIECE_BYTES + (flip++ % 2);
+      return { data: counted(Math.min(FILE_PIECE_BYTES, size - at)), size, mtimeMs: 1 };
+    };
+    const flipping = await r.t.begin({ from: { node: SELF, path: "big.bin" }, to: { node: SELF, dir: into }, peer: SRC });
+    const gaveUp = await ended(r, flipping.transfer!.id);
+    expect(gaveUp.state).toBe("failed");
+    expect(gaveUp.error).toContain("kept changing on their side");
+  });
+
+  test.if(process.platform === "win32")("what lands is marked as from the internet, as a browser's download is", async () => {
+    const r = rig(theirFile("setup.exe", counted(100)));
+    const into = join(r.home, "in");
+    mkdirSync(into, { recursive: true });
+    const started = await r.t.begin({ from: { node: SELF, path: "setup.exe" }, to: { node: SELF, dir: into }, peer: SRC });
+    expect((await ended(r, started.transfer!.id)).state).toBe("done");
+    expect(readFileSync(`${join(into, "setup.exe")}:Zone.Identifier`, "utf8")).toContain("ZoneId=3");
   });
 });

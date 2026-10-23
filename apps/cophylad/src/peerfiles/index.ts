@@ -22,6 +22,7 @@ import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import type { Bus } from "../bus.ts";
 import { PEER_FILES_NS, PEER_PULLS_NS } from "../grants/namespaces.ts";
 import type { Asks } from "../gate/asks.ts";
+import type { Gate } from "../gate/index.ts";
 import type { Groups, SaveStart } from "../groups/index.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
@@ -29,6 +30,8 @@ import type { TreePage } from "../transfers/tree.ts";
 
 /** How long an offer is read for, from its last read. */
 const OFFER_MS = 24 * 60 * 60_000;
+/** How long an offer is read for at most, however often it is read: a side that never says it is done reads no longer. */
+const OFFER_MAX_MS = 7 * 24 * 60 * 60_000;
 /** How long a machine may read what the primary started a transfer of for it. */
 const PULL_MS = 7 * 24 * 60 * 60_000;
 /** Bytes over which a file from another person waits for the user's word. */
@@ -60,6 +63,8 @@ interface Offer {
   /** Its name there, and the agent here that sent it. */
   to: string;
   from: { session: string; alias: string };
+  /** When it was made, its last read, and until when it is read. */
+  made: number;
   at: number;
   until: number;
 }
@@ -84,7 +89,7 @@ export interface PeerFilesDeps {
   tree: (node: string, path: string, from?: number) => Promise<TreePage>;
   /** A piece of a file on one of this user's machines. */
   read: (node: string, path: string, rel: string | undefined, at: number) => Promise<{ data: Uint8Array; size: number; mtimeMs: number }>;
-  /** A file request to the other person's Cophyla, on that link's tunnel for files. */
+  /** A file request to the other person's Cophyla, on that link's tunnel, paced with its messages. */
   request: (peer: { kind: PeerKind; id: string }, method: "send" | "tree" | "read" | "done", params: unknown) => Promise<unknown>;
   groups: () => Groups | undefined;
   /** A transfer started on the machine it goes to. */
@@ -92,11 +97,22 @@ export interface PeerFilesDeps {
   /** Cophyla's own words into a session of this user's, wherever it runs. */
   tell: (session: string, text: string, info: EnvelopeInfo) => Promise<void>;
   asks?: Pick<Asks, "open" | "wait">;
+  /** Audits a file coming in, as the system's. */
+  gate?: Pick<Gate, "run">;
   now?: () => number;
 }
 
 function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
+}
+
+/** Words from the other side, put in a line of this side's: one line, no markup, at most `max` characters. */
+export function theirWords(text: string, max: number): string {
+  const line = text
+    .replace(/[\u0000-\u001f\u007f<>]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return line.length <= max ? line : `${line.slice(0, max - 1).trimEnd()}…`;
 }
 
 /** Bytes as a person reads them. */
@@ -157,7 +173,7 @@ export class PeerFiles {
     const day = this.day(p.peer);
     if (day.out >= PER_DAY) throw new RpcError("denied", `your agents sent ${p.peer.user} ${PER_DAY} files today, the most in a day`);
     const at = this.now();
-    const offer: Offer = { id: newId("peerFile"), peer: { kind: p.peer.kind, id: p.peer.id }, src: p.src, name: p.what.name, kind: p.what.kind, total: p.what.total, to: p.to, from: { session: caller.id, alias }, at, until: at + OFFER_MS };
+    const offer: Offer = { id: newId("peerFile"), peer: { kind: p.peer.kind, id: p.peer.id }, src: p.src, name: p.what.name, kind: p.what.kind, total: p.what.total, to: p.to, from: { session: caller.id, alias }, made: at, at, until: at + OFFER_MS };
     this.kv.put(PEER_FILES_NS, offer.id, offer);
     const send: PeerFileSend = {
       file: offer.id,
@@ -190,8 +206,8 @@ export class PeerFiles {
         this.kv.delete(PEER_FILES_NS, o.id);
         throw new RpcError("not_found", "the file was offered more than a day ago: ask for it again");
       }
-      // read lately: it is read on for another day
-      if (this.now() - o.at > 60_000) this.kv.put(PEER_FILES_NS, o.id, { ...o, at: this.now(), until: this.now() + OFFER_MS });
+      // read lately: it is read on for another day, and never past a week from when it was made
+      if (this.now() - o.at > 60_000) this.kv.put(PEER_FILES_NS, o.id, { ...o, at: this.now(), until: Math.min(this.now() + OFFER_MS, (o.made ?? o.at) + OFFER_MAX_MS) });
       return o.src;
     }
     if (!ref.group || peer.kind !== "teammate" || !peer.owner) throw new RpcError("not_found", "no such file offered to you");
@@ -221,7 +237,7 @@ export class PeerFiles {
     this.kv.delete(PEER_FILES_NS, o.id);
     const what = o.kind === "folder" ? `the folder ${o.name}` : o.name;
     const to = `${peer.user}/${o.to}`;
-    const text = d.ok ? `${what} reached ${to}: it landed on their machine, and they were told where.` : `${what} did not reach ${to}: ${d.why ?? "it failed there"}.`;
+    const text = d.ok ? `${what} reached ${to}: it landed on their machine, and they were told where.` : `${what} did not reach ${to}. Their Cophyla says: "${theirWords(d.why ?? "it failed there", 200)}"`;
     try {
       await this.deps.tell(o.from.session, text, { messageId: newId("agentMessage") });
     } catch (e) {
@@ -239,8 +255,11 @@ export class PeerFiles {
     const day = this.day(peer);
     if (day.in >= PER_DAY) throw new RpcError("denied", `${PER_DAY} files in a day is the most this side takes from you`);
     day.in++;
-    const src: PeerSource = { kind: peer.kind, id: peer.id, file: p.file, user: peer.user, agent: p.from.name };
-    const from = `${peer.user}/${p.from.name}`;
+    const agent = theirWords(p.from.name, 60) || "agent";
+    const src: PeerSource = { kind: peer.kind, id: peer.id, file: p.file, user: peer.user, agent };
+    const from = `${peer.user}/${agent}`;
+    // audited as it comes in, as a message from another person is
+    if (this.deps.gate) await this.deps.gate.run({ principal: { kind: "system" }, action: "peer.file.receive", target: target.id, args: { from, name: theirWords(p.name, 255), kind: p.kind, bytes: p.total, ...(p.reason ? { reason: theirWords(p.reason, 120) } : {}), via: peer.kind } }, () => undefined);
     const go = async (relayOk: boolean) => {
       this.allowPull(target.node, src);
       const r = await this.deps.start({ from: { node: this.deps.selfId(), path: p.name }, to: { node: target.node }, ...(p.reason ? { reason: p.reason } : {}), ...(relayOk ? { relayOk: true } : {}), by: { kind: "user" }, notify: target.id, peer: src });
@@ -263,8 +282,8 @@ export class PeerFiles {
       {
         type: "choice",
         source: { kind: "harness", session: target.id },
-        title: `Take ${p.kind === "folder" ? `the folder ${p.name}` : p.name} (${sizeWords(p.total)}) from ${from}?`,
-        detail: `${p.reason ? `${p.reason}\n` : ""}${peer.user}'s agent sends it to your agent; it comes through the Cophyla server's relay into the Downloads folder on ${this.deps.nodeName(target.node)}.`,
+        title: `Take ${p.kind === "folder" ? `the folder ${theirWords(p.name, 120)}` : theirWords(p.name, 120)} (${sizeWords(p.total)}) from ${from}?`,
+        detail: `${p.reason ? `${theirWords(p.reason, 120)}\n` : ""}${peer.user}'s agent sends it to your agent; it comes through the Cophyla server's relay into the Downloads folder on ${this.deps.nodeName(target.node)}.`,
         options,
         answerableBy: ["user"],
         expiresAt: now + ASK_MS,
@@ -298,6 +317,18 @@ export class PeerFiles {
     } catch (e) {
       this.log.info("the other side was not told how its file ended", { file, error: message(e) });
     }
+  }
+
+  /**
+   * A transfer of another person's file started on one of this user's machines, which may then
+   * read it through the primary (a group's file saved from another side): its pull allowed first,
+   * since the machine asks as soon as it starts, and dropped when it ends.
+   */
+  async startPull(p: SaveStart & { peer: PeerSource }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm }> {
+    this.allowPull(p.to.node, p.peer);
+    const r = await this.deps.start(p);
+    if (r.transfer) this.tracked(p.to.node, p.peer, r.transfer.id);
+    return r;
   }
 
   /** A machine of this user's may read `src` through the primary, for a transfer started for it. */

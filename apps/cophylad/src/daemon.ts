@@ -1507,7 +1507,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       const paths = platformOf(n) === "win32" ? win32 : posix;
       return paths.isAbsolute(path) ? path : paths.join(cwd, path);
     },
-    start: (params) => agentFiles!.start(params),
+    // another side's file is read through this primary: the machine it goes to is let read it
+    start: (params) => (params.peer && peerFilesLive ? peerFilesLive.startPull({ ...params, peer: params.peer }) : agentFiles!.start(params)),
   });
   groupMedia.init();
   groupsLive.start();
@@ -1603,6 +1604,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       if (s) await deliverAnywhere(s, text, info);
     },
     asks,
+    gate,
   });
   peerFilesLive.start();
   // New terminal's picker: a folder of this computer at a time.

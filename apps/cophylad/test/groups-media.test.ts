@@ -10,7 +10,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
-import { newId } from "@cophyla/protocol";
+import { FILE_PIECE_BYTES, GROUP_PHOTO_MAX_BYTES, newId } from "@cophyla/protocol";
 import type { GroupEntry, GroupPhoto, Session, TeamAgent } from "@cophyla/protocol";
 import type { EnvelopeInfo } from "../src/agentmsg/envelope.ts";
 import { Focuses } from "../src/agentmsg/focus.ts";
@@ -97,6 +97,11 @@ function rig(local: Session[], opts: { bypass?: boolean } = {}) {
     version: "test",
     focus: () => focus,
     groups: () => groups,
+    files: () => ({
+      peek: async () => ({ kind: "file", name: "x", total: 1, files: 1 }),
+      start: async () => ({}),
+      ended: async (id) => ({ id, from: { node: DESK, path: "x" }, to: { node: DESK, dir: "/in", path: "/in/x" }, kind: "file", name: "x", total: 1, bytes: 1, state: "done", by: { kind: "user" }, startedAt: 1, endedAt: 2 }),
+    }),
   });
   const bobWeb: TeamAgent = { session: BOB_SESS, name: "web", harness: "claude", workspace: "web" };
   const teams: GroupTeams = {
@@ -300,6 +305,83 @@ describe("photos and files in a group chat", () => {
       r.groups.delete(g.id);
       expect(existsSync(join(r.home, "data", "groups", "photos", g.id))).toBe(false);
       expect(readdirSync(join(r.home, "data", "groups"))).not.toContain(g.id);
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("a side that came in later is not served files posted before; another side's post never takes over an id; a photo not as posted is not kept", async () => {
+    const api = sess("C:/code/api");
+    const r = rig([api]);
+    try {
+      const g = await r.groups.create({ name: "release", members: [{ session: api.id }] });
+      // posted while the group was the user's own: no one was asked
+      await r.call(api, "post_group", { group: "release", text: "the keys", expects_reply: false, files: ["C:/code/api/secrets"] });
+      const before = r.groups.posts(g.id).posts.at(-1)!.files![0]!.id;
+      await r.groups.addMembers(g.id, [{ teammate: TM, name: "web" }]);
+      const pending = r.call(api, "post_group", { group: "release", text: "the schema", expects_reply: false, files: ["schema.sql"] });
+      r.asks.answer((await waitFor(() => r.asks.listOpen()[0])).id, { option: "allow" }, USER);
+      await pending;
+      const after = r.groups.posts(g.id).posts.at(-1)!.files![0]!.id;
+      expect(() => r.groups.fileSource("usr_BOB", g.id, before)).toThrow("posted before you were in the group");
+      expect(r.groups.fileSource("usr_BOB", g.id, after)).toEqual({ node: DESK, path: "C:/code/api/schema.sql" });
+
+      // bob's side posts under the ids of this side's file and of a photo it posted
+      const shot = r.call(api, "post_group", { group: "release", text: "the page", expects_reply: false, photos: ["shot.png"] });
+      r.asks.answer((await waitFor(() => r.asks.listOpen()[0])).id, { option: "allow" }, USER);
+      await shot;
+      const ourPhoto = r.groups.posts(g.id).posts.at(-1)!.photos![0]!;
+      await r.groups.take("usr_BOB", g.id, 1, { kind: "snapshot", group: { id: g.id, name: "release", by: "ferit", notify: "tags", createdAt: 1, members: [], posts: [] } }, 1);
+      const sneaky = newId("groupPost");
+      await r.groups.take(
+        "usr_BOB",
+        g.id,
+        2,
+        { kind: "post", post: { id: sneaky, from: { kind: "person", key: "person:usr_BOB", user: "bob" }, text: "mine now", mentions: [], photos: [ourPhoto], files: [{ id: after, name: "schema.sql", kind: "file", bytes: 1 }], at: Date.now() } },
+        Date.now(),
+      );
+      const taken = r.groups.posts(g.id).posts.find((p) => p.id === sneaky)!;
+      expect(taken.text).toBe("mine now");
+      expect(taken.photos).toBeUndefined();
+      expect(taken.files).toBeUndefined();
+      expect(r.groups.fileSource("usr_BOB", g.id, after)).toEqual({ node: DESK, path: "C:/code/api/schema.sql" });
+
+      // a photo of bob's whose bytes are not the size its post says
+      const lying: GroupPhoto = { id: newId("groupPhoto"), type: "image/png", bytes: PNG_1X1.length, width: 4000, height: 4000 };
+      r.theirPhotos.set(lying.id, PNG_1X1);
+      await r.groups.take("usr_BOB", g.id, 3, { kind: "post", post: { id: newId("groupPost"), from: { kind: "person", key: "person:usr_BOB", user: "bob" }, text: "", mentions: [], photos: [lying], at: Date.now() } }, Date.now());
+      await expect(r.groups.photo(g.id, lying.id)).rejects.toThrow("not the image the post names");
+      expect(r.media.hasPhoto(g.id, lying.id)).toBe(false);
+
+      // an upload attached as a photo is a photo's size before it is read
+      const big = new Uint8Array(GROUP_PHOTO_MAX_BYTES + 1);
+      let up: string | undefined;
+      for (let at = 0; at < big.length; at += FILE_PIECE_BYTES) {
+        const piece = big.subarray(at, Math.min(big.length, at + FILE_PIECE_BYTES));
+        up = (await r.groups.upload({ group: g.id, ...(up ? { upload: up } : {}), name: "huge.png", size: big.length, at, data: Buffer.from(piece).toString("base64") })).upload;
+      }
+      await expect(r.groups.postAsUser(g.id, "look", undefined, { photos: [{ upload: up! }] })).rejects.toThrow("too big for a photo");
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("get_file into its Downloads is the agent's; into a folder it names, its user is asked first", async () => {
+    const api = sess("C:/code/api");
+    const r = rig([api]);
+    try {
+      const g = await r.groups.create({ name: "release", members: [{ session: api.id }] });
+      await r.call(api, "post_group", { group: "release", text: "the schema", expects_reply: false, files: ["schema.sql"] });
+      const file = r.groups.posts(g.id).posts.at(-1)!.files![0]!.id;
+      const plain = await r.call(api, "get_file", { group: "release", file });
+      expect(plain.text).toContain("Copied schema.sql");
+      expect(r.asks.listOpen()).toEqual([]);
+      const placed = r.call(api, "get_file", { group: "release", file, dir: "C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup" });
+      const ask = await waitFor(() => r.asks.listOpen()[0]);
+      expect(ask.title).toBe("Let api-claude copy schema.sql (1 KB) from #release into C:/Users/me/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup?");
+      r.asks.answer(ask.id, { option: "deny" }, USER);
+      expect((await placed).isError).toBe(true);
+      expect(r.started.at(-1)!.to.dir).toBeUndefined();
     } finally {
       r.stop();
     }

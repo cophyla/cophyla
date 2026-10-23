@@ -377,7 +377,7 @@ export class AgentMessages {
 
   private async groupToolHere(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<ToolAnswer> {
     if (tool === "focus") return { text: await this.focusTool(caller, args) };
-    if (tool === "get_file") return { text: await this.getFile(caller, args) };
+    if (tool === "get_file") return { text: await this.getFile(caller, mode, args) };
     const groups = this.deps.groups?.();
     if (!groups) throw new RpcError("unavailable", "group chats are off on this machine");
     return groups.tool(caller, tool, args, mode);
@@ -419,7 +419,7 @@ export class AgentMessages {
    * machine (its Downloads folder, or `dir`), from where it is now: one of this user's machines,
    * or the other person's, through their Cophyla. Answered once it lands, or later.
    */
-  private async getFile(caller: Session, args: Json): Promise<string> {
+  private async getFile(caller: Session, mode: AgentMode, args: Json): Promise<string> {
     const groups = this.deps.groups?.();
     const files = this.deps.files?.();
     if (!groups || !files) throw new RpcError("unavailable", "copying files is off on this machine");
@@ -444,6 +444,23 @@ export class AgentMessages {
     let asking = false;
     const work = async (): Promise<string> => {
       await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "group.file.get", target: found.group, args: { group: found.groupName, file: f.id, ...(dir ? { dir } : {}) }, sessionKey: caller.id }, () => undefined);
+      // into a folder the agent names, not its Downloads: placed where it writes, asked as send_file is
+      if (dir) {
+        await this.deps.gate.run(
+          {
+            principal: { kind: "harness", session: caller.id },
+            action: "transfer.send",
+            target: node,
+            args: { group: found.groupName, file: f.id, to: nodeName, dir, bytes: f.bytes },
+            sessionKey: caller.id,
+            ask: { title: `Let ${alias} copy ${label} from #${found.groupName} into ${dir}?`, detail: `It goes into that folder on ${nodeName}, beside what is there and never over it.` },
+            ...(mode === "bypass" ? { unprompted: true } : {}),
+          },
+          () => undefined,
+          { onPending: () => (asking = true) },
+        );
+        asking = false;
+      }
       const by: TransferBy = { kind: "agent", alias, session: caller.id };
       const to = { node, ...(dir ? { dir } : {}) };
       let started = await groups.save(found.group, found.post, f.id, to, { by });
@@ -1003,7 +1020,7 @@ export class AgentMessages {
       await this.deps.gate.run(
         {
           principal: { kind: "harness", session: caller.id },
-          action: "transfer.send",
+          action: "peer.file.send",
           target: peer.link.id,
           args: { path: p.path, to: peer.alias, user: peer.link.user, ...(p.reason ? { reason: p.reason } : {}), bytes: what.total },
           sessionKey: caller.id,

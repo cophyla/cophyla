@@ -255,8 +255,10 @@ export const actions = {
   // from a path.
   "files.read": { risk: "read" },
   "files.photo": { risk: "read" },
-  // Files between two people: an agent's file to another person's (`transfer.send` too), and
-  // one coming in (`peer.file.receive`, the system's), pulled into the agent's machine.
+  // Files between two people: an agent's file to another person's agent (`peer.file.send`, which
+  // a built-in rule asks about unless the agent runs without prompts, as `transfer.send`), and one
+  // coming in (`peer.file.receive`, the system's, audited), pulled into the agent's machine.
+  "peer.file.send": { risk: "network" },
   "peer.file.receive": { risk: "write" },
 } as const satisfies Record<string, ActionDefinition>;
 

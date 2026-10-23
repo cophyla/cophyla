@@ -96,6 +96,18 @@ const WIC_SCRIPT = [
   "} finally { $in.Close() }",
 ].join("\n");
 
+/**
+ * ImageMagick reads the image as the kind it was named, never as what its bytes guess (a file
+ * may come from another person), and within limits a picture never needs.
+ */
+const MAGICK_CODERS: Readonly<Record<string, string>> = { TIFF: "tiff", HEIC: "heic", HEIF: "heif", JPEG: "jpeg", PNG: "png", WEBP: "webp", GIF: "gif" };
+const MAGICK_LIMITS = ["-limit", "memory", "512MiB", "-limit", "map", "1GiB", "-limit", "width", "32KP", "-limit", "height", "32KP", "-limit", "time", "60"];
+
+export function magickCoder(kind: string): string {
+  const coder = MAGICK_CODERS[kind.toUpperCase()];
+  return coder ? `${coder}:` : "";
+}
+
 /** The words for an image no codec here reads, by platform. */
 function noDecoder(platform: NodeJS.Platform, kind: string): ConvertError {
   const heic = kind === "HEIC" || kind === "HEIF";
@@ -130,7 +142,7 @@ export function systemConverter(over: Partial<ConvertDeps> = {}): ImageConverter
       } else {
         const magick = deps.which("magick") ?? deps.which("convert");
         const heif = kind === "HEIC" || kind === "HEIF" ? deps.which("heif-convert") : null;
-        if (magick) r = await deps.run(magick, [`${path}[0]`, "-auto-orient", "-resize", `${max}x${max}>`, ...(jpeg ? ["-quality", String(JPEG_QUALITY), `jpg:${out}`] : [`png:${out}`])]);
+        if (magick) r = await deps.run(magick, [...MAGICK_LIMITS, `${magickCoder(kind)}${path}[0]`, "-auto-orient", "-resize", `${max}x${max}>`, ...(jpeg ? ["-quality", String(JPEG_QUALITY), `jpg:${out}`] : [`png:${out}`])]);
         else if (heif) r = await deps.run(heif, [...(jpeg ? ["-q", String(JPEG_QUALITY)] : []), path, out]);
         else throw noDecoder(deps.platform, kind);
       }
