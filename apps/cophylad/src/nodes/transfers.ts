@@ -13,18 +13,20 @@
 // and path of each transfer it forwarded there (`HandsPulls`), never any other path, here or
 // on another node. Pulling from a hands node needs no such word: its primary drives it.
 
-import { nodeLinkRequests, RpcError } from "@cophyla/protocol";
+import { FILE_PIECE_BYTES, nodeLinkRequests, RpcError } from "@cophyla/protocol";
 import type { NodeRecord, Transfer } from "@cophyla/protocol";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
 import type { PipeHub } from "../remote/pipes.ts";
+import type { PhotoMaker } from "../groups/photo.ts";
 import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
+import { readPiece } from "../transfers/source.ts";
 import type { TreeCache, TreePage } from "../transfers/tree.ts";
 import type { LinkFrom } from "./streams.ts";
 import { PIPE_OPEN_TIMEOUT_MS } from "./streams.ts";
 
-export const FILE_LINK_REQUESTS: ReadonlySet<string> = new Set(["files.tree", "files.pipe.open"]);
+export const FILE_LINK_REQUESTS: ReadonlySet<string> = new Set(["files.tree", "files.pipe.open", "files.read", "files.photo"]);
 
 /** How long a path a link was let read stays let: about as long as a big folder takes. */
 const ALLOWED_MS = 60 * 60_000;
@@ -157,6 +159,8 @@ export interface TransferLinkDeps {
   handsPull?: (hands: string, node: string, path: string) => boolean;
   /** The node on the link is this node's primary, let work here unasked at the join. */
   trusted?: (node: string) => boolean;
+  /** Makes a photo of an image here, for a group chat's post. */
+  photos?: PhotoMaker;
   log: Logger;
   now?: () => number;
 }
@@ -223,12 +227,50 @@ export class TransferLinks {
           throw new RpcError("unavailable", e instanceof Error ? e.message : String(e));
         }
       }
+      case "files.read": {
+        const parsed = nodeLinkRequests["files.read"].params.safeParse(params ?? {});
+        if (!parsed.success) throw new RpcError("invalid", "bad files.read", parsed.error.issues);
+        const p = parsed.data;
+        this.handsMay(from, p.node, p.path);
+        if (p.node !== self) {
+          this.carriable(p.node);
+          return this.deps.carry(p.node, method, p, { timeoutMs: TREE_TIMEOUT_MS });
+        }
+        this.sending();
+        if (!this.isAllowed(from, p.path)) {
+          await this.gated(from, "files.read", p.path, { path: p.path, ...(p.rel !== undefined ? { rel: p.rel } : {}), at: p.at }, () => undefined);
+          this.allow(from, p.path);
+        }
+        const require = this.deps.require?.();
+        const piece = await readPiece({ path: p.path, ...(p.rel !== undefined ? { rel: p.rel } : {}) }, p.at, FILE_PIECE_BYTES, require ? { require } : {});
+        return { data: Buffer.from(piece.data).toString("base64"), size: piece.size, mtimeMs: piece.mtimeMs };
+      }
+      case "files.photo": {
+        const parsed = nodeLinkRequests["files.photo"].params.safeParse(params ?? {});
+        if (!parsed.success) throw new RpcError("invalid", "bad files.photo", parsed.error.issues);
+        const p = parsed.data;
+        this.handsMay(from, p.node, p.path);
+        if (p.node !== self) {
+          this.carriable(p.node);
+          return this.deps.carry(p.node, method, p, { timeoutMs: TREE_TIMEOUT_MS });
+        }
+        this.sending();
+        const photos = this.deps.photos;
+        if (!photos) throw new RpcError("unsupported", "this machine makes no photos");
+        if (!this.isAllowed(from, p.path)) {
+          await this.gated(from, "files.photo", p.path, { path: p.path }, () => undefined);
+          this.allow(from, p.path);
+        }
+        const require = this.deps.require?.();
+        const r = await photos.piece(p.path, p.at ?? 0, require);
+        return { type: r.type, data: Buffer.from(r.data).toString("base64"), at: r.at, total: r.total, width: r.width, height: r.height, name: r.name };
+      }
       default:
         throw new RpcError("unsupported", `${method} is not a transfer request`);
     }
   }
 
-  private gated<T>(from: LinkFrom, action: "files.tree" | "files.pipe.open", target: string, args: unknown, handler: () => Promise<T> | T, redactResult?: (r: unknown) => unknown): Promise<T> {
+  private gated<T>(from: LinkFrom, action: "files.tree" | "files.pipe.open" | "files.read" | "files.photo", target: string, args: unknown, handler: () => Promise<T> | T, redactResult?: (r: unknown) => unknown): Promise<T> {
     return this.deps.gate.run(
       {
         principal: { kind: "node", id: from.id },

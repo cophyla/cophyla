@@ -22,6 +22,52 @@ export const IDLE_MS = 2 * 60_000;
 /** How long the far end may take to answer one request. */
 export const REQUEST_MS = 20_000;
 
+/**
+ * Requests a minute one end sends on a tunnel: each is two frames (the request and its answer,
+ * a piece of a file perhaps), and the server closes a connection's tunnel past 240 frames a minute.
+ */
+export const TUNNEL_REQUESTS_MINUTE = 100;
+/** How long the far end may take to answer a piece of a file. */
+export const FILE_REQUEST_MS = 60_000;
+
+/**
+ * Keeps a tunnel's requests to `max` in any `windowMs`: a request past it waits for the oldest
+ * to leave the window, so a file pulled through the relay, or a busy group catching up, never
+ * trips the server's cap.
+ */
+export class Pacer {
+  private times = new Map<string, number[]>();
+  private max: number;
+  private windowMs: number;
+  private now: () => number;
+  private sleep: (ms: number) => Promise<void>;
+
+  constructor(max = TUNNEL_REQUESTS_MINUTE, windowMs = 60_000, now: () => number = Date.now, sleep: (ms: number) => Promise<void> = (ms) => Bun.sleep(ms)) {
+    this.max = max;
+    this.windowMs = windowMs;
+    this.now = now;
+    this.sleep = sleep;
+  }
+
+  async take(key: string): Promise<void> {
+    for (;;) {
+      const at = this.now();
+      const list = (this.times.get(key) ?? []).filter((t) => at - t < this.windowMs);
+      if (list.length < this.max) {
+        list.push(at);
+        this.times.set(key, list);
+        return;
+      }
+      this.times.set(key, list);
+      await this.sleep(Math.max(5, list[0]! + this.windowMs - at + 5));
+    }
+  }
+
+  forget(key: string): void {
+    this.times.delete(key);
+  }
+}
+
 /** The relay, as a connection's end dials it. */
 export const dialRelay: Dial = async (relay, psk) => {
   const texts: string[] = [];

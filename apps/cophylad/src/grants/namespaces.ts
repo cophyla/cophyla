@@ -51,6 +51,13 @@ export const TEAMMATES_KV_NS = "teammates";
 /** The leaders (see `leaders/`): who speaks to which of the user's sessions as the user. Replicated to the backups; never the brain's, never in the cloud backup. */
 export const LEADERS_KV_NS = "leaders";
 
+/**
+ * Files between two people (see `peerfiles/`): what this side's agents offered another person's,
+ * with where each is, and what this primary lets its machines read of other people's.
+ */
+export const PEER_FILES_NS = "peer-files";
+export const PEER_PULLS_NS = "peer-pulls";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -68,4 +75,6 @@ export const RESERVED_KV_NS: readonly string[] = [
   FOCUS_KV_NS,
   TEAMMATES_KV_NS,
   LEADERS_KV_NS,
+  PEER_FILES_NS,
+  PEER_PULLS_NS,
 ];

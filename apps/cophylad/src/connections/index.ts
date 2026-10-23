@@ -28,7 +28,7 @@
 
 import { createHash, randomBytes } from "node:crypto";
 import { CONNECTION_MAX_CHARS, connectionInviteText, connectionLinkRequests, identityAudience, InviteError, newId, parseConnectionInvite, RpcError } from "@cophyla/protocol";
-import type { Ask, AskOption, Connection, ConnectionEndInfo, ConnectionListing, ConnectionRelay, ConnectionSendStatus, Session, Terminal, TerminalRef } from "@cophyla/protocol";
+import type { Ask, AskOption, Connection, ConnectionEndInfo, ConnectionListing, ConnectionRelay, ConnectionSendStatus, PeerFileSend, Session, Terminal, TerminalRef } from "@cophyla/protocol";
 import { pskFromHex, pskFromSecret } from "@cophyla/relay";
 import type { Bus } from "../bus.ts";
 import type { ConnectionTunnel } from "../cloud/tunnels.ts";
@@ -37,6 +37,7 @@ import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { LinkSocket } from "../nodes/outbound.ts";
+import type { PeerFiles, PeerLink } from "../peerfiles/index.ts";
 import type { RpcPeer } from "../rpc/peer.ts";
 import type { Store } from "../store/index.ts";
 import { base, folderOf, slug } from "../agentmsg/directory.ts";
@@ -44,7 +45,7 @@ import { peerAlias } from "../agentmsg/envelope.ts";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import { Limits } from "../agentmsg/limits.ts";
 import type { LimitsConfig } from "../agentmsg/limits.ts";
-import { clientOver, dialRelay, farEnded, IDLE_MS, REQUEST_MS, serveOver } from "./link.ts";
+import { clientOver, dialRelay, farEnded, FILE_REQUEST_MS, IDLE_MS, Pacer, REQUEST_MS, serveOver } from "./link.ts";
 import type { Dial } from "./link.ts";
 import { clientConnection, ConnectionStore } from "./store.ts";
 import type { ConnectionRow, Queued } from "./store.ts";
@@ -119,6 +120,8 @@ export interface ConnectionsDeps {
   deliver: (s: Session, text: string, info: EnvelopeInfo) => Promise<{ status: "queued" | "held" }>;
   /** Whether a node can be reached now: this one always, another while its link is up. */
   linked: (node: string) => boolean;
+  /** Files on connections, on the primary. */
+  files?: () => PeerFiles | undefined;
   /** A node's terminals as known now; undefined while that is not known (the node not linked). */
   terminals: (node: string) => Terminal[] | undefined;
   /** A node's name, for the words. */
@@ -189,6 +192,8 @@ export class Connections {
   private escalating = new Map<string, string>();
   private flushing = new Set<string>();
   private again = new Set<string>();
+  /** Each connection's tunnel, kept under the server's cap on frames a minute. */
+  private pacer = new Pacer();
   private sweepTimer?: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private retryMs = 30_000;
@@ -592,8 +597,55 @@ export class Connections {
         this.drop(row, `${row.peer?.user ?? "the other side"} ended it (${why})`);
         return {};
       }
+      case "conn.file.send": {
+        const f = parsed.data as PeerFileSend;
+        // the agent at this end: a file waits for none, as a message would
+        const s = this.sessionOf(row);
+        if (!s || !this.deps.linked(s.node)) throw new RpcError("unavailable", "no agent runs at that end now: send it again once one does");
+        return this.files().incoming(this.link(row), f, s);
+      }
+      case "conn.file.tree":
+        return this.files().serveTree(this.link(row), parsed.data as { file: string; from?: number });
+      case "conn.file.read":
+        return this.files().serveRead(this.link(row), parsed.data as { file: string; rel?: string; at: number });
+      case "conn.file.done":
+        await this.files().doneThere(this.link(row), parsed.data as { file: string; ok: boolean; why?: string });
+        return {};
       default:
         throw new RpcError("unsupported", `unsupported: ${method}`);
+    }
+  }
+
+  /** The connection as the files module names the other end. */
+  private link(row: ConnectionRow): PeerLink {
+    return { kind: "connection", id: row.id, user: row.peer?.user ?? "someone" };
+  }
+
+  private files(): PeerFiles {
+    const f = this.deps.files?.();
+    if (!f) throw new RpcError("unavailable", "files on connections are off here");
+    return f;
+  }
+
+  /** The far end's agent a file from `caller` goes to, as a message's does: one of `caller`'s connections. */
+  fileTarget(caller: Session, to: string): { link: PeerLink; name: string; alias: string } {
+    this.routing();
+    const found = this.resolveFor(caller, to);
+    if (!found) throw new RpcError("not_found", `this session has no connection called "${to}": list_agents shows the ones it has`);
+    const { row, alias } = found;
+    if (!row.peer) throw new RpcError("unavailable", "the connection is not live");
+    return { link: this.link(row), name: row.peer.name, alias };
+  }
+
+  /** A file request to the other side, on the connection's tunnel, given longer than a message: a piece of a file is big. */
+  async fileRequest(id: string, method: string, params: unknown): Promise<unknown> {
+    const row = this.rows.get(id);
+    if (!row || row.state !== "active") throw new RpcError("not_found", `no connection ${id}`);
+    try {
+      return await this.request(row, method, params, FILE_REQUEST_MS);
+    } catch (e) {
+      if (farEnded(e)) this.drop(row, `${row.peer?.user ?? "the other side"} ended it`);
+      throw e;
     }
   }
 
@@ -930,6 +982,8 @@ export class Connections {
 
   /** One request on the connection's own tunnel, opened for it when none is. */
   private async request(row: ConnectionRow, method: string, params: unknown, timeoutMs = REQUEST_MS): Promise<unknown> {
+    // every request and its answer are two frames: kept under the server's cap on the tunnel
+    await this.pacer.take(row.id);
     const rpc = await this.rpcFor(row);
     const entry = this.out.get(row.id);
     if (entry) this.idle(row.id, entry);

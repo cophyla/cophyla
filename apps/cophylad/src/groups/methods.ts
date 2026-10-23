@@ -2,7 +2,9 @@
 // group's posts, makes a group, changes it, posts and gives a thumbs up as the user, marks what
 // the user read, ends a group, drops its copy, and puts agents in or takes them out
 // (`group.*`, `sessions:read` to read and `sessions:write` to change, refused to limited access
-// by the filter tables, since a group spans workspaces). And focus: which agents are in it,
+// by the filter tables, since a group spans workspaces). A post's photos and files: the bytes an
+// app uploads for one, a photo read a piece at a time, and a file saved to one of the user's
+// machines (`group.file.save`, the `terminal` scope's, as a transfer is). And focus: which agents are in it,
 // and ending one's. The groups are the primary's: a client of a secondary is the primary's
 // client, and its requests are answered there.
 
@@ -38,7 +40,32 @@ export function groupMethods(deps: { groups: () => Groups | undefined; focus: ()
     },
     "group.post": {
       target: (p) => p.group,
-      handler: (p) => ({ post: get().postAsUser(p.group, p.text, p.replyTo) }),
+      handler: async (p, ctx) => {
+        // a file or a photo from a path reads one of the user's machines, as a transfer does: the terminal scope's
+        const byPath = [...(p.photos ?? []), ...(p.files ?? [])].some((a) => "path" in a);
+        if (byPath && ctx.client.access && !ctx.client.access.scopes.includes("terminal")) throw new RpcError("denied", "attaching a file from a machine needs access to its files (the terminal scope)");
+        return { post: await get().postAsUser(p.group, p.text, p.replyTo, { ...(p.photos ? { photos: p.photos } : {}), ...(p.files ? { files: p.files } : {}) }) };
+      },
+    },
+    "group.upload": {
+      target: (p) => p.group,
+      redact: (p) => ({ ...p, data: `${p.data.length} base64 characters` }),
+      handler: (p) => get().upload({ group: p.group, ...(p.upload ? { upload: p.upload } : {}), name: p.name, size: p.size, at: p.at, data: p.data, ...(p.photo ? { photo: true } : {}) }),
+    },
+    "group.photo": {
+      target: (p) => p.group,
+      redactResult: (r) => ({ type: r.type, at: r.at, total: r.total, bytes: Math.floor((r.data.length * 3) / 4) }),
+      handler: async (p) => {
+        const r = await get().photo(p.group, p.photo, p.at ?? 0);
+        return { type: r.type, data: r.base64, at: r.at, total: r.total };
+      },
+    },
+    "group.file.save": {
+      target: (p) => p.group,
+      handler: async (p) => {
+        const r = await get().save(p.group, p.post, p.file, p.to, { ...(p.relayOk ? { relayOk: true } : {}), by: { kind: "user" } });
+        return { ...(r.transfer ? { transfer: r.transfer } : {}), ...(r.confirm ? { confirm: r.confirm } : {}) };
+      },
     },
     "group.react": {
       target: (p) => p.group,

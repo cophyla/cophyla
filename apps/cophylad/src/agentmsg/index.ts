@@ -24,12 +24,18 @@
 // asks as the user (`answer_ask`, gated as `agent.answer`). A session it leads that cannot take
 // the user's words (one cophylad cannot type into, a machine with an older Cophyla) gets the
 // message as another agent's, and the leader is told why.
+//
+// A tool's answer is text, and for `read_group` the photos of the posts it shows too, as MCP
+// image content the harness hands its model. `send_file` reaches another person's agent through
+// the files module (`peerfiles/`), and `get_file` copies a file posted in a group to the agent's
+// own machine.
 
 import { posix, win32 } from "node:path";
 import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, Session, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
+import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, PeerSource, Session, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { Connections } from "../connections/index.ts";
-import type { Groups } from "../groups/index.ts";
+import type { Groups, PhotoRef, ToolAnswer } from "../groups/index.ts";
+import type { PeerFiles, PeerLink } from "../peerfiles/index.ts";
 import type { Asks } from "../gate/asks.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Leaders } from "../leaders/index.ts";
@@ -105,6 +111,8 @@ export interface AgentMessagesDeps {
   groups?: () => Groups | undefined;
   /** The teammates' agents, on the node that routes. */
   teammates?: () => AgentTeammates | undefined;
+  /** Files to other people's agents, on the node that routes. */
+  peerFiles?: () => PeerFiles | undefined;
   /** Sending files for an agent (`send_file`), on the node that routes. */
   files?: () => AgentFiles | undefined;
   /** For what only the user answers, never remembered: a big transfer through the relay. And this node's asks, which a leader answers as the user. */
@@ -123,7 +131,7 @@ export interface AgentFiles {
   /** What `path` on `node` holds; refuses what is not there or may not be sent. */
   peek(node: string, path: string): Promise<{ kind: "file" | "folder"; name: string; total: number; files: number }>;
   /** Starts a transfer on the machine it goes to, here or forwarded there. */
-  start(params: { from: { node: string; path: string }; to: { node: string; dir?: string }; reason?: string; relayOk?: boolean; by: TransferBy; notify?: string }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm }>;
+  start(params: { from: { node: string; path: string }; to: { node: string; dir?: string }; reason?: string; relayOk?: boolean; by: TransferBy; notify?: string; peer?: PeerSource }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm }>;
   /** The transfer once it has ended. */
   ended(id: string): Promise<Transfer>;
 }
@@ -136,6 +144,15 @@ export interface AgentTeammates {
   names(to: string): boolean;
   /** A message from `caller` to a teammate's agent. */
   send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }): Promise<{ status: "sent" | "held" | "queued" | "focus"; id: string; teammate: string; alias: string; focus?: Focus }>;
+  /** The teammate's agent a file from `caller` goes to. */
+  fileTarget(caller: Session, to: string): { link: PeerLink; name: string; alias: string };
+}
+
+/** A tool's answer as the model reads it: its words, whether it is a refusal, and images shown with it. */
+interface CallAnswer {
+  text: string;
+  isError?: boolean;
+  images?: { mime: string; data: string }[];
 }
 
 /** Where a `send_file` goes: a machine, and the agent session there it is for, when it is. */
@@ -243,7 +260,8 @@ export class AgentMessages {
         const args = (m.params?.["arguments"] ?? {}) as Json;
         const meta = m.params?.["_meta"] as Json | undefined;
         const r = await this.call(name, args, meta, evidence);
-        return ok({ content: [{ type: "text", text: r.text }], ...(r.isError ? { isError: true } : {}) });
+        const images = (r.images ?? []).map((i) => ({ type: "image", data: i.data, mimeType: i.mime }));
+        return ok({ content: [{ type: "text", text: r.text }, ...images], ...(r.isError ? { isError: true } : {}) });
       }
       default:
         if (!answers || m.method.startsWith("notifications/")) return undefined;
@@ -252,7 +270,7 @@ export class AgentMessages {
   }
 
   /** A tool call, as the model reads its answer. */
-  private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<{ text: string; isError?: boolean }> {
+  private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<CallAnswer> {
     if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && name !== "answer_ask" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
     if (!this.deps.config().enabled) return { text: "Agent messaging is off on this machine ([agent_messages] enabled = false); nothing was sent.", isError: true };
     const who = identify(evidence, meta, this.deps.sessions);
@@ -286,7 +304,7 @@ export class AgentMessages {
     }
   }
 
-  private async callAs(caller: Session, name: string, args: Json, meta: Json | undefined): Promise<{ text: string; isError?: boolean }> {
+  private async callAs(caller: Session, name: string, args: Json, meta: Json | undefined): Promise<CallAnswer> {
     if (CONNECTION_TOOLS.has(name)) {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.connectionTool(caller, mode, name as "create_invite" | "accept_invite" | "end_connection", args);
@@ -342,21 +360,106 @@ export class AgentMessages {
     return (this.deps.now ?? Date.now)();
   }
 
-  /** One of the group tools or `focus`, on the primary's groups, here or through the link. */
-  private async groupTool(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<{ text: string; isError?: boolean }> {
+  /** One of the group tools or `focus`, on the primary's groups, here or through the link; the photos a read shows, read where they are kept. */
+  private async groupTool(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<CallAnswer> {
     try {
-      if (this.deps.cluster.routes()) return { text: await this.groupToolHere(caller, tool, args) };
-      return nodeLinkRequests["group.tool"].result.parse(await this.upward("group.tool", { caller: caller.id, mode, tool, args }));
+      const routes = this.deps.cluster.routes();
+      const r: ToolAnswer & { isError?: boolean } = routes
+        ? await this.groupToolHere(caller, mode, tool, args)
+        : nodeLinkRequests["group.tool"].result.parse(await this.upward("group.tool", { caller: caller.id, mode, tool, args }, tool === "get_file" || tool === "post_group" ? FILE_UPWARD_MS : UPWARD_MS));
+      if (!r.photos?.length) return { text: r.text, ...(r.isError ? { isError: true } : {}) };
+      const images = await this.photosFor(caller, r.photos, routes);
+      return { text: r.text, ...(images.length > 0 ? { images } : {}), ...(r.isError ? { isError: true } : {}) };
     } catch (e) {
       return { text: groupRefusal(e), isError: true };
     }
   }
 
-  private async groupToolHere(caller: Session, tool: GroupToolName, args: Json): Promise<string> {
-    if (tool === "focus") return this.focusTool(caller, args);
+  private async groupToolHere(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<ToolAnswer> {
+    if (tool === "focus") return { text: await this.focusTool(caller, args) };
+    if (tool === "get_file") return { text: await this.getFile(caller, args) };
     const groups = this.deps.groups?.();
     if (!groups) throw new RpcError("unavailable", "group chats are off on this machine");
-    return groups.tool(caller, tool, args);
+    return groups.tool(caller, tool, args, mode);
+  }
+
+  /** The photos a read shows, as images: kept here on the primary, else read from it a piece at a time. One that cannot be read is left out. */
+  private async photosFor(caller: Session, refs: readonly PhotoRef[], here: boolean): Promise<{ mime: string; data: string }[]> {
+    const out: { mime: string; data: string }[] = [];
+    for (const ref of refs) {
+      try {
+        if (here) {
+          const groups = this.deps.groups?.();
+          if (!groups) break;
+          out.push({ mime: ref.type, data: Buffer.from(await groups.photoBytes(ref.group, ref.photo)).toString("base64") });
+          continue;
+        }
+        const parts: Buffer[] = [];
+        let at = 0;
+        let total = 1;
+        while (at < total && parts.length < 8) {
+          const piece = nodeLinkRequests["group.photo"].result.parse(await this.upward("group.photo", { caller: caller.id, group: ref.group, photo: ref.photo, ...(at > 0 ? { at } : {}) }));
+          const bytes = Buffer.from(piece.data, "base64");
+          if (piece.at !== at || bytes.length === 0) throw new RpcError("unavailable", "the photo came short");
+          parts.push(bytes);
+          at += bytes.length;
+          total = piece.total;
+        }
+        if (at < total) throw new RpcError("unavailable", "the photo came short");
+        out.push({ mime: ref.type, data: Buffer.concat(parts).toString("base64") });
+      } catch (e) {
+        this.log.info("a group's photo could not be shown to an agent", { session: caller.id, photo: ref.photo, error: message(e) });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * `get_file`, on the router: a file posted in a group the caller is in, copied to the caller's
+   * machine (its Downloads folder, or `dir`), from where it is now: one of this user's machines,
+   * or the other person's, through their Cophyla. Answered once it lands, or later.
+   */
+  private async getFile(caller: Session, args: Json): Promise<string> {
+    const groups = this.deps.groups?.();
+    const files = this.deps.files?.();
+    if (!groups || !files) throw new RpcError("unavailable", "copying files is off on this machine");
+    const group = typeof args["group"] === "string" ? args["group"].trim() : "";
+    const ref = typeof args["file"] === "string" ? args["file"].trim() : "";
+    const dirArg = typeof args["dir"] === "string" && args["dir"].trim() ? args["dir"].trim() : undefined;
+    if (!group) throw new RpcError("invalid", "get_file needs group: the group's name as read_group lists it");
+    if (!ref) throw new RpcError("invalid", "get_file needs file: its gfile_ id from read_group");
+    const found = groups.fileFor(caller, group, ref);
+    const node = caller.node;
+    const nodeName = this.nameOf(node);
+    if (node !== this.deps.self().id) {
+      const row = this.deps.cluster.nodes().find((n) => n.id === node);
+      if (row && !row.capabilities.files) throw new RpcError("unsupported", `${nodeName} runs an older Cophyla: update it to receive files`);
+      if (!this.deps.cluster.linked(node)) throw new RpcError("unavailable", `${nodeName} is offline`);
+    }
+    const there = this.pathsOf(node);
+    const dir = dirArg === undefined ? undefined : there.isAbsolute(dirArg) ? dirArg : there.join(caller.cwd, dirArg);
+    const f = found.file;
+    const label = `${f.kind === "folder" ? `the folder ${f.name}` : f.name} (${sizeText(f.bytes)})`;
+    const alias = this.aliasOf(caller);
+    let asking = false;
+    const work = async (): Promise<string> => {
+      await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "group.file.get", target: found.group, args: { group: found.groupName, file: f.id, ...(dir ? { dir } : {}) }, sessionKey: caller.id }, () => undefined);
+      const by: TransferBy = { kind: "agent", alias, session: caller.id };
+      const to = { node, ...(dir ? { dir } : {}) };
+      let started = await groups.save(found.group, found.post, f.id, to, { by });
+      if (started.confirm) {
+        asking = true;
+        await this.askUser(caller, `Copy ${label} through the relay?`, `${alias} copies it from #${found.groupName} to ${nodeName}. It is over 1 GB and comes through the Cophyla server's relay, which counts what it carries.`, "Copy it");
+        asking = false;
+        started = await groups.save(found.group, found.post, f.id, to, { by, relayOk: true });
+      }
+      if (!started.transfer) throw new RpcError("unavailable", "the copy did not start");
+      this.log.info("an agent copies a group's file", { id: started.transfer.id, session: caller.id, group: found.group, bytes: f.bytes });
+      return gotText(await files.ended(started.transfer.id), label, found.groupName);
+    };
+    return this.waitOrLater(caller, work, () =>
+      asking ? `Waiting for your user to allow copying ${label}. You will be told by a message from cophyla how it went.` : `Copying ${label} from #${found.groupName} to this machine. You will be told by a message from cophyla when it lands.`,
+    );
   }
 
   /** `focus`: taken for an hour or two, or ended. */
@@ -386,7 +489,7 @@ export class AgentMessages {
   }
 
   /** `send_file`, here or through the primary: its words for the model. */
-  private async fileTool(caller: Session, mode: AgentMode, args: Json): Promise<{ text: string; isError?: boolean }> {
+  private async fileTool(caller: Session, mode: AgentMode, args: Json): Promise<CallAnswer> {
     const path = typeof args["path"] === "string" ? args["path"].trim() : "";
     const to = typeof args["to"] === "string" ? args["to"].trim() : "";
     const dir = typeof args["dir"] === "string" && args["dir"].trim() ? args["dir"].trim() : undefined;
@@ -403,7 +506,7 @@ export class AgentMessages {
   }
 
   /** One of the connection tools, on the primary's connections, here or through the link. */
-  private async connectionTool(caller: Session, mode: AgentMode, tool: "create_invite" | "accept_invite" | "end_connection", args: Json): Promise<{ text: string; isError?: boolean }> {
+  private async connectionTool(caller: Session, mode: AgentMode, tool: "create_invite" | "accept_invite" | "end_connection", args: Json): Promise<CallAnswer> {
     try {
       if (this.deps.cluster.routes()) {
         const c = this.deps.connections?.();
@@ -440,7 +543,7 @@ export class AgentMessages {
   }
 
   /** One request to the primary's router; what it refuses comes back as it said it. */
-  private async upward(method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
+  private async upward(method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "group.photo" | "file.send", params: unknown, timeoutMs = UPWARD_MS): Promise<unknown> {
     const noLink = () => new RpcError("unavailable", `this machine has no link to ${this.deps.cluster.primaryName() ?? "the primary"}, which carries agents' messages, so nothing was sent`);
     if (!this.deps.cluster.primaryLinked()) throw noLink();
     try {
@@ -814,6 +917,9 @@ export class AgentMessages {
     if (fromRow && !fromRow.capabilities.files) throw new RpcError("unsupported", `${fromName} runs an older Cophyla, which sends no files: update it`);
     const here = this.pathsOf(from);
     const path = here.isAbsolute(p.path) ? p.path : here.join(caller.cwd, p.path);
+    // another person's agent: offered to their Cophyla, which pulls it
+    const peer = this.peerTarget(caller, p.to);
+    if (peer) return this.sendFileToPeer(caller, mode, { ...p, path }, peer);
     const target = this.receiver(caller, p.to);
     const there = this.pathsOf(target.node);
     let dir: string | undefined;
@@ -865,6 +971,56 @@ export class AgentMessages {
         ? `Waiting for your user to allow sending ${label} to ${where}. You will be told by a message from cophyla how it went.`
         : `Sending ${label} to ${where}. You will be told by a message from cophyla when it lands.`,
     );
+  }
+
+  /** The other person's agent `to` names, when it names one: on a connection of the caller's terminal, or a teammate's. */
+  private peerTarget(caller: Session, to: string): { link: PeerLink; name: string; alias: string } | undefined {
+    // as a message's: a teammate's unless the caller's own connection has the name, else a connection's
+    const connections = this.deps.connections?.();
+    const teammates = this.deps.teammates?.();
+    if (teammates && !connections?.resolveFor(caller, to) && teammates.names(to)) return teammates.fileTarget(caller, to);
+    if (connections && (connections.resolveFor(caller, to) || (Connections.names(to) && to.includes("/")))) return connections.fileTarget(caller, to);
+    return undefined;
+  }
+
+  /**
+   * `send_file` to another person's agent: asked about as one to the user's own machines is (a
+   * caller that prompts asks, one that runs without prompts does not), then offered to their
+   * Cophyla, which pulls it into that agent's machine. Answered once their side took it; how it
+   * ended comes later, from cophyla.
+   */
+  private async sendFileToPeer(caller: Session, mode: AgentMode, p: { path: string; to: string; reason?: string; dir?: string }, peer: { link: PeerLink; name: string; alias: string }): Promise<string> {
+    const files = this.deps.files?.();
+    const peerFiles = this.deps.peerFiles?.();
+    if (!files || !peerFiles) throw new RpcError("unavailable", "sending files to other people is off on this machine");
+    if (p.dir !== undefined) throw new RpcError("invalid", "dir is for the user's own machines: another person's file lands in their Downloads folder");
+    const what = await files.peek(caller.node, p.path);
+    const label = `${what.kind === "folder" ? `the folder ${what.name}` : what.name} (${sizeText(what.total)}${what.kind === "folder" ? `, ${what.files} ${what.files === 1 ? "file" : "files"}` : ""})`;
+    const alias = this.aliasOf(caller);
+    const fromName = this.nameOf(caller.node);
+    let asking = false;
+    const work = async (): Promise<string> => {
+      await this.deps.gate.run(
+        {
+          principal: { kind: "harness", session: caller.id },
+          action: "transfer.send",
+          target: peer.link.id,
+          args: { path: p.path, to: peer.alias, user: peer.link.user, ...(p.reason ? { reason: p.reason } : {}), bytes: what.total },
+          sessionKey: caller.id,
+          ask: { title: `Let ${alias} send ${label} to ${peer.alias}, ${peer.link.user}'s agent?`, detail: `${p.reason ? `${p.reason}\n` : ""}${p.path} on ${fromName}. It leaves your machines for ${peer.link.user}'s, through the Cophyla server's relay.` },
+          ...(mode === "bypass" ? { unprompted: true } : {}),
+        },
+        () => undefined,
+        { onPending: () => (asking = true) },
+      );
+      asking = false;
+      const status = await peerFiles.offer(caller, alias, { src: { node: caller.node, path: p.path }, what, ...(p.reason ? { reason: p.reason } : {}), peer: peer.link, to: peer.name });
+      this.log.info("an agent's file offered to another person", { from: caller.id, to: peer.alias, bytes: what.total, status });
+      return status === "asked"
+        ? `Sent ${label} to ${peer.alias}: it is big, so ${peer.link.user} is asked first whether to take it. You will be told by a message from cophyla whether it landed.`
+        : `Sending ${label} to ${peer.alias}: ${peer.link.user}'s Cophyla is copying it into that agent's Downloads folder now. You will be told by a message from cophyla when it lands.`;
+    };
+    return this.waitOrLater(caller, work, () => (asking ? `Waiting for your user to allow sending ${label} to ${peer.alias}. You will be told by a message from cophyla how it went.` : `Sending ${label} to ${peer.alias}. You will be told by a message from cophyla how it went.`));
   }
 
   /** A session's alias as the directory gives it. */
@@ -919,7 +1075,7 @@ export class AgentMessages {
    * the primary does not hold as that node's, and a send as far as the node's grant may
    * message; gated as the session, never as the node.
    */
-  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "file.send", params: unknown): Promise<unknown> {
+  async upwardRequest(peer: { id: string; grant?: string }, method: "agent.list" | "agent.send" | "agent.answer" | "connection.tool" | "group.tool" | "group.note" | "group.photo" | "file.send", params: unknown): Promise<unknown> {
     if (!this.deps.config().enabled) throw new RpcError("unavailable", "agent messaging is off on the primary");
     if (method === "agent.answer") {
       const parsed = nodeLinkRequests["agent.answer"].params.safeParse(params ?? {});
@@ -955,10 +1111,21 @@ export class AgentMessages {
       // a post tells other agents, as a message does: the machine's access must let its sessions start one
       if (p.tool === "post_group" && !mayMessage(grant.access, "initiate")) return { text: "Not posted: this machine's access lets its sessions start no conversations with other agents.", isError: true };
       try {
-        return { text: await this.groupToolHere(caller, p.tool, p.args) };
+        const r = await this.groupToolHere(caller, p.mode, p.tool, p.args);
+        return { text: r.text, ...(r.photos?.length ? { photos: r.photos } : {}) };
       } catch (e) {
         return { text: groupRefusal(e), isError: true };
       }
+    }
+    if (method === "group.photo") {
+      const parsed = nodeLinkRequests["group.photo"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad group.photo", parsed.error.issues);
+      const p = parsed.data;
+      const caller = this.callerOf(peer, p.caller);
+      if (peer.grant === undefined || !this.deps.cluster.grant(peer.grant)) throw new RpcError("denied", "the node's grant is not known here");
+      const groups = this.deps.groups?.();
+      if (!groups) throw new RpcError("unavailable", "group chats are off on the primary");
+      return groups.photoForAgent(caller.id, p.group, p.photo, p.at ?? 0);
     }
     if (method === "group.note") {
       const parsed = nodeLinkRequests["group.note"].params.safeParse(params ?? {});
@@ -1054,6 +1221,13 @@ function groupRefusal(e: unknown): string {
   const text = message(e);
   const why = text.endsWith(".") ? text.slice(0, -1) : text;
   return /^not posted|nothing was|not done/i.test(why) ? `${why.charAt(0).toUpperCase()}${why.slice(1)}.` : `Not done: ${why}.`;
+}
+
+/** How a `get_file` ended, as the model reads it. */
+export function gotText(t: Transfer, label: string, group: string): string {
+  if (t.state === "done") return `Copied ${label} from #${group}: it is at ${t.to.path ?? t.to.dir}.`;
+  if (t.state === "failed") return `Not copied: ${label} did not come from #${group}: ${t.error ?? "it failed"}. What came of it is kept until the user retries or dismisses it in Cophyla.`;
+  return `Not copied: the user stopped copying ${label}, and nothing of it was kept.`;
 }
 
 /** How a `send_file` ended, as the model reads it. */

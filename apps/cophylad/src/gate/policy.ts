@@ -99,9 +99,13 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:group.ack": "allow",
   "harness:agent.focus": "allow",
   "harness:teammate.send": "allow",
-  // An agent sending a file or a folder to another of the user's machines (`send_file`): asked
-  // about, unless the agent runs without permission prompts, which its harness would not ask.
+  // An agent sending a file or a folder to another of the user's machines, or to another person's
+  // agent (`send_file`), and an agent's post carrying photos or files into a group with other
+  // people in it: asked about, unless the agent runs without permission prompts, which its
+  // harness would not ask. Copying a file posted in its group to its own machine is the agent's.
   "harness:transfer.send": "ask",
+  "harness:group.share": "ask",
+  "harness:group.file.get": "allow",
 };
 
 /**

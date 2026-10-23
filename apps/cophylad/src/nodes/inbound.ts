@@ -31,7 +31,7 @@
 // forgets the cluster on the primary's word and no one else's.
 
 import { capabilityEvents, failure, newId, nodeLinkFrames, nodeLinkRequests, nodeLinkUpward, NODE_LINK_REFUSED, NODE_LINK_REVOKED, PROTOCOL_VERSION, protocolError, RpcError } from "@cophyla/protocol";
-import type { Ask, CapabilityEventParams, IceServer, MetricsSample, NodeRecord, RpcId, Session, SpendTotals, Terminal, Transfer } from "@cophyla/protocol";
+import type { Ask, CapabilityEventParams, FilePiece, FileTreePage, IceServer, MetricsSample, NodeRecord, PeerSource, RpcId, Session, SpendTotals, Terminal, Transfer } from "@cophyla/protocol";
 import { parseSealedHello, sealedRefusal, sealedRespond, SealedSocket } from "@cophyla/relay";
 import type { Psk, SealedKind } from "@cophyla/relay";
 import type { z } from "zod";
@@ -134,7 +134,15 @@ export interface InboundDeps {
   agents?: () => Pick<AgentMessages, "upwardRequest"> | undefined;
   /** Transfers: what a path holds and a file's pipe, served here or carried on. */
   transfers?: TransferLinks;
+  /** Files of other people's a secondary's transfer reads through this primary. */
+  peerFiles?: () => PeerFileServe | undefined;
   now?: () => number;
+}
+
+/** What a secondary reads of another person's file through the primary, for a transfer the primary started there. */
+export interface PeerFileServe {
+  tree(node: string, src: PeerSource, from?: number): Promise<FileTreePage>;
+  read(node: string, src: PeerSource, rel: string | undefined, at: number): Promise<FilePiece>;
 }
 
 /** Samples kept per linked node for a watcher that joins between two of them. */
@@ -703,12 +711,26 @@ export class Inbound {
         if (!parsed.success) throw new RpcError("invalid", "bad direct.offer", parsed.error.issues);
         return linkDirect.answer(parsed.data);
       }
+      case "peer.file.tree":
+      case "peer.file.read": {
+        const serve = this.deps.peerFiles?.();
+        if (!serve) throw new RpcError("unavailable", "files from other people are off on the primary");
+        if (method === "peer.file.tree") {
+          const parsed = nodeLinkRequests["peer.file.tree"].params.safeParse(params ?? {});
+          if (!parsed.success) throw new RpcError("invalid", "bad peer.file.tree", parsed.error.issues);
+          return serve.tree(peer.id, parsed.data.peer, parsed.data.from);
+        }
+        const parsed = nodeLinkRequests["peer.file.read"].params.safeParse(params ?? {});
+        if (!parsed.success) throw new RpcError("invalid", "bad peer.file.read", parsed.error.issues);
+        return serve.read(peer.id, parsed.data.peer, parsed.data.rel, parsed.data.at);
+      }
       case "agent.list":
       case "agent.send":
       case "agent.answer":
       case "connection.tool":
       case "group.tool":
       case "group.note":
+      case "group.photo":
       case "file.send": {
         // Checked and gated as the node's session, never as the node; answered at once, held or not.
         const agents = this.deps.agents?.();

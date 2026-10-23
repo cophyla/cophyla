@@ -29,8 +29,17 @@ export function convertKind(path: string): string | undefined {
 /** Why an image could not be made a PNG: its message is the viewer's words. */
 export class ConvertError extends Error {}
 
+/** How a conversion comes out: its longest side at most, and PNG (the viewer's) or JPEG (a photo's). */
+export interface ConvertOptions {
+  max?: number;
+  format?: "png" | "jpeg";
+}
+
+/** The JPEG quality a photo is made at, out of 100. */
+export const JPEG_QUALITY = 85;
+
 /** Makes the image at `path`, a `kind` of `convertKind`'s, a PNG; throws ConvertError saying why it could not. */
-export type ImageConverter = (path: string, kind: string) => Promise<Uint8Array>;
+export type ImageConverter = (path: string, kind: string, opts?: ConvertOptions) => Promise<Uint8Array>;
 
 export interface ConvertDeps {
   platform: NodeJS.Platform;
@@ -62,8 +71,8 @@ const defaults: ConvertDeps = { platform: process.platform, which: (c) => Bun.wh
 
 /**
  * WIC through WPF: the first frame decoded, scaled through WIC's own scaler when it is larger
- * than the most, and encoded as PNG. The paths come in the environment, so nothing in them is
- * ever read as PowerShell.
+ * than the most, and encoded as PNG, or as JPEG with its alpha dropped. The paths come in the
+ * environment, so nothing in them is ever read as PowerShell.
  */
 const WIC_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -76,7 +85,11 @@ const WIC_SCRIPT = [
   "  $scale = [Math]::Min(1.0, $max / [Math]::Max($frame.PixelWidth, $frame.PixelHeight))",
   "  $image = $frame",
   "  if ($scale -lt 1.0) { $image = New-Object Windows.Media.Imaging.TransformedBitmap($frame, (New-Object Windows.Media.ScaleTransform($scale, $scale))) }",
-  "  $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder",
+  "  if ($env:COPHYLA_CONVERT_FORMAT -eq 'jpeg') {",
+  "    $image = New-Object Windows.Media.Imaging.FormatConvertedBitmap($image, [Windows.Media.PixelFormats]::Bgr24, $null, 0)",
+  "    $encoder = New-Object Windows.Media.Imaging.JpegBitmapEncoder",
+  "    $encoder.QualityLevel = [int]$env:COPHYLA_CONVERT_QUALITY",
+  "  } else { $encoder = New-Object Windows.Media.Imaging.PngBitmapEncoder }",
   "  $encoder.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($image))",
   "  $out = [IO.File]::Create($env:COPHYLA_CONVERT_OUT)",
   "  try { $encoder.Save($out) } finally { $out.Close() }",
@@ -94,23 +107,31 @@ function noDecoder(platform: NodeJS.Platform, kind: string): ConvertError {
 /** The computer's own codecs, as `platform` has them. */
 export function systemConverter(over: Partial<ConvertDeps> = {}): ImageConverter {
   const deps: ConvertDeps = { ...defaults, ...over };
-  return async (path, kind) => {
+  return async (path, kind, opts = {}) => {
+    const max = opts.max ?? CONVERT_MAX;
+    const jpeg = opts.format === "jpeg";
     const dir = await mkdtemp(join(tmpdir(), "cophyla-convert-"));
-    const out = join(dir, "image.png");
+    const out = join(dir, jpeg ? "image.jpg" : "image.png");
     try {
       let r: { code: number | null; err: string };
       if (deps.platform === "win32") {
         const script = Buffer.from(WIC_SCRIPT, "utf16le").toString("base64");
-        r = await deps.run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", script], { COPHYLA_CONVERT_IN: path, COPHYLA_CONVERT_OUT: out, COPHYLA_CONVERT_MAX: String(CONVERT_MAX) });
+        r = await deps.run("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", script], {
+          COPHYLA_CONVERT_IN: path,
+          COPHYLA_CONVERT_OUT: out,
+          COPHYLA_CONVERT_MAX: String(max),
+          COPHYLA_CONVERT_FORMAT: jpeg ? "jpeg" : "png",
+          COPHYLA_CONVERT_QUALITY: String(JPEG_QUALITY),
+        });
         // WINCODEC_ERR_COMPONENTNOTFOUND: no codec for the format.
         if (r.code !== 0 && /88982F50|imaging component suitable/i.test(r.err)) throw noDecoder(deps.platform, kind);
       } else if (deps.platform === "darwin") {
-        r = await deps.run("sips", ["-s", "format", "png", "-Z", String(CONVERT_MAX), path, "--out", out]);
+        r = await deps.run("sips", ["-s", "format", jpeg ? "jpeg" : "png", ...(jpeg ? ["-s", "formatOptions", String(JPEG_QUALITY)] : []), "-Z", String(max), path, "--out", out]);
       } else {
         const magick = deps.which("magick") ?? deps.which("convert");
         const heif = kind === "HEIC" || kind === "HEIF" ? deps.which("heif-convert") : null;
-        if (magick) r = await deps.run(magick, [`${path}[0]`, "-auto-orient", "-resize", `${CONVERT_MAX}x${CONVERT_MAX}>`, `png:${out}`]);
-        else if (heif) r = await deps.run(heif, [path, out]);
+        if (magick) r = await deps.run(magick, [`${path}[0]`, "-auto-orient", "-resize", `${max}x${max}>`, ...(jpeg ? ["-quality", String(JPEG_QUALITY), `jpg:${out}`] : [`png:${out}`])]);
+        else if (heif) r = await deps.run(heif, [...(jpeg ? ["-q", String(JPEG_QUALITY)] : []), path, out]);
         else throw noDecoder(deps.platform, kind);
       }
       if (r.code !== 0) throw new ConvertError(`This ${kind} image could not be read here${r.err.trim() ? `: ${firstLine(r.err)}` : "."}`);

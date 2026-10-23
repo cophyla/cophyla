@@ -141,7 +141,7 @@ describe("agent messages across nodes", () => {
     const handle = g.members.find((m) => m.kind === "agent")!;
     await waitFor(() => agentTurns(beta!, b).some((e) => String((e.payload as { text?: string }).text ?? "").includes("put you in the group chat #release")), 10_000);
     await waitFor(() => beta!.sessions.get(b.id)?.status === "idle", 10_000);
-    primary.d.groups.postAsUser(g.id, `@${handle.kind === "agent" ? handle.handle : ""} is the schema merged?`);
+    await primary.d.groups.postAsUser(g.id, `@${handle.kind === "agent" ? handle.handle : ""} is the schema merged?`);
     const notice = await waitFor(() => agentTurns(beta!, b).find((e) => String((e.payload as { text?: string }).text ?? "").includes("tagged you in #release")), 10_000);
     expect((notice.payload as { text: string }).text).not.toContain("schema");
     // forwarded quiet; a session started over ACP answers no hooks here, so it went as a message
@@ -221,7 +221,7 @@ describe("agent messages across nodes", () => {
     expect((await post("wrong", { jsonrpc: "2.0", id: 1, method: "ping" })).status).toBe(401);
     const list = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(list.status).toBe(200);
-    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "focus", "answer_ask"]);
+    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "get_file", "focus", "answer_ask"]);
     expect((await post(primary.d.hookToken, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(204);
     const call = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_agents", arguments: {} } });
     expect(((await call.json()) as { result: { isError: boolean; content: { text: string }[] } }).result).toMatchObject({ isError: true, content: [{ text: "Cophyla can't tell which session you are, so nothing was sent." }] });

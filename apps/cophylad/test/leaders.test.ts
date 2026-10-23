@@ -444,7 +444,7 @@ describe("a leader's message", () => {
   test("to a teammate's agent is never the user's words", async () => {
     const lead = withPid(sess("claude", "C:/code/api"));
     const got: string[] = [];
-    const teammates: AgentTeammates = { listing: async () => [], names: (to) => to.startsWith("bob/"), send: async (_c, _m, p) => (got.push(p.to), { status: "sent", id: "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", alias: p.to }) };
+    const teammates: AgentTeammates = { listing: async () => [], names: (to) => to.startsWith("bob/"), send: async (_c, _m, p) => (got.push(p.to), { status: "sent", id: "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5TM1", alias: p.to }), fileTarget: () => { throw new Error("no files here"); } };
     const r = routerRig({ local: [lead], teammates });
     r.leaders.set(lead.id, "all");
     const a = await r.call(lead, "send_message", { to: "bob/web", text: "hello" });

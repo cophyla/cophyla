@@ -23,9 +23,19 @@
 // numbered on that side and to the other sides over the teammates' link, and a side that was
 // away asks each other side for its entries after the last it took. A post is numbered on each
 // side as it arrives, so one that came late is unread rather than skipped.
+//
+// A post may carry photos and files. A photo's bytes are kept beside the posts on every side
+// (`media.ts`): the side that wrote it keeps them as posted, and each other side fetches them
+// from it (`team.group.photo`) as the post comes, again later when that failed. An agent reading
+// the group is shown the photos as images. A file stays where it was posted from, on that side's
+// machine (or, uploaded by an app, on that side's primary); a member saves a copy, pulled from
+// there then, through the teammate's link when it is another side's (`peerfiles/`). A post that
+// carries photos or files into a group with other people in it is `group.share` for an agent,
+// asked about as a file sent to another person is.
 
-import { newId, RpcError } from "@cophyla/protocol";
-import type { Focus, Group, GroupCandidate, GroupEntry, GroupEntryMember, GroupEntryPost, GroupMember, GroupMemberRef, GroupNotify, GroupPost, Session, TeamAgent } from "@cophyla/protocol";
+import { readFile } from "node:fs/promises";
+import { FILE_PIECE_BYTES, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, newId, RpcError, TRANSFER_REASON_MAX } from "@cophyla/protocol";
+import type { AgentMode, Focus, Group, GroupAttach, GroupCandidate, GroupEntry, GroupEntryMember, GroupEntryPost, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPhotoType, GroupPost, PeerSource, Session, TeamAgent, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { GROUP_POST_MAX_CHARS } from "@cophyla/protocol";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import { clockTime, minutesLeft, plainIdle } from "../agentmsg/focus.ts";
@@ -34,8 +44,11 @@ import type { Bus } from "../bus.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
+import type { GroupMedia } from "./media.ts";
+import { checkPhoto, sniffImage } from "./photo.ts";
+import type { PreparedPhoto } from "./photo.ts";
 import { GroupStore } from "./store.ts";
-import type { GroupRow, MemberRow, PostRow } from "./store.ts";
+import type { FileRow, GroupRow, MemberRow, PostRow } from "./store.ts";
 import { keepMarkers, preview, reaches, readTags, writeTags } from "./text.ts";
 import type { HandleTable } from "./text.ts";
 
@@ -71,8 +84,42 @@ const CLOCK_SKEW_MS = 60_000;
 const MENTIONS_MAX = 100;
 /** One push to the phones per group in this long. */
 const PUSH_GAP_MS = 20_000;
+/** The most photos `read_group` shows an agent at once, and their bytes together. */
+const READ_PHOTOS = 4;
+const READ_PHOTO_BYTES = 8 * 1024 * 1024;
+/** How long after a failed fetch another side's photo is asked for again. */
+const PHOTO_RETRY_MS = 60_000;
+/** The latest posts of a group whose missing photos the sweep fetches again, and how many photos are fetched at once. */
+const PHOTO_SWEEP_POSTS = 200;
+const PHOTO_FETCHES = 2;
+/** How long an agent's post waits on its user's word before the agent is answered, and told the outcome later. */
+const SHARE_WAIT_MS = 90_000;
 
 const HARNESS_WORDS: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "ACP" };
+
+/** A photo an agent is shown with what it read: its group, its id and its kind. */
+export interface PhotoRef {
+  group: string;
+  photo: string;
+  type: GroupPhotoType;
+}
+
+/** What a group tool answers: the words the model reads, and the photos shown with them. */
+export interface ToolAnswer {
+  text: string;
+  photos?: PhotoRef[];
+}
+
+/** A saved copy of a post's file: a transfer started on the machine it goes to, from where the file is. */
+export interface SaveStart {
+  from: { node: string; path: string };
+  to: { node: string; dir?: string };
+  reason?: string;
+  relayOk?: boolean;
+  by: TransferBy;
+  notify?: string;
+  peer?: PeerSource;
+}
 
 /** What the groups need of the teammates, once there are some. */
 export interface GroupTeams {
@@ -88,6 +135,8 @@ export interface GroupTeams {
   send(teammate: string, group: string, seq: number, entry: GroupEntry, at: number): Promise<boolean>;
   /** Asks a side for its entries after `after`; undefined when it cannot be reached now. */
   sync(teammate: string, group: string, after: number): Promise<{ entries: { seq: number; entry: GroupEntry; at: number }[]; more: boolean } | undefined>;
+  /** A piece of a photo of a post a side wrote, from `at`, base64. */
+  photo(teammate: string, group: string, photo: string, at: number): Promise<{ type: GroupPhotoType; data: string; at: number; total: number }>;
 }
 
 export interface GroupsDeps {
@@ -115,6 +164,18 @@ export interface GroupsDeps {
   teams?: () => GroupTeams | undefined;
   /** A tag of the user, for their phones. */
   push?: (p: { group: GroupRow; post: PostRow; from: string; text: string }) => void;
+  /** Photos, uploads and the files apps uploaded, kept on the primary. */
+  media?: GroupMedia;
+  /** This node's id: where an app's upload is kept. */
+  selfId?: () => string;
+  /** A photo made of an image on one of the user's machines, there. */
+  photoFrom?: (node: string, path: string) => Promise<PreparedPhoto>;
+  /** What a path on one of the user's machines holds, for a file attached by its path. */
+  peek?: (node: string, path: string) => Promise<{ kind: "file" | "folder"; name: string; total: number; files: number }>;
+  /** A path an agent named, as its machine reads it: absolute there, or under its folder. */
+  resolvePath?: (node: string, cwd: string, path: string) => string;
+  /** A saved copy of a post's file: started on the machine it goes to. */
+  start?: (p: SaveStart) => Promise<{ transfer?: Transfer; confirm?: TransferConfirm }>;
   now?: () => number;
   sweepMs?: number;
   gatherMs?: number;
@@ -150,6 +211,13 @@ export class Groups {
   private inbound = new Map<string, number[]>();
   /** When each group last pushed a tag of the user to the phones. */
   private pushedAt = new Map<string, number>();
+  /** Another side's photos being fetched, and when a failed fetch may be tried again, by `<group>/<photo>`. */
+  private fetching = new Set<string>();
+  private photoRetry = new Map<string, number>();
+  private photoQueue: { key: string; run: () => Promise<void> }[] = [];
+  private photoRunning = 0;
+  /** Where this side's posted files are, by id, as far as this process met them: what another side may read. */
+  private fileIndex = new Map<string, { group: string; post: string }>();
 
   constructor(deps: GroupsDeps) {
     this.deps = deps;
@@ -356,8 +424,16 @@ export class Groups {
       ...(p.expectsReply !== undefined ? { expectsReply: p.expectsReply } : {}),
       ...(p.answered ? { answered: true } : {}),
       acks: p.acks.map((k) => handleOf(k) ?? k),
+      ...(p.photos && p.photos.length > 0 ? { photos: p.photos } : {}),
+      ...(p.files && p.files.length > 0 ? { files: p.files.map((f) => this.clientFile(f)) } : {}),
       at: p.at,
     };
+  }
+
+  /** A post's file as this side's apps show it: where it is, by the machine's name, when it is this side's. */
+  private clientFile(f: FileRow): GroupFile {
+    const { src, ...rest } = f;
+    return { ...rest, ...(src ? { machine: cap(this.deps.nodeName(src.node), 80) } : {}) };
   }
 
   private ownerOfKey(g: GroupRow, key: string): string {
@@ -660,29 +736,337 @@ export class Groups {
     this.lastCatchUp.delete(g.id);
     this.groupRecent.delete(g.id);
     this.pushedAt.delete(g.id);
+    this.deps.media?.dropGroup(g.id);
+    for (const [id, at] of [...this.fileIndex]) if (at.group === g.id) this.fileIndex.delete(id);
     this.deps.bus.emit("group.state", { ...this.client(g), left: true });
     this.log.info("group deleted here", { id });
   }
 
   // --- posts -----------------------------------------------------------------------------------------------
 
-  /** This side's user posts. */
-  postAsUser(id: string, text: string, replyTo?: string): GroupPost {
+  /** This side's user posts, with the photos and files the app attached. */
+  async postAsUser(id: string, text: string | undefined, replyTo?: string, attached: { photos?: GroupAttach[]; files?: GroupAttach[] } = {}): Promise<GroupPost> {
     this.routing();
     const g = this.must(id);
     const me = this.person(g);
     if (!me) throw new RpcError("invalid", "you are not in this group");
-    const post = this.write(g, { kind: "person", key: me.key, user: me.user }, text, { ...(replyTo ? { replyTo } : {}), person: true });
-    return this.clientPost(this.must(id), post);
+    if (g.ended) throw new RpcError("invalid", `#${g.name} has ended: it is read only`);
+    if (!(text ?? "").trim() && !attached.photos?.length && !attached.files?.length) throw new RpcError("invalid", "the post is empty");
+    const made = await this.attach(g.id, attached.photos ?? [], attached.files ?? []);
+    try {
+      const post = this.write(this.must(id), { kind: "person", key: me.key, user: me.user }, text ?? "", { ...(replyTo ? { replyTo } : {}), person: true, ...made });
+      return this.clientPost(this.must(id), post);
+    } catch (e) {
+      this.unattach(g.id, made);
+      throw e;
+    }
+  }
+
+  // --- photos and files -------------------------------------------------------------------------------------
+
+  private media(): GroupMedia {
+    const m = this.deps.media;
+    if (!m) throw new RpcError("unsupported", "photos and files in group chats are off here");
+    return m;
+  }
+
+  /** One piece of what an app uploads for its user's next post. */
+  async upload(p: { group: string; upload?: string; name: string; size: number; at: number; data: string; photo?: boolean }): Promise<{ upload: string; received: number }> {
+    this.routing();
+    const g = this.must(p.group);
+    if (!this.person(g)) throw new RpcError("invalid", "you are not in this group");
+    if (g.ended) throw new RpcError("invalid", `#${g.name} has ended: it is read only`);
+    return this.media().upload({ ...p, data: new Uint8Array(Buffer.from(p.data, "base64")) });
+  }
+
+  /**
+   * The photos and files a post of this side's will carry, made ready: each photo kept here
+   * (from an upload, or made on the machine its path is on), each file found where it is, or an
+   * upload kept on this primary. Nothing is left behind when one of them fails.
+   */
+  private async attach(group: string, photos: readonly GroupAttach[], files: readonly GroupAttach[]): Promise<{ photos: GroupPhoto[]; files: FileRow[] }> {
+    if (photos.length > GROUP_POST_PHOTOS_MAX) throw new RpcError("invalid", `a post carries ${GROUP_POST_PHOTOS_MAX} photos at most`);
+    if (files.length > GROUP_POST_FILES_MAX) throw new RpcError("invalid", `a post carries ${GROUP_POST_FILES_MAX} files at most`);
+    const made: { photos: GroupPhoto[]; files: FileRow[] } = { photos: [], files: [] };
+    if (photos.length === 0 && files.length === 0) return made;
+    const media = this.media();
+    try {
+      for (const a of photos) {
+        let ph: PreparedPhoto;
+        if ("upload" in a) {
+          const u = media.take(group, a.upload);
+          try {
+            ph = checkPhoto(new Uint8Array(await readFile(u.path)), u.name);
+          } finally {
+            await media.discard(u.path);
+          }
+        } else {
+          if (!this.deps.photoFrom) throw new RpcError("unsupported", "photos from a machine's files are off here");
+          ph = await this.deps.photoFrom(a.node, a.path);
+        }
+        const id = newId("groupPhoto");
+        await media.putPhoto(group, id, ph.bytes);
+        made.photos.push({ id, type: ph.type, bytes: ph.bytes.length, width: ph.width, height: ph.height, name: cap(ph.name, 255) });
+      }
+      for (const a of files) {
+        const id = newId("groupFile");
+        if ("upload" in a) {
+          const u = media.take(group, a.upload);
+          const path = await media.keepFile(group, id, u.path, u.name);
+          made.files.push({ id, name: cap(u.name, 255), kind: "file", bytes: u.size, src: { node: this.deps.selfId?.() ?? "", path } });
+        } else {
+          if (!this.deps.peek) throw new RpcError("unsupported", "files from a machine are off here");
+          const what = await this.deps.peek(a.node, a.path);
+          made.files.push({ id, name: cap(what.name, 255), kind: what.kind, bytes: what.total, ...(what.kind === "folder" ? { files: what.files } : {}), src: { node: a.node, path: a.path } });
+        }
+      }
+    } catch (e) {
+      this.unattach(group, made);
+      throw e;
+    }
+    return made;
+  }
+
+  /** A post that was not made after all: what was kept for it goes. */
+  private unattach(group: string, made: { photos: readonly GroupPhoto[]; files: readonly FileRow[] }): void {
+    const media = this.deps.media;
+    if (!media) return;
+    media.dropPost(
+      group,
+      made.photos.map((p) => p.id),
+      made.files.filter((f) => f.src && media.isUploaded(group, f.src.path)).map((f) => f.id),
+    );
+  }
+
+  /** Posts a group dropped past its most: their photos and uploaded files go with them. */
+  private trimmed(group: string, posts: readonly PostRow[]): void {
+    for (const p of posts) {
+      this.unattach(group, { photos: p.photos ?? [], files: p.files ?? [] });
+      for (const f of p.files ?? []) this.fileIndex.delete(f.id);
+    }
+  }
+
+  /** The post in a group that holds a photo: the newest first, as most asked for. */
+  private postWithPhoto(g: GroupRow, photo: string): PostRow | undefined {
+    for (const n of this.rows.numbers(g.id).reverse()) {
+      const p = this.rows.post(g.id, n);
+      if (p?.photos?.some((x) => x.id === photo)) return p;
+    }
+    return undefined;
+  }
+
+  /** The side a post of another person's came from: its writer's account, while that side is in the group. */
+  private sideOf(g: GroupRow, p: PostRow): { owner: string; teammate: string; user: string } | undefined {
+    if (p.from.kind === "cophyla") return undefined;
+    const from = p.from;
+    let owner = this.ownerOfKey(g, from.key);
+    if (!owner && from.kind === "person") owner = from.key.slice("person:".length);
+    if (!owner) owner = Object.entries(g.sides).find(([, side]) => side.user === from.user)?.[0] ?? "";
+    const side = owner ? g.sides[owner] : undefined;
+    return side ? { owner, teammate: side.teammate, user: side.user } : undefined;
+  }
+
+  /** A piece of a photo of a group's post, for this side's apps: one of another side's is fetched first when it is not here yet. */
+  async photo(id: string, photo: string, at = 0): Promise<{ type: GroupPhotoType; base64: string; at: number; total: number }> {
+    this.routing();
+    const g = this.must(id);
+    const p = this.postWithPhoto(g, photo);
+    const ph = p?.photos?.find((x) => x.id === photo);
+    if (!p || !ph) throw new RpcError("not_found", `no photo ${photo} in #${g.name}`);
+    const media = this.media();
+    if (!media.hasPhoto(g.id, photo)) {
+      const side = this.sideOf(g, p);
+      if (!side) throw new RpcError("not_found", "this photo is not here, and the side that posted it is no longer in the group");
+      await this.fetchPhoto(g.id, side.teammate, ph, true);
+    }
+    const piece = await media.photoPiece(g.id, photo, at);
+    return { type: ph.type, base64: Buffer.from(piece.data).toString("base64"), at, total: piece.total };
+  }
+
+  /** A whole photo's bytes, for an agent shown it with what it read here. */
+  async photoBytes(id: string, photo: string): Promise<Uint8Array> {
+    return this.media().photo(id, photo);
+  }
+
+  /** A piece of a photo, for a member agent of a secondary's reading the group there. */
+  async photoForAgent(session: string, id: string, photo: string, at = 0): Promise<{ type: GroupPhotoType; data: string; at: number; total: number }> {
+    this.routing();
+    const g = this.must(id);
+    if (!g.members.some((m) => m.key === agentKey(session))) throw new RpcError("denied", "that session is not in the group");
+    const r = await this.photo(id, photo, at);
+    return { type: r.type, data: r.base64, at: r.at, total: r.total };
+  }
+
+  /** A piece of a photo this side holds, for another side in the group, which keeps it. */
+  async photoForSide(owner: string, id: string, photo: string, at = 0): Promise<{ type: GroupPhotoType; data: string; at: number; total: number }> {
+    const g = this.get(id);
+    if (!g || !g.sides[owner]) throw new RpcError("not_found", "no such group with you in it");
+    const p = this.postWithPhoto(g, photo);
+    const ph = p?.photos?.find((x) => x.id === photo);
+    if (!p || !ph) throw new RpcError("not_found", "no such photo in the group");
+    const piece = await this.media().photoPiece(g.id, photo, at);
+    return { type: ph.type, data: Buffer.from(piece.data).toString("base64"), at, total: piece.total };
+  }
+
+  /**
+   * Another side's photo, fetched from it a piece at a time and kept here; one fetch at a time
+   * per photo, a failed one not tried again for a minute unless `now`.
+   */
+  private async fetchPhoto(group: string, teammate: string, ph: GroupPhoto, now = false): Promise<void> {
+    const key = `${group}/${ph.id}`;
+    const teams = this.deps.teams?.();
+    const media = this.deps.media;
+    if (!teams || !media || media.hasPhoto(group, ph.id)) return;
+    if (this.fetching.has(key)) {
+      if (!now) return;
+      // one is under way: wait for it a little
+      for (let i = 0; i < 100 && this.fetching.has(key); i++) await Bun.sleep(100);
+      if (media.hasPhoto(group, ph.id)) return;
+    }
+    if (!now && (this.photoRetry.get(key) ?? 0) > this.now()) return;
+    this.fetching.add(key);
+    try {
+      const parts: Uint8Array[] = [];
+      let at = 0;
+      let total = ph.bytes;
+      while (at < total) {
+        const r = await teams.photo(teammate, group, ph.id, at);
+        const data = new Uint8Array(Buffer.from(r.data, "base64"));
+        if (r.at !== at || data.length === 0 || r.total !== ph.bytes) throw new RpcError("invalid", "the photo came back not as it was posted");
+        parts.push(data);
+        at += data.length;
+        total = r.total;
+        if (parts.length > Math.ceil(ph.bytes / FILE_PIECE_BYTES) + 1) throw new RpcError("invalid", "the photo came in more pieces than it has");
+      }
+      const bytes = new Uint8Array(at);
+      let o = 0;
+      for (const part of parts) {
+        bytes.set(part, o);
+        o += part.length;
+      }
+      // the bytes must be the kind of image the post says
+      if (sniffImage(bytes)?.type !== ph.type) throw new RpcError("invalid", "the photo's bytes are not the image the post names");
+      await media.putPhoto(group, ph.id, bytes);
+      this.photoRetry.delete(key);
+      const g = this.get(group);
+      const p = g ? this.postWithPhoto(g, ph.id) : undefined;
+      // the apps draw it now it is here
+      if (g && p) this.emitPost(g, p);
+    } catch (e) {
+      this.photoRetry.set(key, this.now() + PHOTO_RETRY_MS);
+      this.log.info("another side's photo could not be fetched now", { group, photo: ph.id, error: message(e) });
+      if (now) throw e instanceof RpcError ? e : new RpcError("unavailable", `the photo could not be fetched from the side that posted it: ${message(e)}`);
+    } finally {
+      this.fetching.delete(key);
+    }
+  }
+
+  /** Another side's post's photos, fetched as it comes, two at a time across every group. */
+  private fetchPhotos(g: GroupRow, p: PostRow): void {
+    if (!p.photos?.length || !this.deps.media) return;
+    const side = this.sideOf(g, p);
+    if (!side) return;
+    for (const ph of p.photos) {
+      const key = `${g.id}/${ph.id}`;
+      if (this.deps.media.hasPhoto(g.id, ph.id) || this.fetching.has(key) || this.photoQueue.some((q) => q.key === key) || (this.photoRetry.get(key) ?? 0) > this.now()) continue;
+      this.photoQueue.push({ key, run: () => this.fetchPhoto(g.id, side.teammate, ph) });
+    }
+    this.pumpPhotos();
+  }
+
+  private pumpPhotos(): void {
+    while (this.photoRunning < PHOTO_FETCHES && this.photoQueue.length > 0) {
+      const next = this.photoQueue.shift()!;
+      this.photoRunning++;
+      void next
+        .run()
+        .catch(() => undefined)
+        .finally(() => {
+          this.photoRunning--;
+          this.pumpPhotos();
+        });
+    }
+  }
+
+  /** Where a file of one of this side's posts is, for another side in the group that saves a copy of it. */
+  fileSource(owner: string, id: string, file: string): { node: string; path: string } {
+    const g = this.get(id);
+    if (!g || !g.sides[owner]) throw new RpcError("not_found", "no such group with you in it");
+    const found = this.findFile(g, file);
+    if (!found?.file.src) throw new RpcError("not_found", "no such file of this side's in the group");
+    return found.file.src;
+  }
+
+  /** A file of a group's post by its id: the post that carries it, the newest first. */
+  private findFile(g: GroupRow, file: string): { post: PostRow; file: FileRow } | undefined {
+    const at = this.fileIndex.get(file);
+    if (at && at.group === g.id) {
+      const p = this.rows.byId(g.id, at.post);
+      const f = p?.files?.find((x) => x.id === file);
+      if (p && f) return { post: p, file: f };
+    }
+    for (const n of this.rows.numbers(g.id).reverse()) {
+      const p = this.rows.post(g.id, n);
+      const f = p?.files?.find((x) => x.id === file);
+      if (p && f) {
+        this.fileIndex.set(file, { group: g.id, post: p.id });
+        return { post: p, file: f };
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * A copy of a post's file saved into `to.dir` on one of this user's machines: a transfer from
+   * where it is, on this side's machines, or through the teammate the side that posted it is
+   * reached by. `by` is who saves it, `notify` an agent told where it landed.
+   */
+  async save(id: string, post: string, file: string, to: { node: string; dir?: string }, opts: { relayOk?: boolean; by: TransferBy; notify?: string }): Promise<{ transfer?: Transfer; confirm?: TransferConfirm; name: string; kind: "file" | "folder"; from: string }> {
+    this.routing();
+    const g = this.must(id);
+    const p = this.rows.byId(g.id, post);
+    if (!p) throw new RpcError("not_found", `no post ${post} in #${g.name}`);
+    const f = p.files?.find((x) => x.id === file);
+    if (!f) throw new RpcError("not_found", `the post holds no file ${file}`);
+    if (!this.deps.start) throw new RpcError("unsupported", "this machine saves no files");
+    const writer = this.writer(g, p);
+    const reason = cap(`posted in #${g.name} by ${writer}`, TRANSFER_REASON_MAX);
+    const base = { to, reason, by: opts.by, ...(opts.relayOk ? { relayOk: true } : {}), ...(opts.notify ? { notify: opts.notify } : {}) };
+    if (f.src) return { ...(await this.deps.start({ from: f.src, ...base })), name: f.name, kind: f.kind, from: writer };
+    const side = this.sideOf(g, p);
+    if (!side) throw new RpcError("unavailable", `${writer} is no longer in #${g.name}: what they posted cannot be copied from them`);
+    const peer: PeerSource = { kind: "teammate", id: side.teammate, file: f.id, group: g.id, user: side.user, ...(p.from.kind === "agent" ? { agent: cap(p.from.name, 200) } : {}) };
+    return { ...(await this.deps.start({ from: { node: this.deps.selfId?.() ?? "", path: f.name }, ...base, peer })), name: f.name, kind: f.kind, from: writer };
+  }
+
+  /** The file an agent names in a group it is in: its gfile_ id, or the name of one file among the group's posts. */
+  fileFor(caller: Session, group: string, ref: string): { group: string; post: string; file: FileRow; groupName: string } {
+    this.routing();
+    const g = this.groupFor(caller, group);
+    const want = ref.trim();
+    if (want.startsWith("gfile_")) {
+      const found = this.findFile(g, want);
+      if (!found) throw new RpcError("not_found", `no file ${want} in #${g.name}`);
+      return { group: g.id, post: found.post.id, file: found.file, groupName: g.name };
+    }
+    const matches: { post: PostRow; file: FileRow }[] = [];
+    for (const n of this.rows.numbers(g.id).reverse()) {
+      const p = this.rows.post(g.id, n);
+      for (const f of p?.files ?? []) if (f.name.toLowerCase() === want.toLowerCase()) matches.push({ post: p!, file: f });
+      if (matches.length > 1) break;
+    }
+    if (matches.length === 0) throw new RpcError("not_found", `no file called ${want} in #${g.name}: read_group names each with its gfile_ id`);
+    if (matches.length > 1) throw new RpcError("invalid", `more than one file in #${g.name} is called ${want}: name it by its gfile_ id`);
+    return { group: g.id, post: matches[0]!.post.id, file: matches[0]!.file, groupName: g.name };
   }
 
   /**
    * A post by a member of this side: its tags read, refused when one names no member, kept,
    * logged for the other sides, and told to whom it tags.
    */
-  private write(g: GroupRow, from: PostRow["from"], text: string, opts: { replyTo?: string; expectsReply?: boolean; person: boolean }): PostRow {
+  private write(g: GroupRow, from: PostRow["from"], text: string, opts: { replyTo?: string; expectsReply?: boolean; person: boolean; photos?: GroupPhoto[]; files?: FileRow[] }): PostRow {
     if (g.ended) throw new RpcError("invalid", `#${g.name} has ended: it is read only`);
-    if (!text.trim()) throw new RpcError("invalid", "the post is empty");
+    if (!text.trim() && !opts.photos?.length && !opts.files?.length) throw new RpcError("invalid", "the post is empty");
     if (text.length > GROUP_POST_MAX_CHARS) throw new RpcError("invalid", `a post is ${GROUP_POST_MAX_CHARS} characters at most`);
     let replied: PostRow | undefined;
     if (opts.replyTo) {
@@ -703,8 +1087,11 @@ export class Groups {
       ...(replied ? { replyTo: replied.id } : {}),
       ...(opts.expectsReply !== undefined ? { expectsReply: opts.expectsReply } : {}),
       acks: [],
+      ...(opts.photos?.length ? { photos: opts.photos } : {}),
+      ...(opts.files?.length ? { files: opts.files } : {}),
       at: now,
     };
+    for (const f of post.files ?? []) this.fileIndex.set(f.id, { group: g.id, post: post.id });
     g.lastAt = now;
     // the writer has read up to its own post only when it had read all before it: one that answers
     // a notice without reading keeps the posts it did not read, and the tags in them
@@ -717,7 +1104,7 @@ export class Groups {
     }
     this.rows.put(g);
     this.rows.putPost(post);
-    if (g.n % 100 === 0) this.rows.trim(g.id, POSTS_MAX);
+    if (g.n % 100 === 0) this.trimmed(g.id, this.rows.trim(g.id, POSTS_MAX));
     // an answer settles what it answers
     if (replied && replied.expectsReply && !replied.answered) {
       replied.answered = true;
@@ -765,7 +1152,7 @@ export class Groups {
         const now = this.now();
         if (tagged && p.from.kind !== "cophyla" && now - (this.pushedAt.get(g.id) ?? 0) >= PUSH_GAP_MS) {
           this.pushedAt.set(g.id, now);
-          this.deps.push?.({ group: g, post: p, from: this.writer(g, p), text: preview(writeTags(p.text, this.handleOf(g)), 200) });
+          this.deps.push?.({ group: g, post: p, from: this.writer(g, p), text: preview(writeTags(p.text, this.handleOf(g)), 200) || attachedWords(p) });
         }
         continue;
       }
@@ -930,8 +1317,8 @@ export class Groups {
 
   // --- reading and posting, for an agent -----------------------------------------------------------------------
 
-  /** One post on one line or more, as an agent reads it. */
-  private postLine(g: GroupRow, p: PostRow, reader: MemberRow, handleOf: (key: string) => string | undefined): string {
+  /** One post on one line or more, as an agent reads it; `shown` the photos it is shown with them, others named for read_group. */
+  private postLine(g: GroupRow, p: PostRow, reader: MemberRow, handleOf: (key: string) => string | undefined, shown: ReadonlySet<string> = new Set()): string {
     const now = this.now();
     const who = p.from.kind === "cophyla" ? "cophyla" : p.from.key === reader.key ? "you" : this.writerWords(g, p, reader);
     const bits = [`[${p.n} ${p.id}] ${who}, ${clock(p.at, now)}`];
@@ -944,7 +1331,16 @@ export class Groups {
     if (p.expectsReply && !p.answered) bits.push(tagsYou ? "awaiting your reply" : "awaiting a reply");
     const acks = p.acks.map((k) => (k === reader.key ? "you" : (handleOf(k) ?? k)));
     const tail = acks.length > 0 ? ` 👍 ${acks.join(", ")}` : "";
-    return `${bits.join(", ")}: ${writeTags(p.text, handleOf)}${tail}`;
+    const lines = [`${bits.join(", ")}: ${writeTags(p.text, handleOf)}${tail}`];
+    if (p.photos?.length) {
+      const words = p.photos.map((ph) => `${ph.name ?? "photo"} (${ph.width}×${ph.height}, ${shown.has(ph.id) ? "shown below" : `read_group with before=${p.n + 1} limit=1 shows it`})`);
+      lines.push(`  ${p.photos.length === 1 ? "photo" : "photos"}: ${words.join("; ")}`);
+    }
+    if (p.files?.length) {
+      const words = p.files.map((f) => `${f.name}${f.kind === "folder" ? `/ (a folder, ${f.files ?? 0} ${f.files === 1 ? "file" : "files"}, ${sizeWords(f.bytes)})` : ` (${sizeWords(f.bytes)})`} ${f.id}`);
+      lines.push(`  ${p.files.length === 1 ? "file" : "files"}: ${words.join("; ")}; get_file copies one to your machine`);
+    }
+    return lines.join("\n");
   }
 
   private writerWords(g: GroupRow, p: PostRow, reader: MemberRow): string {
@@ -956,13 +1352,13 @@ export class Groups {
     return `@${name}`;
   }
 
-  /** The group tools, called by `caller`, an agent of this side's: the words it reads. */
-  async tool(caller: Session, name: "read_group" | "post_group" | "ack_post", args: Record<string, unknown>): Promise<string> {
+  /** The group tools, called by `caller`, an agent of this side's: the words it reads, and the photos it is shown. */
+  async tool(caller: Session, name: "read_group" | "post_group" | "ack_post", args: Record<string, unknown>, mode: AgentMode = "prompting"): Promise<ToolAnswer> {
     this.routing();
     if (name === "read_group") {
       const group = typeof args["group"] === "string" ? args["group"].trim() : "";
       return this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "group.read", ...(group ? { target: group } : {}), args: { ...(group ? { group } : {}) }, sessionKey: caller.id }, () =>
-        group ? this.readGroup(caller, group, args) : this.listFor(caller),
+        group ? this.readGroup(caller, group, args) : { text: this.listFor(caller) },
       );
     }
     const group = typeof args["group"] === "string" ? args["group"].trim() : "";
@@ -974,26 +1370,88 @@ export class Groups {
       if (!id) throw new RpcError("invalid", "ack_post needs post: the post's gmsg_ id from read_group");
       return this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "group.ack", target: g.id, args: { post: id }, sessionKey: caller.id }, () => {
         const p = this.ack(g, m.key, id, true);
-        return `Thumbs up on post ${p.n} in #${g.name}; no one was woken.`;
+        return { text: `Thumbs up on post ${p.n} in #${g.name}; no one was woken.` };
       });
     }
     const text = typeof args["text"] === "string" ? args["text"] : "";
     const expects = args["expects_reply"];
     const replyTo = typeof args["reply_to"] === "string" && args["reply_to"].trim() ? args["reply_to"].trim() : undefined;
-    if (!text.trim()) throw new RpcError("invalid", "post_group needs text: the post");
+    const photos = this.pathsArg(caller, args["photos"], "photos", GROUP_POST_PHOTOS_MAX);
+    const files = this.pathsArg(caller, args["files"], "files", GROUP_POST_FILES_MAX);
+    if (!text.trim() && photos.length === 0 && files.length === 0) throw new RpcError("invalid", "post_group needs text: the post");
     if (typeof expects !== "boolean") throw new RpcError("invalid", "post_group needs expects_reply: true when you wait for an answer, false when the post only tells");
-    const why = this.limit(caller.id, g.id, text);
+    // what makes a post the same as another: its words and what it carries
+    const same = [text, ...photos, ...files].join("\n");
+    const why = this.limit(caller.id, g.id, same);
     if (why) throw new RpcError("denied", why);
-    return this.deps.gate.run(
-      { principal: { kind: "harness", session: caller.id }, action: "group.post", target: g.id, args: { group: g.name, text: cap(text, 2000), ...(replyTo ? { replyTo } : {}), expectsReply: expects }, sessionKey: caller.id },
-      () => {
-        const fresh = this.must(g.id);
-        const writer = this.handle(m);
-        const post = this.write(fresh, { kind: "agent", key: m.key, session: caller.id, user: m.user, name: writer, harness: caller.harness }, text, { ...(replyTo ? { replyTo } : {}), expectsReply: expects, person: false });
-        this.record(caller.id, g.id, text);
-        return this.postedText(this.must(g.id), post);
-      },
+    const post = async (): Promise<string> => {
+      // photos and files into a group with other people in it leave this user's hands: asked as a file to another person is
+      const others = Object.values(g.sides).map((side) => side.user);
+      if ((photos.length > 0 || files.length > 0) && others.length > 0) {
+        const what = [photos.length > 0 ? `${photos.length} ${photos.length === 1 ? "photo" : "photos"}` : "", files.length > 0 ? `${files.length} ${files.length === 1 ? "file" : "files"}` : ""].filter(Boolean).join(" and ");
+        await this.deps.gate.run(
+          {
+            principal: { kind: "harness", session: caller.id },
+            action: "group.share",
+            target: g.id,
+            args: { group: g.name, photos, files, people: others },
+            sessionKey: caller.id,
+            ask: { title: `Let ${this.handle(m)} post ${what} in #${g.name}?`, detail: `${others.join(", ")} ${others.length === 1 ? "is" : "are"} in it and may see and copy them.\n${[...photos, ...files].join("\n")}` },
+            ...(mode === "bypass" ? { unprompted: true } : {}),
+          },
+          () => undefined,
+        );
+      }
+      return this.deps.gate.run(
+        { principal: { kind: "harness", session: caller.id }, action: "group.post", target: g.id, args: { group: g.name, text: cap(text, 2000), ...(replyTo ? { replyTo } : {}), expectsReply: expects, ...(photos.length > 0 ? { photos } : {}), ...(files.length > 0 ? { files } : {}) }, sessionKey: caller.id },
+        async () => {
+          const made = await this.attach(g.id, photos.map((path) => ({ node: caller.node, path })), files.map((path) => ({ node: caller.node, path })));
+          try {
+            const fresh = this.must(g.id);
+            const writer = this.handle(m);
+            const written = this.write(fresh, { kind: "agent", key: m.key, session: caller.id, user: m.user, name: writer, harness: caller.harness }, text, { ...(replyTo ? { replyTo } : {}), expectsReply: expects, person: false, ...made });
+            this.record(caller.id, g.id, same);
+            return this.postedText(this.must(g.id), written);
+          } catch (e) {
+            this.unattach(g.id, made);
+            throw e;
+          }
+        },
+      );
+    };
+    if (photos.length === 0 && files.length === 0) return { text: await post() };
+    return { text: await this.waitOrLater(caller, g, post) };
+  }
+
+  /** A tool's list of paths on the caller's machine, each absolute there. */
+  private pathsArg(caller: Session, v: unknown, name: string, max: number): string[] {
+    if (v === undefined || v === null) return [];
+    if (!Array.isArray(v) || v.some((x) => typeof x !== "string" || !x.trim())) throw new RpcError("invalid", `${name} is a list of paths on this machine`);
+    if (v.length > max) throw new RpcError("invalid", `a post carries ${max} ${name} at most`);
+    const resolve = this.deps.resolvePath ?? ((_n: string, _cwd: string, p: string) => p);
+    return (v as string[]).map((p) => resolve(caller.node, caller.cwd, p.trim()));
+  }
+
+  /** Runs a post that may wait on the user: its words when it ends soon, else words that it waits, and its outcome told to the agent later. */
+  private async waitOrLater(caller: Session, g: GroupRow, work: () => Promise<string>): Promise<string> {
+    const p = work();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const slow = new Promise<"slow">((r) => (timer = setTimeout(() => r("slow"), SHARE_WAIT_MS)));
+    try {
+      const first = await Promise.race([p, slow]);
+      if (first !== "slow") return first;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    const tell = (text: string) => {
+      const s = this.session(caller.id);
+      if (s) void this.send(this.get(g.id) ?? g, s, text);
+    };
+    p.then(
+      (text) => tell(text),
+      (e: unknown) => tell(`Not posted in #${g.name}: ${message(e)}.`),
     );
+    return `Waiting for your user to allow the post in #${g.name}; you will be told by a message from cophyla how it went.`;
   }
 
   /** Who a post told, as the agent that wrote it reads it. */
@@ -1051,8 +1509,8 @@ export class Groups {
     return `Your group chats:\n${lines.join("\n")}\nRead one with read_group and its name.`;
   }
 
-  /** A group as its member reads it: what it is for, who is in it, and what it has not read. */
-  private readGroup(caller: Session, name: string, args: Record<string, unknown>): string {
+  /** A group as its member reads it: what it is for, who is in it, what it has not read, and the latest photos among it. */
+  private readGroup(caller: Session, name: string, args: Record<string, unknown>): ToolAnswer {
     const g = this.groupFor(caller, name);
     const m = g.members.find((x) => x.key === agentKey(caller.id))!;
     const before = typeof args["before"] === "number" && Number.isInteger(args["before"]) && args["before"] > 0 ? args["before"] : undefined;
@@ -1104,8 +1562,25 @@ export class Groups {
         this.emit(g);
       }
     }
-    const lines = posts.map((p) => this.postLine(g, p, m, handleOf));
-    return `${head.join("\n")}\n\n${lines.join("\n")}${lines.length > 0 ? "\n\n" : ""}${note}`;
+    // the latest photos of the posts shown, others' and here, within what one answer carries
+    const shown: PhotoRef[] = [];
+    let bytes = 0;
+    for (const p of [...posts].reverse()) {
+      if (p.from.kind !== "cophyla" && p.from.key === m.key) continue;
+      for (const ph of [...(p.photos ?? [])].reverse()) {
+        if (shown.length >= READ_PHOTOS || bytes + ph.bytes > READ_PHOTO_BYTES) break;
+        if (!this.deps.media?.hasPhoto(g.id, ph.id)) {
+          this.fetchPhotos(g, p);
+          continue;
+        }
+        shown.unshift({ group: g.id, photo: ph.id, type: ph.type });
+        bytes += ph.bytes;
+      }
+    }
+    const shownIds = new Set(shown.map((x) => x.photo));
+    const lines = posts.map((p) => this.postLine(g, p, m, handleOf, shownIds));
+    const text = `${head.join("\n")}\n\n${lines.join("\n")}${lines.length > 0 ? "\n\n" : ""}${note}`;
+    return shown.length > 0 ? { text, photos: shown } : { text };
   }
 
   /**
@@ -1268,6 +1743,8 @@ export class Groups {
     for (const [k, rs] of [...this.recent]) if (!rs.some((r) => now - r.at < DUPLICATE_MS)) this.recent.delete(k);
     for (const [k, ts] of [...this.groupRecent]) if (!ts.some((t) => now - t < 60_000)) this.groupRecent.delete(k);
     for (const [k, ts] of [...this.inbound]) if (!ts.some((t) => now - t < 60_000)) this.inbound.delete(k);
+    for (const [k, until] of [...this.photoRetry]) if (until <= now) this.photoRetry.delete(k);
+    this.deps.media?.sweep();
     for (const g of this.all()) {
       for (const m of g.members) {
         if (m.kind !== "agent" || !this.mine(m) || m.noticeAt === undefined || m.reminded) continue;
@@ -1280,6 +1757,10 @@ export class Groups {
       if (Object.keys(g.sides).length > 0 && now - (this.lastCatchUp.get(g.id) ?? 0) >= CATCH_UP_MS) {
         this.lastCatchUp.set(g.id, now);
         void this.catchUp(g.id);
+      }
+      // another side's photos that did not come: asked for again
+      if (Object.keys(g.sides).length > 0 && this.deps.media) {
+        for (const p of this.rows.page(g.id, PHOTO_SWEEP_POSTS).posts) if (p.photos?.some((ph) => !this.deps.media!.hasPhoto(g.id, ph.id))) this.fetchPhotos(g, p);
       }
     }
   }
@@ -1333,7 +1814,18 @@ export class Groups {
         : p.from.kind === "person"
           ? { kind: "person", key: p.from.key, user: p.from.user }
           : { kind: "cophyla" };
-    return { id: p.id, from, text: p.text, mentions: p.mentions, ...(p.replyTo ? { replyTo: p.replyTo } : {}), ...(p.expectsReply !== undefined ? { expectsReply: p.expectsReply } : {}), at: p.at };
+    return {
+      id: p.id,
+      from,
+      text: p.text,
+      mentions: p.mentions,
+      ...(p.replyTo ? { replyTo: p.replyTo } : {}),
+      ...(p.expectsReply !== undefined ? { expectsReply: p.expectsReply } : {}),
+      ...(p.photos && p.photos.length > 0 ? { photos: p.photos } : {}),
+      // where a file is stays on this side
+      ...(p.files && p.files.length > 0 ? { files: p.files.map(({ src: _src, ...f }) => f) } : {}),
+      at: p.at,
+    };
   }
 
   /** Hands a side newly in a group the group itself: its members and its last two hundred posts. */
@@ -1620,7 +2112,11 @@ export class Groups {
     const mentions = from.kind === "person" ? ep.mentions : ep.mentions.filter((m) => !("all" in m && m.all === "everyone"));
     // a marker shows a tag only for a member the post tags
     const tagged = new Set(mentions.flatMap((m) => ("member" in m ? [m.member] : [])));
-    return { ...ep, from: { ...from, user }, text: keepMarkers(ep.text, tagged), mentions };
+    // photos and files once each, by ids no other post of this side's holds
+    const photos = uniqueBy(ep.photos ?? [], (x) => x.id);
+    const files = uniqueBy(ep.files ?? [], (x) => x.id);
+    const { photos: _p, files: _f, ...rest } = ep;
+    return { ...rest, from: { ...from, user }, text: keepMarkers(ep.text, tagged), mentions, ...(photos.length > 0 ? { photos } : {}), ...(files.length > 0 ? { files } : {}) };
   }
 
   /** A post written on another side, checked by `remotePost`: numbered here as it arrives, kept once by its id. */
@@ -1637,12 +2133,14 @@ export class Groups {
       ...(ep.replyTo ? { replyTo: ep.replyTo } : {}),
       ...(ep.expectsReply !== undefined ? { expectsReply: ep.expectsReply } : {}),
       acks: [],
+      ...(ep.photos?.length ? { photos: ep.photos } : {}),
+      ...(ep.files?.length ? { files: ep.files } : {}),
       at: ep.at,
     };
     g.lastAt = Math.max(g.lastAt ?? 0, Math.min(ep.at, this.now() + CLOCK_SKEW_MS));
     this.rows.put(g);
     this.rows.putPost(p);
-    if (g.n % 100 === 0) this.rows.trim(g.id, POSTS_MAX);
+    if (g.n % 100 === 0) this.trimmed(g.id, this.rows.trim(g.id, POSTS_MAX));
     if (ep.replyTo) {
       const r = this.rows.byId(g.id, ep.replyTo);
       if (r && r.expectsReply && !r.answered) {
@@ -1652,6 +2150,7 @@ export class Groups {
       }
     }
     this.emitPost(g, p);
+    this.fetchPhotos(g, p);
     if (tell) void this.tell(g.id, p.n);
     return p;
   }
@@ -1838,6 +2337,28 @@ function cleanName(name: string): string {
 function lastPart(path: string): string {
   const parts = path.split(/[\\/]+/).filter((p) => p !== "" && !p.endsWith(":"));
   return parts[parts.length - 1] ?? path;
+}
+
+function uniqueBy<T>(xs: readonly T[], key: (x: T) => string): T[] {
+  const seen = new Set<string>();
+  return xs.filter((x) => (seen.has(key(x)) ? false : (seen.add(key(x)), true)));
+}
+
+/** Bytes as an agent reads them. */
+function sizeWords(n: number): string {
+  if (n >= 1024 ** 3) return `${(n / 1024 ** 3).toFixed(1)} GB`;
+  if (n >= 1024 ** 2) return `${Math.round(n / 1024 ** 2)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+/** A post with no words, said by what it carries: for a phone's notification. */
+export function attachedWords(p: Pick<PostRow, "photos" | "files">): string {
+  const photos = p.photos?.length ?? 0;
+  const files = p.files ?? [];
+  if (photos > 0 && files.length === 0) return photos === 1 ? "📷 Photo" : `📷 ${photos} photos`;
+  if (files.length === 1 && photos === 0) return `📎 ${files[0]!.name}`;
+  return [photos > 0 ? `📷 ${photos}` : "", files.length > 0 ? `📎 ${files.length}` : ""].filter(Boolean).join(" ");
 }
 
 function clock(at: number, now: number): string {

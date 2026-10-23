@@ -188,7 +188,7 @@ describe("a group chat", () => {
       expect(r.delivered[0]!.info.group).toEqual({ id: g.id, name: "release" });
       r.delivered.length = 0;
 
-      r.groups.postAsUser(g.id, "@api-codex is the schema merged?");
+      await r.groups.postAsUser(g.id, "@api-codex is the schema merged?");
       await waitFor(() => r.delivered.length === 1);
       const n = r.delivered[0]!;
       expect(n.session).toBe(api.id);
@@ -199,7 +199,7 @@ describe("a group chat", () => {
       expect(n.info.from).toBeUndefined();
 
       // three more before it reads: no second notice
-      for (const t of ["@api-codex one", "@api-codex two", "@agents three"]) r.groups.postAsUser(g.id, t);
+      for (const t of ["@api-codex one", "@api-codex two", "@agents three"]) await r.groups.postAsUser(g.id, t);
       await Bun.sleep(20);
       expect(r.delivered.filter((d) => d.session === api.id)).toHaveLength(1);
       // @agents told web-claude, which had no notice waiting
@@ -213,7 +213,7 @@ describe("a group chat", () => {
       expect(read.text).toMatch(/\[1 gmsg_\w+\] @?ferit \(your user\), \d\d:\d\d, tags you: @api-codex is the schema merged\?/);
       expect(read.text).toContain("That is everything unread.");
       // read: the next tag sends a notice again
-      r.groups.postAsUser(g.id, "@api-codex and now?");
+      await r.groups.postAsUser(g.id, "@api-codex and now?");
       await waitFor(() => r.delivered.filter((d) => d.session === api.id).length === 2);
       // nothing unread: the last posts for context, and the read point stays
       const again = await r.call(api, "read_group", { group: "release" });
@@ -277,7 +277,7 @@ describe("a group chat", () => {
       r.delivered.length = 0;
       r.groups.setNotify(g.id, `agent:${web.id}`, "all");
       // busy: nothing yet
-      r.groups.postAsUser(g.id, "first");
+      await r.groups.postAsUser(g.id, "first");
       await r.call(api, "post_group", { group: "release", text: "second", expects_reply: false });
       await Bun.sleep(20);
       expect(r.delivered.filter((d) => d.session === web.id)).toHaveLength(0);
@@ -288,7 +288,7 @@ describe("a group chat", () => {
       expect(gathered.text).toMatch(/^New in #release \(2 posts\):\n\[1 gmsg_\w+\] @?ferit \(your user\), \d\d:\d\d: first\n\[2 gmsg_\w+\] @api-codex, \d\d:\d\d: second\n/);
       expect(r.groups.list()[0]!.members.find((m) => m.key === `agent:${web.id}`)!.readTo).toBe(2);
       // idle now: the next post goes after a moment, on its own
-      r.groups.postAsUser(g.id, "third");
+      await r.groups.postAsUser(g.id, "third");
       await waitFor(() => r.delivered.filter((d) => d.session === web.id).length === 2);
       expect(r.delivered.filter((d) => d.session === web.id)[1]!.text).toContain("third");
     } finally {
@@ -302,11 +302,11 @@ describe("a group chat", () => {
     const r = rig([api, web]);
     try {
       await r.groups.create({ name: "release", members: [{ session: api.id }, { session: web.id }] });
-      r.groups.postAsUser([...r.groups.list()][0]!.id, "the release branch is cut");
+      await r.groups.postAsUser([...r.groups.list()][0]!.id, "the release branch is cut");
       const listed = await r.call(web, "list_agents", {});
       expect(listed.text).toContain("Unread in your group chats, which read_group shows when it suits your work: #release: 1 new post.");
       expect((await r.call(web, "list_agents", {})).text).not.toContain("Unread in your group chats");
-      r.groups.postAsUser([...r.groups.list()][0]!.id, "and tagged 0.18.0");
+      await r.groups.postAsUser([...r.groups.list()][0]!.id, "and tagged 0.18.0");
       const read = await r.call(web, "read_group", { group: "release" });
       expect(read.text).not.toContain("Unread in your group chats");
       expect((await r.call(web, "list_agents", {})).text).not.toContain("Unread in your group chats");
@@ -359,7 +359,7 @@ describe("a group chat", () => {
     const r = rig([api]);
     try {
       const g = await r.groups.create({ name: "release", members: [{ session: api.id }] });
-      const p = r.groups.postAsUser(g.id, "a note for later");
+      const p = await r.groups.postAsUser(g.id, "a note for later");
       expect(p.from).toMatchObject({ kind: "person", user: "ferit" });
       expect(r.groups.list()[0]!.unread).toBe(0);
       await r.call(api, "post_group", { group: "release", text: "@ferit noted", expects_reply: false });

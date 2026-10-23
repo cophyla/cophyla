@@ -8,8 +8,8 @@
 // against a temporary home.
 
 import { existsSync, rmSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
-import { newId, RpcError } from "@cophyla/protocol";
+import { dirname, join, posix, resolve, win32 } from "node:path";
+import { newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
 import type { AgentMode, Client, Node, PairedLan, RelayAccess, Session, Transfer } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
@@ -108,6 +108,8 @@ import { Focuses } from "./agentmsg/focus.ts";
 import { peerAlias } from "./agentmsg/envelope.ts";
 import type { EnvelopeInfo } from "./agentmsg/envelope.ts";
 import { Groups } from "./groups/index.ts";
+import { GroupMedia } from "./groups/media.ts";
+import { PeerFiles } from "./peerfiles/index.ts";
 import { groupMethods } from "./groups/methods.ts";
 import { Leaders } from "./leaders/index.ts";
 import { leaderMethods } from "./leaders/methods.ts";
@@ -193,7 +195,7 @@ export const LISTENER_SETTLE_MS = 3000;
 export interface DaemonOptions {
   home?: string;
   /** The transfers' backoff, the size over which a relayed one asks first, and how long an agent's `send_file` waits before it answers; the tests' own. */
-  transfers?: { backoff?: { firstMs: number; maxMs: number }; relayConfirmBytes?: number; toolWaitMs?: number };
+  transfers?: { backoff?: { firstMs: number; maxMs: number }; relayConfirmBytes?: number; toolWaitMs?: number; downloads?: string };
   /** The agents' MCP shim the profiles are given, over the one found; a test sets it to install in its own profiles. */
   agentShim?: string;
   /** Overrides config.api.port; 0 picks a free one. */
@@ -447,6 +449,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   /** The transfers this machine receives, built with the nodes module, and what an agent's `send_file` reaches them through. */
   let transfers: Transfers | undefined;
   let agentFiles: AgentFiles | undefined;
+  /** Files between this user and other people, kept by the primary. */
+  let peerFilesLive: PeerFiles | undefined;
   // a hands node sends and receives no files
   const node = () => selfNode(identity, config, PLATFORM_VERSION, Date.now(), profiles.harnessesOk(), voice?.capabilities(), nodes?.roleOf() ?? config.node.role, brain?.brainVersion, remote?.capable() ?? false, nodes?.via() ?? "direct", servesTerminals(), config.agent_messages.enabled ? { acceptInBypass: acceptInBypass() } : undefined, true);
   // The agents' MCP shim every session runs, from a copy in a folder that never moves, found
@@ -1164,6 +1168,22 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     },
     guests: () => guests,
     agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
+    // a secondary reads another person's file through here, for a transfer started for it
+    peerFiles: () => {
+      const pf = peerFilesLive;
+      if (!pf || !(nodes!.roleOf() === "primary" || nodes!.member() === undefined)) return undefined;
+      return {
+        tree: async (n, src, from) => {
+          if (!pf.mayPull(n, src)) throw new RpcError("denied", "that machine was sent no such file");
+          return pf.pullTree(src, from);
+        },
+        read: async (n, src, rel, at) => {
+          if (!pf.mayPull(n, src)) throw new RpcError("denied", "that machine was sent no such file");
+          const r = await pf.pullRead(src, rel, at);
+          return { data: Buffer.from(r.data).toString("base64"), size: r.size, mtimeMs: r.mtimeMs };
+        },
+      };
+    },
     // the chat's message to a session of another node: as the user's words where it leads it
     chatLead: (id) => {
       const s = routesHere() ? knownSessions().find((x) => x.id === id) : undefined;
@@ -1211,6 +1231,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: () => focusLive,
     groups: () => groupsLive,
     teammates: () => (routesHere() ? teammatesLive : undefined),
+    peerFiles: () => (routesHere() ? peerFilesLive : undefined),
     leaders: () => (routesHere() ? leadersLive : undefined),
     reports: () => (routesHere() ? reportsLive : undefined),
     files: () => agentFiles,
@@ -1241,9 +1262,22 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     tell: async (session, text) => {
       await agentMessages.deliverHere(session, text, { messageId: newId("agentMessage") });
     },
+    // another person's file: read through the primary, which holds the link to their Cophyla
+    peer: {
+      tree: async (src, from) => {
+        if (routesHere()) return peerFilesLive!.pullTree(src, from);
+        return nodeLinkRequests["peer.file.tree"].result.parse(await cluster.requestPrimary("peer.file.tree", { peer: src, ...(from !== undefined ? { from } : {}) }, { timeoutMs: 120_000 }));
+      },
+      read: async (src, rel, at) => {
+        if (routesHere()) return peerFilesLive!.pullRead(src, rel, at);
+        const r = nodeLinkRequests["peer.file.read"].result.parse(await cluster.requestPrimary("peer.file.read", { peer: src, ...(rel !== undefined ? { rel } : {}), at }, { timeoutMs: 120_000 }));
+        return { data: new Uint8Array(Buffer.from(r.data, "base64")), size: r.size, mtimeMs: r.mtimeMs };
+      },
+    },
     log: log.child("transfers"),
     ...(opts.transfers?.backoff ? { backoff: opts.transfers.backoff } : {}),
     ...(opts.transfers?.relayConfirmBytes !== undefined ? { relayConfirmBytes: opts.transfers.relayConfirmBytes } : {}),
+    ...(opts.transfers?.downloads !== undefined ? { downloads: () => opts.transfers!.downloads! } : {}),
   });
   // a machine back on its link: what waits for it tries now
   bus.on("node.state", (n) => {
@@ -1436,6 +1470,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   });
   reportsLive.start();
   // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
+  const groupMedia = new GroupMedia(p.data, log.child("groups"));
   const groupsLive: Groups = new Groups({
     store,
     bus,
@@ -1461,7 +1496,20 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: focusLive,
     teams: () => teammatesLive.forGroups(),
     push: (m) => push.mention(m.group.id, m.group.name, m.from, m.text),
+    media: groupMedia,
+    selfId: () => identity.id,
+    photoFrom: (n, path) => nodesLive.photo(n, path),
+    peek: async (n, path) => {
+      const page = await nodesLive.tree(n, path);
+      return { kind: page.kind, name: page.name, total: page.total, files: page.files };
+    },
+    resolvePath: (n, cwd, path) => {
+      const paths = platformOf(n) === "win32" ? win32 : posix;
+      return paths.isAbsolute(path) ? path : paths.join(cwd, path);
+    },
+    start: (params) => agentFiles!.start(params),
   });
+  groupMedia.init();
   groupsLive.start();
   // A machine's platform as paths there are compared: this one's own, another's from its row.
   const platformOf = (n: string): string => {
@@ -1496,6 +1544,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     deliver: (s, text, info) => deliverAnywhere(s, text, info),
     focus: focusLive,
     groups: () => groupsLive,
+    files: () => (routesHere() ? peerFilesLive : undefined),
     linked: (n) => n === identity.id || forwardHost.linked(n),
   });
   teammates = teammatesLive;
@@ -1532,10 +1581,30 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     linked: (n) => n === identity.id || forwardHost.linked(n),
     terminals: (n) => (n === identity.id ? terminalRows?.list() : forwardHost.linked(n) ? forwardHost.mirrorTerminals().filter((t) => t.node === n) : undefined),
     nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),
+    files: () => (routesHere() ? peerFilesLive : undefined),
   });
   connections = connectionsLive;
   connectionsLive.start();
   const offConnectionsUp = cloud.onUp(() => connectionsLive.linkUp());
+  // Files between this user's agents and other people's, on the teammates' and the connections' links.
+  peerFilesLive = new PeerFiles({
+    store,
+    bus,
+    log: log.child("peerfiles"),
+    selfId: () => identity.id,
+    nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),
+    tree: (n, path, from) => nodesLive.tree(n, path, from),
+    read: (n, path, rel, at) => nodesLive.read(n, path, rel, at),
+    request: (peer, method, params) => (peer.kind === "teammate" ? teammatesLive.fileRequest(peer.id, `team.file.${method}`, params) : connectionsLive.fileRequest(peer.id, `conn.file.${method}`, params)),
+    groups: () => groupsLive,
+    start: (params) => agentFiles!.start(params),
+    tell: async (session, text, info) => {
+      const s = knownSessions().find((x) => x.id === session && x.status !== "ended");
+      if (s) await deliverAnywhere(s, text, info);
+    },
+    asks,
+  });
+  peerFilesLive.start();
   // New terminal's picker: a folder of this computer at a time.
   const folderDeps = systemFolderDeps(sessionsLog.child("terminals"));
   const folders = (path: string | undefined) => listFolders(path, folderDeps);
@@ -2013,6 +2082,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       push.dispose();
       offConnectionsUp();
       connectionsLive.stop();
+      peerFilesLive?.stop();
       offSelfLogin();
       offTeammatesUp();
       teammatesLive.stop();

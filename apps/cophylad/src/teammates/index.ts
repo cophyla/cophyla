@@ -19,10 +19,14 @@
 // connection's does (the `connection` peer kind), so the server routes it to each account's
 // primary. Messages to a side that cannot be reached wait a day on this side; a teammate ended
 // on either side ends at both, their agents leaving every group chat.
+//
+// Files go on the same link (`peerfiles/`): an agent's file to a teammate's open agent, and a
+// file or a photo of a group's post. The bytes of a file ride a tunnel of their own, paced
+// under the server's cap on a connection's tunnel, so a big one never holds up a message.
 
 import { createHash, randomBytes } from "node:crypto";
 import { InviteError, newId, parseTeammateInvite, RpcError, TEAMMATE_MAX_CHARS, teammateInviteText, teammateLinkRequests, teamAudience } from "@cophyla/protocol";
-import type { AgentMode, ConnectionRelay, Focus, GroupEntry, Session, TeamAgent, Teammate, TeammateListing, TeammateShare, TeammateTheirs } from "@cophyla/protocol";
+import type { AgentMode, ConnectionRelay, Focus, GroupEntry, PeerFileSend, Session, TeamAgent, Teammate, TeammateListing, TeammateShare, TeammateTheirs } from "@cophyla/protocol";
 import { pskFromHex, pskFromSecret } from "@cophyla/relay";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import type { Focuses } from "../agentmsg/focus.ts";
@@ -31,12 +35,13 @@ import type { LimitsConfig } from "../agentmsg/limits.ts";
 import type { Bus } from "../bus.ts";
 import type { VerifiedIdentity } from "../cloud/identity.ts";
 import type { ConnectionTunnel } from "../cloud/tunnels.ts";
-import { clientOver, dialRelay, farEnded, IDLE_MS, REQUEST_MS, serveOver } from "../connections/link.ts";
+import { clientOver, dialRelay, farEnded, FILE_REQUEST_MS, IDLE_MS, Pacer, REQUEST_MS, serveOver } from "../connections/link.ts";
 import type { Dial } from "../connections/link.ts";
 import type { Gate } from "../gate/index.ts";
 import type { GroupTeams, Groups } from "../groups/index.ts";
 import type { Logger } from "../log.ts";
 import type { LinkSocket } from "../nodes/outbound.ts";
+import type { PeerFiles, PeerLink } from "../peerfiles/index.ts";
 import type { RpcPeer } from "../rpc/peer.ts";
 import type { Store } from "../store/index.ts";
 import { placeKey, shares, tidyShare, within } from "./share.ts";
@@ -98,6 +103,8 @@ export interface TeammatesDeps {
   deliver: (s: Session, text: string, info: EnvelopeInfo) => Promise<{ status: "queued" | "held" }>;
   focus: Focuses;
   groups: () => Groups | undefined;
+  /** Files between this side and its teammates, on the primary. */
+  files?: () => PeerFiles | undefined;
   linked: (node: string) => boolean;
   dial?: Dial;
   now?: () => number;
@@ -167,6 +174,8 @@ export class Teammates {
   private sweepTimer?: ReturnType<typeof setInterval>;
   private retryTimer?: ReturnType<typeof setTimeout>;
   private retryMs = 30_000;
+  /** Each teammate's tunnel, kept under the server's cap on frames a minute. */
+  private pacer = new Pacer();
 
   constructor(deps: TeammatesDeps) {
     this.deps = deps;
@@ -487,6 +496,7 @@ export class Teammates {
   private drop(row: TeammateRow, reason: string): void {
     if (!this.rows.delete(row.id)) return;
     this.closeOut(row.id, "ended");
+    this.pacer.forget(row.id);
     if (row.inbound) void this.deps.cloud.revokeRelay(row.inbound);
     for (const k of [this.seen, this.days, this.dirs, this.minutes]) k.delete(row.id);
     if (row.peer) this.deps.groups()?.teammateEnded(row.peer.subject);
@@ -629,8 +639,66 @@ export class Teammates {
         if (!groups) throw new RpcError("unavailable", "group chats are off here");
         return groups.entriesFor(row.peer.subject, s.group, s.after);
       }
+      case "team.group.photo": {
+        const ph = parsed.data as { group: string; photo: string; at?: number };
+        const groups = this.deps.groups();
+        if (!groups) throw new RpcError("unavailable", "group chats are off here");
+        return groups.photoForSide(row.peer.subject, ph.group, ph.photo, ph.at ?? 0);
+      }
+      case "team.file.send": {
+        const f = parsed.data as PeerFileSend;
+        const files = this.files();
+        // the agent it is for: one open to them by its name, as a message's is
+        const target = this.target(row, f.to, undefined);
+        if (!target) throw new RpcError("not_found", `no agent called ${f.to} is open to you`);
+        return files.incoming(this.link(row), f, target);
+      }
+      case "team.file.tree":
+        return this.files().serveTree(this.link(row), parsed.data as { file: string; group?: string; from?: number });
+      case "team.file.read":
+        return this.files().serveRead(this.link(row), parsed.data as { file: string; group?: string; rel?: string; at: number });
+      case "team.file.done":
+        await this.files().doneThere(this.link(row), parsed.data as { file: string; ok: boolean; why?: string });
+        return {};
       default:
         throw new RpcError("unsupported", `unsupported: ${method}`);
+    }
+  }
+
+  /** The teammate as the files module names the other side. */
+  private link(row: TeammateRow): PeerLink {
+    return { kind: "teammate", id: row.id, user: row.peer!.user, owner: row.peer!.subject };
+  }
+
+  private files(): PeerFiles {
+    const f = this.deps.files?.();
+    if (!f) throw new RpcError("unavailable", "files from teammates are off here");
+    return f;
+  }
+
+  /**
+   * The teammate's agent an agent of this side sends a file to: as a message's, `login/name`, from
+   * an agent working in what this side shares with them, to one of theirs open to it.
+   */
+  fileTarget(caller: Session, to: string): { link: PeerLink; name: string; alias: string } {
+    this.routing();
+    const { row, name } = this.resolve(to);
+    const alias = `${row.peer!.user}/${name}`;
+    if (!this.sharedWith(row, caller)) throw new RpcError("denied", `you work in a folder your user does not share with ${row.peer!.user}, so you reach none of their agents`);
+    const kept = this.dirs.get(row.id);
+    if (kept && this.now() - kept.at < DIRECTORY_MS && !kept.agents.some((a) => a.name === name)) throw new RpcError("not_found", `${alias} is not open to you: list_agents shows who is`);
+    return { link: this.link(row), name, alias };
+  }
+
+  /** A file request to the other side, on the teammate's tunnel, given longer than a message: a piece of a file is big. */
+  async fileRequest(id: string, method: string, params: unknown): Promise<unknown> {
+    const row = this.rows.get(id);
+    if (!row || row.state !== "active") throw new RpcError("not_found", `no teammate ${id}`);
+    try {
+      return await this.request(row, method, params, FILE_REQUEST_MS);
+    } catch (e) {
+      if (farEnded(e)) this.drop(row, `${row.peer?.user ?? "the other side"} ended it`);
+      throw e;
     }
   }
 
@@ -959,6 +1027,7 @@ export class Teammates {
       openTo: (session, owner) => this.openTo(session, owner),
       send: (teammate, group, seq, entry, at) => this.sendEntry(teammate, group, seq, entry, at),
       sync: (teammate, group, after) => this.sync(teammate, group, after),
+      photo: async (teammate, group, photo, at) => teammateLinkRequests["team.group.photo"].result.parse(await this.fileRequest(teammate, "team.group.photo", { group, photo, ...(at > 0 ? { at } : {}) })),
     };
   }
 
@@ -989,6 +1058,8 @@ export class Teammates {
   // --- tunnels this side opens ----------------------------------------------------------------------------
 
   private async request(row: TeammateRow, method: string, params: unknown, timeoutMs = REQUEST_MS): Promise<unknown> {
+    // every request and its answer are two frames: kept under the server's cap on the tunnel
+    await this.pacer.take(row.id);
     const rpc = await this.rpcFor(row);
     const entry = this.out.get(row.id);
     if (entry) this.idle(row.id, entry);

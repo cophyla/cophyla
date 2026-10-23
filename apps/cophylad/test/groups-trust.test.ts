@@ -234,7 +234,7 @@ describe("reading, gathering and focus at their edges", () => {
       await r.groups.tool(a0, "post_group", { group: "team", text: "@a1 second", expects_reply: false });
       // a1 answers the notice without reading: posts 1 and 2 stay unread for it
       await r.groups.tool(a1, "post_group", { group: "team", text: "@a0 on it", expects_reply: false });
-      const read = await r.groups.tool(a1, "read_group", { group: "team" });
+      const read = (await r.groups.tool(a1, "read_group", { group: "team" })).text;
       expect(read).toContain("second");
       expect(read).not.toContain("Nothing unread");
       expect(g.id).toBeTruthy();

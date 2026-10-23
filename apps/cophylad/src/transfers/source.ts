@@ -9,7 +9,7 @@
 
 import { createReadStream } from "node:fs";
 import type { ReadStream } from "node:fs";
-import { lstat, realpath, stat } from "node:fs/promises";
+import { lstat, open, realpath, stat } from "node:fs/promises";
 import { isAbsolute, join } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import { FILE_PIPE_CHUNK } from "../remote/pipes.ts";
@@ -70,6 +70,36 @@ export async function openSource(target: FileTarget, deliver: (data: Uint8Array)
   if (!info.isFile()) throw new RpcError("invalid", `${target.rel || target.path}: not a file`);
   const end = new FileSourceEnd(full, target.at, info.size, deliver, gone);
   return { end, file: { size: info.size, mtimeMs: mtimeOf(info.mtimeMs) } };
+}
+
+/**
+ * A piece of a pipe's file for a reader that asks a piece at a time (another person's Cophyla,
+ * through the primary): its bytes from `at`, `max` at most, and the file as it is now, resolved
+ * and checked as a pipe's is.
+ */
+export async function readPiece(target: Pick<FileTarget, "path" | "rel">, at: number, max: number, opts: SourceOptions = {}): Promise<{ data: Uint8Array; size: number; mtimeMs: number }> {
+  const full = await resolveSource(target, opts);
+  let fh;
+  try {
+    fh = await open(full, "r");
+  } catch (e) {
+    throw fsError(target.rel || target.path, e);
+  }
+  try {
+    const info = await fh.stat();
+    if (!info.isFile()) throw new RpcError("invalid", `${target.rel || target.path}: not a file`);
+    const want = Math.max(0, Math.min(max, info.size - at));
+    const buf = new Uint8Array(want);
+    let got = 0;
+    while (got < want) {
+      const { bytesRead } = await fh.read(buf, got, want - got, at + got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    return { data: buf.subarray(0, got), size: info.size, mtimeMs: mtimeOf(info.mtimeMs) };
+  } finally {
+    await fh.close();
+  }
 }
 
 export class FileSourceEnd implements End {

@@ -5,7 +5,7 @@
 // replicate to the backups and stay out of the cloud backup and the brain
 // (`grants/namespaces.ts`).
 
-import type { Focus, GroupEntry, GroupEntryPost, GroupMention, GroupNotify, HarnessKind, TeammatePlace } from "@cophyla/protocol";
+import type { Focus, GroupEntry, GroupEntryPost, GroupFile, GroupMention, GroupNotify, GroupPhoto, HarnessKind, TeammatePlace } from "@cophyla/protocol";
 import { GROUP_LOG_KV_NS, GROUP_POSTS_KV_NS, GROUPS_KV_NS } from "../grants/namespaces.ts";
 import type { Store } from "../store/index.ts";
 
@@ -68,6 +68,15 @@ export interface GroupRow {
   lastAt?: number;
 }
 
+/**
+ * A file of a post as a side keeps it. On the side that wrote the post, `src` is where it is:
+ * the machine and path it was posted from, or where an app's upload was kept on the primary;
+ * no other side is told.
+ */
+export interface FileRow extends Omit<GroupFile, "machine"> {
+  src?: { node: string; path: string };
+}
+
 /** A post as a side keeps it: its text holds each tag as `@[<member key>]`. */
 export interface PostRow {
   id: string;
@@ -81,6 +90,9 @@ export interface PostRow {
   answered?: boolean;
   /** The member keys that gave it a thumbs up. */
   acks: string[];
+  /** Its photos, whose bytes every side keeps (`media.ts`), and its files. */
+  photos?: GroupPhoto[];
+  files?: FileRow[];
   at: number;
 }
 
@@ -177,14 +189,19 @@ export class GroupStore {
     return { posts, more: ns.length > take.length };
   }
 
-  /** Keeps a group to its last `max` posts. */
-  trim(group: string, max: number): void {
+  /** Keeps a group to its last `max` posts: the ones dropped, for what is kept beside them. */
+  trim(group: string, max: number): PostRow[] {
     const ns = this.numbers(group);
+    const dropped: PostRow[] = [];
     for (const n of ns.slice(0, Math.max(0, ns.length - max))) {
       const p = this.post(group, n);
       this.store.kv.delete(GROUP_POSTS_KV_NS, `${group}/${pad(n)}`);
-      if (p) this.index.delete(p.id);
+      if (p) {
+        this.index.delete(p.id);
+        dropped.push(p);
+      }
     }
+    return dropped;
   }
 
   // --- this side's log, for teammates ---------------------------------------------------------------

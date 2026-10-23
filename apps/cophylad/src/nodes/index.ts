@@ -37,7 +37,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
-import { FULL, inviteLink, inviteText, newId, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
+import { FILE_PIECE_BYTES, FULL, inviteLink, inviteText, newId, nodeLinkRequests, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
 import type { Ask, ClientNotificationParams, FolderPick, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Transfer, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
@@ -82,7 +82,7 @@ import type { ForwardHost } from "./forward.ts";
 import { Confinement } from "./confine.ts";
 import { redeemNodeInvite } from "./enroll.ts";
 import { Inbound } from "./inbound.ts";
-import type { EnrollResult, LinkCredential } from "./inbound.ts";
+import type { EnrollResult, LinkCredential, PeerFileServe } from "./inbound.ts";
 import { Mirror } from "./mirror.ts";
 import { Outbound } from "./outbound.ts";
 import type { LinkTarget } from "./outbound.ts";
@@ -94,6 +94,11 @@ import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
 import type { NodeTerminals, TerminalViews } from "./terminals.ts";
 import { HandsPulls, TransferEnds, TransferLinks } from "./transfers.ts";
+import { PhotoMaker } from "../groups/photo.ts";
+import type { PreparedPhoto } from "../groups/photo.ts";
+import { readPiece } from "../transfers/source.ts";
+import { systemConverter } from "../sessions/convert.ts";
+import type { ImageConverter } from "../sessions/convert.ts";
 import { TreeCache } from "../transfers/tree.ts";
 import { TREE_TIMEOUT_MS } from "../transfers/index.ts";
 import type { Hop, Transfers } from "../transfers/index.ts";
@@ -187,6 +192,8 @@ export interface NodesDeps {
   agents?: () => Pick<AgentMessages, "upwardRequest" | "setAccept"> | undefined;
   /** How the chat's message reaches a session it leads, from the leaders this node keeps as the primary. */
   chatLead?: (session: string) => { lead: true } | { fallback: string } | undefined;
+  /** Files of other people's a secondary's transfer reads through this primary. */
+  peerFiles?: () => PeerFileServe | undefined;
   now?: () => number;
 }
 
@@ -229,6 +236,8 @@ export class Nodes {
   private outbound: Outbound;
   /** This node's walks of what a transfer pulls from it, kept for their next pages. */
   private trees: TreeCache;
+  /** Photos made of this machine's images, for a group chat's post. */
+  readonly photos: PhotoMaker;
   /** What this node, as the primary, sent its hands nodes: what they may pull. */
   private handsPulls: HandsPulls;
   private transferEnds: TransferEnds;
@@ -303,6 +312,8 @@ export class Nodes {
       log: this.log.child("streams"),
     });
     this.trees = new TreeCache(deps.now);
+    let converter: ImageConverter | undefined;
+    this.photos = new PhotoMaker({ converter: (path, kind, o) => (converter ??= systemConverter())(path, kind, o) }, deps.now);
     this.handsPulls = new HandsPulls(deps.store.kv, deps.now);
     this.transferEnds = new TransferEnds(deps.store.kv, deps.now);
     // what the primary sent a hands node is pulled no more once it ends, wherever that is heard
@@ -320,6 +331,7 @@ export class Nodes {
       },
       row: (node) => this.registry.get(node),
       trees: this.trees,
+      photos: this.photos,
       require: () => this.requirePath(),
       sends: () => true,
       handsPull: (hands, node, path) => this.role.role === "primary" && this.handsPulls.allows(hands, node, path),
@@ -363,6 +375,7 @@ export class Nodes {
       streams,
       transfers,
       ...(deps.agents ? { agents: deps.agents } : {}),
+      ...(deps.peerFiles ? { peerFiles: deps.peerFiles } : {}),
       ...(deps.now ? { now: deps.now } : {}),
     });
     this.outbound = new Outbound({
@@ -577,6 +590,44 @@ export class Nodes {
       return this.trees.page(path, from, require ? { require } : {});
     }
     return (await this.linkRequest(node, "files.tree", { node, path, ...(from !== undefined ? { from } : {}) }, { timeoutMs: TREE_TIMEOUT_MS })) as TreePage;
+  }
+
+  /** A piece of a file on `node`: this node's read here, another's asked over the links. */
+  async read(node: string, path: string, rel: string | undefined, at: number): Promise<{ data: Uint8Array; size: number; mtimeMs: number }> {
+    if (node === this.deps.identity.id) {
+      const require = this.requirePath();
+      return readPiece({ path, ...(rel !== undefined ? { rel } : {}) }, at, FILE_PIECE_BYTES, require ? { require } : {});
+    }
+    const r = nodeLinkRequests["files.read"].result.parse(await this.linkRequest(node, "files.read", { node, path, ...(rel !== undefined ? { rel } : {}), at }, { timeoutMs: TREE_TIMEOUT_MS }));
+    return { data: new Uint8Array(Buffer.from(r.data, "base64")), size: r.size, mtimeMs: r.mtimeMs };
+  }
+
+  /** An image on `node` made a photo, whole: this node's here, another's a piece at a time over the links. */
+  async photo(node: string, path: string): Promise<PreparedPhoto> {
+    const parts: Uint8Array[] = [];
+    let at = 0;
+    let total = 1;
+    let info: { type: PreparedPhoto["type"]; width: number; height: number; name: string } | undefined;
+    while (at < total) {
+      let r: { type: PreparedPhoto["type"]; data: Uint8Array; at: number; total: number; width: number; height: number; name: string };
+      if (node === this.deps.identity.id) r = await this.photos.piece(path, at, this.requirePath());
+      else {
+        const x = nodeLinkRequests["files.photo"].result.parse(await this.linkRequest(node, "files.photo", { node, path, ...(at > 0 ? { at } : {}) }, { timeoutMs: TREE_TIMEOUT_MS }));
+        r = { ...x, data: new Uint8Array(Buffer.from(x.data, "base64")) };
+      }
+      if (r.at !== at || (r.data.length === 0 && at < r.total)) throw new RpcError("unavailable", "the photo came short");
+      info ??= { type: r.type, width: r.width, height: r.height, name: r.name };
+      parts.push(r.data);
+      at += r.data.length;
+      total = r.total;
+    }
+    const bytes = new Uint8Array(at);
+    let o = 0;
+    for (const part of parts) {
+      bytes.set(part, o);
+      o += part.length;
+    }
+    return { ...info!, bytes };
   }
 
   /** What refuses a path outside the folders this node shares with its primary, when it shares some alone. */
