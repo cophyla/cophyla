@@ -1159,6 +1159,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       backup?.onRole(primary);
       // what this node ends by itself follows the role
       grantClock?.arm(true);
+      // the retired brain_sends is read once by the primary, as soon as this node is it
+      if (primary) leadersLive.migrate();
     },
     guests: () => guests,
     agents: () => (config.agent_messages.enabled ? agentMessages : undefined),
