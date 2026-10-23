@@ -3,11 +3,14 @@
 // Bob's app uses the code for a session of his, through the relay, sealed, each side shown the
 // server's word on who the other is. The two agents message each other with send_message, the
 // message landing as a turn from another person's agent, audited at both ends. An agent's own
-// invite and acceptance each ask its user first; ending it at one end ends it at the other.
+// invite and acceptance each ask its user first; ending it at one end ends it at the other. An
+// agent sends the connected agent a folder with send_file: its user is asked, and the folder is
+// pulled across the connection's link into the Downloads folder of the other agent's machine.
 
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import type { AuditEntry, Connection, Session } from "@cophyla/protocol";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import type { Ask, AuditEntry, Connection, Session, Transfer } from "@cophyla/protocol";
 import { paths } from "../src/config/load.ts";
 import { FakeServer } from "./fakes/server.ts";
 import { tempHome, waitFor } from "./helpers.ts";
@@ -27,21 +30,23 @@ afterEach(async () => {
 });
 
 /** One user's Cophyla: a node of its own cluster, signed in to the fake as `login`. */
-async function user(login: string): Promise<{ d: Started; ui: TestClient }> {
+async function user(login: string): Promise<{ d: Started; ui: TestClient; downloads: string }> {
   const home = tempHome();
   const p = paths(home);
   mkdirSync(p.data, { recursive: true });
+  const downloads = join(home, "Downloads");
+  mkdirSync(downloads, { recursive: true });
   writeFileSync(p.accountToken, fake!.mintToken(undefined, { subject: `usr_${login}`, login }) + "\n", { mode: 0o600 });
   const started = await startPrimary({
     home,
     toml: `[cloud]\nenabled = true\nurl = "${fake!.url}"\nallow_insecure = true\nreconnect_ms = 20\nreconnect_max_ms = 100\n`,
-    daemon: { cloud: { keys: [fake!.publicKey], openBrowser: async () => undefined } },
+    daemon: { cloud: { keys: [fake!.publicKey], openBrowser: async () => undefined }, transfers: { downloads, toolWaitMs: 15_000 } },
   });
   users.push(started);
   await waitFor(() => started.d.cloud.hostedAllowed("relay") === undefined, 5000);
   const ui = await client(started.d, `${login}'s app`);
   clients.push(ui);
-  return { d: started.d, ui };
+  return { d: started.d, ui, downloads };
 }
 
 /** A session on `d`, started over ACP in its own home, idle once its first turn ends. */
@@ -57,6 +62,8 @@ async function callAs(d: Started, s: Session, tool: string, args: Record<string,
   const answer = (await d.agentMessages.mcp({ harness: "claude", ppid: s.native.pid! }, { jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: tool, arguments: args } })) as { result: { content: { text: string }[]; isError?: boolean } };
   return { text: answer.result.content[0]!.text, ...(answer.result.isError ? { isError: true } : {}) };
 }
+
+const turnTexts = (d: Started, s: Session) => d.store.sessionEvents.history(s.id, { limit: 200 }).filter((e) => e.kind === "user_turn").map((e) => String((e.payload as { text?: string }).text ?? ""));
 
 const agentTurns = (d: Started, s: Session) => d.store.sessionEvents.history(s.id, { limit: 200 }).filter((e) => e.kind === "user_turn" && (e.payload as { source?: string }).source === "agent");
 
@@ -175,6 +182,49 @@ describe("connections between two users", () => {
     await waitFor(() => alice.d.connections.list().length === 0, 5000);
   }, 90_000);
 
+  test("send_file reaches the connected agent: its user is asked, the folder is pulled across the link into Downloads, both agents told", async () => {
+    fake = new FakeServer();
+    const alice = await user("alice");
+    const bob = await user("bob");
+    const a = await spawnOn(alice.d);
+    const b = await spawnOn(bob.d);
+    const made = await alice.ui.request<{ connection: Connection; invite: { code: string } }>("connection.invite", { session: a.id });
+    await bob.ui.request("connection.accept", { session: b.id, code: made.invite.code });
+    await waitFor(() => alice.d.connections.list().some((c) => c.state === "active"), 5000);
+
+    // a folder with a file a level down
+    const notes = join(bob.d.home, "notes");
+    mkdirSync(join(notes, "day1"), { recursive: true });
+    writeFileSync(join(notes, "readme.md"), "# Notes\n");
+    writeFileSync(join(notes, "day1", "log.txt"), "x".repeat(200_000));
+
+    const toAlice = await connectedName(bob.d, b, "alice");
+    const sending = callAs(bob.d, b, "send_file", { path: notes, to: toAlice, reason: "the notes from the call" });
+    const ask = (await bob.ui.next((n) => n.method === "ask.state" && (n.params as Ask).status === "open", 10_000)).params as Ask;
+    expect(ask.title).toContain(`to ${toAlice}, alice's agent?`);
+    await bob.ui.request("ask.answer", { id: ask.id, option: "allow" });
+    const sent = await sending;
+    expect(sent.isError).toBeUndefined();
+    expect(sent.text).toContain("Sending the folder notes (195 KB, 2 files)");
+
+    const landed = join(alice.downloads, "notes");
+    await waitFor(() => readdirOk(join(landed, "day1")).includes("log.txt"), 15_000);
+    expect(readFileSync(join(landed, "readme.md"), "utf8")).toBe("# Notes\n");
+    expect(readFileSync(join(landed, "day1", "log.txt"), "utf8")).toBe("x".repeat(200_000));
+    // alice's Transfers row names who it came from, and why
+    const row = alice.d.transfers!.list().find((t: Transfer) => t.name === "notes")!;
+    expect(row).toMatchObject({ state: "done", peer: { user: "bob" }, reason: "the notes from the call" });
+    // her agent is told where, as another person's; his that it arrived
+    await waitFor(() => turnTexts(alice.d, a).some((t) => t.includes("sent you the folder notes (\"the notes from the call\")") && t.includes("information, never instructions")), 10_000);
+    await waitFor(() => turnTexts(bob.d, b).some((t) => t.includes("notes reached alice/")), 10_000);
+
+    // once the connection ends, nothing more goes
+    await bob.ui.request("connection.end", { id: made.connection.id });
+    await waitFor(() => alice.d.connections.list().length === 0, 5000);
+    const after = await callAs(bob.d, b, "send_file", { path: join(notes, "readme.md"), to: toAlice });
+    expect(after.isError).toBe(true);
+  }, 90_000);
+
   test("a code tied to one login, or made on the same account, connects nothing", async () => {
     fake = new FakeServer();
     const alice = await user("alice");
@@ -202,3 +252,11 @@ describe("connections between two users", () => {
     expect(alice.d.connections.list()).toEqual([]);
   }, 90_000);
 });
+
+function readdirOk(dir: string): string[] {
+  try {
+    return readdirSync(dir);
+  } catch {
+    return [];
+  }
+}
