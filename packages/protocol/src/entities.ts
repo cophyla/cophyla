@@ -9,7 +9,9 @@ import {
   ConnectionId,
   ControllerId,
   GrantRef,
+  GroupFileId,
   GroupId,
+  GroupPhotoId,
   GroupPostId,
   ListenerId,
   MessageId,
@@ -701,10 +703,57 @@ export const GroupPostFrom = z.discriminatedUnion("kind", [
 export type GroupPostFrom = z.infer<typeof GroupPostFrom>;
 
 /**
+ * The most bytes a photo in a group chat holds: what an agent is shown whole, base64'd under the
+ * five megabytes a model takes in one image.
+ */
+export const GROUP_PHOTO_MAX_BYTES = 3.5 * 1024 * 1024;
+/** The longest side a photo may have, in pixels. */
+export const GROUP_PHOTO_MAX_SIDE = 8000;
+/** The most photos one post carries, and the most files. */
+export const GROUP_POST_PHOTOS_MAX = 4;
+export const GROUP_POST_FILES_MAX = 4;
+/** What a photo may be: JPEG, PNG, WebP or GIF, which every view and model draws. */
+export const GroupPhotoType = z.enum(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+export type GroupPhotoType = z.infer<typeof GroupPhotoType>;
+
+/**
+ * A photo in a post: its bytes are kept by every side of the group (the side that wrote it, and
+ * each other side once it fetched them), and read with `group.photo`. `name` is the file it
+ * came from, when it did.
+ */
+export const GroupPhoto = z.object({
+  id: GroupPhotoId,
+  type: GroupPhotoType,
+  bytes: z.number().int().positive().max(GROUP_PHOTO_MAX_BYTES),
+  width: z.number().int().positive().max(GROUP_PHOTO_MAX_SIDE),
+  height: z.number().int().positive().max(GROUP_PHOTO_MAX_SIDE),
+  name: z.string().min(1).max(255).optional(),
+});
+export type GroupPhoto = z.infer<typeof GroupPhoto>;
+
+/**
+ * A file or a folder attached to a post. It stays where it was posted from, on the machine of
+ * the side that wrote the post, and a member who wants it saves a copy (`group.file.save`, an
+ * agent's `get_file`), which is pulled from there then, as it is then: that machine must be on.
+ * `bytes` and `files` are what it held when it was posted. `machine` names that machine, for
+ * the side that holds it alone; one an app uploaded is kept on that side's primary.
+ */
+export const GroupFile = z.object({
+  id: GroupFileId,
+  name: z.string().min(1).max(255),
+  kind: z.enum(["file", "folder"]),
+  bytes: z.number().int().nonnegative(),
+  files: z.number().int().nonnegative().optional(),
+  machine: z.string().min(1).max(80).optional(),
+});
+export type GroupFile = z.infer<typeof GroupFile>;
+
+/**
  * One post in a group chat, as this side shows it: `n` its number here, in the order it
  * arrived, so one that came late after a disconnect is unread rather than skipped; `text` with
  * each tag written as this side names the member; `expectsReply` until a reply comes
- * (`answered`); `acks`, the handles that gave it a thumbs up.
+ * (`answered`); `acks`, the handles that gave it a thumbs up; its `photos` and `files`. A post
+ * with a photo or a file may have no text.
  */
 export const GroupPost = z.object({
   id: GroupPostId,
@@ -717,6 +766,8 @@ export const GroupPost = z.object({
   expectsReply: z.boolean().optional(),
   answered: z.boolean().optional(),
   acks: z.array(z.string().max(200)),
+  photos: z.array(GroupPhoto).max(GROUP_POST_PHOTOS_MAX).optional(),
+  files: z.array(GroupFile).max(GROUP_POST_FILES_MAX).optional(),
   at: Timestamp,
 });
 export type GroupPost = z.infer<typeof GroupPost>;
@@ -744,6 +795,14 @@ export const TransferBy = z.discriminatedUnion("kind", [
 ]);
 export type TransferBy = z.infer<typeof TransferBy>;
 
+/**
+ * A transfer from another person: their login, and the name of their agent that sent it when
+ * one did. Its bytes come from their Cophyla through this user's primary, over the relay;
+ * `from.node` is the primary, `from.path` the name it has there.
+ */
+export const TransferPeer = z.object({ user: z.string().min(1).max(64), agent: z.string().min(1).max(200).optional() });
+export type TransferPeer = z.infer<typeof TransferPeer>;
+
 /** The most a transfer's reason holds: a line, not a note. */
 export const TRANSFER_REASON_MAX = 120;
 
@@ -758,7 +817,8 @@ export const TransferReason = z.string().min(1).max(TRANSFER_REASON_MAX);
  * sender said: an agent's `send_file` asks for one. `total` and `bytes` count the bytes to
  * send and the bytes come; a folder counts its files too (`files`). `rate` is bytes a second
  * lately, while it runs. `via` is the slowest way its bytes take. `error` says why it failed,
- * or what it waits for. `dismissed` is its last row: the user took it off the list.
+ * or what it waits for. `peer` is the other person it came from, when it did. `dismissed` is its
+ * last row: the user took it off the list.
  */
 export const Transfer = z.object({
   id: TransferId,
@@ -775,6 +835,7 @@ export const Transfer = z.object({
   via: TransferVia.optional(),
   rate: z.number().nonnegative().optional(),
   by: TransferBy,
+  peer: TransferPeer.optional(),
   startedAt: Timestamp,
   endedAt: Timestamp.optional(),
   dismissed: z.literal(true).optional(),
@@ -1954,11 +2015,14 @@ export const entities = {
   Group,
   GroupMember,
   GroupPost,
+  GroupPhoto,
+  GroupFile,
   GroupMention,
   Transfer,
   TransferState,
   TransferVia,
   TransferBy,
+  TransferPeer,
   Client,
   Controller,
   Access,

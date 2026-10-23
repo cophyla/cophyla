@@ -11,10 +11,11 @@
 // architecture.md, "nodes" and "Topology".
 
 import { z } from "zod";
-import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, TransferReason, Workspace } from "./entities.ts";
-import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
+import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, GroupPhotoType, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, TransferReason, Workspace } from "./entities.ts";
+import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, GroupId, GroupPhotoId, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
+import { FilePiece, FileTreePage, GroupPhotoRef, PeerSource, PhotoPiece, TreeEntry } from "./peer-files.ts";
 
 const Empty = z.object({});
 
@@ -75,14 +76,6 @@ export const ReplicaSnapshot = z.object({
 });
 export type ReplicaSnapshot = z.infer<typeof ReplicaSnapshot>;
 
-/** One entry of what `files.tree` lists: a folder, or a file with its size and when it last changed. */
-export const TreeEntry = z.object({
-  rel: z.string().max(4096),
-  dir: z.literal(true).optional(),
-  size: z.number().int().nonnegative().optional(),
-  mtimeMs: z.number().int().nonnegative().optional(),
-});
-export type TreeEntry = z.infer<typeof TreeEntry>;
 
 /** Requests over the link: the handshake and heartbeat upward, takeover downward, relay and replication. */
 export const nodeLinkRequests = {
@@ -263,6 +256,40 @@ export const nodeLinkRequests = {
     result: z.object({ window: z.number().int().positive(), size: z.number().int().nonnegative(), mtimeMs: z.number().int().nonnegative() }),
   },
   /**
+   * Either way, carried on by the primary as `files.tree` is: a piece of a file on `node`
+   * (`path`, or `rel` under it), its bytes from `at`, and the file as it is now. The primary
+   * reads one of its machines' files this way for another person's Cophyla, which reads only a
+   * file this user let it read. Gated and confined as `files.pipe.open`.
+   */
+  "files.read": {
+    params: z.object({ node: NodeId, path: z.string().min(1).max(4096), rel: z.string().max(4096).optional(), at: z.number().int().nonnegative() }),
+    result: FilePiece,
+  },
+  /**
+   * Either way, carried on by the primary: the image at `path` on `node` as a photo of a group
+   * chat's post, a piece at a time from `at`. JPEG, PNG, WebP or GIF within the photo's limits
+   * goes as it is; anything else, or bigger, is scaled down to a JPEG by the computer's own
+   * codecs, or refused saying why when it has none. The first piece makes it, the rest read
+   * what was made.
+   */
+  "files.photo": {
+    params: z.object({ node: NodeId, path: z.string().min(1).max(4096), at: z.number().int().nonnegative().optional() }),
+    result: PhotoPiece.extend({ width: z.number().int().positive(), height: z.number().int().positive(), name: z.string().min(1).max(255) }),
+  },
+  /**
+   * Secondary → primary: what a file of another person's holds, a page at a time, for a
+   * transfer the primary started on the secondary (`transfer.start` with `peer`). Refused for
+   * any other file.
+   */
+  "peer.file.tree": { params: z.object({ peer: PeerSource, from: z.number().int().nonnegative().optional() }), result: FileTreePage },
+  /** Secondary → primary: a piece of a file of another person's, for such a transfer. */
+  "peer.file.read": { params: z.object({ peer: PeerSource, rel: z.string().max(4096).optional(), at: z.number().int().nonnegative() }), result: FilePiece },
+  /**
+   * Secondary → primary: a photo of a group `caller`, a live session of the secondary's, is
+   * in, a piece at a time, for `read_group`'s answer.
+   */
+  "group.photo": { params: GroupPhotoRef.extend({ caller: SessionId }), result: PhotoPiece },
+  /**
    * Secondary → primary: `caller`, a live session of the secondary's, sends `path` (on its own
    * machine) to `to`, an agent or a machine, with the `send_file` tool. Transfers start where
    * they land, from the primary; the answer is the text the model reads. `reason` is the
@@ -329,13 +356,14 @@ export const nodeLinkRequests = {
     result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
   /**
-   * Secondary → primary: one of the group chat tools (`read_group`, `post_group`, `ack_post`)
-   * or `focus`, called by `caller`, a live session of the secondary's. Groups and focus live on
-   * the primary; the answer is the text the model reads.
+   * Secondary → primary: one of the group chat tools (`read_group`, `post_group`, `ack_post`,
+   * `get_file`) or `focus`, called by `caller`, a live session of the secondary's. Groups and
+   * focus live on the primary; the answer is the text the model reads, and the photos it is
+   * shown, which the secondary reads with `group.photo`.
    */
   "group.tool": {
-    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "post_group", "ack_post", "focus"]), args: z.record(z.string(), z.unknown()) }),
-    result: z.object({ text: z.string(), isError: z.boolean().optional() }),
+    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "post_group", "ack_post", "get_file", "focus"]), args: z.record(z.string(), z.unknown()) }),
+    result: z.object({ text: z.string(), isError: z.boolean().optional(), photos: z.array(z.object({ group: GroupId, photo: GroupPhotoId, type: GroupPhotoType })).max(8).optional() }),
   },
   /**
    * What a secondary's session has not read in its group chats and was not told yet, for the

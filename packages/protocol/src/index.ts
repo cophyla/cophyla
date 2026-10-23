@@ -23,6 +23,7 @@ export * from "./key.ts";
 export * from "./agent-tools.ts";
 export * from "./connection.ts";
 export * from "./team.ts";
+export * from "./peer-files.ts";
 
 import { entities } from "./entities.ts";
 import { brainRequests, CapabilityHello, capabilityEvents, capabilityNotices, capabilityRequests, capabilitySignals } from "./capability.ts";

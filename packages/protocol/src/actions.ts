@@ -205,6 +205,15 @@ export const actions = {
   "group.member.set": { risk: "write" },
   "group.ack": { risk: "write" },
   "group.deliver": { risk: "write" },
+  // Photos and files in group chats: the app's upload, a photo read, a file saved to one of the
+  // user's machines; an agent's post that carries photos or files into a group with other
+  // people in it (`group.share`, which a built-in rule asks about unless the agent runs without
+  // prompts), and its `get_file` (`group.file.get`).
+  "group.upload": { risk: "write" },
+  "group.photo": { risk: "read" },
+  "group.file.save": { risk: "write" },
+  "group.share": { risk: "network" },
+  "group.file.get": { risk: "write" },
   // An agent's focus: taken or ended by the agent (`agent.focus`), ended by the user (`focus.end`).
   "focus.list": { risk: "read" },
   "focus.end": { risk: "write" },
@@ -241,6 +250,14 @@ export const actions = {
   "transfer.send": { risk: "write" },
   "files.tree": { risk: "read" },
   "files.pipe.open": { risk: "read" },
+  // A piece of a file, and an image made a photo, read on one of the user's machines for the
+  // primary: for another person's Cophyla reading a file it was let read, and for a photo posted
+  // from a path.
+  "files.read": { risk: "read" },
+  "files.photo": { risk: "read" },
+  // Files between two people: an agent's file to another person's (`transfer.send` too), and
+  // one coming in (`peer.file.receive`, the system's), pulled into the agent's machine.
+  "peer.file.receive": { risk: "write" },
 } as const satisfies Record<string, ActionDefinition>;
 
 export type ActionName = keyof typeof actions;

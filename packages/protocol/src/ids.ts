@@ -29,6 +29,14 @@ export const ID_PREFIXES = {
   group: "grp",
   /** One post in a group chat. */
   groupPost: "gmsg",
+  /** A photo in a group chat's post, kept by every side of the group. */
+  groupPhoto: "gph",
+  /** A file or a folder attached to a group chat's post: it stays where it was posted from. */
+  groupFile: "gfile",
+  /** A file or a folder an agent sent another person's agent, which that person's Cophyla reads from this side. */
+  peerFile: "pfile",
+  /** Bytes an app hands its node a piece at a time, for a photo or a file it posts. */
+  upload: "upl",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -119,6 +127,10 @@ export const TransferId = idSchema("transfer");
 export const TeammateId = idSchema("teammate");
 export const GroupId = idSchema("group");
 export const GroupPostId = idSchema("groupPost");
+export const GroupPhotoId = idSchema("groupPhoto");
+export const GroupFileId = idSchema("groupFile");
+export const PeerFileId = idSchema("peerFile");
+export const UploadId = idSchema("upload");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -140,6 +152,10 @@ export type TransferId = z.infer<typeof TransferId>;
 export type TeammateId = z.infer<typeof TeammateId>;
 export type GroupId = z.infer<typeof GroupId>;
 export type GroupPostId = z.infer<typeof GroupPostId>;
+export type GroupPhotoId = z.infer<typeof GroupPhotoId>;
+export type GroupFileId = z.infer<typeof GroupFileId>;
+export type PeerFileId = z.infer<typeof PeerFileId>;
+export type UploadId = z.infer<typeof UploadId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");

@@ -16,6 +16,7 @@ import { z } from "zod";
 import { HarnessKind } from "./entities.ts";
 import { AgentMessageId, ConnectionId, Timestamp } from "./ids.ts";
 import { ConnectionRelay, Secret } from "./invite.ts";
+import { peerFileRequests } from "./peer-files.ts";
 
 /** One end of a connection as the other is told it: its name, the agent there now, whether one runs. */
 export const ConnectionEndInfo = z.object({
@@ -66,6 +67,14 @@ export const connectionLinkRequests = {
   "conn.state": { params: ConnectionEndInfo, result: z.object({}) },
   /** The sending end ended the connection: its terminal closed, or someone ended it there. */
   "conn.end": { params: z.object({ reason: z.string().min(1).max(200) }), result: z.object({}) },
+  /** The agent at the sending end sent the one at this end a file or a folder (peer-files.ts); `to` is that agent's name here. */
+  "conn.file.send": peerFileRequests.send,
+  /** What a file this end sent the asking end holds, a page at a time. */
+  "conn.file.tree": peerFileRequests.tree,
+  /** A piece of such a file. */
+  "conn.file.read": peerFileRequests.read,
+  /** How a file the asking end sent ended here. */
+  "conn.file.done": peerFileRequests.done,
 } as const;
 
 export type ConnectionLinkRequestName = keyof typeof connectionLinkRequests;

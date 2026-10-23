@@ -13,9 +13,10 @@
 // away asks for the entries after the last it took (`team.group.sync`).
 
 import { z } from "zod";
-import { Focus, GroupMention, GroupNotify, HarnessKind, SessionStatus, TeammateTheirs } from "./entities.ts";
+import { Focus, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, GroupFile, GroupMention, GroupNotify, GroupPhoto, HarnessKind, SessionStatus, TeammateTheirs } from "./entities.ts";
 import { AgentMessageId, GroupId, GroupPostId, SessionId, TeammateId, Timestamp } from "./ids.ts";
 import { ConnectionRelay, Secret } from "./invite.ts";
+import { GroupPhotoRef, peerFileRequests, PhotoPiece } from "./peer-files.ts";
 
 /** The longest message a teammate's agent sends: as a connection's. */
 export const TEAMMATE_MAX_CHARS = 16_000;
@@ -64,7 +65,12 @@ export const GroupEntryMember = z.discriminatedUnion("kind", [
 ]);
 export type GroupEntryMember = z.infer<typeof GroupEntryMember>;
 
-/** A post as it crosses between sides: its text holds each tag as `@[<member key>]`, which each side writes as it names the member. */
+/**
+ * A post as it crosses between sides: its text holds each tag as `@[<member key>]`, which each
+ * side writes as it names the member. Its photos' bytes are fetched from the writer's side
+ * (`team.group.photo`) and kept by each; its files stay with the writer's side, which names no
+ * machine to the others.
+ */
 export const GroupEntryPost = z.object({
   id: GroupPostId,
   from: z.discriminatedUnion("kind", [
@@ -76,6 +82,8 @@ export const GroupEntryPost = z.object({
   mentions: z.array(GroupMention).max(100),
   replyTo: GroupPostId.optional(),
   expectsReply: z.boolean().optional(),
+  photos: z.array(GroupPhoto).max(GROUP_POST_PHOTOS_MAX).optional(),
+  files: z.array(GroupFile.omit({ machine: true })).max(GROUP_POST_FILES_MAX).optional(),
   at: Timestamp,
 });
 export type GroupEntryPost = z.infer<typeof GroupEntryPost>;
@@ -158,6 +166,19 @@ export const teammateLinkRequests = {
     params: z.object({ group: GroupId, seq: z.number().int().positive(), entry: GroupEntry, at: Timestamp }),
     result: z.object({}),
   },
+  /**
+   * A photo of a post this side wrote in a group both are in, a piece at a time from `at`,
+   * which the asking side keeps.
+   */
+  "team.group.photo": { params: GroupPhotoRef, result: PhotoPiece },
+  /** An agent of the sending side sent one of this side's open agents a file or a folder (peer-files.ts). */
+  "team.file.send": peerFileRequests.send,
+  /** What a file this side was let read holds, a page at a time: one sent to its agent, or one posted in a group both are in. */
+  "team.file.tree": peerFileRequests.tree,
+  /** A piece of such a file. */
+  "team.file.read": peerFileRequests.read,
+  /** How a file the asking side sent ended here. */
+  "team.file.done": peerFileRequests.done,
   /** This side's entries for a group after `after`, in order, at most two hundred at a time. */
   "team.group.sync": {
     params: z.object({ group: GroupId, after: z.number().int().nonnegative() }),

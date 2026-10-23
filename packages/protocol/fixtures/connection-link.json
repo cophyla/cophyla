@@ -34,6 +34,10 @@
     },
     "conn.notice": { "params": [{ "about": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "why": "the user did not allow it" }], "results": [{}] },
     "conn.state": { "params": [{ "name": "api-claude", "harness": "claude", "live": true }, { "name": "terminal", "live": false }], "results": [{}] },
-    "conn.end": { "params": [{ "reason": "its terminal closed" }], "results": [{}] }
+    "conn.end": { "params": [{ "reason": "its terminal closed" }], "results": [{}] },
+    "conn.file.send": { "params": [{ "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1", "to": "web", "name": "schema.sql", "kind": "file", "total": 18432, "files": 1, "reason": "the schema for the web client", "from": { "name": "api-codex", "harness": "codex" }, "sentAt": 1758196800000 }, { "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1", "to": "web", "name": "dist", "kind": "folder", "total": 2147483648, "files": 3, "from": { "name": "api-codex" }, "sentAt": 1758196800000 }], "results": [{ "status": "sending" }, { "status": "asked" }] },
+    "conn.file.tree": { "params": [{ "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1" }, { "file": "gfile_01ARZ3NDEKTSV4RRFFQ69G5GF2", "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "from": 5000 }], "results": [{ "kind": "file", "name": "schema.sql", "entries": [{ "rel": "", "size": 18432, "mtimeMs": 1758196600000 }], "total": 18432, "files": 1, "count": 1, "skipped": 0 }, { "kind": "folder", "name": "dist", "entries": [{ "rel": "assets", "dir": true }, { "rel": "assets/app.js", "size": 2000, "mtimeMs": 1758196600000 }], "total": 2048, "files": 2, "count": 5003, "skipped": 0, "next": 5000 }] },
+    "conn.file.read": { "params": [{ "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1", "at": 0 }, { "file": "gfile_01ARZ3NDEKTSV4RRFFQ69G5GF2", "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "rel": "assets/app.js", "at": 1024 }], "results": [{ "data": "iVBORw0KGgo=", "size": 18432, "mtimeMs": 1758196600000 }] },
+    "conn.file.done": { "params": [{ "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1", "ok": true }, { "file": "pfile_01ARZ3NDEKTSV4RRFFQ69G5PF1", "ok": false, "why": "it failed: the disk is full" }], "results": [{}] }
   }
 }

@@ -29,6 +29,8 @@ import {
   GroupMemberKey,
   GroupNotify,
   GroupPost,
+  GROUP_POST_FILES_MAX,
+  GROUP_POST_PHOTOS_MAX,
   Grant,
   GrantKind,
   GrantRole,
@@ -68,7 +70,8 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateId, ThreadId, Timestamp, TransferId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
 
@@ -225,6 +228,17 @@ export const GroupCandidate = z.object({
   intent: z.string().max(300).optional(),
 });
 export type GroupCandidate = z.infer<typeof GroupCandidate>;
+
+/** The most bytes one file an app uploads to post holds. */
+export const GROUP_UPLOAD_MAX_BYTES = 1024 ** 3;
+
+/**
+ * A photo or a file a post carries, as the app names it: bytes it uploaded (`group.upload`),
+ * or a file or a folder on one of the user's machines, by its path there (one the desktop app
+ * was handed by a drop, or one picked in Files).
+ */
+export const GroupAttach = z.union([z.object({ upload: UploadId }), z.object({ node: NodeId, path: z.string().min(1).max(4096) })]);
+export type GroupAttach = z.infer<typeof GroupAttach>;
 
 /** A six-digit pairing code, shown on the desktop and typed on the phone. */
 export const PairingCode = z.string().regex(/^\d{6}$/, { message: "expected six digits" });
@@ -1139,8 +1153,53 @@ export const clientRequests = {
     params: z.object({ group: GroupId, name: z.string().trim().min(1).max(80).optional(), purpose: z.string().trim().max(300).optional(), notify: GroupNotify.optional() }),
     result: z.object({ group: Group }),
   },
-  /** This side's user posts in a group: tags are read out of the text (`@handle`, `@agents`, `@users`, `@everyone`), and one that names no member refuses the post. */
-  "group.post": { params: z.object({ group: GroupId, text: z.string().min(1).max(16_000), replyTo: GroupPostId.optional() }), result: z.object({ post: GroupPost }) },
+  /**
+   * This side's user posts in a group: tags are read out of the text (`@handle`, `@agents`,
+   * `@users`, `@everyone`), and one that names no member refuses the post. `photos` and `files`
+   * are what it carries; with either, the text may be left out. A photo from a path is made one
+   * on its machine (`files.photo`); a file from a path stays there, and one uploaded is kept on
+   * the primary.
+   */
+  "group.post": {
+    params: z.object({
+      group: GroupId,
+      text: z.string().max(16_000).optional(),
+      replyTo: GroupPostId.optional(),
+      photos: z.array(GroupAttach).max(GROUP_POST_PHOTOS_MAX).optional(),
+      files: z.array(GroupAttach).max(GROUP_POST_FILES_MAX).optional(),
+    }),
+    result: z.object({ post: GroupPost }),
+  },
+  /**
+   * Bytes for a photo or a file this side's user is about to post, a piece at a time: the first
+   * piece, without `upload`, starts one of `size` bytes named `name`; each next carries its id
+   * and goes on at `at`, which must be what came so far. Kept on the primary an hour after its
+   * last piece, until a post takes it. `photo`: it is to be a photo, which the app made a JPEG,
+   * PNG, WebP or GIF within a photo's limits.
+   */
+  "group.upload": {
+    params: z.object({
+      group: GroupId,
+      upload: UploadId.optional(),
+      name: z.string().min(1).max(255),
+      size: z.number().int().positive().max(GROUP_UPLOAD_MAX_BYTES),
+      at: z.number().int().nonnegative(),
+      data: z.string().min(1).max(FILE_PIECE_BASE64),
+      photo: z.boolean().optional(),
+    }),
+    result: z.object({ upload: UploadId, received: z.number().int().nonnegative() }),
+  },
+  /** A photo of a group's post, a piece at a time from `at`; one another side wrote is fetched from it first when this side has not got it yet. */
+  "group.photo": { params: GroupPhotoRef, result: PhotoPiece },
+  /**
+   * Saves a copy of a file posted in a group into `to.dir` on one of this user's machines (its
+   * Downloads folder without it): a transfer from where the file is now, on this user's
+   * machines or the other person's. Answered as `transfer.start` is.
+   */
+  "group.file.save": {
+    params: z.object({ group: GroupId, post: GroupPostId, file: GroupFileId, to: z.object({ node: NodeId, dir: z.string().min(1).max(4096).optional() }), relayOk: z.boolean().optional() }),
+    result: z.object({ transfer: Transfer.optional(), confirm: TransferConfirm.optional() }),
+  },
   /** This side's user's thumbs up on a post, or taken back; it tells no one. */
   "group.react": { params: z.object({ group: GroupId, post: GroupPostId, on: z.boolean() }), result: Empty },
   /** This side's user has read a group up to post number `upTo`. */
@@ -1195,7 +1254,8 @@ export const clientRequests = {
    * a hop through the server's relay, it is answered `confirm` and not started, unless
    * `relayOk`. `reason` is why it is sent, shown beside its name. `by` and `notify` are what
    * the primary carries for an agent's `send_file` (who sent it, and the agent session told
-   * where it landed); a client's own are dropped. Answered by the receiving machine.
+   * where it landed), and `peer` for a file of another person's, read through the primary
+   * (peer-files.ts); a client's own are dropped. Answered by the receiving machine.
    */
   "transfer.start": {
     params: z.object({
@@ -1205,6 +1265,7 @@ export const clientRequests = {
       relayOk: z.boolean().optional(),
       by: TransferBy.optional(),
       notify: SessionId.optional(),
+      peer: PeerSource.optional(),
     }),
     result: z.object({ transfer: Transfer.optional(), confirm: TransferConfirm.optional() }),
   },
