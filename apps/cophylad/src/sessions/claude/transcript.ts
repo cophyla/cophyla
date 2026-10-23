@@ -141,8 +141,8 @@ export function isCostRecord(row: unknown): boolean {
 /**
  * Reads Claude's own cost record against the usage counted so far, priced the same way: what
  * it holds beyond that is the conversation's side calls, kept in `unrecorded`. The record is
- * cumulative over the conversation's runs when a resume restores it; a record holding less (a
- * resume that did not) adds nothing, and the most any record showed stays. The usage counted
+ * cumulative over the conversation's runs when a resume restores it; a record costing less (a
+ * resume that did not) adds nothing, tokens neither, and the most any record showed stays. The usage counted
  * must include the sub-agents' up to the record. Returns whether the stats moved.
  */
 export function applyClaudeCostRecord(state: ClaudeTranscriptState, row: unknown, price: ClaudePrice): boolean {
@@ -165,6 +165,9 @@ export function applyClaudeCostRecord(state: ClaudeTranscriptState, row: unknown
   }
   let counted = 0;
   for (const [model, tokens] of state.byModel) counted += price(model, tokens) ?? 0;
+  // Less than counted: Claude's totals cover only part of the conversation (a run whose resume
+  // did not restore them), so none of its counts says what the transcripts lack.
+  if (total < counted) return false;
   const t = state.stats.tokens;
   const was = state.unrecorded ?? { cost: 0, in: 0, out: 0, cacheRead: 0, cacheWrite: 0 };
   const next: UnrecordedSpend = {

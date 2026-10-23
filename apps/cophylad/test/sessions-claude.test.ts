@@ -201,9 +201,10 @@ describe("claude transcript parser", () => {
     expect(statsFor(s, price).tokens).toEqual({ in: 600, out: 1000 });
     // Unpriced, the record's cost is left out, its tokens not.
     expect(statsFor(s).cost).toBe(0);
-    // Lower (its totals not restored on a resume): nothing taken back, nothing changes.
-    expect(applyClaudeCostRecord(s, record(0.001, 1), price)).toBe(false);
+    // Lower (its totals not restored on a resume): nothing taken back, and its counts add nothing either.
+    expect(applyClaudeCostRecord(s, record(0.001, 99_999), price)).toBe(false);
     expect(statsFor(s, price).cost).toBeCloseTo(counted + 0.1, 6);
+    expect(statsFor(s, price).tokens).toEqual({ in: 600, out: 1000 });
     // Usage after it: no longer settled; a later record counts on top of all of it.
     applyClaudeRow(s, assistant("msg_2", "claude-opus-5-5", { input_tokens: 0, output_tokens: 1000 }));
     expect(s.settled).toBe(false);
