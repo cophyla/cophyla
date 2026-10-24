@@ -36,6 +36,8 @@ export class TeamControl {
   private d: TeamDeps;
   /** The user's own post just went: the group's posts scroll to their end once drawn. */
   private toEnd = false;
+  /** Lists refused as kept by the primary: asked again once the node may be it. */
+  private refused = new Set<"groups" | "focus" | "teammates">();
 
   /** The composer's photos and files, and the posts'. */
   readonly media: MediaControl;
@@ -72,12 +74,13 @@ export class TeamControl {
     if (!this.d.state.scopes.includes("sessions:read")) return;
     try {
       const { groups } = await this.d.rpc.request<{ groups: Group[] }>("group.list", {});
+      this.refused.delete("groups");
       this.d.dispatch({ type: "groups", groups });
       // the group shown has its posts asked for again: the line dropped since they came
       const shown = this.d.ui.group;
       if (shown !== undefined && this.d.state.groups.has(shown)) void this.loadPosts(shown);
     } catch (e) {
-      this.quiet("group chats", e);
+      this.quiet("groups", "group chats", e);
     }
   }
 
@@ -85,9 +88,10 @@ export class TeamControl {
     if (!this.d.state.scopes.includes("sessions:read")) return;
     try {
       const { focus } = await this.d.rpc.request<{ focus: { session: string; focus: Focus }[] }>("focus.list", {});
+      this.refused.delete("focus");
       this.d.dispatch({ type: "focus", focus });
     } catch (e) {
-      this.quiet("focus", e);
+      this.quiet("focus", "focus", e);
     }
   }
 
@@ -95,9 +99,10 @@ export class TeamControl {
     if (!this.d.state.scopes.includes("controllers")) return;
     try {
       const { teammates } = await this.d.rpc.request<{ teammates: Teammate[] }>("teammate.list", {});
+      this.refused.delete("teammates");
       this.d.dispatch({ type: "teammates", teammates });
     } catch (e) {
-      this.quiet("teammates", e);
+      this.quiet("teammates", "teammates", e);
     }
   }
 
@@ -134,9 +139,19 @@ export class TeamControl {
   }
 
   /** A list a node or an app too old for it refuses, or one whose part is off there: none, said nowhere. */
-  private quiet(what: string, e: unknown): void {
-    if (e instanceof ViewRpcError && (e.code === "unsupported" || e.code === "unavailable")) return;
+  private quiet(part: "groups" | "focus" | "teammates", what: string, e: unknown): void {
+    if (e instanceof ViewRpcError && (e.code === "unsupported" || e.code === "unavailable")) {
+      if (e.code === "unavailable") this.refused.add(part);
+      return;
+    }
     this.fail(what, e);
+  }
+
+  /** The node's own row changed (it took the primary role, say): the lists it refused, asked again. */
+  again(): void {
+    if (this.refused.has("groups")) void this.loadGroups();
+    if (this.refused.has("focus")) void this.loadFocus();
+    if (this.refused.has("teammates")) void this.loadTeammates();
   }
 
   /** A group this side no longer keeps: its tab, its draft and what was open on it go. */

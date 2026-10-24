@@ -25,6 +25,8 @@ export class TalkControl {
   private d: TalkDeps;
   /** The session whose Messages pane showed at the last draw. */
   private shown?: string;
+  /** `talk.list` was refused as kept by the primary: asked again once the node may be it. */
+  private refused = false;
 
   constructor(deps: TalkDeps) {
     this.d = deps;
@@ -44,12 +46,21 @@ export class TalkControl {
     if (!this.d.state.scopes.includes("sessions:read")) return;
     try {
       const { talks } = await this.d.rpc.request<{ talks: TalkSummary[] }>("talk.list", {});
+      this.refused = false;
       this.d.dispatch({ type: "talks", talks });
     } catch (e) {
       // Older than conversations, or a node that keeps none: Messages goes. Anything else (the
       // line dropped) leaves things as they were, and the next connect asks again.
-      if (e instanceof ViewRpcError && (e.code === "unsupported" || e.code === "unavailable")) this.d.dispatch({ type: "talks" });
+      if (e instanceof ViewRpcError && (e.code === "unsupported" || e.code === "unavailable")) {
+        this.refused = e.code === "unavailable";
+        this.d.dispatch({ type: "talks" });
+      }
     }
+  }
+
+  /** The node's own row changed (it took the primary role, say): a refused list is asked again. */
+  again(): void {
+    if (this.refused) void this.load();
   }
 
   /** A notice for conversations, folded in; false for any other. */

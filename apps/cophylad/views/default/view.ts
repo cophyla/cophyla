@@ -398,6 +398,13 @@ rpc.onNotification((n) => {
       const node = n.params as CophylaNode;
       const harnesses = state.nodes.get(node.id)?.capabilities.harnesses.join(",");
       dispatch({ type: "node.state", params: node });
+      // The node this view talks to took the primary role, a moment after it started, say: what
+      // only the primary keeps, refused while it claimed the role, is asked for again.
+      if (node.id === state.node) {
+        team.again();
+        lead.again();
+        talks.again();
+      }
       // A harness signed in or out there: its profiles, and the usage rows they give, again.
       if (harnesses !== undefined && harnesses !== node.capabilities.harnesses.join(",")) void loadProfiles();
       // A node that went away takes its subscription with it; it is watched again when it is back.

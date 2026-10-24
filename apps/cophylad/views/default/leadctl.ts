@@ -23,6 +23,8 @@ export interface LeadDeps {
 
 export class LeadControl {
   private d: LeadDeps;
+  /** `lead.list` was refused as kept by the primary: asked again once the node may be it. */
+  private refused = false;
 
   constructor(deps: LeadDeps) {
     this.d = deps;
@@ -38,6 +40,7 @@ export class LeadControl {
     if (!state.scopes.includes("sessions:read")) return;
     try {
       const { leaders } = await this.d.rpc.request<{ leaders: Leader[] }>("lead.list", {});
+      this.refused = false;
       this.d.dispatch({ type: "leaders", leaders });
     } catch (e) {
       // Older than leaders: Lead and the marks go. Anything else (the line dropped, the primary
@@ -46,7 +49,13 @@ export class LeadControl {
         ui.lead = undefined;
         this.d.dispatch({ type: "leaders" });
       }
+      if (e instanceof ViewRpcError && e.code === "unavailable") this.refused = true;
     }
+  }
+
+  /** The node's own row changed (it took the primary role, say): a refused list is asked again. */
+  again(): void {
+    if (this.refused) void this.load();
   }
 
   /** A notice for leaders, folded in; false for any other. */
