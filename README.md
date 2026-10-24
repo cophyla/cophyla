@@ -59,7 +59,7 @@ The editable layer under `~/.cophyla` uses erasable syntax only (`erasableSyntax
 
 ## Install and update
 
-The latest release, [0.20.0](https://github.com/cophyla/cophyla/releases/tag/platform-v0.20.0),
+The latest release, [0.20.1](https://github.com/cophyla/cophyla/releases/tag/platform-v0.20.1),
 is a pre-release for Windows on x64. Its installer is signed with a self-signed certificate
 until one Windows trusts exists, so SmartScreen warns about it: More info, then Run anyway.
 The Android app is attached to the same release as a debug build: a release-signed one will
