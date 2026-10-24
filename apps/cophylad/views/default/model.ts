@@ -5255,19 +5255,24 @@ export interface CandidateGroup {
   items: CandidateItem[];
 }
 
-/** The picker's agents under their headings, the user's own first; one already in `g` is left out. */
+/**
+ * The picker's agents under their headings, the user's own first; one already in `g` is left
+ * out, by its session: a teammate's agent renamed since it was put in is the same agent. A node
+ * from before teammates' sessions came with them is matched by handle.
+ */
 export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">): CandidateGroup[] {
   const sessions = new Set<string>();
   const handles = new Set<string>();
   for (const m of g?.members ?? []) {
-    if (m.kind !== "agent" || m.gone) continue;
+    if (m.kind !== "agent") continue;
     sessions.add(m.session);
-    handles.add(m.handle);
+    if (!m.gone) handles.add(m.handle);
   }
   const groups = new Map<string, CandidateGroup>();
   for (const c of cands) {
     const own = "session" in c.ref;
-    if ("session" in c.ref ? sessions.has(c.ref.session) : handles.has(c.handle)) continue;
+    const session = "session" in c.ref ? c.ref.session : c.session;
+    if (session !== undefined ? sessions.has(session) : handles.has(c.handle)) continue;
     const folder = c.folder ?? c.workspace;
     const key = own ? `own:${c.node ?? ""}\n${folder ?? ""}` : `user:${c.user ?? ""}`;
     let group = groups.get(key);

@@ -271,6 +271,16 @@ describe("group chats in the view", () => {
     expect(groupCreateParams({ name: " ", purpose: "", notify: "all", picked: [] }, cands)).toEqual({ error: "Name the group." });
   });
 
+  test("Add members leaves out a teammate's agent in the group under the name it had, by its session", () => {
+    // bob renamed his api agent "stick" since it was put in: the same session, a new name
+    const renamed: GroupCandidate = { ref: { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE1", name: "stick" }, handle: "bob/stick", session: BOBS, harness: "claude", user: "bob", status: "idle" };
+    const other: GroupCandidate = { ref: { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE1", name: "black" }, handle: "bob/black", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC9", harness: "claude", user: "bob", status: "idle" };
+    expect(candidateGroups([renamed, other], group()).flatMap((g) => g.items.map((i) => i.handle))).toEqual(["bob/black"]);
+    // a node from before sessions came with a teammate's agents: matched by handle as before
+    const { session: _s, ...old } = renamed;
+    expect(candidateGroups([old, { ...old, handle: "bob/api", ref: { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE1", name: "api" } }], group()).flatMap((g) => g.items.map((i) => i.handle))).toEqual(["bob/stick"]);
+  });
+
   test("what the user read is told up to the last post loaded, once", () => {
     const g = group();
     expect(readUpTo(g, { posts: [post(1), post(2)] })).toBeUndefined();

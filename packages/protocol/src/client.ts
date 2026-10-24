@@ -216,10 +216,15 @@ export type TeammateInvite = z.infer<typeof TeammateInvite>;
 export const GroupMemberRef = z.union([z.object({ session: SessionId }), z.object({ teammate: TeammateId, name: z.string().min(1).max(120) })]);
 export type GroupMemberRef = z.infer<typeof GroupMemberRef>;
 
-/** An agent a group may take, as the picker shows it: what to add it by, its handle, harness, owner, workspace, folder and machine (the user's own alone), and how it stands. */
+/**
+ * An agent a group may take, as the picker shows it: what to add it by, its handle, harness,
+ * owner, workspace, folder and machine (the user's own alone), and how it stands. A teammate's
+ * agent carries its session too, so a picker leaves it out of a group it is in under an older name.
+ */
 export const GroupCandidate = z.object({
   ref: GroupMemberRef,
   handle: z.string().min(1).max(200),
+  session: SessionId.optional(),
   harness: z.string().max(40).optional(),
   user: z.string().max(64).optional(),
   workspace: z.string().max(200).optional(),

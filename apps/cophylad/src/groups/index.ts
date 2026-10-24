@@ -22,7 +22,9 @@
 // whole of it and writes only its own part: what its own people and agents do goes into a log
 // numbered on that side and to the other sides over the teammates' link, and a side that was
 // away asks each other side for its entries after the last it took. A post is numbered on each
-// side as it arrives, so one that came late is unread rather than skipped.
+// side as it arrives, so one that came late is unread rather than skipped. An agent renamed on
+// its side keeps its place: that side tells the others its new name, and each also takes the
+// name another side's agent has now from its posts and from that teammate's directory.
 //
 // A post may carry photos and files. A photo's bytes are kept beside the posts on every side
 // (`media.ts`): the side that wrote it keeps them as posted, and each other side fetches them
@@ -497,11 +499,14 @@ export class Groups {
         } catch (e) {
           this.log.info("a teammate's agents could not be listed", { teammate: t.id, error: message(e) });
         }
+        const owner = teams.teammate(t.id)?.owner;
+        if (owner) this.followDirectory(owner, agents);
         for (const a of agents) {
           if (!a.session) continue;
           out.push({
             ref: { teammate: t.id, name: a.name },
             handle: `${t.user}/${a.name}`,
+            session: a.session,
             ...(a.harness ? { harness: a.harness } : {}),
             user: t.user,
             ...(a.workspace ? { workspace: a.workspace } : {}),
@@ -512,6 +517,28 @@ export class Groups {
       }
     }
     return out;
+  }
+
+  /**
+   * Another side's agent by the name that side gives it now, from what it says (a post, its
+   * directory): a rename there is followed here. Its row is changed, not put; true when it was.
+   */
+  private followName(g: GroupRow, owner: string, session: string, name: string): boolean {
+    const m = g.members.find((x) => x.key === agentKey(session));
+    if (!m || m.kind !== "agent" || this.mine(m) || m.owner !== owner || !name || m.name === name) return false;
+    m.name = name;
+    return true;
+  }
+
+  /** A teammate's directory, as it was just read: its agents in the groups take the names it gives them. */
+  private followDirectory(owner: string, agents: TeamAgent[]): void {
+    for (const g of this.all()) {
+      let changed = false;
+      for (const a of agents) if (a.session && this.followName(g, owner, a.session, a.name)) changed = true;
+      if (!changed) continue;
+      this.rows.put(g);
+      this.emit(g);
+    }
   }
 
   /** The teammates the groups may reach, as the teammates module lists them. */
@@ -584,6 +611,9 @@ export class Groups {
     const me = this.deps.me();
     const now = this.now();
     const added: MemberRow[] = [];
+    // asked for, and in the group already (under another name, it may be): said when nothing else is added
+    const already: string[] = [];
+    let renamed = false;
     for (const ref of refs) {
       if ("session" in ref) {
         const s = this.session(ref.session);
@@ -591,7 +621,11 @@ export class Groups {
         if (s.role === "assistant") throw new RpcError("invalid", "the chat's own session is no member of a group");
         // only one the agents' directory lists: never a session on a folder lent here by another person
         if (!this.deps.names().has(s.id)) throw new RpcError("denied", `${ref.session} is not one of the agents your agents can reach`);
-        if (g.members.some((m) => m.key === agentKey(s.id))) continue;
+        const was = g.members.find((m) => m.key === agentKey(s.id));
+        if (was) {
+          already.push(this.handle(was));
+          continue;
+        }
         const place = this.deps.place(s);
         const m: MemberRow = {
           key: agentKey(s.id),
@@ -622,7 +656,13 @@ export class Groups {
         let a = (await teams.agents(ref.teammate)).find((x) => x.name === ref.name);
         if (!a) a = (await teams.agents(ref.teammate, true)).find((x) => x.name === ref.name);
         if (!a || !a.session) throw new RpcError("not_found", `${t.user}/${ref.name} is not open to you now`);
-        if (g.members.some((m) => m.key === agentKey(a.session!))) continue;
+        const was = g.members.find((m) => m.key === agentKey(a.session!));
+        if (was) {
+          // renamed on their side since it was put in: it takes the name asked for, which is theirs now
+          if (this.followName(g, t.owner, a.session, a.name)) renamed = true;
+          already.push(this.handle(was));
+          continue;
+        }
         // every person in a group is a teammate of every other
         for (const [owner, side] of Object.entries(g.sides)) {
           if (owner !== t.owner) throw new RpcError("denied", `${t.user} and ${side.user} are both in the group only if they are teammates of each other, which this side cannot tell: add ${t.user}'s agents in a group of your own with them`);
@@ -651,6 +691,13 @@ export class Groups {
         }
         if (!g.sides[t.owner]) g.sides[t.owner] = { teammate: ref.teammate, user: t.user, taken: 0, since: g.n };
       }
+    }
+    if (added.length === 0 && already.length > 0) {
+      if (renamed) {
+        this.rows.put(g);
+        this.emit(g);
+      }
+      throw new RpcError("conflict", `${already.join(", ")} ${already.length === 1 ? "is" : "are"} in #${g.name} already`);
     }
     if (g.members.filter((m) => m.kind === "agent").length > AGENTS_MAX) throw new RpcError("invalid", `a group takes ${AGENTS_MAX} agents at most`);
     this.rows.put(g);
@@ -1705,10 +1752,20 @@ export class Groups {
   private onSession(s: Session): void {
     if (!this.deps.routes()) return;
     const key = agentKey(s.id);
+    let names: Map<string, { alias: string }> | undefined;
     for (const g of this.all()) {
       const m = g.members.find((x) => x.key === key);
       if (!m || !this.mine(m)) continue;
       const ended = s.status === "ended";
+      // renamed (a /rename, or its harness naming it afresh): the other sides are told the name it answers to now
+      const alias = ended ? undefined : (names ??= this.deps.names()).get(s.id)?.alias;
+      if (alias && alias !== m.name) {
+        m.name = alias;
+        m.at = this.now();
+        this.rows.put(g);
+        this.logEntry(g, { kind: "member.add", member: this.entryMember(g, m) }, m.at);
+        this.emit(g);
+      }
       if (ended !== (m.gone === true)) {
         if (ended) m.gone = true;
         else delete m.gone;
@@ -2204,6 +2261,11 @@ export class Groups {
       }
       case "post": {
         const ok = this.remotePost(g, owner, entry.post, false);
+        // its writer as its side names it now: before the post is shown, so it shows that name
+        if (ok && ok.from.kind === "agent" && this.followName(g, owner, ok.from.session, ok.from.name)) {
+          this.rows.put(g);
+          this.emit(g);
+        }
         if (ok) this.takePost(g, ok, true);
         else this.log.info("a side's post refused: not its own to write", { group: g.id, owner, post: entry.post.id });
         break;
