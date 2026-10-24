@@ -103,7 +103,13 @@ describe("teammates between two users", () => {
     const bobPost = await bob.ui.next((n) => n.method === "group.posted", 10_000);
     expect((bobPost.params as { post: GroupPost }).post.text).toContain("please check the build");
 
-    // focus: the agent takes it, the apps see it, the app ends it
+    // focus: the agent takes it, the apps see it, the app ends it. Her agent was told it is in the
+    // group: that turn ends first, or its plain idle would end the focus taken here
+    await waitFor(() => {
+      const h = alice.d.store.sessionEvents.history(a.id, { limit: 200 });
+      const at = h.findIndex((e) => e.kind === "user_turn" && String((e.payload as { text?: string }).text ?? "").includes("put you in the group chat #release"));
+      return at >= 0 && h.slice(at + 1).some((e) => e.kind === "status" && (e.payload as { status?: string }).status === "idle");
+    }, 10_000);
     const focus = await callAs(alice.d, a, "focus", { minutes: 60, reason: "deep work" });
     expect(focus.text).toContain("You are in focus until");
     const listed = await alice.ui.request<{ focus: { session: string }[] }>("focus.list", {});
