@@ -32,7 +32,7 @@
 
 import { posix, win32 } from "node:path";
 import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, PeerSource, Session, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
+import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, PeerSource, Session, TalkParty, TalkStatus, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { Connections } from "../connections/index.ts";
 import type { Groups, PhotoRef, ToolAnswer } from "../groups/index.ts";
 import type { PeerFiles, PeerLink } from "../peerfiles/index.ts";
@@ -53,6 +53,8 @@ import { clockTime, minutesLeft } from "./focus.ts";
 import type { Focuses } from "./focus.ts";
 import { Limits } from "./limits.ts";
 import type { LimitsConfig } from "./limits.ts";
+import { peerParty } from "./talk.ts";
+import type { TalkLog } from "./talk.ts";
 
 export type { Evidence } from "./caller.ts";
 
@@ -121,6 +123,8 @@ export interface AgentMessagesDeps {
   leaders?: () => Leaders | undefined;
   /** What a session a leader messaged does next, told to the leader; on the node that routes. */
   reports?: () => Reports | undefined;
+  /** The agents' conversations, which every message carried here goes into; on the node that routes. */
+  talk?: () => TalkLog | undefined;
   /** How long a tool call waits for what it started before it answers and tells the outcome later. */
   toolWaitMs?: number;
   now?: () => number;
@@ -219,7 +223,20 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+/** Why a message that waited on the user never landed, as its sender is told. */
+function notDelivered(e: unknown): string {
+  if (e instanceof RpcError && e.code === "denied") return "the user did not allow it";
+  if (e instanceof RpcError && e.code === "timeout") return "no one answered the approval in time";
+  if (e instanceof RpcError && e.code === "cancelled") return "its approval was withdrawn";
+  return message(e);
+}
+
 const HARNESS_WORDS: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "ACP" };
+
+/** An agent as its conversation's other end names it: its alias then, its harness, machine and folder. */
+function partyOf(r: AgentRef): TalkParty & { session: string } {
+  return { session: r.session, name: r.alias, harness: r.harness, machine: r.nodeName, ...(r.folder ? { folder: r.folder } : {}) };
+}
 
 export class AgentMessages {
   private deps: AgentMessagesDeps;
@@ -654,11 +671,13 @@ export class AgentMessages {
     if (teammates && !connections?.resolveFor(caller, p.to) && teammates.names(p.to)) {
       if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
       const sent = await teammates.send(caller, mode, p);
+      this.talkOut(caller.id, sent.id, p, peerParty(sent.alias, { teammate: sent.teammate }), sent.status);
       return { status: sent.status, id: sent.id, peer: { teammate: sent.teammate, alias: sent.alias }, ...(sent.focus ? { focus: sent.focus } : {}) };
     }
     if (connections && (connections.resolveFor(caller, p.to) || Connections.names(p.to))) {
       if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
       const sent = await connections.send(caller, p);
+      this.talkOut(caller.id, sent.id, p, peerParty(sent.alias, { connection: sent.connection }), sent.status);
       return { status: sent.status, id: sent.id, peer: { connection: sent.connection, alias: sent.alias } };
     }
     const d = this.directory();
@@ -687,8 +706,19 @@ export class AgentMessages {
     if (target.session.node !== this.deps.self().id && !this.deps.cluster.linked(target.session.node)) throw new RpcError("unavailable", `${to.nodeName} is offline; not sent`);
     const id = newId("agentMessage");
     this.limits.record(id, caller.id, target.session.id, p.text, hops);
-    if (asLead) return this.lead(caller, target.session, from, to, id, p, hops);
-    const told = (a: SendAnswer): SendAnswer => (fallback ? { ...a, fallback } : a);
+    const said = { id, text: p.text, ...(p.replyTo ? { replyTo: p.replyTo } : {}) };
+    if (asLead) {
+      const answer = await this.lead(caller, target.session, from, to, id, p, hops);
+      this.deps.talk?.()?.between(partyOf(from), partyOf(to), { ...said, lead: true, status: "sent" });
+      return answer;
+    }
+    const told = (a: SendAnswer): SendAnswer => {
+      // into both conversations, as it was answered: one waiting on the user is in the receiver's once it lands
+      const talk = this.deps.talk?.();
+      if (talk && a.status === "pending") talk.add(caller.id, { ...said, dir: "out", with: partyOf(to), status: "pending" });
+      else talk?.between(partyOf(from), partyOf(to), { ...said, status: a.status === "held" || a.status === "focus" ? a.status : "sent" });
+      return fallback ? { ...a, fallback } : a;
+    };
     const agent: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
 
     // the receiver in focus: held for it, its sender told at once until when and why
@@ -727,9 +757,15 @@ export class AgentMessages {
     if ("ask" in first) {
       this.log.info("agent message held for the user", { id, from: caller.id, to: target.session.id, ask: first.ask.id });
       work.then(
-        () => this.log.info("agent message delivered once allowed", { id, to: target.session.id }),
+        (r) => {
+          this.log.info("agent message delivered once allowed", { id, to: target.session.id });
+          const talk = this.deps.talk?.();
+          talk?.settle(id, r.status === "held" ? "held" : "sent");
+          talk?.add(target.session.id, { id, text: p.text, ...(p.replyTo ? { replyTo: p.replyTo } : {}), dir: "in", with: partyOf(from) });
+        },
         (e: unknown) => {
           this.log.info("agent message not delivered", { id, to: target.session.id, error: message(e) });
+          this.deps.talk?.()?.settle(id, "failed", notDelivered(e));
           void this.notice(caller, id, to, e);
         },
       );
@@ -737,6 +773,11 @@ export class AgentMessages {
     }
     this.log.info("agent message sent", { id, from: caller.id, to: target.session.id, status: first.done.status, hops, ...(fallback ? { fallback } : {}) });
     return told({ status: first.done.status === "held" ? "held" : "sent", id, to });
+  }
+
+  /** A message the caller sent to another person's agent, into the caller's conversation as it was answered. */
+  private talkOut(caller: string, id: string, p: { text: string; replyTo?: string }, to: TalkParty, status: TalkStatus): void {
+    this.deps.talk?.()?.add(caller, { id, text: p.text, ...(p.replyTo ? { replyTo: p.replyTo } : {}), dir: "out", with: to, status });
   }
 
   /**
@@ -827,14 +868,19 @@ export class AgentMessages {
     const sender = fromEntry ? agentRef(d, fromEntry) : undefined;
     const mode: AgentMode | undefined = fromEntry ? (fromEntry.session.mode === "bypassPermissions" ? "bypass" : "prompting") : undefined;
     const info: EnvelopeInfo & { mode?: AgentMode } = { messageId: newId("agentMessage"), ...(sender ? { from: sender } : {}), ...(from?.replyTo ? { replyTo: from.replyTo } : {}), ...(mode ? { mode } : {}) };
+    // a led session's own words are its side of the conversation; cophyla's notices are not
+    const talk = () => {
+      if (sender) this.deps.talk?.()?.add(leaderId, { id: info.messageId, text, ...(info.replyTo ? { replyTo: info.replyTo } : {}), dir: "in", with: partyOf(sender), report: true });
+    };
     const focus = this.deps.focus?.();
     try {
-      if (focus?.hold(leader, text, info, sender?.alias ?? "cophyla")) return;
+      if (focus?.hold(leader, text, info, sender?.alias ?? "cophyla")) return talk();
     } catch (e) {
       this.log.info("a report to a leader was not held: its focus holds too much", { leader: leaderId, error: message(e) });
       return;
     }
     await this.deliver(leader, text, info, () => undefined);
+    talk();
   }
 
   /** Delivers to the session wherever it is: here, or by its node, gated there too. */
@@ -883,8 +929,7 @@ export class AgentMessages {
 
   /** Tells the sender, in its own session, that its message was not delivered. */
   private async notice(caller: Session, id: string, to: AgentRef, e: unknown): Promise<void> {
-    const why = e instanceof RpcError && e.code === "denied" ? "the user did not allow it" : e instanceof RpcError && e.code === "timeout" ? "no one answered the approval in time" : e instanceof RpcError && e.code === "cancelled" ? "its approval was withdrawn" : message(e);
-    const text = `Your message ${id} to ${to.alias} was not delivered: ${why}.`;
+    const text = `Your message ${id} to ${to.alias} was not delivered: ${notDelivered(e)}.`;
     try {
       await this.deliver(caller, text, { messageId: newId("agentMessage"), replyTo: id }, () => undefined);
     } catch (err) {

@@ -29,7 +29,9 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, TalkMessage, TalkSummary, Teammate, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import { applyTalk } from "./talkmodel.ts";
+import type { TalkPage } from "./talkmodel.ts";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
@@ -265,6 +267,12 @@ export interface ViewState {
   groups: Map<string, Group>;
   /** Each group's posts loaded so far, by group: a group's are asked for as it opens. */
   groupPosts: Map<string, GroupPage>;
+  /** Each session's conversation with other agents at a glance, from `talk.list` and `talk.state`: kept through a disconnect, until the next list replaces them. */
+  talks: Map<string, TalkSummary>;
+  /** Each session's messages loaded so far: a session's are asked for as its Messages pane shows. */
+  talkPages: Map<string, TalkPage>;
+  /** The node keeps conversations: `talk.list` answered. Refused by an older node or app (false), or not asked yet, no Messages shows. */
+  talkOn?: boolean;
   /** The agents in focus now, by session, from `focus.list` and `focus.state`, while connected. */
   focus: Map<string, Focus>;
   /** The leaders, by speaker (`chat` or a session's id), from `lead.list` and `lead.state`, while connected. */
@@ -380,6 +388,16 @@ export type Action =
   /** A page of a group's posts: the latest, or (`before`) the ones before those shown. */
   | { type: "group.posts"; group: string; posts: GroupPost[]; more: boolean; before?: number }
   | { type: "group.posted"; params: { group: string; post: GroupPost } }
+  /** `talk.list`'s answer; none when the node or the app refused it, being older than conversations. */
+  | { type: "talks"; talks?: TalkSummary[] }
+  /** A session's conversation at a glance, as a message came or the user read it. */
+  | { type: "talk.state"; params: TalkSummary }
+  /** A message in a session's conversation, new or changed, to a view watching that session. */
+  | { type: "talk.said"; params: { message: TalkMessage } }
+  | { type: "talk.page.loading"; session: string }
+  | { type: "talk.page.failed"; session: string }
+  /** A page of a session's conversation: the latest, or (`before`) the one before those shown. */
+  | { type: "talk.page"; session: string; messages: TalkMessage[]; more: boolean; before?: number }
   | { type: "focus"; focus: { session: string; focus: Focus }[] }
   /** An agent took focus, or its focus ended (`focus` absent). */
   | { type: "focus.state"; params: { session: string; focus?: Focus } }
@@ -466,6 +484,8 @@ export function initialState(): ViewState {
     transfers: new Map(),
     groups: new Map(),
     groupPosts: new Map(),
+    talks: new Map(),
+    talkPages: new Map(),
     focus: new Map(),
     leaders: new Map(),
     teammates: new Map(),
@@ -672,7 +692,7 @@ function addEvent(c: SessionCard, e: SessionEvent): void {
 
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
-  if (applyTeam(state, action) || applyLead(state, action)) return state;
+  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -718,6 +738,11 @@ export function apply(state: ViewState, action: Action): ViewState {
         state.focus.clear();
         state.leaders.clear();
         for (const page of state.groupPosts.values()) {
+          page.stale = true;
+          page.loading = false;
+        }
+        // and the conversations shown, as their Messages pane shows
+        for (const page of state.talkPages.values()) {
           page.stale = true;
           page.loading = false;
         }
@@ -1101,6 +1126,14 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "leader.removed":
       // folded by applyLead, above
       return state;
+    case "talks":
+    case "talk.state":
+    case "talk.said":
+    case "talk.page.loading":
+    case "talk.page.failed":
+    case "talk.page":
+      // folded by applyTalk, above
+      return state;
     case "error":
       state.errors.push(action.message);
       state.errorsSeen++;
@@ -1149,6 +1182,12 @@ export function chatDraw(action: Action): ChatDraw {
     case "teammates":
     case "teammate.state":
     case "teammate.code":
+    case "talks":
+    case "talk.state":
+    case "talk.said":
+    case "talk.page.loading":
+    case "talk.page.failed":
+    case "talk.page":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -1874,8 +1913,16 @@ export function sessionTerminal(state: ViewState, session: Session): Terminal | 
   return t && t.host === ref.host ? t : undefined;
 }
 
-/** What a session's pane shows: the terminal it runs in, when the view can open one, unless the user chose the timeline. */
-export function paneMode(chosen: "timeline" | "terminal" | undefined, hasTerminal: boolean): "timeline" | "terminal" {
+/** What a session's pane can show: what it said and did, the terminal it runs in, its messages with other agents. */
+export type PaneMode = "timeline" | "terminal" | "messages";
+
+/**
+ * What a session's pane shows: the terminal it runs in, when the view can open one, unless the
+ * user chose the timeline, or its messages where the node keeps them.
+ */
+export function paneMode(chosen: PaneMode | undefined, hasTerminal: boolean, hasTalk: boolean): PaneMode {
+  if (chosen === "messages" && hasTalk) return "messages";
+  if (chosen === "messages") return hasTerminal ? "terminal" : "timeline";
   return hasTerminal ? (chosen ?? "terminal") : "timeline";
 }
 

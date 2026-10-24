@@ -105,6 +105,8 @@ export interface TeammatesDeps {
   groups: () => Groups | undefined;
   /** Files between this side and its teammates, on the primary. */
   files?: () => PeerFiles | undefined;
+  /** A message that waited for the far side went, or was refused there (`why`): its conversation says so. */
+  settled?: (id: string, status: "sent" | "failed", why?: string) => void;
   linked: (node: string) => boolean;
   dial?: Dial;
   now?: () => number;
@@ -901,6 +903,7 @@ export class Teammates {
         }
         if (e instanceof RpcError && (e.code === "denied" || e.code === "invalid" || e.code === "not_found")) {
           this.update2(id, (r) => (r.outbox = r.outbox.filter((m) => m.id !== q.id)));
+          this.deps.settled?.(q.id, "failed", e.message);
           await this.notify(q.sender, `Your message ${q.id} to ${row.peer?.user ?? "them"}/${q.to} was not delivered: ${e.message}.`, q.id);
           continue;
         }
@@ -908,6 +911,7 @@ export class Teammates {
         return;
       }
       this.update2(id, (r) => (r.outbox = r.outbox.filter((m) => m.id !== q.id)));
+      this.deps.settled?.(q.id, "sent");
     }
   }
 

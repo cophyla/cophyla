@@ -2248,11 +2248,13 @@ describe("default view: terminals", () => {
   });
 
   test("a session's pane shows its terminal until the user picks the timeline, and the timeline when it has none", () => {
-    expect(paneMode(undefined, true)).toBe("terminal");
-    expect(paneMode("timeline", true)).toBe("timeline");
-    expect(paneMode("terminal", true)).toBe("terminal");
-    expect(paneMode(undefined, false)).toBe("timeline");
-    expect(paneMode("terminal", false)).toBe("timeline");
+    for (const talk of [false, true]) {
+      expect(paneMode(undefined, true, talk)).toBe("terminal");
+      expect(paneMode("timeline", true, talk)).toBe("timeline");
+      expect(paneMode("terminal", true, talk)).toBe("terminal");
+      expect(paneMode(undefined, false, talk)).toBe("timeline");
+      expect(paneMode("terminal", false, talk)).toBe("timeline");
+    }
   });
 
   test("a send typed into a terminal lands as the user's turn under its ref; one over the pipe reached it as another agent's", () => {

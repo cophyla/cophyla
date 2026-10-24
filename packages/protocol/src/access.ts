@@ -336,6 +336,10 @@ export const requestFilters = {
   "group.member.add": { names: "global" },
   "group.member.remove": { names: "global" },
   "group.member.set": { names: "global" },
+  // a conversation reaches other sessions and other people: the whole account's
+  "talk.list": { names: "global" },
+  "talk.messages": { names: "global" },
+  "talk.read": { names: "global" },
   "focus.list": { names: "global" },
   "focus.end": { names: "global" },
   // a leader speaks as the user to sessions anywhere: the whole account's
@@ -408,6 +412,8 @@ export const notificationFilters = {
   "connection.state": "global",
   "group.state": "global",
   "group.posted": "global",
+  "talk.said": "global",
+  "talk.state": "global",
   "focus.state": "global",
   "lead.state": "global",
   "teammate.state": "global",

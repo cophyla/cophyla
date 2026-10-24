@@ -58,6 +58,15 @@ export const LEADERS_KV_NS = "leaders";
 export const PEER_FILES_NS = "peer-files";
 export const PEER_PULLS_NS = "peer-pulls";
 
+/**
+ * Agents' conversations (see `agentmsg/talk.ts`): every message between agents the primary
+ * carried, under each of the user's sessions it concerns (`<session>/<number>`), and each
+ * session's count and what the user read under `talk.sessions`. Replicated to the backups;
+ * never the brain's, never in the cloud backup, since they hold other people's agents' words.
+ */
+export const TALK_KV_NS = "talk";
+export const TALK_SESSIONS_NS = "talk.sessions";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -77,4 +86,6 @@ export const RESERVED_KV_NS: readonly string[] = [
   LEADERS_KV_NS,
   PEER_FILES_NS,
   PEER_PULLS_NS,
+  TALK_KV_NS,
+  TALK_SESSIONS_NS,
 ];

@@ -217,6 +217,11 @@ export class ClientRegistry {
     this.broadcastTo("session.event", event, (entry) => entry.watching.has(event.session));
   }
 
+  /** A message in a session's conversation with other agents, to the clients watching that session; its count goes to everyone (`talk.state`). */
+  broadcastTalk(said: ClientNotificationParams<"talk.said">): void {
+    this.broadcastTo("talk.said", said, (entry) => entry.watching.has(said.message.session));
+  }
+
   /** A session's row: to everyone when what it is doing changed, else to its watchers alone. */
   broadcastSession(session: Session): void {
     const row = clientRow(session);

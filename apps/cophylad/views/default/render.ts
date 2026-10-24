@@ -55,6 +55,9 @@
 // New group and Teammates lie over the panes as Devices does (teamview.ts draws them all).
 // Lead, beside Kill and at the end of the chat's head, makes a session or the chat a leader of
 // the user's other sessions, and the tabs and heads mark who leads whom (leadview.ts).
+// Messages, after Timeline and Terminal, shows a session's conversation with other agents in
+// its pane as a group's posts show, with what the user has not read counted on it; there is
+// no input under it (talkview.ts).
 
 import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
@@ -75,6 +78,9 @@ import { createConnectTeam, createGroupsHeading, createMenuItems, createSessionF
 import type { TeamUi } from "./teamview.ts";
 import { createLeadControl, createLeaderChip, createLedChip, createTabLead, updateChatLeadChip, updateLeadChips, updateLeadControl, updateTabLead } from "./leadview.ts";
 import type { LeadPop } from "./leadview.ts";
+import { createModeCount, createTalkPane, renderTalkPane, updateModeCount } from "./talkview.ts";
+import type { TalkUi } from "./talkview.ts";
+import type { PaneMode } from "./model.ts";
 import { canLead } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
 
@@ -103,8 +109,10 @@ export interface UiState {
   team: TeamUi;
   /** Lead's list, open under a speaker's Lead: the session's, or the chat's (leadview.ts). */
   lead?: LeadPop;
-  /** What the user chose a session's pane to show, when it runs in a terminal; the terminal until they choose (`paneMode`). */
-  modes: Map<string, "timeline" | "terminal">;
+  /** What the user chose a session's pane to show; its terminal, when it runs in one, until they choose (`paneMode`). */
+  modes: Map<string, PaneMode>;
+  /** Messages panes: the party each one shows alone, and the read point as each opened, which marks the first new message (talkview.ts). */
+  talk: TalkUi;
   /** What the user chose the chat's pane to show: the conversation until they choose its session's terminal (`chatMode`). */
   chatMode?: "chat" | "terminal";
   /** The chat's session is being started again from the menu. */
@@ -3123,19 +3131,21 @@ function createPane(): HTMLElement {
   const copied = el("p", "session-copied");
   copied.setAttribute("role", "status");
   copied.append(el("span", "session-copied-words"), el("code", "session-copied-command"));
-  // Timeline | Terminal, when the session runs in a terminal the node holds.
+  // Timeline | Terminal, when the session runs in a terminal the node holds, | Messages, where the node keeps them.
   const modes = el("div", "pane-mode");
   modes.setAttribute("role", "group");
   modes.setAttribute("aria-label", "Show");
   for (const [mode, label, title] of [
     ["timeline", "Timeline", "Show what the session said and did"],
     ["terminal", "Terminal", "Show the terminal it runs in"],
+    ["messages", "Messages", "Show its messages with other agents"],
   ] as const) {
     const b = el("button", `pane-mode-${mode}`, label);
     b.type = "button";
     b.title = title;
     b.dataset["action"] = "pane-mode";
     b.dataset["mode"] = mode;
+    if (mode === "messages") b.append(createModeCount());
     modes.append(b);
   }
   // Kill session, at the far end: a second press confirms it, since a session's process does not come back.
@@ -3164,7 +3174,7 @@ function createPane(): HTMLElement {
   earlier.type = "button";
   earlier.dataset["action"] = "earlier";
   body.append(earlier, el("ol", "timeline"));
-  root.append(head, body);
+  root.append(head, body, createTalkPane());
   return root;
 }
 
@@ -3181,14 +3191,21 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   fold.setAttribute("aria-expanded", String(open));
   fold.title = open ? "Fold the session's details away" : "Show the session's details";
   const terminal = sessionTerminal(state, s);
-  const mode = paneMode(ui.modes.get(s.id), terminal !== undefined);
+  const talk = state.talkOn === true;
+  const mode = paneMode(ui.modes.get(s.id), terminal !== undefined, talk);
   setData(node, "mode", mode);
   const modes = node.querySelector<HTMLElement>(".pane-mode")!;
-  setHidden(modes, terminal === undefined);
+  setHidden(modes, terminal === undefined && !talk);
   for (const b of Array.from(modes.querySelectorAll<HTMLButtonElement>("button"))) {
     setData(b, "session", s.id);
     b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
   }
+  setHidden(modes.querySelector<HTMLElement>(".pane-mode-terminal")!, terminal === undefined);
+  const messages = modes.querySelector<HTMLElement>(".pane-mode-messages")!;
+  setHidden(messages, !talk);
+  if (talk) updateModeCount(messages, state, s.id);
+  // Its messages are drawn while they show alone: every session has a pane, one shows.
+  if (mode === "messages" && ui.selected === s.id) renderTalkPane(node.querySelector<HTMLElement>(".talk-pane")!, s.id, state, ui);
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
   updateSessionFocus(node.querySelector<HTMLElement>(".session-focus")!, s, state, ui);
   updateHeadConnect(node, s, state, ui);
@@ -3981,7 +3998,7 @@ function renderVoice(root: HTMLElement, state: ViewState): void {
 /** The session whose pane shows its terminal, if the selected one's does. */
 function terminalSession(state: ViewState, ui: UiState): string | undefined {
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  return card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined) === "terminal" ? card.session.id : undefined;
+  return card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "terminal" ? card.session.id : undefined;
 }
 
 /** The chat's pane shows its session's own terminal: the chat's tab, and the user chose it. */
@@ -4168,7 +4185,9 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
     root.prepend(form);
   }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  setHidden(form, card === undefined);
+  // its Messages pane is read alone: what is typed to the session goes from its timeline
+  const reading = card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "messages";
+  setHidden(form, card === undefined || reading);
   if (!card) return;
   const s = card.session;
   const switched = form.dataset["session"] !== s.id;
@@ -4187,7 +4206,11 @@ export function activePane(roots: Roots): HTMLElement | undefined {
   if (!roots.chat.hidden) return roots.stream;
   const group = groupStream(roots.groups);
   if (group) return group;
-  for (const child of Array.from(roots.sessions.children) as HTMLElement[]) if (!child.hidden) return child;
+  for (const child of Array.from(roots.sessions.children) as HTMLElement[]) {
+    if (child.hidden) continue;
+    // its messages scroll on their own, under the head
+    return child.dataset["mode"] === "messages" ? (child.querySelector<HTMLElement>(".talk-stream") ?? child) : child;
+  }
   return undefined;
 }
 

@@ -122,6 +122,8 @@ export interface ConnectionsDeps {
   linked: (node: string) => boolean;
   /** Files on connections, on the primary. */
   files?: () => PeerFiles | undefined;
+  /** A message that waited for the far end went, or was refused there (`why`): its conversation says so. */
+  settled?: (id: string, status: "sent" | "failed", why?: string) => void;
   /** A node's terminals as known now; undefined while that is not known (the node not linked). */
   terminals: (node: string) => Terminal[] | undefined;
   /** A node's name, for the words. */
@@ -953,6 +955,7 @@ export class Connections {
         if (e instanceof RpcError && (e.code === "denied" || e.code === "invalid")) {
           // the far end refused it: its sender hears why, and the next goes
           this.update(id, (r) => (r.outbox = r.outbox.filter((m) => m.id !== q.id)));
+          this.deps.settled?.(q.id, "failed", e.message);
           await this.notify(row, q.sender, `Your message ${q.id} to ${row.peer ? peerAlias(row.peer) : "the other side"} was not delivered: ${e.message}.`, q.id);
           continue;
         }
@@ -960,6 +963,7 @@ export class Connections {
         return;
       }
       this.update(id, (r) => (r.outbox = r.outbox.filter((m) => m.id !== q.id)));
+      this.deps.settled?.(q.id, "sent");
     }
   }
 

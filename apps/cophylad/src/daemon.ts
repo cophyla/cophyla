@@ -107,6 +107,9 @@ import { connectionMethods } from "./connections/methods.ts";
 import { Focuses } from "./agentmsg/focus.ts";
 import { peerAlias } from "./agentmsg/envelope.ts";
 import type { EnvelopeInfo } from "./agentmsg/envelope.ts";
+import { folderOf } from "./agentmsg/directory.ts";
+import { peerParty, TalkLog } from "./agentmsg/talk.ts";
+import { talkMethods } from "./agentmsg/talkmethods.ts";
 import { Groups } from "./groups/index.ts";
 import { GroupMedia } from "./groups/media.ts";
 import { PeerFiles } from "./peerfiles/index.ts";
@@ -1234,6 +1237,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     peerFiles: () => (routesHere() ? peerFilesLive : undefined),
     leaders: () => (routesHere() ? leadersLive : undefined),
     reports: () => (routesHere() ? reportsLive : undefined),
+    talk: () => talkHere(),
     files: () => agentFiles,
     asks,
     ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
@@ -1419,10 +1423,16 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     send: (id, method, params) => (id.startsWith(LINK_VIEWER) ? (nodes?.linkViewers.send(id.slice(LINK_VIEWER.length), params) ?? false) : clients.send(id, method, params)),
   };
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
-  // Delivery into a session wherever it is, past focus: here, or forwarded to its node.
+  // Delivery into a session wherever it is, past focus: here, or forwarded to its node. A
+  // message from another person's agent goes into the session's conversation as it lands; one
+  // of the user's own agents' that focus held is there already, and lands now.
   const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }): Promise<{ status: "queued" | "held" }> => {
-    if (s.node === identity.id) return agentMessages.deliverHere(s.id, text, info);
-    return (await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" };
+    const r = s.node === identity.id ? await agentMessages.deliverHere(s.id, text, info) : ((await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" });
+    if (info.peer && !info.group) {
+      const via = "teammate" in info.peer ? { teammate: info.peer.teammate } : { connection: info.peer.connection };
+      talkHere()?.add(s.id, { id: info.messageId, text, ...(info.replyTo ? { replyTo: info.replyTo } : {}), dir: "in", with: peerParty(peerAlias(info.peer), via, info.peer.harness), ...(r.status === "held" ? { status: "held" as const } : {}) });
+    } else if (info.from && !info.group) talkHere()?.settle(info.messageId, r.status === "held" ? "held" : "sent");
+    return r;
   };
   const knownSessions = (): Session[] => {
     const own = sessions.list();
@@ -1430,6 +1440,32 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     return [...own, ...forwardHost.mirrorSessions().filter((s) => !ids.has(s.id))];
   };
   const routesHere = () => nodes!.roleOf() === "primary" || nodes!.member() === undefined;
+  // Agents' conversations: every message the router carries, kept by the primary. The first time
+  // this node routes, the old ones go and, once ever, the audit log's are taken in.
+  const talkLive = new TalkLog({ store, bus, log: log.child("talk") });
+  let talkReady = false;
+  const talkHere = (): TalkLog | undefined => {
+    if (!routesHere()) return undefined;
+    if (!talkReady) {
+      talkReady = true;
+      try {
+        talkLive.prune();
+        let names: Map<string, { alias: string }> | undefined;
+        talkLive.importOnce((id) => {
+          const s = sessions.get(id) ?? forwardHost.mirrorSessions().find((x) => x.id === id) ?? store.sessions.get(id);
+          if (!s) return undefined;
+          names ??= agentMessages.agentNames();
+          const name = names.get(id)?.alias;
+          const machine = s.node === identity.id ? node().name : forwardHost.registryList().find((x) => x.id === s.node)?.name;
+          const folder = folderOf(s.cwd);
+          return { ...(name ? { name } : {}), harness: s.harness, ...(machine ? { machine } : {}), ...(folder ? { folder } : {}) };
+        });
+      } catch (e) {
+        log.warn("agents' conversations could not be prepared", { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    return talkLive;
+  };
   // The user's own GitHub login, from the server's word on this account, for their name in group chats and to teammates.
   const selfLogin = new SelfLogin({ store, log: log.child("account"), account: () => cloud.account, attest: (aud) => cloud.attest(aud), verify: (token, aud) => cloud.verifyIdentity(token, aud) });
   const offSelfLogin = cloud.onUp(() => void selfLogin.refresh());
@@ -1546,6 +1582,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: focusLive,
     groups: () => groupsLive,
     files: () => (routesHere() ? peerFilesLive : undefined),
+    settled: (id, status, why) => talkHere()?.settle(id, status, why),
     linked: (n) => n === identity.id || forwardHost.linked(n),
   });
   teammates = teammatesLive;
@@ -1583,6 +1620,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     terminals: (n) => (n === identity.id ? terminalRows?.list() : forwardHost.linked(n) ? forwardHost.mirrorTerminals().filter((t) => t.node === n) : undefined),
     nodeName: (n) => (n === identity.id ? node().name : (forwardHost.registryList().find((x) => x.id === n)?.name ?? n)),
     files: () => (routesHere() ? peerFilesLive : undefined),
+    settled: (id, status, why) => talkHere()?.settle(id, status, why),
   });
   connections = connectionsLive;
   connectionsLive.start();
@@ -1746,6 +1784,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...connectionMethods({ connections: () => connections }),
     ...groupMethods({ groups: () => (routesHere() ? groupsLive : undefined), focus: () => (routesHere() ? focusLive : undefined) }),
     ...leaderMethods({ leaders: () => (routesHere() ? leadersLive : undefined) }),
+    ...talkMethods({ talk: () => talkHere() }),
     ...teammateMethods({ teammates: () => (routesHere() ? teammatesLive : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),

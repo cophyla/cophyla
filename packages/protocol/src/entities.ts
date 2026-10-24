@@ -773,6 +773,72 @@ export const GroupPost = z.object({
 export type GroupPost = z.infer<typeof GroupPost>;
 
 // ---------------------------------------------------------------------------------------
+// Agent conversations
+
+/**
+ * The other end of a message in an agent's conversation: another of the user's agents
+ * (`session`), named as the message named it then, with its harness, machine and folder; or
+ * another person's agent, `<user>/<name>`, a teammate's or one on a connection.
+ */
+export const TalkParty = z.object({
+  session: SessionId.optional(),
+  name: z.string().min(1).max(200),
+  harness: HarnessKind.optional(),
+  machine: z.string().max(80).optional(),
+  folder: z.string().max(200).optional(),
+  user: z.string().min(1).max(64).optional(),
+  teammate: TeammateId.optional(),
+  connection: ConnectionId.optional(),
+});
+export type TalkParty = z.infer<typeof TalkParty>;
+
+/**
+ * Where a message stands, as its send was answered: `sent`; `held` in the receiving terminal;
+ * `pending` on the user's approval; `queued` until the other person's Cophyla is reached;
+ * `waiting` for an agent to run in the connection's terminal; `focus` held for a receiver in
+ * focus; `failed` when it never arrived.
+ */
+export const TalkStatus = z.enum(["sent", "held", "pending", "queued", "waiting", "focus", "failed"]);
+export type TalkStatus = z.infer<typeof TalkStatus>;
+
+/** The longest text a conversation keeps of one message. */
+export const TALK_TEXT_MAX = 16_000;
+
+/**
+ * One message in an agent session's conversation with other agents, as the primary keeps it:
+ * `n` its number in that session's conversation, `out` one the session sent and `in` one it
+ * took in, `with` the other end. A message between two of the user's own agents is in both
+ * conversations, out in one and in in the other, under the same `id`. `lead` when it went as
+ * the user's words (the sender leads the receiver); `report` when cophyla carried a led
+ * session's last words to its leader; `why` a failed one's reason.
+ */
+export const TalkMessage = z.object({
+  session: SessionId,
+  n: z.number().int().positive(),
+  id: z.string().min(1).max(64),
+  dir: z.enum(["in", "out"]),
+  with: TalkParty,
+  text: z.string().max(20_000),
+  replyTo: z.string().max(64).optional(),
+  lead: z.literal(true).optional(),
+  report: z.literal(true).optional(),
+  status: TalkStatus.optional(),
+  why: z.string().max(300).optional(),
+  at: Timestamp,
+});
+export type TalkMessage = z.infer<typeof TalkMessage>;
+
+/** A session's conversation at a glance: its last message's number, the last the user read, what is unread, and when the last came. */
+export const TalkSummary = z.object({
+  session: SessionId,
+  n: z.number().int().nonnegative(),
+  readTo: z.number().int().nonnegative(),
+  unread: z.number().int().nonnegative(),
+  lastAt: Timestamp.optional(),
+});
+export type TalkSummary = z.infer<typeof TalkSummary>;
+
+// ---------------------------------------------------------------------------------------
 // Transfer
 
 /**

@@ -10,7 +10,7 @@
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
 // raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`;
-// `leaders` raises `lead.state`. The
+// `leaders` raises `lead.state`; the agents' conversations raise `talk.said` and `talk.state`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
@@ -78,6 +78,10 @@ export interface BusEvents {
   "group.state": ClientNotificationParams<"group.state">;
   /** A post in a group chat, new or changed. */
   "group.posted": ClientNotificationParams<"group.posted">;
+  /** A message in an agent's conversation with other agents, new or changed. */
+  "talk.said": ClientNotificationParams<"talk.said">;
+  /** An agent's conversation at a glance, after a message or a read. */
+  "talk.state": ClientNotificationParams<"talk.state">;
   /** An agent took focus, or came out of it. */
   "focus.state": ClientNotificationParams<"focus.state">;
   /** The leaders changed: every one now. */

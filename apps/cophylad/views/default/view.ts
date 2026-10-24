@@ -50,6 +50,9 @@
 // shows its pane where the chat's would be, and New group and Teammates lie over the panes.
 // Leaders are leadctl.ts's: `lead.list` on every connect, `lead.state` folded in, and Lead's
 // list, beside a session's Kill and in the chat's head, sending `lead.set` and `lead.remove`.
+// Agents' conversations are talkctl.ts's: `talk.list` on every connect, `talk.state` and
+// `talk.said` folded in, a session's messages asked for as its Messages pane shows, and
+// `talk.read` once their end is in view.
 //
 // The view pulls only what it shows. The node streams a session's events only while its
 // tab is open (`session.watch`, sent again on every connect), and leaving a tab drops its
@@ -79,6 +82,8 @@ import { Waves } from "./waves.ts";
 import { TeamControl } from "./teamctl.ts";
 import { newTeamUi } from "./teamview.ts";
 import { LeadControl } from "./leadctl.ts";
+import { TalkControl } from "./talkctl.ts";
+import { newTalkUi } from "./talkview.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -108,6 +113,7 @@ const ui: UiState = {
   viewerWrap: false,
   viewerSource: false,
   team: newTeamUi(),
+  talk: newTalkUi(),
 };
 // A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
 // over them, beside Devices: index.html has neither, so they are made here.
@@ -155,6 +161,14 @@ const lead = new LeadControl({
   draw: () => draw(),
   phone: () => phone.matches,
 });
+const talks = new TalkControl({
+  rpc,
+  state,
+  ui,
+  roots,
+  dispatch: (action, opts) => dispatch(action, opts),
+  draw: () => draw(),
+});
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
 const viewer = new FileViewer(
   rpc,
@@ -189,6 +203,7 @@ function draw(opts: RenderOptions = {}): void {
   syncRemote();
   revealListed();
   team.afterDraw();
+  talks.afterDraw();
 }
 
 /** Whether the rail shows: as the user left it, else beside the pane on a desk and away on a phone. */
@@ -232,7 +247,7 @@ function syncTerminal(): void {
     const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
     const own = card ? sessionTerminal(state, card.session) : undefined;
     const pane = card ? roots.sessions.querySelector<HTMLElement>(`.session[data-session="${card.session.id}"]`) : null;
-    if (card && own && pane && paneMode(ui.modes.get(card.session.id), true) === "terminal") {
+    if (card && own && pane && paneMode(ui.modes.get(card.session.id), true, state.talkOn === true) === "terminal") {
       terminal.show(own.id, pane, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(own, false, ui.fit);
       // Folded, the header's one line takes the terminal's controls too.
@@ -340,6 +355,7 @@ rpc.onNotification((n) => {
         void loadContextOn();
         team.connected();
         lead.connected();
+        talks.connected();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -356,6 +372,7 @@ rpc.onNotification((n) => {
         ui.opening.clear();
         ui.newTerminal = undefined;
         team.disconnected();
+        talks.disconnected();
         activeAt = 0;
       }
       return;
@@ -499,6 +516,10 @@ rpc.onNotification((n) => {
       return;
     case "lead.state":
       lead.notification(n.method, n.params);
+      return;
+    case "talk.state":
+    case "talk.said":
+      talks.notification(n.method, n.params);
       return;
     default:
       return;
@@ -2354,7 +2375,7 @@ function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: n
 /** The agent whose own terminal the pane shows, if it shows one: its paths name its files. */
 function terminalAgent(): Session | undefined {
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  if (!card || !sessionTerminal(state, card.session) || paneMode(ui.modes.get(card.session.id), true) !== "terminal") return undefined;
+  if (!card || !sessionTerminal(state, card.session) || paneMode(ui.modes.get(card.session.id), true, state.talkOn === true) !== "terminal") return undefined;
   return card.session;
 }
 
@@ -3139,8 +3160,8 @@ document.addEventListener("click", (ev) => {
   lead.outside(ev.target as Element | null);
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
-  // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list.
-  if (team.click(target) || lead.click(target)) return;
+  // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list; then a Messages pane's.
+  if (team.click(target) || lead.click(target) || talks.click(target)) return;
   switch (target.dataset["action"]) {
     case "answer": {
       const form = target.closest<HTMLFormElement>("form.ask-form");
@@ -3347,7 +3368,7 @@ document.addEventListener("click", (ev) => {
     case "pane-mode": {
       const session = target.dataset["session"];
       const mode = target.dataset["mode"];
-      if (!session || (mode !== "timeline" && mode !== "terminal")) return;
+      if (!session || (mode !== "timeline" && mode !== "terminal" && mode !== "messages")) return;
       ui.modes.set(session, mode);
       draw();
       if (mode === "terminal") terminal.focus();
@@ -3880,7 +3901,10 @@ document.addEventListener(
   },
   true,
 );
-document.addEventListener("visibilitychange", () => team.syncRead());
+document.addEventListener("visibilitychange", () => {
+  team.syncRead();
+  talks.syncRead();
+});
 
 // The focus follows a sequence of asks only while the user stays in the pinned prompts.
 document.addEventListener("focusin", (ev) => {

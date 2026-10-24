@@ -214,6 +214,10 @@ export const actions = {
   "group.file.save": { risk: "write" },
   "group.share": { risk: "network" },
   "group.file.get": { risk: "write" },
+  // Agents' conversations, which the primary keeps as it routes their messages: the app reads them and marks what the user read.
+  "talk.list": { risk: "read" },
+  "talk.messages": { risk: "read" },
+  "talk.read": { risk: "read" },
   // An agent's focus: taken or ended by the agent (`agent.focus`), ended by the user (`focus.end`).
   "focus.list": { risk: "read" },
   "focus.end": { risk: "write" },

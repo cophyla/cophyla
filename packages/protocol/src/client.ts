@@ -54,6 +54,8 @@ import {
   UsageDimension,
   UsageFilter,
   UsageReport,
+  TalkMessage,
+  TalkSummary,
   Task,
   Teammate,
   TeammateShare,
@@ -1214,6 +1216,15 @@ export const clientRequests = {
   "group.member.remove": { params: z.object({ group: GroupId, member: GroupMemberKey }), result: z.object({ group: Group }) },
   /** How one of this side's own agents is told of the group's posts: every post, or tags only. */
   "group.member.set": { params: z.object({ group: GroupId, member: GroupMemberKey, notify: GroupNotify }), result: z.object({ group: Group }) },
+  /** Each agent session's conversation with other agents at a glance: the sessions that have one, with what the user has not read. */
+  "talk.list": { params: Empty, result: z.object({ talks: z.array(TalkSummary) }) },
+  /** A page of a session's conversation with other agents, oldest first: the latest `limit` (fifty without it), or those before message number `before`. */
+  "talk.messages": {
+    params: z.object({ session: SessionId, before: z.number().int().positive().optional(), limit: z.number().int().min(1).max(200).optional() }),
+    result: z.object({ messages: z.array(TalkMessage), more: z.boolean() }),
+  },
+  /** The user has read a session's conversation up to message number `upTo`. */
+  "talk.read": { params: z.object({ session: SessionId, upTo: z.number().int().nonnegative() }), result: Empty },
   /** The agents in focus now, on every machine, with until when and why. */
   "focus.list": { params: Empty, result: z.object({ focus: z.array(z.object({ session: SessionId, focus: Focus })) }) },
   /** Ends an agent's focus: what was held for it reaches it now. */
@@ -1540,6 +1551,10 @@ export const clientNotifications = {
   "group.state": Group.extend({ left: z.boolean().optional() }),
   /** A post in a group, new or changed (a thumbs up, an answer), as this side shows it. */
   "group.posted": z.object({ group: GroupId, post: GroupPost }),
+  /** A message in a session's conversation with other agents, new or changed (where it stands), to the clients watching that session. */
+  "talk.said": z.object({ message: TalkMessage }),
+  /** A session's conversation at a glance, whenever a message comes or the user reads it. */
+  "talk.state": TalkSummary,
   /** An agent took focus, or came out of it (no `focus`). */
   "focus.state": z.object({ session: SessionId, focus: Focus.optional() }),
   /** The leaders, every one, whenever one is made, changes or goes. */

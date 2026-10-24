@@ -366,6 +366,15 @@ export class Store {
         .all({ before: opts.before ?? Number.MAX_SAFE_INTEGER, limit: opts.limit ?? 100 }) as AuditRow[];
       return rows.map(auditFromRow);
     },
+    /** The rows of these actions that ended `ok`, since `since`, oldest first, at most `limit`: what a module rebuilds its own record from once. */
+    succeeded: (actions: readonly string[], since: number, limit = 50_000): AuditEntry[] => {
+      if (actions.length === 0) return [];
+      const names = Object.fromEntries(actions.map((a, i) => [`a${i}`, a]));
+      const rows = this.db
+        .query(`SELECT * FROM audit WHERE action IN (${actions.map((_, i) => `$a${i}`).join(", ")}) AND outcome = 'ok' AND at >= $since ORDER BY at, id LIMIT $limit`)
+        .all({ ...names, since, limit }) as AuditRow[];
+      return rows.map(auditFromRow);
+    },
     count: (): number => (this.db.query("SELECT COUNT(*) AS n FROM audit").get() as { n: number }).n,
   };
 

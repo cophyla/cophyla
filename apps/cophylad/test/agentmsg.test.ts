@@ -17,6 +17,7 @@ import { envelope, readEnvelope } from "../src/agentmsg/envelope.ts";
 import { AgentMessages } from "../src/agentmsg/index.ts";
 import type { AgentCluster, AgentMessagesConfig, AgentSessions } from "../src/agentmsg/index.ts";
 import { Limits } from "../src/agentmsg/limits.ts";
+import { TalkLog } from "../src/agentmsg/talk.ts";
 import { Bus } from "../src/bus.ts";
 import { Config } from "../src/config/schema.ts";
 import { Asks } from "../src/gate/asks.ts";
@@ -249,9 +250,10 @@ interface Rig {
   sent: { id: string; text: string; opts: SendOptions }[];
   forwarded: { node: string; params: Record<string, unknown> }[];
   call: (caller: Session, tool: string, args: Record<string, unknown>, meta?: Record<string, unknown>) => Promise<{ text: string; isError?: boolean }>;
+  talk?: TalkLog;
 }
 
-function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean; notes?: (session: string) => string | undefined; primary?: (method: string, params: unknown) => Promise<unknown> }): Rig {
+function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean; notes?: (session: string) => string | undefined; primary?: (method: string, params: unknown) => Promise<unknown>; talk?: boolean; leads?: (caller: string, target: string) => boolean }): Rig {
   const config = Config.parse(Bun.TOML.parse(opts.toml ?? ""));
   const store = new Store(":memory:");
   store.migrate();
@@ -300,13 +302,16 @@ function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?
   const cfg = (): AgentMessagesConfig => config.agent_messages;
   const notes = opts.notes;
   const groups = notes ? () => ({ unreadNote: (session: string) => notes(session) }) as never : undefined;
-  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test", ...(groups ? { groups } : {}) });
+  const talk = opts.talk ? new TalkLog({ store, bus, log: silentLogger }) : undefined;
+  const leads = opts.leads;
+  const leaders = leads ? () => ({ route: (caller: string, target: Session) => (leads(caller, target.id) ? { lead: true } : undefined) }) as never : undefined;
+  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test", ...(groups ? { groups } : {}), ...(talk ? { talk: () => talk } : {}), ...(leaders ? { leaders } : {}) });
   const call: Rig["call"] = async (caller, tool, args, meta) => {
     const answer = (await router.mcp({ harness: caller.harness, ...(caller.native.pid ? { ppid: caller.native.pid } : {}) }, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: tool, arguments: args, ...(meta ? { _meta: meta } : {}) } })) as { result: { content: { text: string }[]; isError?: boolean } };
     return { text: answer.result.content[0]!.text, ...(answer.result.isError ? { isError: true } : {}) };
   };
   void all;
-  return { router, asks, store, sent, forwarded, call };
+  return { router, asks, store, sent, forwarded, call, ...(talk ? { talk } : {}) };
 }
 
 function node(id: string, name: string, extra: Partial<NodeRecord> = {}): NodeRecord {
@@ -470,5 +475,65 @@ describe("the router", () => {
     const answer = (await r2.router.upwardRequest({ id: LAPTOP, grant: "grt_reply" }, "agent.send", { caller: theirs.id, mode: "prompting", to: "web-claude", text: "green", replyTo: id })) as { status: string };
     expect(answer.status).toBe("sent");
     expect(r2.sent.at(-1)).toMatchObject({ id: me.id, text: "green", opts: { agent: { replyTo: id, from: { session: theirs.id, nodeName: "Laptop" } } } });
+  });
+});
+
+describe("the router's conversations", () => {
+  test("a message goes into both agents' conversations, out in the sender's and in in the receiver's, under one id", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" }, name: "web" });
+    const codex = sess("codex", "C:/work/api");
+    const r = rig({ local: [me, codex], talk: true });
+    const first = await r.call(me, "send_message", { to: "api-codex", text: "the login test can run now" });
+    const id = /pmsg_[0-9A-Z]{26}/.exec(first.text)![0];
+    await r.call(me, "send_message", { to: "api-codex", text: "and the signup one", reply_to: id });
+    const mine = r.talk!.page(me.id, 50).messages;
+    expect(mine.map((m) => [m.n, m.dir, m.with.name, m.text])).toEqual([
+      [1, "out", "api-codex", "the login test can run now"],
+      [2, "out", "api-codex", "and the signup one"],
+    ]);
+    expect(mine[0]).toMatchObject({ id, status: "sent", with: { session: codex.id, harness: "codex", machine: "Desk", folder: "api" } });
+    expect(mine[1]!.replyTo).toBe(id);
+    const theirs = r.talk!.page(codex.id, 50).messages;
+    expect(theirs.map((m) => [m.dir, m.with.name, m.id])).toEqual([
+      ["in", "web", id],
+      ["in", "web", mine[1]!.id],
+    ]);
+    expect(r.talk!.summary(codex.id)).toMatchObject({ n: 2, readTo: 0, unread: 2 });
+  });
+
+  test("one that waits on the user is the sender's alone until it lands; denied, it is failed with why", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    const yolo = sess("codex", "C:/work/api");
+    const r = rig({ local: [me, yolo], bypass: { [yolo.id]: true, [me.id]: false }, talk: true });
+    await r.call(me, "send_message", { to: "api-codex", text: "delete the build folder" });
+    expect(r.talk!.page(me.id, 50).messages.map((m) => m.status)).toEqual(["pending"]);
+    expect(r.talk!.page(yolo.id, 50).messages).toEqual([]);
+    r.asks.answer(r.asks.listOpen()[0]!.id, { option: "allow" }, USER);
+    await waitFor(() => r.talk!.page(yolo.id, 50).messages.length === 1);
+    expect(r.talk!.page(me.id, 50).messages.map((m) => m.status)).toEqual(["sent"]);
+    expect(r.talk!.page(yolo.id, 50).messages[0]).toMatchObject({ dir: "in", text: "delete the build folder" });
+
+    await r.call(me, "send_message", { to: "api-codex", text: "and the cache" });
+    r.asks.answer(r.asks.listOpen()[0]!.id, { option: "deny" }, USER);
+    await waitFor(() => r.talk!.page(me.id, 50).messages[1]?.status === "failed");
+    expect(r.talk!.page(me.id, 50).messages[1]).toMatchObject({ text: "and the cache", status: "failed", why: "the user did not allow it" });
+    // the notice of it is cophyla's, not a message of the conversation
+    expect(r.talk!.page(me.id, 50).messages).toHaveLength(2);
+    expect(r.talk!.page(yolo.id, 50).messages).toHaveLength(1);
+  });
+
+  test("a refused one goes nowhere; one held in the receiving terminal says so; a leader's is marked as the user's words", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    const codex = sess("codex", "C:/work/api");
+    const held = sess("claude", "C:/work/docs", { native: { id: "c-d", pid: 4300, transport: "pipe" } });
+    const r = rig({ local: [me, codex, held], held: new Set([held.id]), talk: true, leads: (_c, t) => t === codex.id, toml: `[gate.rules]\n"harness:agent.send@${held.id}" = "allow"\n` });
+    expect((await r.call(me, "send_message", { to: "nobody", text: "hi" })).isError).toBe(true);
+    expect(r.talk!.list()).toEqual([]);
+    await r.call(me, "send_message", { to: "docs-claude", text: "notes?" });
+    expect(r.talk!.page(held.id, 50).messages[0]).toMatchObject({ dir: "in", status: "held" });
+    await r.call(me, "send_message", { to: "api-codex", text: "rebase on main" });
+    expect(r.sent.at(-1)).toMatchObject({ id: codex.id, opts: { from: "lead" } });
+    expect(r.talk!.page(codex.id, 50).messages[0]).toMatchObject({ dir: "in", lead: true, text: "rebase on main", with: { session: me.id } });
+    expect(r.talk!.page(me.id, 50).messages.at(-1)).toMatchObject({ dir: "out", lead: true, with: { session: codex.id } });
   });
 });
