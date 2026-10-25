@@ -14,7 +14,7 @@
 //   cophyla connections [list|invite|accept|end]
 //                                             the user's agents connected to other
 //                                             people's (`connection.*`, on the primary)
-//   cophyla teammates [list|invite|accept|end] the user's teammates, and what is shared
+//   cophyla teammates [list|invite|accept|connect|disconnect|end] the user's teammates, what is shared, and agents connected
 //                                             with each (`teammate.*`, on the primary)
 //   cophyla invite | join | leave             as `cophylad invite | join | leave`
 //   cophyla agents uninstall                  takes the agents' MCP server out of every
@@ -98,21 +98,38 @@ function teammateLine(t: ClientResult<"teammate.list">["teammates"][number]): st
   const who = t.state === "pending" ? `(a code${t.expiresAt !== undefined ? `, until ${new Date(t.expiresAt).toLocaleString()}` : ""})` : (t.user ?? "?");
   const share = `${t.share.mode === "include" ? "shares" : "shares all but"} ${t.share.folders.map((f) => f.path).join(", ") || "nothing"}, ${t.share.open === "always" ? "always open" : "opened by hand"}`;
   const theirs = t.theirs ? `; theirs: ${t.theirs.workspaces.join(", ") || "nothing"} (${t.theirs.open === "always" ? "always open" : "opened by hand"})` : "";
-  return [t.id, t.state, who, share + theirs].join("\t");
+  const line = [t.id, t.state, who, share + theirs].join("\t");
+  const joined = (t.connections ?? []).map((c) => {
+    const how = c.state === "active" ? "connected" : c.state === "declined" ? `declined${c.reason ? ` (${c.reason})` : ""}` : c.by === "us" ? "asked, waiting for their answer" : "they ask: answer in the app";
+    return `  ${c.id}\t${c.session} <-> ${t.user ?? "?"}/${c.agent.name}\t${how}`;
+  });
+  return [line, ...joined].join("\n");
 }
 
 /**
- * `cophyla teammates [list] | invite (--folder P)… [--exclude] [--chosen] | accept (--folder P)… [--exclude] [--chosen] [--file F|-] | end <id>`:
+ * `cophyla teammates [list] | invite (--folder P)… [--exclude] [--chosen] | accept (--folder P)… [--exclude] [--chosen] [--file F|-] | connect <login> --session S --agent A | disconnect <tc_…> | end <id>`:
  * the user's teammates. A folder is a path on this machine, shared with every folder under it;
  * --exclude shares every workspace but those named; --chosen opens agents by hand only. Asked
  * of the primary, which keeps them; a code is read from F or stdin, never the command line.
+ * `connect` joins one of the user's agents to one of a teammate's (by its name or session in
+ * their directory): at once when theirs is open, else their user is asked.
  */
 async function teammatesCommand(argv: string[]): Promise<number> {
   let verb = "";
   try {
     const { values, positionals } = parseArgs({
       args: argv,
-      options: { home: { type: "string" }, port: { type: "string" }, folder: { type: "string", multiple: true }, node: { type: "string" }, exclude: { type: "boolean" }, chosen: { type: "boolean" }, file: { type: "string" } },
+      options: {
+        home: { type: "string" },
+        port: { type: "string" },
+        folder: { type: "string", multiple: true },
+        node: { type: "string" },
+        exclude: { type: "boolean" },
+        chosen: { type: "boolean" },
+        file: { type: "string" },
+        session: { type: "string" },
+        agent: { type: "string" },
+      },
       allowPositionals: true,
       strict: true,
     });
@@ -145,6 +162,31 @@ async function teammatesCommand(argv: string[]): Promise<number> {
         const code = await readInvite(values.file);
         const r = await call(where, "teammate.accept", { code: code.trim(), share: s }, how);
         process.stdout.write(`${r.teammate.user ?? "They"} and you are teammates (${r.teammate.id}).\n`);
+        return 0;
+      }
+      case "connect": {
+        const who = positionals[1];
+        if (!who || !values.session || !values.agent) throw new Error("give the teammate, your agent and theirs: cophyla teammates connect <login> --session <sess_…> --agent <name>");
+        const list = await call(where, "teammate.list", {}, how);
+        const t = list.teammates.find((x) => x.state === "active" && (x.id === who || x.user?.toLowerCase() === who.toLowerCase()));
+        if (!t) throw new Error(`${who} is not your teammate`);
+        const dir = await call(where, "teammate.agents", { teammate: t.id, fresh: true }, how);
+        const want = values.agent.toLowerCase();
+        const found = [...dir.agents, ...dir.closed].find((a) => a.session === values.agent || a.name.toLowerCase() === want);
+        if (!found?.session) throw new Error(`${t.user} has no agent called ${values.agent} in what they share with you`);
+        const r = await call(where, "teammate.connect", { teammate: t.id, session: values.session, agent: found.session }, how);
+        const c = (r.teammate.connections ?? []).find((x) => x.session === values.session && x.agent.session === found.session);
+        process.stdout.write(c?.state === "active" ? `Connected: ${values.session} and ${t.user}/${found.name} may message each other (${c.id}).\n` : `Asked ${t.user}: ${found.name} is closed, so their user decides (${c?.id ?? "asked"}).\n`);
+        return 0;
+      }
+      case "disconnect": {
+        const id = positionals[1];
+        if (!id) throw new Error("give the connection: cophyla teammates disconnect <tc_…>");
+        const list = await call(where, "teammate.list", {}, how);
+        const t = list.teammates.find((x) => (x.connections ?? []).some((c) => c.id === id));
+        if (!t) throw new Error(`no connection ${id}`);
+        await call(where, "teammate.disconnect", { teammate: t.id, id }, how);
+        process.stdout.write(`${id} has ended at both sides.\n`);
         return 0;
       }
       case "end": {
@@ -209,6 +251,11 @@ const HELP = `cophyla: the Cophyla commands, for the daemon running on this mach
                  --exclude every workspace but those; --chosen opens agents by hand only
   cophyla teammates accept --folder <path>… [--exclude] [--chosen] [--file F|-]
                  become the teammate of the person whose code is read from F or stdin
+  cophyla teammates connect <login> --session <sess_…> --agent <name>
+                 join one of your agents to one of the teammate's, so the two message each
+                 other both ways: at once when theirs is open to you, else they are asked
+  cophyla teammates disconnect <tc_…>
+                 end a connection between two agents, take back an ask, or decline one
   cophyla teammates end <tm_…>
                  end a teammate at both sides, or cancel a code
 

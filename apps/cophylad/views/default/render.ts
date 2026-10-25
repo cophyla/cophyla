@@ -67,14 +67,14 @@ import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, byt
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
-import { codeWords, connectableSessions, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionConnections } from "./model.ts";
+import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
 import type { SendTarget, TransferRow } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import { placeGroupChats } from "./model.ts";
 import type { Group } from "@cophyla/protocol";
-import { createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, createStatusTeam, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderStatusTeam, renderTeamOverlay, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
+import { createConnectConnected, createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, createStatusTeam, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderStatusTeam, renderTeamOverlay, updateConnectConnected, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
 import type { TeamUi } from "./teamview.ts";
 import { createLeadControl, createLeaderChip, createLedChip, createTabLead, updateChatLeadChip, updateLeadChips, updateLeadControl, updateTabLead } from "./leadview.ts";
 import type { LeadPop } from "./leadview.ts";
@@ -3159,14 +3159,14 @@ function createPane(): HTMLElement {
   // Connect: this session's terminal joined to another person's, by a code made or used here.
   const connect = actionButton("session-connect-start", "", "session-connect");
   connect.append(el("span", "session-connect-glyph", "⇄"), el("span", "session-connect-word", "Connect"));
-  connect.setAttribute("aria-label", "Connect this session to another person's agent");
-  connect.title = "Connect this session to another person's agent: make a code for them, or enter theirs";
+  connect.setAttribute("aria-label", "Connect this agent to a teammate's agent, or to someone else's with a code");
+  connect.title = "Connect this agent to a teammate's agent, or to someone else's with a code";
   const actions = el("div", "session-actions");
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
   // Lead, before Kill: this session a leader of the user's others, speaking to them as the user.
   actions.append(modes, el("span", "session-term-slot"), connect, createLeadControl(), kill);
-  // The other people's agents this session is connected to, when it is: a press opens them in Devices.
-  const links = actionButton("session-links", "", "connections-open");
+  // The other people's agents this session is joined to, when it is: a press opens its Connect panel.
+  const links = actionButton("session-links", "", "session-connect-show");
   // Beside them, what it leads while it leads, and the leaders that speak to it.
   head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
   const body = el("div", "session-body");
@@ -3209,11 +3209,12 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   updateKill(node.querySelector<HTMLElement>(".session-kill")!, s, state, ui);
   updateSessionFocus(node.querySelector<HTMLElement>(".session-focus")!, s, state, ui);
   updateHeadConnect(node, s, state, ui);
-  const linked = sessionConnections(state, s.id);
+  const linked = sessionLinks(state, s.id);
   const links = node.querySelector<HTMLButtonElement>(".session-links")!;
-  setHidden(links, linked.length === 0);
+  setHidden(links, linked.length === 0 || !headConnectOffered(state, s));
+  setData(links, "session", s.id);
   setText(links, linked.length === 0 ? "" : `⇄ ${linked[0]}${linked.length > 1 ? ` +${linked.length - 1}` : ""}`);
-  links.title = linked.length === 0 ? "" : `Connected to ${linked.join(", ")}: their agents and this one may message each other. Open Connections`;
+  links.title = linked.length === 0 ? "" : `Connected to ${linked.join(", ")}: their agents and this one may message each other. Open Connect`;
   updateLeadChips(head, s, state);
   updateLeadControl(node.querySelector<HTMLElement>(".session-actions > .lead-control")!, s.id, state, ui);
   const chip = node.querySelector<HTMLElement>(".chip")!;
@@ -3284,7 +3285,7 @@ function createHeadConnect(): HTMLElement {
   const close = actionButton("session-connect-close", "×", "session-connect-close");
   close.setAttribute("aria-label", "Close");
   close.title = "Close";
-  top.append(tabs, close);
+  top.append(el("h3", "session-connect-title", "Connect this agent"), close);
 
   const invite = el("form", "session-connect-form session-connect-invite");
   const login = el("input", "session-connect-for");
@@ -3323,7 +3324,14 @@ function createHeadConnect(): HTMLElement {
 
   const error = el("p", "session-connect-error");
   error.setAttribute("role", "alert");
-  panel.append(top, el("p", "session-connect-why"), invite, accept, error, el("p", "session-connect-note"), issued, done, createConnectTeam());
+  // Someone else: a person who is not a teammate, by a code; folded to its heading while the user has a teammate.
+  const others = el("section", "connect-section connect-else");
+  const toggle = actionButton("connect-else-toggle", "", "connect-else");
+  toggle.append(el("span", "connect-else-mark"), el("span", "connect-else-label", "Someone else"), el("span", "connect-else-hint", "not a teammate: make a code for them, or enter theirs"));
+  const body = el("div", "connect-else-body");
+  body.append(tabs, el("p", "session-connect-why"), invite, accept, error, el("p", "session-connect-note"), issued, done);
+  others.append(toggle, body);
+  panel.append(top, createConnectConnected(), createConnectTeam(), others);
   return panel;
 }
 
@@ -3340,7 +3348,16 @@ function updateHeadConnect(node: HTMLElement, s: Session, state: ViewState, ui: 
   if (!open) return;
   const v = headConnectView(state, s, open, Date.now());
   setData(panel, "kind", v.kind);
-  for (const b of Array.from(panel.querySelectorAll<HTMLElement>("button, form"))) setData(b, "session", s.id);
+  for (const b of Array.from(panel.querySelectorAll<HTMLElement>(".session-connect-top button, .connect-else button, .connect-else form"))) setData(b, "session", s.id);
+  // What it is joined to, and the teammates, above; Someone else under them, folded while there are teammates.
+  updateConnectConnected(panel.querySelector<HTMLElement>(".connect-connected")!, s, state, ui);
+  updateConnectTeam(panel.querySelector<HTMLElement>(".connect-teammates")!, s, state, ui);
+  const folded = connectElseFolded(state, open);
+  const toggle = panel.querySelector<HTMLButtonElement>(".connect-else-toggle")!;
+  toggle.setAttribute("aria-expanded", String(!folded));
+  setText(toggle.querySelector(".connect-else-mark")!, folded ? "▸" : "▾");
+  setData(panel.querySelector<HTMLElement>(".connect-else")!, "folded", String(folded));
+  setHidden(panel.querySelector<HTMLElement>(".connect-else-body")!, folded);
   const tabs = panel.querySelector<HTMLElement>(".session-connect-tabs")!;
   setHidden(tabs, v.kind !== "form");
   for (const b of Array.from(tabs.querySelectorAll<HTMLButtonElement>("button"))) b.setAttribute("aria-pressed", String(b.dataset["mode"] === open.mode));
@@ -3369,8 +3386,6 @@ function updateHeadConnect(node: HTMLElement, s: Session, state: ViewState, ui: 
     setText(issued.querySelector(".invite-left")!, [v.expired ? "this code has run out" : `good for ${v.left}`, copied ? (copied.ok ? "copied" : "select the text and copy it") : ""].filter(Boolean).join(" · "));
     setData(issued, "expired", v.expired ? "1" : "0");
   }
-  // Under it, the teammates this session may be opened to by hand.
-  updateConnectTeam(panel.querySelector<HTMLElement>(".session-teammates")!, s, state, ui);
   const done = panel.querySelector<HTMLElement>(".session-connect-done")!;
   setHidden(done, v.kind !== "connected");
   setText(done.querySelector(".session-connect-done-words")!, v.kind === "connected" ? `Connected to ${v.peer}: their agent and this one can message each other now, until the terminal closes or either of you ends it.` : "");

@@ -25,6 +25,8 @@ export const ID_PREFIXES = {
   transfer: "xfr",
   /** Another Cophyla user made a teammate: a standing link between the two accounts' primaries. */
   teammate: "tm",
+  /** One agent of this user's joined to one of a teammate's, both ways. */
+  teammateConnection: "tc",
   /** A group chat: posts by agent sessions and the people in it. */
   group: "grp",
   /** One post in a group chat. */
@@ -125,6 +127,7 @@ export const AgentMessageId = idSchema("agentMessage");
 export const ConnectionId = idSchema("connection");
 export const TransferId = idSchema("transfer");
 export const TeammateId = idSchema("teammate");
+export const TeammateConnectionId = idSchema("teammateConnection");
 export const GroupId = idSchema("group");
 export const GroupPostId = idSchema("groupPost");
 export const GroupPhotoId = idSchema("groupPhoto");
@@ -150,6 +153,7 @@ export type AgentMessageId = z.infer<typeof AgentMessageId>;
 export type ConnectionId = z.infer<typeof ConnectionId>;
 export type TransferId = z.infer<typeof TransferId>;
 export type TeammateId = z.infer<typeof TeammateId>;
+export type TeammateConnectionId = z.infer<typeof TeammateConnectionId>;
 export type GroupId = z.infer<typeof GroupId>;
 export type GroupPostId = z.infer<typeof GroupPostId>;
 export type GroupPhotoId = z.infer<typeof GroupPhotoId>;

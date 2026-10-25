@@ -352,6 +352,9 @@ export const requestFilters = {
   "teammate.accept": { names: "global" },
   "teammate.update": { names: "global" },
   "teammate.open": { names: "global" },
+  "teammate.agents": { names: "global" },
+  "teammate.connect": { names: "global" },
+  "teammate.disconnect": { names: "global" },
   "teammate.cancel": { names: "global" },
   "teammate.end": { names: "global" },
   // a transfer reaches any path of the machines it joins, as a shell there does

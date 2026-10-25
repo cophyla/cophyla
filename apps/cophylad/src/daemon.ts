@@ -1614,6 +1614,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     files: () => (routesHere() ? peerFilesLive : undefined),
     settled: (id, status, why) => talkHere()?.settle(id, status, why),
     linked: (n) => n === identity.id || forwardHost.linked(n),
+    asks,
+    self: () => ({ id: identity.id }),
   });
   teammates = teammatesLive;
   groupsLive.teammateList = () => teammatesLive.active();

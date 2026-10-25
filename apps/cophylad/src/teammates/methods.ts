@@ -1,5 +1,6 @@
 // The teammate methods: a client with full access lists the teammates, makes a code, uses
-// another user's, changes what it shares, opens an agent by hand, cancels a code, and ends a
+// another user's, changes what it shares, opens an agent by hand, lists a teammate's agents,
+// connects one of its agents to one of theirs and ends that, cancels a code, and ends a
 // teammate (`teammate.*`, the `controllers` scope, refused to limited access by the filter
 // tables). A code is shown to the one who asked and kept in no audit row. The teammates are the
 // primary's: a client of a secondary is the primary's client, and its requests are answered
@@ -53,6 +54,21 @@ export function teammateMethods(deps: { teammates: () => Teammates | undefined }
         if (p.on) full(ctx, "opens an agent to a teammate");
         return { teammate: get().open(p.teammate, p.session, p.on) };
       },
+    },
+    "teammate.agents": {
+      target: (p) => p.teammate,
+      handler: (p) => get().agentsFor(p.teammate, p.fresh === true),
+    },
+    "teammate.connect": {
+      target: (p) => p.teammate,
+      handler: async (p, ctx) => {
+        full(ctx, "connects an agent to a teammate's");
+        return { teammate: await get().connect(p.teammate, p.session, p.agent) };
+      },
+    },
+    "teammate.disconnect": {
+      target: (p) => p.teammate,
+      handler: async (p) => ({ teammate: await get().disconnect(p.teammate, p.id) }),
     },
     "teammate.cancel": {
       target: (p) => p.id,

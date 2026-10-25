@@ -72,10 +72,11 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
+import { TeamAgent, TeamClosedAgent } from "./team.ts";
 
 const Empty = z.object({});
 
@@ -1258,6 +1259,24 @@ export const clientRequests = {
   "teammate.update": { params: z.object({ id: TeammateId, share: TeammateShare }), result: z.object({ teammate: Teammate }) },
   /** Opens one agent to a teammate by hand, or closes it again: under `chosen`, or in a workspace shared closed. */
   "teammate.open": { params: z.object({ teammate: TeammateId, session: SessionId, on: z.boolean() }), result: z.object({ teammate: Teammate }) },
+  /**
+   * A teammate's agents in what they share with this user, asked of their side (kept half a
+   * minute, unless `fresh`): the open ones, and the closed ones this user may ask for by name,
+   * harness and workspace alone.
+   */
+  "teammate.agents": {
+    params: z.object({ teammate: TeammateId, fresh: z.boolean().optional() }),
+    result: z.object({ agents: z.array(TeamAgent), closed: z.array(TeamClosedAgent) }),
+  },
+  /**
+   * Joins `session`, an agent of this user's in what they share with the teammate, to `agent`,
+   * one of the teammate's by its session there, so the two message each other both ways and no
+   * other agent is let in: at once when theirs is open to this user, else their user is asked.
+   * Used on an ask the teammate made for the same two agents, it is this user's yes.
+   */
+  "teammate.connect": { params: z.object({ teammate: TeammateId, session: SessionId, agent: SessionId }), result: z.object({ teammate: Teammate }) },
+  /** Ends a teammate connection at both sides, takes back this user's ask, declines the teammate's, or forgets a decline. */
+  "teammate.disconnect": { params: z.object({ teammate: TeammateId, id: TeammateConnectionId }), result: z.object({ teammate: Teammate }) },
   /** Cancels a code that waits to be used. */
   "teammate.cancel": { params: z.object({ id: TeammateId }), result: Empty },
   /** Ends a teammate at both sides: their agents leave every group and nothing reaches either side any more. */

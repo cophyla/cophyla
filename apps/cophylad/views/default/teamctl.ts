@@ -6,8 +6,8 @@
 // or an app older than these refuses them (`unsupported`): the lists are then quietly empty,
 // and a request the user made says to update.
 
-import type { Focus, FolderPick, Group, GroupCandidate, GroupNotify, GroupPost, Teammate, TeammatePlace, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { broadShares, buildShare, candidateKey, closedPlaces, completeTag, enterSends, excludePlace, groupCreateParams, openPlace, readUpTo, tagCompletion, teamworkFailure } from "./model.ts";
+import type { Focus, FolderPick, Group, GroupCandidate, GroupNotify, GroupPost, TeamAgent, TeamClosedAgent, Teammate, TeammatePlace, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { broadShares, buildShare, candidateKey, closedPlaces, completeTag, connectElseFolded, enterSends, excludePlace, groupCreateParams, openPlace, readUpTo, samePlaceOrUnder, sessionFolder, tagCompletion, teamworkFailure } from "./model.ts";
 import type { Action, ViewState } from "./model.ts";
 import { fitField } from "./render.ts";
 import type { Roots, UiState } from "./render.ts";
@@ -32,6 +32,11 @@ export interface TeamDeps {
   phone: () => boolean;
 }
 
+/** While a Connect panel is open, its teammates' agents are asked again this often. */
+const AGENTS_EVERY_MS = 30_000;
+/** A teammate's change asks their agents again, at most this often. */
+const AGENTS_AGAIN_MS = 5_000;
+
 export class TeamControl {
   private d: TeamDeps;
   /** The user's own post just went: the group's posts scroll to their end once drawn. */
@@ -41,6 +46,9 @@ export class TeamControl {
 
   /** The composer's photos and files, and the posts'. */
   readonly media: MediaControl;
+
+  /** Asks the open Connect panel's teammates' agents again, every half minute. */
+  private agentsTimer?: ReturnType<typeof setInterval>;
 
   constructor(deps: TeamDeps) {
     this.d = deps;
@@ -121,9 +129,14 @@ export class TeamControl {
       case "focus.state":
         this.d.dispatch({ type: "focus.state", params: params as { session: string; focus?: Focus } });
         return true;
-      case "teammate.state":
-        this.d.dispatch({ type: "teammate.state", params: params as Teammate });
+      case "teammate.state": {
+        const t = params as Teammate;
+        this.d.dispatch({ type: "teammate.state", params: t });
+        // what they share, or the connections, changed: the panel asks their agents again, now and then
+        const c = this.d.ui.team.connect;
+        if (c && t.state === "active" && Date.now() - (c.asked.get(t.id) ?? 0) > AGENTS_AGAIN_MS) void this.loadAgents(t.id, false);
         return true;
+      }
       default:
         return false;
     }
@@ -194,7 +207,7 @@ export class TeamControl {
     }
   }
 
-  /** After a draw: the user's own post in view, and what they read told once the end of the posts shows. */
+  /** After a draw: the user's own post in view, what they read told once the end of the posts shows, and the Connect panel's teammates asked for. */
   afterDraw(): void {
     if (this.toEnd) {
       this.toEnd = false;
@@ -202,6 +215,109 @@ export class TeamControl {
       if (stream) stream.scrollTop = stream.scrollHeight;
     }
     this.syncRead();
+    this.syncConnect();
+  }
+
+  // --- the Connect panel's teammates -----------------------------------------------------------------
+
+  /**
+   * A Connect panel opened: each active teammate's agents are asked of their side (fresh, the
+   * first time), again every half minute while it stays open, and dropped once it closes.
+   */
+  private syncConnect(): void {
+    const { ui, state } = this.d;
+    const open = ui.headConnect;
+    if (!open || !state.scopes.includes("controllers") || !state.connected) {
+      if (ui.team.connect) ui.team.connect = undefined;
+      if (this.agentsTimer) {
+        clearInterval(this.agentsTimer);
+        this.agentsTimer = undefined;
+      }
+      return;
+    }
+    const active = [...state.teammates.values()].filter((t) => t.state === "active" && t.user).map((t) => t.id);
+    if (ui.team.connect?.session !== open.session) {
+      ui.team.connect = { session: open.session, seen: new Map(), asked: new Map(), filters: new Map() };
+      for (const id of active) void this.loadAgents(id, true);
+      if (this.agentsTimer) clearInterval(this.agentsTimer);
+      this.agentsTimer = setInterval(() => {
+        const c = this.d.ui.team.connect;
+        if (!c) return;
+        for (const t of this.d.state.teammates.values()) if (t.state === "active" && t.user) void this.loadAgents(t.id, false);
+      }, AGENTS_EVERY_MS);
+      return;
+    }
+    // a teammate made while it was open
+    for (const id of active) if (!ui.team.connect.seen.has(id)) void this.loadAgents(id, true);
+  }
+
+  /** A teammate's agents, asked of their side for the open Connect panel. */
+  private async loadAgents(teammate: string, fresh: boolean): Promise<void> {
+    const c = this.d.ui.team.connect;
+    if (!c) return;
+    const before = c.seen.get(teammate);
+    if (before?.loading) return;
+    c.seen.set(teammate, { ...(before ?? { agents: [], closed: [] }), loading: true });
+    c.asked.set(teammate, Date.now());
+    const login = this.d.state.teammates.get(teammate)?.user ?? "their";
+    try {
+      const r = await this.d.rpc.request<{ agents: TeamAgent[]; closed: TeamClosedAgent[] }>("teammate.agents", { teammate, ...(fresh ? { fresh: true } : {}) });
+      if (this.d.ui.team.connect !== c) return;
+      c.seen.set(teammate, { at: Date.now(), agents: r.agents, closed: r.closed ?? [] });
+    } catch (e) {
+      if (this.d.ui.team.connect !== c) return;
+      const code = e instanceof ViewRpcError ? e.code : undefined;
+      const error =
+        code === "unsupported" ? "Cophyla here is older than connecting to a teammate's agent: update it." : code === "unavailable" || code === "timeout" ? `${login}'s Cophyla can't be reached now.` : this.words(e);
+      const kept = c.seen.get(teammate);
+      c.seen.set(teammate, { ...(kept?.at !== undefined ? { at: kept.at } : {}), agents: kept?.agents ?? [], closed: kept?.closed ?? [], error });
+    }
+    this.d.draw();
+  }
+
+  /** Joins an agent of this side's to one of a teammate's: at once, asked of their user, or a yes to their ask. */
+  private async connectAgents(teammate: string, session: string, agent: string): Promise<void> {
+    const key = `connect:${teammate}\n${session}\n${agent}`;
+    if (this.d.ui.team.busy.has(key)) return;
+    this.d.ui.team.busy.add(key);
+    this.d.draw();
+    try {
+      const r = await this.d.rpc.request<{ teammate: Teammate }>("teammate.connect", { teammate, session, agent });
+      this.d.dispatch({ type: "teammate.state", params: r.teammate });
+    } catch (e) {
+      this.fail("connecting", e);
+    } finally {
+      this.d.ui.team.busy.delete(key);
+      this.d.draw();
+    }
+  }
+
+  /** Ends a teammate connection at both sides, takes an ask back, declines theirs, or forgets a decline. */
+  private async disconnect(teammate: string, id: string): Promise<void> {
+    const key = `tc:${id}`;
+    const t = this.d.ui.team;
+    if (t.busy.has(key)) return;
+    if (t.connEnding === id) t.connEnding = undefined;
+    t.busy.add(key);
+    this.d.draw();
+    try {
+      const r = await this.d.rpc.request<{ teammate: Teammate }>("teammate.disconnect", { teammate, id });
+      this.d.dispatch({ type: "teammate.state", params: r.teammate });
+    } catch (e) {
+      this.fail("the connection", e);
+    } finally {
+      t.busy.delete(key);
+      this.d.draw();
+    }
+  }
+
+  /** Share it…: the Teammates page, with that teammate's share open and the agent's folder added to it. */
+  private shareFolder(teammate: string, session: string): void {
+    const card = this.d.state.sessions.get(session);
+    if (!card) return;
+    const { place } = sessionFolder(this.d.state, card.session);
+    this.openPage();
+    this.openShare("edit", teammate, place);
   }
 
   /** Tells the node the user read the group shown up to its last post, once the end of it is in view in a window that shows. */
@@ -534,13 +650,22 @@ export class TeamControl {
     );
   }
 
-  /** The share form, opened to invite, to use a code, or (`teammate`) to change what is shared with one. */
-  private openShare(kind: ShareForm["kind"], teammate?: string): void {
+  /**
+   * The share form, opened to invite, to use a code, or (`teammate`) to change what is shared
+   * with one; `add`, a folder to share besides: ticked where folders are included, and the
+   * folders that hold it unticked where they are excluded. The user saves it.
+   */
+  private openShare(kind: ShareForm["kind"], teammate?: string, add?: TeammatePlace): void {
     const { state, ui } = this.d;
     const t = teammate !== undefined ? state.teammates.get(teammate) : undefined;
     if (kind === "edit" && !t) return;
     const picked = new Map<string, TeammatePlace>();
     for (const p of t?.share.folders ?? []) picked.set(folderKey(state, p), { node: p.node, path: p.path });
+    if (add) {
+      const platform = state.nodes.get(add.node)?.platform;
+      if ((t?.share.mode ?? "include") === "include") picked.set(folderKey(state, add), { node: add.node, path: add.path });
+      else for (const [k, p] of [...picked]) if (samePlaceOrUnder(add, p, platform)) picked.delete(k);
+    }
     ui.team.share = { kind, ...(teammate !== undefined ? { teammate } : {}), mode: t?.share.mode ?? "include", picked, open: t?.share.open ?? "always" };
     ui.team.ending = undefined;
     this.d.draw();
@@ -876,6 +1001,41 @@ export class TeamControl {
       case "teammate-open":
         if (data["teammate"] && data["session"]) void this.openTo(data["teammate"], data["session"], data["on"] === "true");
         return true;
+      case "session-connect-show": {
+        // the head's pill: the session's Connect panel, open
+        const session = data["session"];
+        if (session && ui.headConnect?.session !== session) ui.headConnect = { session, mode: "invite" };
+        this.d.draw();
+        return true;
+      }
+      case "connect-else": {
+        // Someone else, unfolded or folded again
+        const open = ui.headConnect;
+        if (open) ui.headConnect = { ...open, others: connectElseFolded(this.d.state, open) };
+        this.d.draw();
+        return true;
+      }
+      case "team-share-folder":
+        if (data["teammate"] && data["session"]) this.shareFolder(data["teammate"], data["session"]);
+        return true;
+      case "tc-connect-agent":
+      case "tc-connect":
+        if (data["teammate"] && data["session"] && data["agent"]) void this.connectAgents(data["teammate"], data["session"], data["agent"]);
+        return true;
+      case "tc-decline":
+      case "tc-cancel":
+      case "tc-dismiss":
+      case "tc-end-confirm":
+        if (data["teammate"] && data["id"]) void this.disconnect(data["teammate"], data["id"]);
+        return true;
+      case "tc-end":
+        t.connEnding = data["id"];
+        this.d.draw();
+        return true;
+      case "tc-end-cancel":
+        t.connEnding = undefined;
+        this.d.draw();
+        return true;
       case "team-place-open":
       case "team-place-exclude":
         if (data["key"]) void this.placeAction(data["key"], data["action"] === "team-place-open" ? "open" : "exclude");
@@ -974,8 +1134,15 @@ export class TeamControl {
     return false;
   }
 
-  /** Typing in the composer: its draft, and the tags offered. */
+  /** Typing in the composer: its draft, and the tags offered; or in a teammate's filter in the Connect panel. */
   input(target: HTMLElement): boolean {
+    if (target.classList.contains("connect-filter")) {
+      const c = this.d.ui.team.connect;
+      const teammate = target.dataset["teammate"];
+      if (c && teammate) c.filters.set(teammate, (target as HTMLInputElement).value);
+      this.d.draw();
+      return true;
+    }
     if (!target.classList.contains("group-text")) return false;
     this.typed(target as HTMLTextAreaElement);
     return true;
@@ -1051,6 +1218,10 @@ export class TeamControl {
       return draw();
     }
     if (this.media.escape()) return true;
+    if (t.connEnding !== undefined) {
+      t.connEnding = undefined;
+      return draw();
+    }
     if (this.overlayShown()) {
       if (t.share?.broad) t.share.broad = undefined;
       else if (t.share?.browse) t.share.browse = undefined;

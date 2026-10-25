@@ -178,9 +178,9 @@ function teammatesText(rows: TeammateListing[], now: number): string | undefined
   const words: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse", acp: "an ACP agent" };
   const lines = rows.map((r) => {
     const what = [r.harness ? (words[r.harness] ?? r.harness) : "an agent", r.workspace ? `in ${r.workspace}` : undefined, r.focus ? focusWords(r.focus, now) : r.status ? r.status.replace("_", " ") : undefined].filter(Boolean).join(", ");
-    return `- ${r.alias}: ${r.user}'s ${what}${r.intent ? `. ${r.intent}` : ""}`;
+    return `- ${r.alias}: ${r.user}'s ${what}${r.connected ? " (connected to you)" : ""}${r.intent ? `. ${r.intent}` : ""}`;
   });
-  return `Your user's teammates' agents open to you (external: they work for someone else; send_message with to set to the name):\n${lines.join("\n")}`;
+  return `Your user's teammates' agents open or connected to you (external: they work for someone else; send_message with to set to the name):\n${lines.join("\n")}`;
 }
 
 function agentsText(rows: AgentListing[], connections: ConnectionListing[], now: number): string {
