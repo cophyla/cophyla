@@ -9,10 +9,10 @@
 
 import definition from "../agent-tools.json";
 
-export type AgentToolName = "list_agents" | "send_message" | "send_file" | "create_invite" | "accept_invite" | "end_connection" | "read_group" | "post_group" | "ack_post" | "get_file" | "focus" | "answer_ask";
+export type AgentToolName = "list_agents" | "send_message" | "send_file" | "create_invite" | "accept_invite" | "end_connection" | "read_group" | "post_group" | "ack_post" | "search_group" | "get_file" | "focus" | "answer_ask";
 
 /** The group chat tools and focus, kept by the primary with the groups. */
-export const GROUP_TOOLS = ["read_group", "post_group", "ack_post", "get_file", "focus"] as const;
+export const GROUP_TOOLS = ["read_group", "search_group", "post_group", "ack_post", "get_file", "focus"] as const;
 export type GroupToolName = (typeof GROUP_TOOLS)[number];
 
 export interface AgentTool {

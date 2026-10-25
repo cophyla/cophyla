@@ -263,7 +263,7 @@ describe("agent messages across nodes", () => {
     expect((await post("wrong", { jsonrpc: "2.0", id: 1, method: "ping" })).status).toBe(401);
     const list = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 2, method: "tools/list" });
     expect(list.status).toBe(200);
-    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "post_group", "ack_post", "get_file", "focus", "answer_ask"]);
+    expect(((await list.json()) as { result: { tools: { name: string }[] } }).result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask"]);
     expect((await post(primary.d.hookToken, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(204);
     const call = await post(primary.d.hookToken, { jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "list_agents", arguments: {} } });
     expect(((await call.json()) as { result: { isError: boolean; content: { text: string }[] } }).result).toMatchObject({ isError: true, content: [{ text: "Cophyla can't tell which session you are, so nothing was sent." }] });

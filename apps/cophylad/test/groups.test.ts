@@ -195,7 +195,8 @@ describe("a group chat", () => {
       const n = r.delivered[0]!;
       expect(n.session).toBe(api.id);
       // who and how many, never the words: read_group shows them; quiet, so a working agent gets it by a hook
-      expect(n.text).toBe("ferit (your user) tagged you in #release (1 unread, 1 tagging you). read_group shows it when it suits your work; answer with post_group.");
+      // and that it stands for every tag until the group is read, and how an answer reaches the writer
+      expect(n.text).toBe("ferit (your user) tagged you in #release (1 unread, 1 tagging you). read_group shows it when it suits your work; until you read it, no other notice comes for #release. If you answer, post_group with its id as reply_to tells them.");
       expect(n.text).not.toContain("schema");
       expect(n.quiet).toBe(true);
       expect(n.info.from).toBeUndefined();
@@ -206,6 +207,17 @@ describe("a group chat", () => {
       expect(r.delivered.filter((d) => d.session === api.id)).toHaveLength(1);
       // @agents told web-claude, which had no notice waiting
       expect(r.delivered.filter((d) => d.session === web.id)).toHaveLength(1);
+      // still unread ten minutes on, at rest: one reminder, which says it is the last
+      r.set(api, { status: "idle" });
+      r.clock.t += 10 * 60_000 + 1;
+      await r.groups.sweep();
+      await waitFor(() => r.delivered.filter((d) => d.session === api.id).length === 2);
+      expect(r.delivered.filter((d) => d.session === api.id)[1]!.text).toBe("Reminder: ferit (your user) tagged you in #release and it is still unread (4 unread, 4 tagging you). read_group shows it when it suits your work; no more notices come for #release until you read it.");
+      r.clock.t += 10 * 60_000 + 1;
+      await r.groups.sweep();
+      await r.groups.postAsUser(g.id, "@api-codex five");
+      await Bun.sleep(20);
+      expect(r.delivered.filter((d) => d.session === api.id)).toHaveLength(2);
 
       const read = await r.call(api, "read_group", { group: "release" });
       expect(read.isError).toBeUndefined();
@@ -213,10 +225,10 @@ describe("a group chat", () => {
       expect(read.text).toContain("@api-codex (you)");
       expect(read.text).toContain("@ferit (your user)");
       expect(read.text).toMatch(/\[1 gmsg_\w+\] @?ferit \(your user\), \d\d:\d\d, tags you: @api-codex is the schema merged\?/);
-      expect(read.text).toContain("That is everything unread.");
+      expect(read.text).toContain("That is everything for you.");
       // read: the next tag sends a notice again
       await r.groups.postAsUser(g.id, "@api-codex and now?");
-      await waitFor(() => r.delivered.filter((d) => d.session === api.id).length === 2);
+      await waitFor(() => r.delivered.filter((d) => d.session === api.id).length === 3);
       // nothing unread: the last posts for context, and the read point stays
       const again = await r.call(api, "read_group", { group: "release" });
       expect(again.text).toContain("and now?");
@@ -244,11 +256,22 @@ describe("a group chat", () => {
       expect(everyone.text).toContain("only a person tags @everyone");
 
       const asked = await r.call(api, "post_group", { group: "release", text: "@web-claude can you run the login test?", expects_reply: true });
-      expect(asked.text).toMatch(/Posted in #release as post 1 \(gmsg_\w+\)\. Told: @web-claude\. Any answer comes to you as a tag/);
+      expect(asked.text).toMatch(/Posted in #release as post 1 \(gmsg_\w+\)\. Told: @web-claude\. An answer comes to you as a notice when it tags you or answers this post; do not wait for it in a loop\.$/);
       await waitFor(() => r.delivered.length === 1);
-      expect(r.delivered[0]!.text).toContain("It waits for your answer.");
+      expect(r.delivered[0]!.text).toContain("It waits for your answer: post_group with its id as reply_to tells them.");
       expect(r.delivered[0]!.text).not.toContain("login test");
       const postId = /\((gmsg_\w+)\)/.exec(asked.text)![1]!;
+      // a post that waits on its reader says how to answer it
+      const shown = await r.call(web, "read_group", { group: "release" });
+      expect(shown.text).toContain("tags you, awaiting your reply");
+      expect(shown.text).toContain("That is everything for you. Answer a post with post_group and its id as reply_to, which tells its writer.");
+      // a question that tags no one: no one was told, and the asker hears so
+      const untagged = await r.call(api, "post_group", { group: "release", text: "does anyone know the staging URL?", expects_reply: true });
+      expect(untagged.text).toContain("It tags no one, so no one was told: the others read it when they choose. It waits for an answer no one was asked for: post again tagging whoever should answer.");
+      const told = await r.call(api, "post_group", { group: "release", text: "the build is up", expects_reply: false });
+      expect(told.text).toMatch(/It tags no one, so no one was told: the others read it when they choose\.$/);
+      await Bun.sleep(20);
+      expect(r.delivered).toHaveLength(1);
       const answer = await r.call(web, "post_group", { group: "release", text: "Passed: 14 tests.", expects_reply: false, reply_to: postId });
       expect(answer.text).toContain("Told: @api-codex.");
       await waitFor(() => r.delivered.some((d) => d.session === api.id));
@@ -280,7 +303,9 @@ describe("a group chat", () => {
       r.groups.setNotify(g.id, `agent:${web.id}`, "all");
       // busy: nothing yet
       await r.groups.postAsUser(g.id, "first");
-      await r.call(api, "post_group", { group: "release", text: "second", expects_reply: false });
+      const second = await r.call(api, "post_group", { group: "release", text: "second", expects_reply: false });
+      // a post that tags no one names who gets it all the same
+      expect(second.text).toContain("It tags no one: @web-claude hears every post and gets it; the others read it when they choose.");
       await Bun.sleep(20);
       expect(r.delivered.filter((d) => d.session === web.id)).toHaveLength(0);
       // its turn ends: one message with both
@@ -306,7 +331,8 @@ describe("a group chat", () => {
       await r.groups.create({ name: "release", members: [{ session: api.id }, { session: web.id }] });
       await r.groups.postAsUser([...r.groups.list()][0]!.id, "the release branch is cut");
       const listed = await r.call(web, "list_agents", {});
-      expect(listed.text).toContain("Unread in your group chats, which read_group shows when it suits your work: #release: 1 new post.");
+      // the user's post tags no one, and is for every agent of theirs to read
+      expect(listed.text).toContain("Unread in your group chats, which read_group shows when it suits your work: #release: 1 new post (1 for you).");
       expect((await r.call(web, "list_agents", {})).text).not.toContain("Unread in your group chats");
       await r.groups.postAsUser([...r.groups.list()][0]!.id, "and tagged 0.18.0");
       const read = await r.call(web, "read_group", { group: "release" });
@@ -462,6 +488,180 @@ describe("focus", () => {
       r.set(web, { status: "ended" });
       await waitFor(() => r.delivered.length === 1);
       expect(r.delivered[0]).toMatchObject({ session: api.id, text: `Your message ${id} was not delivered: its session ended while it was in focus.`, info: { replyTo: id } });
+    } finally {
+      r.stop();
+    }
+  });
+});
+
+describe("reading and searching a group", () => {
+  /** A group of the user and three agents; web-claude reads. */
+  async function setup(extra: Session[] = []) {
+    const api = sess("codex", "C:/code/api");
+    const web = sess("claude", "C:/code/web");
+    const ops = sess("claude", "C:/code/ops");
+    const r = rig([api, web, ops, ...extra]);
+    const g = await r.groups.create({ name: "release", purpose: "Ship 0.18 by Friday", members: [{ session: api.id }, { session: web.id }, { session: ops.id }] });
+    await waitFor(() => r.delivered.length === 3);
+    r.delivered.length = 0;
+    const readTo = () => r.groups.list().find((x) => x.id === g.id)!.members.find((m) => m.key === `agent:${web.id}`)!.readTo;
+    const idOf = (text: string) => /\((gmsg_\w+)\)/.exec(text)![1]!;
+    return { api, web, ops, r, g, readTo, idOf };
+  }
+
+  test("a read shows the posts for the agent and passes over the rest, read, as a range it can open", async () => {
+    const { api, web, ops, r, g, readTo, idOf } = await setup();
+    try {
+      await r.call(api, "post_group", { group: "release", text: "the build is red", expects_reply: false });
+      // the user's own, though it tags no one
+      await r.groups.postAsUser(g.id, "everyone, rebase on main");
+      const asked = await r.call(api, "post_group", { group: "release", text: "@web-claude can you check the login test?", expects_reply: true });
+      // another's answer to what web-claude was asked
+      await r.call(ops, "post_group", { group: "release", text: "on it, the login test passes here", expects_reply: false, reply_to: idOf(asked.text) });
+      await r.call(ops, "post_group", { group: "release", text: "deploy queue is empty", expects_reply: false });
+      const read = await r.call(web, "read_group", { group: "release" });
+      expect(read.text).toContain("Members: @ferit (your user), @api-codex");
+      expect(read.text).toMatch(/\[2 gmsg_\w+\] ferit \(your user\), \d\d:\d\d: everyone, rebase on main/);
+      expect(read.text).toMatch(/\[3 gmsg_\w+\] @api-codex, \d\d:\d\d, tags you: @web-claude can you check the login test\?/);
+      expect(read.text).toMatch(/\[4 gmsg_\w+\] @ops-claude, \d\d:\d\d, answering 3: on it, the login test passes here/);
+      expect(read.text).not.toContain("the build is red");
+      expect(read.text).not.toContain("deploy queue");
+      expect(read.text).toContain('That is everything for you. Passed over 2 posts not for you, now read (posts 1 to 5; @api-codex 1, @ops-claude 1): read_group with posts="1-5" shows them.');
+      expect(readTo()).toBe(5);
+
+      // nothing for it: the members as listed before, and only the count of what it passed over
+      await r.call(api, "post_group", { group: "release", text: "fixed the build", expects_reply: false });
+      const quiet = await r.call(web, "read_group", { group: "release" });
+      expect(quiet.text).toContain("Members: 4, as listed before; members=true lists them and how each stands.");
+      expect(quiet.text).toContain('Nothing for you. Passed over 1 post not for you, now read (post 6; @api-codex 1): read_group with posts="6" shows it.');
+      expect(quiet.text).not.toContain("fixed the build");
+      expect((await r.call(web, "read_group", { group: "release", members: true })).text).toContain("Members: @ferit (your user), @api-codex");
+
+      // an answer to its own post, which the read does not show, is shown with a line of it
+      const mine = await r.call(web, "post_group", { group: "release", text: "@api-codex is the fix on main?", expects_reply: true });
+      await r.call(api, "post_group", { group: "release", text: "yes, since 14:10", expects_reply: false, reply_to: idOf(mine.text) });
+      const answer = await r.call(web, "read_group", { group: "release" });
+      expect(answer.text).toMatch(/\[8 gmsg_\w+\] @api-codex, \d\d:\d\d, answering 7 by you \("@api-codex is the fix on main\?"\), tags you: yes, since 14:10/);
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("posts shows posts whole by number, thread a conversation, all every unread post; the first two move no read point", async () => {
+    const { api, web, ops, r, g, readTo, idOf } = await setup();
+    try {
+      await r.groups.postAsUser(g.id, `@web-claude here is the log: ${"x".repeat(2_000)} end of log`);
+      const asked = await r.call(api, "post_group", { group: "release", text: "who has the staging URL?", expects_reply: true });
+      await r.call(ops, "post_group", { group: "release", text: "it is staging.example.com", expects_reply: false, reply_to: idOf(asked.text) });
+      // a long post is cut in a list, and posts shows it whole
+      const first = await r.call(web, "read_group", { group: "release" });
+      expect(first.text).toContain('more characters: read_group with posts="1" shows it whole)');
+      expect(first.text).not.toContain("end of log");
+      expect(readTo()).toBe(3);
+      const whole = await r.call(web, "read_group", { group: "release", posts: "1" });
+      expect(whole.text).toContain("end of log");
+      expect(whole.text).toContain("Your read point did not move.");
+      // a range, an id, and a number that is no post
+      const some = await r.call(web, "read_group", { group: "release", posts: `2-3, ${idOf(asked.text)}, 9` });
+      expect(some.text).toMatch(/\[2 gmsg_\w+\] @api-codex, \d\d:\d\d: who has the staging URL\?/);
+      expect(some.text).toMatch(/\[3 gmsg_\w+\] @ops-claude, \d\d:\d\d, answering 2: it is staging\.example\.com/);
+      expect(some.text).toContain("No post 9 in #release.");
+      expect((await r.call(web, "read_group", { group: "release", posts: "the staging one" })).text).toContain("posts takes post numbers, ranges like 30-52 and gmsg_ ids: the is none of them");
+
+      // a conversation: the posts it answers, up to the first, and the answers to them
+      await r.groups.postAsUser(g.id, "thanks", r.groups.posts(g.id).posts.find((p) => p.n === 3)!.id);
+      const thread = await r.call(web, "read_group", { group: "release", thread: "3" });
+      expect(thread.text).toContain("The conversation post 3 is in: 3 posts from post 2. Your read point did not move.");
+      expect(thread.text).toContain("who has the staging URL?");
+      expect(thread.text).toContain("thanks");
+      expect(thread.text).not.toContain("here is the log");
+      expect(readTo()).toBe(3);
+      expect((await r.call(web, "read_group", { group: "release", posts: "1", thread: "3" })).text).toContain("read_group takes one of posts, thread, before and all at a time");
+
+      // all: every unread post, those not for it too
+      await r.call(api, "post_group", { group: "release", text: "the build is green", expects_reply: false });
+      const everything = await r.call(web, "read_group", { group: "release", all: true });
+      expect(everything.text).toContain("thanks");
+      expect(everything.text).toContain("the build is green");
+      expect(everything.text).toContain("That is everything unread.");
+      expect(readTo()).toBe(5);
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("more posts for the agent than one read shows: its read point stops at the last shown, and the next read goes on", async () => {
+    const { api, web, r, g, readTo } = await setup();
+    try {
+      await r.groups.postAsUser(g.id, "@web-claude first");
+      await r.call(api, "post_group", { group: "release", text: "noise one", expects_reply: false });
+      await r.groups.postAsUser(g.id, "@web-claude second");
+      await r.call(api, "post_group", { group: "release", text: "noise two", expects_reply: false });
+      const one = await r.call(web, "read_group", { group: "release", limit: 1 });
+      expect(one.text).toContain("@web-claude first");
+      expect(one.text).not.toContain("second");
+      expect(one.text).toContain("1 of 2 posts for you; read_group again for the next.");
+      expect(one.text).not.toContain("Passed over");
+      expect(readTo()).toBe(1);
+      const two = await r.call(web, "read_group", { group: "release", limit: 1 });
+      expect(two.text).toContain("@web-claude second");
+      expect(two.text).toContain('That is everything for you. Passed over 2 posts not for you, now read (posts 2 to 4; @api-codex 2): read_group with posts="2-4" shows them.');
+      expect(readTo()).toBe(4);
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("the members are listed again once they change", async () => {
+    const docs = sess("claude", "C:/code/docs");
+    const { web, r, g } = await setup([docs]);
+    try {
+      expect((await r.call(web, "read_group", { group: "release" })).text).toContain("Members: @ferit (your user)");
+      expect((await r.call(web, "read_group", { group: "release" })).text).toContain("Members: 4, as listed before");
+      r.clock.t += 1_000;
+      await r.groups.addMembers(g.id, [{ session: docs.id }]);
+      expect((await r.call(web, "read_group", { group: "release" })).text).toContain("@docs-claude");
+    } finally {
+      r.stop();
+    }
+  });
+
+  test("search_group finds posts by their words, a tag, a writer or for the agent, in one group or all, and moves no read point", async () => {
+    const { api, web, ops, r, readTo } = await setup();
+    try {
+      const at = async (f: () => Promise<unknown>) => {
+        r.clock.t += 1_000;
+        await f();
+      };
+      await at(() => r.call(api, "post_group", { group: "release", text: "The staging URL is staging.example.com", expects_reply: false }));
+      await at(() => r.call(ops, "post_group", { group: "release", text: "@web-claude the login test is flaky on staging", expects_reply: false }));
+      await at(() => r.call(api, "post_group", { group: "release", text: "100% of the e2e suite passed", expects_reply: false }));
+      await r.groups.create({ name: "ops", members: [{ session: web.id }, { session: ops.id }] });
+      await at(() => r.call(ops, "post_group", { group: "ops", text: "staging is down for an hour", expects_reply: false }));
+
+      // every word, case aside, newest first, across the agent's groups
+      const both = await r.call(web, "search_group", { query: "STAGING" });
+      expect(both.text).toMatch(/^3 posts in your groups, newest first:\n\[#ops 1 gmsg_\w+\] @ops-claude, \d\d:\d\d: staging is down for an hour\n\[#release 2 gmsg_\w+\] @ops-claude, \d\d:\d\d, tags you: @web-claude the login test is flaky on staging\n\[#release 1 gmsg_\w+\] @api-codex, \d\d:\d\d: The staging URL is staging\.example\.com\n/);
+      expect(both.text).toContain('read_group with the group and posts="<number>" shows a post whole');
+      expect((await r.call(web, "search_group", { group: "release", query: "login staging" })).text).toMatch(/^1 post in #release, newest first:\n\[#release 2 /);
+      // a tag looks for the member it names; % and _ are plain characters
+      expect((await r.call(web, "search_group", { group: "release", query: "@web-claude" })).text).toMatch(/^1 post in #release/);
+      expect((await r.call(web, "search_group", { group: "release", query: "100%" })).text).toContain("100% of the e2e suite passed");
+      expect((await r.call(web, "search_group", { group: "release", query: "1_0" })).text).toStartWith("Nothing in #release matches.");
+
+      // by a writer, and for the agent
+      expect((await r.call(web, "search_group", { group: "release", from: "@api-codex" })).text).toMatch(/^2 posts in #release/);
+      expect((await r.call(web, "search_group", { for_you: true })).text).toMatch(/^1 post in your groups/);
+      // paging back in one group
+      const page = await r.call(web, "search_group", { group: "release", query: "the", limit: 1 });
+      expect(page.text).toMatch(/^1 post in #release, newest first:\n\[#release 3 /);
+      expect(page.text).toContain("Older ones with before=3.");
+      expect((await r.call(web, "search_group", { group: "release", query: "the", before: 3 })).text).toMatch(/^2 posts in #release/);
+
+      expect((await r.call(web, "search_group", {})).text).toContain("search_group needs query");
+      expect((await r.call(web, "search_group", { query: "the", before: 3 })).text).toContain("before pages back in one group");
+      expect((await r.call(web, "search_group", { from: "nobody" })).text).toContain("nobody names no member of your groups");
+      expect(readTo()).toBe(0);
     } finally {
       r.stop();
     }

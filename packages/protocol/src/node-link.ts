@@ -357,13 +357,13 @@ export const nodeLinkRequests = {
     result: z.object({ text: z.string(), isError: z.boolean().optional() }),
   },
   /**
-   * Secondary → primary: one of the group chat tools (`read_group`, `post_group`, `ack_post`,
-   * `get_file`) or `focus`, called by `caller`, a live session of the secondary's. Groups and
+   * Secondary → primary: one of the group chat tools (`read_group`, `search_group`, `post_group`,
+   * `ack_post`, `get_file`) or `focus`, called by `caller`, a live session of the secondary's. Groups and
    * focus live on the primary; the answer is the text the model reads, and the photos it is
    * shown, which the secondary reads with `group.photo`.
    */
   "group.tool": {
-    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "post_group", "ack_post", "get_file", "focus"]), args: z.record(z.string(), z.unknown()) }),
+    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "search_group", "post_group", "ack_post", "get_file", "focus"]), args: z.record(z.string(), z.unknown()) }),
     result: z.object({ text: z.string(), isError: z.boolean().optional(), photos: z.array(z.object({ group: GroupId, photo: GroupPhotoId, type: GroupPhotoType })).max(8).optional() }),
   },
   /**

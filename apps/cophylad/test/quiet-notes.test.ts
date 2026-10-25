@@ -72,7 +72,7 @@ function notice(group = "release"): EnvelopeInfo {
   return { messageId: newId("agentMessage"), group: { id: newId("group"), name: group } };
 }
 
-const TEXT = "@bob tagged you in #release (1 unread, 1 tagging you). read_group shows it when it suits your work; answer with post_group.";
+const TEXT = "@bob tagged you in #release (1 unread, 1 tagging you). read_group shows it when it suits your work; until you read it, no other notice comes for #release. If you answer, post_group with its id as reply_to tells them.";
 
 function quiet(id: string, info = notice(), text = TEXT) {
   return mini.sessions.send(id, text, { from: "agent", agent: info, quiet: true });

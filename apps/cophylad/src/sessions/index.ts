@@ -344,7 +344,10 @@ const NOTES_MAX = 8;
 /** The group a `read_group` call read (by name or id), when the tool is one: a notice about it is stale. */
 function readsGroup(tool: string | undefined, input: unknown): string | undefined {
   if (!tool || !/(^|__)read_group$/.test(tool) || input === null || typeof input !== "object") return undefined;
-  const g = (input as Record<string, unknown>)["group"];
+  const args = input as Record<string, unknown>;
+  // only a read of what is unread shows the tags a notice is of: not posts asked for by number, a thread, or a page back
+  if (args["posts"] !== undefined || args["thread"] !== undefined || args["before"] !== undefined) return undefined;
+  const g = args["group"];
   return typeof g === "string" && g.trim() ? g.trim() : undefined;
 }
 

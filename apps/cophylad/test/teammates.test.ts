@@ -495,7 +495,8 @@ describe("a group chat with a teammate in it", () => {
       await waitFor(() => t.bob.delivered.some((d) => d.session === t.b.id));
       const notice = t.bob.delivered.find((d) => d.session === t.b.id)!;
       // who and how many, none of alice's words: nothing in it to mark external; read_group says whose the post is
-      expect(notice.text).toContain("@alice/api-codex tagged you in #release (1 unread, 1 tagging you). It waits for your answer.");
+      expect(notice.text).toContain("@alice/api-codex tagged you in #release (1 unread, 1 tagging you).");
+      expect(notice.text).toContain("It waits for your answer: post_group with its id as reply_to tells them.");
       expect(notice.text).not.toContain("e2e suite");
       expect(notice.info.group).toEqual({ id: g.id, name: "release" });
       // Bob's agent reads and answers: the answer tags Alice's agent, told on Alice's side

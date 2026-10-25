@@ -33,6 +33,8 @@ export interface MemberRow {
   reminded?: boolean;
   /** An agent of this side's: the last post a line of what is unread, beside a prompt or a tool's answer, told it of. */
   nudgedTo?: number;
+  /** An agent of this side's: the latest change to the group's members (their rows' `at`) when `read_group` last listed them. */
+  membersSeen?: number;
   /** Its session ended; kept, with its read point. */
   gone?: boolean;
   /** Another side's agent's focus, as its side said. */
@@ -191,6 +193,25 @@ export class GroupStore {
       return p ? [p] : [];
     });
     return { posts, more: ns.length > take.length };
+  }
+
+  /**
+   * A group's posts whose text holds every one of `words` (case aside, for Latin letters), by
+   * `from` when given, before number `before`, newest first: at most `limit`.
+   */
+  search(group: string, words: readonly string[], limit: number, opts: { from?: string; before?: number } = {}): PostRow[] {
+    const where = ["ns = $ns", "key >= $lo", "key < $hi"];
+    const params: Record<string, string | number> = { ns: GROUP_POSTS_KV_NS, lo: `${group}/`, hi: opts.before !== undefined ? `${group}/${pad(opts.before)}` : `${group}/￿`, limit };
+    words.forEach((w, i) => {
+      where.push(`json_extract(value, '$.text') LIKE $w${i} ESCAPE '\\'`);
+      params[`w${i}`] = `%${w.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    });
+    if (opts.from !== undefined) {
+      where.push("json_extract(value, '$.from.key') = $from");
+      params["from"] = opts.from;
+    }
+    const rows = this.store.db.query(`SELECT value FROM kv WHERE ${where.join(" AND ")} ORDER BY key DESC LIMIT $limit`).all(params) as { value: string }[];
+    return rows.map((r) => JSON.parse(r.value) as PostRow);
   }
 
   /** Keeps a group to its last `max` posts: the ones dropped, for what is kept beside them. */
