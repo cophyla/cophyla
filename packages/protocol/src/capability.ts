@@ -80,7 +80,9 @@ export const CapabilityHello = z.object({
    * one its first prompt (`terminal.prompt`); `assistant`: the chat runs in an agent session
    * of its own, which the platform starts and types into: the brain wakes it
    * (`assistant.wake`), serves it its rules, tools and context (`brainRequests`) and hears its
-   * turns (`assistant.prompted`, `assistant.step`, `assistant.replied`, `assistant.state`).
+   * turns (`assistant.prompted`, `assistant.step`, `assistant.replied`, `assistant.state`);
+   * `reopen.profile`: `session.reopen` takes `profile`, and `session.stop` ends a session of
+   * the user's on their own machines once the gate let it.
    */
   features: z.array(z.string()).optional(),
 });
@@ -530,14 +532,28 @@ export const capabilityRequests = {
    * `session.closed`). One still running, or with no conversation saved, is a `conflict`; one
    * that ran headless, or a node with no terminal to start it in, `unsupported`.
    */
-  "session.reopen": { params: z.object({ id: SessionId, node: NodeId.optional() }), result: z.object({ id: SessionId }) },
+  "session.reopen": {
+    params: z.object({
+      id: SessionId,
+      node: NodeId.optional(),
+      /**
+       * Another profile of the node's to take a Claude session up under, and its launch: the
+       * conversation is copied into that profile's `projects/` (its sub-agents' folder with it)
+       * unless the two share one. A profile of another harness is `invalid`; a Codex or Muse
+       * session goes on under its own alone, `unsupported`; a node without `reopenProfile` refuses it.
+       */
+      profile: ProfileId.optional(),
+    }),
+    result: z.object({ id: SessionId }),
+  },
   "session.stop": {
     params: z.object({
       id: SessionId,
       /**
        * Who asked, set by a primary forwarding a stop to the node that owns the session: the
-       * user may end a session of their own, the brain only one cophylad started. The brain
-       * stopping one for itself cannot set it.
+       * user may end a session of their own, and so may the brain, through the gate, on a
+       * machine of the user's; on a workspace node, or one that shares some folders alone, the
+       * brain ends only one cophylad started. The brain stopping one for itself cannot set it.
        */
       as: z.enum(["user", "brain"]).optional(),
     }),

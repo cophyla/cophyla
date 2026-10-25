@@ -67,7 +67,7 @@
         }
       ]
     },
-    "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
+    "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {

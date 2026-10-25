@@ -1,7 +1,8 @@
 // brain-link over the socket with the fake brain: the handshake and an audit row for every
 // brain request with `principal.kind = brain` and the event's correlation; an out-of-range
 // brain refused; `session.spawn` under an `ask` rule held as `pending` and answered, and one in
-// bypass permissions mode asked about under the built-in rule, started in it or declined; `cancel`
+// bypass permissions mode asked about under the built-in rule, started in it or declined; a
+// stop of a session of the user's asked about in its words and ended once allowed; `cancel`
 // on a held request; `ui.ask` as a choice Ask whose answer comes back; `ui.say` quoting a
 // prior result verbatim with a source and an unknown cite left unresolved; `chat.delta` then
 // `chat.message` under one id for a completion flagged `reply`, nothing for one that is not,
@@ -19,7 +20,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ConversationSpend, newId } from "@cophyla/protocol";
-import type { AuditEntry, Hit, Message, Task, TurnProgress } from "@cophyla/protocol";
+import type { AuditEntry, HarnessProfile, Hit, Message, Session, Task, TurnProgress } from "@cophyla/protocol";
+import { reopenAsk } from "../src/brain-link/methods.ts";
 import type { Daemon } from "../src/daemon.ts";
 import { ASKING_BRAIN, brainFrames, isMethod, removeHome, sleep, stopDaemon, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 import type { GeminiFake, Script } from "./fakes/gemini.ts";
@@ -117,7 +119,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "session.reopen", "llm.cache", "assistant", "lead"] });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "session.reopen", "llm.cache", "assistant", "lead", "reopen.profile"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);
@@ -277,6 +279,36 @@ describe("brain-link", () => {
     const limits = await waitFor(() => brainFrames(log).find((f) => f.dir === "in" && f.frame["id"] === "r3" && f.frame["result"] !== undefined));
     expect(limits.frame["result"]).toEqual({ limits: {} });
     await c.request("ask.answer", { id: ask.id, option: "deny" });
+  });
+
+  test("the brain's stop of a session of the user's is asked about in words, and ends it once allowed", async () => {
+    const { d, c, scratch } = await start({ on: [] });
+    await waitFor(() => d.brain?.state === "up");
+    // A process of the session's own to end, so no other is signalled.
+    const child = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 60000)"], { stdout: "ignore", stderr: "ignore" });
+    try {
+      const users = d.sessions.ensure({ harness: "claude", nativeId: "users-stop", profile: d.profiles.byHarness("claude")[0]!.id, cwd: join(scratch, "work"), transport: "pipe", pid: child.pid, title: "Intake forms" });
+      writeFileSync(join(scratch, "brain-script.json"), JSON.stringify({ on: [{ event: "user.message", match: { text: "stop" }, requests: [{ method: "session.stop", params: { id: users.session.id } }] }] }));
+      await c.request("chat.send", { text: "stop it" });
+      const askState = await c.next(isMethod("ask.state", (p) => (p as { status: string }).status === "open"));
+      const ask = askState.params as { id: string; source: { action: string }; title: string; detail: string };
+      expect(ask.source.action).toBe("session.stop");
+      expect(ask.title).toBe("End Intake forms?");
+      expect(ask.detail).toContain("The conversation is kept");
+      await c.request("ask.answer", { id: ask.id, option: "allow" });
+      await waitFor(() => d.sessions.get(users.session.id)?.status === "ended", 10_000);
+      await child.exited;
+      expect(brainAudit(d).filter((e) => e.action === "session.stop").map((e) => [e.decision, e.outcome])).toEqual([["ask", "ok"]]);
+    } finally {
+      child.kill();
+    }
+  });
+
+  test("a reopen's ask names the profile it goes on under", () => {
+    const session = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", title: "Intake forms", profile: "prof_a", cwd: "C:/work" } as Session;
+    expect(reopenAsk({ id: session.id }, session, undefined).title).toBe("Reopen Intake forms?");
+    expect(reopenAsk({ id: session.id }, session, { id: "prof_a", name: "work" } as HarnessProfile).title).toBe("Reopen Intake forms?");
+    expect(reopenAsk({ id: session.id }, session, { id: "prof_b", name: "gmail" } as HarnessProfile)).toEqual({ title: "Reopen Intake forms under gmail?", detail: "It starts again where it left off, with nothing typed into it, signed in as gmail and with its launch." });
   });
 
   test("by the built-in rule the brain starts a session in plan mode unasked; one in bypass permissions mode is asked about, then starts in it", async () => {

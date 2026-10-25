@@ -89,6 +89,8 @@ export function selfNode(
       ...(config.node.scope.kind === "machine" ? { lead: true } : {}),
       // what focus held for one of its sessions is handed over as one message
       bundle: true,
+      // a Claude session of its own reopens under another of its profiles
+      reopenProfile: true,
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

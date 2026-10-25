@@ -103,6 +103,8 @@ export const NodeCapabilities = z.object({
   lead: z.boolean().optional(),
   /** It takes several messages handed over as one (`session.send` `agent.more`): what focus held, given at once; an older node is sent them one by one. */
   bundle: z.boolean().optional(),
+  /** It reopens a Claude session under another of its profiles (`session.reopen` `profile`); an older node would drop the profile, so it is not asked. */
+  reopenProfile: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 

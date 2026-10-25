@@ -5,6 +5,7 @@
 // The one place every adapter goes through when it matches a path a harness reported (a
 // transcript, a rollout, a hooks file) against a directory it owns.
 
+import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 
 /** Whether the platform's default filesystem folds case. */
@@ -30,6 +31,19 @@ function slashed(p: string, platform?: string): string {
 export function samePath(a: string | undefined, b: string | undefined, platform?: string): boolean {
   if (a === undefined || b === undefined) return false;
   return slashed(a, platform) === slashed(b, platform);
+}
+
+/**
+ * Whether two paths reach one file through whatever links are on the way, as two Claude
+ * profiles that share their `projects/` by a junction reach one transcript; false when
+ * either is not there.
+ */
+export function sameFile(a: string, b: string): boolean {
+  try {
+    return samePath(realpathSync(a), realpathSync(b));
+  } catch {
+    return false;
+  }
 }
 
 /** Whether `path` is `dir` or lies under it: a separator boundary, so `/a/bc` is not within `/a/b`. */

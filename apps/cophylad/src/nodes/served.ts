@@ -285,6 +285,10 @@ export class NodeServer {
     }
     // A node that shares some folders alone takes no one's words as its owner's but its owner's own.
     if (c && name === "session.send" && p["as"] === "lead") throw new RpcError("denied", "this node shares folders alone: a leader's message reaches its sessions as another agent's, never as its owner's words");
+    // Nor does the brain end its owner's own sessions there, or pick a profile of its owner's.
+    const stopping = c && name === "session.stop" && p["as"] !== "user" ? local?.session(String(p["id"])) : undefined;
+    if (stopping && stopping.origin !== "orchestrator") throw new RpcError("denied", "this node shares folders alone: its owner's own sessions are theirs to end");
+    if (c && name === "session.reopen" && p["profile"] !== undefined) throw new RpcError("denied", "this node shares folders alone: a session reopens there under the profile it ran under");
     if (!c) return;
     switch (name) {
       case "session.history":

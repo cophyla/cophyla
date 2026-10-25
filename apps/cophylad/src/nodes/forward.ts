@@ -314,6 +314,11 @@ export function withForwarding<T extends object>(table: T, host: ForwardHost): T
             const known = host.registryList().some((n) => n.id === route.node);
             throw known ? new RpcError("unavailable", `node ${route.node} is not linked`) : new RpcError("not_found", `no node ${route.node}`);
           }
+          // An older owner would drop the profile and reopen the session under its own.
+          if (name === "session.reopen" && P(p)["profile"] !== undefined) {
+            const owner = host.registryList().find((n) => n.id === route.node);
+            if (owner?.capabilities.reopenProfile !== true) throw new RpcError("unsupported", `${owner?.name ?? route.node} runs an older Cophyla: update it to reopen a session under another profile`);
+          }
           const opts = { ...(c.signal ? { signal: c.signal } : {}), ...(c.onPending ? { onPending: c.onPending } : {}) };
           // A terminal is opened for a client, whose output then comes to it alone.
           if (name === "terminal.open" && c.client) return host.remoteTerminals.open(c.client.id, route.node, p as ClientParams<"terminal.open">, opts);

@@ -35,9 +35,9 @@
 
 import { watch } from "node:fs";
 import type { FSWatcher } from "node:fs";
-import { existsSync, realpathSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionScope, SessionScopeState, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
@@ -77,7 +77,7 @@ import { claudeGlobalConfig } from "./profiles.ts";
 import { AGENT_MCP_SERVER } from "@cophyla/protocol";
 import { terminalCommand as museCommand } from "./muse/locate.ts";
 import { promptInput as musePromptInput, waitingOn as museWaitingOn } from "./muse/screen.ts";
-import { isWithin, pathKey } from "./paths.ts";
+import { isWithin, pathKey, sameFile } from "./paths.ts";
 import { NotSettled } from "./protected.ts";
 import { CLEAR, freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, permissionAsk, permissionDecision, planOf } from "./permissions.ts";
 import type { GoOnMode, PlanOffer } from "./permissions.ts";
@@ -230,6 +230,11 @@ export interface SendOptions {
 /** Where a spawn finds its profile. */
 export interface SpawnOptions {
   profiles: { get(id: string): HarnessProfile | undefined; defaultFor(h: SpawnParams["harness"]): HarnessProfile | undefined; launch?(id: string): Launch | undefined };
+}
+
+/** Where a reopen finds its profile, and the one it goes on under when not its own. */
+export interface ReopenOptions extends SpawnOptions {
+  profile?: string;
 }
 
 /** A command run to its end, its output and error text together. */
@@ -913,7 +918,9 @@ export class Sessions implements SessionHost {
 
   openTail(rec: SessionRecord, path: string): Tail {
     const recorded = this.deps.store.sessions.tail(rec.session.id);
-    rec.tail = new Tail(path, { replayBytes: REPLAY_BYTES, ...(recorded && recorded.path === path ? { recordedTo: recorded.offset } : {}) });
+    // The same file by another way to it (a link two profiles share) was recorded to there too.
+    const same = recorded !== undefined && (recorded.path === path || sameFile(recorded.path, path));
+    rec.tail = new Tail(path, { replayBytes: REPLAY_BYTES, ...(recorded && same ? { recordedTo: recorded.offset } : {}) });
     return rec.tail;
   }
 
@@ -2902,11 +2909,12 @@ export class Sessions implements SessionHost {
    * owns its child; one in a tether terminal is ended by its host, and the windows on it say
    * so; one started straight in a terminal has no child to stop, so its process is ended and
    * its window goes with it. A session of the user's is theirs: `unsupported`, unless the user
-   * asked (`as: user`), when it ends with the terminal it runs in if cophylad started that
-   * terminal, the shell of a New terminal the session was typed into included; in a window of
-   * the user's own, its process ends and their shell stays. A Codex thread with no terminal
-   * whose process is the app-server daemon, or may be, is `unsupported`: the daemon runs every
-   * CLI's threads.
+   * asked (`as: user`), or the brain did on the machine's own (`as: brain`, no `part`) once
+   * the gate let it, never a workspace node's, whose owner's own it is. It ends with the
+   * terminal it runs in if cophylad started that terminal, the shell of a New terminal the
+   * session was typed into included; in a window of the user's own, its process ends and
+   * their shell stays. A Codex thread with no terminal whose process is the app-server daemon,
+   * or may be, is `unsupported`: the daemon runs every CLI's threads.
    */
   async stopSession(id: string, opts: { as?: "user" | "brain" } = {}, part?: string): Promise<void> {
     const rec = this.must(id, part);
@@ -2920,7 +2928,8 @@ export class Sessions implements SessionHost {
       await headless.stop(rec);
       return;
     }
-    if (rec.session.origin !== "orchestrator" && opts.as !== "user") throw new RpcError("unsupported", "only a session cophylad started can be stopped");
+    const mayEnd = opts.as === "user" || (opts.as === "brain" && part === undefined);
+    if (rec.session.origin !== "orchestrator" && !mayEnd) throw new RpcError("unsupported", "only a session cophylad started can be stopped");
     if (rec.session.native.job !== undefined && rec.session.harness === "claude") {
       await this.stopJob(rec, rec.session.native.job);
       delete rec.continuing;
@@ -3008,8 +3017,15 @@ export class Sessions implements SessionHost {
    * by the CLI marked in the terminal, living while that process does. A Claude session goes in
    * a terminal window of its own where tether is not; the others need tether. A workspace
    * node's sessions run headless, and none is reopened.
+   *
+   * A Claude session may go on under another of the machine's profiles (`opts.profile`), with
+   * that profile's account and launch: Claude finds a conversation in its own directory's
+   * `projects/`, so unless the two profiles share that folder (a link to one), the transcript
+   * and its sub-agents' folder are copied there first, and the record reads on from the copy
+   * where it had read to. Its registry then lists it under that profile, which it comes back
+   * under. A Codex or Muse session goes on under its own alone.
    */
-  async reopen(id: string, opts: SpawnOptions, part?: string): Promise<Session> {
+  async reopen(id: string, opts: ReopenOptions, part?: string): Promise<Session> {
     if (part !== undefined) throw new RpcError("unsupported", "a workspace node's sessions run headless: none is reopened");
     const session = this.get(id);
     if (!session) throw new RpcError("not_found", `no session ${id}`);
@@ -3017,20 +3033,65 @@ export class Sessions implements SessionHost {
     const refused = this.reopenRefusal(session);
     if (refused) throw refused;
     if (this.reopening.has(id)) throw new RpcError("conflict", `session ${id} is being reopened`);
-    const profile = opts.profiles.get(session.profile);
-    if (!profile) throw new RpcError("not_found", `session ${id} ran under profile ${session.profile}, which is gone`);
+    const profile = opts.profiles.get(opts.profile ?? session.profile);
+    if (!profile) throw new RpcError("not_found", opts.profile !== undefined ? `no profile ${opts.profile} on this node` : `session ${id} ran under profile ${session.profile}, which is gone`);
+    if (profile.harness !== session.harness) throw new RpcError("invalid", `profile ${profile.name} is a ${profile.harness} profile, and session ${id} a ${session.harness} session`);
+    const moving = profile.id !== session.profile;
+    if (moving && session.harness !== "claude") throw new RpcError("unsupported", `a ${session.harness} session goes on under the profile it ran under: its conversation is kept in that profile's folder`);
     if (profile.status === "missing") throw new RpcError("unavailable", `profile ${profile.name} has no configuration directory`);
     if (!existsSync(session.cwd)) throw new RpcError("conflict", `session ${id}'s folder ${session.cwd} is gone`);
     const tether = this.deps.tether?.available ? this.deps.tether : undefined;
     if (session.harness !== "claude" && !tether) throw new RpcError("unsupported", `a ${session.harness} session is reopened in a tether terminal, and tether is not on this node`);
     this.reopening.add(id);
     try {
+      // Pointed at the copy for good: one that comes back late (a dialog answered in its terminal) goes on there.
+      if (moving && session.transcript) this.carryTranscript(session, session.transcript.path, profile);
       const rec = tether ? await this.reopenInTether(session, profile, opts) : await this.reopenInTerminal(session, profile, opts);
-      this.log.info("session reopened", { id, harness: session.harness, native: session.native.id, terminal: rec.session.native.terminal?.id, pid: rec.session.native.pid });
+      this.log.info("session reopened", { id, harness: session.harness, native: session.native.id, terminal: rec.session.native.terminal?.id, pid: rec.session.native.pid, ...(moving ? { from: session.profile, profile: profile.id } : {}) });
       return { ...rec.session };
     } finally {
       this.reopening.delete(id);
     }
+  }
+
+  /**
+   * An ended Claude session's conversation, made the other profile's to resume: copied into its
+   * directory's `projects/`, beside where it is in the first (the sub-agents' folder of the same
+   * name with it, and over an older copy), unless that is the same file through a link the two
+   * share. The record is pointed at it either way, as the hooks there will name it.
+   */
+  private carryTranscript(session: Session, from: string, profile: HarnessProfile): void {
+    const to = join(profile.configDir, "projects", basename(dirname(from)), basename(from));
+    if (sameFile(from, to)) {
+      this.log.info("the profiles share their conversations: nothing copied", { id: session.id, transcript: to });
+    } else {
+      try {
+        mkdirSync(dirname(to), { recursive: true });
+        copyFileSync(from, to);
+        const subs = join(dirname(from), basename(from, ".jsonl"));
+        if (existsSync(subs)) cpSync(subs, join(dirname(to), basename(subs)), { recursive: true });
+      } catch (e) {
+        throw new RpcError("unavailable", `session ${session.id}'s conversation could not be copied to profile ${profile.name}: ${e instanceof Error ? e.message : String(e)}`);
+      }
+      this.log.info("conversation copied to the profile it goes on under", { id: session.id, from, to, profile: profile.id });
+    }
+    if (from !== to) this.moveTranscript(session.id, to);
+  }
+
+  /**
+   * Points an ended session's record at another copy of its transcript, of the same bytes as
+   * the one it read, and moves its tail's mark there, so what was recorded is not again.
+   */
+  private moveTranscript(id: string, path: string): void {
+    const rec = this.byId.get(id);
+    const session = rec?.session ?? this.deps.store.sessions.get(id);
+    if (!session) return;
+    session.transcript = { path };
+    // Read again from the new path, by a parser of its own.
+    if (rec) rec.tail = undefined;
+    this.deps.store.sessions.update(session);
+    const mark = this.deps.store.sessions.tail(id);
+    if (mark) this.deps.store.sessions.setTail(id, path, mark.offset, mark.cursor);
   }
 
   /** The command line that takes a session's conversation up again in a terminal, under its profile. */

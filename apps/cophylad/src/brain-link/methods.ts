@@ -5,7 +5,7 @@
 // Requests that belong to later milestones answer `unsupported`.
 
 import { RpcError, sessionModeRisk } from "@cophyla/protocol";
-import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, LaunchMode, LlmDelta, Node, Principal, ProfileLimits, RiskClass, RpcId, Session, Terminal, WorkMode } from "@cophyla/protocol";
+import type { Ask, CapabilityParams, CapabilityRequestName, CapabilityResult, HarnessProfile, LaunchMode, LlmDelta, Node, Principal, ProfileLimits, RiskClass, RpcId, Session, Terminal, WorkMode } from "@cophyla/protocol";
 import { annotate } from "../annotate.ts";
 import type { Chat } from "../chat/index.ts";
 import type { MemoryFiles } from "../editable/memory.ts";
@@ -168,6 +168,18 @@ export function promptAsk(p: { terminal: string; text: string }, terminal: Termi
 
 const CLI_NAME: Record<string, string> = { claude: "Claude Code", codex: "Codex", muse: "Muse" };
 
+/** The words of the ask before the brain ends a session of the user's: its conversation stays, for a reopen. */
+export function stopAsk(p: { id: string }, session: Session | undefined): { title: string; detail: string } {
+  return { title: `End ${sessionName(session, p.id)}?`, detail: "Its program ends, and its terminal with it when Cophyla opened that terminal. The conversation is kept: reopening it takes it up again." };
+}
+
+/** The words of the ask a rule of the user's opens before the brain reopens a session: under another profile, which one. */
+export function reopenAsk(p: { id: string }, session: Session | undefined, profile: HarnessProfile | undefined): { title: string; detail: string } {
+  const name = sessionName(session, p.id);
+  if (!profile || profile.id === session?.profile) return { title: `Reopen ${name}?`, detail: "It starts again where it left off, with nothing typed into it." };
+  return { title: `Reopen ${name} under ${profile.name}?`, detail: `It starts again where it left off, with nothing typed into it, signed in as ${profile.name} and with its launch.` };
+}
+
 /** The words of the ask a node's rules open before the brain changes a session's mode. */
 export function modeAsk(p: { id: string; mode: LaunchMode }, session: Session | undefined): { title: string; detail: string } {
   const name = sessionName(session, p.id);
@@ -231,18 +243,20 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     },
     "session.stop": {
       target: (p) => p.id,
-      // A session the brain started is its own to stop; the user's are asked about.
+      // A session the brain started is its own to stop; the user's are asked about, and end once the gate let it.
       own: (p) => deps.sessions.get(p.id)?.origin === "orchestrator",
+      ask: (p) => stopAsk(p, deps.sessions.get(p.id)),
       handler: async (p) => {
-        await deps.sessions.stopSession(p.id);
+        await deps.sessions.stopSession(p.id, { as: "brain" });
         return {};
       },
     },
     "session.closed": { handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }) },
     "session.reopen": {
       target: (p) => p.id,
+      ask: (p) => reopenAsk(p, deps.sessions.get(p.id), p.profile !== undefined ? deps.profiles.get(p.profile) : undefined),
       handler: async (p) => {
-        const session = await deps.sessions.reopen(p.id, { profiles: deps.profiles });
+        const session = await deps.sessions.reopen(p.id, { profiles: deps.profiles, ...(p.profile !== undefined ? { profile: p.profile } : {}) });
         const thread = deps.chat.peek();
         if (thread) deps.chat.touchSession(thread.id, session.id);
         return { id: session.id };

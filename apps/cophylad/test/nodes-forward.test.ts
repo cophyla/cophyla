@@ -4,9 +4,10 @@
 // `session.history` by id follow the session. A `[gate.rules] "node:session.send" = "ask"`
 // on the secondary opens an ask that reaches the primary's client, whose answer settles it.
 // A client's forwarded request is gated on the primary as the user and on the owner as the
-// node, and a client's `session.stop` tells the owner the user asked. The chat's send to a
-// session it leads goes as a leader's, the user's words. `cancel` propagates. A link that drops
-// mid-forward answers `unavailable`.
+// node, and a client's `session.stop` tells the owner the user asked; the brain's ends a session
+// of the user's there once the gate let it, and a reopen under another profile is not asked of
+// an owner older than that. The chat's send to a session it leads goes as a leader's, the
+// user's words. `cancel` propagates. A link that drops mid-forward answers `unavailable`.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
@@ -140,6 +141,39 @@ describe("forwarding over the node link", () => {
     await c.next(isMethod("session.state", (p) => (p as Session).id === session.id && (p as Session).status === "ended"), 10_000);
     const stops = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.stop");
     expect(stops.map((e) => [e.principal.kind, e.args, e.outcome])).toEqual([["node", { id: session.id, as: "brain" }, "ok"]]);
+  }, 30_000);
+
+  test("the brain's forwarded stop ends a session of the user's on their machine once the gate let it; a reopen under another profile is not asked of an older owner", async () => {
+    primary = await startPrimary({ brain: { script, rules: { "brain:session.stop": "allow" } } });
+    secondary = await startSecondary(primary, { agent: true, gateRules: { "node:session.stop": "allow" } });
+    await linked(secondary);
+    await waitFor(() => primary!.d.brain?.state === "up");
+    const c = await client(primary.d);
+    clients.push(c);
+    // A process of the session's own to end, so no other is signalled.
+    const child = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 60000)"], { stdout: "ignore", stderr: "ignore" });
+    let id: string;
+    try {
+      const users = secondary.sessions.ensure({ harness: "claude", nativeId: "users-far", profile: secondary.profiles.byHarness("claude")[0]!.id, cwd: secondary.home, transport: "pipe", pid: child.pid });
+      id = users.session.id;
+      await waitFor(() => primary!.d.nodes.mirror.ownerOfSession(id) === secondary!.identity.id);
+      await c.request("chat.send", { text: `stop ${id}` });
+      await waitFor(() => secondary!.sessions.get(id)?.status === "ended", 10_000);
+      await child.exited;
+    } finally {
+      child.kill();
+    }
+    const stops = secondary.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.stop");
+    expect(stops.map((e) => [e.principal.kind, e.args, e.outcome])).toEqual([["node", { id, as: "brain" }, "ok"]]);
+    // An owner that does not say it reopens under another profile would drop it: refused here.
+    const row = primary.d.nodes.registry.get(secondary.identity.id)!;
+    expect(row.capabilities.reopenProfile).toBe(true);
+    primary.d.nodes.registry.upsert({ ...row, capabilities: { ...row.capabilities, reopenProfile: undefined } });
+    const refused = await c.request("session.reopen", { id, node: secondary.identity.id, profile: secondary.profiles.byHarness("claude")[0]!.id }).then(
+      () => "served",
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    expect(refused).toContain("runs an older Cophyla: update it to reopen a session under another profile");
   }, 30_000);
 
   test("the chat's forwarded send to a session it leads goes as the user's words, and as the brain's once it leads it no more", async () => {

@@ -133,6 +133,8 @@ describe("kept apart", () => {
     expect(await refusal(() => mini.sessions.annotate(g.id, { intent: "peek" }))).toBe(none);
     expect(await refusal(() => mini.sessions.send(g.id, "hi"))).toBe(none);
     expect(await refusal(() => mini.sessions.stopSession(g.id, { as: "user" }))).toBe(none);
+    // nor does the workspace node's brain end one its owner started there
+    expect(await refusal(() => mini.sessions.view(G).stopSession(g.id, { as: "brain" }))).toBe("unsupported: only a session cophylad started can be stopped");
     expect(await refusal(() => mini.sessions.view(G).history(m.id))).toBe(`not_found: no session ${m.id}`);
     expect(mini.sessions.view(G).history(g.id).length).toBeGreaterThan(0);
     // its pids are its own

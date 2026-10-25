@@ -5,11 +5,16 @@
 // in a tether terminal in the session's folder, under its profile and with cophylad's settings
 // file, and the same record comes back with its id, origin and workspace, holding the new
 // terminal. One still running, one with nothing saved, one whose folder is gone and an
-// unknown one are refused, and so is a second reopen while the first runs. The store's list
-// leaves out the chat's own session and the ends that were none of a conversation.
+// unknown one are refused, and so is a second reopen while the first runs. A reopen under
+// another profile copies the conversation and its sub-agents' folder into that profile's
+// `projects/`, or copies nothing where the two share it by a link, and the session comes back
+// under that profile, reading on from the copy with nothing recorded twice; a profile that is
+// not there, one of another harness, and a Codex session moved are refused. The brain ends a
+// session of the user's on the machine's own once the gate let it. The store's list leaves
+// out the chat's own session and the ends that were none of a conversation.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Session } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
@@ -32,6 +37,8 @@ let tether: Tether;
 let mini: Mini;
 let registry: string;
 let profileDir: string;
+let otherDir: string;
+let sharedDir: string;
 let cwd: string;
 let workspace: string;
 const alive = new Set<number>();
@@ -87,14 +94,24 @@ beforeAll(async () => {
   cwd = join(scratch, "work");
   mkdirSync(registry, { recursive: true });
   mkdirSync(cwd, { recursive: true });
+  // Another account with its own conversations, and one that shares the first's by a link.
+  otherDir = join(scratch, "claude-other");
+  sharedDir = join(scratch, "claude-shared");
+  mkdirSync(join(otherDir, "sessions"), { recursive: true });
+  mkdirSync(join(sharedDir, "sessions"), { recursive: true });
+  mkdirSync(join(profileDir, "projects"), { recursive: true });
+  symlinkSync(join(profileDir, "projects"), join(sharedDir, "projects"), "junction");
+  const codexA = join(scratch, "codex-a");
+  const codexB = join(scratch, "codex-b");
+  for (const dir of [codexA, codexB]) mkdirSync(dir, { recursive: true });
   fake = await new FakeTether(join(scratch, "tether")).start();
-  // Claude writes its registry entry once it runs, a resumed conversation under its own id.
+  // Claude writes its registry entry once it runs, a resumed conversation under its own id, in its profile's directory.
   fake.onSpawn = (s) => {
     s.setScreen(EMPTY);
     const id = conversationOf(s);
     if (!id) return;
     alive.add(s.pid);
-    writeRegistry(registry, { pid: s.pid, sessionId: id, cwd, status: "idle" });
+    writeRegistry(join(s.spawn.env.set?.["CLAUDE_CONFIG_DIR"] ?? profileDir, "sessions"), { pid: s.pid, sessionId: id, cwd, status: "idle" });
   };
   tether = new Tether({
     config: { idle_exit_s: 600, window: "auto", window_on_start: false, profiles: false, on_path: false, dir: fake.dir },
@@ -107,8 +124,15 @@ beforeAll(async () => {
     connectOrStart: (opts) => TetherClient.connect(fake.host, { name: opts.name ?? "cophylad" }),
   });
   await tether.start();
+  const PROFILES: [string, string, string][] = [
+    ["claude", "fake", profileDir],
+    ["claude", "other", otherDir],
+    ["claude", "shared", sharedDir],
+    ["codex", "codex-a", codexA],
+    ["codex", "codex-b", codexB],
+  ];
   mini = await miniSessions(
-    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(profileDir)}\n\n[acp]\nspawn_timeout_ms = 5000\n`,
+    `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n\n${PROFILES.map(([harness, name, dir]) => `[[profiles]]\nharness = "${harness}"\nname = "${name}"\nconfig_dir = ${tomlString(dir)}\n`).join("\n")}\n[acp]\nspawn_timeout_ms = 5000\n`,
     (host, log) => [new ClaudeAdapter({ host, log, isAlive: (pid) => alive.has(pid), inject: async () => undefined, sharedSettings: join(profileDir, "no-such-shared-settings.json") })],
     {
       acp: (config) => ({ config: config.acp, env: {} }),
@@ -198,6 +222,88 @@ describe("closed sessions", () => {
     await interrupt(pid, fs);
     rmSync(elsewhere, { recursive: true, force: true });
     await expect(mini.sessions.reopen(gone.session.id, { profiles: mini.profiles })).rejects.toMatchObject({ code: "conflict", message: expect.stringContaining("is gone") });
+  });
+});
+
+const profileNamed = (name: string) => mini.profiles.list().find((p) => p.name === name)!;
+
+/** The user turns recorded on a session's timeline. */
+const turns = (id: string) => mini.store.sessionEvents.history(id, { limit: 200 }).filter((e) => e.kind === "user_turn").length;
+
+/** A line the resumed conversation adds, as Claude appends it. */
+function goOn(path: string, sessionId: string): void {
+  appendFileSync(path, JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "go on" } }) + "\n");
+}
+
+describe("reopened under another profile", () => {
+  test("its conversation and its sub-agents' folder are copied to that profile's projects, and it comes back under it with nothing recorded twice", async () => {
+    const s = await usersOwn("conv-moved");
+    const original = s.session.transcript!.path;
+    const sub = join(dirname(original), "conv-moved", "subagents", "agent-a1.jsonl");
+    mkdirSync(dirname(sub), { recursive: true });
+    writeFileSync(sub, JSON.stringify({ type: "user", isSidechain: true, message: { role: "user", content: "look" } }) + "\n");
+    await mini.sessions.tick();
+    expect(turns(s.session.id)).toBe(1);
+    await interrupt(s.pid, s.fs);
+    const other = profileNamed("other");
+    const back = await mini.sessions.reopen(s.session.id, { profiles: mini.profiles, profile: other.id });
+    const copy = transcriptPathFor(otherDir, cwd, "conv-moved");
+    expect(readFileSync(copy, "utf8")).toBe(readFileSync(original, "utf8"));
+    expect(readFileSync(join(dirname(copy), "conv-moved", "subagents", "agent-a1.jsonl"), "utf8")).toBe(readFileSync(sub, "utf8"));
+    const fs = [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.reopen"] === s.session.id)!;
+    expect(fs.spawn.argv[fs.spawn.argv.indexOf("--resume") + 1]).toBe("conv-moved");
+    expect(fs.spawn.env.set?.["CLAUDE_CONFIG_DIR"]).toBe(otherDir);
+    expect(fs.spawn.argv[fs.spawn.argv.indexOf("--settings") + 1]).toBe(join(mini.home, "data", "claude", `settings-${other.id}.json`));
+    expect(back).toMatchObject({ id: s.session.id, profile: other.id, status: "idle", origin: "user", workspace, transcript: { path: copy } });
+    // What it says next is read from the copy, after what was recorded from the first.
+    goOn(copy, "conv-moved");
+    await mini.sessions.tick();
+    await waitFor(() => turns(s.session.id) === 2);
+    await mini.sessions.tick();
+    expect(turns(s.session.id)).toBe(2);
+  });
+
+  test("profiles that share their conversations by a link copy nothing, and it reads on where it was", async () => {
+    const s = await usersOwn("conv-shared");
+    const original = s.session.transcript!.path;
+    const saved = readFileSync(original, "utf8");
+    await mini.sessions.tick();
+    expect(turns(s.session.id)).toBe(1);
+    await interrupt(s.pid, s.fs);
+    const shared = profileNamed("shared");
+    const back = await mini.sessions.reopen(s.session.id, { profiles: mini.profiles, profile: shared.id });
+    const through = transcriptPathFor(sharedDir, cwd, "conv-shared");
+    expect(back).toMatchObject({ id: s.session.id, profile: shared.id, transcript: { path: through } });
+    expect(realpathSync(through)).toBe(realpathSync(original));
+    expect(readFileSync(original, "utf8")).toBe(saved);
+    goOn(original, "conv-shared");
+    await mini.sessions.tick();
+    await waitFor(() => turns(s.session.id) === 2);
+    await mini.sessions.tick();
+    expect(turns(s.session.id)).toBe(2);
+  });
+
+  test("a profile not there, one of another harness, and a Codex session moved are refused, and nothing is copied", async () => {
+    const s = await usersOwn("conv-refused");
+    await interrupt(s.pid, s.fs);
+    await expect(mini.sessions.reopen(s.session.id, { profiles: mini.profiles, profile: "prof_01ARZ3NDEKTSV4RRFFQ69G5FZZ" })).rejects.toMatchObject({ code: "not_found", message: expect.stringContaining("no profile") });
+    await expect(mini.sessions.reopen(s.session.id, { profiles: mini.profiles, profile: profileNamed("codex-a").id })).rejects.toMatchObject({ code: "invalid", message: expect.stringContaining("a codex profile") });
+    expect(existsSync(transcriptPathFor(otherDir, cwd, "conv-refused"))).toBe(false);
+    const thread = mini.sessions.ensure({ harness: "codex", nativeId: "thread-moved", profile: profileNamed("codex-a").id, cwd, transport: "app-server" });
+    mini.sessions.end(thread, "gone");
+    await expect(mini.sessions.reopen(thread.session.id, { profiles: mini.profiles, profile: profileNamed("codex-b").id })).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("under the profile it ran under") });
+  });
+});
+
+describe("stopped by the brain", () => {
+  test("a session of the user's on the machine's own ends once the gate let it; a caller that says neither is refused", async () => {
+    const s = await usersOwn("conv-brain-stop");
+    await mini.sessions.stopSession(s.session.id, { as: "brain" });
+    expect(mini.sessions.get(s.session.id)?.status).toBe("ended");
+    expect(mini.sessions.closed().find((c) => c.session.id === s.session.id)).toMatchObject({ reason: "stopped", interrupted: false });
+    const t = await usersOwn("conv-nobody-stop");
+    await expect(mini.sessions.stopSession(t.session.id)).rejects.toMatchObject({ code: "unsupported" });
+    expect(mini.sessions.get(t.session.id)?.status).not.toBe("ended");
   });
 });
 

@@ -3,7 +3,8 @@
 // folder that does not exist yet. The primary's requests there are refused past the folders
 // (a spawn in a workspace outside, a workspace put outside, a file read outside or through a
 // junction, the desktop, an editable or a network tool, the node's profiles, a start in a mode
-// looser than asking before each edit); its lists, its searches and its samples answer what is
+// looser than asking before each edit, the brain's stop of a session its owner started, a
+// reopen under another profile); its lists, its searches and its samples answer what is
 // inside; what goes up the link is what is inside. A node that answers its own asks answers
 // them alone. The node's own apps see everything.
 
@@ -123,9 +124,10 @@ describe("what a confined node serves", () => {
   function server(t: ReturnType<typeof tree>, answerHere = false) {
     const inside: Session = { id: newId("session"), node: NODE, harness: "claude", profile: newId("profile"), native: { id: "n", transport: "acp" }, origin: "user", cwd: join(t.shared, "src"), tags: [], status: "idle", startedAt: 1, lastActivity: 1 };
     const outside: Session = { ...inside, id: newId("session"), cwd: t.secret };
+    const startedInside: Session = { ...inside, id: newId("session"), origin: "orchestrator" };
     const wsIn: Workspace = { id: newId("workspace"), node: NODE, path: t.shared, name: "shared", origin: "user", tags: [], lastActivity: 1 };
     const wsOut: Workspace = { ...wsIn, id: newId("workspace"), path: t.secret, name: "secret" };
-    const sessions = new Map([inside, outside].map((s) => [s.id, s]));
+    const sessions = new Map([inside, outside, startedInside].map((s) => [s.id, s]));
     const workspaces = new Map([wsIn, wsOut].map((w) => [w.id, w]));
     const ran: string[] = [];
     const answer = () => ({});
@@ -152,6 +154,8 @@ describe("what a confined node serves", () => {
       "tool.list": { handler: () => ({ tools: [{ name: "fs.read", source: "builtin", risk: "read" }, { name: "mine", source: "editable", risk: "exec" }, { name: "http.get", source: "builtin", risk: "network" }] }) },
       "tool.run": { handler: (p: { name: string }) => (ran.push(`tool ${p.name}`), { result: {} }), risk: () => "read" },
       "remote.screenshot": { handler: () => (ran.push("screenshot"), {}) },
+      "session.stop": { handler: (p: { id: string }) => (ran.push(`stop ${p.id}`), {}) },
+      "session.reopen": { handler: (p: { id: string }) => (ran.push(`reopen ${p.id}`), { id: p.id }) },
       "ask.answer": { handler: answer },
     };
     const localAsk = { id: newId("ask"), node: NODE, type: "permission", source: { kind: "gate", action: "x", principal: { kind: "node", id: "node_p" } }, title: "t", options: [], answerableBy: ["user"], status: "open", createdAt: 1 };
@@ -185,7 +189,7 @@ describe("what a confined node serves", () => {
         read: async (id, path) => (ran.push(`read ${id} ${path}`), { path, size: 0, modified: 0, text: "" }),
       },
     });
-    return { s, inside, outside, wsIn, wsOut, ran, localAsk, outsideAsk, audited };
+    return { s, inside, outside, startedInside, wsIn, wsOut, ran, localAsk, outsideAsk, audited };
   }
 
   const refused = (p: Promise<unknown>) => p.then(() => "served", (e: unknown) => (e instanceof Error ? e.message : String(e)));
@@ -253,6 +257,19 @@ describe("what a confined node serves", () => {
     // one of the folder's own is shown
     mkdirSync(join(t.shared, ".git"));
     expect(await refused(s.serve("session.git", { id: inside.id }, 2))).toBe("served");
+  });
+
+  test("the brain ends none of its owner's own sessions there, and none is reopened under another profile", async () => {
+    const t = tree();
+    const { s, inside, startedInside, ran } = server(t);
+    let n = 0;
+    const call = (method: string, params: unknown) => s.serve(method, params, ++n);
+    expect(await refused(call("session.stop", { id: inside.id, as: "brain" }))).toMatch(/its owner's own sessions are theirs to end/);
+    expect(await refused(call("session.stop", { id: startedInside.id, as: "brain" }))).toBe("served");
+    expect(await refused(call("session.stop", { id: inside.id, as: "user" }))).toBe("served");
+    expect(await refused(call("session.reopen", { id: inside.id, profile: newId("profile") }))).toMatch(/under the profile it ran under/);
+    expect(await refused(call("session.reopen", { id: inside.id }))).toBe("served");
+    expect(ran).toEqual([`stop ${startedInside.id}`, `stop ${inside.id}`, `reopen ${inside.id}`]);
   });
 
   test("a node that answers its own asks answers them alone", async () => {
