@@ -27,7 +27,7 @@
 //   <cophyla-message from="cophyla" group="release" id="pmsg_…">
 //   <cophyla-message from="cophyla" group="release" user="bob" external="true" id="pmsg_…">
 
-import type { AgentRef, ConnectionSender, TeammateSender } from "@cophyla/protocol";
+import type { AgentMode, AgentRef, ConnectionSender, TeammateSender } from "@cophyla/protocol";
 import { capText } from "../sessions/model.ts";
 
 /** What every envelope starts with: how a harness's echo of one is known. */
@@ -114,6 +114,39 @@ export function envelope(info: EnvelopeInfo, text: string): string {
   return `${ENVELOPE_TAG} ${head}>\n${neutralise(text)}\n${CLOSE_TAG}`;
 }
 
+/**
+ * How a message goes into a session wherever it is: `quiet`, a notice its next hook hands over
+ * while it works; `more`, messages handed over with it as one (what focus held), each in its own
+ * envelope, with its sender's permission class for the parity rule.
+ */
+export interface DeliverOptions {
+  quiet?: boolean;
+  more?: readonly (EnvelopeInfo & { mode?: AgentMode; text: string })[];
+}
+
+/** What a delivery with `more` may answer beside its status: the messages left out there, as the user did not let them in, and why. */
+export function droppedOf(r: unknown): readonly { messageId: string; why: string }[] {
+  const d = r !== null && typeof r === "object" ? (r as { dropped?: unknown }).dropped : undefined;
+  return Array.isArray(d) ? (d as { messageId: string; why: string }[]) : [];
+}
+
+/** An agent's message on its way into a session, and the ones handed over with it as one message, each in its own envelope after it. */
+export interface Wrapped {
+  info: EnvelopeInfo;
+  text: string;
+  more?: readonly { info: EnvelopeInfo; text: string }[];
+}
+
+/** What goes over the wire for a message and those handed over with it: each in its envelope, a blank line between. */
+export function envelopes(w: Wrapped): string {
+  return [w, ...(w.more ?? [])].map((m) => envelope(m.info, m.text)).join("\n\n");
+}
+
+/** The turns a message handed over with others is recorded as: one per envelope, the send's ref on the first. */
+export function agentTurns(w: Wrapped, ref?: string): Record<string, unknown>[] {
+  return [agentTurn(w.info, w.text, ref), ...(w.more ?? []).map((m) => agentTurn(m.info, m.text))];
+}
+
 /** The turn an agent's message is recorded as in the session it reached: who it is from, its id, what it answers, and its text. */
 export function agentTurn(info: EnvelopeInfo, text: string, ref?: string): Record<string, unknown> {
   return {
@@ -134,7 +167,20 @@ const ATTR = /([a-z_]+)="([^"]*)"/g;
 /** The envelope in a harness's echo of a message, when there is one with an id. */
 export function readEnvelope(text: string): ReadEnvelope | undefined {
   const m = ENVELOPE.exec(text);
-  if (!m) return undefined;
+  return m ? readOne(m) : undefined;
+}
+
+/** Every envelope with an id in a harness's echo of a message, in order: several handed over as one. */
+export function readEnvelopes(text: string): ReadEnvelope[] {
+  const out: ReadEnvelope[] = [];
+  for (const m of text.matchAll(new RegExp(ENVELOPE.source, "g"))) {
+    const read = readOne(m);
+    if (read) out.push(read);
+  }
+  return out;
+}
+
+function readOne(m: RegExpMatchArray): ReadEnvelope | undefined {
   const attrs = new Map<string, string>();
   for (const a of m[1]!.matchAll(ATTR)) attrs.set(a[1]!, a[2]!);
   const id = attrs.get("id");

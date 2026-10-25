@@ -194,7 +194,7 @@ function agentsText(rows: AgentListing[], connections: ConnectionListing[], now:
             const led = r.led ? `, led by you${r.ask ? `, asking (${r.ask})` : ""}` : "";
             return `- ${r.alias}: ${words[r.harness] ?? r.harness} on ${r.nodeName}${r.folder ? `, in ${r.folder}` : ""}, ${state}${led}${r.intent ? `. ${r.intent}` : ""}`;
           })
-          .join("\n")}${rows.some((r) => r.led) ? "\nYour messages to a session led by you reach it as your user's own words, and answer_ask answers its ask as your user." : ""}`;
+          .join("\n")}${rows.some((r) => r.led) ? `\nYour messages to a session led by you reach it as your user's own words, and answer_ask answers its ask as your user.${rows.some((r) => r.led && r.focus) ? " One in focus gets yours when its focus ends; past_focus: true types them in now, for what cannot wait." : ""}` : ""}`;
   if (connections.length === 0) return own;
   const lines = connections.map((c) => {
     const what = c.live === false ? "no agent runs in their terminal now; what you send waits there" : c.harness ? `${words[c.harness] ?? c.harness}` : "an agent";

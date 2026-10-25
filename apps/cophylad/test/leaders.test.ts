@@ -281,7 +281,7 @@ interface Sent {
   opts: SendOptions;
 }
 
-function routerRig(opts: { local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; linked?: Set<string>; toml?: string; teammates?: AgentTeammates; grants?: Record<string, Access> }) {
+function routerRig(opts: { local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; linked?: Set<string>; toml?: string; teammates?: AgentTeammates; grants?: Record<string, Access>; landMs?: number }) {
   const config = Config.parse(Bun.TOML.parse(opts.toml ?? ""));
   const st = store();
   const bus = new Bus();
@@ -328,7 +328,18 @@ function routerRig(opts: { local: Session[]; mirror?: Session[]; nodes?: NodeRec
     mirrorAsk: (id) => mirrorAsks.get(id),
   };
   const leaders = new Leaders({ store: st, bus, log: silentLogger, routes: () => true, sessions: all, node: (id) => (id === DESK ? SELF : opts.nodes?.find((n) => n.id === id)) });
-  const focus = new Focuses({ store: st, bus, log: silentLogger, routes: () => true, sessions: all, deliver: async (s, text, info) => router.deliverHere(s.id, text, info), linked: () => true });
+  const focus = new Focuses({
+    store: st,
+    bus,
+    log: silentLogger,
+    routes: () => true,
+    sessions: all,
+    deliver: async (s, text, info, o) => router.deliverHere(s.id, text, info, undefined, o?.more),
+    lead: (s, text, by, ids) => router.typeHeld(s, text, by, ids),
+    // nothing here records a landing unless a test says so: what follows a leader's words waits only a moment
+    landMs: opts.landMs ?? 20,
+    linked: () => true,
+  });
   const reports: Reports = new Reports({
     bus,
     log: silentLogger,
@@ -386,20 +397,103 @@ describe("a leader's message", () => {
     expect(r.reports.list()).toEqual([{ leader: lead.id, target: web.id, refs: ["cophylad-1"] }]);
   });
 
-  test("skips the focus hold and the parity ask, and still counts against the limits", async () => {
+  test("sent past focus, skips the focus hold and the parity ask, and still counts against the limits", async () => {
     const lead = withPid(sess("claude", "C:/code/api"));
     const web = sess("codex", "C:/code/web");
     const r = routerRig({ local: [lead, web], bypass: { [web.id]: true } });
     r.leaders.set(lead.id, "all");
     r.focus.take(web, 60, "the migration");
-    const a = await r.call(lead, "send_message", { to: "web-codex", text: "Stop and commit what you have." });
+    const a = await r.call(lead, "send_message", { to: "web-codex", text: "Stop and commit what you have.", past_focus: true });
     expect(a.text).toContain("as your user's own words");
     expect(r.sent.at(-1)!.opts.from).toBe("lead");
     expect(r.asks.listOpen()).toEqual([]);
+    expect(r.focus.get(web.id)).toBeDefined();
+    // the audit row says it went past the session's focus
+    expect(r.store.audit.list({ limit: 10 }).find((e) => e.action === "agent.lead")!.args).toMatchObject({ pastFocus: true });
     // the same words again within the window are refused, as any message's are
-    const again = await r.call(lead, "send_message", { to: "web-codex", text: "Stop and commit what you have." });
+    const again = await r.call(lead, "send_message", { to: "web-codex", text: "Stop and commit what you have.", past_focus: true });
     expect(again.isError).toBe(true);
     expect(r.sent).toHaveLength(1);
+  });
+
+  test("waits for the led session's focus to end, then is typed in as the user's words, one message per leader, before what else came", async () => {
+    const lead = withPid(sess("claude", "C:/code/api"));
+    const other = withPid(sess("claude", "C:/code/docs"));
+    const web = sess("codex", "C:/code/web");
+    const r = routerRig({ local: [lead, other, web] });
+    r.leaders.set(lead.id, "all");
+    r.focus.take(web, 60, "the migration");
+    // the leader is shown how to reach it now
+    expect((await r.call(lead, "list_agents", {})).text).toContain("One in focus gets yours when its focus ends; past_focus: true types them in now, for what cannot wait.");
+    const a = await r.call(lead, "send_message", { to: "web-codex", text: "Commit what you have." });
+    expect(a.text).toMatch(/^Held for web-codex \(pmsg_\w+\): it is in focus until \d\d:\d\d, 1 h from now, or until its turn ends \(the migration\)\. Your message is typed into it as your user's own words when its focus ends/);
+    expect(a.text).toContain("past_focus: true");
+    await r.call(lead, "send_message", { to: "web-codex", text: "Then run the tests." });
+    // a slash command goes alone, as it must be the whole prompt
+    await r.call(lead, "send_message", { to: "web-codex", text: "/compact" });
+    // another agent's message waits too, and goes after the leader's words
+    await r.call(other, "send_message", { to: "web-codex", text: "the docs are merged" });
+    expect(r.sent).toHaveLength(0);
+    expect(r.reports.list()).toEqual([]);
+    expect(r.store.audit.list({ limit: 10 }).filter((e) => e.action === "agent.lead").map((e) => e.args)).toEqual(expect.arrayContaining([expect.objectContaining({ focus: true })]));
+
+    await r.focus.end(web.id, "user");
+    expect(r.sent.map((x) => x.opts.from)).toEqual(["lead", "lead", "agent"]);
+    expect(r.sent[0]).toMatchObject({ id: web.id, text: "Commit what you have.\n\nThen run the tests.", opts: { from: "lead", lead: { by: expect.objectContaining({ session: lead.id }) } } });
+    expect(r.sent[1]!.text).toBe("/compact");
+    // the rest is one message: the notice, then the other agent's in its own envelope
+    expect(r.sent[2]!.text).toBe("Your user ended your focus. While you were in focus: 1 message (from docs-claude), below.");
+    expect(r.sent[2]!.opts.agent!.from).toBeUndefined();
+    expect(r.sent[2]!.opts.more).toHaveLength(1);
+    expect(r.sent[2]!.opts.more![0]).toMatchObject({ text: "the docs are merged", info: { from: expect.objectContaining({ session: other.id }) } });
+    // what the session does next is told to the leader, as for words typed in at once
+    expect(r.reports.list()).toEqual([{ leader: lead.id, target: web.id, refs: ["cophylad-1", "cophylad-2"] }]);
+  });
+
+  test("what else came waits for the leader's words to land before it goes", async () => {
+    const lead = withPid(sess("claude", "C:/code/api"));
+    const other = withPid(sess("claude", "C:/code/docs"));
+    const web = sess("codex", "C:/code/web");
+    const r = routerRig({ local: [lead, other, web], landMs: 10_000 });
+    r.leaders.set(lead.id, "all");
+    r.focus.take(web, 60, "the migration");
+    await r.call(lead, "send_message", { to: "web-codex", text: "Commit what you have." });
+    await r.call(other, "send_message", { to: "web-codex", text: "the docs are merged" });
+    const ending = r.focus.end(web.id, "user");
+    await waitFor(() => r.sent.length === 1);
+    await sleep(50);
+    expect(r.sent).toHaveLength(1);
+    // the session records the leader's words as its user's turn: the rest goes after them
+    r.event(web.id, "user_turn", { source: "lead", text: "Commit what you have.", ref: "cophylad-1" });
+    await ending;
+    expect(r.sent.map((x) => x.opts.from)).toEqual(["lead", "agent"]);
+  });
+
+  test("held for focus but no longer led by then, goes as the leader's own message with the rest", async () => {
+    const lead = withPid(sess("claude", "C:/code/api"));
+    const web = sess("codex", "C:/code/web");
+    const r = routerRig({ local: [lead, web] });
+    r.leaders.set(lead.id, [web.id]);
+    r.focus.take(web, 60, "the migration");
+    await r.call(lead, "send_message", { to: "web-codex", text: "Commit what you have." });
+    r.leaders.remove(lead.id);
+    await r.focus.end(web.id, "time");
+    expect(r.sent).toHaveLength(1);
+    expect(r.sent[0]!.opts.from).toBe("agent");
+    expect(r.sent[0]!.text).toBe("Your focus ran its time. While you were in focus: 1 message (from api-claude), below.");
+    expect(r.sent[0]!.opts.more![0]).toMatchObject({ text: "Commit what you have.", info: { from: expect.objectContaining({ session: lead.id }) } });
+  });
+
+  test("past_focus is a leader's: to a session the caller does not lead it is refused", async () => {
+    const lead = withPid(sess("claude", "C:/code/api"));
+    const web = sess("codex", "C:/code/web");
+    const r = routerRig({ local: [lead, web] });
+    const a = await r.call(lead, "send_message", { to: "web-codex", text: "status?", past_focus: true });
+    expect(a.isError).toBe(true);
+    expect(a.text).toContain("past_focus is for a session you lead, and you do not lead web-codex");
+    expect(r.sent).toHaveLength(0);
+    const b = await r.call(lead, "send_message", { to: "web-codex", text: "status?", past_focus: "yes" });
+    expect(b).toEqual({ text: "past_focus is true or false.", isError: true });
   });
 
   test("from a session that leads no one, or to one it does not lead, goes as ever, in the envelope", async () => {

@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { newId } from "@cophyla/protocol";
 import type { Session } from "@cophyla/protocol";
-import type { EnvelopeInfo } from "../src/agentmsg/envelope.ts";
+import type { DeliverOptions, EnvelopeInfo } from "../src/agentmsg/envelope.ts";
 import { Focuses } from "../src/agentmsg/focus.ts";
 import { AgentMessages } from "../src/agentmsg/index.ts";
 import type { AgentSessions } from "../src/agentmsg/index.ts";
@@ -41,6 +41,8 @@ interface Delivery {
   text: string;
   info: EnvelopeInfo;
   quiet?: boolean;
+  /** Handed over with it as one message. */
+  more?: DeliverOptions["more"];
 }
 
 function rig(local: Session[]) {
@@ -73,8 +75,8 @@ function rig(local: Session[]) {
     acceptsInbound: () => false,
   };
   let groups: Groups;
-  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: { quiet?: boolean }) => {
-    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}) });
+  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: DeliverOptions) => {
+    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}), ...(opts?.more ? { more: opts.more } : {}) });
     return { status: "queued" as const };
   };
   const focus = new Focuses({ store, bus, log: silentLogger, routes: () => true, sessions: () => local, deliver, linked: () => true, ended: (s, told) => groups.focusEnded(s, told), now: () => clock.t, sweepMs: 60_000 });
@@ -403,15 +405,17 @@ describe("focus", () => {
       await Bun.sleep(20);
       expect(r.delivered).toHaveLength(0);
 
-      // its turn ends: one notice of what came, then the message
+      // its turn ends: one message, the notice of what came with the message after it in its own envelope
       r.set(web, { status: "idle" });
-      await waitFor(() => r.delivered.length === 2);
-      expect(r.delivered[0]!.text).toBe("Your focus ended with your turn. While you were in focus: 1 tag of you in #release; 1 message (from api-codex), which follow. Read a group with read_group when it suits your work.");
-      expect(r.delivered[1]).toMatchObject({ session: web.id, text: "the schema is merged", info: { from: { alias: "api-codex" } } });
+      await waitFor(() => r.delivered.length === 1);
+      expect(r.delivered[0]!.text).toBe("Your focus ended with your turn. While you were in focus: 1 tag of you in #release; 1 message (from api-codex), below. Read a group with read_group when it suits your work.");
+      expect(r.delivered[0]!.info.from).toBeUndefined();
+      expect(r.delivered[0]!.more).toHaveLength(1);
+      expect(r.delivered[0]!.more![0]).toMatchObject({ text: "the schema is merged", from: { alias: "api-codex" }, mode: "prompting" });
       expect(r.focus.list()).toEqual([]);
       // the catch-up stood for the tag's notice: no second one
       await Bun.sleep(20);
-      expect(r.delivered).toHaveLength(2);
+      expect(r.delivered).toHaveLength(1);
       void g;
     } finally {
       r.stop();
@@ -428,7 +432,7 @@ describe("focus", () => {
       await Bun.sleep(10);
       expect(r.focus.get(web.id)).toBeDefined();
       const off = await r.call(web, "focus", { off: true });
-      expect(off.text).toBe("Your focus has ended; what came meanwhile follows as messages.");
+      expect(off.text).toBe("Your focus has ended; what came meanwhile follows.");
       expect(r.delivered[0]!.text).toBe("You ended your focus; nothing came meanwhile.");
       // the user ends it from the app
       r.set(web, { status: "busy" });

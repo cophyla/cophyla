@@ -14,7 +14,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import { newId, RpcError } from "@cophyla/protocol";
 import type { ConnectionRelay, Session, TeammateShare } from "@cophyla/protocol";
 import type { Psk } from "@cophyla/relay";
-import type { EnvelopeInfo } from "../src/agentmsg/envelope.ts";
+import type { DeliverOptions, EnvelopeInfo } from "../src/agentmsg/envelope.ts";
 import { Focuses } from "../src/agentmsg/focus.ts";
 import { AgentMessages } from "../src/agentmsg/index.ts";
 import type { AgentSessions } from "../src/agentmsg/index.ts";
@@ -112,7 +112,7 @@ interface Side {
   online: boolean;
   sessions: Session[];
   workspaces: { node: string; path: string; name: string }[];
-  delivered: { session: string; text: string; info: EnvelopeInfo }[];
+  delivered: { session: string; text: string; info: EnvelopeInfo; more?: DeliverOptions["more"] }[];
   teammates: Teammates;
   groups: Groups;
   focus: Focuses;
@@ -138,9 +138,9 @@ function side(relay: Relay, login: string, clock: { t: number }): Side {
   const audit = new Audit(store, node, config.gate.audit_result_cap, bus);
   const gate = new Gate({ config: config.gate, policy: new Policy(config.gate, store), asks, audit, log: silentLogger });
   const s = { login, node, online: true, sessions: [] as Session[], workspaces: [] as Side["workspaces"], delivered: [] as Side["delivered"], bus } as Side;
-  const deliver = async (x: Session, text: string, info: EnvelopeInfo) => {
+  const deliver = async (x: Session, text: string, info: EnvelopeInfo, opts?: DeliverOptions) => {
     if (x.status === "ended") throw new RpcError("not_found", "that session has ended; not sent");
-    s.delivered.push({ session: x.id, text, info });
+    s.delivered.push({ session: x.id, text, info, ...(opts?.more ? { more: opts.more } : {}) });
     return { status: "queued" as const };
   };
   const place = (x: Session) => {
@@ -428,8 +428,11 @@ describe("messages between teammates' agents", () => {
       expect(sent.text).toContain("(the schema)");
       expect(t.alice.delivered).toHaveLength(0);
       t.alice.set(t.a, { status: "idle" });
-      await waitFor(() => t.alice.delivered.length === 2);
-      expect(t.alice.delivered[1]).toMatchObject({ text: "ping", info: { peer: { user: "bob" } } });
+      // handed over behind the notice in one message, still marked as the teammate's
+      await waitFor(() => t.alice.delivered.length === 1);
+      expect(t.alice.delivered[0]!.text).toContain("1 message (from bob/site-claude), below");
+      expect(t.alice.delivered[0]!.more).toHaveLength(1);
+      expect(t.alice.delivered[0]!.more![0]).toMatchObject({ text: "ping", peer: { user: "bob" } });
     } finally {
       t.done();
     }

@@ -316,7 +316,8 @@ export const nodeLinkRequests = {
    * refusal is an error that says why.
    */
   "agent.send": {
-    params: z.object({ caller: SessionId, mode: AgentMode, to: z.string().min(1).max(200), text: z.string().min(1), replyTo: AgentMessageId.optional() }),
+    /** `pastFocus`: the caller leads the session, and its words go in at once even while the session is in focus; an older primary holds them. */
+    params: z.object({ caller: SessionId, mode: AgentMode, to: z.string().min(1).max(200), text: z.string().min(1), replyTo: AgentMessageId.optional(), pastFocus: z.boolean().optional() }),
     result: z.object({
       /**
        * `queued`: kept until the other user's Cophyla is reached; `waiting`: there, kept until an

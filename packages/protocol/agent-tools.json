@@ -16,7 +16,8 @@
         "properties": {
           "to": { "type": "string", "description": "The session's name as list_agents gives it (name@machine when two share a name, login/name for another person's agent), or its sess_ or con_ id." },
           "text": { "type": "string", "description": "The message, as plain text." },
-          "reply_to": { "type": "string", "description": "The id (pmsg_…) of the message you are answering, from its envelope." }
+          "reply_to": { "type": "string", "description": "The id (pmsg_…) of the message you are answering, from its envelope." },
+          "past_focus": { "type": "boolean", "description": "Only to a session you lead (led in list_agents): true types your message in at once even while that session is in focus (list_agents says until when). Without it, a session in focus gets your message when its focus ends, before what else came. Use it only when waiting would cost more than the interruption." }
         },
         "required": ["to", "text"],
         "additionalProperties": false

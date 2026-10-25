@@ -87,6 +87,8 @@ export function selfNode(
       ...(files ? { files: true } : {}),
       // a leader's message goes in as its user's words; a node that shares some folders alone takes it as another agent's
       ...(config.node.scope.kind === "machine" ? { lead: true } : {}),
+      // what focus held for one of its sessions is handed over as one message
+      bundle: true,
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

@@ -18,12 +18,13 @@
 //
 // A session the user made a leader (`leaders/`) speaks to the sessions of its group as the
 // user: its message is checked against the limits as any is, gated as `agent.lead`, and typed
-// into the session as the user's own words, past focus and the parity ask, since the user's own
-// words never wait for either and the promotion is the user's consent. What the session does
-// next comes back to the leader (`leaders/reports.ts`), and the leader may answer the session's
-// asks as the user (`answer_ask`, gated as `agent.answer`). A session it leads that cannot take
-// the user's words (one cophylad cannot type into, a machine with an older Cophyla) gets the
-// message as another agent's, and the leader is told why.
+// into the session as the user's own words, past the parity ask, since the promotion is the
+// user's consent. A session in focus gets it when its focus ends, typed before what else came,
+// unless the leader sent it `past_focus`, which types it in at once as the user's own words
+// would be. What the session does next comes back to the leader (`leaders/reports.ts`), and the
+// leader may answer the session's asks as the user (`answer_ask`, gated as `agent.answer`). A
+// session it leads that cannot take the user's words (one cophylad cannot type into, a machine
+// with an older Cophyla) gets the message as another agent's, and the leader is told why.
 //
 // A tool's answer is text, and for `read_group` the photos of the posts it shows too, as MCP
 // image content the harness hands its model. `send_file` reaches another person's agent through
@@ -188,6 +189,14 @@ export interface SendAnswer {
   fallback?: string;
 }
 
+/** What a send is asked to do: `pastFocus`, a leader's words to a session it leads go in even while it is in focus. */
+export interface SendParams {
+  to: string;
+  text: string;
+  replyTo?: string;
+  pastFocus?: boolean;
+}
+
 /** The connection tools, which a secondary's sessions call through the primary. */
 const CONNECTION_TOOLS = new Set(["create_invite", "accept_invite", "end_connection"]);
 /** The group tools and focus, which live on the primary too. */
@@ -343,11 +352,13 @@ export class AgentMessages {
       const to = typeof args["to"] === "string" ? args["to"].trim() : "";
       const text = typeof args["text"] === "string" ? args["text"] : "";
       const replyTo = args["reply_to"];
+      const pastFocus = args["past_focus"];
       if (!to) return { text: "send_message needs to: the name list_agents gives the session.", isError: true };
       if (!text.trim()) return { text: "send_message needs text: the message.", isError: true };
       if (replyTo !== undefined && replyTo !== "" && !AgentMessageId.safeParse(replyTo).success) return { text: "reply_to is the id (pmsg_…) of the message you are answering, from its envelope.", isError: true };
+      if (pastFocus !== undefined && typeof pastFocus !== "boolean") return { text: "past_focus is true or false.", isError: true };
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
-      const answer = await this.sendFrom(caller, mode, { to, text, ...(typeof replyTo === "string" && replyTo !== "" ? { replyTo } : {}) });
+      const answer = await this.sendFrom(caller, mode, { to, text, ...(typeof replyTo === "string" && replyTo !== "" ? { replyTo } : {}), ...(pastFocus === true ? { pastFocus: true } : {}) });
       return { text: answerText(answer, this.now()) };
     } catch (e) {
       return { text: refusalText(e), isError: true };
@@ -501,9 +512,9 @@ export class AgentMessages {
     const focus = this.deps.focus?.();
     if (!focus) throw new RpcError("unavailable", "focus is off on this machine");
     if (args["off"] === true) {
-      // not awaited past the end itself: what was held follows as messages once this tool has answered
+      // not awaited past the end itself: what was held follows once this tool has answered
       const ended = await this.deps.gate.run({ principal: { kind: "harness", session: caller.id }, action: "agent.focus", args: { off: true }, sessionKey: caller.id }, () => focus.release(caller.id, "agent"));
-      return ended ? "Your focus has ended; what came meanwhile follows as messages." : "You were not in focus.";
+      return ended ? "Your focus has ended; what came meanwhile follows." : "You were not in focus.";
     }
     const minutes = args["minutes"] === undefined ? 60 : args["minutes"];
     if (minutes !== 60 && minutes !== 120) throw new RpcError("invalid", "minutes is 60 or 120");
@@ -570,7 +581,7 @@ export class AgentMessages {
     }
   }
 
-  private async sendFrom(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }): Promise<SendAnswer> {
+  private async sendFrom(caller: Session, mode: AgentMode, p: SendParams): Promise<SendAnswer> {
     if (this.deps.cluster.routes()) return this.send(caller, mode, p);
     const r = await this.upward("agent.send", { caller: caller.id, mode, ...p });
     return nodeLinkRequests["agent.send"].result.parse(r);
@@ -662,12 +673,15 @@ export class AgentMessages {
    * or waiting on the user; one that waits is delivered once allowed, and its sender is told
    * when it is not. `access` is the grant of the node it came up from, when it did. To a
    * session the caller leads, it goes as the user's own words (`asUser`), or as another agent's
-   * with why (`fallback`) when that session cannot take them.
+   * with why (`fallback`) when that session cannot take them; either waits for the session's
+   * focus to end unless the caller sent it `pastFocus`, which only a session it leads takes.
    */
-  async send(caller: Session, mode: AgentMode, p: { to: string; text: string; replyTo?: string }, access?: Access): Promise<SendAnswer> {
+  async send(caller: Session, mode: AgentMode, { pastFocus, ...p }: SendParams, access?: Access): Promise<SendAnswer> {
     // another user's agent, on a connection of the caller's terminal: carried by the connection alone
     const connections = this.deps.connections?.();
     const teammates = this.deps.teammates?.();
+    const peer = (teammates && !connections?.resolveFor(caller, p.to) && teammates.names(p.to)) || (connections && (connections.resolveFor(caller, p.to) || Connections.names(p.to)));
+    if (peer && pastFocus) throw new RpcError("invalid", "past_focus is for a session you lead, and another person's agent is never one: send without it");
     if (teammates && !connections?.resolveFor(caller, p.to) && teammates.names(p.to)) {
       if (access && !mayMessage(access, "initiate")) throw new RpcError("denied", `${this.nameOf(caller.node)}'s access lets its sessions send no messages to other people`);
       const sent = await teammates.send(caller, mode, p);
@@ -695,6 +709,7 @@ export class AgentMessages {
     const lead = this.deps.leaders?.()?.route(caller.id, target.session);
     const asLead = lead !== undefined && "lead" in lead;
     const fallback = lead !== undefined && "fallback" in lead ? lead.fallback : undefined;
+    if (pastFocus && !lead) throw new RpcError("invalid", `past_focus is for a session you lead, and you do not lead ${to.alias}: send without it, and it gets your message when any focus of its ends`);
     const command = asLead ? leadCommand(p.text) : undefined;
     if (command) throw new RpcError("invalid", command);
     const { hops, reply } = this.limits.hops(caller.id, p.replyTo);
@@ -707,8 +722,29 @@ export class AgentMessages {
     const id = newId("agentMessage");
     this.limits.record(id, caller.id, target.session.id, p.text, hops);
     const said = { id, text: p.text, ...(p.replyTo ? { replyTo: p.replyTo } : {}) };
+    // the receiver in focus: held for it, its sender told at once until when and why, unless the
+    // caller leads it and sent it past focus (or what was held for it still being handed over,
+    // which this queues behind)
+    const focus = this.deps.focus?.();
+    const inFocus = focus?.get(target.session.id);
+    const holds = focus !== undefined && (inFocus !== undefined || focus.holding(target.session.id));
     if (asLead) {
-      const answer = await this.lead(caller, target.session, from, to, id, p, hops);
+      if (focus && holds && !pastFocus) {
+        // its sender's permission class kept too, for the parity rule should it go as the leader's own message after all
+        const info: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
+        const heldIt = await this.deps.gate.run(
+          { principal: { kind: "harness", session: caller.id }, action: "agent.lead", target: target.session.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, focus: true }, sessionKey: caller.id },
+          () => focus.hold(target.session, p.text, info, from.alias, caller.id, true),
+        );
+        if (heldIt) {
+          this.log.info("a leader's message held for focus", { id, from: caller.id, to: target.session.id });
+          this.deps.talk?.()?.between(partyOf(from), partyOf(to), { ...said, lead: true, status: "focus" });
+          const still = focus.get(target.session.id);
+          return { status: still ? "focus" : "sent", id, to, asUser: true, ...(still ? { focus: still } : {}) };
+        }
+        // its focus ended while this was asked about: typed in as ever, below
+      }
+      const answer = await this.lead(caller, target.session, from, to, id, p, hops, holds && pastFocus === true);
       this.deps.talk?.()?.between(partyOf(from), partyOf(to), { ...said, lead: true, status: "sent" });
       return answer;
     }
@@ -721,11 +757,7 @@ export class AgentMessages {
     };
     const agent: EnvelopeInfo & { mode: AgentMode } = { from, messageId: id, ...(p.replyTo ? { replyTo: p.replyTo } : {}), mode };
 
-    // the receiver in focus: held for it, its sender told at once until when and why
-    // (or what was held for it still being handed over, which this queues behind)
-    const focus = this.deps.focus?.();
-    const inFocus = focus?.get(target.session.id);
-    if (focus && (inFocus || focus.holding(target.session.id))) {
+    if (focus && holds && !pastFocus) {
       const heldIt = await this.deps.gate.run(
         { principal: { kind: "harness", session: caller.id }, action: "agent.send", target: target.session.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, focus: true }, sessionKey: caller.id },
         () => focus.hold(target.session, p.text, agent, from.alias, caller.id),
@@ -746,7 +778,7 @@ export class AgentMessages {
         principal: { kind: "harness", session: caller.id },
         action: "agent.send",
         target: target.session.id,
-        args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id },
+        args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, ...(holds && pastFocus ? { pastFocus: true } : {}) },
         sessionKey: caller.id,
         ask: { title: `Let ${from.alias} (${HARNESS_WORDS[from.harness] ?? from.harness} on ${from.nodeName}) message ${to.alias}?`, detail: cap(p.text) },
       },
@@ -782,17 +814,18 @@ export class AgentMessages {
 
   /**
    * A leader's message to a session it leads, checked and counted already: gated as
-   * `agent.lead`, and typed into the session as the user's own words. Never held by focus nor
-   * asked about for parity: the user's own words wait for neither, and the user made the caller
-   * its leader. What the session does next is told to the caller (`leaders/reports.ts`).
+   * `agent.lead`, and typed into the session as the user's own words. Never asked about for
+   * parity: the user made the caller its leader. One to a session in focus got here only sent
+   * past it (`pastFocus`, which the audit row says). What the session does next is told to the
+   * caller (`leaders/reports.ts`).
    */
-  private async lead(caller: Session, target: Session, from: AgentRef, to: AgentRef, id: string, p: { text: string; replyTo?: string }, hops: number): Promise<SendAnswer> {
+  private async lead(caller: Session, target: Session, from: AgentRef, to: AgentRef, id: string, p: { text: string; replyTo?: string }, hops: number, pastFocus?: boolean): Promise<SendAnswer> {
     // watched before it goes: a session can take it before the send is answered
     const going = this.deps.reports?.()?.begin(caller.id, target.id);
     let r: { status: "queued" | "held"; ref?: string };
     try {
       r = await this.deps.gate.run(
-        { principal: { kind: "harness", session: caller.id }, action: "agent.lead", target: target.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id }, sessionKey: caller.id },
+        { principal: { kind: "harness", session: caller.id }, action: "agent.lead", target: target.id, args: { to: to.alias, text: cap(p.text), ...(p.replyTo ? { replyTo: p.replyTo } : {}), id, ...(pastFocus ? { pastFocus: true } : {}) }, sessionKey: caller.id },
         () => this.deliverAsLead(target, p.text, from),
       );
     } catch (e) {
@@ -801,8 +834,34 @@ export class AgentMessages {
     }
     if (r.ref) going?.sent(r.ref, id);
     else going?.failed();
-    this.log.info("a leader's message sent as the user's words", { id, from: caller.id, to: target.id, hops, ...(r.ref ? { ref: r.ref } : {}) });
+    this.log.info("a leader's message sent as the user's words", { id, from: caller.id, to: target.id, hops, ...(r.ref ? { ref: r.ref } : {}), ...(pastFocus ? { pastFocus: true } : {}) });
     return { status: "sent", id, to, asUser: true };
+  }
+
+  /**
+   * A leader's words that focus held for `target`, typed in as the user's now that it has ended,
+   * as one message, and watched as a leader's message is (`leaders/reports.ts`): the ref its
+   * landing is recorded under. False, and nothing typed, when `by` no longer speaks to it as the
+   * user (the user made it lead no more, or the session cannot take the user's words now): they
+   * go as its message with the rest.
+   */
+  async typeHeld(target: Session, text: string, by: AgentRef, ids: string[]): Promise<{ ref?: string } | false> {
+    const lead = this.deps.leaders?.()?.route(by.session, target);
+    if (!lead || !("lead" in lead)) return false;
+    const going = this.deps.reports?.()?.begin(by.session, target.id);
+    let r: { status: "queued" | "held"; ref?: string };
+    try {
+      r = await this.deliverAsLead(target, text, by);
+    } catch (e) {
+      going?.failed();
+      throw e;
+    }
+    if (r.ref) going?.sent(r.ref, ids[ids.length - 1]!);
+    else going?.failed();
+    const talk = this.deps.talk?.();
+    for (const id of ids) talk?.settle(id, "sent");
+    this.log.info("a leader's words held for focus typed as the user's", { from: by.session, to: target.id, messages: ids.length, ...(r.ref ? { ref: r.ref } : {}) });
+    return r.ref ? { ref: r.ref } : {};
   }
 
   /** Delivers a leader's message as the user's words, wherever the session is: here, or by its node, which the router knows takes it. */
@@ -901,30 +960,58 @@ export class AgentMessages {
    * with a message forwarded to it. A message from a session that prompts, into one that runs
    * without prompts, is asked about first (the parity rule), unless the session is a Claude one
    * that holds such a message in its own terminal: asking twice would be wrong.
+   *
+   * `more`: messages handed over with this one as one message, each in its own envelope after
+   * it (what focus held). Each is asked about as it would be alone, and one the user does not
+   * let in is left out and named in `dropped`; nothing goes when every one is.
    */
-  async deliverHere(targetId: string, text: string, agent: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }, onPending?: (ask: Ask) => void): Promise<{ status: "queued" | "held"; ref?: string }> {
+  async deliverHere(
+    targetId: string,
+    text: string,
+    agent: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean },
+    onPending?: (ask: Ask) => void,
+    more: readonly (EnvelopeInfo & { mode?: AgentMode; text: string })[] = [],
+  ): Promise<{ status: "queued" | "held"; ref?: string; dropped?: { messageId: string; why: string }[] }> {
     const s = this.deps.sessions.get(targetId);
     if (!s || s.status === "ended") throw new RpcError("not_found", "that session has ended; not sent");
-    if (agent.from && agent.mode !== "bypass" && this.deps.sessions.bypasses(targetId) === true) {
-      const claudeHolds = s.harness === "claude" && !this.deps.sessions.acceptsInbound(targetId);
-      if (!claudeHolds) {
-        const where = `${HARNESS_WORDS[s.harness] ?? s.harness}${folderOf(s.cwd) ? ` in ${folderOf(s.cwd)}` : ""}`;
-        await this.deps.gate.run(
-          {
-            principal: { kind: "harness", session: agent.from.session },
-            action: "agent.escalate",
-            target: targetId,
-            args: { from: agent.from.alias, text: cap(text), id: agent.messageId },
-            sessionKey: agent.from.session,
-            ask: { title: `Let ${agent.from.alias}, which asks before it acts, message ${where}, which runs without asking?`, detail: cap(text) },
-          },
-          () => undefined,
-          onPending ? { onPending: (ask) => onPending(ask) } : {},
-        );
+    const { mode: _mode, quiet, ...info } = agent;
+    if (more.length === 0) {
+      await this.parity(s, text, agent, onPending);
+      return this.deps.sessions.send(targetId, text, { from: "agent", agent: info, ...(quiet ? { quiet: true } : {}) });
+    }
+    const kept: { info: EnvelopeInfo; text: string }[] = [];
+    const dropped: { messageId: string; why: string }[] = [];
+    for (const { mode, text: words, ...one } of [{ ...info, ...(agent.mode ? { mode: agent.mode } : {}), text }, ...more]) {
+      try {
+        await this.parity(s, words, { ...one, ...(mode ? { mode } : {}) }, onPending);
+        kept.push({ info: one, text: words });
+      } catch (e) {
+        dropped.push({ messageId: one.messageId, why: notDelivered(e) });
       }
     }
-    const { mode: _mode, quiet, ...info } = agent;
-    return this.deps.sessions.send(targetId, text, { from: "agent", agent: info, ...(quiet ? { quiet: true } : {}) });
+    const [first, ...rest] = kept;
+    if (!first) return { status: "queued", dropped };
+    const r = await this.deps.sessions.send(targetId, first.text, { from: "agent", agent: first.info, ...(rest.length > 0 ? { more: rest } : {}) });
+    return dropped.length > 0 ? { ...r, dropped } : r;
+  }
+
+  /** The parity rule: a message from a session that prompts, into one of this node's that runs without prompts, waits on the user unless the session holds it itself. */
+  private async parity(s: Session, text: string, agent: EnvelopeInfo & { mode?: AgentMode }, onPending?: (ask: Ask) => void): Promise<void> {
+    if (!agent.from || agent.mode === "bypass" || this.deps.sessions.bypasses(s.id) !== true) return;
+    if (s.harness === "claude" && !this.deps.sessions.acceptsInbound(s.id)) return;
+    const where = `${HARNESS_WORDS[s.harness] ?? s.harness}${folderOf(s.cwd) ? ` in ${folderOf(s.cwd)}` : ""}`;
+    await this.deps.gate.run(
+      {
+        principal: { kind: "harness", session: agent.from.session },
+        action: "agent.escalate",
+        target: s.id,
+        args: { from: agent.from.alias, text: cap(text), id: agent.messageId },
+        sessionKey: agent.from.session,
+        ask: { title: `Let ${agent.from.alias}, which asks before it acts, message ${where}, which runs without asking?`, detail: cap(text) },
+      },
+      () => undefined,
+      onPending ? { onPending: (ask) => onPending(ask) } : {},
+    );
   }
 
   /** Tells the sender, in its own session, that its message was not delivered. */
@@ -1228,7 +1315,7 @@ export class AgentMessages {
     const caller = this.callerOf(peer, p.caller);
     const grant = peer.grant !== undefined ? this.deps.cluster.grant(peer.grant) : undefined;
     if (!grant) throw new RpcError("denied", "the node's grant is not known here");
-    return this.send(caller, p.mode, { to: p.to, text: p.text, ...(p.replyTo !== undefined ? { replyTo: p.replyTo } : {}) }, grant.access);
+    return this.send(caller, p.mode, { to: p.to, text: p.text, ...(p.replyTo !== undefined ? { replyTo: p.replyTo } : {}), ...(p.pastFocus ? { pastFocus: true } : {}) }, grant.access);
   }
 
   private callerOf(peer: { id: string }, id: string): Session {
@@ -1252,6 +1339,10 @@ export class AgentMessages {
 /** A send's answer, as the model reads it: a session the sender leads but that took it as another agent's says why. */
 export function answerText(a: SendAnswer, now = Date.now()): string {
   const to = a.peer?.alias ?? a.to?.alias ?? "the session";
+  if (a.asUser && a.status === "focus") {
+    const until = a.focus ? ` until ${clockTime(a.focus.until)}, ${minutesLeft(a.focus.until, now)} from now, or until its turn ends (${a.focus.reason})` : "";
+    return `Held for ${to} (${a.id}): it is in focus${until}. Your message is typed into it as your user's own words when its focus ends, before what else came; you are told then when it asks something, and get its last words when it settles. If it cannot wait, send it again with past_focus: true. Do not wait for it in a loop.`;
+  }
   if (a.asUser) return `Typed into ${to} as your user's own words (${a.id}). You are told when it asks something, and get its last words when it settles; do not wait for it in a loop.`;
   const text = statusText(a, to, now);
   return a.fallback ? `${text} You lead ${to}, but this went as another agent's message, not as your user's words: ${a.fallback}.` : text;

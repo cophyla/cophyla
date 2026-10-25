@@ -191,6 +191,48 @@ describe("agent messages across nodes", () => {
     c.close();
   }, 40_000);
 
+  test("what focus held for a session on another secondary goes when it ends: its leader's words as the user's, then the rest in one message", async () => {
+    primary = await startPrimary();
+    alpha = await startSecondary(primary, { agent: true, node: 'name = "Alpha"\n' });
+    beta = await startSecondary(primary, { agent: true, node: 'name = "Beta"\n' });
+    await linked(alpha);
+    await linked(beta);
+    await waitFor(() => primary!.d.nodes.linkedTo(alpha!.identity.id) && primary!.d.nodes.linkedTo(beta!.identity.id));
+    const lead = await spawnOn(alpha);
+    const other = await spawnOn(alpha);
+    const b = await spawnOn(beta);
+    await waitFor(() => [lead, other].every((s) => primary!.d.nodes.mirror.ownerOfSession(s.id) === alpha!.identity.id) && primary!.d.nodes.mirror.ownerOfSession(b.id) === beta!.identity.id, 10_000);
+    await waitFor(() => primary!.d.nodes.registry.get(beta!.identity.id)?.capabilities.bundle === true, 10_000);
+    const c = await client(primary.d);
+    await c.request("lead.set", { speaker: lead.id, targets: [b.id] });
+
+    expect((await callAs(beta, b, "focus", { minutes: 60, reason: "the migration" })).text).toContain("You are in focus until");
+    const led = await callAs(alpha, lead, "send_message", { to: b.id, text: "Commit what you have." });
+    expect(led.text).toContain("is typed into it as your user's own words when its focus ends");
+    const told = await callAs(alpha, other, "send_message", { to: b.id, text: "the docs are merged" });
+    expect(told.text).toMatch(/^Held for /);
+    const before = beta.store.sessionEvents.history(b.id, { limit: 200 }).filter((e) => e.kind === "user_turn").length;
+
+    await primary.d.focus.end(b.id, "user");
+    // the leader's words land as the user's turn, forwarded as a leader's
+    const turn = await waitFor(() => beta!.store.sessionEvents.history(b.id, { limit: 200 }).find((e) => e.kind === "user_turn" && (e.payload as { source?: string }).source === "lead"), 10_000);
+    expect(turn.payload).toMatchObject({ text: "Commit what you have.", by: { session: lead.id, nodeName: "Alpha" } });
+    // the rest is one send to Beta: the notice, then the other agent's in its own envelope, each its own turn
+    const got = await waitFor(() => {
+      const t = agentTurns(beta!, b);
+      return t.length >= 2 ? t : undefined;
+    }, 10_000);
+    expect(got.map((e) => (e.payload as { text: string }).text)).toEqual([expect.stringContaining("Your user ended your focus. While you were in focus: 1 message"), "the docs are merged"]);
+    expect((got[1]!.payload as { from?: { session: string } }).from?.session).toBe(other.id);
+    // and it came after the leader's words had landed
+    expect(turn.seq).toBeLessThan(got[0]!.seq);
+    const sends = beta.store.audit.list({ limit: 50 }).filter((e: AuditEntry) => e.action === "session.send" && (e.args as { as?: string }).as === "agent");
+    expect(sends).toHaveLength(1);
+    expect((sends[0]!.args as { agent: { more?: unknown[] } }).agent.more).toHaveLength(1);
+    expect(beta.store.sessionEvents.history(b.id, { limit: 200 }).filter((e) => e.kind === "user_turn").length).toBe(before + 3);
+    c.close();
+  }, 40_000);
+
   test("the bypass switch is set on the node an app on the primary names, and that node's row says so", async () => {
     primary = await startPrimary();
     alpha = await startSecondary(primary, { node: 'name = "Alpha"\n' });

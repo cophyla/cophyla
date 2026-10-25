@@ -101,6 +101,8 @@ export const NodeCapabilities = z.object({
   files: z.boolean().optional(),
   /** It takes a leader's message as its user's words (`session.send` `as: lead`); an older node takes it as another agent's. */
   lead: z.boolean().optional(),
+  /** It takes several messages handed over as one (`session.send` `agent.more`): what focus held, given at once; an older node is sent them one by one. */
+  bundle: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 

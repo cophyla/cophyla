@@ -42,8 +42,8 @@ import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, Ha
 import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
 import type { HookHarness, HookMeta } from "../api/hooks.ts";
-import { agentTurn, envelope, ENVELOPE_TAG, NOTICE_FROM, readEnvelope } from "../agentmsg/envelope.ts";
-import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
+import { agentTurn, envelope, envelopes, ENVELOPE_TAG, NOTICE_FROM, readEnvelopes } from "../agentmsg/envelope.ts";
+import type { EnvelopeInfo, ReadEnvelope, Wrapped } from "../agentmsg/envelope.ts";
 import type { Bus } from "../bus.ts";
 import type { AcpConfig, SessionsConfig } from "../config/schema.ts";
 import type { AskInput, Asks } from "../gate/asks.ts";
@@ -217,6 +217,11 @@ export interface SendOptions {
    * message, and so does one that comes to rest with it still waiting.
    */
   quiet?: boolean;
+  /**
+   * With `from: agent`: more messages handed over in the same one, each in its own envelope
+   * after this one's, and each recorded as its sender's turn: what focus held, given at once.
+   */
+  more?: readonly { info: EnvelopeInfo; text: string }[];
   task?: string;
   clear?: boolean;
   mode?: WorkMode;
@@ -3270,8 +3275,8 @@ export class Sessions implements SessionHost {
     // An agent's message, and the brain's when it does not lead the session, reach Muse typed,
     // which has no other way in, and never a Claude session.
     const typed = this.typesInto(rec) && (agent || opts.from === "brain" ? rec.session.harness === "muse" : true);
-    const wrapped = agent ? { info: agent, text } : undefined;
-    const wire = agent ? envelope(agent, text) : text;
+    const wrapped: Wrapped | undefined = agent ? { info: agent, text, ...(opts.more?.length ? { more: opts.more } : {}) } : undefined;
+    const wire = wrapped ? envelopes(wrapped) : text;
     if (typed) {
       const ref = `cophylad-${ulid(this.now())}`;
       this.queueTyped(rec, wire, ref, wrapped, lead);
@@ -3302,7 +3307,7 @@ export class Sessions implements SessionHost {
     const ref = `cophylad-${ulid(this.now())}`;
     // An agent's envelope names its sender, so it needs no prefix of cophylad's.
     const body = agent ? wire : `${SEND_PREFIX}\n${text}`;
-    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(lead ? { lead } : {}) });
+    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}) });
     try {
       const r = await adapter.send(rec, body, ref);
       this.log.info("message sent", { session: id, ref, status: r.status });
@@ -3391,7 +3396,7 @@ export class Sessions implements SessionHost {
   }
 
   /** Types a message once those before it are typed; a message that cannot be typed is withdrawn. `agent`: an agent's, typed in its envelope; `lead`: a leader's, typed as the user's. */
-  private queueTyped(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): void {
+  private queueTyped(rec: LiveRecord, text: string, ref: string, agent?: Wrapped, lead?: LeadInfo): void {
     const prev = rec.typing ?? Promise.resolve();
     rec.toType = (rec.toType ?? 0) + 1;
     rec.typing = prev
@@ -3415,7 +3420,7 @@ export class Sessions implements SessionHost {
    * what is sent while it works. Then the message is pasted, Enter pressed on its own, and its
    * landing awaited; when the text still sits in the prompt, Enter is pressed once more.
    */
-  private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): Promise<void> {
+  private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: Wrapped, lead?: LeadInfo): Promise<void> {
     const tether = this.deps.tether!;
     const deadline = this.now() + this.config.hook_timeout_s * 1000;
     let term: TerminalRef | undefined;
@@ -3431,7 +3436,7 @@ export class Sessions implements SessionHost {
       await sleep(TYPE_POLL_MS);
     }
     const at = term;
-    this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}), ...(lead ? { lead } : {}) });
+    this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}), ...(agent?.more ? { more: agent.more } : {}), ...(lead ? { lead } : {}) });
     await submit(await tether.client(at.host), at.id, text);
     this.log.info("message typed", { session: rec.session.id, ref, terminal: at.id });
     // The next message waits only for the prompt to be free; this one's landing is watched apart.
@@ -3491,12 +3496,20 @@ export class Sessions implements SessionHost {
   /**
    * An agent's message that showed up with no send waiting for it (one sent before a restart,
    * or past the sends' retention): recorded from its envelope as the agent's turn it is, once,
-   * and never as the user's. False when the text holds no envelope.
+   * and never as the user's; several handed over as one, each as its sender's. False when the
+   * text holds no envelope.
    */
   agentEcho(rec: SessionRecord, text: string, raw?: unknown, at = this.now()): boolean {
-    const read = readEnvelope(unpasted(text));
-    if (!read) return false;
-    if (this.agentSeen(rec.session.id, read.messageId)) return true;
+    const reads = readEnvelopes(unpasted(text));
+    if (reads.length === 0) return false;
+    for (const read of reads) {
+      if (this.agentSeen(rec.session.id, read.messageId)) continue;
+      this.echoTurn(rec, read, raw, at);
+    }
+    return true;
+  }
+
+  private echoTurn(rec: SessionRecord, read: ReadEnvelope, raw: unknown, at: number): void {
     const notice = read.from.alias === NOTICE_FROM && read.from.harness === undefined;
     // another user's agent, on a connection or a teammate's: named as its envelope named it, never as one of the user's own
     const peer = read.peer
@@ -3512,7 +3525,6 @@ export class Sessions implements SessionHost {
     // a group chat's notice, from cophyla: the group it named
     const group = notice && read.group ? { group: { name: read.group } } : {};
     this.event(rec, "user_turn", { source: "agent", ...(notice ? {} : (peer ?? { from: read.from })), ...group, messageId: read.messageId, ...(read.replyTo ? { replyTo: read.replyTo } : {}), text: capText(read.text), late: true }, raw, at);
-    return true;
   }
 
   /** Marks an agent's message seen in a session; true when it was already. */
@@ -3536,8 +3548,9 @@ export class Sessions implements SessionHost {
     if (!settled) return;
     this.log.info("message delivered", { session: rec.session.id, ref: p.ref, typed: p.typed === true, ...(p.agent ? { agent: p.agent.messageId } : {}) });
     if (p.agent) {
-      // Another agent's turn, with who it is from: never the user's, and nothing of what the session is for.
+      // Another agent's turn, with who it is from: never the user's, and nothing of what the session is for; each handed over with it, its own.
       if (!this.agentSeen(rec.session.id, p.agent.messageId)) this.event(rec, "user_turn", agentTurn(p.agent, p.text, p.ref));
+      for (const m of p.more ?? []) if (!this.agentSeen(rec.session.id, m.info.messageId)) this.event(rec, "user_turn", agentTurn(m.info, m.text));
     } else if (p.lead) {
       // The user's words, sent by their leader: what the session is for is the user's to say, not its leader's.
       this.event(rec, "user_turn", leadTurn(p.lead, p.text, p.ref, promptId));

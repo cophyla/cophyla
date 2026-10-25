@@ -1430,13 +1430,37 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const terminalStreams = tether && terminalRows ? new TerminalStreams({ tether, registry: viewers, rows: terminalRows, log: sessionsLog.child("terminals") }) : undefined;
   // Delivery into a session wherever it is, past focus: here, or forwarded to its node. A
   // message from another person's agent goes into the session's conversation as it lands; one
-  // of the user's own agents' that focus held is there already, and lands now.
-  const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }): Promise<{ status: "queued" | "held" }> => {
-    const r = s.node === identity.id ? await agentMessages.deliverHere(s.id, text, info) : ((await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: info }, {})) as { status: "queued" | "held" });
-    if (info.peer && !info.group) {
-      const via = "teammate" in info.peer ? { teammate: info.peer.teammate } : { connection: info.peer.connection };
-      talkHere()?.add(s.id, { id: info.messageId, text, ...(info.replyTo ? { replyTo: info.replyTo } : {}), dir: "in", with: peerParty(peerAlias(info.peer), via, info.peer.harness), ...(r.status === "held" ? { status: "held" as const } : {}) });
-    } else if (info.from && !info.group) talkHere()?.settle(info.messageId, r.status === "held" ? "held" : "sent");
+  // of the user's own agents' that focus held is there already, and lands now. `more`: messages
+  // handed over with it as one (what focus held), each in its own envelope; a node older than
+  // that is handed them one by one. One left out, there or on the way, is named in `dropped`.
+  type Dropped = { messageId: string; why: string };
+  const deliverAnywhere = async (s: Session, text: string, info: EnvelopeInfo & { mode?: AgentMode; quiet?: boolean }, more: readonly (EnvelopeInfo & { mode?: AgentMode; text: string })[] = []): Promise<{ status: "queued" | "held"; dropped?: Dropped[] }> => {
+    const parts = [{ ...info, text }, ...more];
+    if (more.length > 0 && s.node !== identity.id && forwardHost.registryList().find((n) => n.id === s.node)?.capabilities.bundle !== true) {
+      let status: "queued" | "held" = "queued";
+      const dropped: Dropped[] = [];
+      for (const { text: words, ...one } of parts) {
+        try {
+          status = (await deliverAnywhere(s, words, one)).status;
+        } catch (e) {
+          dropped.push({ messageId: one.messageId, why: e instanceof Error ? e.message : String(e) });
+        }
+      }
+      return dropped.length > 0 ? { status, dropped } : { status };
+    }
+    const r =
+      s.node === identity.id
+        ? await agentMessages.deliverHere(s.id, text, info, undefined, more)
+        : ((await forwardHost.forward(s.node, "session.send", { id: s.id, text, as: "agent", agent: more.length > 0 ? { ...info, more } : info }, {})) as { status: "queued" | "held"; dropped?: Dropped[] });
+    const left = new Map((r.dropped ?? []).map((d) => [d.messageId, d.why]));
+    for (const { text: words, ...one } of parts) {
+      const why = left.get(one.messageId);
+      if (one.peer && !one.group) {
+        if (why !== undefined) continue;
+        const via = "teammate" in one.peer ? { teammate: one.peer.teammate } : { connection: one.peer.connection };
+        talkHere()?.add(s.id, { id: one.messageId, text: words, ...(one.replyTo ? { replyTo: one.replyTo } : {}), dir: "in", with: peerParty(peerAlias(one.peer), via, one.peer.harness), ...(r.status === "held" ? { status: "held" as const } : {}) });
+      } else if (one.from && !one.group) talkHere()?.settle(one.messageId, why !== undefined ? "failed" : r.status === "held" ? "held" : "sent", why);
+    }
     return r;
   };
   const knownSessions = (): Session[] => {
@@ -1482,7 +1506,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     log: log.child("focus"),
     routes: routesHere,
     sessions: knownSessions,
-    deliver: (s, text, info) => deliverAnywhere(s, text, info),
+    deliver: (s, text, info, opts) => deliverAnywhere(s, text, info, opts?.more),
+    lead: (s, text, by, ids) => agentMessages.typeHeld(s, text, by, ids),
     linked: (n) => n === identity.id || forwardHost.linked(n),
     ended: (session, told) => groupsLive.focusEnded(session, told),
   });

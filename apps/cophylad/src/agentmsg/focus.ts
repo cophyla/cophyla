@@ -1,32 +1,41 @@
 // Focus: an agent that starts long work takes an hour or two out of reach (`focus`, one of the
 // agents' tools), and until then nothing from other agents reaches it. A message to it (another
-// of the user's agents', a connection's, a teammate's) is held here, twenty at most, and its
-// sender is told at once until when and why, so it never waits for an answer that is not
-// coming yet; a group chat's notices and posts are not sent, only counted. Focus ends at its
-// time, at the agent's next plain idle (its turn over, none of its own background shells
-// running, no dialog open), when its session ends, or when the agent or the user ends it. The
-// agent then gets one notice of what came, and the held messages after it in the order they
-// came; a session that ended drops them, and the user's own agents that sent them are told.
+// of the user's agents', a connection's, a teammate's, a leader's) is held here, twenty at
+// most, and its sender is told at once until when and why, so it never waits for an answer
+// that is not coming yet; a group chat's notices and posts are not sent, only counted. Focus
+// ends at its time, at the agent's next plain idle (its turn over, none of its own background
+// shells running, no dialog open), when its session ends, or when the agent or the user ends
+// it. What came is then handed over at once: a leader's words first, typed as the user's, one
+// message per leader; then, once they have landed (or a while has passed), one message with a
+// notice of what came and every other held message after it, each in its own envelope, in the
+// order they came. A session that ended drops them, and the user's own agents that sent them
+// are told.
 //
 // The primary keeps it, since every message and every group goes through the primary: one kv
 // row per agent in focus, replicated to the backups, so a daemon restart or a change of
-// primary keeps it. The user's own words, typed or from the app, and the chat's sends for the
-// user never pass through here, and reach an agent in focus as ever.
+// primary keeps it. The user's own words, typed or from the app, the chat's sends for the
+// user, and a leader's sent `past_focus` never pass through here, and reach an agent in focus
+// as ever.
 
-import { newId, RpcError } from "@cophyla/protocol";
-import type { Focus, Session } from "@cophyla/protocol";
+import { BUNDLE_MAX, newId, RpcError } from "@cophyla/protocol";
+import type { AgentRef, Focus, Session } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import { FOCUS_KV_NS } from "../grants/namespaces.ts";
 import type { Logger } from "../log.ts";
 import type { Store } from "../store/index.ts";
-import type { EnvelopeInfo } from "./envelope.ts";
+import { droppedOf } from "./envelope.ts";
+import type { DeliverOptions, EnvelopeInfo } from "./envelope.ts";
 
 /** How long focus may be taken for, in minutes. */
 export const FOCUS_MINUTES = [60, 120] as const;
 /** How many messages wait for one agent in focus. */
 export const HELD_MAX = 20;
+/** How much text one message handed over at the end of a focus carries; what is more goes in another. */
+export const BUNDLE_CHARS = 64_000;
 const REASON_CHARS = 200;
 const SWEEP_MS = 15_000;
+/** How long the rest of what came waits for a leader's words typed before it to land. */
+const LAND_MS = 20_000;
 
 /** A message held for an agent in focus: what reaches it once focus ends. */
 export interface HeldMessage {
@@ -37,6 +46,8 @@ export interface HeldMessage {
   label: string;
   /** One of the user's own agents that sent it, told if it never arrives. */
   sender?: string;
+  /** A leader's words (`info.from` the leader), typed as the user's once focus ends, before the rest. */
+  lead?: true;
 }
 
 /** An agent in focus as the primary keeps it. */
@@ -63,8 +74,19 @@ export interface FocusDeps {
   routes: () => boolean;
   /** Every session this node knows, its own and its linked nodes'. */
   sessions: () => Session[];
-  /** Delivers into a session wherever it is, past focus: here, or forwarded to its node. */
-  deliver: (s: Session, text: string, info: EnvelopeInfo) => Promise<unknown>;
+  /**
+   * Delivers into a session wherever it is, past focus: here, or forwarded to its node. `more`:
+   * handed over with it as one message, each in its own envelope; any left out is named.
+   */
+  deliver: (s: Session, text: string, info: EnvelopeInfo, opts?: DeliverOptions) => Promise<unknown>;
+  /**
+   * Types a leader's held words into a session as the user's, as one message, with the ref its
+   * landing is recorded under; false when the leader no longer speaks to it as the user, and
+   * they go as its message with the rest.
+   */
+  lead?: (s: Session, text: string, by: AgentRef, ids: string[]) => Promise<{ ref?: string } | false>;
+  /** How long the rest waits for a leader's words to land; `LAND_MS` when absent. */
+  landMs?: number;
   /** Whether a node can be reached now. */
   linked: (node: string) => boolean;
   /** The groups, told when an agent comes out of focus, so what it was told stands for their notices. */
@@ -185,8 +207,9 @@ export class Focuses {
   }
 
   /**
-   * Ends `session`'s focus: one notice of what came, then what was held, in order. A session
-   * that ended drops what was held, and the user's own agents that sent it are told.
+   * Ends `session`'s focus and hands over what came: a leader's words typed as the user's, then
+   * one message of the notice and the rest. A session that ended drops what was held, and the
+   * user's own agents that sent it are told.
    */
   async end(session: string, why: FocusEnd): Promise<boolean> {
     const row = this.row(session);
@@ -203,30 +226,21 @@ export class Focuses {
         this.deps.ended?.(session, false);
         return true;
       }
-      // out of focus from here, but what comes now queues behind what was held, so nothing overtakes it
+      // out of focus from here, but what comes now queues behind what was held, so nothing overtakes
+      // it, and goes the same way once that is handed over
       row.draining = true;
       this.put(row);
       this.deps.bus.emit("focus.state", { session });
-      const text = catchUp(row, why);
-      if (text) {
-        try {
-          await this.deps.deliver(s, text, { messageId: newId("agentMessage") });
-        } catch (e) {
-          this.log.warn("an agent's focus notice could not be delivered", { session, error: e instanceof Error ? e.message : String(e) });
-        }
-      }
-      this.deps.ended?.(session, text !== undefined);
-      for (;;) {
+      for (let first = true; ; first = false) {
         const cur = this.row(session);
-        const h = cur?.held.shift();
-        if (!cur || !h) break;
-        this.put(cur);
-        try {
-          await this.deps.deliver(s, h.text, h.info);
-        } catch (e) {
-          this.log.warn("a message held for focus could not be delivered", { session, id: h.info.messageId, error: e instanceof Error ? e.message : String(e) });
-          await this.dropped(h, session, e instanceof Error ? e.message : String(e));
-        }
+        if (!cur) break;
+        const held = cur.held.splice(0);
+        if (!first && held.length === 0) break;
+        if (held.length > 0) this.put(cur);
+        const rest = await this.typeLeads(s, held);
+        const notice = first ? catchUp({ ...row, held: rest }, why) : undefined;
+        await this.handOver(s, notice, rest);
+        if (first) this.deps.ended?.(session, notice !== undefined);
       }
       // nothing waits between the last look and this: what comes after goes straight in
       if (this.row(session)?.draining) this.deps.store.kv.delete(FOCUS_KV_NS, session);
@@ -241,6 +255,90 @@ export class Focuses {
     if (!this.holding(session) || this.row(session)?.draining) return false;
     void this.end(session, why).catch((e: unknown) => this.log.warn("an agent's focus did not end cleanly", { session, error: e instanceof Error ? e.message : String(e) }));
     return true;
+  }
+
+  /**
+   * A leader's held words, typed into `s` as the user's: one message per leader, a slash command
+   * alone, and the last of them awaited until it lands, so what follows comes after it. What is
+   * left, in the order it came: the rest, and a leader's that no longer goes as the user's. A
+   * sender of words that could not be typed is told.
+   */
+  private async typeLeads(s: Session, held: HeldMessage[]): Promise<HeldMessage[]> {
+    const lead = this.deps.lead;
+    const leads = held.filter((h) => h.lead === true && h.info.from !== undefined);
+    if (!lead || leads.length === 0) return held;
+    // heard from before the first is typed: a session can record one before its send answers
+    const landing = this.landings(s.id);
+    const done = new Set<HeldMessage>();
+    let last: string | undefined;
+    try {
+      for (const run of leadRuns(leads)) {
+        const by = run[0]!.info.from!;
+        try {
+          const typed = await lead(s, run.map((h) => h.text).join("\n\n"), by, run.map((h) => h.info.messageId));
+          if (!typed) continue;
+          if (typed.ref) last = typed.ref;
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          this.log.warn("a leader's words held for focus could not be typed", { session: s.id, leader: by.session, error: why });
+          for (const h of run) await this.dropped(h, s.id, why);
+        }
+        for (const h of run) done.add(h);
+      }
+      if (last) await landing.until(last);
+    } finally {
+      landing.off();
+    }
+    return held.filter((h) => !done.has(h));
+  }
+
+  /** The messages sent into `session` that landed or were withdrawn from now on, by ref, as its events say; `until` waits for one, `LAND_MS` at most. */
+  private landings(session: string): { until: (ref: string) => Promise<void>; off: () => void } {
+    const seen = new Set<string>();
+    let want: { ref: string; done: () => void } | undefined;
+    const off = this.deps.bus.on("session.event", (e) => {
+      if (e.session !== session) return;
+      const p = (e.payload ?? {}) as Record<string, unknown>;
+      if (typeof p["ref"] !== "string" || !(e.kind === "user_turn" || (e.kind === "notification" && p["type"] === "message"))) return;
+      seen.add(p["ref"]);
+      if (want?.ref === p["ref"]) want.done();
+    });
+    const until = (ref: string) =>
+      seen.has(ref)
+        ? Promise.resolve()
+        : new Promise<void>((resolve) => {
+            const timer = setTimeout(() => {
+              this.log.info("a leader's words held for focus did not land in time; the rest goes now", { session, ref });
+              resolve();
+            }, this.deps.landMs ?? LAND_MS);
+            want = {
+              ref,
+              done: () => {
+                clearTimeout(timer);
+                resolve();
+              },
+            };
+          });
+    return { until, off };
+  }
+
+  /** The notice of what came and the messages held, handed over in as few messages as they fit; a sender of one that did not land is told. */
+  private async handOver(s: Session, notice: string | undefined, held: HeldMessage[]): Promise<void> {
+    const parts: { text: string; info: EnvelopeInfo; held?: HeldMessage }[] = [...(notice ? [{ text: notice, info: { messageId: newId("agentMessage") } }] : []), ...held.map((h) => ({ text: h.text, info: h.info, held: h }))];
+    for (const sent of bundles(parts)) {
+      const [first, ...more] = sent;
+      try {
+        const r = await this.deps.deliver(s, first!.text, first!.info, more.length > 0 ? { more: more.map((m) => ({ ...m.info, text: m.text })) } : undefined);
+        for (const d of droppedOf(r)) {
+          const h = sent.find((p) => p.info.messageId === d.messageId)?.held;
+          if (h) await this.dropped(h, s.id, d.why);
+        }
+      } catch (e) {
+        const why = e instanceof Error ? e.message : String(e);
+        this.log.warn("what came during focus could not be handed over", { session: s.id, messages: sent.length, error: why });
+        for (const p of sent) if (p.held) await this.dropped(p.held, s.id, why);
+      }
+    }
   }
 
   /** Tells the agent that sent a held message, when it is one of the user's own, that it never arrived. */
@@ -259,14 +357,15 @@ export class Focuses {
 
   /**
    * Holds a message for `s` while it is in focus: true when it was held, false when `s` is not
-   * in focus. Refused when twenty already wait.
+   * in focus. Refused when twenty already wait. `lead`: a leader's words, typed as the user's
+   * when focus ends.
    */
-  hold(s: Session, text: string, info: EnvelopeInfo, label: string, sender?: string): boolean {
+  hold(s: Session, text: string, info: EnvelopeInfo, label: string, sender?: string, lead = false): boolean {
     if (!this.deps.routes()) return false;
     const row = this.row(s.id);
     if (!row || (!row.draining && row.until <= this.now())) return false;
     if (row.held.length >= (row.draining ? HELD_MAX * 2 : HELD_MAX)) throw new RpcError("unavailable", row.draining ? "it is still being handed what came while it was in focus; send again in a minute" : `it is in focus until ${clockTime(row.until)} and already holds ${HELD_MAX} messages; not sent`);
-    row.held.push({ text, info, at: this.now(), label, ...(sender ? { sender } : {}) });
+    row.held.push({ text, info, at: this.now(), label, ...(sender ? { sender } : {}), ...(lead ? { lead: true as const } : {}) });
     this.put(row);
     this.log.info("a message held for an agent in focus", { session: s.id, id: info.messageId, held: row.held.length });
     return true;
@@ -316,6 +415,56 @@ export class Focuses {
   }
 }
 
+/**
+ * A leader's held words as the messages they are typed in: one per leader, in the order each
+ * first spoke, a slash command alone since it must be the whole prompt, and none past
+ * `BUNDLE_CHARS` but one that is alone.
+ */
+export function leadRuns(held: readonly HeldMessage[]): HeldMessage[][] {
+  const by = new Map<string, HeldMessage[]>();
+  for (const h of held) {
+    const k = h.info.from?.session ?? "";
+    by.set(k, [...(by.get(k) ?? []), h]);
+  }
+  const runs: HeldMessage[][] = [];
+  for (const words of by.values()) {
+    let run: HeldMessage[] = [];
+    let chars = 0;
+    const close = () => {
+      if (run.length > 0) runs.push(run);
+      run = [];
+      chars = 0;
+    };
+    for (const h of words) {
+      const slash = h.text.trimStart().startsWith("/");
+      if (slash || chars + h.text.length > BUNDLE_CHARS) close();
+      run.push(h);
+      chars += h.text.length + 2;
+      if (slash) close();
+    }
+    close();
+  }
+  return runs;
+}
+
+/** Messages split into as few handed over as one as they fit: at most `BUNDLE_MAX` and `BUNDLE_CHARS` of text each, but one that is alone. */
+export function bundles<T extends { text: string }>(parts: readonly T[]): T[][] {
+  const out: T[][] = [];
+  let cur: T[] = [];
+  let chars = 0;
+  for (const p of parts) {
+    if (cur.length > 0 && (cur.length >= BUNDLE_MAX || chars + p.text.length > BUNDLE_CHARS)) {
+      out.push(cur);
+      cur = [];
+      chars = 0;
+    }
+    cur.push(p);
+    chars += p.text.length;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
+}
+
 /** The words for the end of a focus, and what came meanwhile; undefined when nothing came and its own turn ended it. */
 export function catchUp(row: FocusRow, why: FocusEnd): string | undefined {
   const groups = Object.values(row.groups).filter((g) => g.tags > 0 || g.posts > 0);
@@ -331,7 +480,7 @@ export function catchUp(row: FocusRow, why: FocusEnd): string | undefined {
   }
   if (row.held.length > 0) {
     const from = [...new Set(row.held.map((h) => h.label))];
-    parts.push(`${row.held.length} ${row.held.length === 1 ? "message" : "messages"} (from ${from.join(", ")}), which follow`);
+    parts.push(`${row.held.length} ${row.held.length === 1 ? "message" : "messages"} (from ${from.join(", ")}), below`);
   }
   if (parts.length === 0) return `${ended}; nothing came meanwhile.`;
   const read = groups.length > 0 ? " Read a group with read_group when it suits your work." : "";

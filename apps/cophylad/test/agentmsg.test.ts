@@ -413,6 +413,28 @@ describe("the router", () => {
     expect(r.sent[0]!.opts.agent?.from).toBeUndefined();
   });
 
+  test("several handed over as one: each is asked about as it would be alone, and one the user does not let in is left out and named", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    const docs = sess("claude", "C:/work/docs", { native: { id: "c-docs", pid: 4200, transport: "pipe" } });
+    const yolo = sess("codex", "C:/work/api");
+    const r = rig({ local: [me, docs, yolo], bypass: { [yolo.id]: true } });
+    const ref = (s: Session, alias: string): AgentRef => ({ session: s.id, alias, harness: s.harness, node: DESK, nodeName: "Desk" });
+    const notice = { messageId: newId("agentMessage") };
+    const asking = { from: ref(me, "web-claude"), messageId: newId("agentMessage"), mode: "prompting" as const, text: "delete the build folder" };
+    const free = { from: ref(docs, "docs-claude"), messageId: newId("agentMessage"), mode: "bypass" as const, text: "the docs are merged" };
+    const going = r.router.deliverHere(yolo.id, "Your focus ran its time. While you were in focus: 2 messages (from web-claude, docs-claude), below.", notice, undefined, [asking, free]);
+    await waitFor(() => r.asks.listOpen().length === 1);
+    const ask = r.asks.listOpen()[0]!;
+    expect(ask.title).toBe("Let web-claude, which asks before it acts, message Codex in api, which runs without asking?");
+    expect(r.sent).toHaveLength(0);
+    r.asks.answer(ask.id, { option: "deny" }, USER);
+    const done = await going;
+    expect(done.dropped).toEqual([{ messageId: asking.messageId, why: "the user did not allow it" }]);
+    // one send: the notice, and the one let in after it
+    expect(r.sent).toHaveLength(1);
+    expect(r.sent[0]!.opts).toEqual({ from: "agent", agent: notice, more: [{ info: { from: free.from, messageId: free.messageId }, text: "the docs are merged" }] });
+  });
+
   test("a Claude session in bypass holds such a message itself: no second ask; with accept it is asked here", async () => {
     const me = sess("codex", "C:/work/api");
     const yolo = sess("claude", "C:/work/web", { native: { id: "c-y", pid: 4300, transport: "pipe" } });

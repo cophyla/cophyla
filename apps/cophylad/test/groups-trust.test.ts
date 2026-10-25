@@ -11,7 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { newId } from "@cophyla/protocol";
 import type { GroupEntry, Session } from "@cophyla/protocol";
-import type { EnvelopeInfo } from "../src/agentmsg/envelope.ts";
+import type { DeliverOptions, EnvelopeInfo } from "../src/agentmsg/envelope.ts";
 import { Focuses } from "../src/agentmsg/focus.ts";
 import { Bus } from "../src/bus.ts";
 import { Config } from "../src/config/schema.ts";
@@ -39,6 +39,8 @@ interface Delivery {
   text: string;
   info: EnvelopeInfo;
   quiet?: boolean;
+  /** Handed over with it as one message. */
+  more?: DeliverOptions["more"];
 }
 
 /** This side (ferit) with its agents, and bob as a teammate whose side is played by the test. */
@@ -55,8 +57,8 @@ function rig(local: Session[], open: Set<string>) {
   const sentEntries: { seq: number; entry: GroupEntry }[] = [];
   const clock = { t: 1_758_000_000_000 };
   const links = new Set<string>([DESK, LAPTOP]);
-  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: { quiet?: boolean }) => {
-    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}) });
+  const deliver = async (s: Session, text: string, info: EnvelopeInfo, opts?: DeliverOptions) => {
+    delivered.push({ session: s.id, text, info, ...(opts?.quiet ? { quiet: true } : {}), ...(opts?.more ? { more: opts.more } : {}) });
     return { status: "queued" as const };
   };
   let groups: Groups;
@@ -301,8 +303,9 @@ describe("reading, gathering and focus at their edges", () => {
       expect(r.focus.holding(a0.id)).toBe(true);
       expect(r.focus.hold(a0, "late", { messageId: newId("agentMessage") }, "a1")).toBe(true);
       await ending;
-      const texts = r.delivered.filter((d) => d.session === a0.id).map((d) => d.text);
-      expect(texts.slice(1)).toEqual(["held 1", "held 2", "held 3", "late"]);
+      // what was held goes in one message behind the notice, and what came meanwhile in the next
+      const mine = r.delivered.filter((d) => d.session === a0.id).map((d) => [d.text, ...(d.more ?? []).map((m) => m.text)]);
+      expect(mine).toEqual([["Your user ended your focus. While you were in focus: 3 messages (from a1), below.", "held 1", "held 2", "held 3"], ["late"]]);
       expect(r.focus.holding(a0.id)).toBe(false);
     } finally {
       r.stop();

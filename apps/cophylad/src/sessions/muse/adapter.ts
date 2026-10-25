@@ -15,8 +15,8 @@ import { dirname, join, normalize } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { Ask, HarnessProfile, ProfileLimits, RpcId, Session, SessionStatus, TerminalRef } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
-import { agentTurn } from "../../agentmsg/envelope.ts";
-import type { EnvelopeInfo } from "../../agentmsg/envelope.ts";
+import { agentTurns } from "../../agentmsg/envelope.ts";
+import type { Wrapped } from "../../agentmsg/envelope.ts";
 import { leadTurn } from "../lead.ts";
 import type { LeadInfo } from "../lead.ts";
 import type { Asks } from "../../gate/asks.ts";
@@ -672,13 +672,14 @@ export class MuseAdapter implements HarnessAdapter {
   }
 
   /** A turn behind the one in flight; the session is resumed on its host first when the host let it go. */
-  private async prompt(rec: SessionRecord, text: string, ref: string, agent?: { info: EnvelopeInfo; text: string }, lead?: LeadInfo): Promise<void> {
+  private async prompt(rec: SessionRecord, text: string, ref: string, agent?: Wrapped, lead?: LeadInfo): Promise<void> {
     const o = this.ownedOf(rec);
     const now = this.host.now();
     const commandId = uuidv7(now);
     o.commands.add(commandId);
     const params = { commandId, sessionId: o.sessionId, input: [{ type: "text", text }], ifBusy: "queue" };
-    this.host.event(rec, "user_turn", agent ? agentTurn(agent.info, agent.text, ref) : lead ? leadTurn(lead, text, ref) : { text: capText(text), source: "orchestrator", ref }, undefined, now);
+    if (agent) for (const turn of agentTurns(agent, ref)) this.host.event(rec, "user_turn", turn, undefined, now);
+    else this.host.event(rec, "user_turn", lead ? leadTurn(lead, text, ref) : { text: capText(text), source: "orchestrator", ref }, undefined, now);
     this.host.setStatus(rec, "busy", now);
     o.queued += 1;
     try {

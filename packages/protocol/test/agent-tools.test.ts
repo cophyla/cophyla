@@ -26,7 +26,10 @@ describe("agent tools", () => {
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
     expect(send!.inputSchema).toMatchObject({ type: "object", required: ["to", "text"] });
-    expect(Object.keys((send!.inputSchema as { properties: object }).properties)).toEqual(["to", "text", "reply_to"]);
+    expect(Object.keys((send!.inputSchema as { properties: object }).properties)).toEqual(["to", "text", "reply_to", "past_focus"]);
+    // past focus is a leader's, to a session it leads
+    expect((send!.inputSchema as { properties: { past_focus: { type: string; description: string } } }).properties.past_focus).toMatchObject({ type: "boolean" });
+    expect((send!.inputSchema as { properties: { past_focus: { description: string } } }).properties.past_focus.description).toContain("session you lead");
   });
 
   test("the connection tools reach another person: an invite takes an optional login, an acceptance its code, an end its name", () => {

@@ -20,6 +20,8 @@ export interface PendingSend {
   body: string;
   /** Another agent's message: its delivery is recorded as that agent's turn. */
   agent?: EnvelopeInfo;
+  /** Other agents' messages handed over with it as one, each in its own envelope: recorded as their turns too. */
+  more?: readonly { info: EnvelopeInfo; text: string }[];
   /** Typed into the session's terminal as the user's own words. */
   typed?: boolean;
   /** A leader's message, the user's words sent by the chat or one of the user's agents: its delivery is recorded as the user's turn, sent by it. */
