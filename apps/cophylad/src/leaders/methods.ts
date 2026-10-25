@@ -16,7 +16,9 @@ export function leaderMethods(deps: { leaders: () => Leaders | undefined }): Met
     return l;
   };
   return {
-    "lead.list": { handler: () => ({ leaders: deps.leaders()?.list() ?? [] }) },
+    // refused, not empty, before this node is the primary: an app that connected while it claimed
+    // the role asks again once it has it, rather than showing no leaders until one changes
+    "lead.list": { handler: () => ({ leaders: get().list() }) },
     "lead.set": {
       target: (p) => p.speaker,
       handler: (p) => ({ leader: get().set(p.speaker, p.targets) }),

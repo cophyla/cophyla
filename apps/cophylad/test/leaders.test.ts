@@ -150,9 +150,10 @@ describe("the leaders the primary keeps", () => {
     expect(r.leaders.list().map((l) => l.speaker)).toEqual(["chat"]);
     expect(r.states).toHaveLength(4);
     expect(r.states.at(-1)!.map((l) => l.speaker)).toEqual(["chat"]);
-    // on a node that does not keep them, nothing is listed and nothing is changed
+    // on a node that does not keep them (yet: it claims the primary role a moment after it starts),
+    // the list is refused rather than empty, so an app asks again once it does; nothing is changed
     const off = leaderMethods({ leaders: () => undefined }) as Record<string, { handler: (p: unknown) => unknown }>;
-    expect(off["lead.list"]!.handler({})).toEqual({ leaders: [] });
+    expect(failure(() => off["lead.list"]!.handler({}))).toMatchObject({ code: "unavailable" });
     expect(failure(() => off["lead.set"]!.handler({ speaker: "chat", targets: "all" }))).toMatchObject({ code: "unavailable" });
   });
 
