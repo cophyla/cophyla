@@ -89,7 +89,7 @@ describe("teammates between two users", () => {
 
     // a group chat with an agent of each, made in Alice's app
     const cands = await alice.ui.request<{ agents: GroupCandidate[] }>("group.candidates", {});
-    const bobs = cands.agents.find((c) => c.user === "bob")!;
+    const bobs = cands.agents.find((c) => c.user === "bob" && !c.person)!;
     expect(bobs).toBeDefined();
     const made2 = await alice.ui.request<{ group: Group }>("group.create", { name: "release", purpose: "Ship it", members: [{ session: a.id }, bobs.ref] });
     expect(made2.group.members.map((m) => (m.kind === "person" ? m.user : m.handle))).toContain("alice");

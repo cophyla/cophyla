@@ -213,19 +213,27 @@ export type ConnectionInvite = z.infer<typeof ConnectionInvite>;
 export const TeammateInvite = z.object({ code: z.string(), expiresAt: Timestamp });
 export type TeammateInvite = z.infer<typeof TeammateInvite>;
 
-/** An agent to put in a group: one of the user's own sessions, or a teammate's open agent by its name in their directory. */
-export const GroupMemberRef = z.union([z.object({ session: SessionId }), z.object({ teammate: TeammateId, name: z.string().min(1).max(120) })]);
+/**
+ * Who to put in a group: one of the user's own sessions, a teammate's agent by its name in their
+ * directory (one working in what they share with this user, open or not), or a teammate by
+ * themselves, with none of their agents.
+ */
+export const GroupMemberRef = z.union([z.object({ session: SessionId }), z.object({ teammate: TeammateId, name: z.string().min(1).max(120) }), z.object({ teammate: TeammateId })]);
 export type GroupMemberRef = z.infer<typeof GroupMemberRef>;
 
 /**
  * An agent a group may take, as the picker shows it: what to add it by, its handle, harness,
  * owner, workspace, folder and machine (the user's own alone), and how it stands. A teammate's
  * agent carries its session too, so a picker leaves it out of a group it is in under an older name.
+ * `person` is a teammate by themselves. A teammate's agents and the teammate carry `peers`: the
+ * logins of this user's other teammates that teammate is a teammate of too, as their side says,
+ * since everyone in a group is a teammate of everyone else; without it their side could not say.
  */
 export const GroupCandidate = z.object({
   ref: GroupMemberRef,
   handle: z.string().min(1).max(200),
   session: SessionId.optional(),
+  person: z.boolean().optional(),
   harness: z.string().max(40).optional(),
   user: z.string().max(64).optional(),
   workspace: z.string().max(200).optional(),
@@ -234,6 +242,7 @@ export const GroupCandidate = z.object({
   machine: z.string().max(120).optional(),
   status: z.string().max(40).optional(),
   intent: z.string().max(300).optional(),
+  peers: z.array(z.string().max(64)).max(500).optional(),
 });
 export type GroupCandidate = z.infer<typeof GroupCandidate>;
 
@@ -1141,9 +1150,9 @@ export const clientRequests = {
   /** The group chats this side keeps, each with this side's user's unread and tagged counts. */
   "group.list": { params: Empty, result: z.object({ groups: z.array(Group) }) },
   /**
-   * The agents a group may take: the user's own live ones on every machine, and each
-   * teammate's agents open to this user now. `ref` is what `group.create` and
-   * `group.member.add` take.
+   * Who a group may take: the user's own live agents on every machine, each teammate by
+   * themselves, and each teammate's agents in what they share with this user now, open or not.
+   * `ref` is what `group.create` and `group.member.add` take.
    */
   "group.candidates": { params: Empty, result: z.object({ agents: z.array(GroupCandidate) }) },
   /** A page of a group's posts, oldest first: the latest `limit` (fifty without it), or those before post number `before`. */
@@ -1216,7 +1225,12 @@ export const clientRequests = {
   "group.end": { params: z.object({ group: GroupId }), result: Empty },
   /** Drops this side's copy of a group, taking this side's user and agents out of it. */
   "group.delete": { params: z.object({ group: GroupId }), result: Empty },
-  /** Puts agents in a group: the user's own, or a teammate's open to this user. */
+  /**
+   * Puts agents and people in a group: the user's own agents, a teammate's agents in what they
+   * share with this user, or the teammate by themselves. Everyone in a group is a teammate of
+   * everyone else: a teammate whose side does not hold every other person in it as a teammate is
+   * refused.
+   */
   "group.member.add": { params: z.object({ group: GroupId, members: z.array(GroupMemberRef).min(1).max(32) }), result: z.object({ group: Group }) },
   /** Takes a member out: one of this side's own agents, or anyone for the group's maker. */
   "group.member.remove": { params: z.object({ group: GroupId, member: GroupMemberKey }), result: z.object({ group: Group }) },

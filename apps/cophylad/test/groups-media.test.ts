@@ -107,8 +107,9 @@ function rig(local: Session[], opts: { bypass?: boolean } = {}) {
   const teams: GroupTeams = {
     teammateOf: (owner) => (owner === "usr_BOB" ? { id: TM, user: "bob" } : undefined),
     teammate: (id) => (id === TM ? { owner: "usr_BOB", user: "bob" } : undefined),
-    agents: async () => [bobWeb],
-    openTo: () => true,
+    agents: async () => ({ agents: [bobWeb], closed: [] }),
+    peers: async () => [],
+    sharedTo: () => true,
     send: async (_t, group, seq, entry) => (entries.push({ group, seq, entry }), true),
     sync: async () => undefined,
     photo: async (_t, _g, photo, at) => {

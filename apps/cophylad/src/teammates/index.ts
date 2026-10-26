@@ -204,6 +204,8 @@ export class Teammates {
   private days = new Map<string, { day: string; in: number; out: number }>();
   private minutes = new Map<string, number[]>();
   private dirs = new Map<string, { at: number; agents: TeamAgent[]; theirs: TeammateTheirs; closed?: TeamClosedAgent[] }>();
+  /** What each teammate's side last said of which accounts are its teammates too (`team.peers`), kept as the directory is. */
+  private peerAnswers = new Map<string, { at: number; asked: string[]; teammates: string[] }>();
   /** Asks to connect made of this side's user today, by teammate. */
   private asksDay = new Map<string, { day: string; n: number }>();
   /** Connections whose ask is being answered now, so a sweep does not ask again. */
@@ -474,12 +476,12 @@ export class Teammates {
     }
   }
 
-  /** Changes what this side shares; the other side is told. Agents no longer open leave that teammate's groups. */
+  /** Changes what this side shares; the other side is told. Agents no longer shared leave the groups that teammate put them in. */
   update(id: string, share: TeammateShare): Teammate {
     this.routing();
     const row = this.rows.get(id);
     if (!row) throw new RpcError("not_found", `no teammate ${id}`);
-    const before = row.state === "active" ? this.openSessions(row) : [];
+    const before = row.state === "active" ? this.sharedSessions(row) : [];
     const tidy = tidyShare(share);
     // an exclude share keeps the places it knew, and knows the ones opened or excluded now
     if (tidy.mode === "exclude") {
@@ -496,8 +498,8 @@ export class Teammates {
     this.dirs.delete(id);
     this.emit(row);
     if (row.state === "active") {
-      const after = new Set(this.openSessions(row));
-      for (const s of before) if (!after.has(s)) this.deps.groups()?.closedTo(row.peer!.subject, s);
+      const after = new Set(this.sharedSessions(row));
+      for (const s of before) if (!after.has(s)) this.deps.groups()?.unshared(row.peer!.subject, s);
       void this.request(row, "team.share", this.summary(row)).catch(() => undefined);
       for (const c of row.connections ?? []) {
         const mine = this.deps.sessions().find((x) => x.id === c.session);
@@ -508,10 +510,11 @@ export class Teammates {
     return clientTeammate(row);
   }
 
-  private openSessions(row: TeammateRow): string[] {
+  /** The agents of this side in what it shares with `row`'s side, open or not: the ones that side may put in a group. */
+  private sharedSessions(row: TeammateRow): string[] {
     return this.deps
       .sessions()
-      .filter((s) => this.openWith(row, s))
+      .filter((s) => this.askable(row, s))
       .map((s) => s.id);
   }
 
@@ -552,10 +555,11 @@ export class Teammates {
     } catch (e) {
       this.log.info("the far side was not told of the end", { id, error: message(e) });
     }
-    this.drop(row, reason);
+    this.drop(row, reason, true);
   }
 
-  private drop(row: TeammateRow, reason: string): void {
+  /** A teammate gone: ended here (`here`), or by the far side, as it said or as its link refused this side. */
+  private drop(row: TeammateRow, reason: string, here = false): void {
     if (!this.rows.delete(row.id)) return;
     for (const c of row.connections ?? []) {
       if (c.askId) this.deps.asks?.cancel(c.askId);
@@ -564,8 +568,8 @@ export class Teammates {
     this.closeOut(row.id, "ended");
     this.pacer.forget(row.id);
     if (row.inbound) void this.deps.cloud.revokeRelay(row.inbound);
-    for (const k of [this.seen, this.days, this.dirs, this.minutes]) k.delete(row.id);
-    if (row.peer) this.deps.groups()?.teammateEnded(row.peer.subject);
+    for (const k of [this.seen, this.days, this.dirs, this.minutes, this.peerAnswers]) k.delete(row.id);
+    if (row.peer) this.deps.groups()?.teammateEnded(row.peer.subject, here);
     this.emitEnded(row, reason);
     this.log.info("teammate ended", { id: row.id, reason, user: row.peer?.user });
   }
@@ -677,6 +681,11 @@ export class Teammates {
         this.dirs.delete(id);
         void this.flushOutbox(id);
         return {};
+      }
+      case "team.peers": {
+        // this side's own teammates alone, as it holds them now
+        const owners = (parsed.data as { owners: string[] }).owners;
+        return { teammates: [...new Set(owners)].filter((o) => o !== row.peer!.subject && this.rows.bySubject(o)?.state === "active") };
       }
       case "team.send":
         return this.receive(row, parsed.data as { id: string; to: string; toSession?: string; text: string; replyTo?: string; from: { name: string; harness?: Session["harness"]; session?: string }; sentAt: number });
@@ -811,6 +820,29 @@ export class Teammates {
     this.routing();
     const agents = await this.agents(teammate, fresh);
     return { agents, closed: this.dirs.get(teammate)?.closed ?? [] };
+  }
+
+  /**
+   * Which of `owners` a teammate's side holds as its teammates too, as it says, kept as the
+   * directory is; `fresh` asks again. Throws when that side cannot be reached, or is older than
+   * `team.peers`, which it answers `unsupported`.
+   */
+  async peers(teammate: string, owners: string[], fresh = false): Promise<string[]> {
+    const row = this.rows.get(teammate);
+    if (!row || row.state !== "active") throw new RpcError("not_found", `no teammate ${teammate}`);
+    const want = [...new Set(owners)].filter((o) => o !== row.peer?.subject).sort();
+    if (want.length === 0) return [];
+    const kept = this.peerAnswers.get(teammate);
+    if (kept && !fresh && this.now() - kept.at < DIRECTORY_MS && want.every((o) => kept.asked.includes(o))) return kept.teammates.filter((o) => want.includes(o));
+    const teammates: string[] = [];
+    // as many at a time as the request takes
+    for (let i = 0; i < want.length; i += 64) {
+      const part = want.slice(i, i + 64);
+      const r = teammateLinkRequests["team.peers"].result.parse(await this.request(row, "team.peers", { owners: part }));
+      teammates.push(...r.teammates.filter((o) => part.includes(o)));
+    }
+    this.peerAnswers.set(teammate, { at: this.now(), asked: want, teammates });
+    return teammates;
   }
 
   /** The far agents of this side's connections go by the names their side gives them now. */
@@ -1545,10 +1577,11 @@ export class Teammates {
     return row?.state === "active" && row.peer ? { owner: row.peer.subject, user: row.peer.user } : undefined;
   }
 
-  openTo(session: string, owner: string): boolean {
+  /** Whether one of this side's agents works in what it shares with the teammate of this account, open or not, outside a workspace shared closed. */
+  sharedTo(session: string, owner: string): boolean {
     const row = this.rows.bySubject(owner);
     const s = this.deps.sessions().find((x) => x.id === session);
-    return row !== undefined && s !== undefined && this.openWith(row, s);
+    return row?.state === "active" && s !== undefined && this.askable(this.refreshClosed(row), s);
   }
 
   /** What the group chats reach the other sides through. */
@@ -1556,8 +1589,9 @@ export class Teammates {
     return {
       teammateOf: (owner) => this.teammateOf(owner),
       teammate: (id) => this.teammate(id),
-      agents: (id, fresh) => this.agents(id, fresh),
-      openTo: (session, owner) => this.openTo(session, owner),
+      agents: (id, fresh) => this.agentsFor(id, fresh),
+      peers: (id, owners, fresh) => this.peers(id, owners, fresh),
+      sharedTo: (session, owner) => this.sharedTo(session, owner),
       send: (teammate, group, seq, entry, at) => this.sendEntry(teammate, group, seq, entry, at),
       sync: (teammate, group, after) => this.sync(teammate, group, after),
       photo: async (teammate, group, photo, at) => teammateLinkRequests["team.group.photo"].result.parse(await this.fileRequest(teammate, "team.group.photo", { group, photo, ...(at > 0 ? { at } : {}) })),

@@ -26,6 +26,13 @@
 // its side keeps its place: that side tells the others its new name, and each also takes the
 // name another side's agent has now from its posts and from that teammate's directory.
 //
+// Everyone in a group is a teammate of everyone else, so every side links straight to every
+// other and sees every member: a person comes in only once their side said it holds each person
+// already there as a teammate (`team.peers`), and when two people in a group stop being
+// teammates one of them goes (the one who made it takes the other out; when neither did, the
+// one who ended it leaves). Any person in it puts in their own agents and their teammates'
+// agents in what those share with them, open or not, or a teammate by themselves.
+//
 // A post may carry photos and files. A photo's bytes are kept beside the posts on every side
 // (`media.ts`): the side that wrote it keeps them as posted, and each other side fetches them
 // from it (`team.group.photo`) as the post comes, again later when that failed. An agent reading
@@ -37,7 +44,7 @@
 
 import { readFile } from "node:fs/promises";
 import { FILE_PIECE_BYTES, GROUP_PHOTO_MAX_BYTES, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, newId, RpcError, TRANSFER_REASON_MAX } from "@cophyla/protocol";
-import type { AgentMode, Focus, Group, GroupAttach, GroupCandidate, GroupEntry, GroupEntryMember, GroupEntryPost, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPhotoType, GroupPost, PeerSource, Session, TeamAgent, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
+import type { AgentMode, Focus, Group, GroupAttach, GroupCandidate, GroupEntry, GroupEntryMember, GroupEntryPost, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPhotoType, GroupPost, PeerSource, Session, TeamAgent, TeamClosedAgent, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { GROUP_POST_MAX_CHARS } from "@cophyla/protocol";
 import type { EnvelopeInfo } from "../agentmsg/envelope.ts";
 import { clockTime, minutesLeft, plainIdle } from "../agentmsg/focus.ts";
@@ -139,10 +146,12 @@ export interface GroupTeams {
   teammateOf(owner: string): { id: string; user: string } | undefined;
   /** A teammate by id: their account and login. */
   teammate(id: string): { owner: string; user: string } | undefined;
-  /** A teammate's agents open to this user now, as their side says; `fresh` asks again rather than take what was kept. */
-  agents(teammate: string, fresh?: boolean): Promise<TeamAgent[]>;
-  /** Whether one of this side's agents is open to the teammate with this account now. */
-  openTo(session: string, owner: string): boolean;
+  /** A teammate's agents in what they share with this user now, as their side says: the open ones and the others; `fresh` asks again rather than take what was kept. */
+  agents(teammate: string, fresh?: boolean): Promise<{ agents: TeamAgent[]; closed: TeamClosedAgent[] }>;
+  /** Which of these accounts a teammate's side holds as its teammates too, as it says; throws when it cannot say. */
+  peers(teammate: string, owners: string[], fresh?: boolean): Promise<string[]>;
+  /** Whether one of this side's agents works in what this side shares with the teammate with this account now, open or not. */
+  sharedTo(session: string, owner: string): boolean;
   /** Sends one entry of this side's log to a side; false when it could not be reached now. */
   send(teammate: string, group: string, seq: number, entry: GroupEntry, at: number): Promise<boolean>;
   /** Asks a side for its entries after `after`; undefined when it cannot be reached now. */
@@ -476,7 +485,12 @@ export class Groups {
     return g;
   }
 
-  /** The agents a group may take: the user's own live ones, and their teammates' agents open to them now. */
+  /**
+   * Who a group may take: the user's own live agents; each teammate by themselves, and their
+   * agents in what they share with the user now, open or not; each teammate with the user's
+   * other teammates it is a teammate of too, as its side says, for the picker to keep a group to
+   * people who are all teammates of each other.
+   */
   async candidates(): Promise<GroupCandidate[]> {
     this.routing();
     const names = this.deps.names();
@@ -500,17 +514,33 @@ export class Groups {
     }
     const teams = this.deps.teams?.();
     if (teams) {
-      for (const t of this.teammates()) {
-        let agents: TeamAgent[] = [];
-        try {
-          agents = await teams.agents(t.id);
-        } catch (e) {
-          this.log.info("a teammate's agents could not be listed", { teammate: t.id, error: message(e) });
-        }
+      const mates = this.teammates().flatMap((t) => {
         const owner = teams.teammate(t.id)?.owner;
-        if (owner) this.followDirectory(owner, agents);
-        for (const a of agents) {
-          if (!a.session) continue;
+        return owner ? [{ ...t, owner }] : [];
+      });
+      for (const t of mates) {
+        const others = mates.filter((x) => x.id !== t.id);
+        const [dir, known] = await Promise.all([
+          teams.agents(t.id).catch((e: unknown) => {
+            this.log.info("a teammate's agents could not be listed", { teammate: t.id, error: message(e) });
+            return { agents: [] as TeamAgent[], closed: [] as TeamClosedAgent[] };
+          }),
+          others.length === 0
+            ? Promise.resolve([] as string[])
+            : teams.peers(t.id, others.map((x) => x.owner)).catch((e: unknown) => {
+                // a side that cannot say, or one older than groups of three: kept to groups with this user alone
+                this.log.info("a teammate's side could not say who its teammates are", { teammate: t.id, error: message(e) });
+                return undefined;
+              }),
+        ]);
+        const peers = known === undefined ? undefined : others.filter((x) => known.includes(x.owner)).map((x) => x.user);
+        const peerField = peers !== undefined ? { peers } : {};
+        this.followDirectory(t.owner, [...dir.agents, ...dir.closed]);
+        out.push({ ref: { teammate: t.id }, handle: t.user, person: true, user: t.user, ...peerField });
+        const listed = new Set<string>();
+        for (const a of [...dir.agents, ...dir.closed]) {
+          if (!a.session || listed.has(a.session)) continue;
+          listed.add(a.session);
           out.push({
             ref: { teammate: t.id, name: a.name },
             handle: `${t.user}/${a.name}`,
@@ -520,6 +550,7 @@ export class Groups {
             ...(a.workspace ? { workspace: a.workspace } : {}),
             ...(a.status ? { status: a.status } : {}),
             ...(a.intent ? { intent: a.intent } : {}),
+            ...peerField,
           });
         }
       }
@@ -611,12 +642,38 @@ export class Groups {
     return this.client(g);
   }
 
-  /** Puts agents in a group: the user's own, or a teammate's open to them. */
+  /**
+   * Puts agents and people in a group: the user's own agents, a teammate's in what they share
+   * with the user (open or not), or a teammate by themselves. A person new to the group comes in
+   * only once their side said it holds everyone already in it, and every other newcomer, as a
+   * teammate: everyone in a group is a teammate of everyone else.
+   */
   async addMembers(id: string, refs: GroupMemberRef[], opts: { quiet?: boolean } = {}): Promise<Group> {
     this.routing();
+    if (this.must(id).ended) throw new RpcError("invalid", "the group has ended");
+    const me = this.deps.me();
+    // the teammates' agents and the teammates themselves, as their sides name them now: found before anything changes
+    const teams = this.deps.teams?.();
+    const theirs = new Map<GroupMemberRef, { teammate: string; owner: string; user: string; agent?: TeamAgent | TeamClosedAgent }>();
+    for (const ref of refs) {
+      if ("session" in ref) continue;
+      const t = teams?.teammate(ref.teammate);
+      if (!teams || !t) throw new RpcError("not_found", `no teammate ${ref.teammate}`);
+      if (!("name" in ref)) {
+        // by themselves: their side is reached now (its directory, as kept a while), so the group it is handed reaches it
+        await teams.agents(ref.teammate);
+        theirs.set(ref, { teammate: ref.teammate, ...t });
+        continue;
+      }
+      const find = (d: { agents: TeamAgent[]; closed: TeamClosedAgent[] }) => [...d.agents, ...d.closed].find((x) => x.name === ref.name && x.session);
+      const a = find(await teams.agents(ref.teammate)) ?? find(await teams.agents(ref.teammate, true));
+      if (!a) throw new RpcError("not_found", `${t.user}/${ref.name} is not among the agents ${t.user} shares with you now`);
+      theirs.set(ref, { teammate: ref.teammate, ...t, agent: a });
+    }
+    await this.checkTeammates(this.must(id), [...theirs.values()]);
+    // as the group is now, after the asking
     const g = this.must(id);
     if (g.ended) throw new RpcError("invalid", "the group has ended");
-    const me = this.deps.me();
     const now = this.now();
     const added: MemberRow[] = [];
     // asked for, and in the group already (under another name, it may be): said when nothing else is added
@@ -650,54 +707,48 @@ export class Groups {
           addedAt: now,
           at: now,
         };
-        // a teammate in the group may reach this agent from now on: it must be open to each
-        for (const owner of Object.keys(g.sides)) {
-          if (!this.deps.teams?.()?.openTo(s.id, owner)) throw new RpcError("denied", `${this.handle(m)} is not open to ${g.sides[owner]!.user}, who is in this group: open it to them under Teammates first`);
-        }
+        // the user's word puts it where everyone in the group sees it, whatever it is open to
         g.members.push(m);
         added.push(m);
         if (!g.home) g.home = { node: s.node, path: place.path };
       } else {
-        const teams = this.deps.teams?.();
-        const t = teams?.teammate(ref.teammate);
-        if (!teams || !t) throw new RpcError("not_found", `no teammate ${ref.teammate}`);
-        let a = (await teams.agents(ref.teammate)).find((x) => x.name === ref.name);
-        if (!a) a = (await teams.agents(ref.teammate, true)).find((x) => x.name === ref.name);
-        if (!a || !a.session) throw new RpcError("not_found", `${t.user}/${ref.name} is not open to you now`);
-        const was = g.members.find((m) => m.key === agentKey(a.session!));
-        if (was) {
-          // renamed on their side since it was put in: it takes the name asked for, which is theirs now
-          if (this.followName(g, t.owner, a.session, a.name)) renamed = true;
-          already.push(this.handle(was));
+        const t = theirs.get(ref)!;
+        const a = t.agent;
+        if (a?.session) {
+          const was = g.members.find((m) => m.key === agentKey(a.session!));
+          if (was) {
+            // renamed on their side since it was put in: it takes the name asked for, which is theirs now
+            if (this.followName(g, t.owner, a.session, a.name)) renamed = true;
+            already.push(this.handle(was));
+            continue;
+          }
+          const m: MemberRow = {
+            key: agentKey(a.session),
+            kind: "agent",
+            session: a.session,
+            owner: t.owner,
+            user: t.user,
+            name: a.name,
+            ...(a.harness ? { harness: a.harness } : {}),
+            ...(a.workspace ? { workspace: a.workspace } : {}),
+            notify: g.notify,
+            readTo: g.n,
+            addedBy: me.user,
+            addedAt: now,
+            at: now,
+          };
+          g.members.push(m);
+          added.push(m);
+        } else if (g.members.some((x) => x.kind === "person" && x.owner === t.owner)) {
+          already.push(t.user);
           continue;
         }
-        // every person in a group is a teammate of every other
-        for (const [owner, side] of Object.entries(g.sides)) {
-          if (owner !== t.owner) throw new RpcError("denied", `${t.user} and ${side.user} are both in the group only if they are teammates of each other, which this side cannot tell: add ${t.user}'s agents in a group of your own with them`);
-        }
-        const m: MemberRow = {
-          key: agentKey(a.session),
-          kind: "agent",
-          session: a.session,
-          owner: t.owner,
-          user: t.user,
-          name: a.name,
-          ...(a.harness ? { harness: a.harness } : {}),
-          ...(a.workspace ? { workspace: a.workspace } : {}),
-          notify: g.notify,
-          readTo: g.n,
-          addedBy: me.user,
-          addedAt: now,
-          at: now,
-        };
-        g.members.push(m);
-        added.push(m);
         if (!g.members.some((x) => x.kind === "person" && x.owner === t.owner)) {
           const person: MemberRow = { key: personKey(t.owner), kind: "person", owner: t.owner, user: t.user, readTo: 0, addedBy: me.user, addedAt: now, at: now };
           g.members.push(person);
           added.push(person);
         }
-        if (!g.sides[t.owner]) g.sides[t.owner] = { teammate: ref.teammate, user: t.user, taken: 0, since: g.n };
+        if (!g.sides[t.owner]) g.sides[t.owner] = { teammate: t.teammate, user: t.user, taken: 0, since: g.n };
       }
     }
     if (added.length === 0 && already.length > 0) {
@@ -710,14 +761,46 @@ export class Groups {
     if (g.members.filter((m) => m.kind === "agent").length > AGENTS_MAX) throw new RpcError("invalid", `a group takes ${AGENTS_MAX} agents at most`);
     this.rows.put(g);
     const newSides = added.filter((m) => m.kind === "person" && !this.mine(m)).map((m) => m.owner);
-    for (const m of added) {
-      if (newSides.includes(m.owner)) continue;
-      this.logEntry(g, { kind: "member.add", member: this.entryMember(g, m) }, now);
+    // one snapshot for every side, first: the new ones take the group in from it, everyone added among it
+    if (newSides.length > 0) this.sendSnapshot(g.id);
+    // the sides in it before take who was added, a newcomer's person and agents too, from these
+    const fresh = this.must(id);
+    if (newSides.length === 0 || Object.keys(fresh.sides).some((o) => !newSides.includes(o))) {
+      for (const m of added) this.logEntry(fresh, { kind: "member.add", member: this.entryMember(fresh, m) }, now);
     }
-    for (const owner of newSides) void this.sendSnapshot(g.id, owner);
     if (!opts.quiet) this.emit(this.must(id));
     for (const m of added) if (m.kind === "agent" && this.mine(m)) void this.welcome(g.id, m.key);
     return this.client(this.must(id));
+  }
+
+  /**
+   * Everyone in a group is a teammate of everyone else: each person about to come in is asked,
+   * of their own side, whether it holds as teammates every other person in the group and every
+   * other newcomer. This side's user is the teammate of each already; each side answers for its
+   * own teammates alone, and checks the people it is told of against them when they come.
+   */
+  private async checkTeammates(g: GroupRow, coming: { teammate: string; owner: string; user: string }[]): Promise<void> {
+    const teams = this.deps.teams?.();
+    const people = new Map<string, string>();
+    for (const m of g.members) if (m.kind === "person" && !this.mine(m)) people.set(m.owner, m.user);
+    const newcomers = new Map<string, { teammate: string; user: string }>();
+    for (const c of coming) if (!people.has(c.owner)) newcomers.set(c.owner, { teammate: c.teammate, user: c.user });
+    if (!teams || newcomers.size === 0) return;
+    const everyone = new Map([...people, ...[...newcomers].map(([o, c]) => [o, c.user] as const)]);
+    for (const [owner, c] of newcomers) {
+      const others = new Map(everyone);
+      others.delete(owner);
+      if (others.size === 0) continue;
+      let known: string[];
+      try {
+        known = await teams.peers(c.teammate, [...others.keys()], true);
+      } catch (e) {
+        if (e instanceof RpcError && e.code === "unsupported") throw new RpcError("unsupported", `${c.user}'s Cophyla is older than group chats of more than two people: they need to update it before they join one`);
+        throw new RpcError("unavailable", `${c.user}'s Cophyla could not be asked whether they are a teammate of ${andList([...others.values()])}, which everyone in a group is of everyone else: try again once it is reached`);
+      }
+      const missing = [...others].filter(([o]) => !known.includes(o)).map(([, user]) => user);
+      if (missing.length > 0) throw new RpcError("denied", `${c.user} is not a teammate of ${andList(missing)}, and everyone in a group is a teammate of everyone else in it`);
+    }
   }
 
   /** Takes a member out: one of this side's own agents, or anyone for the group's maker. */
@@ -780,7 +863,8 @@ export class Groups {
     this.routing();
     const g = this.must(id);
     const me = this.deps.me();
-    let left: { seq: number; at: number; person: string; owners: string[] } | undefined;
+    // a copy kept read only after a leave already holds what is left of it
+    let left = this.rows.left(g.id);
     if (Object.keys(g.sides).length > 0) {
       const at = this.now();
       const person = personKey(me.owner);
@@ -2155,11 +2239,15 @@ export class Groups {
     };
   }
 
-  /** Hands a side newly in a group the group itself: its members and its last two hundred posts. */
-  private async sendSnapshot(id: string, owner: string): Promise<void> {
+  /**
+   * Hands the sides newly in a group the group itself: its members, its last two hundred posts,
+   * its maker, and how far this side read each other side's log, which a new side reads on from.
+   */
+  private sendSnapshot(id: string): void {
     const g = this.get(id);
-    if (!g || !g.sides[owner]) return;
+    if (!g || Object.keys(g.sides).length === 0) return;
     const page = this.rows.page(g.id, 200);
+    const me = this.deps.me();
     const entry: GroupEntry = {
       kind: "snapshot",
       group: {
@@ -2167,12 +2255,14 @@ export class Groups {
         name: g.name,
         ...(g.purpose ? { purpose: g.purpose } : {}),
         by: g.by,
+        byOwner: g.byOwner === "me" ? me.owner : g.byOwner,
         notify: g.notify,
         createdAt: g.createdAt,
         updatedAt: g.updatedAt,
         ...(g.ended ? { ended: g.ended } : {}),
         members: g.members.map((m) => this.entryMember(g, m)),
         posts: page.posts.map((p) => this.entryPost(g, p)),
+        taken: Object.fromEntries(Object.entries(g.sides).map(([o, side]) => [o, side.taken])),
       },
     };
     // every side gets it: the new side takes the group in, the others take its new members
@@ -2229,8 +2319,8 @@ export class Groups {
   /** This side's log after `after`, for a side catching up: refused to a side not in the group. */
   entriesFor(owner: string, id: string, after: number): { entries: { seq: number; entry: GroupEntry; at: number }[]; more: boolean } {
     const g = this.get(id);
-    if (!g) {
-      // a group this side left: the leave is all that is left of its log
+    if (!g || !g.sides[owner]) {
+      // a group this side left, deleted or kept read only: the leave is all that is left of its log
       const left = this.rows.left(id);
       if (left && left.owners.includes(owner)) return { entries: after < left.seq ? [{ seq: left.seq, entry: { kind: "leave", person: left.person }, at: left.at }] : [], more: false };
     }
@@ -2285,7 +2375,11 @@ export class Groups {
       return;
     }
     const side = g.sides[owner];
-    if (!side) throw new RpcError("denied", "you are not in that group");
+    if (!side) {
+      // one this side left, keeping its copy: the side that still writes is told again
+      if (this.rows.left(id)) this.resendLeave(owner, id);
+      throw new RpcError("denied", "you are not in that group");
+    }
     if (seq <= side.taken) return;
     // a leave is a side's last word: taken even after a gap, since nothing it wrote after it matters
     if (seq > side.taken + 1 && entry.kind !== "snapshot" && entry.kind !== "leave") {
@@ -2311,16 +2405,23 @@ export class Groups {
     }
   }
 
-  /** A group handed over by a teammate: kept as this side's copy, this side's own agents in it checked against what it shares. */
+  /**
+   * A group handed over by a teammate: kept as this side's copy, its other people reached
+   * straight, each from where the handing side read it to, and this side's own agents in it
+   * checked against what this side shares with the one who put them in.
+   */
   private fromSnapshot(owner: string, t: { id: string; user: string }, s: GroupSnapshotLike, seq: number): GroupRow {
     const me = this.deps.me();
     const now = this.now();
+    const teams = this.deps.teams?.();
+    // its maker: the handing side, or another person in it this side is a teammate of, never this side
+    const maker = s.byOwner !== undefined && s.byOwner !== me.owner && s.byOwner !== "me" && s.byOwner !== owner && s.members.some((m) => m.kind === "person" && m.owner === s.byOwner) && teams?.teammateOf(s.byOwner) ? s.byOwner : owner;
     const g: GroupRow = {
       id: s.id,
       name: s.name,
       ...(s.purpose ? { purpose: s.purpose } : {}),
       by: s.by,
-      byOwner: owner,
+      byOwner: maker,
       notify: s.notify,
       createdAt: s.createdAt,
       updatedAt: s.updatedAt ?? s.createdAt,
@@ -2331,21 +2432,19 @@ export class Groups {
       sides: { [owner]: { teammate: t.id, user: t.user, taken: seq } },
     };
     const refused: string[] = [];
-    // the other sides it reaches: the sender, and any third person this side is a teammate of
-    const teams = this.deps.teams?.();
-    const reach = new Set<string>([owner]);
-    for (const em of s.members) if (em.owner !== me.owner && em.owner !== "me" && em.owner !== owner && teams?.teammateOf(em.owner)) reach.add(em.owner);
     for (const em of s.members) {
       if (g.members.some((x) => x.key === em.key)) continue;
-      if (!this.trusted(em, owner, [...reach])) {
+      if (!this.trusted(em, owner)) {
         if (em.owner === me.owner && em.kind === "agent") refused.push(em.key);
+        else if (em.kind === "person" && em.owner !== me.owner) this.log.info("a group handed over holds a person who is not this user's teammate: left out", { id: s.id, from: t.user, user: em.user });
         continue;
       }
       if (em.kind === "agent" && g.members.filter((x) => x.kind === "agent").length >= AGENTS_MAX) continue;
       const m = this.fromEntryMember(em, g.n);
       if (m.owner !== me.owner && m.owner !== owner && !g.sides[m.owner]) {
         const other = teams!.teammateOf(m.owner)!;
-        g.sides[m.owner] = { teammate: other.id, user: other.user, taken: 0 };
+        const taken = s.taken?.[m.owner];
+        g.sides[m.owner] = { teammate: other.id, user: other.user, taken: typeof taken === "number" ? taken : 0 };
       }
       g.members.push(m);
       if (m.kind === "agent" && m.owner === me.owner && !g.home) {
@@ -2363,7 +2462,7 @@ export class Groups {
     // whoever is in it has read what came before them
     for (const m of fresh.members) if (m.owner === me.owner) m.readTo = fresh.n;
     this.rows.put(fresh);
-    for (const key of refused) this.logEntry(fresh, { kind: "member.remove", member: key, why: `not open to ${t.user}` }, now);
+    for (const key of refused) this.logEntry(fresh, { kind: "member.remove", member: key, why: `not shared with ${t.user}` }, now);
     this.emit(fresh);
     for (const m of fresh.members) if (m.kind === "agent" && m.owner === me.owner) void this.welcome(fresh.id, m.key);
     for (const o of Object.keys(fresh.sides)) if (o !== owner) void this.catchUp(fresh.id);
@@ -2395,19 +2494,20 @@ export class Groups {
   }
 
   /**
-   * Whether a member another side tells of may be taken: named by its own key, owned by the
-   * sender, by this side, or by a third person this side is a teammate of; one of this side's own
-   * agents only as a live session open to every other side in `reach`. A side writes its own
-   * part alone, so nothing it says makes a member this side's that this side did not open.
+   * Whether a member another side, `owner`, tells of may be taken: named by its own key, owned by
+   * the sender, by this side, or by a third person this side is a teammate of; one of this side's
+   * own agents, which that side put in, only as a live session in what this side shares with it,
+   * open or not. A side writes its own part alone, so nothing it says makes a member this side's
+   * that this side did not share.
    */
-  private trusted(em: GroupEntryMember, owner: string, reach: string[]): boolean {
+  private trusted(em: GroupEntryMember, owner: string): boolean {
     const me = this.deps.me();
     if (em.owner === "me" || em.key !== (em.kind === "person" ? personKey(em.owner) : agentKey(em.session))) return false;
     const teams = this.deps.teams?.();
     if (em.owner === me.owner) {
       if (em.kind === "person") return true;
       const s = this.session(em.session);
-      return s !== undefined && s.role !== "assistant" && teams !== undefined && reach.every((o) => teams.openTo(em.session, o));
+      return s !== undefined && s.role !== "assistant" && teams !== undefined && teams.sharedTo(em.session, owner);
     }
     return em.owner === owner || teams?.teammateOf(em.owner) !== undefined;
   }
@@ -2493,12 +2593,11 @@ export class Groups {
     switch (entry.kind) {
       case "snapshot": {
         // a side handed over the group again: the members and posts not held yet are taken, never
-        // one of this side's own agents (those come by a `member.add` it can check) nor a new side
-        const reach = Object.keys(g.sides);
+        // one of this side's own agents nor a new side's people (those come by a `member.add` it can check)
         for (const em of entry.group.members) {
           if (g.members.some((m) => m.key === em.key)) continue;
           if (em.owner === me.owner || (em.owner !== owner && !g.sides[em.owner])) continue;
-          if (!this.trusted(em, owner, reach)) continue;
+          if (!this.trusted(em, owner)) continue;
           if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) continue;
           g.members.push(this.fromEntryMember(em, g.n));
         }
@@ -2543,9 +2642,9 @@ export class Groups {
       }
       case "member.add": {
         const em = entry.member;
+        // a person new to the group, or their agent: reached straight from here on, as everyone in it is a teammate of everyone else
         const third = em.owner !== me.owner && em.owner !== owner && !g.sides[em.owner];
-        const reach = [...Object.keys(g.sides), ...(third ? [em.owner] : [])];
-        const ok = this.trusted(em, owner, reach);
+        const ok = this.trusted(em, owner);
         const existing = g.members.find((m) => m.key === em.key);
         if (existing) {
           // a side changes its own members' rows alone, never this side's
@@ -2556,8 +2655,9 @@ export class Groups {
           break;
         }
         if (!ok) {
-          // one of this side's agents, put in by another side, that is not open to everyone in it
-          if (em.owner === me.owner && em.kind === "agent") this.logEntry(g, { kind: "member.remove", member: em.key, why: `not open to ${g.sides[owner]?.user ?? "them"}` }, this.now());
+          // one of this side's agents, put in by another side, that is not in what this side shares with it
+          if (em.owner === me.owner && em.kind === "agent") this.logEntry(g, { kind: "member.remove", member: em.key, why: `not shared with ${g.sides[owner]?.user ?? "them"}` }, this.now());
+          else if (third) this.log.info("a group's newcomer is not this user's teammate: left out", { group: g.id, from: g.sides[owner]?.user, user: em.user });
           break;
         }
         if (em.kind === "agent" && g.members.filter((m) => m.kind === "agent").length >= AGENTS_MAX) break;
@@ -2565,11 +2665,14 @@ export class Groups {
           const other = this.deps.teams?.()?.teammateOf(em.owner);
           if (!other) break;
           g.sides[em.owner] = { teammate: other.id, user: other.user, taken: 0, since: g.n };
-          void this.catchUp(g.id);
         }
         const m = this.fromEntryMember(em, g.n);
         g.members.push(m);
         this.rows.put(g);
+        if (third) {
+          void this.catchUp(g.id);
+          this.poke(g, em.owner);
+        }
         if (m.kind === "agent" && m.owner === me.owner) {
           const s = this.session(m.session);
           if (s && !g.home) {
@@ -2627,24 +2730,68 @@ export class Groups {
     if (fresh) this.emit(fresh);
   }
 
-  /** A teammate ended: their people and agents leave every group, their posts stay. */
-  teammateEnded(owner: string): void {
+  /**
+   * A teammate ended, here (`here`) or by their side: their people and agents leave every group,
+   * their posts stay. A group that holds someone else too may not keep both of them, since
+   * everyone in a group is a teammate of everyone else, and each of the two works out the same
+   * answer: the one who was ended leaves, keeping its copy read only, even from a group it made.
+   * The one who ended it stays, and as the group's maker takes the other out for the rest too, in
+   * case their side is away and does not hear of the end for a while.
+   */
+  teammateEnded(owner: string, here = false): void {
+    const me = this.deps.me();
     for (const g of this.all()) {
       if (!g.sides[owner] && !g.members.some((m) => m.owner === owner)) continue;
+      const user = g.sides[owner]?.user ?? g.members.find((m) => m.owner === owner)?.user ?? "them";
       g.members = g.members.filter((m) => m.owner !== owner);
       delete g.sides[owner];
       this.rows.put(g);
+      if (Object.keys(g.sides).length > 0) {
+        if (!here) this.outOf(g, true);
+        else if (this.mine({ owner: g.byOwner })) this.logEntry(g, { kind: "member.remove", member: personKey(owner), why: `${user} and ${me.user} are no longer teammates` }, this.now());
+      }
       this.emit(g);
     }
   }
 
-  /** A teammate closed one of this side's agents to them, or narrowed what they share: it leaves the groups that teammate is in. */
-  closedTo(owner: string, session: string): void {
+  /**
+   * This side's user and agents leave a group that holds other people, for everyone in it (the
+   * leave goes to each side, and is kept for a side that was away), and this side keeps its copy
+   * read only: what was posted stays, and nothing more comes or goes.
+   */
+  private outOf(g: GroupRow, leave: boolean): void {
+    if (leave && Object.keys(g.sides).length > 0) {
+      const at = this.now();
+      const person = personKey(this.deps.me().owner);
+      const owners = Object.keys(g.sides);
+      this.logEntry(g, { kind: "leave", person }, at);
+      this.rows.putLeft(g.id, { seq: g.seq, at, person, owners });
+    }
+    for (const m of g.members) if (this.mine(m)) this.cancelGather(g.id, m.key);
+    g.members = g.members.filter((m) => !this.mine(m));
+    g.sides = {};
+    this.rows.put(g);
+    this.lastCatchUp.delete(g.id);
+    this.log.info("out of a group, its copy kept read only", { id: g.id, left: leave });
+  }
+
+  /** A side new to a group hears this side's last entry again: one it is behind on shows it a gap, and it catches up. */
+  private poke(g: GroupRow, owner: string): void {
+    const side = g.sides[owner];
+    if (g.seq === 0 || !side) return;
+    const last = this.rows.entries(g.id, g.seq - 1, 1).entries[0];
+    if (last) void this.deps.teams?.()?.send(side.teammate, g.id, last.seq, last.entry, last.at).catch(() => undefined);
+  }
+
+  /** One of this side's agents is no longer in what this side shares with a teammate: it leaves the groups that teammate put it in. */
+  unshared(owner: string, session: string): void {
     const key = agentKey(session);
     for (const g of this.all()) {
-      if (!g.sides[owner] || !g.members.some((m) => m.key === key)) continue;
+      const side = g.sides[owner];
+      const m = g.members.find((x) => x.key === key);
+      if (!side || !m || m.addedBy !== side.user) continue;
       this.drop(g, key);
-      this.logEntry(g, { kind: "member.remove", member: key, why: `no longer open to ${g.sides[owner]?.user ?? "them"}` }, this.now());
+      this.logEntry(g, { kind: "member.remove", member: key, why: `no longer shared with ${side.user}` }, this.now());
       this.emit(g);
     }
   }
@@ -2675,6 +2822,11 @@ function cleanName(name: string): string {
 function lastPart(path: string): string {
   const parts = path.split(/[\\/]+/).filter((p) => p !== "" && !p.endsWith(":"));
   return parts[parts.length - 1] ?? path;
+}
+
+/** Names as words: a, a and b, a, b and c. */
+function andList(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 function uniqueBy<T>(xs: readonly T[], key: (x: T) => string): T[] {

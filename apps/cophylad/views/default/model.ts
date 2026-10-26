@@ -5236,17 +5236,18 @@ export function completeTag(text: string, start: number, caret: number, choice: 
   return { text: text.slice(0, start) + tag + text.slice(caret), caret: start + tag.length };
 }
 
-/** What a picker keeps an agent by: its own session, or a teammate's agent by name. */
+/** What a picker keeps an agent by: its own session, a teammate's agent by name, or the teammate by themselves. */
 export function candidateKey(ref: GroupMemberRef): string {
-  return "session" in ref ? `s:${ref.session}` : `t:${ref.teammate}:${ref.name}`;
+  return "session" in ref ? `s:${ref.session}` : "name" in ref ? `t:${ref.teammate}:${ref.name}` : `p:${ref.teammate}`;
 }
 
-/** An agent in the picker, and its heading: the user's own by machine and folder, a teammate's under their login. */
+/** An agent in the picker, or a teammate by themselves (`person`), and its heading: the user's own by machine and folder, a teammate's under their login. */
 export interface CandidateItem {
   key: string;
   ref: GroupMemberRef;
   handle: string;
   harness?: string;
+  person?: boolean;
   words: string;
 }
 
@@ -5254,39 +5255,79 @@ export interface CandidateGroup {
   key: string;
   title: string;
   own: boolean;
+  /** Why a teammate's heading cannot be picked from now: they are not a teammate of someone in the group or picked. */
+  blocked?: string;
   items: CandidateItem[];
 }
 
 /**
- * The picker's agents under their headings, the user's own first; one already in `g` is left
- * out, by its session: a teammate's agent renamed since it was put in is the same agent. A node
- * from before teammates' sessions came with them is matched by handle.
+ * The picker's agents under their headings, the user's own first, and each teammate first by
+ * themselves; one already in `g` is left out, by its session: a teammate's agent renamed since
+ * it was put in is the same agent. A node from before teammates' sessions came with them is
+ * matched by handle. Everyone in a group is a teammate of everyone else, so a teammate who is
+ * not a teammate of someone in `g`, or of a teammate with something `picked`, is blocked, saying
+ * who; one whose side could not say (no `peers`) only joins a group of the user's and theirs.
  */
-export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">): CandidateGroup[] {
+export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">, picked: Iterable<string> = []): CandidateGroup[] {
   const sessions = new Set<string>();
   const handles = new Set<string>();
+  const people = new Set<string>();
   for (const m of g?.members ?? []) {
-    if (m.kind !== "agent") continue;
+    if (m.kind === "person") {
+      if (!m.me) people.add(m.user);
+      continue;
+    }
     sessions.add(m.session);
     if (!m.gone) handles.add(m.handle);
   }
+  const inGroup = new Set(people);
+  const chosen = new Set(picked);
+  for (const c of cands) if (!("session" in c.ref) && c.user && chosen.has(candidateKey(c.ref))) people.add(c.user);
   const groups = new Map<string, CandidateGroup>();
   for (const c of cands) {
     const own = "session" in c.ref;
     const session = "session" in c.ref ? c.ref.session : c.session;
-    if (session !== undefined ? sessions.has(session) : handles.has(c.handle)) continue;
+    if (c.person ? c.user !== undefined && inGroup.has(c.user) : session !== undefined ? sessions.has(session) : handles.has(c.handle)) continue;
     const folder = c.folder ?? c.workspace;
     const key = own ? `own:${c.node ?? ""}\n${folder ?? ""}` : `user:${c.user ?? ""}`;
     let group = groups.get(key);
     if (!group) {
-      group = { key, own, title: own ? `${folder ?? "No folder"}${c.machine ? ` · ${c.machine}` : ""}` : `${c.user ?? "A teammate"}'s agents`, items: [] };
+      group = { key, own, title: own ? `${folder ?? "No folder"}${c.machine ? ` · ${c.machine}` : ""}` : `${c.user ?? "A teammate"} and their agents`, items: [] };
+      if (!own) {
+        const missing = [...people].filter((u) => u !== c.user && !(c.peers ?? []).includes(u));
+        if (missing.length > 0) group.blocked = c.peers === undefined ? `${c.user ?? "They"} can join a group with ${wordList(missing)} once their Cophyla is updated.` : `${c.user ?? "They"} is not a teammate of ${wordList(missing)}, and everyone in a group is a teammate of everyone else.`;
+      }
       groups.set(key, group);
     }
     const harness = c.harness ? (HARNESS_NAMES[c.harness as keyof typeof HARNESS_NAMES] ?? c.harness) : undefined;
-    const words = [harness, c.status, own ? undefined : c.workspace, c.intent].filter((w): w is string => w !== undefined && w !== "").join(" · ");
-    group.items.push({ key: candidateKey(c.ref), ref: c.ref, handle: c.handle, ...(c.harness ? { harness: c.harness } : {}), words });
+    const words = c.person ? "Just them, without an agent" : [harness, c.status, own ? undefined : c.workspace, c.intent].filter((w): w is string => w !== undefined && w !== "").join(" · ");
+    const item: CandidateItem = { key: candidateKey(c.ref), ref: c.ref, handle: c.handle, ...(c.harness ? { harness: c.harness } : {}), ...(c.person ? { person: true } : {}), words };
+    if (c.person) group.items.unshift(item);
+    else group.items.push(item);
   }
   return [...groups.values()].sort((a, b) => Number(b.own) - Number(a.own) || a.title.localeCompare(b.title));
+}
+
+/**
+ * What End asks before a teammate is ended: their agents leave every group, and since everyone
+ * in a group is a teammate of everyone else, they leave the groups with someone else in them too,
+ * for everyone in them, whoever made them, and the user stays.
+ */
+export function teamEndWords(who: string, groups: Iterable<Pick<Group, "name" | "members">>): string {
+  const leave: string[] = [];
+  for (const g of groups) {
+    const people = g.members.filter((m) => m.kind === "person");
+    if (!groupMe(g) || people.length < 3 || !people.some((m) => !m.me && m.user === who)) continue;
+    leave.push(`#${g.name}`);
+  }
+  const words = [`End ${who} as a teammate? Their agents leave every group, and nothing reaches either side any more.`];
+  if (leave.length > 0) words.push(`${who} leaves ${wordList(leave)} too, for everyone in ${leave.length === 1 ? "it" : "them"}, since everyone in a group is a teammate of everyone else.`);
+  return words.join(" ");
+}
+
+/** Names as words: a, a and b, a, b and c. */
+function wordList(names: readonly string[]): string {
+  return names.length <= 1 ? (names[0] ?? "") : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
 }
 
 /** What `group.create` is sent from New group's form, or why it is not: a group needs a name. */
