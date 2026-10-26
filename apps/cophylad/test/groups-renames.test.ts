@@ -49,8 +49,9 @@ function rig(local: Session[], aliases: Map<string, string>) {
   const teams = {
     teammateOf: (owner: string) => (owner === BOB ? { id: TM, user: "bob" } : undefined),
     teammate: (_id: string) => ({ owner: BOB, user: "bob" }),
-    agents: async () => [{ session: bob.session, name: bob.name, harness: "claude" as const, workspace: "web", status: "idle" as const }],
-    openTo: (_session: string, owner: string) => owner === BOB,
+    agents: async () => ({ agents: [{ session: bob.session, name: bob.name, harness: "claude" as const, workspace: "web", status: "idle" as const }], closed: [] }),
+    peers: async () => [],
+    sharedTo: (_session: string, owner: string) => owner === BOB,
     send: async (_teammate: string, _group: string, seq: number, entry: GroupEntry) => {
       sentEntries.push({ seq, entry });
       return true;
@@ -97,7 +98,7 @@ describe("a group's agents by the names they have now", () => {
       // bob renamed it "stick-main": the add list reads his directory, the group follows, and the list carries its session
       r.bob.name = "stick-main";
       const cands = await r.groups.candidates();
-      expect(cands.find((c) => "teammate" in c.ref)).toMatchObject({ handle: "bob/stick-main", session: r.bob.session });
+      expect(cands.find((c) => "teammate" in c.ref && "name" in c.ref)).toMatchObject({ handle: "bob/stick-main", session: r.bob.session });
       expect(handles(r, g.id)).toEqual(["api", "bob/stick-main"]);
 
       // and again, seen first in a post of its own

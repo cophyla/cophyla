@@ -10,7 +10,9 @@
 // now, and a `team.send` is checked against its own sharing before it delivers, never on the
 // sender's word. A group chat with teammates in it has no host: each side writes what its own
 // people and agents did into a log numbered on that side (`team.group`), and a side that was
-// away asks for the entries after the last it took (`team.group.sync`).
+// away asks for the entries after the last it took (`team.group.sync`). Everyone in a group is a
+// teammate of everyone else, so a side asks a newcomer whether it holds the others as
+// teammates (`team.peers`) before it puts it in, and each side's entries go straight to each.
 
 import { z } from "zod";
 import { Focus, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, GroupFile, GroupMention, GroupNotify, GroupPhoto, HarnessKind, SessionStatus, TeammateConnectionAgent, TeammateTheirs } from "./entities.ts";
@@ -106,12 +108,18 @@ export const GroupEntryPost = z.object({
 });
 export type GroupEntryPost = z.infer<typeof GroupEntryPost>;
 
-/** The group itself, as a side hands it to one newly in it: who is in it and the posts so far (the last two hundred). */
+/**
+ * The group itself, as a side hands it to one newly in it: who is in it and the posts so far (the
+ * last two hundred). `byOwner` is its maker's account, which need not be the side handing it
+ * over once three or more people are in it; `taken` is the last entry the handing side took of
+ * each other side's, so the new side asks each of them only for what came after.
+ */
 export const GroupSnapshot = z.object({
   id: GroupId,
   name: z.string().min(1).max(80),
   purpose: z.string().max(300).optional(),
   by: z.string().min(1).max(64),
+  byOwner: z.string().min(1).max(120).optional(),
   notify: GroupNotify,
   createdAt: Timestamp,
   /** When its name, purpose or setting last changed. */
@@ -119,6 +127,7 @@ export const GroupSnapshot = z.object({
   ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
   members: z.array(GroupEntryMember).max(64),
   posts: z.array(GroupEntryPost).max(200),
+  taken: z.record(z.string().max(120), z.number().int().nonnegative()).optional(),
 });
 export type GroupSnapshot = z.infer<typeof GroupSnapshot>;
 
@@ -161,6 +170,15 @@ export const teammateLinkRequests = {
   },
   /** What the sending side shares changed. */
   "team.share": { params: TeammateTheirs, result: z.object({}) },
+  /**
+   * Which of these accounts this side holds as active teammates: asked before the sending side
+   * puts this side's user in a group with them, since everyone in a group is a teammate of
+   * everyone else, and each side answers for its own teammates alone.
+   */
+  "team.peers": {
+    params: z.object({ owners: z.array(z.string().min(1).max(120)).min(1).max(64) }),
+    result: z.object({ teammates: z.array(z.string().min(1).max(120)).max(64) }),
+  },
   /**
    * A message from an agent of the sending side to `to`, an open agent of this side by its
    * name here. `replyTo` lets an agent that is not open be answered: one that sent the message

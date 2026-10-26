@@ -79,7 +79,7 @@ describe("photos and files between teammates", () => {
     await alice.ui.next((n) => n.method === "teammate.state" && (n.params as Teammate).state === "active");
 
     const cands = await alice.ui.request<{ agents: GroupCandidate[] }>("group.candidates", {});
-    const bobs = cands.agents.find((c) => c.user === "bob")!;
+    const bobs = cands.agents.find((c) => c.user === "bob" && !c.person)!;
     const g = (await alice.ui.request<{ group: Group }>("group.create", { name: "release", members: [{ session: a.id }, bobs.ref] })).group;
     await waitFor(async () => (await bob.ui.request<{ groups: Group[] }>("group.list", {})).groups.length === 1, 10_000);
 

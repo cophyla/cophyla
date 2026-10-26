@@ -8625,6 +8625,25 @@ button:disabled {
   color: var(--cophyla-ink);
 }
 
+/* a teammate who is not a teammate of someone in the group or picked: said once, their rows held */
+.agent-pick-blocked {
+  margin: 0 0 4px;
+  color: var(--amber);
+  font-size: 11.5px;
+}
+
+.agent-pick-group[data-blocked="true"] .agent-pick-item {
+  cursor: default;
+}
+
+.agent-pick-group[data-blocked="true"] .agent-pick-item:hover {
+  background: none;
+}
+
+.agent-pick-group[data-blocked="true"] .agent-pick-handle {
+  color: var(--muted);
+}
+
 .agent-pick-items {
   display: flex;
   flex-direction: column;

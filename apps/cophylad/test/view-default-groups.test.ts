@@ -27,6 +27,7 @@ import {
   slot,
   tagCompletion,
   tagSlots,
+  teamEndWords,
   teamworkFailure,
   unreadBy,
 } from "../views/default/model.ts";
@@ -261,7 +262,7 @@ describe("group chats in the view", () => {
     expect(groups.map((g) => [g.title, g.items.map((i) => i.handle)])).toEqual([
       ["api · Laptop", ["api-codex"]],
       ["web · Desk", ["web"]],
-      ["bob's agents", ["bob/api"]],
+      ["bob and their agents", ["bob/api"]],
     ]);
     expect(groups[1]!.items[0]).toMatchObject({ key: `s:${A}`, words: "Claude · busy · login page" });
     expect(groups[2]!.items[0]).toMatchObject({ key: "t:tm_01ARZ3NDEKTSV4RRFFQ69G5FE1:api", words: "Claude · idle · backend" });
@@ -269,6 +270,59 @@ describe("group chats in the view", () => {
     const made = groupCreateParams({ name: "  release ", purpose: " ", notify: "tags", picked: [`s:${A}`, "t:tm_01ARZ3NDEKTSV4RRFFQ69G5FE1:api"] }, cands);
     expect(made).toEqual({ params: { name: "release", notify: "tags", members: [{ session: A }, { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE1", name: "api" }] } });
     expect(groupCreateParams({ name: " ", purpose: "", notify: "all", picked: [] }, cands)).toEqual({ error: "Name the group." });
+  });
+
+  test("a teammate comes first by themselves, and one who is not a teammate of someone in the group or picked is held, saying who", () => {
+    const BOB = "tm_01ARZ3NDEKTSV4RRFFQ69G5FE1";
+    const CAROL = "tm_01ARZ3NDEKTSV4RRFFQ69G5FE2";
+    const DAVE = "tm_01ARZ3NDEKTSV4RRFFQ69G5FE3";
+    const cands: GroupCandidate[] = [
+      { ref: { teammate: BOB, name: "api" }, handle: "bob/api", session: BOBS, harness: "claude", user: "bob", workspace: "backend", status: "idle", peers: ["carol"] },
+      { ref: { teammate: BOB }, handle: "bob", person: true, user: "bob", peers: ["carol"] },
+      // a closed agent of carol's comes with no state
+      { ref: { teammate: CAROL, name: "deploy" }, handle: "carol/deploy", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FC1", harness: "codex", user: "carol", workspace: "infra", peers: ["bob"] },
+      { ref: { teammate: CAROL }, handle: "carol", person: true, user: "carol", peers: ["bob"] },
+      { ref: { teammate: DAVE }, handle: "dave", person: true, user: "dave", peers: [] },
+      // erin's side could not say who its teammates are
+      { ref: { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE4" }, handle: "erin", person: true, user: "erin" },
+    ];
+    const fresh = candidateGroups(cands);
+    expect(fresh.map((g) => [g.title, g.items.map((i) => i.handle), g.blocked])).toEqual([
+      ["bob and their agents", ["bob", "bob/api"], undefined],
+      ["carol and their agents", ["carol", "carol/deploy"], undefined],
+      ["dave and their agents", ["dave"], undefined],
+      ["erin and their agents", ["erin"], undefined],
+    ]);
+    expect(fresh[0]!.items[0]).toMatchObject({ key: `p:${BOB}`, person: true, words: "Just them, without an agent" });
+    expect(fresh[1]!.items[1]).toMatchObject({ key: `t:${CAROL}:deploy`, words: "Codex · infra" });
+    // bob picked: carol may join him, dave may not, erin's side could not say
+    const picked = candidateGroups(cands, undefined, [`t:${BOB}:api`]);
+    expect(picked.map((g) => g.blocked)).toEqual([
+      undefined,
+      undefined,
+      "dave is not a teammate of bob, and everyone in a group is a teammate of everyone else.",
+      "erin can join a group with bob once their Cophyla is updated.",
+    ]);
+    // in a group with bob already: bob is not offered again, nor his agent in it, and the same holds
+    const g = group();
+    const adding = candidateGroups(cands, g);
+    expect(adding.find((x) => x.title.startsWith("bob"))).toBeUndefined();
+    expect(adding.find((x) => x.title.startsWith("dave"))!.blocked).toContain("dave is not a teammate of bob,");
+    expect(adding.find((x) => x.title.startsWith("carol"))!.blocked).toBeUndefined();
+    // carol picked too: dave is held for both
+    expect(candidateGroups(cands, g, [`p:${CAROL}`]).find((x) => x.title.startsWith("dave"))!.blocked).toBe("dave is not a teammate of bob and carol, and everyone in a group is a teammate of everyone else.");
+  });
+
+  test("End asks what ending a teammate does to the groups both are in with someone else", () => {
+    const carol: GroupMember = { kind: "person", key: "person:usr_carol", user: "carol", readTo: 0 };
+    const mine = { name: "release", by: "alice", members: [me, bobPerson, carol] };
+    const theirs = { name: "ops", by: "carol", members: [me, bobPerson, carol] };
+    const pair = { name: "pair", by: "alice", members: [me, bobPerson] };
+    expect(teamEndWords("bob", [pair])).toBe("End bob as a teammate? Their agents leave every group, and nothing reaches either side any more.");
+    expect(teamEndWords("bob", [mine, theirs, pair])).toBe(
+      "End bob as a teammate? Their agents leave every group, and nothing reaches either side any more. bob leaves #release and #ops too, for everyone in them, since everyone in a group is a teammate of everyone else.",
+    );
+    expect(teamEndWords("bob", [theirs])).toContain("bob leaves #ops too, for everyone in it,");
   });
 
   test("Add members leaves out a teammate's agent in the group under the name it had, by its session", () => {

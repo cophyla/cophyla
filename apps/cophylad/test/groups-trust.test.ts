@@ -2,7 +2,7 @@
 // reading: the modules alone over a real store, bus and gate, with a fake teammates link. A
 // side writes only its own part: it cannot post as this side's user or agents or as cophyla,
 // overwrite a group through a snapshot of another id, rewrite this side's members or slip in an
-// agent not open to it, take this side's user out of a group it did not make, or show a tag the
+// agent not shared with it, take this side's user out of a group it did not make, or show a tag the
 // post does not make. A side taken out is told; a group left while a side was away tells it of
 // the leave when it comes back. A post does not move its writer past what it did not read; a
 // gathered post never lands mid-turn; a machine whose link drops keeps its agents' focus and is
@@ -44,7 +44,7 @@ interface Delivery {
 }
 
 /** This side (ferit) with its agents, and bob as a teammate whose side is played by the test. */
-function rig(local: Session[], open: Set<string>) {
+function rig(local: Session[], shared: Set<string>) {
   const config = Config.parse({});
   const store = new Store(":memory:");
   store.migrate();
@@ -69,8 +69,9 @@ function rig(local: Session[], open: Set<string>) {
   const teams = {
     teammateOf: (owner: string) => (owner === BOB ? { id: TM, user: "bob" } : undefined),
     teammate: (_id: string) => ({ owner: BOB, user: "bob" }),
-    agents: async () => [{ session: bobAgent, name: "web", harness: "claude" as const, workspace: "web", status: "idle" as const }],
-    openTo: (session: string, owner: string) => owner === BOB && open.has(session),
+    agents: async () => ({ agents: [{ session: bobAgent, name: "web", harness: "claude" as const, workspace: "web", status: "idle" as const }], closed: [] }),
+    peers: async () => [],
+    sharedTo: (session: string, owner: string) => owner === BOB && shared.has(session),
     send: async (_teammate: string, _group: string, seq: number, entry: GroupEntry) => {
       sentEntries.push({ seq, entry });
       return true;
@@ -176,7 +177,7 @@ describe("a teammate's side writes its own part alone", () => {
     }
   });
 
-  test("bob cannot rewrite this side's members, slip in an agent not open to him, or take this side's user out", async () => {
+  test("bob cannot rewrite this side's members, slip in an agent not shared with him, or take this side's user out", async () => {
     const a0 = sess("C:/code/api");
     const secret = sess("C:/code/secret");
     const r = rig([a0, secret], new Set([a0.id]));

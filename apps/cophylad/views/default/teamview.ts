@@ -46,6 +46,7 @@ import {
   sessionFocus,
   teamBlock,
   teamConnectionRows,
+  teamEndWords,
   connectNoTeam,
   connectTeamBlocks,
   connectedRows,
@@ -550,7 +551,7 @@ function createGroupPane(root: HTMLElement): void {
   const members = el("div", "group-members");
   members.setAttribute("aria-label", "Members");
   const add = actionButton("group-add-start", "+ Add", "group-add");
-  add.title = "Put more agents in it: yours, or a teammate's open to you";
+  add.title = "Put more agents or people in it: your agents, a teammate, or a teammate's agents in what they share with you";
   const add2 = el("div", "group-add");
   const addButtons = el("div", "group-form-buttons");
   addButtons.append(actionButton("group-add-confirm", "Add", "group-add-confirm"), actionButton("group-add-cancel", "Cancel", "group-add-cancel"));
@@ -609,14 +610,18 @@ function renderAgentPick(pick: HTMLElement, p: AgentPick, groups: CandidateGroup
 
 function createPickGroup(): HTMLElement {
   const group = el("fieldset", "agent-pick-group");
-  group.append(el("legend", "agent-pick-title"), el("div", "agent-pick-items"));
+  group.append(el("legend", "agent-pick-title"), el("p", "agent-pick-blocked"), el("div", "agent-pick-items"));
   return group;
 }
 
 function updatePickGroup(node: HTMLElement, g: CandidateGroup, p: AgentPick): void {
   setText(node.querySelector(".agent-pick-title")!, g.title);
   setData(node, "own", String(g.own));
-  reconcile(node.querySelector<HTMLElement>(".agent-pick-items")!, g.items, (i) => i.key, createPickItem, (n, i) => updatePickItem(n, i, p));
+  setData(node, "blocked", String(g.blocked !== undefined));
+  const blocked = node.querySelector<HTMLElement>(".agent-pick-blocked")!;
+  setText(blocked, g.blocked ?? "");
+  setHidden(blocked, g.blocked === undefined);
+  reconcile(node.querySelector<HTMLElement>(".agent-pick-items")!, g.items, (i) => i.key, createPickItem, (n, i) => updatePickItem(n, i, p, g.blocked !== undefined));
 }
 
 function createPickItem(): HTMLElement {
@@ -631,12 +636,14 @@ function createPickItem(): HTMLElement {
   return label;
 }
 
-function updatePickItem(label: HTMLElement, i: CandidateItem, p: AgentPick): void {
+function updatePickItem(label: HTMLElement, i: CandidateItem, p: AgentPick, blocked: boolean): void {
   const box = label.querySelector<HTMLInputElement>(".agent-pick-check")!;
   setData(box, "key", i.key);
   box.checked = p.picked.has(i.key);
-  box.disabled = p.busy === true;
+  // one ticked before it was blocked may still be unticked
+  box.disabled = p.busy === true || (blocked && !box.checked);
   const icon = label.querySelector<HTMLElement>(".agent-icon")!;
+  setHidden(icon, i.person === true);
   setData(icon, "harness", i.harness ?? "terminal");
   setData(icon, "tone", "active");
   setText(label.querySelector(".agent-pick-handle")!, i.handle);
@@ -668,7 +675,7 @@ function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiSt
   setHidden(purpose, !g.purpose);
   const editing = ui.team.editGroup?.group === g.id ? ui.team.editGroup : undefined;
   const edit = head.querySelector<HTMLButtonElement>(".group-edit")!;
-  setHidden(edit, ended || !state.scopes.includes("sessions:write") || editing !== undefined);
+  setHidden(edit, ended || groupMe(g) === undefined || !state.scopes.includes("sessions:write") || editing !== undefined);
   edit.disabled = !canWrite;
   const form = head.querySelector<HTMLFormElement>(".group-edit-form")!;
   setHidden(form, editing === undefined);
@@ -712,12 +719,12 @@ function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiSt
   reconcile(head.querySelector<HTMLElement>(".group-members")!, chips, (c) => c.key, createMemberChip, (n, c) => updateMemberChip(n, c, g, state, ui, canWrite));
   const adding = ui.team.addMembers?.group === g.id ? ui.team.addMembers : undefined;
   const add = head.querySelector<HTMLButtonElement>(".group-add-start")!;
-  setHidden(add, ended || !state.scopes.includes("sessions:write") || adding !== undefined);
+  setHidden(add, ended || groupMe(g) === undefined || !state.scopes.includes("sessions:write") || adding !== undefined);
   add.disabled = !canWrite;
   const panel = head.querySelector<HTMLElement>(".group-add")!;
   setHidden(panel, adding === undefined);
   if (adding) {
-    renderAgentPick(panel.querySelector<HTMLElement>(".agent-pick")!, adding, candidateGroups(adding.candidates ?? [], g), "No other agent of yours or your teammates' is open now.");
+    renderAgentPick(panel.querySelector<HTMLElement>(".agent-pick")!, adding, candidateGroups(adding.candidates ?? [], g, adding.picked), "No other agent of yours, teammate or teammate's agent is there to add now.");
     const confirm = panel.querySelector<HTMLButtonElement>(".group-add-confirm")!;
     setText(confirm, adding.busy ? "Adding…" : adding.picked.size > 0 ? `Add ${adding.picked.size}` : "Add");
     confirm.disabled = !canWrite || adding.busy === true || adding.picked.size === 0;
@@ -904,10 +911,12 @@ function renderGroupComposer(form: HTMLFormElement, g: Group, state: ViewState, 
   form.querySelector<HTMLButtonElement>(".group-send")!.disabled = !mayPost || ui.team.posting === g.id;
   renderAttach(form, ui.team.media.attached.get(g.id) ?? [], mayPost);
   setText(form.querySelector(".group-send")!, ui.team.posting === g.id ? "Sending…" : "Send");
+  // left, or taken out: this side's copy stays, read only
+  const out = !ended && groupMe(g) === undefined;
   const closed = form.querySelector<HTMLElement>(".group-closed")!;
-  setText(closed, ended ? "This group ended: it is read only." : "");
-  setHidden(closed, !ended);
-  setHidden(form.querySelector<HTMLElement>(".group-composer-row")!, ended);
+  setText(closed, ended ? "This group ended: it is read only." : out ? "You are no longer in this group: what was posted stays here to read." : "");
+  setHidden(closed, !ended && !out);
+  setHidden(form.querySelector<HTMLElement>(".group-composer-row")!, ended || out);
   const replyTo = ui.team.replyTo?.group === g.id ? ui.team.replyTo : undefined;
   const answered = replyTo ? state.groupPosts.get(g.id)?.posts.find((p) => p.id === replyTo.post) : undefined;
   const reply = form.querySelector<HTMLElement>(".group-reply")!;
@@ -989,11 +998,11 @@ function createNewGroup(): HTMLElement {
   const error = el("p", "group-form-error");
   error.setAttribute("role", "alert");
   form.append(
-    sectionHead("New group", "A chat of agents and you: yours on any machine, and your teammates' open to you. Tag one with @ to ask it something; it reads the group when it chooses."),
+    sectionHead("New group", "A chat of agents and people: your agents on any machine, your teammates, and their agents in what they share with you. Everyone in it must be teammates. Tag one with @ to ask it something; it reads the group when it chooses."),
     nameLabel,
     purposeLabel,
     notifyRow,
-    el("p", "team-field-label", "Agents"),
+    el("p", "team-field-label", "Agents and people"),
     createAgentPick("new"),
     error,
     buttons,
@@ -1118,7 +1127,7 @@ export function renderTeamOverlay(root: HTMLElement, state: ViewState, ui: UiSta
 function renderNewGroup(column: HTMLElement, f: NewGroupForm, state: ViewState): void {
   const form = column.querySelector<HTMLFormElement>(".group-new-form")!;
   for (const b of Array.from(form.querySelectorAll<HTMLButtonElement>(".group-new-notify button"))) b.setAttribute("aria-pressed", String(b.dataset["notify"] === f.notify));
-  renderAgentPick(form.querySelector<HTMLElement>(".agent-pick")!, f, candidateGroups(f.candidates ?? []), "No agent of yours or your teammates' is open now: the group can be made without one, and agents added later.");
+  renderAgentPick(form.querySelector<HTMLElement>(".agent-pick")!, f, candidateGroups(f.candidates ?? [], undefined, f.picked), "No agent of yours, teammate or teammate's agent is there to add now: the group can be made without one, and others added later.");
   const submit = form.querySelector<HTMLButtonElement>(".team-submit")!;
   setText(submit, f.busy ? "Making…" : f.picked.size > 0 ? `Make the group with ${f.picked.size} agent${f.picked.size === 1 ? "" : "s"}` : "Make the group");
   submit.disabled = f.busy === true || !state.connected;
@@ -1251,7 +1260,7 @@ function updateTeammateRow(row: HTMLElement, r: TeammateRow, state: ViewState, u
   setHidden(row.querySelector<HTMLElement>(".team-cancel")!, r.state !== "pending");
   const ask = row.querySelector<HTMLElement>(".team-end-ask")!;
   setHidden(ask, !asking);
-  if (asking) setText(ask.querySelector(".team-end-words")!, `End ${r.who} as a teammate? Their agents leave every group, and nothing reaches either side any more.`);
+  if (asking) setText(ask.querySelector(".team-end-words")!, teamEndWords(r.who, state.groups.values()));
 }
 
 function renderShareForm(form: HTMLElement, f: ShareForm, state: ViewState, ui: UiState): void {

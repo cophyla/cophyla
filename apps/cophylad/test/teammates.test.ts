@@ -539,17 +539,175 @@ describe("a group chat with a teammate in it", () => {
     }
   });
 
-  test("an agent not open to the adder is refused; ending the teammate takes their agents out of the group", async () => {
+  test("a teammate's agent in what they share joins, open or not, and one outside it does not; ending the teammate takes their agents out of the group", async () => {
     const t = await teammates();
     try {
-      await expect(t.alice.groups.create({ name: "x", members: [{ session: t.a.id }, { teammate: t.id, name: "docs-codex" }] })).rejects.toThrow(/bob\/docs-codex is not open to you now/);
+      const away = sess(t.bob.node, "claude", "/home/bob/notes");
+      t.bob.sessions.push(away);
+      // docs-codex is closed to alice (bob opens agents by hand) but in what he shares: it joins, his side agreeing
+      const docs = await t.alice.groups.create({ name: "docs", members: [{ session: t.a.id }, { teammate: t.id, name: "docs-codex" }] });
+      await waitFor(() => (everyone(t.bob, docs.id) ?? []).includes("docs-codex"));
+      await waitFor(() => t.bob.delivered.some((d) => d.session === t.b2.id && d.text.includes("put you in the group chat #docs")));
+      expect(everyone(t.alice, docs.id)).toContain("bob/docs-codex");
+      await expect(t.alice.groups.create({ name: "x", members: [{ session: t.a.id }, { teammate: t.id, name: "notes-claude" }] })).rejects.toThrow(/bob\/notes-claude is not among the agents bob shares with you now/);
       t.bob.teammates.open(t.id, t.b.id, true);
       const g = await t.alice.groups.create({ name: "release", members: [{ session: t.a.id }, { teammate: t.id, name: "site-claude" }] });
       await waitFor(() => t.bob.groups.list().length === 1);
       await t.alice.teammates.end(t.id, "ended by the user");
       await waitFor(() => t.bob.teammates.list().length === 0);
       expect(t.alice.groups.list().find((x) => x.id === g.id)!.members.map((m) => m.key)).toEqual([`person:usr_alice`, `agent:${t.a.id}`]);
-      expect(t.bob.groups.list()[0]!.members.some((m) => m.key.includes("usr_alice") || m.key === `agent:${t.a.id}`)).toBe(false);
+      expect(t.bob.groups.list().find((x) => x.id === g.id)!.members.some((m) => m.key.includes("usr_alice") || m.key === `agent:${t.a.id}`)).toBe(false);
+    } finally {
+      t.done();
+    }
+  });
+
+  test("an agent its teammate put in leaves when its folder is no longer shared with them; one its own user put in stays", async () => {
+    const t = await teammates();
+    try {
+      const g = await t.alice.groups.create({ name: "release", members: [{ session: t.a.id }, { teammate: t.id, name: "site-claude" }] });
+      await waitFor(() => t.bob.groups.list().length === 1);
+      await t.bob.groups.addMembers(g.id, [{ session: t.b2.id }]);
+      await waitFor(() => (everyone(t.alice, g.id) ?? []).includes("bob/docs-codex"));
+      // bob shares a folder neither agent works in now
+      t.bob.teammates.update(t.id, { mode: "include", folders: [{ node: t.bob.node, path: "/elsewhere" }], open: "chosen" });
+      await waitFor(() => !(everyone(t.alice, g.id) ?? []).includes("bob/site-claude"));
+      expect(everyone(t.bob, g.id)).not.toContain("site-claude");
+      expect(everyone(t.bob, g.id)).toContain("docs-codex");
+      expect(everyone(t.alice, g.id)).toContain("bob/docs-codex");
+    } finally {
+      t.done();
+    }
+  });
+});
+
+/** Who is in a group on a side, by handle (agents) and login (people), sorted; undefined while the side does not hold it. */
+function everyone(s: Side, group: string): string[] | undefined {
+  return s.groups
+    .list()
+    .find((g) => g.id === group)
+    ?.members.map((m) => (m.kind === "agent" ? m.handle : m.user))
+    .sort();
+}
+
+/** Two sides made teammates, each sharing what is given: the teammate's id, which both sides keep it by. */
+async function befriend(x: Side, y: Side, xShare: TeammateShare, yShare: TeammateShare): Promise<string> {
+  const made = await x.teammates.invite(xShare);
+  const kept = await y.teammates.accept(made.code, yShare);
+  await waitFor(() => x.teammates.list().some((r) => r.id === kept.id && r.state === "active"));
+  return kept.id;
+}
+
+/** Alice, Bob and Carol: Alice a teammate of each, and Bob and Carol of each other unless `strangers`. Carol shares /work, always open. */
+async function trio(opts: { strangers?: boolean } = {}) {
+  const t = await teammates();
+  const carol = side(t.relay, "carol", t.clock);
+  const c = sess(carol.node, "codex", "/work/infra");
+  carol.sessions.push(c);
+  carol.workspaces.push({ node: carol.node, path: "/work/infra", name: "infra" });
+  const ac = await befriend(t.alice, carol, include(t.alice.node, "/code"), include(carol.node, "/work"));
+  const bobShare = (): TeammateShare => ({ mode: "include", folders: [{ node: t.bob.node, path: "/src" }], open: "chosen" });
+  const bc = opts.strangers ? undefined : await befriend(t.bob, carol, bobShare(), include(carol.node, "/work"));
+  const done = () => {
+    t.done();
+    carol.stop();
+  };
+  return { ...t, carol, c, ab: t.id, ac, bc, bobShare, done };
+}
+
+describe("a group chat of three or more people", () => {
+  test("everyone a teammate of everyone else: each side holds every member, and posts and tags go straight between all three", async () => {
+    const t = await trio();
+    try {
+      // bob's agent is closed to alice and carol: in what he shares, so it joins with no word from him
+      const g = await t.alice.groups.create({ name: "release", members: [{ session: t.a.id }, { teammate: t.ab, name: "site-claude" }, { teammate: t.ac, name: "infra-codex" }] });
+      expect(everyone(t.alice, g.id)).toEqual(["alice", "api-codex", "bob", "bob/site-claude", "carol", "carol/infra-codex"]);
+      await waitFor(() => everyone(t.bob, g.id)?.length === 6 && everyone(t.carol, g.id)?.length === 6);
+      expect(everyone(t.bob, g.id)).toEqual(["alice", "alice/api-codex", "bob", "carol", "carol/infra-codex", "site-claude"]);
+      expect(everyone(t.carol, g.id)).toEqual(["alice", "alice/api-codex", "bob", "bob/site-claude", "carol", "infra-codex"]);
+      await waitFor(() => t.bob.delivered.some((d) => d.session === t.b.id && d.text.includes("put you in the group chat #release")));
+      await waitFor(() => t.carol.delivered.some((d) => d.session === t.c.id && d.text.includes("put you in the group chat #release")));
+      t.bob.delivered.length = 0;
+      t.carol.delivered.length = 0;
+
+      // carol's agent tags bob's: from carol's side straight to bob's, told there
+      const posted = await t.carol.call(t.c, "post_group", { group: "release", text: "@bob/site-claude is the site up?", expects_reply: true });
+      expect(posted.text).toContain("Told: @bob/site-claude.");
+      await waitFor(() => t.bob.delivered.some((d) => d.session === t.b.id && d.text.includes("@carol/infra-codex tagged you in #release")));
+      const read = await t.bob.call(t.b, "read_group", { group: "release" });
+      expect(read.text).toContain("@carol/infra-codex");
+      const asked = /\[\d+ (gmsg_\w+)\] @carol\/infra-codex/.exec(read.text)![1]!;
+      // bob's agent answers: told on carol's side; alice's side holds both
+      const answered = await t.bob.call(t.b, "post_group", { group: "release", text: "Up and green.", expects_reply: false, reply_to: asked });
+      expect(answered.text).toContain("Told: @carol/infra-codex.");
+      await waitFor(() => t.carol.delivered.some((d) => d.session === t.c.id && d.text.includes("@bob/site-claude tagged you in #release")));
+      await waitFor(() => t.alice.groups.posts(g.id).posts.length === 2);
+      expect(t.alice.groups.posts(g.id).posts.map((p) => p.text)).toEqual(["@bob/site-claude is the site up?", "Up and green."]);
+      expect(t.alice.groups.posts(g.id).posts[0]!.answered).toBe(true);
+    } finally {
+      t.done();
+    }
+  });
+
+  test("a teammate who is not a teammate of someone in it is refused, at making and at adding; once they are, they come in, by themselves too", async () => {
+    const t = await trio({ strangers: true });
+    try {
+      await expect(t.alice.groups.create({ name: "x", members: [{ teammate: t.ab, name: "site-claude" }, { teammate: t.ac, name: "infra-codex" }] })).rejects.toThrow(
+        "bob is not a teammate of carol, and everyone in a group is a teammate of everyone else in it",
+      );
+      expect(t.alice.groups.list()).toHaveLength(0);
+      // bob by himself, with no agent of his
+      const g = await t.alice.groups.create({ name: "release", members: [{ session: t.a.id }, { teammate: t.ab }] });
+      await waitFor(() => t.bob.groups.list().length === 1);
+      expect(everyone(t.bob, g.id)).toEqual(["alice", "alice/api-codex", "bob"]);
+      await expect(t.alice.groups.addMembers(g.id, [{ teammate: t.ac }])).rejects.toThrow("carol is not a teammate of bob");
+      expect(everyone(t.alice, g.id)).toEqual(["alice", "api-codex", "bob"]);
+      await expect(t.alice.groups.addMembers(g.id, [{ teammate: t.ab }])).rejects.toThrow("bob is in #release already");
+
+      // they become teammates: carol comes in, and bob's side reaches her straight
+      await befriend(t.bob, t.carol, t.bobShare(), include(t.carol.node, "/work"));
+      await t.alice.groups.addMembers(g.id, [{ teammate: t.ac, name: "infra-codex" }]);
+      await waitFor(() => everyone(t.carol, g.id)?.length === 5);
+      expect(everyone(t.carol, g.id)).toEqual(["alice", "alice/api-codex", "bob", "carol", "infra-codex"]);
+      await waitFor(() => (everyone(t.bob, g.id) ?? []).includes("carol/infra-codex"));
+      expect(everyone(t.bob, g.id)).toEqual(["alice", "alice/api-codex", "bob", "carol", "carol/infra-codex"]);
+      // bob, there as a person, tags carol's agent: told on carol's side, from bob's
+      t.carol.delivered.length = 0;
+      await t.bob.groups.postAsUser(g.id, "@carol/infra-codex can you deploy?");
+      await waitFor(() => t.carol.delivered.some((d) => d.session === t.c.id && d.text.includes("bob (a person) tagged you in #release")));
+      // bob puts his own agent in: carol's side takes it from his
+      await t.bob.groups.addMembers(g.id, [{ session: t.b.id }]);
+      await waitFor(() => (everyone(t.carol, g.id) ?? []).includes("bob/site-claude"));
+    } finally {
+      t.done();
+    }
+  });
+
+  test("two people in it stop being teammates: the one who was ended leaves every group with someone else in it, even one they made, keeping a copy to read", async () => {
+    const t = await trio();
+    try {
+      const alices = await t.alice.groups.create({ name: "alices", members: [{ session: t.a.id }, { teammate: t.ab, name: "site-claude" }, { teammate: t.ac, name: "infra-codex" }] });
+      const bobs = await t.bob.groups.create({ name: "bobs", members: [{ session: t.b.id }, { teammate: t.ab, name: "api-codex" }, { teammate: t.bc!, name: "infra-codex" }] });
+      const carols = await t.carol.groups.create({ name: "carols", members: [{ session: t.c.id }, { teammate: t.ac, name: "api-codex" }, { teammate: t.bc!, name: "site-claude" }] });
+      const ids = [alices.id, bobs.id, carols.id];
+      for (const s of [t.alice, t.bob, t.carol]) await waitFor(() => ids.every((id) => everyone(s, id)?.length === 6));
+
+      // bob ends carol: she leaves alice's group, bob's and her own, for everyone, and bob stays
+      await t.bob.teammates.end(t.bc!, "ended by the user");
+      await waitFor(() => t.carol.teammates.list().every((r) => r.id !== t.bc));
+      await waitFor(() => ids.every((id) => !(everyone(t.alice, id) ?? []).includes("carol")));
+      for (const id of ids) {
+        expect(everyone(t.alice, id)).toEqual(["alice", "api-codex", "bob", "bob/site-claude"]);
+        expect(everyone(t.bob, id)).toEqual(["alice", "alice/api-codex", "bob", "site-claude"]);
+        // her copy stays, with her out of it, and bob's part gone with the end
+        expect(everyone(t.carol, id)).toEqual(["alice", "alice/api-codex"]);
+        await expect(t.carol.groups.postAsUser(id, "still here?")).rejects.toThrow("you are not in this group");
+      }
+      // the two left in each go on, in carol's too: alice's post reaches bob, not carol
+      await t.alice.groups.postAsUser(carols.id, "on we go");
+      await waitFor(() => t.bob.groups.posts(carols.id).posts.some((p) => p.text === "on we go"));
+      await Bun.sleep(20);
+      expect(t.carol.groups.posts(carols.id).posts.some((p) => p.text === "on we go")).toBe(false);
     } finally {
       t.done();
     }
