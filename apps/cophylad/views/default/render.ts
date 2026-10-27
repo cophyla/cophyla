@@ -1246,6 +1246,8 @@ function updateDoor(block: HTMLElement, remote: RemoteCard, state: ViewState, ui
   setText(button, busy === "on" ? "Turning on…" : busy === "off" ? "Turning off…" : door.on ? "Turn off" : "Turn on");
   button.title = door.on ? "Your devices reach this desktop only while someone is signed in and Cophyla runs" : "Let your devices reach this desktop at its sign-in screen, and after a restart";
   button.disabled = !state.connected || busy !== undefined || door.state === "installing";
+  // a machine lent as hands: its owner switches its door, in Cophyla on the machine itself
+  setHidden(button, door.lent === true);
   const remove = block.querySelector<HTMLButtonElement>(".door-remove")!;
   setHidden(remove, !door.remove);
   setText(remove, busy === "remove" ? "Removing…" : "Remove");
@@ -1253,9 +1255,11 @@ function updateDoor(block: HTMLElement, remote: RemoteCard, state: ViewState, ui
   remove.disabled = !state.connected || busy !== undefined;
   setText(
     block.querySelector(".door-note")!,
-    door.on
-      ? "While no one is signed in here, or the screen is locked with Cophyla not running, your phones and the machines that already view this desktop reach it without asking. Windows' password guards the rest."
-      : "On, your phones and the machines that already view this desktop reach it at its sign-in screen and after a restart, without asking. The first time, Windows asks an administrator to approve it on this machine's own screen.",
+    door.lent
+      ? "This machine is lent as hands: its sign-in door is switched in Cophyla on the machine itself, as its sharing is."
+      : door.on
+        ? "While no one is signed in here, or the screen is locked with Cophyla not running, your phones and the machines that already view this desktop reach it without asking. Windows' password guards the rest."
+        : "On, your phones and the machines that already view this desktop reach it at its sign-in screen and after a restart, without asking. The first time, Windows asks an administrator to approve it on this machine's own screen.",
   );
 }
 

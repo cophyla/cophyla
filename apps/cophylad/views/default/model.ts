@@ -4200,7 +4200,7 @@ export interface RemoteCard {
   viewers: RemoteViewer[];
   /** The machine is at its sign-in screen (or locked, with Cophyla not running), reached through its door: its desktop alone. */
   atDoor?: "signin" | "locked";
-  /** Its sign-in door, where it can have one: a Windows machine, not the primary nor a hands node, its desktop shared. */
+  /** Its sign-in door, where it can have one: a Windows machine, not the primary, its desktop shared. */
   door?: DoorCard;
 }
 
@@ -4213,6 +4213,8 @@ export interface DoorCard {
   words: string;
   /** Its service is on the machine and the door is off: it can be taken off. */
   remove: boolean;
+  /** A machine lent as hands, seen from another: its owner switches its door on the machine itself, as its sharing; here it is only shown. */
+  lent?: true;
 }
 
 /** Where a sign-in door stands, in words. */
@@ -4238,11 +4240,16 @@ export function atDoorWords(at: "signin" | "locked"): string {
   return at === "signin" ? "At the sign-in screen" : "Locked, Cophyla not running";
 }
 
-/** A node's sign-in door block, or undefined where it has none: not Windows, the primary, a hands node, sharing off, a node older than the door, or one at its door now. */
-export function selectDoor(node: Node, remote: RemoteState): DoorCard | undefined {
+/**
+ * A node's sign-in door block, or undefined where it has none: not Windows, the primary, sharing
+ * off, a node older than the door, or one at its door now. A hands node's is switched only in an
+ * app of its own (`here`): from another it is shown, `lent`, with no switch and no Remove.
+ */
+export function selectDoor(node: Node, remote: RemoteState, here = false): DoorCard | undefined {
   const door = remote.door;
-  if (!door || node.platform !== "windows" || node.role === "primary" || node.hands || node.door || remote.host.status === "off") return undefined;
-  return { node: node.id, on: door.state !== "off", state: door.state, words: doorWords(door), remove: door.state === "off" && door.version !== undefined };
+  if (!door || node.platform !== "windows" || node.role === "primary" || node.door || remote.host.status === "off") return undefined;
+  const lent = node.hands === true && !here;
+  return { node: node.id, on: door.state !== "off", state: door.state, words: doorWords(door), remove: !lent && door.state === "off" && door.version !== undefined, ...(lent ? { lent: true as const } : {}) };
 }
 
 /**
@@ -4267,7 +4274,8 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
   const viewers = off ? remote.viewers.filter((v) => v.kind === "native") : remote.viewers;
   // The installer's prompt comes up on the machine itself: someone there may have to answer it.
   const away = !(client?.kind === "ui" && client.node === node.id);
-  const door = selectDoor(node, remote);
+  // an app of the machine's own: its daemon serves it
+  const door = selectDoor(node, remote, client?.node === node.id);
   const note = remoteNote(remote.host, { paired: off ? viewers.length : 0, ...(away ? { at: node.name } : {}), ...(remote.door ? { door: remote.door } : {}) });
   // at its sign-in screen only the desktop is reached: no switch, no pairing, the ways in kept
   const at = node.door;

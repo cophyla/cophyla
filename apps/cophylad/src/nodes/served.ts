@@ -6,8 +6,8 @@
 // methods, not capability ones) are served here too, so the primary's clients can watch
 // this node, `remote.invite`, `remote.revoke`, `remote.enable` and `remote.disable` likewise,
 // so they can hand out and take back access to this desktop and switch its sharing (not on a
-// hands node's, whose desktop is its owner's), and `remote.door`, its sign-in door (not a hands
-// node's either), `profile.update`, so they can set this node's profiles,
+// hands node's, whose desktop is its owner's), and `remote.door`, its sign-in door (a hands
+// node's is its owner's to switch too, on the machine), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
 // `agents.accept`, so they can let agents' messages into its bypass sessions (not a lent
 // machine's),
@@ -396,7 +396,7 @@ export class NodeServer {
     if ((NODE_SERVED_REMOTE as readonly string[]).includes(method)) {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not its desktop");
       if ((method === "remote.enable" || method === "remote.disable") && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: sharing its desktop is its owner's to switch");
-      if (method === "remote.door" && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: it has no sign-in door");
+      if (method === "remote.door" && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: its sign-in door is its owner's to switch, in Cophyla on this machine");
       return this.serveRemote(method as (typeof NODE_SERVED_REMOTE)[number], params);
     }
     if ((NODE_SERVED_PROFILES as readonly string[]).includes(method)) {

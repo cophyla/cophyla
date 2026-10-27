@@ -8,7 +8,8 @@
 // fan-out leaves the door out. The machine's own daemon coming back stands the door down
 // before its join (no link replaced on the primary) and lets the phone back in unasked. A door
 // never takes the link from a daemon that holds it. A key the primary hands the grant, and the
-// grant's end, reach the daemon through the door's answer to its attach.
+// grant's end, reach the daemon through the door's answer to its attach. A hands machine's door
+// joins as hands, switched only on the machine itself.
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
@@ -68,8 +69,8 @@ interface Setup {
   secondaryOpts: Parameters<typeof startSecondary>[1];
 }
 
-/** The primary on the LAN, signed in; the secondary linked to it there, sharing its desktop on the fake host, with direct connections on. */
-async function start(): Promise<Setup> {
+/** The primary on the LAN, signed in; the secondary linked to it there (as hands if asked), sharing its desktop on the fake host, with direct connections on. */
+async function start(opts: { hands?: boolean } = {}): Promise<Setup> {
   fake = new FakeServer();
   apollo = await startFakeApollo();
   apollo.acceptAny = true;
@@ -89,6 +90,7 @@ async function start(): Promise<Setup> {
   const port = apollo.port;
   const secondaryOpts: Parameters<typeof startSecondary>[1] = {
     node: `name = "den"\n`,
+    ...(opts.hands ? { hands: true } : {}),
     toml: `[remote]\nenabled = true\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n\n[direct]\nrestart_backoff_ms = 50\n\n`,
     heartbeatMs: 1000,
     daemon: {
@@ -264,6 +266,51 @@ describe("a machine at its sign-in screen", () => {
     expect(restarted.asks.listOpen().filter((a) => a.source.kind === "gate" && a.source.action === "remote.ticket")).toEqual([]);
   }, 120_000);
 
+  test("a hands machine's door joins as hands, switched by its owner alone: a phone reaches its desktop unasked, and the daemon back takes the machine again", async () => {
+    const setup = await start({ hands: true });
+    const { p, s } = setup;
+    const id = s.identity.id;
+    // from the primary the switch is the owner's, as sharing is
+    const ui = await client(p.d, "desk app");
+    closers.push(() => ui.close());
+    const thrown = await ui.call("remote.door", { node: id, on: true });
+    expect("error" in thrown && thrown.error.message).toMatch(/its owner's to switch/);
+    expect(s.store.meta.get("door_enabled")).not.toBe("1");
+    // on the machine itself it is switched as anywhere else
+    s.store.meta.set("door_enabled", "1");
+    const kit = s.door.kitNow()!;
+    expect(kit.hands).toBe(true);
+    expect(kitRefusalOf(kit)).toBeUndefined();
+
+    const home = s.home;
+    await s.stop();
+    secondary = undefined;
+    await waitFor(() => p.d.nodes.registry.get(id)?.status === "offline", 10_000);
+    const run = await startDoorFor(setup, kit);
+    const row = await waitFor(() => {
+      const r = p.d.nodes.registry.get(id);
+      return r?.status === "online" && r.door === "signin" ? r : undefined;
+    }, 15_000);
+    expect(row.hands).toBe(true);
+    expect(row.backup).toBeUndefined();
+
+    const phone = await phoneOn(p);
+    await waitFor(async () => (await p.d.remote.states()).find((x) => x.node === id)?.door?.state === "serving", 15_000);
+    const opened = await phone.request<{ path: string; node: string }>("remote.open", { node: id });
+    expect(opened.node).toBe(id);
+    expect(p.d.asks.listOpen().filter((a) => a.source.kind === "gate")).toEqual([]);
+    const claim = await get(`http://127.0.0.1:${forwarderFor(phone, id).port}${opened.path}`);
+    expect(claim.status).toBe(200);
+
+    // the machine's daemon back: the door stands down, and the node links as hands again
+    const restarted = await startSecondaryOn(home, setup, run.shim.pipe);
+    secondary = restarted;
+    await linked(restarted, 15_000);
+    await waitFor(() => p.d.nodes.registry.get(id)?.door === undefined && p.d.nodes.registry.get(id)?.status === "online", 10_000);
+    expect(p.d.nodes.registry.get(id)?.hands).toBe(true);
+    expect(run.lines.some((l) => l.includes("replaced by a new link"))).toBe(false);
+  }, 120_000);
+
   test("a door never takes the link from the machine's own daemon", async () => {
     const setup = await start();
     const { p, s } = setup;
@@ -319,7 +366,7 @@ describe("a machine at its sign-in screen", () => {
 });
 
 function kitRefusalOf(kit: Kit): string | undefined {
-  return kit.hands || kit.confined || kit.primary || !kit.sharing || !kit.host ? "refused" : undefined;
+  return kit.confined || kit.primary || !kit.sharing || !kit.host ? "refused" : undefined;
 }
 
 /** The secondary started again on its home, its daemon attaching to the door's pipe first. */

@@ -783,11 +783,13 @@ web_server` until its archive is published and pinned in `manifest.ts`; with nei
 
 ### Sign-in door
 
-A Windows machine that is not the primary nor a hands node, its desktop shared, can be reached
-while no one is signed in there, or its screen is locked with Cophyla not running, after a
-restart too: its sign-in door. `remote.door {node?, on}` is the switch (`remote_enabled`'s
-neighbour `door_enabled` in the store), asked about on the machine like Share when it comes
-from elsewhere (`doorAsk`); the first time on it installs the door's Windows service,
+A Windows machine that is not the primary, its desktop shared, can be reached while no one is
+signed in there, or its screen is locked with Cophyla not running, after a restart too: its
+sign-in door. `remote.door {node?, on}` is the switch (`remote_enabled`'s neighbour
+`door_enabled` in the store), asked about on the machine like Share when it comes from
+elsewhere (`doorAsk`); a hands node's is its owner's to switch, in Cophyla on that machine, as
+its sharing is (the primary's is refused in `served.ts`), and its door joins as hands, as the
+node does. The first time on it installs the door's Windows service,
 **CophylaDoor**, with one administrator's prompt on that machine's own screen
 (`door/elevate.ts`: `ShellExecuteExW runas` on `versions/<v>/bin/cophyla-door.exe install
 --from <versionDir> --user-sid <sid>`, its outcome in a file named by `--result`, declining it
@@ -803,8 +805,8 @@ before `nodes.start()`, and holds it for life (`door/manager.ts`). It hands the 
 (`door/kit.ts`): the node's id and name, `link.json` with its key, the last primary and the
 cluster's primary and backups, the host's credentials, the screen's size, the remote,
 direct-connection, node-link and update settings, the machines that paired a viewer with this
-desktop (`remote_paired_by`), and whether the node is hands, confined, the primary or not
-sharing; again whenever any of it changes. The door serves (`door/serve.ts`) only with a kit
+desktop (`remote_paired_by`), whether the node is hands, and whether it is confined, the
+primary or not sharing, which open no door; again whenever any of it changes. The door serves (`door/serve.ts`) only with a kit
 that opens a door, no daemon attached for 30 s and the console at the sign-in screen or
 locked; someone who signs in through a stream it holds keeps the stream 2 minutes, for Cophyla
 to start and take it. Serving (`door/serving.ts`), it brings the desktop module up on the
@@ -907,8 +909,8 @@ One joined with `--workspace` folders keeps what the primary sees and does here 
 a sealed `node.leave {reason: revoked}`, and the node forgets the cluster. A machine's sign-in
 door (Remote desktop, above) links as the node itself with `node.join {door: true}`, only to a
 primary whose hello says `door: true`: it brings no lists, is never a backup, settles no
-transfers and raises no events; the primary refuses one for a hands grant or a confined node,
-and while the node holds a link of its own, and a node's own join replaces a door's. From a door
+transfers and raises no events; a hands grant's door is hands as the node is; the primary
+refuses one for a confined node, and while the node holds a link of its own, and a node's own join replaces a door's. From a door
 the primary takes only its heartbeat, `direct.turn`, `direct.offer` and the frames of its row,
 its desktop, its pipes and its audit, carries on to it only `remote.ticket`, `remote.close` and
 `remote.pipe.open` (anything else is told the machine is at its sign-in screen), leaves it out

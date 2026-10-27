@@ -1028,7 +1028,6 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const doorOs = opts.door?.os ?? (env["NODE_ENV"] === "test" ? "linux" : hostOs());
   const doorRefusal = (): string | undefined => {
     if (nodes?.roleOf() === "primary") return "this machine is the primary: it cannot be reached at its sign-in screen yet";
-    if (nodes?.member()?.role === "hands") return "this machine joined as hands: it has no sign-in door";
     if (nodes?.confinement()?.active) return "this machine shares some folders alone, not its desktop";
     if (!remote?.enabled) return "share this desktop first";
     return undefined;

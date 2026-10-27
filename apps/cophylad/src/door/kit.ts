@@ -3,8 +3,9 @@
 // membership (link.json, its grant's key with it), the primary it last linked to and the
 // cluster's primary and backups, the desktop host's kind and credentials, the screen size,
 // the remote, direct-connection, node-link and update settings, the machines that paired a
-// viewer with this desktop (whom the door lets in unasked), and what the door must not serve
-// for: a hands node, a confined one, sharing off, or the primary itself. The daemon sends it
+// viewer with this desktop (whom the door lets in unasked), whether the node joined as hands (its
+// door then joins as hands too), and what the door must not serve for: a confined node, sharing
+// off, or the primary itself. The daemon sends it
 // as it attaches and again whenever any of it changes; the door keeps it in its own home,
 // behind its protected folder, and it is good for KIT_TTL_MS after the daemon last attached.
 
@@ -37,7 +38,7 @@ export const Kit = z.object({
   update: UpdateConfig,
   /** The machines that paired a viewer of their own with this desktop: let in unasked. */
   machines: z.array(NodeId),
-  /** What the door must not serve for. */
+  /** What the door must not serve for, and whether the node joined as hands, which its door joins as too. */
   sharing: z.boolean(),
   hands: z.boolean(),
   confined: z.boolean(),
@@ -118,7 +119,6 @@ export function buildKit(src: KitSources): Kit | undefined {
 /** Why a kit opens no door now, or undefined when it does. */
 export function kitRefusal(kit: Kit | undefined, now: number): string | undefined {
   if (!kit) return "the door has not been handed this machine's membership yet";
-  if (kit.hands) return "this machine joined as hands: it has no sign-in door";
   if (kit.confined) return "this machine shares some folders alone, not its desktop";
   if (kit.primary) return "this machine is the primary: it cannot be reached at its sign-in screen yet";
   if (!kit.sharing) return "desktop sharing is off on this machine";

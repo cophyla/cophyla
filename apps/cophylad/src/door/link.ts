@@ -116,7 +116,8 @@ export class DoorLink {
     });
     this.outbound = new Outbound({
       membership: () => ({ grant: kit.link.grant, key: deps.key(), cluster: kit.link.cluster }),
-      hands: () => false,
+      // a hands node's door is a guest as the node is: the primary takes it as hands from its grant
+      hands: () => kit.hands,
       // nothing is asked of this machine's owner from elsewhere: no one is there
       answerHere: () => true,
       asDoor: () => true,

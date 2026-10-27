@@ -562,8 +562,8 @@ export class Inbound {
       const hands = grant.role === "hands";
       const door = p.door === true;
       if (door) {
-        // A door holds a whole machine's desktop for its owner: never a hands node's, nor one that shares some folders alone.
-        if (hands) throw new RpcError("denied", "a hands node has no sign-in door here");
+        // A door holds a whole machine's desktop: never one that shares some folders alone. A hands
+        // node's door is hands as the node is, from its grant, and its owner switched it on there.
         if (p.node.scope.kind !== "machine") throw new RpcError("denied", "a node that shares some folders alone has no sign-in door");
         // The node's own link is the machine itself: its door stands back, and the node's join takes over a door's.
         if (this.peers.get(p.node.id)?.open && !this.peers.get(p.node.id)?.info.door) throw new RpcError("conflict", "the node is linked itself: its sign-in door stands back");

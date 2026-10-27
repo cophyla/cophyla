@@ -104,11 +104,11 @@ describe("buildKit", () => {
     expect(hostCredentials({ host_user: "me", host_password: "mine" }, sources.remoteDir)).toEqual({ username: "me", password: "mine" });
   });
 
-  test("what opens no door: hands, confined, the primary, sharing off, a grant ended, a month without Cophyla", () => {
+  test("what opens no door: confined, the primary, sharing off, a grant ended, a month without Cophyla; a hands node's does", () => {
     const { sources } = home();
     const kit = buildKit(sources)!;
     const refused = (k: Partial<Kit>, now = 5000) => kitRefusal({ ...kit, ...k }, now);
-    expect(refused({ hands: true })).toMatch(/hands/);
+    expect(refused({ hands: true })).toBeUndefined();
     expect(refused({ confined: true })).toMatch(/folders alone/);
     expect(refused({ primary: true })).toMatch(/the primary/);
     expect(refused({ sharing: false })).toMatch(/sharing is off/);
