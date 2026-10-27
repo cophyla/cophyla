@@ -13,7 +13,7 @@
 // with the attach and again whenever any of it changes (`kitChanged`), a moment after.
 
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, win32 } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { DoorState } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
@@ -271,10 +271,11 @@ export class DoorManager {
         this.deps.onChange();
         throw new RpcError("unavailable", this.failed);
       }
-      exe = join(install.versionDir, "bin", DOOR_EXE);
+      // the shim is a Windows program, its path a Windows path wherever this runs
+      exe = win32.join(install.versionDir, "bin", DOOR_EXE);
       args = ["install", "--from", install.versionDir, "--user-sid", await currentUserSid(this.deps.exec), "--result", resultFile];
     } else {
-      exe = join(doorFolders().root, DOOR_EXE);
+      exe = win32.join(doorFolders().root, DOOR_EXE);
       args = ["uninstall", "--result", resultFile];
     }
     this.installing = true;
