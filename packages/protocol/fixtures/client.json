@@ -525,6 +525,7 @@
     "remote.revoke": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "phone" }], "results": [{}] },
     "remote.enable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
     "remote.disable": { "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }], "results": [{}] },
+    "remote.door": { "params": [{ "on": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "on": false, "remove": true }], "results": [{}] },
     "account.login": { "params": [{}], "results": [{ "verificationUrl": "https://example.com/device", "userCode": "ABCD-EFGH", "expiresAt": 1758197400000 }] },
     "account.logout": { "params": [{}], "results": [{}] },
     "account.apiKey": {
@@ -789,7 +790,10 @@
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready", "display": { "width": 1920, "height": 1200 } }, "viewers": [{ "id": "D78A8CA2-A54F-4E28-D18E-10C7E59FF860", "name": "laptop", "kind": "native", "since": 1758196800000, "connected": true }, { "id": "web_7f3a", "name": "Pixel", "kind": "web", "since": 1758196900000 }], "streaming": true },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "apollo", "status": "installing", "step": "winget install ClassicOldSong.Apollo", "progress": 0.4 }, "viewers": [], "streaming": false },
       { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "unavailable", "reason": "no host binary found and [remote] install = false" }, "viewers": [], "streaming": false },
-      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "off" }, "viewers": [], "streaming": false }
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": { "kind": "none", "status": "off" }, "viewers": [], "streaming": false },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready", "display": { "width": 1920, "height": 1080 } }, "viewers": [{ "id": "1B2C3D4E-0000-4E28-D18E-10C7E59FF861", "name": "laptop sign-in", "kind": "native", "since": 1758196800000, "pairedBy": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "browser": true, "door": true }], "streaming": false, "door": { "state": "ready", "version": "0.22.0" } },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [], "streaming": true, "door": { "state": "serving", "version": "0.22.0" } },
+      { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": { "kind": "apollo", "status": "ready" }, "viewers": [], "streaming": false, "door": { "state": "unavailable", "reason": "the administrator prompt was declined" } }
     ],
     "audit.entry": [
       {

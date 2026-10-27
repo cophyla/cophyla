@@ -1,11 +1,12 @@
 // cophylad entry point: `bun run apps/cophylad/src/main.ts [--home <dir>] [--port <n>]`, or one of
-// the commands that talk to the running daemon (`invite`, `join`, `leave`; see cli.ts).
+// the commands that talk to the running daemon (`invite`, `join`, `leave`; see cli.ts), or
+// `door`, the sign-in door its Windows service runs (door/index.ts). The daemon itself is
+// loaded only when it is what runs.
 
 import { parseArgs } from "node:util";
 import { COMMANDS, runCommand } from "./cli.ts";
 import type { Command } from "./cli.ts";
 import { ConfigError } from "./config/load.ts";
-import { startDaemon } from "./daemon.ts";
 import { guardSpawns } from "./inherit.ts";
 import { loginEnv } from "./login-env.ts";
 import { RESTART_ENV, waitForExit } from "./restart.ts";
@@ -16,6 +17,10 @@ function failure(e: unknown): Record<string, unknown> {
 }
 
 const command = Bun.argv[2];
+if (command === "door") {
+  const { runDoor } = await import("./door/index.ts");
+  await runDoor(Bun.argv.slice(3));
+}
 if (command !== undefined && (COMMANDS as readonly string[]).includes(command)) {
   process.exit(await runCommand(command as Command, Bun.argv.slice(3)));
 }
@@ -69,6 +74,7 @@ const login = await loginEnv(process.env);
 if (login) Object.assign(process.env, login.vars);
 
 try {
+  const { startDaemon } = await import("./daemon.ts");
   const daemon = await startDaemon({
     ...(values.home !== undefined ? { home: values.home } : {}),
     ...(values.port !== undefined ? { port: Number(values.port) } : {}),

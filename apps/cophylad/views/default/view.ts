@@ -67,6 +67,8 @@ import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBl
 import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
+import { doorErrorWords, doorReopenStep } from "./model.ts";
+import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
@@ -103,6 +105,7 @@ const ui: UiState = {
   folded: new Set(),
   directBusy: new Set(),
   agentsBusy: new Set(),
+  doorBusy: new Map(),
   railTab: "files",
   railSplit: RAIL_SPLIT.usual,
   openDirs: new Map(),
@@ -317,6 +320,9 @@ rpc.onNotification((n) => {
     case "host.streamClosed": {
       const stream = (n.params as { stream?: unknown } | undefined)?.stream;
       if (typeof stream !== "string") return;
+      // closed by the user while its machine is still at its sign-in screen: not opened again
+      const opened = doorStreams.find((s) => s.stream === stream);
+      if (opened) forgetDoorStream(opened.node);
       const before = ui.remoteView;
       ui.remoteView = remoteViewStep(before, { type: "ended", stream });
       if (ui.remoteView !== before) draw();
@@ -382,6 +388,7 @@ rpc.onNotification((n) => {
       dispatch({ type: "remote.state", params: s });
       // the desktop beside the view stopped sharing: its stream ended there, and the panel goes
       if (ui.remoteView?.node === s.node && s.host.status === "off") closeBeside();
+      reopenDoorStreams();
       return;
     }
     case "account.state":
@@ -408,12 +415,15 @@ rpc.onNotification((n) => {
       // A harness signed in or out there: its profiles, and the usage rows they give, again.
       if (harnesses !== undefined && harnesses !== node.capabilities.harnesses.join(",")) void loadProfiles();
       // A node that went away takes its subscription with it; it is watched again when it is back.
-      if (node.status === "online") void watchNode(node);
+      // One at its sign-in screen has nothing to watch but its desktop: it is watched once it is itself again.
+      if (node.status === "online" && !node.door) void watchNode(node);
       else watched.delete(node.id);
       // a machine that joined used its invite; one that went may have been removed
       if (!nodeGrant(state, node.id)) grantsSoon();
       // the node's row follows its switch for this network: what Devices says of it, again
       if (ui.devices) lanSoon();
+      // a stream its door served opens again once Cophyla holds its desktop there
+      reopenDoorStreams();
       return;
     }
     case "metrics.sample":
@@ -1539,7 +1549,11 @@ async function openRemote(node: string): Promise<void> {
   try {
     // in a desktop browser the page is seeded as Beside's is, and shown over the whole page; its stream goes along, so closing it ends it on the node
     const result = await rpc.request<{ url?: string; path?: string; node?: string; stream?: string }>("remote.open", remoteOpenParams(node, connectEmbeds(state) ? { embed: true } : {}));
-    if (result.url || result.path) await rpc.request("host.open", { node, ...result });
+    if (result.url || result.path) {
+      await rpc.request("host.open", { node, ...result });
+      // a page the machine's door serves goes with the door: opened again once Cophyla is back there
+      noteDoorStream(node, "page", result.stream);
+    }
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     dispatch({ type: "error", message: `connect: ${connectWords(e instanceof ViewRpcError ? e.code : undefined, message)}` });
@@ -2626,6 +2640,7 @@ async function openBeside(node: string): Promise<void> {
     await rpc.request("host.open", { node, url: opened.url, stream, embed: true });
     const was = ui.remoteView;
     ui.remoteView = remoteViewStep(was, { type: "opened", node, stream, ...(opened.video ? { video: opened.video } : {}) });
+    noteDoorStream(node, "beside", stream);
     // closed while the host opened it
     if (ui.remoteView?.stream !== stream) void rpc.request("host.close", { stream }).catch(() => {});
   } catch (e) {
@@ -2638,6 +2653,7 @@ async function openBeside(node: string): Promise<void> {
 /** Closes the desktop beside the view: the host closes its page, and the node ends the stream. */
 function closeBeside(): void {
   const v = ui.remoteView;
+  if (v) forgetDoorStream(v.node);
   ui.remoteView = remoteViewStep(v, { type: "close" });
   if (v?.stream) void rpc.request("host.close", { stream: v.stream }).catch(() => {});
   draw();
@@ -2664,6 +2680,63 @@ async function shareRemote(node: string, on: boolean): Promise<void> {
   } finally {
     ui.sharing.delete(node);
     draw();
+  }
+}
+
+/**
+ * Switches a machine's sign-in door on or off, or takes its service off the machine
+ * (`remove`); the node's next `remote.state` shows how it went. On the first time, and for
+ * Remove, Windows asks for an administrator on that machine's own screen.
+ */
+async function setDoor(node: string, on: boolean, remove = false): Promise<void> {
+  if (!state.scopes.includes("remote") || ui.doorBusy!.has(node)) return;
+  ui.doorBusy!.set(node, remove ? "remove" : on ? "on" : "off");
+  draw();
+  try {
+    await rpc.request("remote.door", { node, on, ...(remove ? { remove: true } : {}) });
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    dispatch({ type: "error", message: `sign-in door: ${doorErrorWords(message, state.nodes.get(node)?.name ?? node)}` });
+  } finally {
+    ui.doorBusy!.delete(node);
+    draw();
+  }
+}
+
+/** The streams this view opened to machines at their sign-in screens, to open again once someone signs in there and Cophyla takes the desktop over. */
+let doorStreams: DoorStream[] = [];
+
+/** A stream opened just now: kept, when its machine is at its sign-in screen. */
+function noteDoorStream(node: string, how: DoorStream["how"], stream: string | undefined): void {
+  if (!state.nodes.get(node)?.door) return;
+  doorStreams = [...doorStreams.filter((s) => s.node !== node), { node, how, at: Date.now(), ...(stream ? { stream } : {}) }];
+}
+
+/** The user closed a stream themselves while its machine was still at its door: it is not opened again. */
+function forgetDoorStream(node: string): void {
+  if (state.nodes.get(node)?.door) doorStreams = doorStreams.filter((s) => s.node !== node);
+}
+
+/** Opens again, once each, the streams whose machine is itself again with its host ready. */
+function reopenDoorStreams(): void {
+  if (doorStreams.length === 0) return;
+  const now = Date.now();
+  const due: DoorStream[] = [];
+  doorStreams = doorStreams.filter((s) => {
+    const step = doorReopenStep(s, state, now);
+    if (step === "reopen") due.push(s);
+    return step === "wait";
+  });
+  for (const s of due) {
+    if (s.how === "beside") {
+      // the page the door served is gone with it: the panel opens again on the node's own
+      if (ui.remoteView?.node === s.node) {
+        const old = ui.remoteView;
+        ui.remoteView = remoteViewStep(old, { type: "close" });
+        if (old.stream) void rpc.request("host.close", { stream: old.stream }).catch(() => {});
+      }
+      void openBeside(s.node);
+    } else void openRemote(s.node);
   }
 }
 
@@ -3689,6 +3762,12 @@ document.addEventListener("click", (ev) => {
       return;
     case "remote-unshare":
       if (target.dataset["node"]) void shareRemote(target.dataset["node"], false);
+      return;
+    case "door-switch":
+      if (target.dataset["node"]) void setDoor(target.dataset["node"], target.dataset["on"] !== "1");
+      return;
+    case "door-remove":
+      if (target.dataset["node"]) void setDoor(target.dataset["node"], false, true);
       return;
     case "remote-view-moonlight":
       moonlightInstead();

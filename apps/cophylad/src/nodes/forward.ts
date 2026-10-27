@@ -137,6 +137,8 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "remote.screenshot":
     case "remote.enable":
     case "remote.disable":
+    // and its sign-in door, which only that machine can install
+    case "remote.door":
     // Direct connections are each node's own to switch, and so is how its sessions take agents' messages.
     case "direct.enable":
     case "direct.disable":

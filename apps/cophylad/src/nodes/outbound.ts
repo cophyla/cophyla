@@ -42,6 +42,7 @@ import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
 import type { Direct } from "../direct/index.ts";
 import type { Remote } from "../remote/index.ts";
+import type { DoorSwitch } from "../api/methods.ts";
 import { LinkDirect } from "./direct.ts";
 import type { LinkDirectTiming } from "./direct.ts";
 import { SwitchableLink } from "./switch.ts";
@@ -70,6 +71,8 @@ export interface HelloAnswer {
   primary?: string;
   /** A primary the user chose at `epoch`; absent from an older node, whose epoch may be one it gave itself. */
   chosen?: boolean;
+  /** A primary that takes a machine's sign-in door. */
+  door?: boolean;
 }
 
 export interface Linked {
@@ -154,6 +157,13 @@ export interface OutboundDeps {
   outgoing?: (name: string, params: unknown) => unknown;
   /** The remote module, so the primary's clients can invite to and revoke on this desktop, and its state goes up on link. */
   remote?: Remote;
+  /** This machine's sign-in door, which the primary's clients may switch. */
+  door?: DoorSwitch;
+  /**
+   * This link is the machine's sign-in door's: it joins as one (`node.join` `door`), only to a
+   * primary that says it takes a door, and carries its lists empty.
+   */
+  asDoor?: () => boolean;
   /** This node's profiles, which the primary's clients may set. */
   profiles?: Pick<Profiles, "update">;
   /** This node's scope, which the primary's clients may read and set. */
@@ -381,6 +391,9 @@ export class Outbound {
     try {
       const a = await this.hello(sock.rpc, m);
       if (a.role !== "primary") throw new RpcError("conflict", `${endpoint} is not the primary`, a.primary !== undefined ? { primary: a.primary } : undefined);
+      // an older primary would take the door for the whole node: a door links to none
+      const door = this.deps.asDoor?.() === true;
+      if (door && a.door !== true) throw new RpcError("unsupported", "the primary is older than the sign-in door: update it");
       const self: Node = { ...this.deps.self(), via: target.kind };
       const rank = this.deps.rank();
       const joined = await sock.rpc.request(
@@ -389,9 +402,9 @@ export class Outbound {
           node: self,
           endpoints: this.deps.selfEndpoints(),
           epoch: this.deps.epoch(),
-          backup: this.deps.backup(),
-          ...(this.deps.backup() ? { rank } : {}),
-          ...this.lists(),
+          backup: this.deps.backup() && !door,
+          ...(this.deps.backup() && !door ? { rank } : {}),
+          ...(door ? { sessions: [], workspaces: [], asks: [], door: true } : this.lists()),
         },
         { timeoutMs: this.deps.helloTimeoutMs },
       );
@@ -421,6 +434,7 @@ export class Outbound {
         ...(this.deps.usage ? { usage: this.deps.usage } : {}),
         metricsSubscriber: this.subscriberFor(j.linkId),
         ...(this.deps.remote ? { remote: this.deps.remote } : {}),
+        ...(this.deps.door ? { door: this.deps.door } : {}),
         ...(this.deps.profiles ? { profiles: this.deps.profiles } : {}),
         ...(this.deps.scope ? { scope: this.deps.scope } : {}),
         ...(this.deps.rename ? { rename: this.deps.rename } : {}),

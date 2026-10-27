@@ -66,6 +66,7 @@ import type { SpendLedger } from "../usage/ledger.ts";
 import type { Direct } from "../direct/index.ts";
 import type { LinkDirectTiming } from "./direct.ts";
 import type { Remote as RemoteModule } from "../remote/index.ts";
+import type { DoorSwitch } from "../api/methods.ts";
 import type { SessionFiles } from "../sessions/files.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import type { ScopeHost } from "../sessions/scope.ts";
@@ -92,6 +93,7 @@ import { RoleMachine } from "./role.ts";
 import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
 import { PIPE_OPEN_TIMEOUT_MS, StreamLinks } from "./streams.ts";
+import type { StreamLinkDeps } from "./streams.ts";
 import type { NodeTerminals, TerminalViews } from "./terminals.ts";
 import { HandsPulls, TransferEnds, TransferLinks } from "./transfers.ts";
 import { PhotoMaker } from "../groups/photo.ts";
@@ -137,6 +139,10 @@ export interface NodesDeps {
   ledger?: SpendLedger;
   /** The remote module, once built: what the served table and the upward `remote.pair` reach. */
   remote?: () => RemoteModule | undefined;
+  /** This machine's sign-in door, which the primary's clients may switch over the link. */
+  door?: DoorSwitch;
+  /** Decides a ticket for this desktop before the gate: the viewers the door held, let back in a moment. */
+  ticketDecide?: StreamLinkDeps["decide"];
   /** This node's profiles, which the primary's clients may set over the link. */
   profiles?: Pick<Profiles, "update">;
   /** This node's scope, which the primary's clients may read and set over the link. */
@@ -309,6 +315,7 @@ export class Nodes {
         if (this.role.role !== "primary") return Promise.reject(new RpcError("unavailable", `no route to ${node} from here`));
         return this.inbound.forward(node, method, params, opts);
       },
+      ...(deps.ticketDecide ? { decide: deps.ticketDecide } : {}),
       log: this.log.child("streams"),
     });
     this.trees = new TreeCache(deps.now);
@@ -409,6 +416,7 @@ export class Nodes {
       ...(deps.metrics ? { metrics: deps.metrics } : {}),
       ...(deps.ledger ? { usage: { ledger: deps.ledger, node: deps.self().id } } : {}),
       ...(deps.remote ? { remote: deps.remote() } : {}),
+      ...(deps.door ? { door: deps.door } : {}),
       ...(deps.profiles ? { profiles: deps.profiles } : {}),
       ...(deps.scope ? { scope: deps.scope } : {}),
       rename: (name) => this.renameSelf(name),
@@ -1688,6 +1696,7 @@ export class Nodes {
       if (!now || now.grant !== m.grant || now.relay) return;
       this.membership = { ...now, relay };
       writeLinkFile(this.deps.paths.linkFile, this.membership);
+      this.membershipChanged();
       this.log.info("a relay token for this node's grant", { grant: m.grant });
     } catch (e) {
       this.log.debug("no relay token for this node's grant", { grant: m.grant, error: e instanceof Error ? e.message : String(e) });
@@ -1756,6 +1765,7 @@ export class Nodes {
       };
       writeLinkFile(this.deps.paths.linkFile, file);
       this.membership = file;
+      this.membershipChanged();
       this.role.hands = file.role === "hands";
       // the name the user gave this machine in the invite is its name, unless the user named it here already
       if (answer.name && this.deps.store.meta.get("node_name") === undefined && this.deps.config.node.name === undefined) this.renameSelf(answer.name);
@@ -1845,6 +1855,7 @@ export class Nodes {
         if (key && this.membership?.grant === row.id) {
           this.membership = { ...this.membership, key };
           writeLinkFile(this.deps.paths.linkFile, this.membership);
+          this.membershipChanged();
         }
         continue;
       }
@@ -1866,7 +1877,52 @@ export class Nodes {
     if (!m) return;
     this.membership = { ...m, key };
     writeLinkFile(this.deps.paths.linkFile, this.membership);
+    this.membershipChanged();
     this.log.info("this node's grant has a new key", { grant: m.grant });
+  }
+
+  /**
+   * The key the primary handed this machine's sign-in door while it held the link: taken as a
+   * re-key over the node's own link would be. Before `start`, so the first link is keyed from it.
+   */
+  adoptKey(key: string): void {
+    if (this.membership && this.membership.key !== key) this.onRekey(key);
+  }
+
+  /** The primary ended this node's grant while its sign-in door held the link: the node forgets its membership, as it would have heard it itself. */
+  revokedAway(): void {
+    this.forget("the primary ended this node's grant while it was at its sign-in screen");
+  }
+
+  private membershipListeners = new Set<() => void>();
+
+  /** Calls `fn` whenever this node's membership changes: joined, re-keyed, given a relay token, or forgotten. */
+  onMembership(fn: () => void): () => void {
+    this.membershipListeners.add(fn);
+    return () => void this.membershipListeners.delete(fn);
+  }
+
+  private membershipChanged(): void {
+    for (const fn of [...this.membershipListeners]) {
+      try {
+        fn();
+      } catch (e) {
+        this.log.warn("a membership listener failed", { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+  }
+
+  /** The primary this node last linked to, as it kept it: its id, epoch and endpoints. */
+  lastPrimary(): { id: string; epoch: number; endpoints: string[] } | undefined {
+    const text = this.deps.store.meta.get("last_primary");
+    if (!text) return undefined;
+    try {
+      const v = JSON.parse(text) as { id?: unknown; epoch?: unknown; endpoints?: unknown };
+      if (typeof v.id !== "string" || typeof v.epoch !== "number" || !Array.isArray(v.endpoints)) return undefined;
+      return { id: v.id, epoch: v.epoch, endpoints: v.endpoints.filter((e): e is string => typeof e === "string") };
+    } catch {
+      return undefined;
+    }
   }
 
   /**
@@ -1913,6 +1969,7 @@ export class Nodes {
     this.discovery = undefined;
     removeLinkFile(this.deps.paths.linkFile);
     this.membership = undefined;
+    this.membershipChanged();
     this.role.hands = false;
     const forgotten = this.deps.grants.forgetCluster();
     this.log.warn("this node is in no cluster now and runs alone", { why, cluster: m.cluster, grant: m.grant, forgotten });

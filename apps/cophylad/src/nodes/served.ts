@@ -6,7 +6,8 @@
 // methods, not capability ones) are served here too, so the primary's clients can watch
 // this node, `remote.invite`, `remote.revoke`, `remote.enable` and `remote.disable` likewise,
 // so they can hand out and take back access to this desktop and switch its sharing (not on a
-// hands node's, whose desktop is its owner's), `profile.update`, so they can set this node's profiles,
+// hands node's, whose desktop is its owner's), and `remote.door`, its sign-in door (not a hands
+// node's either), `profile.update`, so they can set this node's profiles,
 // `direct.enable` and `direct.disable`, so they can switch this node's direct connections,
 // `agents.accept`, so they can let agents' messages into its bypass sessions (not a lent
 // machine's),
@@ -39,7 +40,8 @@ import type { Logger } from "../log.ts";
 import type { Metrics } from "../metrics/index.ts";
 import type { SpendLedger } from "../usage/ledger.ts";
 import type { Remote } from "../remote/index.ts";
-import { revokeAsk, shareAsk, updatePatch } from "../api/methods.ts";
+import { doorAsk, revokeAsk, shareAsk, updatePatch } from "../api/methods.ts";
+import type { DoorSwitch } from "../api/methods.ts";
 import type { Profiles } from "../sessions/profiles.ts";
 import { checkScope } from "../sessions/scope.ts";
 import type { ScopeHost } from "../sessions/scope.ts";
@@ -87,8 +89,8 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
 export const NODE_SERVED_METRICS = ["metrics.subscribe", "metrics.unsubscribe", "metrics.history"] as const;
 /** And where this node's sessions spent, from its spend ledger, for the primary's Usage page. */
 export const NODE_SERVED_USAGE = ["usage.report"] as const;
-/** The client-protocol remote requests a node serves the same way: an invite from, and a revoke on, this desktop's host, and its sharing switched. */
-export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.enable", "remote.disable"] as const;
+/** The client-protocol remote requests a node serves the same way: an invite from, and a revoke on, this desktop's host, its sharing switched, and its sign-in door. */
+export const NODE_SERVED_REMOTE = ["remote.invite", "remote.revoke", "remote.enable", "remote.disable", "remote.door"] as const;
 /** And what the user sets on this node's profiles from an app on the primary. */
 export const NODE_SERVED_PROFILES = ["profile.update"] as const;
 /** And the name the user gives this machine from an app on the primary. */
@@ -192,6 +194,8 @@ export interface ServeDeps {
   /** The subscriber id the metrics module delivers this link's samples to. */
   metricsSubscriber: string;
   remote?: Remote;
+  /** This machine's sign-in door, for `remote.door`. */
+  door?: DoorSwitch;
   /** This node's profiles, for `profile.update`. */
   profiles?: Pick<Profiles, "update">;
   /** This node's scope, for `session.scope` and `session.setScope`. */
@@ -392,6 +396,7 @@ export class NodeServer {
     if ((NODE_SERVED_REMOTE as readonly string[]).includes(method)) {
       if (this.confined()) throw new RpcError("denied", "this node shares folders alone, not its desktop");
       if ((method === "remote.enable" || method === "remote.disable") && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: sharing its desktop is its owner's to switch");
+      if (method === "remote.door" && this.deps.hands?.()) throw new RpcError("denied", "this node joined as hands: it has no sign-in door");
       return this.serveRemote(method as (typeof NODE_SERVED_REMOTE)[number], params);
     }
     if ((NODE_SERVED_PROFILES as readonly string[]).includes(method)) {
@@ -523,16 +528,29 @@ export class NodeServer {
     const def = clientRequests[method];
     const parsed = def.params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { node?: string; viewer?: string };
+    const p = parsed.data as { node?: string; viewer?: string; on?: boolean; remove?: boolean };
     const target = p.viewer ?? p.node;
     // the viewer by the name the host lists it under, as the user knows it
     const viewer = p.viewer !== undefined ? remote.state().viewers.find((v) => v.id === p.viewer) : undefined;
-    const ask = method === "remote.enable" || method === "remote.disable" ? shareAsk(method === "remote.enable") : method === "remote.revoke" ? revokeAsk(viewer?.name ?? p.viewer!) : undefined;
+    const door = this.deps.door;
+    if (method === "remote.door" && !door) throw new RpcError("unsupported", "this machine has no sign-in door: Windows machines alone have one");
+    const ask =
+      method === "remote.enable" || method === "remote.disable"
+        ? shareAsk(method === "remote.enable")
+        : method === "remote.revoke"
+          ? revokeAsk(viewer?.name ?? p.viewer!)
+          : method === "remote.door"
+            ? doorAsk(p.on === true, p.remove === true)
+            : undefined;
     return this.gated(
       { principal: this.deps.principal, action: method, args: p, ...(target !== undefined ? { target } : {}), ...(ask ? { ask } : {}), sessionKey: this.deps.sessionKey },
       async (): Promise<unknown> => {
         if (method === "remote.invite") return remote.invite();
         if (method === "remote.revoke") return remote.revoke(p.viewer!);
+        if (method === "remote.door") {
+          await door!.set(p.on === true, p.remove ? { remove: true } : {});
+          return {};
+        }
         if (method === "remote.enable") remote.enable();
         else await remote.disable();
         return {};

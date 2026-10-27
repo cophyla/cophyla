@@ -42,7 +42,8 @@ export interface PolicyQuery {
   unprompted?: boolean;
 }
 
-export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "membership" | "config.class";
+/** Where a decision came from; `door` is a sign-in door's own, decided before the gate (`GateRequest.decided`). */
+export type PolicySource = "control" | "system" | "session" | "remembered" | "config.rule" | "builtin.rule" | "membership" | "config.class" | "door";
 
 /**
  * The brain's own conversation and bookkeeping, allowed without a prompt: a brain that had

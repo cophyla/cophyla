@@ -77,6 +77,17 @@ export const ReplicaSnapshot = z.object({
 export type ReplicaSnapshot = z.infer<typeof ReplicaSnapshot>;
 
 
+/**
+ * Who a stream's viewer is, as the primary knows it: a phone or a browser by the grant it
+ * said hello with (`session` for a shared computer's, which opens no door), or one of the
+ * user's machines, the node whose own viewer (its app's window or beside its view) asked.
+ */
+export const TicketViewer = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("phone"), grant: GrantRef.optional(), browser: z.boolean().optional(), session: z.boolean().optional() }),
+  z.object({ kind: z.literal("machine"), node: NodeId }),
+]);
+export type TicketViewer = z.infer<typeof TicketViewer>;
+
 /** Requests over the link: the handshake and heartbeat upward, takeover downward, relay and replication. */
 export const nodeLinkRequests = {
   /**
@@ -100,6 +111,8 @@ export const nodeLinkRequests = {
       primary: Endpoint.optional(),
       /** The answerer is the primary because the user chose it at `epoch`: only such a primary's higher epoch makes another step down. */
       chosen: z.boolean().optional(),
+      /** The answerer is the primary and takes a machine's sign-in door (`node.join` `door`); an older one would take the door for the whole node, so a door links to none without it. */
+      door: z.boolean().optional(),
     }),
   },
   /** What the secondary holds; the primary answers with the registry and a link id. */
@@ -119,6 +132,12 @@ export const nodeLinkRequests = {
       terminals: z.array(Terminal).optional(),
       /** The transfers the node receives, running and ended, so the primary's clients see them. */
       transfers: z.array(Transfer).optional(),
+      /**
+       * The node's sign-in door joins for it while no one is signed in there and its daemon is
+       * not running: it holds the desktop alone (tickets, their ends and pipes), brings no
+       * lists, stands by for nothing, and never replaces a full link of the node's.
+       */
+      door: z.boolean().optional(),
     }),
     result: z.object({
       registry: z.array(NodeRecord),
@@ -208,10 +227,12 @@ export const nodeLinkRequests = {
    * with the settings that keep the video a few frames behind, `sized` with the host's screen
    * size and the bitrate a path across the internet carries, which comes back as `video`, and
    * `hideCursor` hides the viewer's own pointer over the picture, which shows the desktop's
-   * (an older host ignores all three).
+   * (an older host ignores all three). `by` is who the viewer is, as the primary vouches for it:
+   * the primary sets it on every ticket it carries on, over whatever a secondary sent, and a
+   * sign-in door lets in the user's own devices by it, with no one there to ask.
    */
   "remote.ticket": {
-    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport, lowLatency: z.boolean().optional(), sized: z.boolean().optional(), hideCursor: z.boolean().optional() }),
+    params: z.object({ node: NodeId, viewer: z.string().min(1), name: z.string().optional(), transport: StreamTransport, lowLatency: z.boolean().optional(), sized: z.boolean().optional(), hideCursor: z.boolean().optional(), by: TicketViewer.optional() }),
     result: z.object({ path: z.string(), stream: z.string(), video: DisplaySize.optional() }),
   },
   /**

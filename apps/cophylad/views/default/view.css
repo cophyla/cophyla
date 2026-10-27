@@ -3053,7 +3053,7 @@ button:disabled {
 
 /* The page's buttons, one size: quiet outlines, lit under the pointer; the one thing to do is
    in the cophyla outline, a confirm that cannot be undone filled in rust. */
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button) {
   border: 1px solid var(--line-strong);
   border-radius: 6px;
   background: transparent;
@@ -3064,7 +3064,7 @@ button:disabled {
   padding: 4px 11px;
 }
 
-.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
+.devices-view :is(.node-rename, .node-rename-form button, .node-choose button, .node-grant button, .node-restart button, .remote-head button, .door-switch, .remote-viewing button, .remote-actions button, .remote-viewer-forget, .remote-pin-form button, .remote-invite button, .node-tools button, .phone-tools button, .lan-buttons button, .grant-form button, .invite-buttons button, .invite-pending-cancel, .controller-revoke, .pair-done, .account-card button):hover:not(:disabled) {
   border-color: var(--muted);
   background: var(--raised);
 }
@@ -5034,6 +5034,72 @@ button:disabled {
 .remote-note {
   margin: 0;
   color: var(--amber);
+  font-size: 11.5px;
+}
+
+/* the machine's sign-in door: where it stands, its switch, Remove as a link */
+
+.remote-door {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0 2px 8px;
+  border-left: 2px solid var(--line);
+}
+
+.remote-door[data-state="ready"],
+.remote-door[data-state="serving"] {
+  border-left-color: var(--moss);
+}
+
+.door-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+
+.door-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.door-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.remote-door[data-state="unavailable"] .door-words {
+  color: var(--rust);
+}
+
+.remote-door[data-state="serving"] .door-words {
+  color: var(--moss);
+}
+
+.door-remove {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.door-remove:hover:not(:disabled) {
+  color: var(--ink);
+}
+
+.door-note {
+  margin: 0;
+  color: var(--faint);
   font-size: 11.5px;
 }
 

@@ -1087,6 +1087,14 @@ export const clientRequests = {
    */
   "remote.disable": { params: z.object({ node: NodeId.optional() }), result: Empty },
   /**
+   * The sign-in door of `node` (this node's without it), a Windows machine's alone and never
+   * the primary's: `on` lets the user's own devices reach its desktop at its sign-in or lock
+   * screen while Cophyla is not running there, installing the door's service the first time
+   * (an administrator's prompt on that machine's own screen); off it holds nothing for the
+   * machine, its service left installed. `remove` takes the service off the machine too.
+   */
+  "remote.door": { params: z.object({ node: NodeId.optional(), on: z.boolean(), remove: z.boolean().optional() }), result: Empty },
+  /**
    * Starts the device-code login, or answers the one already open (a closed panel, another
    * client) with its code until that runs out; `conflict` only when already signed in.
    */
@@ -1432,6 +1440,8 @@ export const RemoteViewer = z.object({
   connected: z.boolean().optional(),
   pairedBy: NodeId.optional(),
   browser: z.boolean().optional(),
+  /** The machine's own sign-in door's web viewer, paired under its name and " sign-in". */
+  door: z.literal(true).optional(),
 });
 export type RemoteViewer = z.infer<typeof RemoteViewer>;
 
@@ -1452,12 +1462,24 @@ export const RemoteHost = z.object({
 });
 export type RemoteHost = z.infer<typeof RemoteHost>;
 
+/**
+ * A machine's sign-in door: `off` while the user has not switched it on; `installing` while
+ * its service is being put on the machine (the administrator's prompt); `preparing` while it
+ * readies its own web viewer; `ready` to take over once no one is signed in; `serving` while
+ * it holds the machine's desktop; `unavailable` with why.
+ */
+export const DoorStatus = z.enum(["off", "installing", "preparing", "ready", "serving", "unavailable"]);
+export const DoorState = z.object({ state: DoorStatus, reason: z.string().optional(), version: z.string().optional() });
+export type DoorState = z.infer<typeof DoorState>;
+
 export const RemoteState = z.object({
   node: NodeId,
   host: RemoteHost,
   viewers: z.array(RemoteViewer),
   /** Someone is watching this desktop: a client of its host is connected, or a Sunshine host says it is busy. */
   streaming: z.boolean(),
+  /** The machine's sign-in door, where it has one to tell of (Windows). */
+  door: DoorState.optional(),
 });
 export type RemoteState = z.infer<typeof RemoteState>;
 

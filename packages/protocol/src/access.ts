@@ -312,6 +312,7 @@ export const requestFilters = {
   "remote.revoke": { names: (p) => [{ node: p.node }] },
   "remote.enable": { names: (p, self) => [{ node: p.node ?? self }] },
   "remote.disable": { names: (p, self) => [{ node: p.node ?? self }] },
+  "remote.door": { names: (p, self) => [{ node: p.node ?? self }] },
   // how a node's sessions take agents' messages is its settings, a hold taken off them
   "agents.accept": { names: "global" },
   // a connection lets another user's agent into a terminal: the whole account's to make and end

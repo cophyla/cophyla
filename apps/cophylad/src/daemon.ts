@@ -9,7 +9,7 @@
 
 import { existsSync, rmSync } from "node:fs";
 import { dirname, join, posix, resolve, win32 } from "node:path";
-import { newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
+import { newId, nodeLinkRequests, PROTOCOL_VERSION, RpcError } from "@cophyla/protocol";
 import type { AgentMode, Client, Node, PairedLan, RelayAccess, Session, Transfer } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
 import pkg from "../package.json" with { type: "json" };
@@ -159,7 +159,13 @@ import { nodeTz } from "./tasks/triggers.ts";
 import { Tools } from "./tools/index.ts";
 import { Update } from "./update/index.ts";
 import { RELEASE_KEYS } from "./update/keys.ts";
-import { detectInstall, relaunchAfterUpdate } from "./update/platform.ts";
+import { detectInstall, hostOs, relaunchAfterUpdate } from "./update/platform.ts";
+import { DoorManager } from "./door/manager.ts";
+import type { DoorManagerDeps } from "./door/manager.ts";
+import { buildKit } from "./door/kit.ts";
+import { displaySize } from "./remote/display.ts";
+import { StreamLinks } from "./nodes/streams.ts";
+import { defaultExec } from "./sidecars/tts-py.ts";
 import { freeOwnPort, helperPaths } from "./portheld.ts";
 import { spawnsGuarded } from "./inherit.ts";
 import { BUILTIN_VIEWS_DIR, Views } from "./views/index.ts";
@@ -255,6 +261,8 @@ export interface DaemonOptions {
   remote?: Pick<RemoteDeps, "exec" | "fetch" | "hostApi" | "moonlight" | "web" | "screenshot" | "display" | "os" | "env">;
   /** The direct connections' seams: the helper's command and spawner (a test has no helper unless it gives one, since a real one binds the machine's addresses), a clock. */
   direct?: Pick<DirectDeps, "command" | "spawn" | "now"> & { openTimeoutMs?: number; link?: LinkDirectTiming };
+  /** The sign-in door's seams: the OS it believes it is on, its pipe and how it opens, the elevated run, the platform it installs from. */
+  door?: Partial<Pick<DoorManagerDeps, "os" | "pipe" | "client" | "elevate" | "install" | "now">>;
   /** The cloud module's seams: the fetch for the login and the revoke, the entitlement keys, the browser opener, a clock. */
   cloud?: {
     fetch?: typeof fetch;
@@ -355,6 +363,8 @@ export interface Daemon {
   voice: Voice;
   metrics: Metrics;
   remote: Remote;
+  /** The machine's sign-in door (Windows). */
+  door: DoorManager;
   /** The pipes stream pages ride where there is no route to their desktop, and transfers' files. */
   pipes: PipeHub;
   /** The transfers this machine receives. */
@@ -439,6 +449,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let teammates: Teammates | undefined;
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
+  /** The machine's sign-in door (Windows), built beside the remote module. */
+  let door: DoorManager | undefined;
   let backup: BackupSync | undefined;
   /** This node's terminals as its link serves them, and whether it starts any for the cluster's clients, once built. */
   let nodeTerminals: NodeTerminals | undefined;
@@ -952,6 +964,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       iceServers: () => direct.iceServers(),
       request: (method, params) => direct.request(method, params),
     },
+    doorState: () => door?.state(),
     ...(opts.remote ?? {}),
   });
 
@@ -1007,6 +1020,52 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     sendTo: (client, method, params) => clients.sendLocal(client, method, params),
     ...(opts.direct?.openTimeoutMs !== undefined ? { openTimeoutMs: opts.direct.openTimeoutMs } : {}),
   });
+
+  // The sign-in door (Windows): the switch, the pipe to its service, the kit it is handed. It
+  // is attached before the links start, so a door that holds this machine's link stands down
+  // first and hands back what it held.
+  // a test daemon looks for no door unless it is given one
+  const doorOs = opts.door?.os ?? (env["NODE_ENV"] === "test" ? "linux" : hostOs());
+  const doorRefusal = (): string | undefined => {
+    if (nodes?.roleOf() === "primary") return "this machine is the primary: it cannot be reached at its sign-in screen yet";
+    if (nodes?.member()?.role === "hands") return "this machine joined as hands: it has no sign-in door";
+    if (nodes?.confinement()?.active) return "this machine shares some folders alone, not its desktop";
+    if (!remote?.enabled) return "share this desktop first";
+    return undefined;
+  };
+  const doorManager = new DoorManager({
+    os: doorOs,
+    meta: store.meta,
+    log: log.child("door"),
+    kit: () =>
+      buildKit({
+        node: () => ({ id: identity.id, name: identity.name }),
+        linkFile: p.linkFile,
+        remoteDir: join(p.data, "remote"),
+        config,
+        role: () => nodes!.roleOf(),
+        hands: () => nodes!.member()?.role === "hands",
+        confined: () => nodes!.confinement()?.active === true,
+        registry: () => nodes!.registry.list(),
+        epoch: () => nodes!.epoch(),
+        lastPrimary: () => nodes!.lastPrimary(),
+        hostKind: () => remote!.state().host.kind,
+        display: () => remote!.state().host.display ?? displaySize(doorOs),
+        sharing: () => remote!.enabled,
+        directEnabled: () => direct.enabled,
+        machines: () => remote!.pairedMachines(),
+        platform: { version: PLATFORM_VERSION, protocol: PROTOCOL_VERSION },
+      }),
+    nodes: { adoptKey: (key) => nodes!.adoptKey(key), revokedAway: () => nodes!.revokedAway() },
+    refusal: doorRefusal,
+    install: () => (install ? { versionDir: install.versionDir, version: install.version } : undefined),
+    exec: defaultExec,
+    tmpDir: join(p.data, "door"),
+    ...(env["COPHYLA_DOOR_PIPE"] ? { pipe: env["COPHYLA_DOOR_PIPE"] } : {}),
+    onChange: () => remote?.changed(),
+    ...(opts.door ?? {}),
+  });
+  door = doorManager;
 
   // The nodes module: the role, the links, the mirrors. The brain is started and stopped
   // through it, since a promotion or a step-down moves the brain with the role.
@@ -1136,6 +1195,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     metrics,
     ledger,
     remote: () => remote,
+    door: doorManager,
+    // the viewers the door held while no one was signed in here open this desktop again unasked, a moment
+    ticketDecide: (t, from) => (doorManager.allowsReopen(StreamLinks.viewerKey(from.id, t.viewer)) ? { decision: "allow", why: "it was watching this desktop through its sign-in door moments ago" } : undefined),
     profiles,
     scope: sessions,
     files,
@@ -1795,7 +1857,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     }),
     ...voiceMethods({ voice, speech: deliver }),
     ...metricsMethods({ metrics, ledger, nodeId: identity.id }),
-    ...remoteMethods({ remote, pipes }),
+    ...remoteMethods({ remote, pipes, door: doorManager }),
     ...accountMethods({ cloud, keys }),
     ...backupMethods({ sync: backup }),
     ...grantMethods({
@@ -2018,6 +2080,20 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   cloud.start();
   direct.start();
 
+  // The sign-in door first: one that holds this machine's link stands down before the node's
+  // own join, and hands back a key or the grant's end it heard. Its kit follows what it carries.
+  await doorManager.start();
+  nodes.onMembership(() => doorManager.kitChanged());
+  bus.on("remote.state", (s) => {
+    if (s.node === identity.id) doorManager.kitChanged();
+  });
+  bus.on("direct.state", (s) => {
+    if (s.node === identity.id) doorManager.kitChanged();
+  });
+  bus.on("node.state", (n) => {
+    if (n.id === identity.id || n.role === "primary" || n.backup === true) doorManager.kitChanged();
+  });
+
   // The role settles here: a configured primary listens for a live one first, so the brain
   // never starts under a primary of a higher epoch; a secondary begins seeking.
   await nodes.start();
@@ -2137,6 +2213,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     voice,
     metrics,
     remote,
+    door: doorManager,
     pipes,
     transfers,
     direct,
@@ -2170,6 +2247,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       await transfers!.stop();
       await guests!.stop();
       await nodes!.stop();
+      // the pipe goes last of the links: the door serves only once this daemon is gone a while
+      doorManager.stop();
       directClients.stop();
       await direct.stop();
       await stopBrain();

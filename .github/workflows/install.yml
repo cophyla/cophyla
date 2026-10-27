@@ -48,6 +48,11 @@ jobs:
             $files += "$v\bin\cophyla-mcp.exe", "$v\bin\cophyla-mcp-THIRD-PARTY-LICENSES.html"
             $signed += "$v\bin\cophyla-mcp.exe"
           }
+          # the sign-in door's shim ships from 0.22.0 on
+          if ([version]($env:VERSION -replace '-.*$', '') -ge [version]'0.22.0') {
+            $files += "$v\bin\cophyla-door.exe", "$v\bin\cophyla-door-THIRD-PARTY-LICENSES.html"
+            $signed += "$v\bin\cophyla-door.exe"
+          }
           foreach ($f in $files) {
             if (-not (Test-Path $f)) { throw "missing after the install: $f" }
           }

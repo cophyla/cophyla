@@ -8,7 +8,7 @@ import type { Logger } from "../log.ts";
 import type { GateConfig } from "../config/schema.ts";
 import type { Asks } from "./asks.ts";
 import type { Audit } from "./audit.ts";
-import type { Policy } from "./policy.ts";
+import type { Policy, PolicyDecision } from "./policy.ts";
 import { redact } from "./audit.ts";
 
 export interface GateRequest {
@@ -38,6 +38,11 @@ export interface GateRequest {
   unprompted?: boolean;
   /** The result as the audit row keeps it, when it carries a secret the generic redaction would miss. */
   redactResult?: (result: unknown) => unknown;
+  /**
+   * Decided already, where no one could answer an ask: a sign-in door lets the user's own
+   * devices in and no one else. Policy is not asked and nothing is; the audit row is kept.
+   */
+  decided?: { decision: "allow" | "deny"; why: string };
 }
 
 export interface GateContext {
@@ -103,7 +108,7 @@ export class Gate {
       ...(req.trusted ? { trusted: true } : {}),
       ...(req.unprompted ? { unprompted: true } : {}),
     };
-    const verdict = policy.decide(query);
+    const verdict: PolicyDecision = req.decided ? { decision: req.decided.decision, source: "door" } : policy.decide(query);
     const startedAt = Date.now();
 
     let ask: Ask | undefined;
@@ -135,10 +140,10 @@ export class Gate {
       ...(req.task !== undefined ? { task: req.task } : {}),
       ...(req.correlation !== undefined ? { correlation: req.correlation } : {}),
     }, Date.now(), this.deps.node);
-    log.debug("gate", { id: entry.id, action: req.action, principal: req.principal.kind, decision: verdict.decision, source: verdict.source, rule: verdict.rule });
+    log.debug("gate", { id: entry.id, action: req.action, principal: req.principal.kind, decision: verdict.decision, source: verdict.source, rule: verdict.rule, ...(req.decided ? { why: req.decided.why } : {}) });
 
     if (verdict.decision === "deny") {
-      const reason = verdict.rule ? `policy rule ${verdict.rule}` : `policy for ${req.principal.kind}/${risk}`;
+      const reason = req.decided ? req.decided.why : verdict.rule ? `policy rule ${verdict.rule}` : `policy for ${req.principal.kind}/${risk}`;
       audit.complete(entry, "denied", { error: reason, startedAt });
       throw new RpcError("denied", reason);
     }

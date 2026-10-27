@@ -10,6 +10,7 @@
           "epoch": 3,
           "chosen": true
         },
+        { "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "cluster": "9f86d081884c7d65", "role": "primary", "epoch": 3, "chosen": true, "door": true },
         {
           "nodeId": "node_01ARZ3NDEKTSV4RRFFQ69G5FAX",
           "cluster": "9f86d081884c7d65",
@@ -43,6 +44,28 @@
           "workspaces": [],
           "asks": [],
           "terminals": [{ "id": "0c9e41b27a53", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "host": "a1b2c3d4e5f60718", "argv0": "bash", "cwd": "/home/me", "cols": 100, "rows": 30, "status": "running", "windows": 0, "startedAt": 1758196000000 }]
+        },
+        {
+          "node": {
+            "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            "name": "laptop",
+            "role": "secondary",
+            "status": "online",
+            "via": "relay",
+            "platform": "windows",
+            "scope": { "kind": "machine" },
+            "capabilities": { "harnesses": [], "voice": { "wake": false, "stt": false, "tts": false }, "remote": true, "brain": false },
+            "versions": { "platform": "0.22.0", "protocol": 1 },
+            "lastSeen": 1758196800000,
+            "door": "signin"
+          },
+          "endpoints": [],
+          "epoch": 3,
+          "backup": false,
+          "sessions": [],
+          "workspaces": [],
+          "asks": [],
+          "door": true
         }
       ],
       "results": [
@@ -134,7 +157,9 @@
       "params": [
         { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel 8", "transport": "webrtc" },
         { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true },
-        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true, "sized": true, "hideCursor": true }
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "lowLatency": true, "sized": true, "hideCursor": true },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "Pixel 8", "transport": "webrtc", "by": { "kind": "phone", "grant": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC8" } },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "viewer": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB9", "name": "laptop", "transport": "webrtc", "by": { "kind": "machine", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" } }
       ],
       "results": [{ "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e" }, { "path": "/remote/?t=6f1c2a9e4b7d4e0f8a3c5b2d9e1f7a60", "stream": "str_9c1e", "video": { "width": 1920, "height": 1200 } }]
     },

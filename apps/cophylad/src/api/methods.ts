@@ -11,7 +11,7 @@
 
 import { AssistantPreview, RpcError, sessionModeRisk } from "@cophyla/protocol";
 import { checkScope } from "../sessions/scope.ts";
-import type { AssistantState, BrainContext, Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass } from "@cophyla/protocol";
+import type { AssistantState, BrainContext, Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass, TicketViewer } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { clientSignals } from "@cophyla/protocol";
 import { DOC_FRAME_PATH } from "@cophyla/protocol";
@@ -666,6 +666,38 @@ export interface RemoteMethodDeps {
   remote: Remote;
   /** The pipes a stream page's connections ride from a phone with no route to its desktop. */
   pipes?: PipeHub;
+  /** This machine's sign-in door, where it can have one (Windows). */
+  door?: DoorSwitch;
+}
+
+/** A machine's sign-in door as the app switches it: on (its service installed the first time), off, or off and removed. */
+export interface DoorSwitch {
+  set(on: boolean, opts?: { remove?: boolean }): Promise<void>;
+}
+
+/** The words the gate uses when this machine's sign-in door is switched from elsewhere. */
+export const doorAsk = (on: boolean, remove = false): { title: string; detail: string } =>
+  on
+    ? {
+        title: "Let your devices reach this desktop at its sign-in screen?",
+        detail: "While no one is signed in here, or the screen is locked with Cophyla not running, your phones and the machines that already view this desktop can reach it without asking. Windows asks an administrator to approve it on this machine's own screen the first time.",
+      }
+    : remove
+      ? {
+          title: "Remove the sign-in door from this machine?",
+          detail: "Its service comes off this machine. Windows asks an administrator to approve it on this machine's own screen.",
+        }
+      : {
+          title: "Stop letting your devices reach this desktop at its sign-in screen?",
+          detail: "It can be reached only while someone is signed in and Cophyla runs. The door's service stays on this machine until it is removed.",
+        };
+
+/** Who a client opening a stream is, as a host's sign-in door reads it: a phone or a browser by its grant, the desktop app by its machine. */
+export function ticketViewer(ctx: Pick<MethodContext, "client" | "browser" | "session">, self: string): TicketViewer | undefined {
+  const c = ctx.client;
+  if (c.kind === "controller") return { kind: "phone", ...(c.controller ? { grant: c.controller } : {}), ...(ctx.browser ? { browser: true } : {}), ...(ctx.session ? { session: true } : {}) };
+  if (c.kind === "ui") return { kind: "machine", node: c.node ?? self };
+  return undefined;
 }
 
 /** The words the host's gate uses when a viewer asks to pair: what is granted, to whom. */
@@ -718,7 +750,8 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
       handler: (p, ctx) => {
         // The forwarder's door serves its page on the main port: a browser's page there would sit on the app's own origin.
         if (p.forward && ctx.browser) throw new RpcError("invalid", "a page in a browser has no forwarder: it reads a stream on the stream port");
-        return p.settings ? deps.remote.settings(ctx.client) : deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}), ...(p.display ? { display: p.display } : {}) });
+        const by = ticketViewer(ctx, deps.remote.nodeId);
+        return p.settings ? deps.remote.settings(ctx.client) : deps.remote.open(p.node, { client: ctx.client, origin: ctx.origin, listener: ctx.listener, forward: p.forward ?? ctx.forward === true, ...(p.embed ? { embed: true } : {}), ...(p.display ? { display: p.display } : {}), ...(by ? { by } : {}) });
       },
     },
     "remote.close": {
@@ -742,6 +775,15 @@ export function remoteMethods(deps: RemoteMethodDeps): MethodTable {
       ask: () => shareAsk(false),
       handler: async () => {
         await deps.remote.disable();
+        return {};
+      },
+    },
+    "remote.door": {
+      target: (p) => p.node,
+      ask: (p) => doorAsk(p.on, p.remove === true),
+      handler: async (p) => {
+        if (!deps.door) throw new RpcError("unsupported", "this machine has no sign-in door: Windows machines alone have one");
+        await deps.door.set(p.on, p.remove ? { remove: true } : {});
         return {};
       },
     },

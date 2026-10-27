@@ -209,6 +209,18 @@ export function refuseClaim(claim: UpwardClaim, sender: string, isLocal?: Inboun
 
 const FANOUT_TIMEOUT_MS = 3000;
 
+/** What a sign-in door asks of the primary: what keeps its link up, and TURN for its desktop's streams. */
+const DOOR_REQUESTS: ReadonlySet<string> = new Set(["node.heartbeat", "direct.turn", "direct.offer"]);
+/** What a sign-in door sends up: its row, its desktop's and its direct connections' state, its audit rows, its streams' pipes, and its leaving. */
+const DOOR_NOTIFICATIONS: ReadonlySet<string> = new Set(["node.state", "remote.state", "direct.state", "audit.entry", "pipe.data", "pipe.ack", "pipe.close", "pending", "node.leave", "direct.candidate"]);
+/** What is carried on to a sign-in door: its desktop's streams, and nothing else of the node's. */
+export const DOOR_FORWARDS: ReadonlySet<string> = new Set(["remote.ticket", "remote.close", "remote.pipe.open"]);
+
+/** What a request for anything but the desktop of a node at its sign-in screen is told. */
+export function doorRefusal(name: string): string {
+  return `${name} is at its sign-in screen: only its desktop can be reached until someone signs in there`;
+}
+
 /** What a link's handshake has settled so far: what it was sealed with, and whether `node.hello` passed. */
 interface Handshake {
   cred: LinkCredential;
@@ -527,8 +539,9 @@ export class Inbound {
         cluster: p.cluster,
         role: this.deps.role(),
         epoch: this.deps.epoch(),
-        // every primary is the one the user chose at its epoch: an older node's own promotion says nothing of it
-        ...(this.deps.role() === "primary" ? { chosen: true } : {}),
+        // every primary is the one the user chose at its epoch: an older node's own promotion says nothing of it;
+        // and it takes a node's sign-in door for what it is
+        ...(this.deps.role() === "primary" ? { chosen: true, door: true } : {}),
         ...(this.deps.role() !== "primary" && primary ? { primary } : {}),
       };
     }
@@ -547,20 +560,30 @@ export class Inbound {
         throw new RpcError("conflict", "not the primary", primary ? { primary } : undefined);
       }
       const hands = grant.role === "hands";
-      // A hands node stands by for nothing: it is never a backup, and its epoch says nothing.
-      const backup = p.backup && !hands;
-      if (!hands && p.epoch > this.deps.epoch()) this.deps.onHigherEpoch(p.epoch, p.node.id);
+      const door = p.door === true;
+      if (door) {
+        // A door holds a whole machine's desktop for its owner: never a hands node's, nor one that shares some folders alone.
+        if (hands) throw new RpcError("denied", "a hands node has no sign-in door here");
+        if (p.node.scope.kind !== "machine") throw new RpcError("denied", "a node that shares some folders alone has no sign-in door");
+        // The node's own link is the machine itself: its door stands back, and the node's join takes over a door's.
+        if (this.peers.get(p.node.id)?.open && !this.peers.get(p.node.id)?.info.door) throw new RpcError("conflict", "the node is linked itself: its sign-in door stands back");
+      }
+      // A hands node stands by for nothing: it is never a backup, and its epoch says nothing; nor are a door's.
+      const backup = p.backup && !hands && !door;
+      if (!hands && !door && p.epoch > this.deps.epoch()) this.deps.onHigherEpoch(p.epoch, p.node.id);
       const linkId = `link-${newId("client").slice(4)}`;
       await this.deps.gate.run(
-        { principal: { kind: "node", id: p.node.id }, action: "hello", args: { node: p.node.id, name: p.node.name, grant: grant.id, role: grant.role ?? "full", epoch: p.epoch, backup, endpoints: p.endpoints }, sessionKey: linkId },
+        { principal: { kind: "node", id: p.node.id }, action: "hello", args: { node: p.node.id, name: p.node.name, grant: grant.id, role: grant.role ?? "full", epoch: p.epoch, backup, endpoints: p.endpoints, ...(door ? { door: true } : {}) }, sessionKey: linkId },
         () => ({ linkId }),
       );
       const existing = this.peers.get(p.node.id);
+      // the node may have linked itself while the gate ran
+      if (door && existing?.open && !existing.info.door) throw new RpcError("conflict", "the node is linked itself: its sign-in door stands back");
       if (existing) existing.close(4409, "replaced by a new link");
       const rank = backup && p.rank !== undefined ? p.rank : undefined;
       const nodePeer = new NodePeer(
         rpc,
-        { linkId, node: p.node, epoch: p.epoch, backup, ...(rank !== undefined ? { rank } : {}), endpoints: p.endpoints, grant: grant.id, hands },
+        { linkId, node: p.node, epoch: p.epoch, backup, ...(rank !== undefined ? { rank } : {}), endpoints: p.endpoints, grant: grant.id, hands, ...(door ? { door: true } : {}) },
         { log: this.log, closeSocket: (code, reason) => sock.close(code, reason), now: this.now() },
       );
       this.peers.set(p.node.id, nodePeer);
@@ -572,10 +595,16 @@ export class Inbound {
       nodePeer.onClose((reason) => this.onLinkClosed(nodePeer, reason));
       // Silence for two heartbeat intervals is the link gone.
       nodePeer.watch(this.deps.heartbeatMs, async () => this.now() - nodePeer.lastHeard < this.deps.heartbeatMs * 1.5);
-      // Whether it stands by and whether it is hands come from the grant and the join, not from what its row says.
-      const { backup: _backup, hands: _hands, ...sent } = p.node;
-      const record: NodeRecord = { ...sent, via, status: "online", endpoints: p.endpoints, epoch: p.epoch, ...(backup ? { backup: true } : {}), ...(rank !== undefined ? { rank } : {}), ...(hands ? { hands: true } : {}) };
+      // Whether it stands by, whether it is hands and whether it is a door come from the grant and the join, not from what its row says.
+      const { backup: _backup, hands: _hands, door: doorAt, ...sent } = p.node;
+      const record: NodeRecord = { ...sent, via, status: "online", endpoints: p.endpoints, epoch: p.epoch, ...(backup ? { backup: true } : {}), ...(rank !== undefined ? { rank } : {}), ...(hands ? { hands: true } : {}), ...(door ? { door: doorAt ?? "signin" } : {}) };
       this.deps.registry.upsert(record, { joined: true });
+      if (door) {
+        // A door brings nothing but the desktop: no lists, no transfers to settle, no replica.
+        this.log.info("node's sign-in door joined", { node: p.node.id, name: p.node.name, grant: grant.id, via, at: record.door, link: linkId });
+        this.broadcastRegistry(p.node.id);
+        return { registry: this.registryFor(nodePeer), tz: this.deps.tz, epoch: this.deps.epoch(), primary: this.deps.selfId(), linkId };
+      }
       // The join's lists pass the same test as the upward rows: the joiner's own, and none of this node's.
       const own = <T>(rows: T[], claim: (row: T) => UpwardClaim) => rows.filter((row) => refuseClaim(claim(row), p.node.id, this.deps.isLocal) === undefined);
       const sessions = own(p.sessions, (s) => ({ node: s.node, session: s.id }));
@@ -643,16 +672,17 @@ export class Inbound {
     for (const p of this.peers.values()) if (p.id !== except) p.notify("registry.update", { nodes: this.registryFor(p) });
   }
 
-  /** The registry as a node is sent it: whole, or, to a hands node, the primary and the backups alone, what it needs to follow the primary the user chooses next. */
+  /** The registry as a node is sent it: whole, or, to a hands node or a door, the primary and the backups alone, what it needs to follow the primary the user chooses next. */
   private registryFor(peer: NodePeer): NodeRecord[] {
     const nodes = this.deps.registry.list();
-    return peer.info.hands ? nodes.filter((n) => n.role === "primary" || n.backup === true) : nodes;
+    return peer.info.hands || peer.info.door ? nodes.filter((n) => n.role === "primary" || n.backup === true) : nodes;
   }
 
   // --- requests and notices from a linked secondary -----------------------------------------
 
   private async onRequest(peer: NodePeer, method: string, params: unknown, id: RpcId): Promise<unknown> {
     peer.heard(this.now());
+    if (peer.info.door && !DOOR_REQUESTS.has(method)) throw new RpcError("denied", "a sign-in door asks for nothing but what keeps its link");
     switch (method) {
       case "node.heartbeat": {
         const parsed = nodeLinkRequests["node.heartbeat"].params.safeParse(params ?? {});
@@ -761,6 +791,10 @@ export class Inbound {
 
   private onNotification(peer: NodePeer, method: string, params: unknown): void {
     peer.heard(this.now());
+    if (peer.info.door && !DOOR_NOTIFICATIONS.has(method)) {
+      this.log.debug("a sign-in door's frame ignored", { node: peer.id, method });
+      return;
+    }
     if (method === "relay") {
       const p = params as { peer: string; frame: string };
       const clientId = this.relayed.get(`${peer.id}:${p.peer}`);
@@ -781,7 +815,8 @@ export class Inbound {
       const p = params as { reason: string; primary?: string };
       this.log.info("node leaving", { node: peer.id, reason: p.reason });
       peer.close(1000, `left: ${p.reason}`);
-      if (p.reason === "left" && peer.info.grant) this.deps.onLeft?.(peer.id, peer.info.grant);
+      // a door never gives up its node's grant: only the node itself leaves the cluster
+      if (p.reason === "left" && peer.info.grant && !peer.info.door) this.deps.onLeft?.(peer.id, peer.info.grant);
       return;
     }
     if (method === "direct.candidate") {
@@ -866,6 +901,7 @@ export class Inbound {
   async forward(node: string, method: string, params: unknown, opts: { signal?: AbortSignal; onPending?: (ask: Ask) => void; timeoutMs?: number } = {}): Promise<unknown> {
     const peer = this.peers.get(node);
     if (!peer?.open) throw new RpcError("unavailable", `node ${node} is not linked`);
+    if (peer.info.door && !DOOR_FORWARDS.has(method)) throw new RpcError("unavailable", doorRefusal(peer.info.node.name));
     let key: string | undefined;
     const onAbort = () => {
       if (key !== undefined) void peer.request("cancel", { id: key.slice(node.length + 1) }).catch(() => undefined);
@@ -886,12 +922,12 @@ export class Inbound {
     }
   }
 
-  /** The same request to every linked node; a node that fails or times out is left out. */
+  /** The same request to every linked node; a node that fails or times out is left out, and so is a sign-in door, which answers none. */
   async fanout(method: string, params: unknown): Promise<Map<string, unknown>> {
     const out = new Map<string, unknown>();
     await Promise.all(
       [...this.peers.values()]
-        .filter((p) => p.open)
+        .filter((p) => p.open && !p.info.door)
         .map((p) =>
           p
             .request(method, params, { timeoutMs: FANOUT_TIMEOUT_MS })
@@ -1059,9 +1095,13 @@ export class Inbound {
   }
 }
 
-/** A node's own row as it sent it, with what its join settled kept: its role, backup rank, epoch, endpoints, way in, data channel and whether it is hands. */
+/**
+ * A node's own row as it sent it, with what its join settled kept: its role, backup rank,
+ * epoch, endpoints, way in, data channel and whether it is hands. A door's row says where the
+ * machine is (its sign-in screen or locked) and no other row says `door`.
+ */
 export function pinned(row: NodeRecord, sent: Omit<NodeRecord, "endpoints"> & { endpoints?: string[] }): NodeRecord {
-  const { backup: _backup, rank: _rank, epoch: _epoch, endpoints: _endpoints, hands: _hands, p2p: _p2p, ...rest } = sent;
+  const { backup: _backup, rank: _rank, epoch: _epoch, endpoints: _endpoints, hands: _hands, p2p: _p2p, door, ...rest } = sent;
   return {
     ...rest,
     id: row.id,
@@ -1074,5 +1114,6 @@ export function pinned(row: NodeRecord, sent: Omit<NodeRecord, "endpoints"> & { 
     ...(row.epoch !== undefined ? { epoch: row.epoch } : {}),
     ...(row.hands ? { hands: true } : {}),
     ...(row.p2p ? { p2p: row.p2p } : {}),
+    ...(row.door ? { door: door ?? row.door } : {}),
   };
 }

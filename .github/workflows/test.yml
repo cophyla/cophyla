@@ -1,5 +1,5 @@
 # The test suite on the three platforms the product ships on: typecheck, `bun test` and the
-# four crates' `cargo test` (the desktop shell, the launcher, cophyla-net, cophyla-mcp). No
+# five crates' `cargo test` (the desktop shell, the launcher, cophyla-net, cophyla-mcp, cophyla-door). No
 # release is built here; the release scripts run on a machine with the keys. tether is a
 # submodule with CI of its own; its SDK is a workspace here.
 name: test
@@ -39,6 +39,7 @@ jobs:
             apps/installer/src-tauri
             apps/net
             apps/mcp
+            apps/door
 
       - name: Linux build dependencies
         if: runner.os == 'Linux'
@@ -80,3 +81,6 @@ jobs:
         working-directory: apps/net
       - run: cargo test
         working-directory: apps/mcp
+      # the sign-in door's service shim: Windows code behind cfg(windows), its rules tested everywhere
+      - run: cargo test
+        working-directory: apps/door

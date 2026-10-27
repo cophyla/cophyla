@@ -17,6 +17,8 @@ export interface NodePeerInfo {
   /** On the primary: the grant the node linked with, and whether it is hands only. */
   grant?: string;
   hands?: boolean;
+  /** On the primary: the node's sign-in door joined for it, holding its desktop alone. */
+  door?: boolean;
 }
 
 export class NodePeer {

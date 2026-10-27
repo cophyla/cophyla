@@ -142,6 +142,11 @@ export const Node = z.object({
   hands: z.boolean().optional(),
   /** A `via: relay` node's link running on a data channel: its path, round trip, and since when. The relay stays its fallback. */
   p2p: z.object({ path: DirectPathType, rttMs: z.number().nonnegative().optional(), since: Timestamp }).optional(),
+  /**
+   * The node is its sign-in door: no one is signed in there (`signin`) or the screen is
+   * locked with Cophyla not running (`locked`), and only its desktop can be reached.
+   */
+  door: z.enum(["signin", "locked"]).optional(),
 });
 export type Node = z.infer<typeof Node>;
 

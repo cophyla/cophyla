@@ -200,6 +200,11 @@ export class RemoteTickets {
     return this.list().filter((s) => !s.through).map((s) => ({ id: `web_${s.id.slice(0, 8)}`, kind: "web", since: s.since, connected: s.bridges.size > 0, ...(s.name !== undefined ? { name: s.name } : {}) }));
   }
 
+  /** The clients with a session open now, each once, as they were filed (a viewer elsewhere as `<node>:<viewer>`). */
+  liveClients(): string[] {
+    return [...new Set(this.list().map((s) => s.client))];
+  }
+
   /** The session behind a viewer id from `viewers()`. */
   byViewer(viewer: string): RemoteSession | undefined {
     return this.list().find((s) => !s.through && `web_${s.id.slice(0, 8)}` === viewer);

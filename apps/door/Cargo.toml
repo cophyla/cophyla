@@ -1,0 +1,46 @@
+# cophyla-door: the CophylaDoor Windows service, which keeps a machine reachable at its sign-in
+# and lock screens while its user's cophylad is not running. The SCM runs this shim as a
+# virtual account with every privilege but SeChangeNotify stripped; it supervises a Bun child
+# (cophylad's `main.ts door`) from the version the install copied in, tells it the console's
+# state and the power line, keeps the system awake while it says so, and bridges the named pipe
+# the user's own daemon attaches to, letting in that user alone. It also installs, removes and
+# reports on itself. Native, because the service must start before any user does and outlive
+# every child it runs.
+
+[package]
+name = "cophyla-door"
+description = "The CophylaDoor service: runs cophylad's door at the sign-in screen and bridges its pipe"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.89"
+license = "Apache-2.0"
+authors = ["feritmelih"]
+publish = false
+
+[[bin]]
+name = "cophyla-door"
+path = "src/main.rs"
+
+[dependencies]
+serde_json = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_JobObjects",
+    "Win32_System_Pipes",
+    "Win32_System_Power",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Services",
+    "Win32_System_Threading",
+] }
+
+[profile.release]
+opt-level = 3
+strip = true
+lto = "thin"
+codegen-units = 1

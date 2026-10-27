@@ -20,6 +20,8 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
+import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenStep, doorWords } from "../views/default/model.ts";
+import type { DoorState } from "@cophyla/protocol";
 import { selectUpdateNote, updateKey, waitingWords } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -1679,6 +1681,65 @@ describe("default view: remote desktop", () => {
     apply(state, { type: "remote.state", params: remote(NODE, { host: { kind: "apollo", status: "installing", step: "installing apollo" } }) });
     expect(selectRemote(state, state.nodes.get(NODE)!)!.note).toBeUndefined();
     expect(remoteNote({ kind: "apollo", status: "starting" }, { at: "laptop" })).toBeUndefined();
+  });
+
+  test("the sign-in door: a switch on a shared Windows machine that is neither the primary nor hands; at its door, its desktop alone, in words", () => {
+    const state = viewing();
+    const door = (d: DoorState): RemoteState => remote(OTHER, { door: d });
+    apply(state, { type: "remote.state", params: door({ state: "off" }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toEqual({ node: OTHER, on: false, state: "off", words: "off", remove: false });
+    // installed and off: it can be taken off the machine
+    apply(state, { type: "remote.state", params: door({ state: "off", version: "0.22.0" }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toMatchObject({ on: false, remove: true });
+    apply(state, { type: "remote.state", params: door({ state: "ready", version: "0.22.0" }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toMatchObject({ on: true, words: "ready: your devices can reach it at its sign-in screen", remove: false });
+    // the administrator's prompt is on that machine's own screen
+    apply(state, { type: "remote.state", params: door({ state: "installing" }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.note).toBe("Windows asks for an administrator's approval on laptop's own screen");
+    // none on the primary, a hands node, a Mac, a desktop not shared, or a node older than the door
+    apply(state, { type: "remote.state", params: remote(NODE, { door: { state: "off" } }) });
+    expect(selectRemote(state, state.nodes.get(NODE)!)!.door).toBeUndefined();
+    for (const over of [{ hands: true }, { platform: "macos" as const }]) {
+      apply(state, { type: "node.state", params: node(OTHER, "laptop", over) });
+      expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toBeUndefined();
+    }
+    apply(state, { type: "node.state", params: node(OTHER, "laptop") });
+    apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "off" }, door: { state: "ready" } }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toBeUndefined();
+    apply(state, { type: "remote.state", params: remote(OTHER) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.door).toBeUndefined();
+
+    // at its sign-in screen: Connect and Beside, no switch, no pairing, the door's words
+    apply(state, { type: "host.ready", params: { ...READY, client: { ...CLIENT, node: NODE }, scopes: [...CLIENT.scopes, "nodes", "metrics:read", "remote"] as Scope[], embed: true } });
+    apply(state, { type: "node.state", params: node(OTHER, "laptop", { door: "signin" }) });
+    apply(state, { type: "remote.state", params: door({ state: "serving" }) });
+    const at = selectRemote(state, state.nodes.get(OTHER)!)!;
+    expect(at).toMatchObject({ words: "At the sign-in screen", atDoor: "signin", connect: true, beside: true, share: false, stop: false, retry: false, pair: false, invite: false });
+    expect(at.door).toBeUndefined();
+    expect(desktopWords(at)).toBe("At the sign-in screen");
+    apply(state, { type: "node.state", params: node(OTHER, "laptop", { door: "locked" }) });
+    expect(selectRemote(state, state.nodes.get(OTHER)!)!.words).toBe("Locked, Cophyla not running");
+    expect(desktopWords({ ...selectRemote(state, state.nodes.get(OTHER)!)!, streaming: true })).toBe("Locked, Cophyla not running · being watched");
+    expect(doorWords({ state: "unavailable", reason: "the administrator prompt was declined" })).toBe("unavailable: the administrator prompt was declined");
+    expect(atDoorWords("signin")).toBe("At the sign-in screen");
+    expect(doorErrorWords("unknown method remote.door", "laptop")).toBe("this app is older than the sign-in door: update it");
+    expect(doorErrorWords("remote.door is not served over the node link", "laptop")).toBe("Cophyla on laptop is older than the sign-in door: update it there");
+  });
+
+  test("a stream opened at a machine's sign-in screen opens again once, when the machine is itself with its host ready, within three minutes", () => {
+    const state = viewing();
+    apply(state, { type: "node.state", params: node(OTHER, "laptop", { door: "signin" }) });
+    apply(state, { type: "remote.state", params: remote(OTHER) });
+    const s = { node: OTHER, how: "beside" as const, at: 1000 };
+    expect(doorReopenStep(s, state, 2000)).toBe("wait");
+    apply(state, { type: "node.state", params: node(OTHER, "laptop", { status: "offline" }) });
+    expect(doorReopenStep(s, state, 2000)).toBe("wait");
+    apply(state, { type: "node.state", params: node(OTHER, "laptop") });
+    apply(state, { type: "remote.state", params: remote(OTHER, { host: { kind: "apollo", status: "starting" } }) });
+    expect(doorReopenStep(s, state, 2000)).toBe("wait");
+    apply(state, { type: "remote.state", params: remote(OTHER) });
+    expect(doorReopenStep(s, state, 2000)).toBe("reopen");
+    expect(doorReopenStep(s, state, 1000 + DOOR_REOPEN_MS + 1)).toBe("drop");
   });
 
   test("the refusals of Share and Stop sharing in words: this app older, or the machine it reaches", () => {

@@ -32,7 +32,7 @@
 import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, TalkMessage, TalkSummary, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import { applyTalk } from "./talkmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
-import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, DoorState, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
@@ -4128,13 +4128,14 @@ export function selectStatusMachines(state: ViewState, now = Date.now()): Status
     const remote = state.scopes.includes("remote") && online ? state.remote.get(node.id) : undefined;
     const card = selectRemote(state, node);
     // offline, since when is on hover and in Devices: beside a long name the line keeps the word
-    const sub = online ? [node.id === own ? "this computer" : "", node.role === "primary" ? "primary" : "", node.hands ? "hands" : "", relayed(node) ? "via relay" : ""].filter(Boolean).join(" · ") : node.status;
+    // at its sign-in screen it says so before anything else: its desktop is all there is of it
+    const sub = online ? [node.door ? atDoorWords(node.door) : "", node.id === own ? "this computer" : "", node.role === "primary" ? "primary" : "", node.hands ? "hands" : "", relayed(node) ? "via relay" : ""].filter(Boolean).join(" · ") : node.status;
     const row: StatusMachine = {
       node: node.id,
       name: node.name,
       online,
       sub,
-      title: `${node.name} · ${PLATFORM_NAMES[node.platform]} · ${online ? "online" : node.status === "offline" ? `last seen ${ago(node.lastSeen, now)}` : node.status}`,
+      title: `${node.name} · ${PLATFORM_NAMES[node.platform]} · ${online ? (node.door ? atDoorWords(node.door) : "online") : node.status === "offline" ? `last seen ${ago(node.lastSeen, now)}` : node.status}`,
       meters: online && sample ? statusMeters(sample) : [],
       connect: card?.connect ?? false,
       beside: card?.beside ?? false,
@@ -4197,6 +4198,51 @@ export interface RemoteCard {
   retry: boolean;
   /** Watching first, then the newest; while sharing is off, the devices still paired with a host that runs anyway. */
   viewers: RemoteViewer[];
+  /** The machine is at its sign-in screen (or locked, with Cophyla not running), reached through its door: its desktop alone. */
+  atDoor?: "signin" | "locked";
+  /** Its sign-in door, where it can have one: a Windows machine, not the primary nor a hands node, its desktop shared. */
+  door?: DoorCard;
+}
+
+/** A machine's sign-in door on its desktop block: the switch, where the door stands, and Remove. */
+export interface DoorCard {
+  node: NodeId;
+  /** Switched on: the user's own devices may reach this desktop at its sign-in screen. */
+  on: boolean;
+  state: DoorState["state"];
+  words: string;
+  /** Its service is on the machine and the door is off: it can be taken off. */
+  remove: boolean;
+}
+
+/** Where a sign-in door stands, in words. */
+export function doorWords(door: DoorState): string {
+  switch (door.state) {
+    case "off":
+      return "off";
+    case "installing":
+      return "installing";
+    case "preparing":
+      return "getting ready";
+    case "ready":
+      return "ready: your devices can reach it at its sign-in screen";
+    case "serving":
+      return "holding its desktop at the sign-in screen";
+    case "unavailable":
+      return door.reason ? `unavailable: ${door.reason}` : "unavailable";
+  }
+}
+
+/** A machine reached through its door, in words: the sign-in screen, or locked with Cophyla not running. */
+export function atDoorWords(at: "signin" | "locked"): string {
+  return at === "signin" ? "At the sign-in screen" : "Locked, Cophyla not running";
+}
+
+/** A node's sign-in door block, or undefined where it has none: not Windows, the primary, a hands node, sharing off, a node older than the door, or one at its door now. */
+export function selectDoor(node: Node, remote: RemoteState): DoorCard | undefined {
+  const door = remote.door;
+  if (!door || node.platform !== "windows" || node.role === "primary" || node.hands || node.door || remote.host.status === "off") return undefined;
+  return { node: node.id, on: door.state !== "off", state: door.state, words: doorWords(door), remove: door.state === "off" && door.version !== undefined };
 }
 
 /**
@@ -4221,22 +4267,27 @@ export function selectRemote(state: ViewState, node: Node): RemoteCard | undefin
   const viewers = off ? remote.viewers.filter((v) => v.kind === "native") : remote.viewers;
   // The installer's prompt comes up on the machine itself: someone there may have to answer it.
   const away = !(client?.kind === "ui" && client.node === node.id);
-  const note = remoteNote(remote.host, { paired: off ? viewers.length : 0, ...(away ? { at: node.name } : {}) });
+  const door = selectDoor(node, remote);
+  const note = remoteNote(remote.host, { paired: off ? viewers.length : 0, ...(away ? { at: node.name } : {}), ...(remote.door ? { door: remote.door } : {}) });
+  // at its sign-in screen only the desktop is reached: no switch, no pairing, the ways in kept
+  const at = node.door;
   return {
     node: node.id,
     host: remote.host,
-    words: remoteWords(remote.host, remote.streaming),
+    words: at ? atDoorWords(at) : remoteWords(remote.host, remote.streaming),
     ...(note !== undefined ? { note } : {}),
     streaming: remote.streaming,
     connect: ready && viewer,
     beside: ready && (elsewhere || controller) && state.hostEmbed,
     settings: ready && elsewhere,
-    pair: ready,
-    invite: ready && remote.host.kind === "apollo",
-    share: off,
-    stop: !off,
-    retry: status === "unavailable",
+    pair: ready && !at,
+    invite: ready && remote.host.kind === "apollo" && !at,
+    share: off && !at,
+    stop: !off && !at,
+    retry: status === "unavailable" && !at,
     viewers: [...viewers].sort((a, b) => Number(b.connected === true) - Number(a.connected === true) || b.since - a.since),
+    ...(at ? { atDoor: at } : {}),
+    ...(door ? { door } : {}),
   };
 }
 
@@ -4271,8 +4322,9 @@ export function remoteWords(host: RemoteHost, streaming: boolean): string {
   }
 }
 
-/** Whether a desktop is shared, as its block in Devices says it: shared, watched now, coming up or failing, or not shared. */
-export function desktopWords(remote: Pick<RemoteCard, "host" | "streaming">): string {
+/** Whether a desktop is shared, as its block in Devices says it: shared, watched now, coming up or failing, or not shared; or the sign-in screen it is reached at. */
+export function desktopWords(remote: Pick<RemoteCard, "host" | "streaming"> & { atDoor?: "signin" | "locked" }): string {
+  if (remote.atDoor) return remote.streaming ? `${atDoorWords(remote.atDoor)} · being watched` : atDoorWords(remote.atDoor);
   if (remote.host.status === "off") return "Not shared";
   if (remote.host.status === "ready") return remote.streaming ? "Shared · being watched" : "Shared";
   return `Shared · ${remoteWords(remote.host, remote.streaming)}`;
@@ -4283,11 +4335,43 @@ export function desktopWords(remote: Pick<RemoteCard, "host" | "streaming">): st
  * anyway (a Windows service) can still connect to it; installing on a machine away from this
  * client, that the installer may wait on someone there.
  */
-export function remoteNote(host: RemoteHost, more: { paired?: number; at?: string }): string | undefined {
+export function remoteNote(host: RemoteHost, more: { paired?: number; at?: string; door?: DoorState }): string | undefined {
   const n = more.paired ?? 0;
   if (host.status === "off" && n > 0) return `${n} paired device${n === 1 ? "" : "s"} can still connect until revoked`;
   if (host.status === "installing" && more.at !== undefined) return `someone at ${more.at} may need to approve the installer`;
+  // the door's service is installed as an administrator, the prompt on the machine's own screen
+  if (more.door?.state === "installing") return more.at !== undefined ? `Windows asks for an administrator's approval on ${more.at}'s own screen` : "Windows asks for an administrator's approval on this screen";
   return undefined;
+}
+
+/** How long after a stream to a machine at its sign-in screen was opened it is opened again, once someone signed in and Cophyla took the desktop over. */
+export const DOOR_REOPEN_MS = 180_000;
+
+/** A stream this view opened to a machine at its sign-in screen: beside the view, or a page; its id once known. */
+export interface DoorStream {
+  node: NodeId;
+  how: "beside" | "page";
+  stream?: string;
+  at: number;
+}
+
+/**
+ * Whether a stream opened while its machine was at its sign-in screen opens again now: once,
+ * when the machine is itself again (online, no longer at its door) and its host is ready,
+ * within DOOR_REOPEN_MS of when it was opened; given up after that.
+ */
+export function doorReopenStep(s: DoorStream, state: Pick<ViewState, "nodes" | "remote">, now: number): "wait" | "reopen" | "drop" {
+  if (now - s.at > DOOR_REOPEN_MS) return "drop";
+  const node = state.nodes.get(s.node);
+  if (!node || node.status !== "online" || node.door) return "wait";
+  return state.remote.get(s.node)?.host.status === "ready" ? "reopen" : "wait";
+}
+
+/** Why the sign-in door's switch did nothing, in words to act on: this app, or the machine, is older than the door; the node's own words otherwise. */
+export function doorErrorWords(message: string, name: string): string {
+  if (/^unknown method remote\.door/.test(message)) return "this app is older than the sign-in door: update it";
+  if (/remote\.door is not served|unknown method/.test(message)) return `Cophyla on ${name} is older than the sign-in door: update it there`;
+  return message;
 }
 
 /**

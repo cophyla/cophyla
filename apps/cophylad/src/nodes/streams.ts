@@ -6,9 +6,13 @@
 // the viewer's sessions with it. A request for another node the primary carries on to it
 // (the host gates it, the primary does not), and a pipe the primary joins from one link to
 // the next. Both ends of a link share this.
+//
+// The primary says who the viewer is on every ticket it carries on (`by`): the node on the
+// link it came from, over whatever that node said. A sign-in door, where no one is there to
+// ask, decides by it (`decide`): the user's own devices, and no one else.
 
 import { nodeLinkFrames, nodeLinkRequests, RpcError } from "@cophyla/protocol";
-import type { Ask } from "@cophyla/protocol";
+import type { Ask, TicketViewer } from "@cophyla/protocol";
 import { pairAsk } from "../api/methods.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Logger } from "../log.ts";
@@ -30,6 +34,12 @@ export interface StreamLinkDeps {
   pipes: () => PipeHub | undefined;
   /** Carries a request on toward `node`: only the primary can, to a secondary linked to it. */
   carry: (node: string, method: string, params: unknown, opts: { timeoutMs?: number; onPending?: (ask: Ask) => void }) => Promise<unknown>;
+  /**
+   * Decides a ticket for this desktop before the gate, by who the primary says the viewer is
+   * and which viewer it is: a sign-in door's, where no one could answer an ask; and, back from
+   * one, the viewers it held, let back in unasked a moment. Undefined leaves it to the gate.
+   */
+  decide?: (ticket: { by?: TicketViewer; viewer: string }, from: LinkFrom) => { decision: "allow" | "deny"; why: string } | undefined;
   log: Logger;
 }
 
@@ -59,12 +69,14 @@ export class StreamLinks {
         const parsed = nodeLinkRequests["remote.ticket"].params.safeParse(params ?? {});
         if (!parsed.success) throw new RpcError("invalid", "bad remote.ticket", parsed.error.issues);
         const p = parsed.data;
-        if (p.node !== self) return this.deps.carry(p.node, method, p, { timeoutMs: TICKET_TIMEOUT_MS, ...(onPending ? { onPending } : {}) });
+        // carried on (by the primary alone): the viewer is the node's that asked, whatever it said
+        if (p.node !== self) return this.deps.carry(p.node, method, { ...p, by: { kind: "machine", node: from.id } satisfies TicketViewer }, { timeoutMs: TICKET_TIMEOUT_MS, ...(onPending ? { onPending } : {}) });
         const remote = this.deps.remote();
         if (!remote) throw new RpcError("unsupported", "this node has no remote module");
         const name = p.name ?? "a viewer on another node";
+        const decided = this.deps.decide?.({ ...(p.by ? { by: p.by } : {}), viewer: p.viewer }, from);
         return this.deps.gate.run(
-          { principal: { kind: "node", id: from.id }, action: "remote.ticket", target: name, args: p, risk: "exec", sessionKey: from.sessionKey, ask: pairAsk(name) },
+          { principal: { kind: "node", id: from.id }, action: "remote.ticket", target: name, args: p, risk: "exec", sessionKey: from.sessionKey, ask: pairAsk(name), ...(decided ? { decided } : {}) },
           () => remote.ticket(StreamLinks.viewerKey(from.id, p.viewer), p.name, p.transport, { ...(p.lowLatency ? { lowLatency: true } : {}), ...(p.sized ? { sized: true } : {}), ...(p.hideCursor ? { hideCursor: true } : {}) }),
           onPending ? { onPending } : {},
         );

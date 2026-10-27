@@ -112,6 +112,7 @@ export const requestScopes = {
   "remote.revoke": "remote",
   "remote.enable": "remote",
   "remote.disable": "remote",
+  "remote.door": "remote",
   "account.login": "account",
   "account.logout": "account",
   "account.apiKey": "account",

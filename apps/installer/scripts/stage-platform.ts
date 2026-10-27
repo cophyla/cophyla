@@ -26,7 +26,7 @@
 import { chmodSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { parseArgs } from "node:util";
-import { BUILD_JOBS, BUN_NAME, cargoPath, ensureDir, fail, INSTALLER, log, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, missingImports, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, packageDataFiles, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
+import { BUILD_JOBS, BUN_NAME, cargoPath, DOOR, DOOR_LICENCES, DOOR_LICENCES_REL, DOOR_REL, ensureDir, fail, INSTALLER, log, MCP, MCP_LICENCES, MCP_LICENCES_REL, MCP_REL, missingImports, NET, NET_LICENCES, NET_LICENCES_REL, NET_REL, COPHYLAD, OS, packageDataFiles, platformVersion, REPO, run, SHELL_REL, STAGE, TETHER, TETHER_REL, UI } from "./lib.ts";
 
 const { values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -85,6 +85,16 @@ const mcpSrc = join(MCP, "target", "release", basename(MCP_REL));
 if (!existsSync(mcpSrc)) fail(`no cophyla-mcp at ${mcpSrc} after the build`);
 if (!existsSync(join(MCP, MCP_LICENCES))) fail(`no ${MCP_LICENCES} in apps/mcp: run cargo about generate about.hbs -o ${MCP_LICENCES} there`);
 
+// cophyla-door, the sign-in door's Windows service shim: a crate of its own, and its crates' licences; Windows alone.
+let doorSrc: string | undefined;
+if (DOOR_REL) {
+  log("building cophyla-door (cargo build --release --locked)…");
+  await run(["cargo", "build", "--release", "--locked", "-p", "cophyla-door", "-j", BUILD_JOBS], { cwd: DOOR, env: { PATH: cargoPath() } });
+  doorSrc = join(DOOR, "target", "release", basename(DOOR_REL));
+  if (!existsSync(doorSrc)) fail(`no cophyla-door at ${doorSrc} after the build`);
+  if (!existsSync(join(DOOR, DOOR_LICENCES))) fail(`no ${DOOR_LICENCES} in apps/door: run cargo about generate about.hbs -o ${DOOR_LICENCES} there`);
+}
+
 // 2. The version directory, from scratch.
 rmSync(dir, { recursive: true, force: true });
 rmSync(dir + ".partial", { recursive: true, force: true });
@@ -99,6 +109,10 @@ cpSync(netSrc, join(dir, NET_REL));
 cpSync(join(NET, NET_LICENCES), join(dir, NET_LICENCES_REL));
 cpSync(mcpSrc, join(dir, MCP_REL));
 cpSync(join(MCP, MCP_LICENCES), join(dir, MCP_LICENCES_REL));
+if (doorSrc && DOOR_REL) {
+  cpSync(doorSrc, join(dir, DOOR_REL));
+  cpSync(join(DOOR, DOOR_LICENCES), join(dir, DOOR_LICENCES_REL));
+}
 if (OS !== "windows") {
   chmodSync(join(dir, BUN_NAME), 0o755);
   chmodSync(join(dir, SHELL_REL), 0o755);
@@ -213,6 +227,8 @@ if (OS === "windows") {
   await sign(join(dir, TETHER_REL));
   await sign(join(dir, NET_REL));
   await sign(join(dir, MCP_REL));
+  // the door's shim is what an administrator's prompt names: signed, as everything elevated must be
+  if (DOOR_REL) await sign(join(dir, DOOR_REL));
 } else if (OS === "macos") {
   // The bundle was signed by the bundler; the runtime, tether and cophylad's native modules get the
   // hardened runtime with Bun's entitlements, so a notarized package carries no unsigned Mach-O;

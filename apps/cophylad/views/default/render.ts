@@ -202,6 +202,8 @@ export interface UiState {
   directBusy?: Set<string>;
   /** Machines whose agent messaging switch is being set. */
   agentsBusy?: Set<string>;
+  /** Machines whose sign-in door is being switched on, off or removed: the button waits, maybe on an administrator there. */
+  doorBusy?: Map<string, "on" | "off" | "remove">;
   /** The grant form open under the machines, the phones or the browsers: Add a machine, Join another computer, Invite a phone, Add a browser. */
   grantForm?: "node" | "join" | "phone" | "browser";
   /** The switch for devices on this network is on its way. */
@@ -1212,8 +1214,49 @@ function createRemote(): HTMLElement {
   const buttons = el("div", "remote-invite-buttons");
   buttons.append(actionButton("remote-invite-open", "Open in Artemis", "remote-invite-open"), actionButton("remote-invite-done", "Done", "remote-invite-close"));
   invite.append(el("p", "remote-invite-hint", "In Artemis on the phone, add this PC and pair with:"), el("p", "remote-invite-code"), el("p", "remote-invite-pass"), el("p", "remote-invite-left"), buttons);
-  block.append(head, el("p", "remote-note"), viewing, who, actions, form, invite);
+  block.append(head, el("p", "remote-note"), createDoor(), viewing, who, actions, form, invite);
   return block;
+}
+
+/**
+ * A machine's sign-in door, under its desktop's state: where it stands, the switch, and
+ * Remove, a link, once its service is on the machine and the door is off.
+ */
+function createDoor(): HTMLElement {
+  const block = el("div", "remote-door");
+  const head = el("div", "door-head");
+  const remove = actionButton("door-remove", "Remove", "door-remove");
+  remove.classList.add("link");
+  remove.title = "Take the door's service off this machine: Windows asks an administrator on its own screen";
+  head.append(el("span", "door-label", "Sign-in door"), el("span", "door-words"), actionButton("door-switch", "", "door-switch"), remove);
+  block.append(head, el("p", "door-note"));
+  return block;
+}
+
+function updateDoor(block: HTMLElement, remote: RemoteCard, state: ViewState, ui: UiState): void {
+  const door = remote.door;
+  setHidden(block, door === undefined);
+  if (!door) return;
+  setData(block, "state", door.state);
+  const busy = ui.doorBusy?.get(door.node);
+  setText(block.querySelector(".door-words")!, door.words);
+  const button = block.querySelector<HTMLButtonElement>(".door-switch")!;
+  button.dataset["node"] = door.node;
+  button.dataset["on"] = door.on ? "1" : "0";
+  setText(button, busy === "on" ? "Turning on…" : busy === "off" ? "Turning off…" : door.on ? "Turn off" : "Turn on");
+  button.title = door.on ? "Your devices reach this desktop only while someone is signed in and Cophyla runs" : "Let your devices reach this desktop at its sign-in screen, and after a restart";
+  button.disabled = !state.connected || busy !== undefined || door.state === "installing";
+  const remove = block.querySelector<HTMLButtonElement>(".door-remove")!;
+  setHidden(remove, !door.remove);
+  setText(remove, busy === "remove" ? "Removing…" : "Remove");
+  remove.dataset["node"] = door.node;
+  remove.disabled = !state.connected || busy !== undefined;
+  setText(
+    block.querySelector(".door-note")!,
+    door.on
+      ? "While no one is signed in here, or the screen is locked with Cophyla not running, your phones and the machines that already view this desktop reach it without asking. Windows' password guards the rest."
+      : "On, your phones and the machines that already view this desktop reach it at its sign-in screen and after a restart, without asking. The first time, Windows asks an administrator to approve it on this machine's own screen.",
+  );
 }
 
 /** One device that can view a desktop: what it is, how it views it or that it watches now, and Forget. */
@@ -1309,6 +1352,7 @@ function updateRemote(block: HTMLElement, remote: RemoteCard | undefined, state:
   const note = block.querySelector<HTMLElement>(".remote-note")!;
   setText(note, remote.note ?? "");
   setHidden(note, remote.note === undefined);
+  updateDoor(block.querySelector<HTMLElement>(".remote-door")!, remote, state, ui);
   updateViewButtons(block.querySelector<HTMLButtonElement>(".remote-connect")!, block.querySelector<HTMLButtonElement>(".remote-beside")!, remote.node, remote.connect, remote.beside, state, ui);
   const moonlight = block.querySelector<HTMLButtonElement>(".remote-moonlight")!;
   setHidden(moonlight, !remote.settings);

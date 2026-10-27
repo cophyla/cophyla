@@ -111,6 +111,8 @@ export const actions = {
   // Starting the desktop's host may install it; stopping only ends what streams.
   "remote.enable": { risk: "exec" },
   "remote.disable": { risk: "write" },
+  // The door's service is installed elevated the first time, and it lets the user's own devices in unasked.
+  "remote.door": { risk: "exec" },
   // A node asking for a stream page of this desktop for a viewer of its own (the node link's).
   "remote.ticket": { risk: "exec" },
   "remote.screenshot": { risk: "exec" },

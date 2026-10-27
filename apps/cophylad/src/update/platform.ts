@@ -69,6 +69,14 @@ export const MCP_PATHS: Record<HostOs, string> = {
   linux: "bin/cophyla-mcp",
 };
 
+/**
+ * The sign-in door's service shim inside `versions/<v>/`, which the door's install copies to
+ * Program Files, elevated, the first time it is switched on: Windows alone has one.
+ */
+export const DOOR_PATHS: Partial<Record<HostOs, string>> = {
+  windows: "bin/cophyla-door.exe",
+};
+
 export const SHELL_NAME = SHELL_PATHS[hostOs()];
 export const TETHER_PATH = TETHER_PATHS[hostOs()];
 export const NET_PATH = NET_PATHS[hostOs()];

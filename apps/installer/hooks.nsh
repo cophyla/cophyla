@@ -17,6 +17,10 @@
   IfFileExists "$INSTDIR\bin\cophyla.cmd" 0 +3
     nsExec::Exec '"$INSTDIR\bin\cophyla.cmd" agents uninstall'
     Pop $0
+  ; The sign-in door's service, where this machine has one: it holds this user's membership
+  ; in its protected folder, so it goes too, by its own uninstall, as an administrator.
+  IfFileExists "$PROGRAMFILES64\Cophyla Door\cophyla-door.exe" 0 +2
+    ExecShellWait "runas" "$PROGRAMFILES64\Cophyla Door\cophyla-door.exe" "uninstall" SW_HIDE
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL

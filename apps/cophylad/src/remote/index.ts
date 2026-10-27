@@ -29,7 +29,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { RpcError } from "@cophyla/protocol";
-import type { CapabilityResult, Client, ClientResult, DisplaySize, RemoteHost, RemoteState, RemoteViewer, StreamTransport } from "@cophyla/protocol";
+import type { CapabilityResult, Client, ClientResult, DisplaySize, DoorState, RemoteHost, RemoteState, RemoteViewer, StreamTransport, TicketViewer } from "@cophyla/protocol";
 import type { ListenerKind } from "../api/clients.ts";
 import type { Bus } from "../bus.ts";
 import type { RemoteConfig } from "../config/schema.ts";
@@ -67,6 +67,8 @@ export interface OpenContext {
   embed?: boolean;
   /** The host's screen as the client last heard it, for a host whose `remote.state` this node has not. */
   display?: DisplaySize;
+  /** Who the client is, as a host's sign-in door reads it on a ticket asked of it: a phone by its grant, or one of the user's machines. */
+  by?: TicketViewer;
 }
 
 export interface RemoteDeps {
@@ -119,6 +121,12 @@ export interface RemoteDeps {
   streamPort?: () => number | undefined;
   /** This node's direct connections: the TURN servers a stream's own WebRTC uses, and the router's mapping of its ports. */
   direct?: { readonly ready: boolean; iceServers(): Promise<unknown>; request(method: string, params: unknown): Promise<unknown> };
+  /** The name this node's web viewer pairs with a host under: `<name> web`, a sign-in door's own `<name> sign-in`. */
+  viewerName?: () => string;
+  /** The machine's sign-in door, told with this node's state. */
+  doorState?: () => DoorState | undefined;
+  /** Whether a Windows host service that is stopped may be started: never by a sign-in door, which runs no installer and starts nothing. */
+  startsService?: boolean;
 }
 
 /** A stream shown where there is no route to its host: which host, whose it is, and the forwarder a window reads it through. */
@@ -134,11 +142,15 @@ export const ENABLED_KEY = "remote_enabled";
 /** The store's key for whose viewer each client of the host is, by the name the host lists it under (`Owner`s, as JSON). */
 export const PAIRED_BY_KEY = "remote_paired_by";
 
-/** Whose viewer a paired client is: a machine's Moonlight, or (`browser`) the web viewer it runs. */
+/** Whose viewer a paired client is: a machine's Moonlight, or (`browser`) the web viewer it runs, or (`door` too) its sign-in door's. */
 interface Owner {
   node: string;
   browser?: true;
+  door?: true;
 }
+
+/** What a sign-in door's web viewer is paired under, after the machine's name. */
+export const DOOR_VIEWER_SUFFIX = " sign-in";
 /** How long a viewer has to show it kept a pairing the host accepted. */
 const PAIR_CONFIRM_MS = 15_000;
 /** Polls the host may miss before it is called unavailable. */
@@ -206,7 +218,7 @@ export class Remote {
       lanIps: deps.lanIps,
       pairOn: deps.pairOn,
       get viewerName() {
-        return `${deps.nodeName} web`;
+        return deps.viewerName?.() ?? `${deps.nodeName} web`;
       },
       iceServersFile: join(deps.dir, "ice-servers.json"),
     });
@@ -233,6 +245,11 @@ export class Remote {
     return (this.deps.now ?? Date.now)();
   }
 
+  /** The node whose desktop this is. */
+  get nodeId(): string {
+    return this.deps.nodeId;
+  }
+
   // --- state ------------------------------------------------------------------------------------
 
   /** Whether this node shares its desktop now. */
@@ -243,7 +260,13 @@ export class Remote {
   /** This node's `remote.state`. */
   state(): RemoteState {
     const viewers = [...this.native, ...this.tickets.viewers()];
-    return { node: this.deps.nodeId, host: { ...this.host, ...(this.display ? { display: { ...this.display } } : {}) }, viewers, streaming: this.hostStreaming };
+    const door = this.deps.doorState?.();
+    return { node: this.deps.nodeId, host: { ...this.host, ...(this.display ? { display: { ...this.display } } : {}) }, viewers, streaming: this.hostStreaming, ...(door ? { door } : {}) };
+  }
+
+  /** Something this node's state tells of outside the module changed (its sign-in door): told when it did. */
+  changed(): void {
+    this.publish();
   }
 
   /** This machine's primary display now. */
@@ -400,6 +423,7 @@ export class Remote {
         const svc = await windowsServiceState(kind, this.exec);
         this.still(generation);
         if (svc.state === "stopped") {
+          if (this.deps.startsService === false) throw new Error(`${hostLabel(located)} is stopped: ${svc.detail}`);
           this.setHost({ kind, status: "starting", step: svc.detail });
           const started = await windowsServiceStart(kind, this.exec);
           if (!started.ok) throw new Error(started.detail);
@@ -549,7 +573,7 @@ export class Remote {
         since,
         ...(c.name ? { name: c.name } : {}),
         ...(c.connected !== undefined ? { connected: c.connected } : {}),
-        ...(owner ? { pairedBy: owner.node, ...(owner.browser ? { browser: true } : {}) } : {}),
+        ...(owner ? { pairedBy: owner.node, ...(owner.browser ? { browser: true } : {}), ...(owner.door ? { door: true } : {}) } : {}),
       };
     });
     for (const id of [...this.firstSeen.keys()]) if (!seen.has(id)) this.firstSeen.delete(id);
@@ -597,7 +621,7 @@ export class Remote {
     if (!text) return out;
     try {
       for (const [name, o] of Object.entries(JSON.parse(text) as Record<string, Partial<Owner>>)) {
-        if (typeof o?.node === "string") out.set(name, { node: o.node, ...(o.browser === true ? { browser: true } : {}) });
+        if (typeof o?.node === "string") out.set(name, { node: o.node, ...(o.browser === true ? { browser: true } : {}), ...(o.door === true ? { door: true } : {}) });
       }
     } catch {
       this.log.warn("the viewers' owners in the store are unreadable: matched again by name");
@@ -605,14 +629,27 @@ export class Remote {
     return out;
   }
 
-  /** The machine a client of this name was paired for: one that goes by the name, or whose web viewer does. */
+  /** The machine a client of this name was paired for: one that goes by the name, or whose web viewer or sign-in door's does. */
   private ownerNamed(name: string): Owner | undefined {
     const named = this.deps.nodeNamed;
     if (!named) return undefined;
     const node = named(name);
     if (node) return { node };
     const web = name.endsWith(" web") ? named(name.slice(0, -" web".length)) : undefined;
-    return web ? { node: web, browser: true } : undefined;
+    if (web) return { node: web, browser: true };
+    const door = name.endsWith(DOOR_VIEWER_SUFFIX) ? named(name.slice(0, -DOOR_VIEWER_SUFFIX.length)) : undefined;
+    return door ? { node: door, browser: true, door: true } : undefined;
+  }
+
+  /**
+   * The machines that paired a viewer of their own with this desktop (their Moonlight or the
+   * web viewer they run), as the host lists them now: whom a sign-in door here lets in unasked.
+   * The door's own viewer is not one.
+   */
+  pairedMachines(): string[] {
+    const out = new Set<string>();
+    for (const o of this.keptOwners().values()) if (!o.door) out.add(o.node);
+    return [...out];
   }
 
   private requireHost(): HostApi {
@@ -733,16 +770,16 @@ export class Remote {
     // a host this node has no route to: its page is its own node's, read through pipes
     const away = node !== this.deps.nodeId && !this.routable(node);
     // the phone off the LAN, or on it with no route from here to the host: the host's page through its own forwarder and pipes
-    if (ctx.client.kind === "controller" && ctx.forward && (ctx.listener === "cloud" || ctx.listener === "p2p" || away)) return this.openAway(node, ctx.client, "phone");
+    if (ctx.client.kind === "controller" && ctx.forward && (ctx.listener === "cloud" || ctx.listener === "p2p" || away)) return this.openAway(node, ctx.client, "phone", ctx.by);
     if (ctx.embed && ctx.client.kind === "ui" && node === this.deps.nodeId) throw new RpcError("invalid", "this is the desktop the app runs on: it is not shown beside the view");
     // the desktop app on a node with no route to the host: the page through a forwarder here, in a window of its own or beside the view
-    if (ctx.client.kind === "ui" && node !== this.deps.nodeId && ctx.client.node === this.deps.nodeId && !this.routable(node)) return this.openAway(node, ctx.client, "window");
+    if (ctx.client.kind === "ui" && node !== this.deps.nodeId && ctx.client.node === this.deps.nodeId && !this.routable(node)) return this.openAway(node, ctx.client, "window", ctx.by);
     if (ctx.embed && ctx.client.kind === "ui") return this.openBeside(node, ctx.client, ctx.display);
     if (ctx.client.kind === "controller") {
       if (ctx.listener !== "controller") throw new RpcError("unavailable", "a stream page is served on the controller listener only");
       if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
       // a browser, and a host this node has no route to: the host's own page, through pipes, served from the stream listener
-      if (away) return this.openAway(node, ctx.client, "browser", { at: this.streamOrigin(ctx.origin), origin: ctx.origin, embed: ctx.embed === true });
+      if (away) return this.openAway(node, ctx.client, "browser", ctx.by, { at: this.streamOrigin(ctx.origin), origin: ctx.origin, embed: ctx.embed === true });
       const ids = await this.web.ensureHost(node, this.hostAddress(node), ctx.client.id);
       const name = ctx.client.name !== undefined ? { name: ctx.client.name } : {};
       if (ctx.forward) {
@@ -824,7 +861,7 @@ export class Remote {
    * shows the desktop beside its view, the page is seeded to keep the video a few frames
    * behind at the host's screen size, with the user's pointer hidden over it.
    */
-  private async openAway(node: string, client: Client, how: "phone" | "window" | "browser", page?: { at: string; origin: string; embed: boolean }): Promise<ClientResult<"remote.open">> {
+  private async openAway(node: string, client: Client, how: "phone" | "window" | "browser", by: TicketViewer | undefined, page?: { at: string; origin: string; embed: boolean }): Promise<ClientResult<"remote.open">> {
     const self = this.deps.nodeId;
     let opened: { path: string; stream: string; video?: DisplaySize };
     if (node === self) opened = await this.ticket(client.id, client.name, "webrtc");
@@ -832,7 +869,8 @@ export class Remote {
       if (!this.deps.links) throw new RpcError("unavailable", `no link to ${node}`);
       if (how !== "phone" && !this.deps.pipes) throw new RpcError("unavailable", "this node carries no pipes");
       const seeded = how === "window" || (how === "browser" && page?.embed === true);
-      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(seeded ? { lowLatency: true, sized: true, hideCursor: true } : {}) };
+      // who the viewer is, for a host at its sign-in screen; the primary sets it again on a ticket a secondary asks for
+      const params = { node, viewer: client.id, ...(client.name !== undefined ? { name: client.name } : {}), transport: "webrtc", ...(seeded ? { lowLatency: true, sized: true, hideCursor: true } : {}), ...(by ? { by } : {}) };
       opened = (await this.deps.links.request(node, "remote.ticket", params, { timeoutMs: 180_000 })) as { path: string; stream: string; video?: DisplaySize };
     }
     const away: Away = { node, client: client.id };
@@ -874,6 +912,17 @@ export class Remote {
     const { ticket, stream } = this.tickets.mint(viewer, { node: this.deps.nodeId, ...ids }, { door: "loopback", ...(name !== undefined ? { name } : {}), transport, secureCookie: false, ...(opts.lowLatency ? { lowLatency: true } : {}), ...(video ? { video } : {}), ...(opts.hideCursor ? { hideCursor: true } : {}) });
     this.log.info("web viewer ticket minted for a viewer elsewhere", { viewer, transport, ...(video ? { video: `${video.width}x${video.height}@${video.fps} ${video.bitrate} kbps` } : {}) });
     return { path: `/remote/?t=${ticket}`, stream, ...(video ? { video: { width: video.width, height: video.height } } : {}) };
+  }
+
+  /**
+   * Has this node's web viewer pair with this node's own host now, before any stream needs
+   * it: what a sign-in door does while someone is signed in, so it is paired already when no
+   * one is.
+   */
+  async pairWebViewer(): Promise<void> {
+    this.requireHost();
+    if (!this.config.web) throw new RpcError("unsupported", "this node serves no web viewer: [remote] web is off");
+    await this.web.ensureHost(this.deps.nodeId, "127.0.0.1", "door");
   }
 
   /** A viewer elsewhere ended its stream here. */
