@@ -1,7 +1,8 @@
 // The grant methods: a client with full access invites a node, and one with the
 // `controllers` scope a phone with access no wider than its own (`grant.invite`); anyone
 // entitled lists the grants and revokes one, and the desktop of this machine alone joins a
-// primary with an invite or leaves it (`node.join`, `node.leave`). An invite's text is shown
+// primary with an invite or leaves it (`node.join`, `node.leave`), the join turning this
+// machine's sign-in door on when asked (`door`). An invite's text is shown
 // to the one who asked and kept in no audit row; so is the invite a join redeems. A browser on
 // another computer is invited with a key (`browser.invite`), which is audited no more than an
 // invite's text is. What a client
@@ -26,6 +27,11 @@ export interface GrantMethodDeps {
   /** Ends a phone's grant: its sockets close, its relay and push go. */
   revokeController: (id: string) => void;
   phones: Pick<PhoneInvites, "invite" | "browser">;
+  /**
+   * The join's sign-in door, asked for: started once the machine joined, never thrown (the
+   * door's own state says how it went); absent where the machine can have none (not Windows).
+   */
+  doorAtJoin?: () => void;
 }
 
 /** Joining and leaving are this machine's to decide: asked on its loopback listener, never from a phone or through the primary. */
@@ -94,7 +100,13 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
       redact: (p) => ({ ...p, invite: "[redacted]" }),
       handler: async (p, ctx) => {
         onThisMachine(ctx, "joining a primary");
-        return deps.nodes.join(p.invite, { ...(p.paths ? { paths: p.paths } : {}), ...(p.answerHere ? { answerHere: true } : {}), ...(p.askPrimary ? { askPrimary: true } : {}) });
+        // the door holds the whole desktop: refused before the join rather than after it
+        if (p.door && !deps.doorAtJoin) throw new RpcError("unsupported", "this machine has no sign-in door: Windows machines alone have one");
+        if (p.door && p.paths && p.paths.length > 0) throw new RpcError("invalid", "a machine that shares some folders alone has no sign-in door: name no folders, or leave the door off");
+        const joined = await deps.nodes.join(p.invite, { ...(p.paths ? { paths: p.paths } : {}), ...(p.answerHere ? { answerHere: true } : {}), ...(p.askPrimary ? { askPrimary: true } : {}) });
+        // its administrator's prompt may wait for someone here: the join is answered first
+        if (p.door) deps.doorAtJoin?.();
+        return joined;
       },
     },
     "node.leave": {

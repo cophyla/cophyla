@@ -13,7 +13,7 @@ import { ACCESS_PRESETS, inviteLink } from "@cophyla/protocol";
 import type { Client, Controller, Grant, Node, Scope, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { encode } from "uqr";
 import { terminalQr } from "../src/cli.ts";
-import { accessWords, apply, BROWSER_ENDS, browserInviteParams, endWords, GRANT_ENDS, initialState, keyWords, minterWords, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
+import { accessWords, apply, BROWSER_ENDS, browserInviteParams, endWords, GRANT_ENDS, initialState, keyWords, minterWords, joinAsksDoor, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 import { QR_BORDER, qrModules, qrPath } from "../views/default/qr.ts";
 
@@ -234,6 +234,19 @@ describe("default view: the phones' access and the machines' grants", () => {
     const phone = connected("controller");
     apply(phone, { type: "nodes", nodes: [node(NODE, "Studio")] });
     expect(membershipOffer(phone)).toBeUndefined();
+  });
+
+  test("the join asks about this machine's sign-in door on Windows, where its Cophyla has one", () => {
+    const state = connected();
+    apply(state, { type: "nodes", nodes: [node(NODE, "Studio")] });
+    // no word of a door from it yet: its Cophyla is older than the door
+    expect(joinAsksDoor(state)).toBe(false);
+    apply(state, { type: "remote.state", params: { node: NODE, host: { kind: "apollo", status: "off" }, viewers: [], streaming: false, door: { state: "off" } } });
+    expect(joinAsksDoor(state)).toBe(true);
+    const mac = connected();
+    apply(mac, { type: "nodes", nodes: [node(NODE, "Studio", { platform: "macos" })] });
+    apply(mac, { type: "remote.state", params: { node: NODE, host: { kind: "sunshine", status: "off" }, viewers: [], streaming: false, door: { state: "off" } } });
+    expect(joinAsksDoor(mac)).toBe(false);
   });
 
   test("the folders a join shares, one per line", () => {

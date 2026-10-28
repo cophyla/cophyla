@@ -262,7 +262,7 @@ export interface DaemonOptions {
   /** The direct connections' seams: the helper's command and spawner (a test has no helper unless it gives one, since a real one binds the machine's addresses), a clock. */
   direct?: Pick<DirectDeps, "command" | "spawn" | "now"> & { openTimeoutMs?: number; link?: LinkDirectTiming };
   /** The sign-in door's seams: the OS it believes it is on, its pipe and how it opens, the elevated run, the platform it installs from. */
-  door?: Partial<Pick<DoorManagerDeps, "os" | "pipe" | "client" | "elevate" | "install" | "now">>;
+  door?: Partial<Pick<DoorManagerDeps, "os" | "pipe" | "client" | "elevate" | "install" | "exec" | "now">>;
   /** The cloud module's seams: the fetch for the login and the revoke, the entitlement keys, the browser opener, a clock. */
   cloud?: {
     fetch?: typeof fetch;
@@ -1869,6 +1869,18 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       },
       revokeController,
       phones,
+      // the join's own question: this desktop shared first if it is not, its host up, then the door
+      ...(doorOs === "windows"
+        ? {
+            doorAtJoin: () =>
+              void (async () => {
+                if (!remote!.enabled) remote!.enable();
+                // one administrator's prompt at a time: the host's installer's first, then the door's
+                await remote!.ready().catch(() => undefined);
+                await doorManager.set(true);
+              })().catch((e: unknown) => log.child("door").warn("the sign-in door asked for at the join did not come on", { error: e instanceof Error ? e.message : String(e) })),
+          }
+        : {}),
     }),
     ...lanMethods({ lan: () => lan! }),
     ...guestMethods({ guests }),

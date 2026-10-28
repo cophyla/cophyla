@@ -64,7 +64,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
@@ -1464,17 +1464,19 @@ async function removeNode(node: string): Promise<void> {
   void loadNodes();
 }
 
-/** Joins the computer that made the invite, sharing the folders named, asking first and keeping the prompts here when asked. */
+/** Joins the computer that made the invite, sharing the folders named, asking first, keeping the prompts here and turning the sign-in door on when asked. */
 async function submitJoin(form: HTMLFormElement): Promise<void> {
   const invite = field(form, "invite").trim();
   if (!invite) return;
   const paths = joinPaths(field(form, "paths"));
   const answerHere = (form.elements.namedItem("answerHere") as HTMLInputElement | null)?.checked === true;
   const askPrimary = (form.elements.namedItem("trustPrimary") as HTMLInputElement | null)?.checked === false;
+  // asked only where the box shows: a Windows machine whose Cophyla has a door
+  const door = joinAsksDoor(state) && (form.elements.namedItem("door") as HTMLInputElement | null)?.checked === true;
   ui.grantBusy = true;
   draw();
   try {
-    await rpc.request("node.join", { invite, ...(paths.length > 0 ? { paths } : {}), ...(answerHere ? { answerHere: true } : {}), ...(askPrimary ? { askPrimary: true } : {}) });
+    await rpc.request("node.join", { invite, ...(paths.length > 0 ? { paths } : {}), ...(answerHere ? { answerHere: true } : {}), ...(askPrimary ? { askPrimary: true } : {}), ...(door ? { door: true } : {}) });
     ui.grantForm = undefined;
     form.reset();
   } catch (e) {

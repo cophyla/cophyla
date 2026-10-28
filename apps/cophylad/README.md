@@ -7,7 +7,7 @@ on when the node is the primary.
 bun run apps/cophylad/src/main.ts [--home <dir>] [--port <n>]
 bun run apps/cophylad/src/main.ts invite [--name N] [--role hands|full] [--expires 1d] [--invite-expires 1h]
 bun run apps/cophylad/src/main.ts invite --phone [--name N] [--access full|sessions|view] [--expires 1d] [--invite-expires 15m]
-bun run apps/cophylad/src/main.ts join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust]
+bun run apps/cophylad/src/main.ts join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust] [--door|--no-door]
 bun run apps/cophylad/src/main.ts leave
 ```
 
@@ -25,8 +25,12 @@ keeps the asks raised here to this machine's own clients. At a terminal `join` a
 primary may start sessions and terminals, run commands and edit files here without asking each
 time, yes unless answered no; `--trust` and `--ask` answer it beforehand, and with no terminal
 the answer is yes. A no is kept in `data/link.json`, and then `[gate.policy.node]` decides for
-the primary's requests as for any other node's. `leave` leaves the cluster, and the
-machine runs alone.
+the primary's requests as for any other node's. On Windows, joining the whole machine (no
+`--workspace`), it asks too whether the machine's sign-in door comes on (Remote desktop,
+below), no unless answered yes, which `--door` and `--no-door` answer beforehand; with no
+terminal the answer is no. `node.join {door}` then shares the desktop if it is not shared, waits
+for its host, and switches the door on, Windows' administrator prompt on this screen, after
+the join is answered. `leave` leaves the cluster, and the machine runs alone.
 
 `--home` defaults to `$COPHYLA_HOME`, then `~/.cophyla`. On first start the daemon writes a
 commented `config.toml` there, creates `data/cophyla.sqlite`, and generates `data/client.token`,
@@ -789,7 +793,8 @@ sign-in door. `remote.door {node?, on}` is the switch (`remote_enabled`'s neighb
 `door_enabled` in the store), asked about on the machine like Share when it comes from
 elsewhere (`doorAsk`); a hands node's is its owner's to switch, in Cophyla on that machine, as
 its sharing is (the primary's is refused in `served.ts`), and its door joins as hands, as the
-node does. The first time on it installs the door's Windows service,
+node does. It is one of the join's questions too (`node.join {door}`: the join form's box,
+`join --door`), the machine's own setup. The first time on it installs the door's Windows service,
 **CophylaDoor**, with one administrator's prompt on that machine's own screen
 (`door/elevate.ts`: `ShellExecuteExW runas` on `versions/<v>/bin/cophyla-door.exe install
 --from <versionDir> --user-sid <sid>`, its outcome in a file named by `--result`, declining it

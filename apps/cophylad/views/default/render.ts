@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
@@ -1665,7 +1665,7 @@ function createNodeInviteForm(): HTMLFormElement {
   return form;
 }
 
-/** Join another computer: the invite it made for this one, the folders it may use here, whether it asks first, and whose prompts are whose. */
+/** Join another computer: the invite it made for this one, the folders it may use here, whether it asks first, whose prompts are whose, and its sign-in door. */
 function createJoinForm(): HTMLFormElement {
   const form = el("form", "grant-form node-join-form");
   const invite = el("textarea", "join-invite");
@@ -1692,6 +1692,14 @@ function createJoinForm(): HTMLFormElement {
   trusted.name = "trustPrimary";
   trusted.defaultChecked = true;
   trust.append(trusted, el("span", undefined, "It starts sessions and terminals, runs commands and edits files here without asking each time"));
+  // the machine's sign-in door, asked here as the machine is set up: Windows alone (renderNodeTools)
+  const door = el("label", "join-here join-door");
+  const doorBox = el("input");
+  doorBox.type = "checkbox";
+  doorBox.name = "door";
+  door.title =
+    "Its phones and machines reach this desktop while no one is signed in here, or the screen is locked with Cophyla not running, without asking; Windows' password guards the rest. It shares this desktop if it is not shared, and Windows asks an administrator to approve, on this screen. The whole machine's: not with folders named.";
+  door.append(doorBox, el("span", undefined, "Its devices reach this desktop at the sign-in screen too, and after a restart"));
   const submit = el("button", "grant-submit", "Join");
   submit.type = "submit";
   form.append(
@@ -1701,6 +1709,7 @@ function createJoinForm(): HTMLFormElement {
     paths,
     trust,
     here,
+    door,
     submit,
     actionButton("grant-form-cancel", "Cancel", "grant-form-close"),
   );
@@ -1907,6 +1916,7 @@ function renderNodeTools(tools: HTMLElement, state: ViewState, ui: UiState): voi
   const joinForm = tools.querySelector<HTMLFormElement>(".node-join-form")!;
   setHidden(joinForm, ui.grantForm !== "join");
   setFormBusy(joinForm, state, ui);
+  setHidden(joinForm.querySelector<HTMLElement>(".join-door")!, !joinAsksDoor(state));
   renderInvitePanel(tools.querySelector<HTMLElement>(".invite-slot")!, state, ui, "node");
   renderPending(tools.querySelector<HTMLElement>(".invites-pending")!, state, "node");
 }

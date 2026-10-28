@@ -346,7 +346,7 @@
     "grant.revoke": { "params": [{ "id": "grt_01ARZ3NDEKTSV4RRFFQ69G5FD1" }, { "id": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }], "results": [{}] },
     "node.list": { "params": [{}], "results": [{ "nodes": [] }] },
     "node.join": {
-      "params": [{ "invite": "cophyla-invite:eyJ2IjoxfQ" }, { "invite": "cophyla-invite:eyJ2IjoxfQ", "paths": ["C:\\src\\app"], "answerHere": true }],
+      "params": [{ "invite": "cophyla-invite:eyJ2IjoxfQ" }, { "invite": "cophyla-invite:eyJ2IjoxfQ", "paths": ["C:\\src\\app"], "answerHere": true }, { "invite": "cophyla-invite:eyJ2IjoxfQ", "door": true }],
       "results": [{ "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "hands" }]
     },
     "node.leave": { "params": [{}], "results": [{}] },

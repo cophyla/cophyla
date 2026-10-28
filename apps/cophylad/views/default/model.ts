@@ -3632,6 +3632,12 @@ export function membershipOffer(state: ViewState): "join" | "leave" | undefined 
   return undefined;
 }
 
+/** Whether the join asks about this machine's sign-in door: a Windows machine whose Cophyla has one (its desktop's state says `door`). */
+export function joinAsksDoor(state: ViewState): boolean {
+  const self = state.node === undefined ? undefined : state.nodes.get(state.node);
+  return self?.platform === "windows" && state.remote.get(self.id)?.door !== undefined;
+}
+
 /** The folders a join shares, one per line as typed: blank lines and stray spaces dropped. */
 export function joinPaths(text: string): string[] {
   return text

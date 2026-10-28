@@ -32,7 +32,7 @@ import { FAKE_WEB, remoteSeams } from "./fakes/remote.ts";
 import type { RemoteSeams } from "./fakes/remote.ts";
 import { FakeServer } from "./fakes/server.ts";
 import { removeHome, TestClient, tempHome, waitFor } from "./helpers.ts";
-import { client, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
+import { client, inviteOn, linked, startPrimary, startSecondary, stopAll } from "./nodes-helpers.ts";
 import type { Primary, Started } from "./nodes-helpers.ts";
 
 let primary: Primary | undefined;
@@ -310,6 +310,50 @@ describe("a machine at its sign-in screen", () => {
     expect(p.d.nodes.registry.get(id)?.hands).toBe(true);
     expect(run.lines.some((l) => l.includes("replaced by a new link"))).toBe(false);
   }, 120_000);
+
+  test("the join's question: a machine that joins with its door asked for shares its desktop, then installs the door with the prompt here, once joined", async () => {
+    apollo = await startFakeApollo();
+    apollo.acceptAny = true;
+    primary = await startPrimary({ heartbeatMs: 1000 });
+    const seams = remoteSeams();
+    const port = apollo.port;
+    const elevated: string[][] = [];
+    // its desktop not shared yet; a Windows machine, as the daemon sees it, installed in its versions folder
+    const s = await startSecondary(primary, {
+      unjoined: true,
+      node: `name = "den"\n`,
+      toml: `[remote]\nhost_command = "C:\\\\fake\\\\Apollo\\\\sunshine.exe"\npoll_ms = 100\n\n`,
+      daemon: {
+        remote: { os: "windows", exec: seams.exec, hostApi: (kind) => new HostApi({ kind, port, log: silentLogger, timeoutMs: 3000 }), moonlight: { spawn: seams.spawn, command: seams.moonlight }, screenshot: seams.screenshot, display: seams.display, web: { command: [process.execPath, FAKE_WEB] } },
+        door: {
+          os: "windows",
+          pipe: new FakeShim().pipe,
+          client: { verify: async () => undefined },
+          install: () => ({ versionDir: "C:\\Users\\me\\AppData\\Local\\Cophyla\\versions\\0.22.2", version: "0.22.2" }),
+          exec: async () => ({ code: 0, stdout: '"den\\me","S-1-5-21-1-2-3-1001"\r\n', stderr: "" }),
+          elevate: async (exe, args) => {
+            elevated.push([exe, ...args]);
+            return { code: 1223 };
+          },
+        },
+      },
+    });
+    secondary = s;
+    expect(s.remote.enabled).toBe(false);
+    const c = await client(s);
+    closers.push(() => c.close());
+    const joined = await c.request<{ role: string }>("node.join", { invite: await inviteOn(primary, { role: "hands" }), door: true });
+    expect(joined.role).toBe("hands");
+    await linked(s, 10_000);
+    // shared first, its host up, then the door's install with the administrator's prompt here
+    await waitFor(() => elevated.length > 0, 15_000);
+    expect(s.remote.enabled).toBe(true);
+    expect(s.remote.state().host.status).toBe("ready");
+    expect(elevated[0]!.slice(1, 4)).toEqual(["install", "--from", "C:\\Users\\me\\AppData\\Local\\Cophyla\\versions\\0.22.2"]);
+    // the prompt declined: the door says so where the user looks, on the machine's Desktop section
+    await waitFor(() => s.door.state()?.state === "unavailable", 5000);
+    expect(s.door.state()).toMatchObject({ reason: "the administrator prompt was declined" });
+  }, 60_000);
 
   test("a door never takes the link from the machine's own daemon", async () => {
     const setup = await start();

@@ -45,8 +45,9 @@ if (values.help) {
                  an invite for a new node, from the running primary
   cophylad invite --phone [--name N] [--access full|sessions|view] [--expires 1d]
                  an invite for a phone, with its QR code on a terminal
-  cophylad join [--file F|-] [--workspace P]... [--answer-here]
-                 this machine joins the primary whose invite is read from F or stdin
+  cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust] [--door|--no-door]
+                 this machine joins the primary whose invite is read from F or stdin;
+                 --door turns its sign-in door on too (Windows)
   cophylad leave    this machine leaves the primary it joined
 
   Lending one folder to another person's cluster is the cophyla command's:

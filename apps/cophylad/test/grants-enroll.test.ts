@@ -15,7 +15,7 @@ import { inviteText, newId, parseInvite, PROTOCOL_VERSION } from "@cophyla/proto
 import type { InviteBody, Node } from "@cophyla/protocol";
 import { derive, ephemeral, pskFromHex, pskFromSecret } from "@cophyla/relay";
 import type { SealedKind } from "@cophyla/relay";
-import { parseDuration, trustsPrimary } from "../src/cli.ts";
+import { parseDuration, trustsPrimary, wantsDoor } from "../src/cli.ts";
 import type { Questions } from "../src/cli.ts";
 import { paths } from "../src/config/load.ts";
 import { readLinkFile } from "../src/grants/link-file.ts";
@@ -278,6 +278,20 @@ describe("joining and leaving", () => {
     expect(calls).toEqual([]);
     await table["node.join"]!.handler({ invite: "x" }, ctx("loopback"));
     expect(calls).toEqual(["join"]);
+
+    // the sign-in door asked for at the join: refused before it where there is none, or with folders named; started once joined
+    expect(await outcome(Promise.resolve().then(() => table["node.join"]!.handler({ invite: "x", door: true }, ctx("loopback"))))).toMatch(/Windows machines alone/);
+    const withDoor = grantMethods({ ...deps, doorAtJoin: () => void calls.push("door") });
+    expect(await outcome(Promise.resolve().then(() => withDoor["node.join"]!.handler({ invite: "x", door: true, paths: ["C:\\src"] }, ctx("loopback"))))).toMatch(/shares some folders alone has no sign-in door/);
+    expect(calls).toEqual(["join"]);
+    await withDoor["node.join"]!.handler({ invite: "x", door: true }, ctx("loopback"));
+    expect(calls).toEqual(["join", "join", "door"]);
+    await withDoor["node.join"]!.handler({ invite: "x" }, ctx("loopback"));
+    expect(calls).toEqual(["join", "join", "door", "join"]);
+    // a join that fails starts no door
+    const failing = grantMethods({ ...deps, nodes: { ...deps.nodes, join: async () => Promise.reject(new Error("spent")) }, doorAtJoin: () => void calls.push("door") });
+    expect(await outcome(Promise.resolve().then(() => failing["node.join"]!.handler({ invite: "x", door: true }, ctx("loopback"))))).toBe("spent");
+    expect(calls.filter((c) => c === "door")).toHaveLength(1);
   });
 
   test("a primary alone in a cluster of its own gives it up to join another", async () => {
@@ -372,5 +386,29 @@ describe("from before grants", () => {
     expect(await trustsPrimary("cophyla-invite:damaged", {}, answering("n"))).toBe(true);
     expect(asked).toEqual([]);
     expect(await trustsPrimary(invite, { ask: true, trust: true }).then(String, (e: unknown) => (e as Error).message)).toMatch(/give one/);
+  });
+
+  test("join asks on Windows, joining the whole machine, whether its sign-in door comes on: only a yes is a yes, and no terminal is a no", async () => {
+    const invite = inviteText({ v: 1, kind: "node", grant: newId("grant"), secret: "ab".repeat(32), expiresAt: Date.now() + 60_000, node: { id: newId("node"), name: "study" } });
+    const asked: string[] = [];
+    const answering = (answer: string): Questions => ({ ask: async (q) => (asked.push(q), answer), close: () => {} });
+    const windows = { windows: true, confined: false };
+    expect(await wantsDoor(invite, {}, windows, answering("y"))).toBe(true);
+    expect(await wantsDoor(invite, {}, windows, answering(" Yes"))).toBe(true);
+    expect(await wantsDoor(invite, {}, windows, answering(""))).toBe(false);
+    expect(await wantsDoor(invite, {}, windows, answering("n"))).toBe(false);
+    expect(asked[0]).toMatch(/^Let study's phones and machines reach this computer's desktop at its sign-in screen too, and after a restart\? .* \[y\/N\] $/);
+    asked.length = 0;
+    // not asked: no terminal, not Windows, folders named, or answered beforehand
+    expect(await wantsDoor(invite, {}, windows)).toBe(false);
+    expect(await wantsDoor(invite, {}, { windows: false, confined: false }, answering("y"))).toBe(false);
+    expect(await wantsDoor(invite, {}, { windows: true, confined: true }, answering("y"))).toBe(false);
+    expect(await wantsDoor(invite, { noDoor: true }, windows, answering("y"))).toBe(false);
+    expect(await wantsDoor(invite, { door: true }, windows, answering("n"))).toBe(true);
+    expect(asked).toEqual([]);
+    const refused = (p: Promise<boolean>) => p.then(String, (e: unknown) => (e as Error).message);
+    expect(await refused(wantsDoor(invite, { door: true, noDoor: true }, windows))).toMatch(/give one/);
+    expect(await refused(wantsDoor(invite, { door: true }, { windows: false, confined: false }))).toMatch(/Windows machine's/);
+    expect(await refused(wantsDoor(invite, { door: true }, { windows: true, confined: true }))).toMatch(/names folders/);
   });
 });

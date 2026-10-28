@@ -10,11 +10,13 @@
 //       key to type there on stderr, with the QR code of a link that carries both on a
 //       terminal, and that link on stdout; good once, for fifteen minutes. --session is for a
 //       shared computer: nothing is kept in that browser, and its access ends with its tab
-//   cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust]
+//   cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust] [--door|--no-door]
 //       redeems an invite read from a file or stdin, never from the command line, so it
 //       stays out of the process list and the shell's history; at a terminal it asks whether
 //       the primary may work here without asking each time (yes unless answered no), which
-//       --trust and --ask answer beforehand
+//       --trust and --ask answer beforehand, and on Windows, joining the whole machine,
+//       whether its sign-in door comes on (no unless answered yes), which --door and
+//       --no-door answer beforehand
 //   cophylad leave
 //   cophylad lan on|off|status
 //       whether this machine serves devices on its network (a phone, a browser on another
@@ -159,6 +161,27 @@ export async function trustsPrimary(invite: string, flags: { ask?: boolean; trus
   return !/^\s*n/i.test(answer);
 }
 
+/**
+ * Whether this machine's sign-in door comes on with the join: `--door` or `--no-door` say so
+ * beforehand; at a terminal on Windows, joining the whole machine, the question is asked, and
+ * only a yes is a yes; with no terminal to ask at, no.
+ */
+export async function wantsDoor(invite: string, flags: { door?: boolean; noDoor?: boolean }, where: { windows: boolean; confined: boolean }, questions?: Questions): Promise<boolean> {
+  if (flags.door && flags.noDoor) throw new Error("--door and --no-door answer the same question: give one");
+  if (flags.door && !where.windows) throw new Error("--door is a Windows machine's: this one has no sign-in door");
+  if (flags.door && where.confined) throw new Error("--door is the whole machine's: a join that names folders has no sign-in door");
+  if (flags.door) return true;
+  if (flags.noDoor || !questions || !where.windows || where.confined) return false;
+  let name = "the computer you join";
+  try {
+    name = parseInvite(invite).node.name;
+  } catch {
+    // a damaged invite is the daemon's to refuse, in its own words
+  }
+  const answer = await questions.ask(`Let ${name}'s phones and machines reach this computer's desktop at its sign-in screen too, and after a restart? This shares its desktop, and Windows asks an administrator to approve, here. [y/N] `);
+  return /^\s*y/i.test(answer);
+}
+
 /** Where the node stands on its network, as lines for a terminal. */
 export function lanLines(s: LanState): string {
   const head =
@@ -201,6 +224,8 @@ export async function runCommand(command: Command, argv: string[], how: { local?
       "answer-here": { type: "boolean" },
       ask: { type: "boolean" },
       trust: { type: "boolean" },
+      door: { type: "boolean" },
+      "no-door": { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
@@ -251,17 +276,20 @@ export async function runCommand(command: Command, argv: string[], how: { local?
         const flags = { ...(values.ask ? { ask: true } : {}), ...(values.trust ? { trust: true } : {}) };
         if (flags.ask && flags.trust) throw new Error("--ask and --trust answer the same question: give one");
         const questions = process.stdin.isTTY ? terminalQuestions() : undefined;
+        const paths = (values.workspace ?? []).map((w) => resolve(w));
         let invite: string;
         let trusted: boolean;
+        let door: boolean;
         try {
           invite = await readInvite(values.file, questions);
           trusted = await trustsPrimary(invite, flags, questions);
+          door = await wantsDoor(invite, { ...(values.door ? { door: true } : {}), ...(values["no-door"] ? { noDoor: true } : {}) }, { windows: process.platform === "win32", confined: paths.length > 0 }, questions);
         } finally {
           questions?.close();
         }
-        const paths = (values.workspace ?? []).map((w) => resolve(w));
-        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}), ...(trusted ? {} : { askPrimary: true }) }, as);
+        const r = await call(where, "node.join", { invite: invite.trim(), ...(paths.length > 0 ? { paths } : {}), ...(values["answer-here"] ? { answerHere: true } : {}), ...(trusted ? {} : { askPrimary: true }), ...(door ? { door: true } : {}) }, as);
         process.stdout.write(`Joined ${r.primary.name} as ${r.role === "hands" ? "hands" : "a full member"}${trusted ? "" : ", asking here before what it does"}.\n`);
+        if (door) process.stdout.write("Its sign-in door is coming on: once this desktop is shared, Windows asks an administrator to approve it on this screen.\n");
         return 0;
       }
       case "leave": {
