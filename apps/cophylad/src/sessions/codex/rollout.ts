@@ -11,6 +11,7 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionStats } from "@cophyla/protocol";
+import { lastLineWhere } from "../tail.ts";
 import { ASK_TOOL, isQuestionTool, questionCall, repliesIn } from "./questions.ts";
 import type { CodexQuestionCall, QuestionReply } from "./questions.ts";
 
@@ -233,6 +234,24 @@ export function statsFor(state: CodexRolloutState): SessionStats {
   if (s.context && s.context.limit > 0) out.context = { ...s.context };
   if (state.model !== undefined) out.model = state.model;
   return out;
+}
+
+type TurnContext = Extract<CodexItem, { kind: "turn_context" }>;
+
+/** What a thread's last turn ran with (its approval policy and sandbox among it), from the last `turn_context` in its rollout. */
+export function lastTurnContext(path: string): TurnContext | undefined {
+  const line = lastLineWhere(path, (text) => turnContextOf(text) !== undefined);
+  return line !== undefined ? turnContextOf(line) : undefined;
+}
+
+function turnContextOf(text: string): TurnContext | undefined {
+  if (!text.includes('"turn_context"')) return undefined;
+  try {
+    const item = applyCodexRow(newCodexState(), JSON.parse(text))[0];
+    return item?.kind === "turn_context" ? item : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** The rollout file of a thread, by walking the dated directories newest first. */

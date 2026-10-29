@@ -259,7 +259,7 @@ describe("what a confined node serves", () => {
     expect(await refused(s.serve("session.git", { id: inside.id }, 2))).toBe("served");
   });
 
-  test("the brain ends none of its owner's own sessions there, and none is reopened under another profile", async () => {
+  test("the brain ends none of its owner's own sessions there, and none is reopened under another profile or in a looser mode", async () => {
     const t = tree();
     const { s, inside, startedInside, ran } = server(t);
     let n = 0;
@@ -268,8 +268,10 @@ describe("what a confined node serves", () => {
     expect(await refused(call("session.stop", { id: startedInside.id, as: "brain" }))).toBe("served");
     expect(await refused(call("session.stop", { id: inside.id, as: "user" }))).toBe("served");
     expect(await refused(call("session.reopen", { id: inside.id, profile: newId("profile") }))).toMatch(/under the profile it ran under/);
+    expect(await refused(call("session.reopen", { id: inside.id, mode: "bypassPermissions" }))).toMatch(/in the mode it was last in/);
+    expect(await refused(call("session.reopen", { id: inside.id, mode: "plan" }))).toBe("served");
     expect(await refused(call("session.reopen", { id: inside.id }))).toBe("served");
-    expect(ran).toEqual([`stop ${startedInside.id}`, `stop ${inside.id}`, `reopen ${inside.id}`]);
+    expect(ran).toEqual([`stop ${startedInside.id}`, `stop ${inside.id}`, `reopen ${inside.id}`, `reopen ${inside.id}`]);
   });
 
   test("a node that answers its own asks answers them alone", async () => {

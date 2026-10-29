@@ -26,6 +26,62 @@ export interface TailLine {
 
 const NL = 0x0a;
 
+/** How far back `lastLineWhere` reads by default, and how much at a time. */
+const LAST_LINE_BYTES = 32 * 1024 * 1024;
+const LAST_LINE_CHUNK = 1024 * 1024;
+
+/**
+ * The last complete line of a JSONL file that `match` takes, read back from the file's end a
+ * chunk at a time, no further than `maxBytes` from it; `undefined` when none is, or the file
+ * cannot be read. A line cut by the start of that window is not looked at.
+ */
+export function lastLineWhere(path: string, match: (text: string) => boolean, maxBytes = LAST_LINE_BYTES): string | undefined {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch {
+    return undefined;
+  }
+  try {
+    const size = fstatSync(fd).size;
+    const floor = Math.max(0, size - maxBytes);
+    const buf = Buffer.alloc(Math.min(LAST_LINE_CHUNK, size - floor));
+    // The start of a line whose beginning is further back than what has been read.
+    let carry: Buffer = Buffer.alloc(0);
+    let end = size;
+    const take = (bytes: Buffer): string | undefined => {
+      let to = bytes.length;
+      if (to > 0 && bytes[to - 1] === 0x0d) to--;
+      if (to === 0) return undefined;
+      const text = bytes.subarray(0, to).toString("utf8");
+      return match(text) ? text : undefined;
+    };
+    while (end > floor) {
+      const start = Math.max(floor, end - buf.length);
+      const want = end - start;
+      for (let got = 0; got < want; ) {
+        const n = readSync(fd, buf, got, want - got, start + got);
+        if (n <= 0) return undefined;
+        got += n;
+      }
+      const data = carry.length > 0 ? Buffer.concat([buf.subarray(0, want), carry]) : buf.subarray(0, want);
+      let lineEnd = data.length;
+      for (let i = data.length - 1; i >= 0; i--) {
+        if (data[i] !== NL) continue;
+        const hit = take(data.subarray(i + 1, lineEnd));
+        if (hit !== undefined) return hit;
+        lineEnd = i;
+      }
+      carry = Buffer.from(data.subarray(0, lineEnd));
+      end = start;
+    }
+    // Read to the file's start, what is left is its first line.
+    return end === 0 ? take(carry) : undefined;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 export class Tail {
   readonly path: string;
   private offset = 0;

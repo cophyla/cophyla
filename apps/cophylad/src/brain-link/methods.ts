@@ -173,11 +173,17 @@ export function stopAsk(p: { id: string }, session: Session | undefined): { titl
   return { title: `End ${sessionName(session, p.id)}?`, detail: "Its program ends, and its terminal with it when Cophyla opened that terminal. The conversation is kept: reopening it takes it up again." };
 }
 
-/** The words of the ask a rule of the user's opens before the brain reopens a session: under another profile, which one. */
-export function reopenAsk(p: { id: string }, session: Session | undefined, profile: HarnessProfile | undefined): { title: string; detail: string } {
+/**
+ * The words of the ask before the brain reopens a session: under another profile, which one;
+ * in a mode it names, which, and what the session does in it. One in a mode looser than asking
+ * before each edit is asked unless the user's own rules allow it; any other only when one says to ask.
+ */
+export function reopenAsk(p: { id: string; mode?: LaunchMode }, session: Session | undefined, profile: HarnessProfile | undefined): { title: string; detail: string } {
   const name = sessionName(session, p.id);
-  if (!profile || profile.id === session?.profile) return { title: `Reopen ${name}?`, detail: "It starts again where it left off, with nothing typed into it." };
-  return { title: `Reopen ${name} under ${profile.name}?`, detail: `It starts again where it left off, with nothing typed into it, signed in as ${profile.name} and with its launch.` };
+  const moved = profile !== undefined && profile.id !== session?.profile;
+  const title = `Reopen ${name}${moved ? ` under ${profile.name}` : ""}${p.mode !== undefined ? ` in ${MODE_WORDS[p.mode]} mode` : ""}?`;
+  const detail = `It starts again where it left off, with nothing typed into it${moved ? `, signed in as ${profile.name} and with its launch` : ""}.`;
+  return { title, detail: p.mode !== undefined ? `${detail} ${IN_MODE[p.mode]}` : detail };
 }
 
 /** The words of the ask a node's rules open before the brain changes a session's mode. */
@@ -254,9 +260,11 @@ export function brainMethods(deps: BrainMethodDeps): BrainMethodTable {
     "session.closed": { handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }) },
     "session.reopen": {
       target: (p) => p.id,
+      // The built-in rule lets the brain reopen a session in the mode it was last in, or a stricter one named; a looser one named is the user's to approve.
+      loosens: spawnLoosens,
       ask: (p) => reopenAsk(p, deps.sessions.get(p.id), p.profile !== undefined ? deps.profiles.get(p.profile) : undefined),
       handler: async (p) => {
-        const session = await deps.sessions.reopen(p.id, { profiles: deps.profiles, ...(p.profile !== undefined ? { profile: p.profile } : {}) });
+        const session = await deps.sessions.reopen(p.id, { profiles: deps.profiles, ...(p.profile !== undefined ? { profile: p.profile } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) });
         const thread = deps.chat.peek();
         if (thread) deps.chat.touchSession(thread.id, session.id);
         return { id: session.id };

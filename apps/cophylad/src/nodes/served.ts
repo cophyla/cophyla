@@ -293,6 +293,8 @@ export class NodeServer {
     const stopping = c && name === "session.stop" && p["as"] !== "user" ? local?.session(String(p["id"])) : undefined;
     if (stopping && stopping.origin !== "orchestrator") throw new RpcError("denied", "this node shares folders alone: its owner's own sessions are theirs to end");
     if (c && name === "session.reopen" && p["profile"] !== undefined) throw new RpcError("denied", "this node shares folders alone: a session reopens there under the profile it ran under");
+    // Nor in a looser mode than its owner left it in: it goes on in the one it was last in.
+    if (c && name === "session.reopen" && spawnLoosens(p as { mode?: LaunchMode })) throw new RpcError("denied", "this node shares folders alone: a session reopens there in the mode it was last in, or one that asks before each edit");
     if (!c) return;
     switch (name) {
       case "session.history":

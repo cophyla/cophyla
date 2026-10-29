@@ -11,6 +11,9 @@
 // forked from carries that message's id, so it is not counted twice.
 
 import type { SessionStats } from "@cophyla/protocol";
+import { lastLineWhere } from "../tail.ts";
+import { permissionModeOf } from "./launch.ts";
+import type { PermissionMode } from "./launch.ts";
 
 export type ClaudeItem =
   | { kind: "user_turn"; text: string; at: number; promptId?: string }
@@ -408,4 +411,24 @@ export function statsFor(state: ClaudeTranscriptState, price?: ClaudePrice): Ses
 /** The window usage on its own, for records that know no limit. */
 export function contextUsed(state: ClaudeTranscriptState): number | undefined {
   return state.stats.context?.used;
+}
+
+/**
+ * The permission mode a conversation was last in, as its transcript last saved it: Claude
+ * writes the mode on each prompt it is given and in a `permission-mode` row after each turn.
+ * `undefined` when the transcript holds none, or cannot be read.
+ */
+export function lastPermissionMode(path: string): PermissionMode | undefined {
+  const line = lastLineWhere(path, (text) => modeOfLine(text) !== undefined);
+  return line !== undefined ? modeOfLine(line) : undefined;
+}
+
+function modeOfLine(text: string): PermissionMode | undefined {
+  if (!text.includes('"permissionMode"')) return undefined;
+  try {
+    const r = JSON.parse(text) as Row;
+    return r["type"] === "permission-mode" || r["type"] === "user" ? permissionModeOf(r["permissionMode"]) : undefined;
+  } catch {
+    return undefined;
+  }
 }

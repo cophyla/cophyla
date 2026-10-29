@@ -106,6 +106,8 @@ export const NodeCapabilities = z.object({
   bundle: z.boolean().optional(),
   /** It reopens a Claude session under another of its profiles (`session.reopen` `profile`); an older node would drop the profile, so it is not asked. */
   reopenProfile: z.boolean().optional(),
+  /** It reopens a session in a mode it is named (`session.reopen` `mode`); an older node would drop the mode, so it is not asked. */
+  reopenMode: z.boolean().optional(),
 });
 export type NodeCapabilities = z.infer<typeof NodeCapabilities>;
 

@@ -119,7 +119,7 @@ describe("brain-link", () => {
     expect(d.brain!.brainVersion).toBe("fake-0.1");
     await waitFor(() => brainAudit(d).length >= 3);
     const hello = brainFrames(log).find((f) => f.dir === "in" && f.frame["method"] === "hello")!;
-    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "session.reopen", "llm.cache", "assistant", "lead", "reopen.profile"] });
+    expect(hello.frame["params"]).toMatchObject({ protocolVersion: 1, nodeId: d.identity.id, role: "primary", tz: d.tz, features: ["send.prepare", "task.ready.cleared", "task.list.parent", "session.git", "spawn.mode", "codex.bypass", "terminal.prompt", "session.reopen", "llm.cache", "assistant", "lead", "reopen.profile", "reopen.mode"] });
     expect(typeof (hello.frame["params"] as { tz: unknown }).tz).toBe("string");
     const startup = brainAudit(d);
     expect(startup.map((e) => e.action)).toEqual(["node.list", "session.list", "profile.list"]);
@@ -309,6 +309,15 @@ describe("brain-link", () => {
     expect(reopenAsk({ id: session.id }, session, undefined).title).toBe("Reopen Intake forms?");
     expect(reopenAsk({ id: session.id }, session, { id: "prof_a", name: "work" } as HarnessProfile).title).toBe("Reopen Intake forms?");
     expect(reopenAsk({ id: session.id }, session, { id: "prof_b", name: "gmail" } as HarnessProfile)).toEqual({ title: "Reopen Intake forms under gmail?", detail: "It starts again where it left off, with nothing typed into it, signed in as gmail and with its launch." });
+  });
+
+  test("a reopen's ask names the mode it was named, and what the session does in it", () => {
+    const session = { id: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", title: "Intake forms", profile: "prof_a", cwd: "C:/work" } as Session;
+    expect(reopenAsk({ id: session.id, mode: "bypassPermissions" }, session, undefined)).toEqual({ title: "Reopen Intake forms in bypass permissions mode?", detail: "It starts again where it left off, with nothing typed into it. It will run every tool without asking." });
+    expect(reopenAsk({ id: session.id, mode: "plan" }, session, { id: "prof_b", name: "gmail" } as HarnessProfile)).toEqual({
+      title: "Reopen Intake forms under gmail in plan mode?",
+      detail: "It starts again where it left off, with nothing typed into it, signed in as gmail and with its launch. It will only read and plan, changing nothing.",
+    });
   });
 
   test("by the built-in rule the brain starts a session in plan mode unasked; one in bypass permissions mode is asked about, then starts in it", async () => {

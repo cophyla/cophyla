@@ -257,7 +257,7 @@
         }
       ]
     },
-    "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }] },
+    "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "bypassPermissions" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }] },
     "terminal.list": { "params": [{}], "results": [{ "terminals": [] }, { "terminals": [{ "id": "7d1e0a93c2b4", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "powershell.exe", "cwd": "C:\\D\\orchestrator", "pid": 43452, "cols": 120, "rows": 32, "title": "orchestrator", "status": "running", "harness": "codex", "windows": 1, "startedAt": 1758196000000 }] }] },
     "terminal.prompt": {
       "params": [{ "terminal": "7d1e0a93c2b4", "text": "check the Unreal MCP" }, { "terminal": "7d1e0a93c2b4", "text": "check the Unreal MCP", "task": "task_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],

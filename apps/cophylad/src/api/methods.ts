@@ -193,7 +193,7 @@ export function attachMethods(deps: AttachDeps): MethodTable {
     },
     "session.reopen": {
       target: (p) => p.id,
-      handler: async (p) => ({ id: (await deps.sessions.reopen(p.id, { profiles: deps.profiles, ...(p.profile !== undefined ? { profile: p.profile } : {}) })).id }),
+      handler: async (p) => ({ id: (await deps.sessions.reopen(p.id, { profiles: deps.profiles, ...(p.profile !== undefined ? { profile: p.profile } : {}), ...(p.mode !== undefined ? { mode: p.mode } : {}) })).id }),
     },
     "session.watch": {
       handler: (p, ctx) => {

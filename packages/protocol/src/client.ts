@@ -630,8 +630,8 @@ export const clientRequests = {
     params: z.object({ since: Timestamp.optional(), limit: z.number().int().positive().max(CLOSED_MAX).optional(), node: NodeId.optional() }),
     result: z.object({ closed: z.array(ClientClosedSession) }),
   },
-  /** Starts an ended session again where it left off, as the capability request of that name does: under another profile when one is named. */
-  "session.reopen": { params: z.object({ id: SessionId, node: NodeId.optional(), profile: ProfileId.optional() }), result: z.object({ id: SessionId }) },
+  /** Starts an ended session again where it left off, as the capability request of that name does: under another profile, or in another mode than the one it was last in, when one is named. */
+  "session.reopen": { params: z.object({ id: SessionId, node: NodeId.optional(), profile: ProfileId.optional(), mode: LaunchMode.optional() }), result: z.object({ id: SessionId }) },
   /**
    * Puts a Claude session in a permission mode, as Shift+Tab in its terminal does: pressed in
    * its tether terminal until the footer shows the mode, or set over ACP for a session cophylad

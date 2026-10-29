@@ -56,14 +56,15 @@ import { looserOnTheWay, MODE_WORDS, permissionModeOf, readLaunch } from "./clau
 import { isAlive as processAlive } from "./claude/registry.ts";
 import type { ClaudeLaunch, PermissionMode } from "./claude/launch.ts";
 import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, tail, trustDialog, waitingOn } from "./claude/screen.ts";
-import { contextUsed } from "./claude/transcript.ts";
+import { contextUsed, lastPermissionMode } from "./claude/transcript.ts";
 import type { ClaudeTranscriptState } from "./claude/transcript.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
-import { codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
+import { lastTurnContext } from "./codex/rollout.ts";
+import { CODEX_BYPASS, codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
 import { scrub } from "./env.ts";
 import { Injections, unpasted } from "./injections.ts";
@@ -232,9 +233,10 @@ export interface SpawnOptions {
   profiles: { get(id: string): HarnessProfile | undefined; defaultFor(h: SpawnParams["harness"]): HarnessProfile | undefined; launch?(id: string): Launch | undefined };
 }
 
-/** Where a reopen finds its profile, and the one it goes on under when not its own. */
+/** Where a reopen finds its profile, the one it goes on under when not its own, and the mode it goes on in when not the one it was last in. */
 export interface ReopenOptions extends SpawnOptions {
   profile?: string;
+  mode?: PermissionMode;
 }
 
 /** A command run to its end, its output and error text together. */
@@ -3013,7 +3015,12 @@ export class Sessions implements SessionHost {
    * Starts an ended session of the machine's again where it left off: its harness resuming the
    * conversation (`claude --resume`, `codex resume`, `muse resume`) in a tether terminal in its
    * folder, under its profile and the profile's launch, as `spawn` starts one, with a window
-   * when `[tether].window_on_start` says so. The record comes back as a resume brings it back
+   * when `[tether].window_on_start` says so. It goes on in the permission mode it was last in
+   * (`resumeMode`), over the launch's: one that bypassed permissions bypasses them again
+   * (`--dangerously-skip-permissions`, Codex's `--dangerously-bypass-approvals-and-sandbox`),
+   * as it does when moved to another profile, unless `opts.mode` names another: any of a Claude
+   * session's, `default` or `bypassPermissions` for a Codex one, none for Muse, as `spawn`
+   * takes them. The record comes back as a resume brings it back
    * (`revive`), keeping its id, name, origin, workspace and task, and holds that terminal.
    * Nothing is typed into it. Claude's registry names the conversation at once; a Codex or Muse
    * CLI may say nothing until its first prompt, so after `REOPEN_HOOK_MS` its record comes back
@@ -3036,6 +3043,8 @@ export class Sessions implements SessionHost {
     const refused = this.reopenRefusal(session);
     if (refused) throw refused;
     if (this.reopening.has(id)) throw new RpcError("conflict", `session ${id} is being reopened`);
+    if (opts.mode !== undefined && session.harness === "codex" && opts.mode !== "default" && opts.mode !== "bypassPermissions") throw new RpcError("unsupported", `a Codex session goes on in default or bypassPermissions mode, not ${opts.mode}`);
+    if (opts.mode !== undefined && session.harness !== "claude" && session.harness !== "codex") throw new RpcError("unsupported", `only a Claude Code or Codex session goes on in a mode: ${session.harness} has none`);
     const profile = opts.profiles.get(opts.profile ?? session.profile);
     if (!profile) throw new RpcError("not_found", opts.profile !== undefined ? `no profile ${opts.profile} on this node` : `session ${id} ran under profile ${session.profile}, which is gone`);
     if (profile.harness !== session.harness) throw new RpcError("invalid", `profile ${profile.name} is a ${profile.harness} profile, and session ${id} a ${session.harness} session`);
@@ -3047,10 +3056,11 @@ export class Sessions implements SessionHost {
     if (session.harness !== "claude" && !tether) throw new RpcError("unsupported", `a ${session.harness} session is reopened in a tether terminal, and tether is not on this node`);
     this.reopening.add(id);
     try {
+      const mode = opts.mode ?? this.resumeMode(session);
       // Pointed at the copy for good: one that comes back late (a dialog answered in its terminal) goes on there.
       if (moving && session.transcript) this.carryTranscript(session, session.transcript.path, profile);
-      const rec = tether ? await this.reopenInTether(session, profile, opts) : await this.reopenInTerminal(session, profile, opts);
-      this.log.info("session reopened", { id, harness: session.harness, native: session.native.id, terminal: rec.session.native.terminal?.id, pid: rec.session.native.pid, ...(moving ? { from: session.profile, profile: profile.id } : {}) });
+      const rec = tether ? await this.reopenInTether(session, profile, opts, mode) : await this.reopenInTerminal(session, profile, opts, mode);
+      this.log.info("session reopened", { id, harness: session.harness, native: session.native.id, terminal: rec.session.native.terminal?.id, pid: rec.session.native.pid, mode, ...(opts.mode !== undefined ? { named: true } : {}), ...(moving ? { from: session.profile, profile: profile.id } : {}) });
       return { ...rec.session };
     } finally {
       this.reopening.delete(id);
@@ -3097,17 +3107,35 @@ export class Sessions implements SessionHost {
     if (mark) this.deps.store.sessions.setTail(id, path, mark.offset, mark.cursor);
   }
 
-  /** The command line that takes a session's conversation up again in a terminal, under its profile. */
-  private resumeArgv(session: Session, profile: HarnessProfile, opts: SpawnOptions, terminal: boolean): string[] {
+  /**
+   * The permission mode an ended session goes on in when it is reopened: the one it was last in,
+   * so one that ran bypassing permissions bypasses them again, whatever its profile's launch
+   * says. A Claude session's is its record's when the daemon has run since it was learned, else
+   * the last its transcript saved; a Codex session bypasses again when its last turn ran with
+   * approval `never` and full access. `undefined` when nothing says, and the launch decides.
+   */
+  private resumeMode(session: Session): PermissionMode | undefined {
+    const rec = this.byId.get(session.id);
+    const saved = session.transcript?.path;
+    if (session.harness === "claude") return rec?.session.mode ?? (saved ? lastPermissionMode(saved) : undefined);
+    if (session.harness !== "codex") return undefined;
+    const last = rec?.permissionMode !== undefined ? { approvalPolicy: rec.permissionMode, sandbox: rec.sandbox } : saved ? lastTurnContext(saved) : undefined;
+    return last?.approvalPolicy === "never" && last.sandbox === "danger-full-access" ? "bypassPermissions" : undefined;
+  }
+
+  /** The command line that takes a session's conversation up again in a terminal, under its profile, in `mode` when one is known. */
+  private resumeArgv(session: Session, profile: HarnessProfile, opts: SpawnOptions, terminal: boolean, mode: PermissionMode | undefined): string[] {
     const native = session.native.id;
     switch (session.harness) {
       case "claude": {
-        const launch = opts.profiles.launch?.(profile.id);
+        const profileLaunch = opts.profiles.launch?.(profile.id);
+        // The session's own mode over the launch's, as a spawn's is.
+        const launch = mode !== undefined ? { ...(profileLaunch ?? { args: [] }), mode } : profileLaunch;
         const command = profile.exec?.command ?? Bun.which("claude") ?? "claude";
         return this.claudeCommand({ command, sessionId: native, intent: "", profile, cwd: session.cwd, launch: terminal ? this.terminalLaunch(launch) : launch, model: undefined, resume: true });
       }
       case "codex":
-        return [profile.exec?.command ?? Bun.which("codex") ?? "codex", ...(profile.exec?.args ?? []), "resume", native];
+        return [profile.exec?.command ?? Bun.which("codex") ?? "codex", ...(profile.exec?.args ?? []), "resume", ...(mode === "bypassPermissions" ? [CODEX_BYPASS] : []), native];
       default:
         return [...museCommand(profile), "resume", native];
     }
@@ -3118,13 +3146,13 @@ export class Sessions implements SessionHost {
     return harness === "claude" ? this.claudeSpawnEnv(profile) : harness === "codex" ? this.codexSpawnEnv(profile) : this.museSpawnEnv(profile);
   }
 
-  private async reopenInTether(session: Session, profile: HarnessProfile, opts: SpawnOptions): Promise<LiveRecord> {
+  private async reopenInTether(session: Session, profile: HarnessProfile, opts: SpawnOptions, mode: PermissionMode | undefined): Promise<LiveRecord> {
     const tether = this.deps.tether!;
     const title = session.title ?? (sessionName(session.intent ?? "") || "cophylad session");
     const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
     let term: TerminalRef;
     try {
-      term = (await tether.spawn({ argv: this.resumeArgv(session, profile, opts, false), cwd: session.cwd, env: this.spawnEnv(session.harness, profile), labels: { app: "cophylad", "cophylad.reopen": session.id } })).ref;
+      term = (await tether.spawn({ argv: this.resumeArgv(session, profile, opts, false, mode), cwd: session.cwd, env: this.spawnEnv(session.harness, profile), labels: { app: "cophylad", "cophylad.reopen": session.id } })).ref;
     } catch (e) {
       throw new RpcError("unavailable", `tether could not start session ${session.id} again: ${e instanceof Error ? e.message : String(e)}`);
     }
@@ -3148,13 +3176,13 @@ export class Sessions implements SessionHost {
   }
 
   /** A Claude session reopened where tether is not: in a terminal window of its own, as `spawnInTerminal` opens one. */
-  private async reopenInTerminal(session: Session, profile: HarnessProfile, opts: SpawnOptions): Promise<LiveRecord> {
+  private async reopenInTerminal(session: Session, profile: HarnessProfile, opts: SpawnOptions, mode: PermissionMode | undefined): Promise<LiveRecord> {
     const opener = await pickOpener(this.deps.terminals ?? []);
     if (!opener) throw new RpcError("unsupported", "no terminal to reopen the session in on this node");
     const env = claudeEnv(profile.configDir, this.deps.home);
     const timeoutMs = this.deps.acp?.config.spawn_timeout_ms ?? 60000;
     await opener.open({
-      argv: this.resumeArgv(session, profile, opts, true),
+      argv: this.resumeArgv(session, profile, opts, true, mode),
       cwd: session.cwd,
       env: { ...env.set, ...(profile.env as Record<string, string> | undefined) },
       ...(env.unset.length > 0 ? { unset: env.unset } : {}),

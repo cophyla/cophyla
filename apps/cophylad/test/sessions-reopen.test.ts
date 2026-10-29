@@ -60,19 +60,19 @@ function conversationOf(fs: FakeSession): string | undefined {
   return undefined;
 }
 
-/** A conversation saved where Claude saves it, as it is from its first prompt. */
-function saveTranscript(sessionId: string): void {
+/** A conversation saved where Claude saves it, as it is from its first prompt: given in `mode`, as Claude writes it, when one is named. */
+function saveTranscript(sessionId: string, mode?: string): void {
   const path = transcriptPathFor(profileDir, cwd, sessionId);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "hello" } }) + "\n");
+  writeFileSync(path, JSON.stringify({ type: "user", sessionId, message: { role: "user", content: "hello" }, ...(mode ? { permissionMode: mode } : {}) }) + "\n");
 }
 
 /** A session of the user's own, running in a tether terminal: met, with its conversation saved when asked. */
-async function usersOwn(sessionId: string, opts: { saved?: boolean } = {}): Promise<{ session: Session; pid: number; fs: FakeSession }> {
+async function usersOwn(sessionId: string, opts: { saved?: boolean; mode?: string } = {}): Promise<{ session: Session; pid: number; fs: FakeSession }> {
   const pid = nextPid++;
   const fs = fake.add({ argv: ["claude"], cwd }, pid);
   alive.add(pid);
-  if (opts.saved !== false) saveTranscript(sessionId);
+  if (opts.saved !== false) saveTranscript(sessionId, opts.mode);
   writeRegistry(registry, { pid, sessionId, cwd, status: "idle" });
   await waitFor(() => tether.byPid(pid));
   await mini.sessions.tick();
@@ -190,6 +190,9 @@ describe("closed sessions", () => {
     expect(argv[argv.indexOf("--resume") + 1]).toBe("conv-crashed");
     expect(argv).not.toContain("--session-id");
     expect(argv).not.toContain("--name");
+    // Nothing said what mode it was in, and its profile's launch names none.
+    expect(argv).not.toContain("--dangerously-skip-permissions");
+    expect(argv).not.toContain("--permission-mode");
     expect(argv[argv.indexOf("--settings") + 1]).toBe(join(mini.home, "data", "claude", `settings-${crashed.session.profile}.json`));
     expect(fs.spawn.cwd).toBe(cwd);
     expect(fs.spawn.env.set?.["CLAUDE_CONFIG_DIR"]).toBe(profileDir);
@@ -292,6 +295,61 @@ describe("reopened under another profile", () => {
     const thread = mini.sessions.ensure({ harness: "codex", nativeId: "thread-moved", profile: profileNamed("codex-a").id, cwd, transport: "app-server" });
     mini.sessions.end(thread, "gone");
     await expect(mini.sessions.reopen(thread.session.id, { profiles: mini.profiles, profile: profileNamed("codex-b").id })).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("under the profile it ran under") });
+  });
+});
+
+describe("reopened in the mode it was last in", () => {
+  /** The command line a session was reopened with. */
+  const reopenedArgv = (id: string) => [...fake.sessions.values()].findLast((x) => x.spawn.labels["cophylad.reopen"] === id)!.spawn.argv;
+
+  test("one that bypassed permissions bypasses them again, though its profile's launch does not, and under another profile too", async () => {
+    // Its transcript says so; its record never learned it, as after a restart.
+    const s = await usersOwn("conv-bypass", { mode: "bypassPermissions" });
+    expect(mini.sessions.get(s.session.id)?.mode).toBeUndefined();
+    expect(mini.profiles.launch(s.session.profile)?.mode).toBeUndefined();
+    await interrupt(s.pid, s.fs);
+    await mini.sessions.reopen(s.session.id, { profiles: mini.profiles });
+    const argv = reopenedArgv(s.session.id);
+    expect(argv[argv.indexOf("--resume") + 1]).toBe("conv-bypass");
+    expect(argv).toContain("--dangerously-skip-permissions");
+    expect(argv).not.toContain("--permission-mode");
+    const moved = await usersOwn("conv-bypass-moved", { mode: "bypassPermissions" });
+    await interrupt(moved.pid, moved.fs);
+    await mini.sessions.reopen(moved.session.id, { profiles: mini.profiles, profile: profileNamed("other").id });
+    expect(reopenedArgv(moved.session.id)).toContain("--dangerously-skip-permissions");
+  });
+
+  test("its record's mode, when one was learned, over what its transcript last saved", async () => {
+    const s = await usersOwn("conv-edits", { mode: "bypassPermissions" });
+    mini.sessions.noteMode(mini.sessions.find("claude", "conv-edits")!, "acceptEdits");
+    await interrupt(s.pid, s.fs);
+    await mini.sessions.reopen(s.session.id, { profiles: mini.profiles });
+    const argv = reopenedArgv(s.session.id);
+    expect(argv[argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    expect(argv).not.toContain("--dangerously-skip-permissions");
+  });
+
+  test("a mode named goes over the one it was last in, stricter or looser", async () => {
+    const bypassed = await usersOwn("conv-named-plan", { mode: "bypassPermissions" });
+    await interrupt(bypassed.pid, bypassed.fs);
+    await mini.sessions.reopen(bypassed.session.id, { profiles: mini.profiles, mode: "plan" });
+    const planned = reopenedArgv(bypassed.session.id);
+    expect(planned[planned.indexOf("--permission-mode") + 1]).toBe("plan");
+    expect(planned).not.toContain("--dangerously-skip-permissions");
+    const asked = await usersOwn("conv-named-bypass", { mode: "auto" });
+    await interrupt(asked.pid, asked.fs);
+    await mini.sessions.reopen(asked.session.id, { profiles: mini.profiles, mode: "bypassPermissions" });
+    const bypassing = reopenedArgv(asked.session.id);
+    expect(bypassing).toContain("--dangerously-skip-permissions");
+    expect(bypassing).not.toContain("--permission-mode");
+  });
+
+  test("a Codex session named a mode it has not is refused before anything starts", async () => {
+    const thread = mini.sessions.ensure({ harness: "codex", nativeId: "thread-named-plan", profile: profileNamed("codex-a").id, cwd, transport: "app-server" });
+    mini.sessions.end(thread, "gone");
+    const before = fake.sessions.size;
+    await expect(mini.sessions.reopen(thread.session.id, { profiles: mini.profiles, mode: "plan" })).rejects.toMatchObject({ code: "unsupported", message: expect.stringContaining("default or bypassPermissions") });
+    expect(fake.sessions.size).toBe(before);
   });
 });
 

@@ -390,4 +390,62 @@ describe("a Codex session reopened", () => {
       fake.onSpawn = previous;
     }
   });
+
+  /** The resumed CLI says so with a hook at once; its terminal by the session it was reopened for. */
+  function hookOnResume(): { argvOf: (id: string) => FakeSession; restore: () => void } {
+    const previous = fake.onSpawn;
+    fake.onSpawn = (x) => {
+      previous?.(x);
+      const id = x.spawn.argv[x.spawn.argv.length - 1]!;
+      setTimeout(() => mini.sessions.ensure({ harness: "codex", nativeId: id, profile: profileOf("own").id, cwd, transport: "app-server", liveness: "hook", pid: x.pid, terminal: { host: fake.host.host, id: x.id } }), 30);
+    };
+    return { argvOf: (id) => [...fake.sessions.values()].find((x) => x.spawn.labels["cophylad.reopen"] === id)!, restore: () => (fake.onSpawn = previous) };
+  }
+
+  test("one whose last turn ran with approval never and full access resumes bypassing them again; one that asked does not", async () => {
+    threadMode = "none";
+    const { argvOf, restore } = hookOnResume();
+    try {
+      const bypassed = interrupted(9900);
+      bypassed.permissionMode = "never";
+      bypassed.sandbox = "danger-full-access";
+      await mini.sessions.reopen(bypassed.session.id, { profiles: mini.profiles });
+      const f = argvOf(bypassed.session.id);
+      expect(f.spawn.argv.slice(-3)).toEqual(["resume", "--dangerously-bypass-approvals-and-sandbox", bypassed.session.native.id]);
+      f.exit(0);
+      const asked = interrupted(9901);
+      asked.permissionMode = "on-request";
+      asked.sandbox = "workspace-write";
+      await mini.sessions.reopen(asked.session.id, { profiles: mini.profiles });
+      const g = argvOf(asked.session.id);
+      expect(g.spawn.argv.slice(-2)).toEqual(["resume", asked.session.native.id]);
+      expect(g.spawn.argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+      g.exit(0);
+    } finally {
+      restore();
+    }
+  });
+
+  test("a mode named goes over the one its last turn ran in: bypassing for one that asked, default for one that bypassed", async () => {
+    threadMode = "none";
+    const { argvOf, restore } = hookOnResume();
+    try {
+      const asked = interrupted(9902);
+      asked.permissionMode = "on-request";
+      asked.sandbox = "workspace-write";
+      await mini.sessions.reopen(asked.session.id, { profiles: mini.profiles, mode: "bypassPermissions" });
+      const f = argvOf(asked.session.id);
+      expect(f.spawn.argv.slice(-3)).toEqual(["resume", "--dangerously-bypass-approvals-and-sandbox", asked.session.native.id]);
+      f.exit(0);
+      const bypassed = interrupted(9903);
+      bypassed.permissionMode = "never";
+      bypassed.sandbox = "danger-full-access";
+      await mini.sessions.reopen(bypassed.session.id, { profiles: mini.profiles, mode: "default" });
+      const g = argvOf(bypassed.session.id);
+      expect(g.spawn.argv.slice(-2)).toEqual(["resume", bypassed.session.native.id]);
+      g.exit(0);
+    } finally {
+      restore();
+    }
+  });
 });

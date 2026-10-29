@@ -82,7 +82,8 @@ export const CapabilityHello = z.object({
    * (`assistant.wake`), serves it its rules, tools and context (`brainRequests`) and hears its
    * turns (`assistant.prompted`, `assistant.step`, `assistant.replied`, `assistant.state`);
    * `reopen.profile`: `session.reopen` takes `profile`, and `session.stop` ends a session of
-   * the user's on their own machines once the gate let it.
+   * the user's on their own machines once the gate let it; `reopen.mode`: `session.reopen`
+   * takes `mode`, over the one the session was last in.
    */
   features: z.array(z.string()).optional(),
 });
@@ -527,7 +528,8 @@ export const capabilityRequests = {
   /**
    * Starts an ended session again where it left off: its harness resuming the conversation
    * (`claude --resume`, `codex resume`, `muse resume`) in a terminal in its folder, under its
-   * profile and the profile's launch. The same session comes back, its id, name, workspace and
+   * profile and the profile's launch, in the permission mode it was last in: one that bypassed
+   * permissions bypasses them again. The same session comes back, its id, name, workspace and
    * task kept; nothing is typed into it. `node` says where it is when the caller knows (a row of
    * `session.closed`). One still running, or with no conversation saved, is a `conflict`; one
    * that ran headless, or a node with no terminal to start it in, `unsupported`.
@@ -543,6 +545,14 @@ export const capabilityRequests = {
        * session goes on under its own alone, `unsupported`; a node without `reopenProfile` refuses it.
        */
       profile: ProfileId.optional(),
+      /**
+       * The mode it goes on in, over the one it was last in: any of a Claude session's, `default`
+       * or `bypassPermissions` for a Codex one, none for Muse (`unsupported`). One looser than
+       * asking before each edit (`sessionModeRisk` says `exec`) is never allowed by the built-in
+       * rule that lets the brain reopen a session: it asks, unless the user's own rules say
+       * otherwise. A node without `reopenMode` refuses it.
+       */
+      mode: LaunchMode.optional(),
     }),
     result: z.object({ id: SessionId }),
   },

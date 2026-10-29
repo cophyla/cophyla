@@ -174,6 +174,14 @@ describe("forwarding over the node link", () => {
       (e: unknown) => (e instanceof Error ? e.message : String(e)),
     );
     expect(refused).toContain("runs an older Cophyla: update it to reopen a session under another profile");
+    // Nor would one that does not say it reopens in a mode named keep the mode.
+    expect(row.capabilities.reopenMode).toBe(true);
+    primary.d.nodes.registry.upsert({ ...row, capabilities: { ...row.capabilities, reopenMode: undefined } });
+    const noMode = await c.request("session.reopen", { id, node: secondary.identity.id, mode: "bypassPermissions" }).then(
+      () => "served",
+      (e: unknown) => (e instanceof Error ? e.message : String(e)),
+    );
+    expect(noMode).toContain("runs an older Cophyla: update it to reopen a session in a mode named");
   }, 30_000);
 
   test("the chat's forwarded send to a session it leads goes as the user's words, and as the brain's once it leads it no more", async () => {

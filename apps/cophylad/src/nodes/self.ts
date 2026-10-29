@@ -91,6 +91,8 @@ export function selfNode(
       bundle: true,
       // a Claude session of its own reopens under another of its profiles
       reopenProfile: true,
+      // a session of its own reopens in a mode named, over the one it was last in
+      reopenMode: true,
     },
     versions: { platform: platformVersion, protocol: PROTOCOL_VERSION, ...(brainVersion !== undefined ? { brain: brainVersion } : {}) },
     lastSeen: now,

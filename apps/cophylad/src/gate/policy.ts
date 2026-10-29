@@ -51,7 +51,8 @@ export type PolicySource = "control" | "system" | "session" | "remembered" | "co
  * it, and the session runs under their own account in their own terminal, where they watch it.
  * A start in a mode looser than asking before each edit is not covered (`loosens`): it falls
  * to the class default, an allow unless the config asks. So is starting an ended session again where it left off,
- * under the same account and launch, with nothing typed into it. Anything else that reaches a
+ * under the same account and launch, in the mode it was last in, with nothing typed into it; one
+ * named a mode looser than asking before each edit is not covered either (`loosens`). Anything else that reaches a
  * session, a machine or the network stays under the class default, which a config that has the
  * brain ask holds it to; `"brain:session.spawn" = "ask"` in `[gate.rules]` puts the ask back, and
  * `"brain:session.reopen" = "ask"` does for a reopen.
