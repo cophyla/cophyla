@@ -2,8 +2,9 @@
 // own token (never refreshed; an expired one, an API key or a refusal reads nothing new),
 // at most every five minutes and a quarter hour after a 429; Codex's from the newest
 // `rate_limits` row of its recent rollouts, the window told by its length; Muse's
-// from what its host last observed; a window past its reset reads 0; and a profile that is
-// gone takes its reading with it.
+// from what its host last observed; a window past its reset reads 0; a reading is kept in
+// the store across restarts and stands for ten days; and a profile that is gone takes its
+// reading with it.
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from "node:fs";
@@ -11,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { HarnessProfile } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
-import { CLAUDE_BACKOFF_MS, CLAUDE_EVERY_MS, CLAUDE_USAGE_URL, claudeWindow, lastRolloutLimits, PlanLimits, recentRollouts } from "../src/metrics/limits.ts";
+import { CLAUDE_BACKOFF_MS, CLAUDE_EVERY_MS, CLAUDE_USAGE_URL, claudeWindow, KEEP_MS, KEPT_KEY, lastRolloutLimits, PlanLimits, recentRollouts } from "../src/metrics/limits.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLAUDE = "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8";
@@ -102,7 +103,7 @@ describe("plan limits: Claude", () => {
     expect(none.latest()).toBeUndefined();
   });
 
-  test("an expired token keeps the last reading and asks nothing; a refusal drops it; a 429 keeps it and waits a quarter hour", async () => {
+  test("an expired token keeps the last reading and asks nothing; a refusal keeps it too; a 429 keeps it and waits a quarter hour", async () => {
     const home = join(dir, ".claude");
     login(home, T0 + 3_600_000);
     const { fetch, calls } = fakeFetch([json(USAGE), json({ error: "slow down" }, 429), json({ error: "no" }, 401)]);
@@ -124,12 +125,45 @@ describe("plan limits: Claude", () => {
     await limits.refresh();
     expect(calls.length).toBe(2);
     expect(limits.latest()![CLAUDE]!.weekly!.percent).toBe(55);
-    // Claude Code refreshed it; the server refuses the login: no limits to show.
+    // Claude Code refreshed it; the server refuses the login: the reading still stands.
     clock.now += CLAUDE_EVERY_MS;
     login(home, clock.now + 3_600_000);
     await limits.refresh();
     expect(calls.length).toBe(3);
-    expect(limits.latest()).toBeUndefined();
+    expect(limits.latest()![CLAUDE]!.weekly!.percent).toBe(55);
+  });
+
+  test("a reading is kept in the store: a restart with the token run out still has it, until it is ten days old", async () => {
+    const home = join(dir, ".claude");
+    login(home, T0 + 3_600_000);
+    const meta = new Map<string, string>();
+    const store = { get: (k: string) => meta.get(k), set: (k: string, v: string) => void meta.set(k, v) };
+    const { fetch, calls } = fakeFetch([json(USAGE)]);
+    const clock = { now: T0 };
+    const first = new PlanLimits({ profiles: () => [profile(CLAUDE, "claude", home)], log: silentLogger, meta: store, fetch, now: () => clock.now });
+    await first.refresh();
+    expect(JSON.parse(meta.get(KEPT_KEY)!)).toEqual({ [CLAUDE]: expect.objectContaining({ at: T0 }) });
+    // Days later, the login unused since: its token ran out, and the daemon starts again.
+    clock.now = T0 + 3 * 86_400_000;
+    const again = new PlanLimits({ profiles: () => [profile(CLAUDE, "claude", home)], log: silentLogger, meta: store, fetch, now: () => clock.now });
+    expect(again.latest()).toEqual({ [CLAUDE]: { at: T0, session: { percent: 0 }, weekly: { percent: 55, resetsAt: Date.parse("2026-09-27T08:00:00.273Z") } } });
+    await again.refresh();
+    expect(calls.length).toBe(1);
+    // Its week started over meanwhile, so it reads 0, but the row is there.
+    clock.now = Date.parse("2026-09-28T12:00:00Z");
+    expect(again.latest()).toEqual({ [CLAUDE]: { at: T0, session: { percent: 0 }, weekly: { percent: 0 } } });
+    // Ten days after the reading: gone from the samples, and from the store at the next pass.
+    clock.now = T0 + KEEP_MS - 1;
+    expect(again.latest()![CLAUDE]).toBeDefined();
+    clock.now = T0 + KEEP_MS;
+    expect(again.latest()).toBeUndefined();
+    await again.refresh();
+    expect(JSON.parse(meta.get(KEPT_KEY)!)).toEqual({});
+    // What the store holds that is not a reading is not taken for one.
+    meta.set(KEPT_KEY, JSON.stringify({ [CLAUDE]: { at: "soon" }, [CODEX]: { at: T0 }, other: 3 }));
+    expect(new PlanLimits({ profiles: () => [], log: silentLogger, meta: store, fetch, now: () => T0 }).latest()).toBeUndefined();
+    meta.set(KEPT_KEY, "not json");
+    expect(new PlanLimits({ profiles: () => [], log: silentLogger, meta: store, fetch, now: () => T0 }).latest()).toBeUndefined();
   });
 
   test("fresh: read when asked, with no one watching the samples; within five minutes, or while backing off, the reading stands", async () => {
@@ -261,7 +295,7 @@ describe("plan limits: Codex", () => {
 });
 
 describe("plan limits: Muse", () => {
-  test("what its host last observed, read locally each minute; none before the login made a model call", async () => {
+  test("what its host last observed, read locally each minute; none before the login made a model call; kept once its host is gone", async () => {
     const MUSE = "prof_01ARZ3NDEKTSV4RRFFQ69G5FBB";
     const muse: HarnessProfile = { id: MUSE, node: NODE, harness: "muse", name: "muse", configDir: dir, env: {}, origin: "discovered", status: "ok" };
     const asked: string[] = [];
@@ -284,6 +318,12 @@ describe("plan limits: Muse", () => {
     clock.now += 60_000;
     await limits.refresh();
     expect(asked).toEqual([MUSE, MUSE]);
+    expect(limits.latest()).toEqual({ [MUSE]: { at: T0, session: { percent: 12 }, weekly: { percent: 3 } } });
+    // Its host exits and nothing is observed: the reading stands.
+    reading = undefined;
+    clock.now += 60_000;
+    await limits.refresh();
+    expect(asked).toEqual([MUSE, MUSE, MUSE]);
     expect(limits.latest()).toEqual({ [MUSE]: { at: T0, session: { percent: 12 }, weekly: { percent: 3 } } });
   });
 });

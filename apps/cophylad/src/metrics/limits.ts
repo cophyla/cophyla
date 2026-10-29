@@ -4,8 +4,8 @@
 // `.credentials.json`, or on macOS, where a login leaves none, from the profile's Keychain item
 // (the daemon's `keychain`, through `/usr/bin/security` as Claude Code reads it, which the
 // item's access list trusts, so no prompt): read and never refreshed or written, so an expired
-// token means no new reading until Claude Code refreshes it. A profile on an API key has no
-// plan and no limits. Codex writes its limits into every `token_count` of a
+// token means no new reading until Claude Code refreshes it, and a refused one the same. A
+// profile on an API key has no plan and no limits. Codex writes its limits into every `token_count` of a
 // rollout, so the newest of the recent rollouts' last ones is read: by the row's time, since a
 // rollout Codex keeps writing on Windows can keep the time it was made as its last-modified
 // one, and only a rollout that grew since it was last read is read again. Muse's host keeps the
@@ -13,7 +13,10 @@
 // has made one. Readings are taken while a client watches the samples (`refresh`), and when
 // someone asks for them now (`fresh`: `profile.limits`, the brain choosing an account),
 // Claude's at most every five minutes either way, and a window whose reset has passed reads 0
-// until the next reading says otherwise.
+// until the next reading says otherwise. A login's last reading is kept in the store, so a
+// restart still has it, and stands until a newer one replaces it or it is ten days old
+// (`KEEP_MS`): a login out of its weekly limit, unused since, keeps its row, and one unused
+// for ten days leaves the rows.
 
 import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -34,10 +37,16 @@ export const FRESH_TIMEOUT_MS = 3000;
 const ROLLOUT_TAIL_BYTES = 256 * 1024;
 /** A Codex window this long or longer is the weekly one; shorter, the session's. */
 const WEEK_MINUTES_FLOOR = 24 * 60;
+/** How long a login's last reading stands with no newer one: a login unused this long has no limits to show. */
+export const KEEP_MS = 10 * 24 * 60 * 60_000;
+/** The store's meta key the readings are kept under, by profile. */
+export const KEPT_KEY = "plan_limits";
 
 export interface PlanLimitsDeps {
   profiles: () => HarnessProfile[];
   log: Logger;
+  /** Where the readings are kept across restarts: the store's meta. */
+  meta?: { get(key: string): string | undefined; set(key: string, value: string): void };
   /** A Muse profile's limits as its host last observed them. */
   muse?: (profileId: string) => Promise<ProfileLimits | undefined>;
   /** macOS: the text of a Claude login's Keychain item (what `.credentials.json` holds elsewhere); never asked when absent. */
@@ -65,21 +74,24 @@ export class PlanLimits {
   private readAt = new Map<string, number>();
   /** Each Codex profile's recent rollouts, by path, as last read. */
   private rollouts = new Map<string, Map<string, RolloutRead>>();
+  /** The readings as the store last kept them. */
+  private saved?: string;
 
   constructor(deps: PlanLimitsDeps) {
     this.deps = deps;
+    this.load();
   }
 
   private now(): number {
     return (this.deps.now ?? Date.now)();
   }
 
-  /** The latest readings by profile, a window past its reset at 0; undefined when there are none. */
+  /** The latest readings by profile, a window past its reset at 0; undefined when there are none, or none in ten days. */
   latest(): Record<string, ProfileLimits> | undefined {
-    if (this.readings.size === 0) return undefined;
     const now = this.now();
     const out: Record<string, ProfileLimits> = {};
     for (const [profile, r] of this.readings) {
+      if (now - r.at >= KEEP_MS) continue;
       const limits: ProfileLimits = { at: r.at };
       const session = current(r.session, now);
       const weekly = current(r.weekly, now);
@@ -87,7 +99,7 @@ export class PlanLimits {
       if (weekly) limits.weekly = weekly;
       out[profile] = limits;
     }
-    return out;
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   /** Reads every profile that is due, one pass at a time; a pass under way is joined. */
@@ -154,6 +166,40 @@ export class PlanLimits {
       if ("limits" in read) this.readings.set(p.id, read.limits);
       else if ("none" in read) this.readings.delete(p.id);
     }
+    const now = this.now();
+    for (const [id, r] of this.readings) if (now - r.at >= KEEP_MS) this.readings.delete(id);
+    this.save();
+  }
+
+  /** The readings the store kept, as the last run left them; `latest` leaves out those ten days old. */
+  private load(): void {
+    const text = this.deps.meta?.get(KEPT_KEY);
+    if (text === undefined) return;
+    this.saved = text;
+    let kept: unknown;
+    try {
+      kept = JSON.parse(text);
+    } catch {
+      return;
+    }
+    if (!kept || typeof kept !== "object") return;
+    for (const [id, v] of Object.entries(kept)) {
+      const r = keptReading(v);
+      if (r) this.readings.set(id, r);
+    }
+  }
+
+  /** Keeps the readings in the store when they changed. */
+  private save(): void {
+    if (!this.deps.meta) return;
+    const text = JSON.stringify(Object.fromEntries(this.readings));
+    if (text === this.saved) return;
+    try {
+      this.deps.meta.set(KEPT_KEY, text);
+      this.saved = text;
+    } catch (e) {
+      this.deps.log.debug("plan limits not kept", { error: e instanceof Error ? e.message : String(e) });
+    }
   }
 
   private async readClaude(p: HarnessProfile): Promise<Read> {
@@ -171,7 +217,7 @@ export class PlanLimits {
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
     });
     if (res.status === 429) return { keep: true, retryMs: CLAUDE_BACKOFF_MS };
-    if (res.status === 401 || res.status === 403) return { none: true };
+    // A refusal (401, 403, or a token Claude Code has just replaced) as any failure: what was read last still stands.
     if (!res.ok) return { keep: true };
     const body = (await res.json()) as Record<string, unknown>;
     const limits: ProfileLimits = { at: this.now() };
@@ -184,7 +230,8 @@ export class PlanLimits {
 
   private async readMuse(p: HarnessProfile): Promise<Read> {
     const limits = this.deps.muse ? await this.deps.muse(p.id) : undefined;
-    return limits ? { limits } : { none: true };
+    // None observed, or its host is gone: what was read last still stands.
+    return limits ? { limits } : { keep: true };
   }
 
   private readCodex(p: HarnessProfile): Read {
@@ -213,6 +260,20 @@ export class PlanLimits {
 function current(w: LimitWindow | undefined, now: number): LimitWindow | undefined {
   if (!w) return undefined;
   return w.resetsAt !== undefined && w.resetsAt <= now ? { percent: 0 } : w;
+}
+
+/** A reading as the store kept it, or undefined when it is not one. */
+function keptReading(v: unknown): ProfileLimits | undefined {
+  if (!v || typeof v !== "object") return undefined;
+  const o = v as Record<string, unknown>;
+  if (typeof o["at"] !== "number") return undefined;
+  const r: ProfileLimits = { at: o["at"] };
+  for (const key of ["session", "weekly"] as const) {
+    const w = o[key] as { percent?: unknown; resetsAt?: unknown } | undefined;
+    if (!w || typeof w.percent !== "number") continue;
+    r[key] = { percent: w.percent, ...(typeof w.resetsAt === "number" ? { resetsAt: w.resetsAt } : {}) };
+  }
+  return r.session || r.weekly ? r : undefined;
 }
 
 /** The profile's access token, "expired" when it has run out, undefined when there is no login in the file. */

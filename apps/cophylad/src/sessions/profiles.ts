@@ -11,7 +11,8 @@
 // Their ids are stable across restarts because sessions reference them: the `profiles`
 // namespace in `kv` maps `<harness>:<configDir>` to a `prof_` id, minted once. An id is one
 // directory on one machine; a signed-in Claude or Codex profile also carries a mark of the
-// account it is signed in as (`accountMark`), which another machine signed in as it shares.
+// account it is signed in as (`accountMark`), which another machine signed in as it shares, and
+// the account's email.
 //
 // Each harness has a usual account on the node, the profile a session cophylad starts runs under
 // when none is named: the one the user picked in the app, else `default = true` in config,
@@ -132,6 +133,7 @@ export function accountMark(harness: ProfileHarness, ids: string[]): string {
 interface GlobalConfig {
   onboarded: boolean;
   account?: string;
+  email?: string;
 }
 
 /** A global config's facts, cached by the file's size and time: the file can run to megabytes. */
@@ -147,11 +149,14 @@ function globalConfig(path: string): GlobalConfig {
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.facts;
   const facts: GlobalConfig = { onboarded: false };
   try {
-    const g = JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown; oauthAccount?: { accountUuid?: unknown; organizationUuid?: unknown } };
+    const g = JSON.parse(readFileSync(path, "utf8")) as { hasCompletedOnboarding?: unknown; oauthAccount?: { accountUuid?: unknown; organizationUuid?: unknown; emailAddress?: unknown } };
     facts.onboarded = g.hasCompletedOnboarding === true;
     // A login's limits are its account's in its organisation: the same person in a team is another subscription.
     const a = g.oauthAccount;
-    if (a && typeof a.accountUuid === "string" && a.accountUuid) facts.account = accountMark("claude", [a.accountUuid, typeof a.organizationUuid === "string" ? a.organizationUuid : ""]);
+    if (a && typeof a.accountUuid === "string" && a.accountUuid) {
+      facts.account = accountMark("claude", [a.accountUuid, typeof a.organizationUuid === "string" ? a.organizationUuid : ""]);
+      if (typeof a.emailAddress === "string" && a.emailAddress) facts.email = a.emailAddress;
+    }
   } catch {
     // Unreadable or mid-write: not onboarded as far as can be told.
   }
@@ -177,26 +182,28 @@ function codexStatus(dir: string, env: Record<string, string | undefined>): Prof
 
 /**
  * A ChatGPT login in Codex's `auth.json`, as an account mark: its account (a workspace) and the
- * user in it, from the id token's claims. Nothing else of the file is kept; a key has no mark.
+ * user in it, from the id token's claims, with the email they carry. Nothing else of the file is
+ * kept; a key has no mark.
  */
-function codexAccount(dir: string): string | undefined {
+function codexAccount(dir: string): { account: string; email?: string } | undefined {
   try {
     const auth = JSON.parse(readFileSync(join(dir, "auth.json"), "utf8")) as { tokens?: { account_id?: unknown; id_token?: unknown } };
     const account = auth.tokens?.account_id;
     if (typeof account !== "string" || !account) return undefined;
-    return accountMark("codex", [account, codexUser(auth.tokens?.id_token) ?? ""]);
+    const user = codexUser(auth.tokens?.id_token);
+    return { account: accountMark("codex", [account, user?.id ?? ""]), ...(user?.email ? { email: user.email } : {}) };
   } catch {
     return undefined;
   }
 }
 
-function codexUser(idToken: unknown): string | undefined {
+function codexUser(idToken: unknown): { id?: string; email?: string } | undefined {
   const payload = typeof idToken === "string" ? idToken.split(".")[1] : undefined;
   if (!payload) return undefined;
   try {
-    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: unknown; "https://api.openai.com/auth"?: { chatgpt_user_id?: unknown } };
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: unknown; email?: unknown; "https://api.openai.com/auth"?: { chatgpt_user_id?: unknown } };
     const user = claims["https://api.openai.com/auth"]?.chatgpt_user_id ?? claims.sub;
-    return typeof user === "string" ? user : undefined;
+    return { ...(typeof user === "string" ? { id: user } : {}), ...(typeof claims.email === "string" && claims.email ? { email: claims.email } : {}) };
   } catch {
     return undefined;
   }
@@ -452,8 +459,11 @@ export class Profiles {
     };
     if (pc.command !== undefined) p.exec = { command: pc.command, args: pc.args };
     if (p.status === "ok") {
-      const account = harness === "claude" ? globalConfig(claudeGlobalConfig(configDir, this.home)).account : harness === "codex" ? codexAccount(configDir) : undefined;
-      if (account) p.account = account;
+      const login = harness === "claude" ? globalConfig(claudeGlobalConfig(configDir, this.home)) : harness === "codex" ? codexAccount(configDir) : undefined;
+      if (login?.account) {
+        p.account = login.account;
+        if (login.email) p.email = login.email;
+      }
     }
     return { profile: p, configDefault: pc.default, configArgs: [...pc.args] };
   }

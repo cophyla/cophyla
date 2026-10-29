@@ -308,6 +308,7 @@ rpc.onNotification((n) => {
         prefs = ready.prefs;
         if (!splitDrag) ui.railSplit = railSplit(prefs["railSplit"]);
         ui.lastPlace = lastPlace(prefs["newTerminal"]);
+        ui.spendByProfile = prefs["spendNames"] === "profile";
         restoreViewerPrefs(prefs["viewer"]);
         restoreRemotePrefs(prefs["remoteView"]);
       }
@@ -3387,6 +3388,12 @@ document.addEventListener("click", (ev) => {
       return;
     case "usage-details":
       void openSettings("usage");
+      return;
+    case "spend-names":
+      ui.spendByProfile = !ui.spendByProfile;
+      prefs = { ...prefs, spendNames: ui.spendByProfile ? "profile" : "email" };
+      void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+      draw();
       return;
     case "new-terminal-in":
       if (target.dataset["place"]) void newTerminal(target.dataset["place"], target.dataset["cwd"], target.dataset["key"]);

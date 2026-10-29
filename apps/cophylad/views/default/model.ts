@@ -3960,6 +3960,8 @@ export interface SpendRow {
   harness?: HarnessProfile["harness"];
   /** The name, with its machine's when another login of the same harness has the same name; the harness's mark tells the rest apart. */
   label: string;
+  /** The account's email, once a profile signed in as it says: the row shows it in the name's place unless the user chose the names. */
+  email?: string;
   /** One account signed in on several machines or in several directories: where, in words. */
   where?: string;
   spend: Spend;
@@ -4017,6 +4019,8 @@ export function selectSpend(state: ViewState): SpendRow[] {
     const profile = p?.id ?? ids[0]!;
     const name = p?.name ?? profile.replace(/^prof_/, "").slice(0, 6);
     const row: SpendRow = { key, profile, name, ...(p ? { harness: p.harness } : {}), label: name, spend, ...(l ? { limits: l } : {}) };
+    const email = p?.email ?? known.find((k) => k.email)?.email;
+    if (email) row.email = email;
     if (known.length > 1) row.where = whereWords(state, known);
     members.set(row, known);
     rows.push(row);
@@ -4712,16 +4716,27 @@ export function limitLevel(w: LimitWindow | undefined): "none" | "normal" | "war
   return w.percent >= 95 ? "critical" : w.percent >= 80 ? "warn" : "normal";
 }
 
-/** A spend row's hover title: each limit with when it starts over, then the day's cost and tokens. */
+/** An email as a Usage row shows it: its first 6 letters and "..." once it has 7 or more; the hover title has it whole. */
+export function shortEmail(email: string): string {
+  const letters = [...email];
+  return letters.length >= 7 ? `${letters.slice(0, 6).join("")}...` : email;
+}
+
+/** How old a login's limits are before its row's hover title says when they were read. */
+const LIMITS_AGED_MS = 3_600_000;
+
+/** A spend row's hover title: its name and email, each limit with when it starts over and, once an hour old, when it was read, then the day's cost and tokens. */
 export function spendTitle(row: SpendRow, now: number): string {
   const window = (label: string, w: LimitWindow | undefined) => {
     if (!w) return `${label}: not known`;
     const left = w.resetsAt !== undefined && w.resetsAt > now ? `, starts over in ${durationWords(w.resetsAt - now)}` : "";
     return `${label}: ${Math.round(w.percent)}% used${left}`;
   };
-  const lines = [row.name];
+  const lines = [row.email ? `${row.name} · ${row.email}` : row.name];
   if (row.where) lines.push(row.where);
   if (row.limits) lines.push(window("Session limit", row.limits.session), window("Weekly limit", row.limits.weekly));
+  // A login unused for a while keeps its last reading (for ten days): say how old it is.
+  if (row.limits && now - row.limits.at >= LIMITS_AGED_MS) lines.push(`Limits as of ${durationWords(now - row.limits.at)} ago`);
   lines.push(`Today: ${costWords(row.spend.cost)}, ${countWords(row.spend.in)} in, ${countWords(row.spend.out)} out, ${countWords(row.spend.cached)} cached`);
   return lines.join("\n");
 }

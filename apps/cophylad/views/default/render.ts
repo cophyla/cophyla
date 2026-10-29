@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
@@ -132,6 +132,8 @@ export interface UiState {
   railTab: RailTab;
   /** The sessions' share of the rail's height under the chat's row, in percent, the rest the lower half's: the divider between them sets it, the same under every tab. */
   railSplit: number;
+  /** Status's Usage names each login by its profile rather than its email: a login's name sets it for all of them, kept on the device. */
+  spendByProfile?: boolean;
   /** The folders the user opened in the explorer, by their path under the folder it shows, per folder (`explorerKey`). */
   openDirs: Map<string, Set<string>>;
   /** The explorer's row the user last picked, per folder it shows. */
@@ -2200,7 +2202,7 @@ function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
   const logins = state.scopes.includes("metrics:read") ? selectSpend(state) : [];
   const usage = cards.querySelector<HTMLElement>(".spend")!;
   setHidden(usage, logins.length === 0);
-  reconcile(usage.querySelector<HTMLElement>(".spend-rows")!, logins, (r) => r.key, createSpend, updateSpend);
+  reconcile(usage.querySelector<HTMLElement>(".spend-rows")!, logins, (r) => r.key, createSpend, (node, r) => updateSpend(node, r, ui));
   const phones = state.scopes.includes("controllers") ? selectStatusPhones(state) : [];
   const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
   setHidden(phoneSection, phones.length === 0);
@@ -2273,10 +2275,13 @@ function updateMeter(node: HTMLElement, m: StatusMeter): void {
   if (fill.style.width !== width) fill.style.width = width;
 }
 
-/** One login's row: its harness's mark and its name, its session and weekly limits as a share used, and what its sessions spent today. */
+/**
+ * One login's row: its harness's mark and its email (or its profile's name, as the user chose by
+ * clicking one), its session and weekly limits as a share used, and what its sessions spent today.
+ */
 function createSpend(): HTMLElement {
   const row = el("div", "spend-row");
-  const name = el("span", "spend-name");
+  const name = actionButton("spend-name", "", "spend-names");
   const icon = el("span", "agent-icon spend-mark");
   icon.dataset["tone"] = "active";
   icon.setAttribute("role", "img");
@@ -2286,14 +2291,16 @@ function createSpend(): HTMLElement {
   return row;
 }
 
-function updateSpend(node: HTMLElement, row: SpendRow): void {
+function updateSpend(node: HTMLElement, row: SpendRow, ui: UiState): void {
   setData(node, "profile", row.profile);
-  node.title = spendTitle(row, Date.now());
+  const title = spendTitle(row, Date.now());
+  node.title = title;
   const icon = node.querySelector<HTMLElement>(".spend-mark")!;
   setData(icon, "harness", row.harness ?? "");
   setHidden(icon, row.harness === undefined);
   icon.setAttribute("aria-label", row.harness ? HARNESS_NAMES[row.harness] : "");
-  setText(node.querySelector(".spend-label")!, row.label);
+  setText(node.querySelector(".spend-label")!, ui.spendByProfile || !row.email ? row.label : shortEmail(row.email));
+  node.querySelector<HTMLButtonElement>(".spend-name")!.title = `${title}\n${ui.spendByProfile ? "Click to show each login's email" : "Click to show each login's profile name"}`;
   for (const [cls, w] of [
     [".spend-session", row.limits?.session],
     [".spend-weekly", row.limits?.weekly],

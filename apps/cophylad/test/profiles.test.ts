@@ -234,6 +234,20 @@ describe("the account a profile is signed in as", () => {
     expect(mark(undefined)).toBeUndefined();
   });
 
+  test("Claude: the login's email beside its mark; none without an account", () => {
+    const email = (oauthAccount: object | undefined, signedIn = true) => {
+      const home = tempHome();
+      mkdirSync(join(home, ".claude"), { recursive: true });
+      if (signedIn) writeFileSync(join(home, ".claude", ".credentials.json"), "{}");
+      writeFileSync(join(home, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, ...(oauthAccount ? { oauthAccount } : {}) }));
+      return build("", home).p.byHarness("claude")[0]!.email;
+    };
+    expect(email({ accountUuid: "acct-1", organizationUuid: "org-1", emailAddress: "ann@example.com" })).toBe("ann@example.com");
+    expect(email({ accountUuid: "acct-1", emailAddress: "ann@example.com" }, false)).toBeUndefined();
+    expect(email({ emailAddress: "ann@example.com" })).toBeUndefined();
+    expect(email({ accountUuid: "acct-1" })).toBeUndefined();
+  });
+
   test("Codex: its ChatGPT account and the user in it, from auth.json; a key has none", () => {
     const jwt = (claims: object) => ["e30", Buffer.from(JSON.stringify(claims)).toString("base64url"), "sig"].join(".");
     const login = (account: string, user: string) => ({ auth_mode: "chatgpt", tokens: { account_id: account, id_token: jwt({ sub: "auth0|x", "https://api.openai.com/auth": { chatgpt_user_id: user } }), access_token: "a", refresh_token: "r" } });
@@ -249,6 +263,15 @@ describe("the account a profile is signed in as", () => {
     // a team's workspace is shared, its limits are each user's
     expect(mark(login("ws-1", "user-2"))).not.toBe(first);
     expect(mark({ OPENAI_API_KEY: "sk-x", tokens: null })).toBeUndefined();
+
+    // the id token's email, which leaves the mark as it was
+    const home = tempHome();
+    mkdirSync(join(home, ".codex"), { recursive: true });
+    const withEmail = login("ws-1", "user-1");
+    withEmail.tokens.id_token = jwt({ sub: "auth0|x", email: "ann@example.com", "https://api.openai.com/auth": { chatgpt_user_id: "user-1" } });
+    writeFileSync(join(home, ".codex", "auth.json"), JSON.stringify(withEmail));
+    const p = build("", home).p.byHarness("codex")[0]!;
+    expect([p.account, p.email]).toEqual([first, "ann@example.com"]);
   });
 });
 

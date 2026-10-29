@@ -2794,11 +2794,24 @@ button:disabled {
   text-transform: uppercase;
 }
 
+/* A login's name is a button: it switches every row between emails and profile names. It
+   reaches 16px into Session, whose values are right-aligned and at most "100%", so an email's 6
+   letters and "..." fit. */
 .spend-name {
   display: flex;
   align-items: center;
   gap: 5px;
   min-width: 0;
+  margin: -1px -20px -1px -4px;
+  padding: 1px 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  text-align: left;
+}
+
+.spend-name:hover {
+  background: var(--raised);
 }
 
 .agent-icon.spend-mark {

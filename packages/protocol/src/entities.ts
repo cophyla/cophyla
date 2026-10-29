@@ -232,6 +232,8 @@ export const HarnessProfile = z.object({
    * account ids, never the ids. Absent for a key, Muse, or no login.
    */
   account: z.string().optional(),
+  /** Signed in with a subscription: the email address the vendor has for the login, which the user knows it by. Absent as `account` is. */
+  email: z.string().optional(),
 });
 export type HarnessProfile = z.infer<typeof HarnessProfile>;
 

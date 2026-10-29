@@ -1503,6 +1503,9 @@ describe("default view: nodes and metrics", () => {
     expect([limitLevel(rows[0]!.limits?.session), limitLevel(rows[0]!.limits?.weekly), limitLevel(rows[1]!.limits?.session), limitLevel({ percent: 95 })]).toEqual(["normal", "warn", "none", "critical"]);
     expect(spendTitle(rows[0]!, 2000)).toBe("main\nSession limit: 4% used, starts over in 2 h 40 min\nWeekly limit: 82% used, starts over in 3 d 4 h\nToday: $0.02, 1.0k in, 200 out, 50 cached");
     expect(spendTitle(rows[1]!, 2000)).toBe("codex\nSession limit: not known\nWeekly limit: 1% used\nToday: $0, 0 in, 0 out, 0 cached");
+    // A login unused for days keeps its last reading, and its title says how old it is.
+    expect(spendTitle(rows[1]!, 1500 + H - 1).split("\n")).toHaveLength(4);
+    expect(spendTitle(rows[1]!, 1500 + 3 * 24 * H + 4 * H).split("\n")[3]).toBe("Limits as of 3 d 4 h ago");
     // The next sample's limits replace the last: one the node no longer reads, with nothing spent, has no row.
     apply(state, { type: "metrics.sample", params: sample(3000, { limits: { [PROFILE]: { at: 2900, session: { percent: 5 } } } }) });
     rows = selectSpend(state);

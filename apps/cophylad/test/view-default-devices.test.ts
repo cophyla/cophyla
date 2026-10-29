@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Controller, Grant, HarnessProfile, LanState, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, memoryWords, spendTitle, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, shortEmail, memoryWords, spendTitle, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -315,6 +315,32 @@ describe("the rail's Status: each login's usage", () => {
       ["default · Desk", undefined],
       ["default · Laptop", undefined],
     ]);
+  });
+
+  test("a login's email, from any profile signed in as it, beside its name on hover", () => {
+    const state = cluster();
+    apply(state, {
+      type: "profiles",
+      profiles: [
+        { ...profile("prof_A", DESK, "claude", "gmail"), origin: "user", account: "aaaa" },
+        // a machine that read the email where the named one did not
+        { ...profile("prof_B", LAPTOP, "claude", "default"), account: "aaaa", email: "ann@example.com" },
+        { ...profile("prof_C", DESK, "codex", "default"), account: "cccc", email: "ann@work.example" },
+        profile("prof_D", DESK, "claude", "key"),
+      ],
+    });
+    const limits = { at: NOW, weekly: { percent: 10 } };
+    apply(state, { type: "metrics.sample", params: { ...sample(DESK, 1, 1, 2), limits: { prof_A: limits, prof_C: limits, prof_D: limits } } });
+    const rows = selectSpend(state);
+    expect(Object.fromEntries(rows.map((r) => [r.profile, [r.label, r.email]]))).toEqual({
+      prof_A: ["gmail", "ann@example.com"],
+      prof_C: ["default", "ann@work.example"],
+      prof_D: ["key", undefined],
+    });
+    const title = (id: string) => spendTitle(rows.find((r) => r.profile === id)!, NOW).split("\n")[0];
+    expect([title("prof_A"), title("prof_D")]).toEqual(["gmail · ann@example.com", "key"]);
+    // the row shows 6 letters and "..." once there are 7
+    expect(["ann@example.com", "annie@x", "ann@xy"].map(shortEmail)).toEqual(["ann@ex...", "annie@...", "ann@xy"]);
   });
 
   test("memory as used of total and today's cost, short enough for the rail", () => {

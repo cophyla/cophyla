@@ -775,6 +775,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       ? new PlanLimits({
           profiles: () => profiles.list(identity.id),
           log: metricsLog.child("limits"),
+          meta: store.meta,
           muse: (id) => muse?.limits(id) ?? Promise.resolve(undefined),
           // a Mac keeps a Claude login in the Keychain, not in `.credentials.json`
           ...(process.platform === "darwin" && !opts.metrics?.limitsFetch ? { keychain: (dir: string) => claudeKeychainSecret(dir) } : {}),
