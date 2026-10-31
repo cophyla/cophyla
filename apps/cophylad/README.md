@@ -184,8 +184,10 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   with no window of its own (`[tether].window_on_start` opens one at once; `session.focus`
   does when asked), and has its first prompt typed once it registers.
   A client's `session.send` is typed with no prefix, waiting while an ask is open or the
-  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen), and so is a
-  leader's (`from: "lead"`, see `leaders/`), recorded as the user's turn sent by it; the brain's
+  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen; with
+  `[sessions].type_into_busy`, off by default, a busy session is typed into without waiting
+  for its prompt, and a prompt not free in 30 s with no ask open is typed into all the same),
+  and so is a leader's (`from: "lead"`, see `leaders/`), recorded as the user's turn sent by it; the brain's
   sends stay on the pipe unless the user made the chat the session's leader. A send may prepare
   the session first, in order: `clear` types `/clear` whoever sends it and waits for the new
   context, `mode` (plan or default) is set as `session.mode` sets it, and `task` is written
@@ -304,7 +306,7 @@ daemon's, which runs every CLI's threads. The README of a shipped build says so.
 
 `[sessions]` in `config.toml` tunes it: `poll_ms`, `codex_list_ms`, `hook_timeout_s`,
 `receipt_timeout_ms`, `codex_recent_ms`, `claude_hook_grace_ms`, `install_hooks`,
-`discover`, `launch`, and a repeatable `[[profiles]]` block for an installation beyond the
+`discover`, `launch`, `type_into_busy`, and a repeatable `[[profiles]]` block for an installation beyond the
 discovered one; the retired `brain_sends` is still read once, on the primary, where `typed`
 becomes the chat leading every agent. `[tether]` names the binary (`command`), tether's state folder (`dir`), a
 host's idle exit (`idle_exit_s`, 600), where a window opens (`window`: `auto`, `wt`,

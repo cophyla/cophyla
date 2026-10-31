@@ -132,6 +132,8 @@ export interface SessionsDeps {
   reopenHookMs?: number;
   /** How long a send that clears a context waits for the new one; a test shortens it. */
   clearWaitMs?: number;
+  /** With `[sessions].type_into_busy`, how long a message waits with no prompt seen, and with the prompt held, before it is typed; a test shortens them. */
+  typeWaits?: { noPromptMs?: number; heldMs?: number };
   /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
   resultHoldMs?: number;
   /** Prices a session's tokens when the harness states no cost of its own; undefined for a model with no price. */
@@ -311,6 +313,8 @@ interface LiveRecord extends SessionRecord {
   typing?: Promise<void>;
   /** How many of those are not typed yet. */
   toType?: number;
+  /** The last message typed into its terminal, which a busy CLI can still hold in its prompt (`[sessions].type_into_busy`). */
+  lastTyped?: string;
   /** Sends that cleared its context, waiting for the record to follow it to its new id. */
   clearWaiters?: (() => void)[];
   /** Claude: a change of permission mode being pressed in its terminal; the next waits for it, and so does a message typed meanwhile. */
@@ -410,6 +414,13 @@ const RECENT_CALLS = 256;
 /** The most rows the folder trust dialog's pointer is moved before it is left alone. */
 const TRUST_MOVES = 4;
 const TYPE_POLL_MS = 400;
+/**
+ * With `[sessions].type_into_busy`: how long a message waits for a prompt to show before it is
+ * typed (a terminal met again after a restart stays blank until its CLI redraws), and how long
+ * it waits for a prompt that shows held before it is typed all the same, with no ask open.
+ */
+const TYPE_NO_PROMPT_MS = 5000;
+const TYPE_HELD_MS = 30000;
 /** How long a message typed and sent waits for the harness to show it before Enter is pressed once more. */
 const TYPE_VERIFY_MS = 6000;
 /** How long the plan dialog is looked for once the hook is released. */
@@ -3511,10 +3522,17 @@ export class Sessions implements SessionHost {
    * user's and would go along with it. A busy session is typed into anyway: the harness queues
    * what is sent while it works. Then the message is pasted, Enter pressed on its own, and its
    * landing awaited; when the text still sits in the prompt, Enter is pressed once more.
+   *
+   * With `[sessions].type_into_busy` the prompt need not show empty (`mayTypeOver`), and with
+   * no ask open a message waits for it at most `TYPE_HELD_MS`, then is typed, and what held it
+   * is logged.
    */
   private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: Wrapped, lead?: LeadInfo): Promise<void> {
     const tether = this.deps.tether!;
-    const deadline = this.now() + this.config.hook_timeout_s * 1000;
+    const since = this.now();
+    const deadline = since + this.config.hook_timeout_s * 1000;
+    const heldMs = this.deps.typeWaits?.heldMs ?? TYPE_HELD_MS;
+    let askLogged = false;
     let term: TerminalRef | undefined;
     for (;;) {
       // Not in the middle of Shift+Tab presses, whose passing modes the turn would start in.
@@ -3523,16 +3541,44 @@ export class Sessions implements SessionHost {
       term = rec.session.native.terminal;
       if (!term) throw new Error("the session's terminal is gone");
       const asking = (rec.held !== undefined && !rec.held.settled) || rec.inputAsk !== undefined;
-      if (!asking && this.promptOf(rec, await tether.screen(term)) === "") break;
+      const prompt = this.promptOf(rec, await tether.screen(term));
+      if (!asking && (prompt === "" || (this.config.type_into_busy && this.mayTypeOver(rec, prompt, since)))) break;
+      if (this.config.type_into_busy && this.now() - since > heldMs) {
+        if (!asking) {
+          this.log.warn("message typed after waiting for the prompt", { session: rec.session.id, ref, status: rec.session.status, prompt: prompt === undefined ? "<none on screen>" : prompt.slice(0, 80) });
+          break;
+        }
+        if (!askLogged) {
+          askLogged = true;
+          this.log.info("message waits for an open ask", { session: rec.session.id, ref, held: rec.held !== undefined && !rec.held.settled, inputAsk: rec.inputAsk !== undefined });
+        }
+      }
       if (this.now() > deadline) throw new Error("the session's prompt was never free to type into");
       await sleep(TYPE_POLL_MS);
     }
     const at = term;
     this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}), ...(agent?.more ? { more: agent.more } : {}), ...(lead ? { lead } : {}) });
     await submit(await tether.client(at.host), at.id, text);
+    rec.lastTyped = text;
     this.log.info("message typed", { session: rec.session.id, ref, terminal: at.id });
     // The next message waits only for the prompt to be free; this one's landing is watched apart.
     void this.watchTyped(rec, at, text, ref);
+  }
+
+  /**
+   * With `[sessions].type_into_busy`, whether a prompt that does not show empty is typed into
+   * all the same: a busy session with no prompt on screen (tool output or a small terminal hides
+   * it), whose CLI queues the message itself; any session whose terminal still shows no prompt
+   * once the message has waited `TYPE_NO_PROMPT_MS` (a terminal met again after a restart is
+   * blank until its CLI redraws, and an idle one does not); and a busy session whose prompt
+   * holds only the message typed last, which the CLI keeps there until its turn ends and takes
+   * with the next.
+   */
+  private mayTypeOver(rec: LiveRecord, prompt: string | undefined, since: number): boolean {
+    const busy = rec.session.status === "busy";
+    if (prompt === undefined) return busy || this.now() - since > (this.deps.typeWaits?.noPromptMs ?? TYPE_NO_PROMPT_MS);
+    const last = rec.lastTyped?.replace(/\s+/g, " ").trim().slice(0, 40);
+    return busy && last !== undefined && last !== "" && prompt.replace(/\s+/g, " ").includes(last);
   }
 
   /**
