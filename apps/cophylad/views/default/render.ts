@@ -22,8 +22,8 @@
 // that shows the file or the folder in the file manager of the computer it is on, which only
 // the desktop app there can do. Which of the two shows is the same for every agent;
 // the chat stream and every session pane stay in the DOM and only the selected one shows,
-// so the chat keeps its place when the user comes back, and a session's pane holds rows
-// only while its tab is open. Above a timeline, and at the top of the chat, a button loads
+// so the chat keeps its place when the user comes back, and a session's pane holds its
+// timeline only while its tab is open, drawn as the chat is, a card per message and per turn. Above a timeline, and at the top of the chat, a button loads
 // history a page earlier per press, and reads Load history while none is loaded, as on a
 // phone or the web app, which load nothing unasked. Under the sessions, a tab per bare
 // terminal (a shell started here). New terminal, in the chat's row, starts one with its + in the
@@ -64,12 +64,12 @@ import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
-import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, TimelineRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
+import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
-import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, viewerRows } from "./model.ts";
+import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, timelinePosts, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
-import type { SendTarget, TransferRow } from "./model.ts";
+import type { SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import { placeGroupChats } from "./model.ts";
@@ -3238,7 +3238,7 @@ function createPane(): HTMLElement {
   const earlier = el("button", "earlier", "Show earlier");
   earlier.type = "button";
   earlier.dataset["action"] = "earlier";
-  body.append(earlier, el("ol", "timeline"));
+  body.append(earlier, el("ol", "timeline"), createWorking());
   root.append(head, body, createTalkPane());
   return root;
 }
@@ -3326,7 +3326,9 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
 
   const timeline = node.querySelector<HTMLElement>(".timeline")!;
   const cardKey = `session:${s.id}`;
-  reconcile(timeline, selectTimeline(state, card), (r) => r.key, createRow, (li, row) => updateRow(li, row, cardKey, ui));
+  const posts = timelinePosts(selectTimeline(state, card));
+  reconcile(timeline, posts, (p) => p.key, createTimelinePost, (li, post) => updateTimelinePost(li, post, s, cardKey, ui));
+  updateWorking(node.querySelector<HTMLElement>(".tl-working")!, s, posts);
 }
 
 /**
@@ -3476,17 +3478,6 @@ function updateKill(block: HTMLElement, s: Session, state: ViewState, ui: UiStat
   setHidden(block.querySelector<HTMLElement>(".session-kill-cancel")!, phase !== "asking");
 }
 
-function createRow(): HTMLElement {
-  const li = el("li", "row");
-  const main = el("span", "row-main");
-  main.append(el("span", "row-label"), el("span", "row-text"));
-  li.append(el("span", "row-time"), main, el("button", "row-toggle"), el("pre", "row-body"));
-  const toggle = li.querySelector<HTMLButtonElement>(".row-toggle")!;
-  toggle.type = "button";
-  toggle.dataset["action"] = "toggle";
-  return li;
-}
-
 function sendWord(state: PendingSend["state"]): string {
   switch (state) {
     case "queued":
@@ -3502,101 +3493,149 @@ function sendWord(state: PendingSend["state"]): string {
   }
 }
 
-interface RowView {
-  kind: string;
-  label: string;
-  text: string;
-  /** A model wrote `text`: it is drawn as markdown. */
-  md?: boolean;
-  body?: string;
-  /** A line under the text, as a send's receipt is: who sent a leader's message as the user. */
-  note?: string;
-  error?: boolean;
-  at?: number;
+// --- a session's timeline, card by card --------------------------------------------------------
+
+/**
+ * One card of a session's timeline, built for its kind (a post's key never changes kind): its
+ * head, who and when, the agent's mark on the session's turns and another agent's messages;
+ * then a turn's parts, or the words; under the user's, where the message stands.
+ */
+function createTimelinePost(post: TimelinePost): HTMLElement {
+  if (post.kind === "note") return el("li", "tl-note");
+  const li = el("li", "message tl-post");
+  li.dataset["kind"] = post.kind;
+  const head = el("header", "message-head");
+  if (post.kind === "agent" || post.kind === "turn") {
+    const icon = el("span", "agent-icon");
+    icon.append(el("span", "agent-mark"));
+    head.append(icon);
+  }
+  head.append(el("span", "message-who"), el("time", "message-time"));
+  li.append(head, el("div", post.kind === "turn" ? "tl-parts" : "tl-text"));
+  if (post.kind === "user") li.append(el("p", "tl-receipt"));
+  return li;
 }
 
-function describe(row: TimelineRow): RowView {
-  if (row.kind === "send") {
-    return { kind: "send", label: "you", text: row.send.text, body: sendWord(row.send.state), at: row.send.at };
+function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, cardKey: string, ui: UiState): void {
+  if (post.kind === "note") {
+    setText(li, post.text);
+    li.title = clock(post.at);
+    return;
   }
-  const e: SessionEvent = row.event;
-  const p = (e.payload ?? {}) as Record<string, unknown>;
-  switch (e.kind) {
-    case "status":
-      return { kind: "status", label: "", text: statusWord({ status: (p["status"] as Session["status"]) ?? "idle", waiting: p["waiting"] as Session["waiting"] }), at: e.at };
-    case "user_turn": {
-      // another agent's, through cophyla: who sent it, and its text as the model wrote it
-      if (row.from !== undefined) return { kind: "user", label: row.from, text: String(p["text"] ?? ""), md: true, at: e.at };
-      // a leader's, typed in as the user's: the user's own turn, and under it who sent it
-      if (row.lead !== undefined) return { kind: "user", label: "you", text: String(p["text"] ?? ""), md: true, note: row.lead, at: e.at };
-      const peer = p["source"] === "peer";
-      return { kind: "user", label: peer ? "another agent" : "you", text: String(p["text"] ?? ""), md: peer, at: e.at };
+  const time = li.querySelector<HTMLElement>(".message-time")!;
+  setText(time, clock(post.at));
+  time.setAttribute("datetime", new Date(post.at).toISOString());
+  const who = li.querySelector<HTMLElement>(".message-who")!;
+  const icon = li.querySelector<HTMLElement>(".agent-icon");
+  switch (post.kind) {
+    case "user": {
+      setData(li, "role", "user");
+      setText(who, "you");
+      renderText(li.querySelector<HTMLElement>(".tl-text")!, post.text, false);
+      // A leader's: who sent it as the user's words, after the crown. Else where it stands, while that is not plainly delivered.
+      const receipt = li.querySelector<HTMLElement>(".tl-receipt")!;
+      const words = post.lead ?? (post.receipt ? (post.receipt.asPeer && post.receipt.state === "delivered" ? "delivered, as another agent's message" : sendWord(post.receipt.state)) : "");
+      setText(receipt, words);
+      setHidden(receipt, words === "");
+      setData(li, "lead", String(post.lead !== undefined));
+      return;
     }
-    case "assistant_text":
-      return { kind: "assistant", label: "assistant", text: String(p["text"] ?? ""), md: true, at: e.at };
-    case "tool_call":
-      return { kind: "call", label: String(p["tool"] ?? "tool"), text: firstLine(p["args"]), body: pretty(p["args"]) + (p["truncated"] ? "\n…" : ""), at: e.at };
-    case "tool_result":
-      return {
-        kind: "result",
-        label: String(p["tool"] ?? "result"),
-        text: firstLine(p["result"]),
-        body: pretty(p["result"]) + (p["truncated"] ? "\n…" : ""),
-        error: p["isError"] === true,
-        at: e.at,
-      };
+    case "agent":
+      setData(icon!, "harness", post.harness ?? "terminal");
+      setData(icon!, "tone", "active");
+      setText(who, post.who);
+      renderText(li.querySelector<HTMLElement>(".tl-text")!, post.text, true);
+      return;
     case "ask": {
-      const { label, text } = askEventText(p, row.ask);
-      return { kind: "ask", label, text, at: e.at };
+      const { label, text } = askEventText(post.payload as Record<string, unknown>, post.ask);
+      setText(who, label);
+      renderText(li.querySelector<HTMLElement>(".tl-text")!, text, false);
+      return;
     }
-    case "notification": {
-      const type = String(p["type"] ?? "notification");
-      if (type === "message") {
-        const text = row.send?.text ?? String(p["text"] ?? "");
-        const state = (p["state"] as PendingSend["state"]) ?? "delivered";
-        // Over the pipe, a Claude session in a terminal reads it as another agent's message.
-        const body = row.asPeer && state === "delivered" ? "delivered, as another agent's message" : sendWord(state);
-        return { kind: "send", label: "you", text, body, at: e.at };
-      }
-      if (type === "queued") return { kind: "note", label: "queued", text: String(p["text"] ?? ""), at: e.at };
-      if (type === "session_end") return { kind: "note", label: "session", text: `ending (${String(p["reason"] ?? "")})`, at: e.at };
-      if (type === "backgrounded") return { kind: "note", label: "session", text: "sent to the background: it goes on as a background job", at: e.at };
-      return { kind: "note", label: type.replace(/_/g, " "), text: String(p["message"] ?? ""), at: e.at };
-    }
-    case "ended":
-      return { kind: "ended", label: "", text: `session ended${p["reason"] ? ` (${String(p["reason"])})` : ""}`, at: e.at };
+    case "turn":
+      setData(icon!, "harness", s.harness);
+      setData(icon!, "tone", "active");
+      setText(who, HARNESS_NAMES[s.harness] ?? s.harness);
+      reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui));
+      return;
   }
 }
 
-function updateRow(li: HTMLElement, row: TimelineRow, cardKey: string, ui: UiState): void {
-  const v = describe(row);
-  setData(li, "kind", v.kind);
-  setData(li, "error", v.error ? "1" : "0");
-  setData(li, "md", v.md ? "1" : "0");
-  setData(li, "lead", v.note !== undefined ? "1" : "0");
-  setText(li.querySelector(".row-time")!, v.at !== undefined ? clock(v.at) : "");
-  const label = li.querySelector<HTMLElement>(".row-label")!;
-  setText(label, v.label);
-  setHidden(label, v.label === "");
-  renderText(li.querySelector<HTMLElement>(".row-text")!, v.text, v.md === true);
-  const toggle = li.querySelector<HTMLButtonElement>(".row-toggle")!;
-  const body = li.querySelector<HTMLElement>(".row-body")!;
-  const key = `${cardKey}/${row.key}`;
-  const collapsible = v.body !== undefined && v.body !== "" && v.kind !== "send";
-  const open = ui.expanded.has(key);
-  setHidden(toggle, !collapsible);
-  setData(toggle, "target", key);
-  setText(toggle, open ? "Hide" : "Show");
-  toggle.setAttribute("aria-expanded", open ? "true" : "false");
-  if (v.kind === "send" || v.note !== undefined) {
-    setText(body, v.kind === "send" ? (v.body ?? "") : (v.note ?? ""));
-    setHidden(body, false);
-    setData(body, "receipt", "1");
-  } else {
-    setText(body, open ? (v.body ?? "") : "");
-    setHidden(body, !(collapsible && open));
-    setData(body, "receipt", "0");
+/** What a turn wrote, as markdown; or the tools it called one after another, folded to a line as a chat reply's steps are. */
+function createTurnPart(part: TurnPart): HTMLElement {
+  if (part.kind === "text") return el("div", "tl-text");
+  const root = el("details", "message-steps tl-steps");
+  const summary = el("summary");
+  summary.append(el("span", "steps-count"), el("span", "steps-line"));
+  root.append(summary, el("ol", "steps-list"));
+  return root;
+}
+
+function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: UiState): void {
+  if (part.kind === "text") {
+    renderText(node, part.text, true);
+    return;
   }
+  const n = part.steps.length;
+  setText(node.querySelector(".steps-count")!, n === 1 ? "1 step" : `${n} steps`);
+  setText(node.querySelector(".steps-line")!, part.steps.map(stepWords).join(" · "));
+  reconcile(node.querySelector<HTMLElement>(".steps-list")!, part.steps, (st) => st.key, createTimelineStep, (li, st) => updateTimelineStep(li, st, `${cardKey}/${st.key}`, ui));
+}
+
+/** A step: its mark (done, failed, or still running), the tool and what it was pointed at; pressed, what went in and what came back. */
+function createTimelineStep(): HTMLElement {
+  const li = el("li", "progress-step tl-step");
+  const line = el("button", "tl-step-line");
+  line.type = "button";
+  line.dataset["action"] = "toggle";
+  line.append(el("span", "progress-mark"), el("span", "progress-text"));
+  const body = el("div", "tl-step-body");
+  body.append(el("pre", "tl-step-in"), el("pre", "tl-step-out"));
+  li.append(line, body);
+  return li;
+}
+
+function updateTimelineStep(li: HTMLElement, step: TimelineStep, key: string, ui: UiState): void {
+  const status = step.result === undefined ? "running" : step.result.error ? "failed" : "done";
+  setData(li, "status", status);
+  setText(li.querySelector(".progress-mark")!, STEP_MARK[status]);
+  setText(li.querySelector(".progress-text")!, stepWords(step));
+  const line = li.querySelector<HTMLButtonElement>(".tl-step-line")!;
+  const open = ui.expanded.has(key);
+  setData(line, "target", key);
+  line.setAttribute("aria-expanded", String(open));
+  line.title = open ? "Hide what went in and what came back" : "Show what went in and what came back";
+  const body = li.querySelector<HTMLElement>(".tl-step-body")!;
+  setHidden(body, !open);
+  const input = li.querySelector<HTMLElement>(".tl-step-in")!;
+  const output = li.querySelector<HTMLElement>(".tl-step-out")!;
+  const args = step.args === undefined ? "" : pretty(step.args) + (step.truncated ? "\n…" : "");
+  const result = step.result === undefined ? "" : pretty(step.result.value) + (step.result.truncated ? "\n…" : "");
+  setText(input, open ? args : "");
+  setHidden(input, !open || args === "");
+  setText(output, open ? result : "");
+  setHidden(output, !open || result === "");
+  setData(output, "error", String(step.result?.error === true));
+}
+
+/** Under the timeline while the session works: a pulse, and the step it is on when one is running. */
+function createWorking(): HTMLElement {
+  const root = el("div", "progress tl-working");
+  root.setAttribute("role", "status");
+  const now = el("div", "progress-now");
+  now.append(el("span", "pulse"), el("span", "progress-text"));
+  root.append(now);
+  root.hidden = true;
+  return root;
+}
+
+function updateWorking(node: HTMLElement, s: Session, posts: TimelinePost[]): void {
+  setHidden(node, s.status !== "busy");
+  if (s.status !== "busy") return;
+  const last = posts.at(-1);
+  const part = last?.kind === "turn" ? last.parts.at(-1) : undefined;
+  const step = part?.kind === "steps" ? part.steps.at(-1) : undefined;
+  setText(node.querySelector(".progress-text")!, step && step.result === undefined ? `${stepWords(step)}…` : "Working…");
 }
 
 // --- audit rows ------------------------------------------------------------------------------

@@ -20,6 +20,8 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, loadsHistory, loginWords, messageText, namedController, pairingWords, paneMode, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
+import { stepWords, timelinePosts } from "../views/default/model.ts";
+import type { TimelinePost, TurnPart } from "../views/default/model.ts";
 import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenStep, doorWords, selectDoor } from "../views/default/model.ts";
 import type { DoorState } from "@cophyla/protocol";
 import { selectUpdateNote, updateKey, waitingWords } from "../views/default/model.ts";
@@ -387,6 +389,60 @@ describe("default view model", () => {
     apply(s, { type: "session.event", params: event("sess_a", 5, "user_turn", { text: "mine", source: "typed" }) });
     const rows = selectTimeline(s, s.sessions.get("sess_a")!) as { from?: string }[];
     expect(rows.map((r) => r.from)).toEqual(["@api-codex · Codex", "@api-codex · Codex on laptop", "cophyla", "@web-review · Claude on laptop", undefined]);
+  });
+
+  test("the timeline as cards: the user's, another agent's, and each turn of the session's with its steps paired to their results", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    open(s, "sess_a");
+    const from = { session: "sess_b", alias: "api-codex", harness: "codex", node: NODE, nodeName: "desk" };
+    const events: [string, unknown][] = [
+      ["status", { status: "idle" }],
+      ["user_turn", { text: "fix the flash", source: "typed" }],
+      ["status", { status: "busy" }],
+      ["assistant_text", { text: "Looking." }],
+      ["tool_call", { tool: "Grep", id: "t1", args: { pattern: "stylesheet" } }],
+      ["tool_call", { tool: "Read", id: "t2", args: { file_path: "C:\\app\\src\\index.html" } }],
+      // results out of order: paired by id
+      ["tool_result", { tool: "Read", id: "t2", result: "<html>" }],
+      ["tool_result", { tool: "Grep", id: "t1", result: "index.html:7", isError: false }],
+      ["assistant_text", { text: "Found it." }],
+      ["tool_call", { tool: "Bash", args: { command: "npm test", description: "Run the tests" } }],
+      ["tool_result", { tool: "Bash", result: "1 failed", isError: true }],
+      ["assistant_text", { text: "Fixed." }],
+      ["status", { status: "idle" }],
+      ["user_turn", { source: "agent", from, messageId: "pmsg_1", text: "rerun e2e" }],
+      ["status", { status: "busy" }],
+      ["assistant_text", { text: "Green." }],
+      ["status", { status: "idle" }],
+      ["notification", { type: "context_cleared" }],
+      ["ended", { reason: "exit" }],
+    ];
+    events.forEach(([kind, payload], i) => apply(s, { type: "session.event", params: event("sess_a", i + 1, kind as SessionEvent["kind"], payload) }));
+    apply(s, { type: "send.result", session: "sess_a", ref: "cophylad-9", text: "and the signup page", at: 9000, status: "queued" });
+    const posts = timelinePosts(selectTimeline(s, s.sessions.get("sess_a")!));
+    expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "agent", "turn", "note", "note", "user"]);
+    expect(posts[0]).toMatchObject({ kind: "user", key: "e2", text: "fix the flash" });
+    expect(posts[0]).not.toHaveProperty("receipt");
+    const turn = posts[1] as Extract<TimelinePost, { kind: "turn" }>;
+    expect(turn.key).toBe("te4");
+    expect(turn.parts.map((p) => (p.kind === "text" ? p.text : p.steps.map((st) => `${st.tool}:${st.result?.error === true ? "failed" : st.result ? "done" : "running"}`).join(",")))).toEqual(["Looking.", "Grep:done,Read:done", "Found it.", "Bash:failed", "Fixed."]);
+    const read = (turn.parts[1] as Extract<TurnPart, { kind: "steps" }>).steps[1]!;
+    expect(read.result?.value).toBe("<html>");
+    expect(posts[2]).toMatchObject({ kind: "agent", who: "@api-codex · Codex", harness: "codex", text: "rerun e2e" });
+    expect((posts[3] as Extract<TimelinePost, { kind: "turn" }>).parts).toEqual([{ kind: "text", key: "e16", text: "Green." }]);
+    expect(posts.slice(4, 6).map((p) => (p as { text: string }).text)).toEqual(["context cleared", "Session ended (exit)"]);
+    expect(posts[6]).toMatchObject({ kind: "user", text: "and the signup page", receipt: { state: "queued", asPeer: false } });
+  });
+
+  test("a turn's step in a few words: the tool and what it was pointed at", () => {
+    expect(stepWords({ tool: "Bash", args: { command: "npm test", description: "Run the tests" } })).toBe("Bash Run the tests");
+    expect(stepWords({ tool: "Bash", args: { command: "git status\ngit diff" } })).toBe("Bash git status");
+    expect(stepWords({ tool: "Read", args: { file_path: "C:\\app\\src\\index.html" } })).toBe("Read index.html");
+    expect(stepWords({ tool: "Grep", args: { pattern: "stylesheet", path: "src" } })).toBe("Grep stylesheet");
+    expect(stepWords({ tool: "WebFetch", args: { url: "https://example.com/a" } })).toBe("WebFetch https://example.com/a");
+    expect(stepWords({ tool: "TodoWrite", args: { todos: [] } })).toBe("TodoWrite");
+    expect(stepWords({ tool: "Bash", args: { command: "x".repeat(80) } })).toBe(`Bash ${"x".repeat(59)}…`);
   });
 
   test("two history pages prepend without duplicates; a short page sets exhausted", () => {

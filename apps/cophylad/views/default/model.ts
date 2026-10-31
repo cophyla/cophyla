@@ -2045,6 +2045,148 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
   return rows;
 }
 
+/** A tool an agent's turn called, and what came back once it did. */
+export interface TimelineStep {
+  key: string;
+  tool: string;
+  args: unknown;
+  truncated?: boolean;
+  result?: { value: unknown; error: boolean; truncated?: boolean };
+}
+
+/** A run of an agent's turn: what it wrote, or the tools it called one after another. */
+export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] };
+
+/**
+ * A session's timeline as cards, the way the chat and a group draw theirs: the user's messages
+ * (`receipt` while one is not plainly delivered, `lead` for a leader's), another agent's, each
+ * of the session's turns as one card of what it wrote and the tools it called between, asks,
+ * and quiet notes. Busy and idle are not drawn: idle ends a turn's card.
+ */
+export type TimelinePost =
+  | { kind: "user"; key: string; at: number; text: string; receipt?: { state: PendingSend["state"]; asPeer: boolean }; lead?: string }
+  | { kind: "agent"; key: string; at: number; text: string; who: string; harness?: string }
+  | { kind: "turn"; key: string; at: number; parts: TurnPart[] }
+  | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown }
+  | { kind: "note"; key: string; at: number; text: string };
+
+export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
+  const posts: TimelinePost[] = [];
+  let turn: Extract<TimelinePost, { kind: "turn" }> | undefined;
+  // the calls of the turn without their result yet, by id, and by tool for a harness that names none
+  let open = new Map<string, TimelineStep>();
+  let waiting: TimelineStep[] = [];
+  const end = () => {
+    turn = undefined;
+    open = new Map();
+    waiting = [];
+  };
+  const add = (post: TimelinePost) => {
+    end();
+    posts.push(post);
+  };
+  const into = (key: string, at: number) => {
+    if (!turn) {
+      turn = { kind: "turn", key: `t${key}`, at, parts: [] };
+      posts.push(turn);
+    }
+    return turn;
+  };
+  for (const row of rows) {
+    if (row.kind === "send") {
+      add({ kind: "user", key: row.key, at: row.send.at, text: row.send.text, receipt: { state: row.send.state, asPeer: false } });
+      continue;
+    }
+    const e = row.event;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    switch (e.kind) {
+      case "status":
+        if (p["status"] === "idle") end();
+        break;
+      case "user_turn": {
+        const text = String(p["text"] ?? "");
+        if (row.from !== undefined) {
+          const from = (p["peer"] ?? p["from"]) as { harness?: unknown } | undefined;
+          add({ kind: "agent", key: row.key, at: e.at, text, who: row.from, ...(typeof from?.harness === "string" ? { harness: from.harness } : {}) });
+        } else if (p["source"] === "peer") add({ kind: "agent", key: row.key, at: e.at, text, who: "another agent" });
+        else add({ kind: "user", key: row.key, at: e.at, text, ...(row.lead !== undefined ? { lead: row.lead } : {}) });
+        break;
+      }
+      case "assistant_text": {
+        const t = into(row.key, e.at);
+        t.parts.push({ kind: "text", key: row.key, text: String(p["text"] ?? "") });
+        break;
+      }
+      case "tool_call": {
+        const t = into(row.key, e.at);
+        const last = t.parts.at(-1);
+        const step: TimelineStep = { key: row.key, tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
+        if (last?.kind === "steps") last.steps.push(step);
+        else t.parts.push({ kind: "steps", key: row.key, steps: [step] });
+        if (typeof p["id"] === "string") open.set(p["id"], step);
+        else waiting.push(step);
+        break;
+      }
+      case "tool_result": {
+        const tool = String(p["tool"] ?? "result");
+        const id = typeof p["id"] === "string" ? p["id"] : undefined;
+        let step = id !== undefined ? open.get(id) : undefined;
+        if (step && id !== undefined) open.delete(id);
+        if (!step) {
+          const i = waiting.findIndex((s) => s.tool === tool);
+          if (i >= 0) step = waiting.splice(i, 1)[0];
+        }
+        const result = { value: p["result"], error: p["isError"] === true, ...(p["truncated"] ? { truncated: true } : {}) };
+        if (step) {
+          step.result = result;
+          break;
+        }
+        // a result whose call is not in this turn: a step of its own
+        const t = into(row.key, e.at);
+        const last = t.parts.at(-1);
+        const alone: TimelineStep = { key: row.key, tool, args: undefined, result };
+        if (last?.kind === "steps") last.steps.push(alone);
+        else t.parts.push({ kind: "steps", key: row.key, steps: [alone] });
+        break;
+      }
+      case "ask":
+        add({ kind: "ask", key: row.key, at: e.at, ...(row.ask ? { ask: row.ask } : {}), payload: e.payload });
+        break;
+      case "notification": {
+        const type = String(p["type"] ?? "notification");
+        if (type === "message") {
+          const state = (p["state"] as PendingSend["state"] | undefined) ?? "delivered";
+          const receipt = state !== "delivered" || row.asPeer === true ? { receipt: { state, asPeer: row.asPeer === true } } : {};
+          add({ kind: "user", key: row.key, at: e.at, text: row.send?.text ?? String(p["text"] ?? ""), ...receipt });
+        } else if (type === "queued") add({ kind: "note", key: row.key, at: e.at, text: `queued: ${String(p["text"] ?? "")}` });
+        else if (type === "session_end") add({ kind: "note", key: row.key, at: e.at, text: `Ending (${String(p["reason"] ?? "")})` });
+        else if (type === "backgrounded") add({ kind: "note", key: row.key, at: e.at, text: "Sent to the background: it goes on as a background job" });
+        else {
+          const words = type.replace(/_/g, " ");
+          const message = String(p["message"] ?? "");
+          add({ kind: "note", key: row.key, at: e.at, text: message ? `${words}: ${message}` : words });
+        }
+        break;
+      }
+      case "ended":
+        add({ kind: "note", key: row.key, at: e.at, text: `Session ended${p["reason"] ? ` (${String(p["reason"])})` : ""}` });
+        break;
+    }
+  }
+  return posts;
+}
+
+/** A step in a few words, for the line a turn's steps fold to: the tool and what it was pointed at. */
+export function stepWords(step: Pick<TimelineStep, "tool" | "args">): string {
+  const a = (step.args ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof a[k] === "string" && (a[k] as string).trim() !== "" ? (a[k] as string).trim() : undefined);
+  const path = str("file_path") ?? str("path") ?? str("notebook_path");
+  const what = str("description") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url") ?? (path ? (path.split(/[\\/]/).pop() ?? path) : undefined) ?? str("prompt");
+  if (!what) return step.tool;
+  const line = what.split(/\r?\n/)[0]!;
+  return `${step.tool} ${line.length > 60 ? `${line.slice(0, 59)}…` : line}`;
+}
+
 export function workspaceName(state: ViewState, session: Session): string | undefined {
   return session.workspace ? state.workspaces.get(session.workspace)?.name : undefined;
 }

@@ -1470,70 +1470,156 @@ button:disabled {
   border-color: var(--line-strong);
 }
 
-/* the timeline is a sequence, hence the rule */
+/* A session's timeline, card by card as the chat's: the user's messages at the right, another
+   agent's with its mark, each of the session's turns one card of what it wrote and the tools it
+   called between, folded to a line as a chat reply's steps are; an ask with an amber edge, and
+   quiet notes between. */
 
 .timeline {
+  margin: 0;
+  padding: 0;
   list-style: none;
-  margin: 0 0 0 8px;
-  padding: 0 0 0 14px;
-  border-left: 1px solid var(--line);
 }
 
 .timeline:empty {
   display: none;
 }
 
-.row {
-  display: grid;
-  grid-template-columns: 56px minmax(0, 1fr) auto;
-  grid-template-areas:
-    "time main toggle"
-    "body body body";
-  gap: 0 10px;
-  align-items: baseline;
-  padding: 3px 0;
-  max-width: calc(var(--measure) + 60px);
+.timeline > * + * {
+  margin-top: 12px;
 }
 
-.row-time {
-  grid-area: time;
-  color: var(--faint);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
+.tl-post .message-head .agent-icon {
+  width: 16px;
+  height: 14px;
+  align-self: center;
 }
 
-.row-main {
-  grid-area: main;
+.tl-post .message-head .agent-mark {
+  width: 13px;
+  height: 13px;
+}
+
+.tl-post[data-kind="turn"] .message-who,
+.tl-post[data-kind="agent"] .message-who {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tl-post[data-kind="user"] .message-who {
+  color: var(--moss);
+}
+
+.tl-post[data-kind="ask"] {
+  border-left: 3px solid var(--amber);
+}
+
+.tl-post[data-kind="ask"] .message-who {
+  color: var(--amber);
+}
+
+.tl-text {
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.row-label {
-  margin-right: 8px;
-  color: var(--muted);
+.tl-text:not(.md) {
+  white-space: pre-wrap;
 }
 
-.row-text {
+.tl-parts > * + * {
+  margin-top: 8px;
+}
+
+.tl-parts > .tl-steps {
+  margin-block: 6px;
+}
+
+.tl-parts > .tl-steps:first-child {
+  margin-top: 2px;
+}
+
+.tl-parts > .tl-steps:last-child {
+  margin-bottom: 0;
+}
+
+.progress-step.tl-step {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.tl-step-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+}
+
+.tl-step-line .progress-text {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.tl-step-line:hover .progress-text {
+  color: var(--ink);
+}
+
+.tl-step[data-status="running"] .progress-mark::before {
+  content: "…";
+}
+
+.tl-step-body {
+  margin: 2px 0 6px 20px;
+}
+
+.tl-step-in,
+.tl-step-out {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  background: var(--well);
+  color: var(--ink);
+  font: 12px/1.45 var(--mono);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-/* A row a model wrote: its label hangs beside the markdown's first line. */
-.row[data-md="1"] .row-main {
-  display: flex;
-  align-items: baseline;
+.tl-step-in + .tl-step-out {
+  border-top: 0;
 }
 
-.row[data-md="1"] .row-label {
-  flex: none;
+.tl-step-out[data-error="true"] {
+  color: var(--rust);
 }
 
-.row[data-md="1"] .row-text {
-  display: block;
-  flex: 1 1 auto;
-  min-width: 0;
+/* Where the user's message stands, while that is not plainly delivered; a leader's, who sent it. */
+.tl-receipt {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 12px;
 }
 
-.row-toggle,
+/* Cophyla's own line, a session ending or a context cleared: one quiet line, as a group's is. */
+.tl-note {
+  padding: 2px 4px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.tl-working {
+  margin-top: 10px;
+}
+
 .audit-toggle {
   grid-area: toggle;
   padding: 0 6px;
@@ -1544,13 +1630,11 @@ button:disabled {
   font-size: 12px;
 }
 
-.row-toggle:hover,
 .audit-toggle:hover {
   background: var(--raised);
   color: var(--ink);
 }
 
-.row-body,
 .audit-args {
   grid-area: body;
   margin: 4px 0 4px 66px;
@@ -1562,71 +1646,6 @@ button:disabled {
   font: 12px/1.45 var(--mono);
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.row-body[data-receipt="1"] {
-  margin: 0 0 0 66px;
-  padding: 0;
-  border: 0;
-  background: none;
-  font: 12px/1.4 var(--sans);
-  color: var(--muted);
-}
-
-.row[data-kind="status"] .row-text,
-.row[data-kind="ended"] .row-text,
-.row[data-kind="note"] .row-text {
-  color: var(--muted);
-  font-size: 13px;
-}
-
-.row[data-kind="user"] .row-label,
-.row[data-kind="send"] .row-label {
-  color: var(--moss);
-}
-
-.row[data-kind="assistant"] .row-label {
-  color: var(--cophyla-ink);
-}
-
-.row[data-kind="call"] .row-label,
-.row[data-kind="result"] .row-label {
-  font-family: var(--mono);
-  font-size: 12px;
-}
-
-.row[data-kind="call"] .row-main,
-.row[data-kind="result"] .row-main {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.row[data-kind="call"] .row-text,
-.row[data-kind="result"] .row-text {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--muted);
-  white-space: nowrap;
-}
-
-.row[data-kind="call"] .row-label::before {
-  content: "▸ ";
-  color: var(--faint);
-}
-
-.row[data-kind="result"] .row-label::before {
-  content: "◂ ";
-  color: var(--faint);
-}
-
-.row[data-kind="result"][data-error="1"] .row-label,
-.row[data-kind="result"][data-error="1"] .row-text {
-  color: var(--rust);
-}
-
-.row[data-kind="ask"] .row-label {
-  color: var(--cophyla-ink);
 }
 
 /* sending to a session: the form under its timeline while its tab is selected */
@@ -10228,7 +10247,7 @@ button:disabled {
 
 /* A leader's message in a session's timeline: the user's own turn, and under it, after the
    crown, who sent it. */
-.row[data-lead="1"] .row-body::before {
+.tl-post[data-lead="true"] .tl-receipt::before {
   content: "";
   display: inline-block;
   width: 11px;
