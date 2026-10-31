@@ -948,6 +948,10 @@ export class TeamControl {
       case "group-complete-pick":
         this.pick(Number(data["index"]));
         return true;
+      case "group-fold":
+        t.headOpen = !t.headOpen;
+        this.d.draw();
+        return true;
       case "group-edit":
         if (ui.group !== undefined) t.editGroup = { group: ui.group };
         this.d.draw();

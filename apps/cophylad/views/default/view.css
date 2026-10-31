@@ -8377,6 +8377,53 @@ button:disabled {
   font-size: 12.5px;
 }
 
+/* The fold at the head's start, as a session's: its arrow turns down while the head is open.
+   It outranks the rail's `.fold`. */
+.fold.group-fold {
+  flex: none;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  margin: 0 -6px 0 -8px;
+}
+
+.group-summary {
+  flex: 0 3 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Folded, as it starts: one line, the name, who is in it in a few words, Edit and ⋮; the
+   purpose and the members' chips, with + Add, show once it is opened. */
+.group-head[data-open="false"] {
+  padding-block: 4px;
+}
+
+.group-head[data-open="false"] .group-head-top {
+  align-items: center;
+}
+
+.group-head[data-open="false"] .group-titles {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.group-head[data-open="false"] .group-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 14px;
+}
+
+.group-head[data-open="true"] .group-summary,
+.group-head[data-open="false"] :is(.group-purpose, .group-member-row, .group-add) {
+  display: none;
+}
+
 .group-tool {
   flex: 0 0 auto;
   display: inline-flex;

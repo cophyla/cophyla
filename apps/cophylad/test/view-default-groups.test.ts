@@ -16,6 +16,7 @@ import {
   focusWords,
   groupCreateParams,
   groupMaker,
+  groupMemberWords,
   groupTabWords,
   initialState,
   memberChips,
@@ -169,6 +170,11 @@ describe("group chats in the view", () => {
   test("the tab's words: the purpose, the agents, unread, tagged, ended", () => {
     expect(groupTabWords(group({ unread: 3, tagged: 1 }))).toEqual({ title: "release: Ship 0.18\n3 agents · 3 unread · you are tagged", label: "Group chat, 3 unread, you are tagged" });
     expect(groupTabWords(group({ purpose: undefined, unread: 0, ended: { at: NOW, by: "alice" }, members: [me, { ...bobs, gone: true }] }))).toEqual({ title: "release\n0 agents · ended, read only", label: "Group chat, ended, read only" });
+  });
+
+  test("the folded head's words: the agents, those gone not counted, and the people", () => {
+    expect(groupMemberWords(group())).toBe("3 agents · 2 people");
+    expect(groupMemberWords(group({ members: [me, web, { ...bobs, gone: true }] }))).toBe("1 agent · 1 person");
   });
 
   test("the maker ends the group; anyone else, or an ended one, does not", () => {

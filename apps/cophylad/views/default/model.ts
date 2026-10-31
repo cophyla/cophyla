@@ -5053,6 +5053,13 @@ export function groupTabWords(g: Group): { title: string; label: string } {
   return { title, label };
 }
 
+/** Who is in a group, in a few words for its head folded to one line: its agents, those gone not counted, and its people. */
+export function groupMemberWords(g: Group): string {
+  const agents = g.members.filter((m) => m.kind === "agent" && !m.gone).length;
+  const people = g.members.filter((m) => m.kind === "person").length;
+  return `${agents} agent${agents === 1 ? "" : "s"} · ${people} ${people === 1 ? "person" : "people"}`;
+}
+
 /**
  * Where each group chat's tab stands in the rail: under the folder group its home names, the
  * innermost one at or around that folder on its machine, counted in that group's heading and
