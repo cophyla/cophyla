@@ -16,7 +16,7 @@
 // its hooks name, its timeline and the log say so, and the registry moves it to its own profile
 // once there is one.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
@@ -28,7 +28,7 @@ import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, Sess
 import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
 import { Tail } from "../tail.ts";
-import { acceptsCrossSessionInbound, installClaudeHooks, uninstallClaudeHooks } from "./hooks.ts";
+import { acceptsCrossSessionInbound, installClaudeHooks, readSettings, uninstallClaudeHooks } from "./hooks.ts";
 import type { ClaudeHookOwner } from "./hooks.ts";
 import { injectClaude } from "./inject.ts";
 import { classify, isAlive as defaultIsAlive, jobCreatedAt, readEntry, readRegistry, statusOf, transcriptPathFor, waitingOf } from "./registry.ts";
@@ -38,7 +38,7 @@ import type { SideSpend, SpendCall, SpendSink } from "../../usage/ledger.ts";
 import { subagentInfo, subagentTranscripts } from "./subagents.ts";
 import type { SubagentInfo } from "./subagents.ts";
 import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, isCostRecord, newClaudeState, rowAt, statsFor } from "./transcript.ts";
-import type { ClaudePrice, ClaudeTranscriptState } from "./transcript.ts";
+import type { ClaudePrice, ClaudeStatsOptions, ClaudeTranscriptState } from "./transcript.ts";
 
 export { subagentTranscripts };
 
@@ -90,6 +90,31 @@ interface Closing {
   state: ClaudeTranscriptState;
   counted?: SessionStats;
   until: number;
+}
+
+/** Each settings file's answer to `namesOneMModel`, by the file's size and time. */
+const oneMSeen = new Map<string, { size: number; mtimeMs: number; oneM: boolean }>();
+
+/** Whether a settings file names a model with the 1M-token window (`"model": "opus[1m]"`), which the transcript never shows; read again only when the file changes. */
+export function namesOneMModel(settingsPath: string): boolean {
+  let st: { size: number; mtimeMs: number };
+  try {
+    st = statSync(settingsPath);
+  } catch {
+    oneMSeen.delete(settingsPath);
+    return false;
+  }
+  const hit = oneMSeen.get(settingsPath);
+  if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.oneM;
+  let oneM = false;
+  try {
+    const model = readSettings(settingsPath)["model"];
+    oneM = typeof model === "string" && /\[1m\]/i.test(model);
+  } catch {
+    // unreadable or mid-write: no window named
+  }
+  oneMSeen.set(settingsPath, { size: st.size, mtimeMs: st.mtimeMs, oneM });
+  return oneM;
 }
 
 /**
@@ -551,7 +576,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     this.tailSubagents(state, path, now);
     if (state.statsChanged) {
       state.statsChanged = false;
-      patch.stats = countOn(rec.statsBase, statsFor(state, this.price));
+      patch.stats = countOn(rec.statsBase, statsFor(state, this.price, this.statsOptions(rec)));
     }
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
     this.commitSpend(rec, state, now);
@@ -748,6 +773,13 @@ export class ClaudeAdapter implements HarnessAdapter {
     return { status: held ? "held" : "queued" };
   }
 
+  /** With `[sessions].claude_window_and_effort`, the stats infer a context window and carry the effort; a `[1m]` model in the session's settings says which window. */
+  private statsOptions(rec: SessionRecord): ClaudeStatsOptions {
+    if (!this.host.config.claude_window_and_effort) return {};
+    const dir = rec.handles.configDir;
+    return { infer: true, ...(dir && namesOneMModel(join(dir, "settings.json")) ? { oneM: true } : {}) };
+  }
+
   /** Whether the session's settings let any session's message in at once (`crossSessionInbound: "accept"`), which a bypass session otherwise holds. */
   acceptsInbound(rec: SessionRecord): boolean {
     const dirs = new Set<string>();
@@ -882,12 +914,14 @@ export function countOn(base: SessionStats | undefined, now: SessionStats): Sess
   const cacheWrite = sum(base.tokens.cacheWrite, now.tokens.cacheWrite);
   const model = now.model ?? base.model;
   const unpriced = now.cost === 0 && now.tokens.in + now.tokens.out + (now.tokens.cacheRead ?? 0) + (now.tokens.cacheWrite ?? 0) > 0;
+  const effort = now.effort ?? base.effort;
   return {
     turns: base.turns + now.turns,
     cost: unpriced ? 0 : base.cost + now.cost,
     tokens: { in: base.tokens.in + now.tokens.in, out: base.tokens.out + now.tokens.out, ...(cacheRead !== undefined ? { cacheRead } : {}), ...(cacheWrite !== undefined ? { cacheWrite } : {}) },
     ...(now.context ? { context: now.context } : {}),
     ...(model !== undefined ? { model } : {}),
+    ...(effort !== undefined ? { effort } : {}),
   };
 }
 
