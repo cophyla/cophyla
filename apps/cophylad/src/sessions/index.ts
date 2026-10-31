@@ -60,7 +60,7 @@ import { contextUsed, lastPermissionMode } from "./claude/transcript.ts";
 import type { ClaudeTranscriptState } from "./claude/transcript.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
-import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
+import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
 import { lastTurnContext } from "./codex/rollout.ts";
@@ -2668,13 +2668,18 @@ export class Sessions implements SessionHost {
   /**
    * The command line a Claude session cophylad starts runs: its id and name, the profile's launch,
    * the model the brain named, and cophylad's settings file with the launch's own folded in.
+   * With `claude_status_line` off it leaves the profile's user scope out, and the file carries the
+   * profile's `settings.json` less its status line, and `--mcp-config` its user-scope servers.
    */
   private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined; resume?: boolean }): string[] {
     const value = launchFlags(o.launch).settings;
+    const quiet = this.config.claude_status_line === false;
+    const mcp = quiet ? userMcpConfig(this.deps.dataDir, o.profile.id, claudeGlobalConfig(o.profile.configDir, this.deps.home ?? homedir())) : undefined;
     return [
-      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}) }),
+      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}), ...(quiet ? { noUserScope: true } : {}) }),
+      ...(mcp ? ["--mcp-config", mcp] : []),
       "--settings",
-      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined),
+      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined, quiet ? join(o.profile.configDir, "settings.json") : undefined),
     ];
   }
 

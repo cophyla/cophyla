@@ -207,6 +207,27 @@ export function launchFlags(launch: Launch | undefined, opts: { model?: string }
   return { args, ...(settings !== undefined ? { settings } : {}) };
 }
 
+/** The setting sources Claude reads when `--setting-sources` is not given. */
+const SETTING_SOURCES = ["user", "project", "local"];
+
+/**
+ * Flags as they leave the profile's user scope out: the launch's own `--setting-sources` less
+ * `user`, or every source but `user` when the launch names none. Claude takes an empty list.
+ */
+export function withoutUserScope(args: readonly string[]): string[] {
+  let sources = SETTING_SOURCES;
+  const out: string[] = [];
+  for (const group of flagGroups(args)) {
+    if (flagName(group) === "--setting-sources") {
+      sources = (flagValues(group)[0] ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+      continue;
+    }
+    out.push(...group);
+  }
+  out.push("--setting-sources", sources.filter((s) => s !== "user").join(","));
+  return out;
+}
+
 /**
  * The settings a `--settings` value holds: inline JSON, or a file resolved against `cwd` as
  * the CLI resolves it. `undefined` when it cannot be read or is not an object.

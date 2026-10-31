@@ -180,7 +180,14 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   its profile's directory (Claude's own `~/.claude` by leaving `CLAUDE_CONFIG_DIR` unset),
   with the profile's launch (its mode replaced by the one `session.spawn` names, `bypassPermissions`
   as `--dangerously-skip-permissions`) and one `--settings <data>/claude/settings-<profile>.json` that
-  folds in the launch's own (`claude/start.ts`, `claude/launch-args.ts`), shows in the apps
+  folds in the launch's own (`claude/start.ts`, `claude/launch-args.ts`). With
+  `[sessions].claude_status_line = false` it runs no status line: Claude has no switch for that
+  alone (`statusLine` takes only a shell command, run through Git Bash on Windows, where every
+  program Git Bash starts can leak kernel memory until a reboot), so the session leaves the user
+  scope out (`--setting-sources` less `user`), the file carries the profile's `settings.json`
+  less `statusLine` and `subagentStatusLine`, and `--mcp-config <data>/claude/mcp-<profile>.json`
+  its user-scope MCP servers, cophyla-agents among them; the user's CLAUDE.md, skills, agents
+  and commands are not loaded, project and local scope and auto-memory are. It shows in the apps
   with no window of its own (`[tether].window_on_start` opens one at once; `session.focus`
   does when asked), and has its first prompt typed once it registers.
   A client's `session.send` is typed with no prefix, waiting while an ask is open or the

@@ -18,7 +18,7 @@
 // last takes a terminal freed.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClaudeHookEvent, Session, SessionEvent } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
@@ -861,6 +861,32 @@ describe("how a session cophylad starts is launched", () => {
     const merged = JSON.parse(readFileSync(argv[argv.indexOf("--settings") + 1]!, "utf8"));
     expect(merged).toEqual({ permissions: { defaultMode: "auto" }, env: { A: "1" }, showClearContextOnPlanAccept: true });
     mini.profiles.update(profileId("fake"), { launch: null });
+  });
+
+  test("with claude_status_line off, the user scope is left out: the profile's settings.json rides in cophylad's file less its status line, its user-scope servers in --mcp-config", async () => {
+    const config = mini.sessions.config as { claude_status_line: boolean };
+    const hookGroup = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4826/hooks/claude" }] };
+    const server = { type: "stdio", command: "C:/cophyla/cophylad.exe", args: ["agent-mcp"], env: {} };
+    writeFileSync(join(profileDir, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "node statusline.js", refreshInterval: 60 }, hooks: { Stop: [hookGroup] }, crossSessionInbound: "accept" }));
+    writeFileSync(join(profileDir, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, mcpServers: { "cophyla-agents": server } }));
+    mini.profiles.update(profileId("fake"), { launch: { mode: "bypassPermissions", args: ["--effort", "high"] } });
+    config.claude_status_line = false;
+    try {
+      const argv = (await spawned("No status line")).fs.spawn.argv;
+      expect(argv.slice(argv.indexOf("--setting-sources"), argv.indexOf("--setting-sources") + 2)).toEqual(["--setting-sources", "project,local"]);
+      expect(JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1]!, "utf8"))).toEqual({ mcpServers: { "cophyla-agents": server } });
+      expect(JSON.parse(readFileSync(argv[argv.indexOf("--settings") + 1]!, "utf8"))).toEqual({ hooks: { Stop: [hookGroup] }, crossSessionInbound: "accept", showClearContextOnPlanAccept: true });
+      config.claude_status_line = true;
+      const kept = (await spawned("A status line")).fs.spawn.argv;
+      expect(kept).not.toContain("--setting-sources");
+      expect(kept).not.toContain("--mcp-config");
+      expect(JSON.parse(readFileSync(kept[kept.indexOf("--settings") + 1]!, "utf8"))).toEqual({ showClearContextOnPlanAccept: true });
+    } finally {
+      config.claude_status_line = true;
+      mini.profiles.update(profileId("fake"), { launch: null });
+      rmSync(join(profileDir, "settings.json"), { force: true });
+      rmSync(join(profileDir, ".claude.json"), { force: true });
+    }
   });
 
   test("the mode a start names replaces the launch's: bypassing permissions is --dangerously-skip-permissions, the launch's other flags stay", async () => {

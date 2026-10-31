@@ -11,9 +11,9 @@
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathKey } from "../paths.ts";
-import { launchFlags, readSettingsValue } from "./launch-args.ts";
+import { launchFlags, readSettingsValue, withoutUserScope } from "./launch-args.ts";
 import type { Launch } from "./launch-args.ts";
 
 /** The characters a session name may carry onto a command line: no quote, no separator, no control. */
@@ -47,6 +47,8 @@ export interface ClaudeStart {
   model?: string;
   /** Goes on with the conversation `sessionId` names (`--resume`), which keeps its id and its name. */
   resume?: boolean;
+  /** Leaves the profile's user scope out (`--setting-sources` less `user`), as a session with no status line runs. */
+  noUserScope?: boolean;
 }
 
 /**
@@ -59,7 +61,8 @@ export function claudeArgv(start: ClaudeStart): string[] {
   const argv = [start.command, start.resume ? "--resume" : "--session-id", start.sessionId];
   const name = start.name && !start.resume ? sessionName(start.name) : "";
   if (name) argv.push("--name", name);
-  argv.push(...launchFlags(start.launch, start.model ? { model: start.model } : {}).args);
+  const flags = launchFlags(start.launch, start.model ? { model: start.model } : {}).args;
+  argv.push(...(start.noUserScope ? withoutUserScope(flags) : flags));
   if (start.model) argv.push("--model", start.model);
   return argv;
 }
@@ -71,12 +74,59 @@ export function claudeArgv(start: ClaudeStart): string[] {
  * JSON), so the CLI reads one. A profile's sessions get a file of their own, since their
  * launches differ; without one it is the file cophylad's other entry points share. Written when
  * its content differs; its path.
+ *
+ * `userSettings`, the profile's own `settings.json`, is for a session that leaves the user scope
+ * out so as to run no status line: Claude has no switch for the status line alone, and every run
+ * of one starts a shell. That file goes in first and the launch's over it, merged as Claude
+ * merges its sources, so the session keeps cophylad's hooks and the rest of the user's settings;
+ * the status lines come out.
  */
-export function cophyladSettings(dataDir: string, profile?: string, launch?: { settings: string; cwd: string }): string {
-  const dir = join(dataDir, "claude");
-  const path = join(dir, profile ? `settings-${profile}.json` : "cophylad-settings.json");
-  const own = launch ? readSettingsValue(launch.settings, launch.cwd) : undefined;
-  const content = JSON.stringify({ ...own, showClearContextOnPlanAccept: true }, null, 2) + "\n";
+export function cophyladSettings(dataDir: string, profile?: string, launch?: { settings: string; cwd: string }, userSettings?: string): string {
+  const path = join(dataDir, "claude", profile ? `settings-${profile}.json` : "cophylad-settings.json");
+  let own = launch ? readSettingsValue(launch.settings, launch.cwd) : undefined;
+  if (userSettings !== undefined) {
+    own = mergeSettings(readSettingsValue(userSettings, dataDir) ?? {}, own ?? {});
+    delete own["statusLine"];
+    delete own["subagentStatusLine"];
+  }
+  writeWhenChanged(path, JSON.stringify({ ...own, showClearContextOnPlanAccept: true }, null, 2) + "\n");
+  return path;
+}
+
+/**
+ * The file `--mcp-config` names for a session that leaves the profile's user scope out: the
+ * user-scope MCP servers in the profile's global config, cophyla-agents among them, which Claude
+ * loads only with that scope. Written when its content differs; `undefined` when the global
+ * config holds none or cannot be read.
+ */
+export function userMcpConfig(dataDir: string, profile: string, globalConfig: string): string | undefined {
+  const doc = readSettingsValue(globalConfig, dataDir);
+  const servers = doc?.["mcpServers"];
+  if (!isObject(servers) || Object.keys(servers).length === 0) return undefined;
+  const path = join(dataDir, "claude", `mcp-${profile}.json`);
+  writeWhenChanged(path, JSON.stringify({ mcpServers: servers }, null, 2) + "\n");
+  return path;
+}
+
+/** Two settings documents as Claude merges its sources: objects key by key, arrays joined without repeats, any other value the later one's. */
+export function mergeSettings(base: Record<string, unknown>, over: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...base };
+  for (const [key, value] of Object.entries(over)) {
+    const was = out[key];
+    if (isObject(was) && isObject(value)) out[key] = mergeSettings(was, value);
+    else if (Array.isArray(was) && Array.isArray(value)) {
+      const seen = new Set(was.map((v) => JSON.stringify(v)));
+      out[key] = [...was, ...value.filter((v) => !seen.has(JSON.stringify(v)))];
+    } else out[key] = value;
+  }
+  return out;
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+function writeWhenChanged(path: string, content: string): void {
   let current: string | undefined;
   try {
     current = readFileSync(path, "utf8");
@@ -84,10 +134,9 @@ export function cophyladSettings(dataDir: string, profile?: string, launch?: { s
     // Not written yet.
   }
   if (current !== content) {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content, "utf8");
   }
-  return path;
 }
 
 /** Whether a directory is Claude's own, `~/.claude`: the one it uses when CLAUDE_CONFIG_DIR is unset. */
