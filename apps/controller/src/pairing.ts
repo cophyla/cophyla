@@ -164,6 +164,27 @@ export function writeListen(storage: Pick<Storage, "setItem" | "removeItem"> | u
   }
 }
 
+/** Where the page remembers that the user turned off the notifications for agents' questions; nothing is stored while they are on. */
+export const ASK_POPUPS_KEY = "cophyla.controller.askPopups";
+
+/** Agents' questions shown as the system's notifications: on, unless the user turned them off in the settings. */
+export function readAskPopups(storage: Pick<Storage, "getItem"> | undefined): boolean {
+  try {
+    return storage?.getItem(ASK_POPUPS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function writeAskPopups(storage: Pick<Storage, "setItem" | "removeItem"> | undefined, on: boolean): void {
+  try {
+    if (on) storage?.removeItem(ASK_POPUPS_KEY);
+    else storage?.setItem(ASK_POPUPS_KEY, "off");
+  } catch {
+    // a page that cannot store it keeps the choice until it is closed
+  }
+}
+
 /** Six digits from what the user typed, or from `?code=`; spaces and dashes are theirs to type. */
 export function parseCode(input: string): string | undefined {
   const digits = input.replace(/[\s-]/g, "");
