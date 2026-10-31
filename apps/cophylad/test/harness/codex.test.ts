@@ -77,13 +77,13 @@ describe.skipIf(!run)("harness: codex", () => {
   );
 
   test(
-    "a sent message reaches the screen and its client_id receipt lands",
+    "a sent message reaches the screen as the user's own words and its client_id receipt lands as their turn",
     async () => {
       const mark = tui.mark();
       const r = await c.request<{ status: string; ref: string }>("session.send", { id: session.id, text: "reply with the single word PONG" });
       expect(r.status).toBe("queued");
-      await tui.waitFor(/relaying the user/, 15_000, mark);
-      await waitFor(() => history().find((e) => e.kind === "notification" && (e.payload as { ref?: string; state?: string }).ref === r.ref && (e.payload as { state?: string }).state === "delivered"), 60_000, 250);
+      await tui.waitFor(/reply with the single word PONG/, 15_000, mark);
+      await waitFor(() => history().find((e) => e.kind === "user_turn" && (e.payload as { ref?: string; source?: string }).ref === r.ref && (e.payload as { source?: string }).source === "sent"), 60_000, 250);
       await tui.waitFor(/PONG/, 120_000, mark);
       await waitFor(() => d.sessions.get(session.id)?.status === "idle", 60_000, 250);
     },

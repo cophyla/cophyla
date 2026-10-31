@@ -3338,8 +3338,9 @@ export class Sessions implements SessionHost {
    * words are typed, and so are a leader's (`from: lead`: the chat's or an agent's that the
    * user made the session's leader); into a Muse session in one, everyone's are, as Muse has no
    * other way in. A session cophylad runs headless is prompted through what runs it. Anything
-   * else goes over the harness's own channel, which a Claude session reads as another agent's
-   * message: the brain's words too, when it does not lead the session. A leader's message to a
+   * else goes over the harness's own channel: a Codex thread takes the user's words there as the
+   * user's own turn, and a Claude session reads what comes over its pipe as another agent's
+   * message, the brain's words too when it does not lead the session. A leader's message to a
    * Claude session cophylad cannot type into is refused, as it would arrive as another
    * agent's; an agent leader's that starts with `!` too, as it would run a shell command there.
    * One that starts with `/` runs as the user's slash command would.
@@ -3397,9 +3398,13 @@ export class Sessions implements SessionHost {
       return { status: "queued", ref };
     }
     const ref = `cophylad-${ulid(this.now())}`;
-    // An agent's envelope names its sender, so it needs no prefix of cophylad's.
-    const body = agent ? wire : `${SEND_PREFIX}\n${text}`;
-    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}) });
+    // An agent's envelope names its sender, so it needs no prefix of cophylad's. Nor do the
+    // user's words into a Codex thread, a leader's among them: its app-server takes them as the
+    // user's own turn, as if typed there. Over Claude's pipe they reach the model as another
+    // session's message, and the brain's are its own, so there the prefix says whose they are.
+    const plain = !agent && adapter.harness === "codex" && opts.from !== "brain";
+    const body = agent || plain ? wire : `${SEND_PREFIX}\n${text}`;
+    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}), ...(plain ? { plain: true } : {}) });
     try {
       const r = await adapter.send(rec, body, ref);
       this.log.info("message sent", { session: id, ref, status: r.status });
@@ -3646,8 +3651,9 @@ export class Sessions implements SessionHost {
     } else if (p.lead) {
       // The user's words, sent by their leader: what the session is for is the user's to say, not its leader's.
       this.event(rec, "user_turn", leadTurn(p.lead, p.text, p.ref, promptId));
-    } else if (p.typed) {
-      this.event(rec, "user_turn", { text: capText(p.text), source: "typed", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
+    } else if (p.typed || p.plain) {
+      // The user's own turn: typed into its terminal, or given to a Codex thread as typed there.
+      this.event(rec, "user_turn", { text: capText(p.text), source: p.typed ? "typed" : "sent", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
       // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.
       if (rec.session.intent === undefined && p.text.trim() && !p.text.trimStart().startsWith("/")) this.patch(rec, { intent: oneLine(p.text) });
     } else {
