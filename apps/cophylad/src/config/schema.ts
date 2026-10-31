@@ -104,6 +104,12 @@ export const SessionsConfig = z.object({
    * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A Claude CLI that goes on to another thread in a terminal (`/resume`) leaves the terminal on
+   * the thread it left. On, the thread it runs now takes the terminal, and the one left, when it
+   * has no transcript (the new id the CLI started under), is ended; its process is not touched.
+   */
+  resume_takes_terminal: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -801,6 +807,7 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
+resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
