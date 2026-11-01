@@ -70,6 +70,7 @@ export const NODE_SERVED: readonly CapabilityRequestName[] = [
   "session.mode",
   "session.models",
   "session.setModel",
+  "session.dialogPress",
   "session.closed",
   "session.reopen",
   "terminal.prompt",
@@ -305,7 +306,8 @@ export class NodeServer {
       case "session.reopen":
       case "session.mode":
       case "session.models":
-      case "session.setModel": {
+      case "session.setModel":
+      case "session.dialogPress": {
         const s = local?.session(String(p["id"]));
         c.require(s?.cwd, "that session");
         return;

@@ -35,6 +35,7 @@ export const requestScopes = {
   "session.mode": "sessions:write",
   "session.models": "sessions:read",
   "session.setModel": "sessions:write",
+  "session.dialogPress": "sessions:write",
   "session.watch": "sessions:read",
   "session.files": "sessions:read",
   "session.git": "sessions:read",

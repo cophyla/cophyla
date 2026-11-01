@@ -228,6 +228,7 @@ export const requestFilters = {
   "session.mode": { names: (p) => [{ session: p.id }] },
   "session.models": { names: (p) => [{ session: p.id }] },
   "session.setModel": { names: (p) => [{ session: p.id }] },
+  "session.dialogPress": { names: (p) => [{ session: p.id }] },
   "session.watch": { names: (p) => p.ids.map((id) => ({ session: id })) },
   // the session's own directory, the path its target is checked by, and nothing above it
   "session.files": { names: (p) => [{ session: p.id }] },

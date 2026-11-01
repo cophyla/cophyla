@@ -64,7 +64,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogTerminal, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
@@ -75,6 +75,8 @@ import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiSta
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
 import { FileViewer } from "./fileview.ts";
+import { clearDialogDock, drawDialogPanel, drawDialogSwitch } from "./dialogview.ts";
+import type { DialogPress } from "./model.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { RemotePanel } from "./remoteview.ts";
 import type { RemoteCover } from "./remoteview.ts";
@@ -102,6 +104,7 @@ const ui: UiState = {
   remoteDock: "beside",
   remoteWidth: REMOTE_VIEW_WIDTH.usual,
   modes: new Map(),
+  dialogModes: new Map(),
   view: "chat",
   fit: false,
   scale: 100,
@@ -275,25 +278,82 @@ function syncTerminal(): void {
   terminal.hide();
 }
 
+/** Sessions whose dialog press is on its way: their panel's buttons wait for the answer. */
+const dialogPresses = new Set<string>();
+
 /**
  * The dialog the selected session's terminal shows over its prompt, drawn above the send box where
- * the user answers it: the terminal's own window, typed into as the terminal is, so a slash command's
- * view and an ask's question take the keys they take in the terminal.
+ * the user answers it: as a native panel of its title, text, tabs, rows and keys (`dialogview.ts`), or
+ * else the terminal's own window, typed into as the terminal is, so a slash command's view and an ask's
+ * question take the keys they take in the terminal. The panel is the default; the terminal is for a
+ * dialog it cannot draw, or the one the user chose.
  */
 function syncDialog(): void {
   const dock = roots.composer.querySelector<HTMLElement>(".dialog-dock");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const pane = card !== undefined ? paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) : undefined;
-  const own = card !== undefined && pane !== undefined ? dialogTerminal(state, card.session, pane) : undefined;
-  if (dock === null || own === undefined) {
+  const panel = card !== undefined && pane !== undefined ? dialogPanelFor(state, card.session, pane) : undefined;
+  if (dock === null || card === undefined || pane === undefined || panel === undefined) {
+    hideDialog(dock);
+    return;
+  }
+  const id = card.session.id;
+  if (dialogNative(panel, ui.dialogModes, id)) {
     if (dialog.shown !== undefined) dialog.hide();
-    if (dock !== null) dock.hidden = true;
+    dock.hidden = false;
+    drawDialogPanel(dock, id, panel, dialogPresses.has(id), {
+      press: (press) => void pressDialog(id, press),
+      showTerminal: () => {
+        ui.dialogModes.set(id, "terminal");
+        draw();
+      },
+      showNative: () => {
+        ui.dialogModes.delete(id);
+        draw();
+      },
+    });
+    return;
+  }
+  const own = dialogTerminal(state, card.session, pane);
+  if (own === undefined) {
+    hideDialog(dock);
     return;
   }
   dock.hidden = false;
+  drawDialogSwitch(dock, id, panel.native ? () => {
+    ui.dialogModes.delete(id);
+    draw();
+  } : undefined);
   dialog.show(own.id, dock, { drive: false, scale: ui.scale, input: true });
   dialog.update(own, false, false);
   dialog.dock();
+}
+
+/** Takes the dock's dialog away: its terminal closed, its panel and bar cleared, and the dock put away. */
+function hideDialog(dock: HTMLElement | null): void {
+  if (dialog.shown !== undefined) dialog.hide();
+  if (dock === null) return;
+  clearDialogDock(dock);
+  dock.hidden = true;
+}
+
+/**
+ * Presses one thing on a session's dialog (a row, a tab, a footer key). Its buttons wait while the
+ * press is on its way; the node publishes the dialog that follows, and the dock draws it (or takes it
+ * away when the dialog has closed). A refusal says why in the error line.
+ */
+async function pressDialog(session: string, press: DialogPress): Promise<void> {
+  if (dialogPresses.has(session)) return;
+  dialogPresses.add(session);
+  draw();
+  try {
+    await rpc.request("session.dialogPress", { id: session, press });
+  } catch (e) {
+    fail("dialog", e);
+  } finally {
+    dialogPresses.delete(session);
+    draw();
+  }
 }
 
 let scheduled = false;

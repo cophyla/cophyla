@@ -40,6 +40,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionScope, SessionScopeState, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
+import type { DialogView } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
 import type { HookHarness, HookMeta } from "../api/hooks.ts";
 import { agentTurn, envelope, envelopes, ENVELOPE_TAG, NOTICE_FROM, readEnvelopes } from "../agentmsg/envelope.ts";
@@ -63,7 +64,8 @@ import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
-import { dialogOn, promptUp } from "./dialog.ts";
+import { dialogOn, dialogView, pressKeys, promptUp } from "./dialog.ts";
+import type { DialogPress } from "./dialog.ts";
 import { lastTurnContext } from "./codex/rollout.ts";
 import { CODEX_BYPASS, codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
@@ -863,12 +865,14 @@ export class Sessions implements SessionHost {
   /** The sessions whose screen is being read for `dialog`: one read at a time per session, so a slow terminal is not read again each tick. */
   private readonly dialogReads = new Set<string>();
 
+  /** The sessions with a press on their dialog still going: one at a time, so keys are never pressed into a dialog that is moving. */
+  private readonly dialogPressing = new Set<string>();
+
   /**
-   * Whether a dialog or a view holds each Claude or Codex session's tether terminal in place of its prompt
-   * (`dialog`), read from each such session's screen. The reads are not waited for, so a tick never waits on a
-   * terminal; the flag follows on the next tick's read. Nothing is read before the prompt has been up once, so
-   * the folder trust and sign-in screens of a start do not open the chat's view; a session that ends, or loses
-   * its terminal, is not showing one.
+   * What each Claude or Codex session's terminal shows over its prompt (`dialog`), read off its screen. The
+   * reads are not waited for, so a tick never waits on a terminal; the next tick's read follows any change.
+   * Nothing is read before the prompt has been up once, so the folder trust and sign-in screens of a start do
+   * not open the chat's view; a session that ends, or loses its terminal, shows none.
    */
   private readDialogs(): void {
     const tether = this.deps.tether;
@@ -876,22 +880,79 @@ export class Sessions implements SessionHost {
       const term = rec.session.native.terminal;
       const harness = rec.session.harness;
       if (!tether?.available || !term || rec.session.status === "ended" || this.stopped || (harness !== "claude" && harness !== "codex")) {
-        if (rec.session.dialog) this.patch(rec, { dialog: false });
+        if (rec.session.dialog) this.setDialog(rec, undefined);
         continue;
       }
       if (this.dialogReads.has(rec.session.id)) continue;
       this.dialogReads.add(rec.session.id);
-      void tether
-        .screen(term, "text")
-        .then((screen) => {
-          if (this.stopped || rec.session.status === "ended" || !sameTerminal(rec.session.native.terminal, term)) return;
-          if (!rec.prompted && promptUp(screen, harness)) rec.prompted = true;
-          const dialog = rec.prompted === true && dialogOn(screen, harness);
-          if (dialog !== (rec.session.dialog ?? false)) this.patch(rec, { dialog });
-        })
+      void this.readDialog(rec, term, harness)
         .catch(() => undefined)
         .finally(() => this.dialogReads.delete(rec.session.id));
     }
+  }
+
+  /** One session's dialog off its screen: the text first, and the styled cells only while a dialog is up, which is when the view reads them. */
+  private async readDialog(rec: LiveRecord, term: TerminalRef, harness: "claude" | "codex"): Promise<void> {
+    const tether = this.deps.tether!;
+    const text = await tether.screen(term, "text");
+    if (!this.stillOn(rec, term)) return;
+    if (!rec.prompted && promptUp(text, harness)) rec.prompted = true;
+    if (!rec.prompted || !dialogOn(text, harness)) {
+      this.setDialog(rec, undefined);
+      return;
+    }
+    const screen = harness === "claude" ? await tether.screen(term, "cells") : text;
+    if (!this.stillOn(rec, term)) return;
+    this.setDialog(rec, dialogView(screen, harness));
+  }
+
+  /** Whether a read still means something: the session runs on the terminal it was read from. */
+  private stillOn(rec: LiveRecord, term: TerminalRef): boolean {
+    return !this.stopped && rec.session.status !== "ended" && sameTerminal(rec.session.native.terminal, term);
+  }
+
+  /** Publishes a session's dialog when it changed. */
+  private setDialog(rec: LiveRecord, dialog: DialogView | undefined): void {
+    if (JSON.stringify(rec.session.dialog ?? null) === JSON.stringify(dialog ?? null)) return;
+    this.patch(rec, { dialog });
+  }
+
+  /**
+   * Presses one thing on a session's dialog as its terminal takes it: a row of a choice (the pointer moved
+   * there, then Enter), a tab of a panel (Left or Right), or a key its footer names. Answers with the dialog
+   * the screen shows once the press has changed it, or with none when the dialog closed.
+   */
+  async dialogPress(id: string, press: DialogPress, part?: string): Promise<{ dialog?: DialogView }> {
+    const rec = this.must(id, part);
+    const term = rec.session.native.terminal;
+    const tether = this.deps.tether;
+    if (rec.session.harness !== "claude" || !term || !tether?.available) throw new RpcError("unsupported", "a dialog is pressed in a Claude session's own terminal");
+    if (rec.session.status === "ended") throw new RpcError("conflict", "the session has ended");
+    if (this.dialogPressing.has(rec.session.id)) throw new RpcError("conflict", "a press on this dialog is still going");
+    this.dialogPressing.add(rec.session.id);
+    try {
+      const before = dialogView(await tether.screen(term, "cells"), "claude");
+      if (!before || before.kind === "other") throw new RpcError("conflict", "no dialog is on the screen");
+      const keys = pressKeys(before, press);
+      if (keys.length === 0) return { dialog: before };
+      await tether.keys(term, keys);
+      const after = await this.dialogAfter(rec, term, before);
+      this.setDialog(rec, after);
+      return after ? { dialog: after } : {};
+    } finally {
+      this.dialogPressing.delete(rec.session.id);
+    }
+  }
+
+  /** The dialog once a press has changed it: read until it differs from `before`, for two seconds at most. */
+  private async dialogAfter(rec: LiveRecord, term: TerminalRef, before: DialogView): Promise<DialogView | undefined> {
+    const tether = this.deps.tether!;
+    for (let i = 0; i < 20; i++) {
+      await sleep(100);
+      const next = dialogView(await tether.screen(term, "cells"), "claude");
+      if (JSON.stringify(next ?? null) !== JSON.stringify(before)) return next;
+    }
+    return before;
   }
 
   /** The profiles were rebuilt and something changed: each adapter takes its harness's profiles as they are now. */

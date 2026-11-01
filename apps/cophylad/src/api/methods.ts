@@ -196,6 +196,10 @@ export function attachMethods(deps: AttachDeps): MethodTable {
       target: (p) => p.id,
       handler: (p) => deps.sessions.setModel(p.id, p.model),
     },
+    "session.dialogPress": {
+      target: (p) => p.id,
+      handler: (p) => deps.sessions.dialogPress(p.id, p.press),
+    },
     "session.closed": {
       handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }),
     },

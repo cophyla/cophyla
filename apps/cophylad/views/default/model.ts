@@ -1924,6 +1924,54 @@ export function dialogTerminal(state: ViewState, session: Session, pane: PaneMod
   return sessionTerminal(state, session);
 }
 
+/** A key a dialog's footer offers, as the protocol names it. */
+export type DialogKey = NonNullable<Session["dialog"]>["keys"][number]["key"];
+
+/** What the dock's native panel draws of a session's dialog: its title, text, tabs, rows and footer keys. */
+export interface DialogPanel {
+  title?: string;
+  note: string[];
+  tabs: { label: string; selected: boolean }[];
+  rows: { label: string; detail?: string; selected: boolean; current: boolean }[];
+  lines: string[];
+  keys: { key: DialogKey; label: string }[];
+  /** False for a dialog the panel cannot draw (kind `other`): the dock shows the session's terminal for it. */
+  native: boolean;
+}
+
+/** One press on a dialog, as the terminal takes it: a row of a choice, a tab of a panel, or a footer key. */
+export type DialogPress = { row: number } | { tab: number } | { key: DialogKey };
+
+/** How a session's dialog shows in the dock: the native panel the view draws, or the terminal the user chose. */
+export type DialogMode = "native" | "terminal";
+
+/** The panel a session's dialog draws as, whatever the terminal shows of it. */
+export function dialogPanel(dialog: NonNullable<Session["dialog"]>): DialogPanel {
+  return {
+    ...(dialog.title !== undefined ? { title: dialog.title } : {}),
+    note: dialog.note,
+    tabs: dialog.tabs,
+    rows: dialog.rows,
+    lines: dialog.lines,
+    keys: dialog.keys,
+    native: dialog.kind !== "other",
+  };
+}
+
+/**
+ * The dock's panel for a session's dialog, on the pane that shows the timeline (where the dock
+ * draws dialogs at all); none when no dialog shows or the view is not connected.
+ */
+export function dialogPanelFor(state: ViewState, session: Session, pane: PaneMode): DialogPanel | undefined {
+  if (!session.dialog || !state.connected || pane !== "timeline") return undefined;
+  return dialogPanel(session.dialog);
+}
+
+/** Whether the dock draws the native panel rather than the terminal: a dialog the panel can draw, and not the terminal the user chose (native by default). */
+export function dialogNative(panel: DialogPanel, modes: ReadonlyMap<string, DialogMode>, session: string): boolean {
+  return panel.native && (modes.get(session) ?? "native") === "native";
+}
+
 /** What a session's pane can show: what it said and did, the terminal it runs in, its messages with other agents. */
 export type PaneMode = "timeline" | "terminal" | "messages";
 

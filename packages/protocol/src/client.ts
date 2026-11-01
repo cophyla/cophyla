@@ -72,6 +72,7 @@ import {
   VoiceUnheard,
   Workspace,
 } from "./entities.ts";
+import { DialogKey, DialogView } from "./entities.ts";
 import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
@@ -683,6 +684,19 @@ export const clientRequests = {
   },
   /** Puts a session on a model: over ACP with `session/set_model`, in a tether terminal by typing `/model` there. */
   "session.setModel": { params: z.object({ id: SessionId, model: z.string().min(1).max(200) }), result: z.object({ model: z.string() }) },
+  /**
+   * Presses one thing on a session's dialog the way its terminal takes it: a row of a choice (the pointer
+   * moved there, then Enter), a tab of a panel (Left or Right), or a key its footer names. Answers with the
+   * dialog the screen shows after the press. `conflict` when no dialog is on the screen, or the row, tab or
+   * key is not one it offers.
+   */
+  "session.dialogPress": {
+    params: z.object({
+      id: SessionId,
+      press: z.union([z.object({ row: z.number().int().nonnegative() }), z.object({ tab: z.number().int().nonnegative() }), z.object({ key: DialogKey })]),
+    }),
+    result: z.object({ dialog: DialogView.optional() }),
+  },
   /**
    * The sessions whose every event this client hears as it lands, as `session.event`: the
    * tab that is open. The list replaces the one before; an empty one stops them. Without

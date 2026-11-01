@@ -406,7 +406,7 @@ describe("a session the user started in tether", () => {
     own.setScreen(EMPTY);
     await mini.sessions.tick();
     await settled(false);
-    expect(cur().dialog).toBe(false);
+    expect(cur().dialog).toBeUndefined();
     // A terminal that goes takes the dialog with it.
     own.setScreen(["Select model", "", " ❯ 1. Default (recommended)", "   2. Sonnet"]);
     await mini.sessions.tick();

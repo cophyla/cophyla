@@ -94,6 +94,7 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
     case "session.mode":
     case "session.models":
     case "session.setModel":
+    case "session.dialogPress":
     case "session.files":
     case "session.git":
     case "session.file":

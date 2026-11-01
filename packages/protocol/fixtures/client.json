@@ -91,6 +91,14 @@
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
     "session.models": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{ "models": [{ "value": "sonnet", "label": "Sonnet" }] }, { "current": "gpt-6-astra[low]", "models": [{ "value": "gpt-6-astra[low]", "label": "GPT-6 Astra (low)" }] }] },
     "session.setModel": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet" }], "results": [{ "model": "sonnet" }] },
+    "session.dialogPress": {
+      "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "press": { "row": 1 } }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "press": { "tab": 2 } }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "press": { "key": "Escape" } }],
+      "results": [
+        { "dialog": { "kind": "choice", "title": "Select model", "note": [], "tabs": [], "rows": [{ "label": "Default (recommended)", "detail": "Use the default model", "selected": false, "current": true }, { "label": "Opus", "selected": true, "current": false }], "lines": [], "keys": [{ "key": "Enter", "label": "set as default" }, { "key": "Escape", "label": "cancel" }] } },
+        { "dialog": { "kind": "panel", "tabs": [{ "label": "Help", "selected": false }, { "label": "General", "selected": true }], "note": [], "rows": [], "lines": ["Claude understands your codebase."], "keys": [{ "key": "Escape", "label": "cancel" }] } },
+        {}
+      ]
+    },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": ["", "apps", "apps/cophylad/src"] }],

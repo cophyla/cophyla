@@ -26,6 +26,7 @@ import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenSt
 import type { DoorState } from "@cophyla/protocol";
 import { selectUpdateNote, updateKey, waitingWords } from "../views/default/model.ts";
 import { dialogTerminal } from "../views/default/model.ts";
+import { dialogNative, dialogPanel, dialogPanelFor } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLIENT: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["sessions:read", "sessions:write", "asks:answer", "audit:read", "chat", "tasks:read"], via: "direct", audio: { in: false, out: false }, connectedAt: 1 };
@@ -2382,12 +2383,72 @@ describe("default view: terminals", () => {
     apply(s, { type: "terminals", terminals: [term("t1", 1, { session: "sess_a" })] });
     scoped(s);
     expect(dialogTerminal(s, a, "timeline")).toBeUndefined();
-    const up = { ...a, dialog: true };
+    const up = { ...a, dialog: { kind: "choice" as const, note: [], tabs: [], rows: [], lines: [], keys: [] } };
     expect(dialogTerminal(s, up, "timeline")?.id).toBe("t1");
     expect(dialogTerminal(s, up, "terminal")).toBeUndefined();
     expect(dialogTerminal(s, up, "messages")).toBeUndefined();
     expect(dialogTerminal(s, { ...up, native: { ...a.native, terminal: undefined } }, "timeline")).toBeUndefined();
     expect(dialogTerminal({ ...s, connected: false }, up, "timeline")).toBeUndefined();
+  });
+
+  test("a dialog is drawn as a native panel on the timeline: its rows, tabs, text and keys as the screen has them; the terminal only for a dialog the panel cannot draw, or when the user chose it", () => {
+    const s = ready();
+    const a = session("sess_a", 100);
+    apply(s, { type: "session.state", params: a });
+    scoped(s);
+    const choice = {
+      kind: "choice" as const,
+      title: "Select model",
+      note: ["Switch between models for this session."],
+      tabs: [],
+      rows: [
+        { label: "Default (recommended)", detail: "Opus", selected: false, current: true },
+        { label: "Sonnet", selected: true, current: false },
+      ],
+      lines: [],
+      keys: [{ key: "Escape" as const, label: "Esc to cancel" }],
+    };
+    const up = { ...a, dialog: choice };
+    expect(dialogPanelFor(s, a, "timeline")).toBeUndefined();
+    expect(dialogPanelFor(s, up, "terminal")).toBeUndefined();
+    expect(dialogPanelFor(s, up, "messages")).toBeUndefined();
+    expect(dialogPanelFor({ ...s, connected: false }, up, "timeline")).toBeUndefined();
+
+    const p = dialogPanelFor(s, up, "timeline");
+    expect(p?.native).toBe(true);
+    expect(p?.title).toBe("Select model");
+    expect(p?.note).toEqual(["Switch between models for this session."]);
+    expect(p?.rows.map((r) => r.label)).toEqual(["Default (recommended)", "Sonnet"]);
+    expect(p?.rows[0]?.current).toBe(true);
+    expect(p?.rows[1]?.selected).toBe(true);
+    expect(p?.keys).toEqual([{ key: "Escape", label: "Esc to cancel" }]);
+
+    const panel = dialogPanel({
+      kind: "panel",
+      tabs: [
+        { label: "Status", selected: false },
+        { label: "Usage", selected: true },
+      ],
+      note: [],
+      rows: [],
+      lines: ["Current session  12% used", "  Weekly          3% used"],
+      keys: [{ key: "Escape", label: "Close" }],
+    });
+    expect(panel.native).toBe(true);
+    expect(panel.title).toBeUndefined();
+    expect(panel.tabs[1]?.selected).toBe(true);
+    expect(panel.lines[1]).toBe("  Weekly          3% used");
+
+    // A dialog the panel cannot draw is the terminal's; the native panel is the default, and the terminal the user chose stays until they choose the panel.
+    const other = dialogPanel({ kind: "other", note: [], tabs: [], rows: [], lines: ["???"], keys: [] });
+    expect(other.native).toBe(false);
+    expect(dialogNative(other, new Map(), "sess_a")).toBe(false);
+    expect(dialogNative(p!, new Map(), "sess_a")).toBe(true);
+    const chose = new Map([["sess_a", "terminal" as const]]);
+    expect(dialogNative(p!, chose, "sess_a")).toBe(false);
+    expect(dialogNative(p!, chose, "sess_b")).toBe(true);
+    chose.delete("sess_a");
+    expect(dialogNative(p!, chose, "sess_a")).toBe(true);
   });
 
   test("a session can be killed from its pane while it runs and the node can end it, with the scope to write to sessions", () => {

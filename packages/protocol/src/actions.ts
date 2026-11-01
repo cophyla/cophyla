@@ -41,6 +41,7 @@ export const actions = {
   "session.mode": { risk: "exec" },
   "session.models": { risk: "read" },
   "session.setModel": { risk: "write" },
+  "session.dialogPress": { risk: "write" },
   "session.focus": { risk: "write" },
   "session.watch": { risk: "read" },
   "session.files": { risk: "read" },

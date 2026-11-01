@@ -48,6 +48,7 @@ import {
   PressureResource,
   Terminal,
 } from "./entities.ts";
+import { DialogKey, DialogView } from "./entities.ts";
 import { AgentMessageId, AskId, GroupId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, ThreadId, Timestamp, WorkspaceId } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
@@ -583,6 +584,11 @@ export const capabilityRequests = {
   },
   /** Puts a session on a model, as the client protocol's `session.setModel` does. */
   "session.setModel": { params: z.object({ id: SessionId, model: z.string().min(1).max(200) }), result: z.object({ model: z.string() }) },
+  /** Presses one thing on a session's dialog, as the client protocol's `session.dialogPress` does. */
+  "session.dialogPress": {
+    params: z.object({ id: SessionId, press: z.union([z.object({ row: z.number().int().nonnegative() }), z.object({ tab: z.number().int().nonnegative() }), z.object({ key: DialogKey })]) }),
+    result: z.object({ dialog: DialogView.optional() }),
+  },
   "ask.answer": {
     params: z.object({ id: AskId, option: z.string(), options: z.array(z.string()).optional(), text: z.string().optional() }),
     result: Empty,

@@ -313,6 +313,33 @@ export type SessionWaiting = z.infer<typeof SessionWaiting>;
 export const TerminalRef = z.object({ host: z.string(), id: z.string() });
 export type TerminalRef = z.infer<typeof TerminalRef>;
 
+/** A key a dialog's footer names, pressed as the terminal presses it. */
+export const DialogKey = z.enum(["Enter", "Escape", "s"]);
+
+/**
+ * What a session's terminal shows over its prompt, read off its screen the way the chat draws it: a
+ * `choice` (rows to pick one of, the pointer on one, the one in use marked), a `panel` (text, with tabs
+ * to move between), or `other`, which the view cannot draw natively and shows in its terminal instead.
+ * Not stored: each screen read gives it again.
+ */
+export const DialogView = z.object({
+  kind: z.enum(["choice", "panel", "other"]),
+  title: z.string().max(200).optional(),
+  /** Lines said above the rows or the text. */
+  note: z.array(z.string().max(400)).max(20),
+  tabs: z.array(z.object({ label: z.string().max(80), selected: z.boolean() })).max(12),
+  rows: z
+    .array(z.object({ label: z.string().max(200), detail: z.string().max(400).optional(), selected: z.boolean(), current: z.boolean() }))
+    .max(60),
+  /** A panel's text as drawn, the spacing kept. */
+  lines: z.array(z.string().max(400)).max(200),
+  /** The keys the footer offers, each with what it does. */
+  keys: z.array(z.object({ key: DialogKey, label: z.string().max(120) })).max(8),
+});
+
+export type DialogKey = z.infer<typeof DialogKey>;
+export type DialogView = z.infer<typeof DialogView>;
+
 export const Session = z.object({
   id: SessionId,
   node: NodeId,
@@ -352,12 +379,11 @@ export const Session = z.object({
   mode: LaunchMode.optional(),
   ask: AskId.optional(),
   /**
-   * The terminal of a Claude Code or Codex session shows a dialog or a view over its prompt: a slash
-   * command's, a permission or a question. The chat shows that terminal in place of the prompt
-   * until the prompt is back. Not stored: a restart learns it from the next screen read. Absent for a
-   * session with no terminal of its own.
+   * What the terminal of a Claude Code or Codex session shows over its prompt, when it shows one: a slash
+   * command's view, a permission or a question. The chat draws it in place of the prompt. Not stored: each
+   * screen read gives it again. Absent when the prompt is up, or for a session with no terminal of its own.
    */
-  dialog: z.boolean().optional(),
+  dialog: DialogView.optional(),
   startedAt: Timestamp,
   lastActivity: Timestamp,
   endedAt: Timestamp.optional(),
