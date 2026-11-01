@@ -707,3 +707,43 @@ describe("the speaker, told to the node", () => {
     expect(sent.filter((f) => f.method === "voice.presence").at(-1)?.params).toEqual({ speaker: false });
   });
 });
+
+describe("a press that dictates", () => {
+  const linkWith = (audio?: { codecs: ("pcm" | "opus")[]; dictate?: true }) => {
+    const asked: { method: string; params: unknown }[] = [];
+    const link = {
+      connected: true,
+      state: { hello: { client: { id: "cli_me" }, ...(audio ? { audio } : {}) } },
+      request: <T>(method: string, params: unknown): Promise<T> => {
+        asked.push({ method, params });
+        return Promise.resolve({} as T);
+      },
+      send: async () => {},
+    };
+    return { link, asked };
+  };
+
+  test("asks the node to dictate when its hello says it does; the release asks nothing more", () => {
+    const { link, asked } = linkWith({ codecs: ["pcm"], dictate: true });
+    const host = new VoiceHost({ link, listening: false, log: () => {} });
+    expect(host.dictates).toBe(true);
+    host.ptt(true, { dictate: true });
+    host.ptt(false, { dictate: true });
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true, dictate: true }, { active: false }]);
+  });
+
+  test("a node that does not say it dictates is asked a plain press, which it makes a message as before", () => {
+    const { link, asked } = linkWith({ codecs: ["pcm"] });
+    const host = new VoiceHost({ link, listening: false, log: () => {} });
+    expect(host.dictates).toBe(false);
+    host.ptt(true, { dictate: true });
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true }]);
+  });
+
+  test("a press that does not ask to dictate is a plain one, whatever the node can do", () => {
+    const { link, asked } = linkWith({ codecs: ["pcm"], dictate: true });
+    const host = new VoiceHost({ link, listening: false, log: () => {} });
+    host.ptt(true);
+    expect(asked.filter((a) => a.method === "voice.ptt").map((a) => a.params)).toEqual([{ active: true }]);
+  });
+});

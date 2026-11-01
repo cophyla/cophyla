@@ -53,7 +53,7 @@ import {
   connectedRows,
 } from "./model.ts";
 import type { BroadPlace, CandidateGroup, CandidateItem, ClosedPlace, ConnectAgentRow, ConnectedRow, ConnectTeamBlock, MemberChip, PostView, TeamAgentsSeen, TeamConnectionRow, TeammateRow, ViewState } from "./model.ts";
-import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, sectionHead, setData, setHidden, setText } from "./render.ts";
+import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, renderTalk, sectionHead, setData, setHidden, setText, talkButton } from "./render.ts";
 import type { FolderBrowse, UiState } from "./render.ts";
 
 // --- what the user has open ---------------------------------------------------------------------
@@ -594,7 +594,8 @@ function createGroupComposer(): HTMLElement {
   const send = el("button", "group-send", "Send");
   send.type = "submit";
   const attach = createAttach();
-  row.append(attach.buttons, messageField("group-text", "Post"), send);
+  // Held, what the user says is typed into the post, to send when they are ready.
+  row.append(attach.buttons, messageField("group-text", "Post"), talkButton(), send);
   form.append(reply, error, complete, attach.strip, row, el("p", "group-closed"));
   return form;
 }
@@ -923,6 +924,7 @@ function renderGroupComposer(form: HTMLFormElement, g: Group, state: ViewState, 
   input.disabled = !mayPost;
   input.placeholder = ended ? "This group ended" : !state.connected ? "Waiting for cophylad" : !state.scopes.includes("sessions:write") ? "This view may not post" : `Post in ${g.name}: @ tags an agent`;
   form.querySelector<HTMLButtonElement>(".group-send")!.disabled = !mayPost || ui.team.posting === g.id;
+  renderTalk(form.querySelector<HTMLButtonElement>(".talk")!, state, ui, mayPost);
   renderAttach(form, ui.team.media.attached.get(g.id) ?? [], mayPost);
   setText(form.querySelector(".group-send")!, ui.team.posting === g.id ? "Sending…" : "Send");
   // left, or taken out: this side's copy stays, read only

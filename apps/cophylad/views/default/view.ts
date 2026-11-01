@@ -81,6 +81,8 @@ import type { RemoteCover } from "./remoteview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
+import { grown, spliceAt, spliced, terminalWords } from "./dictation.ts";
+import type { Splice } from "./dictation.ts";
 import { TeamControl } from "./teamctl.ts";
 import { newTeamUi } from "./teamview.ts";
 import { LeadControl } from "./leadctl.ts";
@@ -369,6 +371,7 @@ rpc.onNotification((n) => {
         whereNow();
       } else {
         typing(false);
+        dictationGone();
         waves.show(false);
         tickVoice();
         stopPairingClock();
@@ -450,6 +453,8 @@ rpc.onNotification((n) => {
       return;
     case "voice.state": {
       const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard; limit?: number; stopped?: VoiceStopped };
+      // this view's utterance is over: a dictation whose words never came leaves its field as it was
+      if (p.state === "idle" && (p.client === undefined || p.client === state.client?.id)) dictationGone();
       dispatch({ type: "voice.state", params: p });
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
       if (p.unheard !== undefined) {
@@ -459,8 +464,14 @@ rpc.onNotification((n) => {
       tickVoice();
       return;
     }
-    case "voice.partial":
-      dispatch({ type: "voice.partial", params: n.params as VoicePartial });
+    case "voice.partial": {
+      const p = n.params as VoicePartial;
+      if (p.dictate) dictationHeard(p);
+      dispatch({ type: "voice.partial", params: p });
+      return;
+    }
+    case "voice.dictated":
+      dictationDone(n.params as { client: string; text: string });
       return;
     case "voice.setup":
       dispatch({ type: "voice.setup", params: n.params as VoiceSetup });
@@ -1855,17 +1866,131 @@ async function loadEarlier(session: string): Promise<void> {
 }
 
 /**
- * The talk button, held and let go: `voice.ptt` on the host's own connection. The host streams
- * its microphone while the node listens to it, and what was said comes back as a message.
+ * The talk button, held and let go: `voice.ptt` on the host's own connection, dictating. The
+ * host streams its microphone while the node listens to it, and what was said comes back as
+ * words typed into the field beside the button held, for the user to send.
  */
-function talk(held: boolean): void {
+function talk(held: boolean, button?: HTMLButtonElement): void {
   if ((ui.talking === true) === held) return;
   ui.talking = held;
+  if (held) {
+    const field = button?.closest("form")?.querySelector<HTMLTextAreaElement>("textarea");
+    pressField = field ?? undefined;
+  }
   draw();
-  rpc.request("voice.ptt", { active: held }).catch((e: unknown) => {
+  rpc.request("voice.ptt", held ? { active: true, dictate: true } : { active: false }).catch((e: unknown) => {
     if (held) ui.talking = false;
     fail("talk", e);
   });
+}
+
+// --- dictation -------------------------------------------------------------------------------------
+
+/** A dictation under way: its words so far, and the field they are typed into (the terminal takes only the whole). */
+interface Dictation {
+  words: string;
+  field?: HTMLTextAreaElement | HTMLInputElement;
+  splice?: Splice;
+  /** Whose the field is: the shared send form swaps to another session's draft with its tab. */
+  owner?: string;
+  terminal?: true;
+}
+
+/** The field whose talk button is held: what is said is typed there. */
+let pressField: HTMLTextAreaElement | undefined;
+let dictating: Dictation | undefined;
+
+const fieldOwner = (field: HTMLTextAreaElement | HTMLInputElement): string => field.form?.dataset["session"] ?? field.form?.dataset["group"] ?? field.className;
+
+const typable = (field: Element | null): field is HTMLTextAreaElement | HTMLInputElement =>
+  (field instanceof HTMLTextAreaElement || (field instanceof HTMLInputElement && field.type === "text")) && !field.disabled && !field.readOnly && field.offsetParent !== null;
+
+/**
+ * Where a dictation's words go: the field of the talk button held; else, from a phone's bar,
+ * the field the user was writing in, the terminal on show when it is typed into, a group's post,
+ * or the chat's or the session's field. A session's Messages pane, or its terminal when it is
+ * read only, gives way to its timeline and field; with nothing else, the chat's field, its tab
+ * opened.
+ */
+function dictationPlace(): HTMLTextAreaElement | HTMLInputElement | "terminal" | undefined {
+  if (pressField?.isConnected && !pressField.disabled) return pressField;
+  if (typable(document.activeElement)) return document.activeElement;
+  if (terminal.shown !== undefined && terminal.droppable) return "terminal";
+  if (ui.group !== undefined) {
+    const post = roots.groups.querySelector<HTMLTextAreaElement>(".group-text");
+    if (typable(post)) return post;
+  }
+  if (ui.group === undefined && ui.terminal === undefined) {
+    let field = composerInput();
+    if (!field && ui.selected !== undefined && state.sessions.has(ui.selected)) {
+      ui.modes.set(ui.selected, "timeline");
+      draw();
+      field = composerInput();
+    }
+    if (field) return field;
+  }
+  if (!state.scopes.includes("chat")) return undefined;
+  select(undefined);
+  return composerInput() ?? undefined;
+}
+
+function startDictation(): Dictation {
+  const place = dictationPlace();
+  if (place === "terminal") return { words: "", terminal: true };
+  if (!place) return { words: "" };
+  // at the caret when the field has the focus; at the end of what is there when it has not
+  const focused = document.activeElement === place;
+  const start = focused ? (place.selectionStart ?? place.value.length) : place.value.length;
+  const end = focused ? (place.selectionEnd ?? start) : start;
+  return { words: "", field: place, splice: spliceAt(place.value, start, end), owner: fieldOwner(place) };
+}
+
+/** Puts `words` where the dictation types them, as if typed: the drafts keep them and the field grows to them. */
+function showDictated(d: Dictation, words: string): void {
+  const field = d.field;
+  if (!field || !d.splice || fieldOwner(field) !== d.owner) return;
+  const { value, caret } = spliced(d.splice, words);
+  if (field.value === value) return;
+  field.value = value;
+  field.setSelectionRange(caret, caret);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** The words heard so far of this view's dictation: shown at the caret as they grow. */
+function dictationHeard(p: VoicePartial): void {
+  if (p.client !== undefined && p.client !== state.client?.id) return;
+  dictating ??= startDictation();
+  dictating.words = grown(dictating.words, p);
+  showDictated(dictating, dictating.words);
+}
+
+/** A dictation's words, whole: typed in, and the field left for the user to read over and send. */
+function dictationDone(p: { client: string; text: string }): void {
+  if (p.client !== state.client?.id) return;
+  let d = dictating ?? startDictation();
+  dictating = undefined;
+  pressField = undefined;
+  // the field went to another session's draft meanwhile: the words go where the user is now
+  if (d.field && d.owner !== fieldOwner(d.field)) d = startDictation();
+  if (d.terminal) {
+    terminal.paste(terminalWords(p.text));
+    return;
+  }
+  if (!d.field) {
+    fail("dictation", new Error("there is nothing here to type what was said into"));
+    return;
+  }
+  showDictated(d, p.text);
+  // on a computer the user can read it over and press Enter; a phone's keyboard would cover the page
+  if (!phone.matches) d.field.focus();
+}
+
+/** This view's utterance ended with no words (taken back, nothing heard), or the link went: the field as it was. */
+function dictationGone(): void {
+  const d = dictating;
+  dictating = undefined;
+  pressField = undefined;
+  if (d) showDictated(d, "");
 }
 
 /**
@@ -4140,7 +4265,7 @@ document.addEventListener("pointerdown", (ev) => {
   if (!button || button.disabled || ev.button !== 0) return;
   ev.preventDefault();
   button.setPointerCapture(ev.pointerId);
-  talk(true);
+  talk(true, button);
 });
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
   document.addEventListener(type, (ev) => {
@@ -4150,7 +4275,7 @@ for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const
 document.addEventListener("keydown", (ev) => {
   if ((ev.key === " " || ev.key === "Enter") && (ev.target as Element | null)?.classList.contains("talk")) {
     ev.preventDefault();
-    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true);
+    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true, ev.target as HTMLButtonElement);
   }
 });
 document.addEventListener("keyup", (ev) => {

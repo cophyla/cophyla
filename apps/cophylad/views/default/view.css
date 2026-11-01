@@ -2404,7 +2404,8 @@ button:disabled {
   border-color: var(--line);
 }
 
-/* the talk button: held, Cophyla listens (the desktop app; the phone's is in its bar) */
+/* the talk button beside a message field: held, what is said is typed into the field (the
+   desktop app and a desktop browser; the phone's is in its bar, and types where the page is) */
 .talk {
   display: inline-flex;
   flex: 0 0 auto;

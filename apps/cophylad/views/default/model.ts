@@ -950,9 +950,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       return state;
     }
     case "voice.partial": {
-      const { client, text, from, message } = action.params;
+      const { client, text, from, message, dictate } = action.params;
       // The node sends each client its own utterance's words alone.
       if (client !== undefined && client !== state.client?.id) return state;
+      // Dictated words are typed into a field (view.ts), not shown on their way to the chat.
+      if (dictate) return state;
       // Its message landed first: the ghost has had its time.
       if (message !== undefined && state.messages.has(message)) {
         delete state.heard;

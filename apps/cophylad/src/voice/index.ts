@@ -751,10 +751,11 @@ export class Voice {
           });
           this.holdSpeech();
         },
-        partial: (text) => {
-          words.push(text);
+        partial: (text, dictating) => {
+          words.push(text, dictating === true);
           const at = this.now();
-          if (c.current === "listening" && at - toldBrain >= TRANSCRIPT_MS) {
+          // Dictated words are the user's to send, if ever: the brain is not told them as they come.
+          if (!dictating && c.current === "listening" && at - toldBrain >= TRANSCRIPT_MS) {
             toldBrain = at;
             this.deps.bus.emit("voice.transcript", { at, text });
           }
@@ -764,6 +765,11 @@ export class Voice {
           const message = this.deps.chat.userMessage({ text, source: "voice", client: client.id });
           // The words shown give way to the message; those of an utterance begun since stay.
           if (!overtaken) words.done(message.id);
+        },
+        dictated: (text, overtaken) => {
+          // The words shown so far give way to the whole, which the client types where it writes.
+          if (!overtaken) words.reset();
+          this.deps.clients.send(client.id, "voice.dictated", { client: client.id, text });
         },
         speaking: (active) => this.deps.activity.speaking(client, active),
         // Speech goes to the one controller whose utterance produced it.
@@ -878,10 +884,10 @@ export class Voice {
     if (stage.status !== "ready" && !(stage.status === "unavailable" && this.sttEngine)) throw new RpcError("unavailable", `speech to text is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
   }
 
-  /** The push-to-talk button. Refused when nothing could transcribe what is said. */
-  ptt(client: Client, active: boolean): void {
+  /** The push-to-talk button; `dictate` on a press has its words typed by the client. Refused when nothing could transcribe what is said. */
+  ptt(client: Client, active: boolean, dictate = false): void {
     this.hearable(client);
-    this.conversation(client)?.ptt(active);
+    this.conversation(client)?.ptt(active, dictate ? { dictate: true } : {});
   }
 
   /**
@@ -1060,21 +1066,24 @@ export class Voice {
  * the message the words became.
  */
 export class PartialFeed {
-  private send: (params: { text: string; from?: number; message?: MessageId }) => void;
+  private send: (params: { text: string; from?: number; message?: MessageId; dictate?: true }) => void;
   private now: () => number;
   /** What the client has, what it is to have next, and when it was last told. */
   private sent = "";
   private latest = "";
   private at = -Infinity;
   private timer?: ReturnType<typeof setTimeout>;
+  /** The words are being dictated: each partial says so. */
+  private dictate = false;
 
-  constructor(send: (params: { text: string; from?: number; message?: MessageId }) => void, now: () => number) {
+  constructor(send: (params: { text: string; from?: number; message?: MessageId; dictate?: true }) => void, now: () => number) {
     this.send = send;
     this.now = now;
   }
 
-  push(text: string): void {
+  push(text: string, dictate = false): void {
     this.latest = text;
+    this.dictate = dictate;
     if (this.timer) return;
     const wait = this.at + PARTIAL_MS - this.now();
     if (wait <= 0) {
@@ -1095,7 +1104,7 @@ export class PartialFeed {
     let from = 0;
     const max = Math.min(this.sent.length, this.latest.length);
     while (from < max && this.sent.charCodeAt(from) === this.latest.charCodeAt(from)) from++;
-    this.send({ text: this.latest.slice(from), ...(this.sent ? { from } : {}) });
+    this.send({ text: this.latest.slice(from), ...(this.sent ? { from } : {}), ...(this.dictate ? { dictate: true as const } : {}) });
     this.sent = this.latest;
     this.at = this.now();
   }
@@ -1113,6 +1122,7 @@ export class PartialFeed {
     this.sent = "";
     this.latest = "";
     this.at = -Infinity;
+    this.dictate = false;
   }
 }
 

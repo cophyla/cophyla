@@ -212,8 +212,8 @@ export interface ApiDeps {
   /** Signal handlers: notifications from a client that get no response and no audit row. */
   signals?: SignalTable;
   platformVersion: string;
-  /** What `hello` tells a client of the node's audio: the codecs `voice.audio` may use. */
-  audio?: { codecs: AudioCodec[] };
+  /** What `hello` tells a client of the node's audio: the codecs `voice.audio` may use, and that a press may dictate. */
+  audio?: { codecs: AudioCodec[]; dictate?: true };
   /** The hook ingress behind `/hooks/<harness>`; absent in a daemon without the sessions module. */
   hooks?: HookIngress;
   /** The chat's own session's endpoints (`/mcp/*`, `/hooks/assistant-part-N`); absent in a daemon with no assistant module. */

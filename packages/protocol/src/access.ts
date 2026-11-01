@@ -400,6 +400,7 @@ export const notificationFilters = {
   "ask.state": (p) => askTarget(p),
   "voice.state": "global",
   "voice.partial": "global",
+  "voice.dictated": "global",
   "voice.audio": "global",
   "voice.setup": "global",
   "voice.next": "global",

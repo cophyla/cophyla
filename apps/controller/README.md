@@ -88,7 +88,10 @@ worker runs openWakeWord on ONNX Runtime's wasm build over the microphone, and o
 hears one of the node's wake words ("Cophyla", "Hey Phyla") does the page send `voice.wake` and the audio after it, until the node
 stops listening. The menu's switch turns that off, and the page remembers the off
 (`cophyla.controller.listen` in its storage) until it is turned back on. Push-to-talk skips the
-wake word: hold it, speak, release. Either way the frames go up as `voice.audio` and the
+wake word: hold it, speak, release. It dictates (`voice.ptt {dictate}`, on a node whose hello
+says it can): what is said is typed into the page the view has open, the chat's field, an
+agent's, a group's post or a terminal, and the user sends it; the wake word still speaks to the
+chat. Either way the frames go up as `voice.audio` and the
 answer comes back the same way; a tone rises as the recording starts and falls as it stops,
 and the view draws the microphone's wave over its input meanwhile (`host.recording`,
 `host.levels`). A node that cannot hand the phone the word — an older one,

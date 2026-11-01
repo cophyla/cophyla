@@ -595,8 +595,12 @@ export const clientRequests = {
       node: NodeId,
       protocolVersion: z.number().int().positive(),
       platformVersion: z.string(),
-      /** The codecs the node takes and sends `voice.audio` in; PCM alone when absent. */
-      audio: z.object({ codecs: z.array(AudioCodec) }).optional(),
+      /**
+       * The codecs the node takes and sends `voice.audio` in; PCM alone when absent. `dictate`:
+       * the node types a press's words for the client that asks (`voice.ptt {dictate}`); a node
+       * without it would send them to the chat, so a host asks only a node that says it.
+       */
+      audio: z.object({ codecs: z.array(AudioCodec), dictate: z.literal(true).optional() }).optional(),
       /**
        * The client named by `resume` was taken up: after this answer come the notifications it
        * missed, in order, and no welcome. What it subscribed to holds.
@@ -769,9 +773,11 @@ export const clientRequests = {
   /**
    * The talk button, held and let go. `cancel` takes back this client's utterance while it is
    * heard or transcribed, however it began (the button, the talk key or the wake word): nothing
-   * is sent, and the button is let go. With nothing to take back it is no error.
+   * is sent, and the button is let go. With nothing to take back it is no error. `dictate`, on
+   * the press: the words are this client's to type (`voice.dictated`), not a message to the
+   * chat; nothing wakes the brain, and nothing is read out.
    */
-  "voice.ptt": { params: z.object({ active: z.boolean(), cancel: z.literal(true).optional() }), result: Empty },
+  "voice.ptt": { params: z.object({ active: z.boolean(), cancel: z.literal(true).optional(), dictate: z.literal(true).optional() }), result: Empty },
   /**
    * The keyword heads this controller can run itself, for the node to say where its wake word
    * is detected. Sent again on every connect; an empty list hands detection back to the node.
@@ -1570,14 +1576,21 @@ export const clientNotifications = {
    * The words heard so far of this client's utterance, to that client alone, as they grow.
    * `from` is how much of the text before to keep, `text` what follows it: a long transcript
    * is not sent again whole. The last one, once the utterance is in the chat, names its
-   * `message`.
+   * `message`. `dictate`: the utterance is being dictated, and its words are typed where the
+   * client is writing, not shown on their way to the chat.
    */
   "voice.partial": z.object({
     client: ClientId.optional(),
     text: z.string(),
     from: z.number().int().nonnegative().optional(),
     message: MessageId.optional(),
+    dictate: z.literal(true).optional(),
   }),
+  /**
+   * A dictated utterance's words, whole, to the client that dictated it (`voice.ptt {dictate}`):
+   * to be typed where it is writing, and sent only when the user sends them.
+   */
+  "voice.dictated": z.object({ client: ClientId, text: z.string() }),
   /**
    * Speech for one controller: base64 of int16 samples (`pcm`, the default) or of
    * length-prefixed Opus packets, at `rate` (24 kHz when absent). `reply` numbers the reply

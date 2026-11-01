@@ -37,7 +37,7 @@
           "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
           "protocolVersion": 1,
           "platformVersion": "0.9.0",
-          "audio": { "codecs": ["opus", "pcm"] }
+          "audio": { "codecs": ["opus", "pcm"], "dictate": true }
         },
         {
           "client": {
@@ -148,7 +148,7 @@
     "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
     "workspace.put": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\other", "name": "other" }], "results": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "event.list": { "params": [{}], "results": [{ "events": [] }] },
-    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }], "results": [{}] },
+    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }, { "active": true, "dictate": true }], "results": [{}] },
     "voice.wakeword": {
       "params": [{ "heads": ["cophyla_v0.1.onnx"] }, { "heads": [] }],
       "results": [
@@ -770,8 +770,10 @@
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "What is the status" },
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": " of the build?", "from": 18 },
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "", "from": 32, "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FC4" },
+      { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "run the tests", "dictate": true },
       { "text": "" }
     ],
+    "voice.dictated": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "Run the tests again, then tell me which ones failed." }],
     "voice.audio": [
       { "chunk": "AAAA" },
       { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },

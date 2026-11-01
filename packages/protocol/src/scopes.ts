@@ -190,6 +190,7 @@ export const notificationScopes = {
   "ask.state": "asks:answer",
   "voice.state": "voice",
   "voice.partial": "voice",
+  "voice.dictated": "voice",
   "voice.audio": "voice",
   "voice.setup": "voice",
   "voice.next": "voice",

@@ -576,7 +576,7 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     "voice.ptt": {
       handler: (p, ctx) => {
         if (p.cancel) deps.voice.cancel(ctx.client);
-        else deps.voice.ptt(ctx.client, p.active);
+        else deps.voice.ptt(ctx.client, p.active, p.dictate === true);
         return {};
       },
     },

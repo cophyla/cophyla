@@ -501,7 +501,8 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
       writeListen(storage, on);
       voice.listen(on);
     },
-    ptt: (down) => voice.ptt(down),
+    // the bar's button dictates: the words are typed where the view is open, and the user sends them
+    ptt: (down) => voice.ptt(down, { dictate: true }),
     mute: (on) => voice.mute(on),
     forget,
   });

@@ -4227,6 +4227,29 @@ export function fitField(input: HTMLTextAreaElement): void {
   if (copy?.classList.contains("field-copy")) setText(copy, `${input.value} `);
 }
 
+/** The talk button beside a message field: held, what the user says is typed into the field, for them to send. */
+export function talkButton(): HTMLButtonElement {
+  const talk = el("button", "talk");
+  talk.type = "button";
+  talk.append(micIcon());
+  return talk;
+}
+
+/** A talk button as things stand: shown where the host has a microphone and no button of its own, live while the field beside it is. */
+export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiState, fieldLive: boolean): void {
+  const canTalk = state.hostTalk && state.connected && state.scopes.includes("voice") && fieldLive;
+  setHidden(talk, !state.hostTalk);
+  talk.disabled = !canTalk;
+  talk.setAttribute("aria-pressed", ui.talking ? "true" : "false");
+  const off = micOff(state);
+  setData(talk, "mic", off !== undefined ? "off" : "on");
+  const talkWords = !state.connected ? "Waiting for cophylad" : !state.scopes.includes("voice") ? "This view may not listen" : !fieldLive ? "Nothing to type into here" : off !== undefined ? `The microphone is off: ${off}` : "Hold to talk: what you say is typed here, for you to send";
+  if (talk.title !== talkWords) {
+    talk.title = talkWords;
+    talk.setAttribute("aria-label", talkWords);
+  }
+}
+
 /** The input under the pane: the chat's, or the selected session's send when its timeline shows. */
 function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void {
   let form = root.querySelector<HTMLFormElement>("form.composer-form");
@@ -4239,10 +4262,8 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
     const field = messageField("composer-text", "Ask about the work");
     const button = el("button", "composer-button", "Send");
     button.type = "submit";
-    // Held, Cophyla listens (`voice.ptt`); let go, what was said is sent as if typed.
-    const talk = el("button", "talk");
-    talk.type = "button";
-    talk.append(micIcon());
+    // Held, Cophyla listens (`voice.ptt {dictate}`); what was said is typed into the field, and the user sends it.
+    const talk = talkButton();
     // First, when the node shows the brain's context: the button that lays it over the conversation.
     const context = actionButton("context-open", "", "context-open");
     context.title = "Context: what the chat's session is told, and how full its context is";
@@ -4267,18 +4288,7 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   const quick = form.querySelector<HTMLButtonElement>(".quick")!;
   quick.disabled = !canChat;
   quick.setAttribute("aria-pressed", state.quick ? "true" : "false");
-  const talk = form.querySelector<HTMLButtonElement>(".talk")!;
-  const canTalk = state.hostTalk && state.connected && state.scopes.includes("voice");
-  setHidden(talk, !state.hostTalk);
-  talk.disabled = !canTalk;
-  talk.setAttribute("aria-pressed", ui.talking ? "true" : "false");
-  const off = micOff(state);
-  setData(talk, "mic", off !== undefined ? "off" : "on");
-  const talkWords = !state.connected ? "Waiting for cophylad" : !canTalk ? "This view may not listen" : off !== undefined ? `The microphone is off: ${off}` : "Hold to talk";
-  if (talk.title !== talkWords) {
-    talk.title = talkWords;
-    talk.setAttribute("aria-label", talkWords);
-  }
+  renderTalk(form.querySelector<HTMLButtonElement>(".talk")!, state, ui, canChat);
   renderSend(root, state, ui);
   renderVoice(root, state);
   const errors = state.errors.slice(-1)[0];
@@ -4300,7 +4310,8 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
     form = el("form", "send");
     const button = el("button", "send-button", "Send");
     button.type = "submit";
-    form.append(messageField("send-text", "Message this session"), button);
+    // Held, what the user says is typed into the session's field, to send when they are ready.
+    form.append(messageField("send-text", "Message this session"), talkButton(), button);
     root.prepend(form);
   }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
@@ -4318,6 +4329,7 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   input.disabled = !canSend;
   input.placeholder = canSend ? `Message ${s.harness}` : s.status === "ended" ? "This session has ended" : "Waiting for cophylad";
   form.querySelector<HTMLButtonElement>(".send-button")!.disabled = !canSend;
+  renderTalk(form.querySelector<HTMLButtonElement>(".talk")!, state, ui, canSend);
 }
 
 /** The pane that shows: the chat stream or the selected session's. */
