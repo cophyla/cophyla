@@ -80,7 +80,7 @@ import { toldToClients } from "../gate/audit.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Policy } from "../gate/policy.ts";
 import type { Logger } from "../log.ts";
-import { clientResult, clientRow, ClientRegistry, forAccess } from "./clients.ts";
+import { clientResult, clientRow, ClientRegistry, CLOSE_HOLD_ENDED, forAccess } from "./clients.ts";
 import type { ClientSocket, ListenerKind, SendOptions } from "./clients.ts";
 import type { Redeemed } from "../grants/phones.ts";
 import type { Grants, RedeemHow } from "../grants/store.ts";
@@ -357,6 +357,8 @@ const HELLO_DEADLINE_MS = 5000;
 const STOP_WAIT_MS = 200;
 const CLOSE_UNAUTHENTICATED = 4401;
 const CLOSE_ROLE_CHANGED = 4409;
+/** What the node closes a socket with on purpose (a refusal or revoke, the LAN turned off, a hold let go): its client is not held for a return. */
+const NOT_HELD_ON: ReadonlySet<number> = new Set([CLOSE_UNAUTHENTICATED, 4410, CLOSE_HOLD_ENDED]);
 const MAX_PAYLOAD = 16 * 1024 * 1024;
 /** Wrong codes one socket may try before it is closed. */
 const MAX_CLAIMS_PER_SOCKET = 3;
@@ -393,6 +395,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const send = (ws: Conn, message: unknown) => {
     ws.send(JSON.stringify(message));
   };
+  /** The registry's view of a socket: what it is sent, how it is closed, what it holds unsent. */
+  const socketOf = (ws: Conn): ClientSocket => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0 });
   const portOf = (ws: Conn): Port => ({ send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0, origin: ws.data.origin, listener: ws.data.listener, ...(ws.data.forward ? { forward: true } : {}), ...(ws.data.browser ? { browser: true } : {}), ...lifetimeOf(ws.data) });
 
   /** A grant's end and its kind, as a port and a relayed client carry them: only what is there. */
@@ -767,8 +771,13 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     const now = Date.now();
     // A phone is what its grant lets it be; the desktop's shared token is everything.
     const access = controller?.access ?? FULL;
+    // A phone coming back names the client it was: held for it, or live on the connection it
+    // moves off. Taken up, it keeps its id, so the gate's word for it and what it subscribed to
+    // go on; the answer says so, and what it missed follows instead of a welcome.
+    const prior = p.resume !== undefined && controller !== undefined ? registry.get(p.resume) : undefined;
+    const resuming = prior !== undefined && prior.client.controller === controller!.id && prior.client.kind === p.kind && prior.listener !== "relayed" && prior.listener !== "relay" && (prior.hold !== undefined || p.move === true) ? prior.client.id : undefined;
     const client: Client = {
-      id: newId("client", now),
+      id: resuming ?? newId("client", now),
       kind: p.kind,
       scopes: [...access.scopes],
       access,
@@ -847,13 +856,41 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         return;
       }
       if (gone()) {
-        deps.policy.forgetSession(client.id);
+        if (resuming === undefined) deps.policy.forgetSession(client.id);
         return;
+      }
+      if (resuming !== undefined) {
+        const live = registry.get(resuming);
+        const moving = live !== undefined && live.hold === undefined ? live.socket : undefined;
+        const taken = live !== undefined && (live.hold !== undefined || p.move === true) ? registry.resume(resuming, { controller: controller!.id, kind: p.kind }, socketOf(ws), ws.data.listener, ws) : undefined;
+        if (taken) {
+          const kept = taken.entry.client;
+          // the connection it is on now, and the access its grant gives it now
+          kept.scopes = client.scopes;
+          kept.access = client.access;
+          kept.via = client.via;
+          kept.audio = client.audio;
+          if (client.path !== undefined) kept.path = client.path;
+          else delete kept.path;
+          if (client.name !== undefined) kept.name = client.name;
+          ws.data.client = kept;
+          uncount(ws);
+          sockets.set(kept.id, ws);
+          // the connection it moved off hears that it did, last: what was on its way there comes first
+          moving?.send(JSON.stringify(notification("client.moved", {})));
+          send(ws, success(req.id, { ...result, client: kept, resumed: true }));
+          for (const frame of taken.frames) ws.send(frame);
+          taken.stale?.close(1000, "taken up on another connection");
+          log.info("client resumed", { client: kept.id, kind: kept.kind, name: kept.name, via: kept.via, held: taken.frames.length, ...(moving ? { moved: true } : {}), ...(controller ? { controller: controller.id } : {}) });
+          return;
+        }
+        // let go meanwhile, or no longer this phone's to take: a client begun again, under a new id when the old one is still here
+        if (registry.get(client.id)) client.id = newId("client", now);
       }
       ws.data.client = client;
       uncount(ws);
       sockets.set(client.id, ws);
-      registry.add(client, { send: (data, o) => ws.send(data, o), close: (code, reason) => ws.close(code ?? 1000, reason ?? ""), buffered: () => ws.buffered?.() ?? 0 }, ws.data.listener);
+      registry.add(client, socketOf(ws), ws.data.listener, ws);
       send(ws, success(req.id, result));
       log.info("client connected", { client: client.id, kind: client.kind, name: client.name, via: client.via, ...(controller ? { controller: controller.id } : {}) });
       welcome(portOf(ws), client);
@@ -867,6 +904,10 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
   const dispatchFor = async (port: Port, client: Client, req: RpcRequest) => {
     const reply = (message: unknown) => port.send(JSON.stringify(message));
     const name = req.method as ClientRequestName;
+    if (name === "client.away") {
+      await away(reply, client, req);
+      return;
+    }
     const def = clientRequests[name];
     const method = deps.methods[name];
     if (!def || !method) {
@@ -920,6 +961,38 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
         reply(failure(req.id, protocolError("unavailable", "internal error")));
       }
     }
+  };
+
+  /**
+   * `client.away`: the host is out of sight, or back. Away, what the client would be sent is
+   * held; back, the answer goes first and what was held after it, so the host hears its own
+   * answer before the notifications it missed. A node that holds nothing says so, and the host
+   * closes its connection as it did before.
+   */
+  const away = async (reply: (message: unknown) => void, client: Client, req: RpcRequest): Promise<void> => {
+    const parsed = clientRequests["client.away"].params.safeParse(req.params ?? {});
+    if (!parsed.success) {
+      reply(failure(req.id, protocolError("invalid", "bad params for client.away", parsed.error.issues)));
+      return;
+    }
+    const principal = { kind: "user", client: client.id } as const;
+    try {
+      await deps.gate.run({ principal, via: client.id, action: "client.away", args: parsed.data, sessionKey: client.id }, () => ({}));
+    } catch (e) {
+      reply(failure(req.id, e instanceof RpcError ? e.error : protocolError("denied", "client.away refused")));
+      return;
+    }
+    if (parsed.data.away) {
+      if (!registry.goAway(client.id)) {
+        reply(failure(req.id, protocolError("unsupported", "this node holds nothing for a client out of sight")));
+        return;
+      }
+      reply(success(req.id, {}));
+      log.info("client away", { client: client.id });
+      return;
+    }
+    reply(success(req.id, {}));
+    if (registry.comeBack(client.id)) log.info("client back", { client: client.id });
   };
 
   /** A signal: no response, no audit row. Unknown ones are ignored. */
@@ -1256,7 +1329,22 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     delete ws.data.redeemed;
     const client = ws.data.client;
     if (client) {
-      sockets.delete(client.id);
+      if (sockets.get(client.id) === ws) sockets.delete(client.id);
+      if (ws.data.relayed === undefined) {
+        // let go while it was away: ended already
+        if (registry.endedOn(ws)) return;
+        const entry = registry.get(client.id);
+        // taken up on another connection: this one carried it, and carries it no more
+        if (entry !== undefined && entry.owner !== ws) {
+          log.info("client moved off a connection", { client: client.id, code, reason });
+          return;
+        }
+        // a phone whose connection closed may come back: held for it, with what it would be sent
+        if (entry !== undefined && client.kind === "controller" && client.controller !== undefined && !NOT_HELD_ON.has(code) && registry.park(client.id, ws)) {
+          log.info("client held for its return", { client: client.id, code, reason, via: client.via });
+          return;
+        }
+      }
       registry.remove(client.id);
       if (ws.data.relayed !== undefined) deps.nodes?.relay?.close(ws.data.relayed);
       // A relayed client too: what this node answered it itself (a staged view, a stream it opened) goes with its socket.
@@ -1330,6 +1418,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     },
     stop: async () => {
       for (const off of unsubscribe) off();
+      if (listener === "loopback") registry.forgetHeld();
       for (const ws of sockets.values()) {
         const client = ws.data.client;
         if (client) registry.remove(client.id);

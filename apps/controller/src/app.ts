@@ -103,7 +103,7 @@ export interface App {
   ui: UiElements;
   state: ChromeInput;
   paint(): void;
-  /** The m8 rule on a phone going away: the microphone off, the button up, the link paused. */
+  /** The m8 rule on a phone going away: the microphone off and the button up at once; the link kept a while for a quick return, then paused. */
   background(): void;
   foreground(): void;
   /** A remote desktop covers the app, or no longer does: the microphone and the wake word stand down meanwhile, and the speaker is quiet. */
@@ -264,6 +264,8 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
   });
 
   let loaded = false;
+  /** The link was up at the last state: a hello on a new connection moved it, with no gap. */
+  let linkUp = false;
   /** A shared computer's credential is held: when it goes without being forgotten, the page says why. */
   let held = false;
   /** In a wide window the audio is started once, as soon as the page is paired: at the first click where the browser holds it back. */
@@ -377,8 +379,16 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     if (io.via === "p2p" && io.snapshot.path) state.path = io.snapshot.path;
     else delete state.path;
     voice.setVia(io.via);
-    if (snapshot.state !== "connected") cache.clear();
-    else notifier.onConnected();
+    // A pause keeps what the node said, for a node that takes the same client up again and
+    // sends only what it missed; one that answers a new client says everything again.
+    const resumed = snapshot.state === "connected" && snapshot.hello?.resumed === true;
+    if (snapshot.state !== "connected") {
+      if (!snapshot.paused) cache.clear();
+    } else if (!resumed) {
+      if (!linkUp) cache.clear();
+      notifier.onConnected();
+    }
+    linkUp = snapshot.state === "connected";
     // Down, the conversation is gone; up, it is a new one: the phone's word starts over with it.
     voice.linkChanged(snapshot.state === "connected");
     paint();
@@ -506,11 +516,12 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     paint,
     background: () => {
       voice.pause();
-      io.suspend();
+      // the connection stays a while, the node told the phone is away: back soon, nothing to wait for
+      io.background();
     },
     watching: (on) => voice.watch(on),
     foreground: () => {
-      io.resume();
+      io.foreground();
       // The microphone is back after a gap: what the word carried on from is gone.
       void voice.resume();
     },

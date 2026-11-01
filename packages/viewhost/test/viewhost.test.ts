@@ -55,6 +55,44 @@ describe("view host", () => {
     expect(FRAME_SANDBOX.split(" ").sort()).toEqual(["allow-forms", "allow-scripts"]);
   });
 
+  test("a pause is kept from the view; a resumed hello ends it with nothing said; one that is not resumed is the gap and a new line", async () => {
+    const posted: { frame: { method?: string; params?: unknown } }[] = [];
+    const loads: (() => void)[] = [];
+    (globalThis as unknown as { window: unknown }).window = { addEventListener: () => {} };
+    (globalThis as unknown as { document: unknown }).document = {
+      createElement: () => ({ setAttribute: () => {}, addEventListener: (type: string, fn: () => void) => (type === "load" ? void loads.push(fn) : undefined), remove: () => {}, contentWindow: { postMessage: (m: unknown) => void posted.push(m as (typeof posted)[number]) }, src: "" }),
+    };
+    const hello = { client: { id: "cli_1", kind: "controller", scopes: [], via: "relay", audio: { in: true, out: true }, connectedAt: 1 }, node: "node_1", protocolVersion: 1, platformVersion: "0.1.0" };
+    const conn = {
+      state: { state: "connected", hello },
+      connected: true,
+      request: async (method: string) => (method === "view.list" ? { views: [view("default", true, "v1")] } : { node: "node_1", scope: { profilesOff: [], tetherOnly: false, allowedFolders: [], hiddenFolders: [] }, setupAt: 1 }),
+      send: async () => ({}),
+    } as unknown as Connection;
+    const cache = { replay: () => [] } as unknown as SnapshotCache;
+    const host = new ViewHost({ conn, cache, container: { replaceChildren: () => {} } as unknown as HTMLElement, stage: async () => ({ base: "http://view.localhost/", version: "v1" }) });
+    await host.load();
+    loads[0]!();
+    const heard = () => posted.map((m) => m.frame).filter((f) => f.method?.startsWith("host.")).map((f) => (f.method === "host.state" ? `host.state ${(f.params as { connected: boolean }).connected}` : f.method));
+    expect(heard()).toEqual(["host.ready", "host.state true"]);
+    posted.length = 0;
+    host.handleState({ state: "disconnected", since: 1, paused: true });
+    host.handleState({ state: "connecting", since: 2, paused: true });
+    host.handleState({ state: "connected", since: 3, hello: { ...hello, resumed: true } } as never);
+    expect(heard()).toEqual([]);
+    // a move between connections, the same client: nothing either
+    host.handleState({ state: "connected", since: 4, hello: { ...hello, resumed: true } } as never);
+    expect(heard()).toEqual([]);
+    // a pause that ends in a new client: the gap, then the new line
+    host.handleState({ state: "disconnected", since: 5, paused: true });
+    host.handleState({ state: "connected", since: 6, hello: { ...hello, client: { ...hello.client, id: "cli_2" } } } as never);
+    expect(heard()).toEqual(["host.state false", "host.ready", "host.state true"]);
+    posted.length = 0;
+    // a loss is heard at once
+    host.handleState({ state: "disconnected", since: 7 });
+    expect(heard()).toEqual(["host.state false"]);
+  });
+
   test("a burst of view.changed notices makes one view.list; a changed version reloads the view, the same version does not", async () => {
     const win = { addEventListener: () => {} };
     const doc = {

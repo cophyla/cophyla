@@ -110,10 +110,10 @@ with no menu button gets the view's own, in a thin bar at the top.
 | `src/app.ts` | the app: `boot(platform)` wires pairing, the link, the view host, voice (`@cophyla/voicehost`'s `VoiceHost`: the microphone, the wake word, the speaker) and the screens over what a platform supplies |
 | `src/main.ts` | the browser entry: the page's own socket back to the origin that served it, views staged by the node under a ticket, the credential in the page's storage or, on a shared computer, in its memory; the key read from the link's fragment; the `desk` form picked at load. LAN only (`connect-src 'self'`) |
 | `src/native.ts` | the Capacitor entry: the pinned native socket, the relay transport, views written to the app's storage, push registration and deep links, the phone's background and network signals |
-| `src/link-core.ts` | the link, shaped as the `TauriIo` the shared view host expects: `pair.claim`, `invite.redeem` and `hello` said for itself (`redeem` races an invite's pinned LAN addresses, with their head start, against its relay peer, then says hello on the same LAN socket or comes back through the relay on the phone's own access), backoff while visible, closed while hidden, the transport chooser (LAN first, the relay when the LAN cannot be reached, the LAN tried again every minute and on a network change), `relay.info` asked for on a LAN hello that finds the access missing |
+| `src/link-core.ts` | the link, shaped as the `TauriIo` the shared view host expects: `pair.claim`, `invite.redeem` and `hello` said for itself (`redeem` races an invite's pinned LAN addresses, with their head start, against its relay peer, then says hello on the same LAN socket or comes back through the relay on the phone's own access), backoff while visible, kept two minutes out of sight with the node told (`client.away`) and closed after, paused rather than lost, the client taken up again on the next hello (`resume`, and `move` between transports, the new one's notifications held for the old one's `client.moved`), the transport chooser (LAN first, the relay when the LAN cannot be reached, at once on the network where it carried the link last, the LAN tried again every minute and on a network change), `relay.info` asked for on a LAN hello that finds the access missing |
 | `src/transport.ts` | the two transports behind one `Duplex`: a WebSocket to the LAN listener, and a `PeerSession` from `@cophyla/relay` to the server's `/ws/relay` — the E2E tunnel the node's daemon is the other end of; and two used once each, the account sign-in's pairing tunnel and an invite's own relay peer, keyed from the invite's secret |
 | `src/pairing.ts` | the credential — token, controller, name, LAN URLs, relay access, the node's address and key — in the page's storage or the app's preferences, and parsing a typed code, an address or an invite (`parseInviteLink`: a computer's invite, one run out or one with no way to its node is refused with a word for the user; `inviteLanNodes` the addresses to pin); beside it, the listen switch's off |
-| `src/native/native-io.ts` | the LAN leg over the Kotlin socket plugin: pinned by the node's key learned at pairing; a key that changed is refused with `pin_mismatch`, never accepted on the quiet |
+| `src/native/native-io.ts` | the LAN leg over the Kotlin socket plugin: pinned by the node's key learned at pairing; a key that changed is refused with `pin_mismatch`, never accepted on the quiet; and the network the phone is on (`network`, the handle Android gives each attachment), which the link keeps the way that worked beside |
 | `src/native/push.ts` | the device token sent as `push.register` until the node took it; `cophyla://ask/<id>/<option>` links answered as `ask.answer` once the link is up, dropped after a minute |
 | `src/native/stage.ts` | views written under `Data/views/<id>/<version>/` from `view.get`, a content policy put into the entry page, older versions pruned |
 | `src/native/storage.ts`, `src/native/platform.ts` | the credential store over `@capacitor/preferences`; the platform check and file URLs |
@@ -155,9 +155,13 @@ with no menu button gets the view's own, in a thin bar at the top.
   same client protocol it sends on the LAN, and the node's gate and audit see it the same
   way.
 - **It listens while it is open, and only then.** In front, the microphone is on unless the
-  menu's switch turned it off. Hidden — or, in the app, in the background — the socket
-  closes and the microphone stops: a phone in a pocket is not a microphone. An ask that opens
-  while the app sleeps reaches it as a push instead.
+  menu's switch turned it off. Hidden — or, in the app, in the background — the microphone
+  stops at once: a phone in a pocket is not a microphone. The socket stays two minutes, with
+  the node told the phone is away (`client.away`): the node holds what it would send and
+  pushes asks as though the phone were gone, and coming back within them costs one round trip.
+  Past them the socket closes; the node holds the phone's client a while longer, and the hello
+  that comes back takes it up again (`resume`), with what it missed and nothing to load. An ask
+  that opens while the app sleeps reaches it as a push.
 - **Speech is dropped on a barge-in.** The playback queue is flushed the moment `voice.state`
   leaves `speaking`, so talking over the answer stops it on the phone as well as on the node.
   The phone's wake word keeps running while a reply is spoken, and a word over it flushes the
@@ -201,7 +205,10 @@ lock across every mode, voice state, button and pending word), and what `host.op
 through. Voice's own parts — chunking, playback, the uplink, Opus, the wake word's reducer,
 ring and detector — are tested in `packages/voicehost`.
 `test/link-core.test.ts` drives the link over fake transports: claim → store → `hello`, a
-denied `hello` dropping the credential, backoff and the pause/resume cycle, the LAN falling
+denied `hello` dropping the credential, backoff and the pause/resume cycle, the link kept out
+of sight and asked again on return (or taken as gone and opened again, resuming), the pause
+kept through its reconnect, the way remembered by network, a move's hello and the new
+connection's notifications held for the old one's `client.moved`, the LAN falling
 to the relay and back, `relay.info` filling a missing access, the relay's 4401 dropping it, and
 an invite redeemed on its pinned LAN address or, the LAN silent past its head start, on its
 relay peer, a spent one and one cut off settled once, and none on a phone paired already.

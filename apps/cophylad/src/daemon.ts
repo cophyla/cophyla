@@ -289,6 +289,8 @@ export interface DaemonOptions {
   };
   /** The LAN listener's seams: the address a peer is taken to come from (every test's peer is this machine otherwise). */
   lan?: { peer?: (address: string) => string; limiter?: LimiterOptions; sessionLingerMs?: number; ownCertificatePollMs?: number };
+  /** How long a phone is held for its return, and what it may be kept meanwhile; the tests' own. */
+  holds?: { holdMs?: number; maxBytes?: number };
   /** `node.restart`'s seams: the successor's check and start, the exit, the delay before the stop. */
   restart?: {
     preflight?: () => void;
@@ -1781,7 +1783,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const revokeController = (id: string): void => {
     const row = grants.revoke(id);
     if (row?.invite?.peer) void cloud.revokeRelay(row.invite.peer);
-    for (const entry of clients.byController(id)) clients.close(entry.client.id, 4401, "controller revoked");
+    for (const entry of clients.byController(id, { held: true })) clients.close(entry.client.id, 4401, "controller revoked");
     void cloud.revokeRelay(id);
     push.unregister(id);
   };
@@ -1916,19 +1918,44 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       ...(brainSpawned ? { assistant: chatAgent.state() } : {}),
     };
   };
-  const onDisconnect = (client: Client) => {
+  /** What goes with a client's socket: its typing, its conversation, its streams and pipes, a data channel not yet open; a shared computer's grant starts to run out. */
+  const socketGone = (client: Client) => {
     if (client.controller !== undefined) sessionGrants.closed(client.controller);
     activity.forget(client.id);
-    deliver.disconnected(client.id);
     voice?.onDisconnect(client.id);
-    tickets.forget(client.id);
-    metrics.onDisconnect(client.id);
-    nodes?.onDisconnect(client.id);
     remoteModule.onDisconnect(client.id);
     pipes.gone(`client:${client.id}`);
     directClients.clientGone(client.id);
+  };
+  /** What goes with the client itself: what it said of its window, its staged views, its subscriptions and its terminals. */
+  const clientGone = (client: Client) => {
+    deliver.disconnected(client.id);
+    tickets.forget(client.id);
+    metrics.onDisconnect(client.id);
+    nodes?.onDisconnect(client.id);
     terminalStreams?.dropClient(client.id);
   };
+  const onDisconnect = (client: Client) => {
+    socketGone(client);
+    clientGone(client);
+  };
+  // A phone held for its return: out of sight it is in no conversation and types nothing; with
+  // its socket gone, what lived with the socket goes; let go, everything does, as on a close.
+  clients.enableHolds({
+    away: (client) => {
+      activity.forget(client.id);
+      voice?.away(client.id);
+    },
+    parked: (client) => socketGone(client),
+    gone: (client, parked) => {
+      policy.forgetSession(client.id);
+      if (!parked) socketGone(client);
+      clientGone(client);
+    },
+    ...(opts.holds?.holdMs !== undefined ? { holdMs: opts.holds.holdMs } : {}),
+    ...(opts.holds?.maxBytes !== undefined ? { maxBytes: opts.holds.maxBytes } : {}),
+    log: (message, fields) => log.info(message, fields),
+  });
 
   api = startApi(
     {

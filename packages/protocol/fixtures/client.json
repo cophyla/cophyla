@@ -6,7 +6,9 @@
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true } },
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "forward": true },
         { "token": "6f1d…", "kind": "ui", "name": "cophyla", "audio": { "in": false, "out": false }, "local": true },
-        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "resume": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "resume": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "move": true }
       ],
       "results": [
         {
@@ -36,6 +38,20 @@
           "protocolVersion": 1,
           "platformVersion": "0.9.0",
           "audio": { "codecs": ["opus", "pcm"] }
+        },
+        {
+          "client": {
+            "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+            "kind": "controller",
+            "scopes": ["chat", "voice", "asks:answer"],
+            "via": "direct",
+            "audio": { "in": true, "out": true },
+            "connectedAt": 1758196800000
+          },
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "protocolVersion": 1,
+          "platformVersion": "0.22.4",
+          "resumed": true
         }
       ]
     },
@@ -279,6 +295,7 @@
         }
       ]
     },
+    "client.away": { "params": [{ "away": true }, { "away": false }], "results": [{}] },
     "relay.info": {
       "params": [{}],
       "results": [{ "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }]
@@ -849,6 +866,7 @@
     "remote.pipe.data": [{ "pipe": "p7", "data": "SFRUUC8xLjEgMjAwIE9LDQo=" }],
     "remote.pipe.ack": [{ "pipe": "p7", "bytes": 1024 }],
     "remote.pipe.close": [{ "pipe": "p7" }],
+    "client.moved": [{}],
     "connection.state": [
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "bob", "name": "api-codex" }, "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "queued": 1 },
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "reason": "bob ended it (ended by the user)" }

@@ -142,6 +142,7 @@ export const actions = {
   "lan.enable": { risk: "write" },
   "lan.disable": { risk: "write" },
   "relay.info": { risk: "read", control: true },
+  "client.away": { risk: "read", control: true },
   "push.register": { risk: "write" },
   "push.unregister": { risk: "write" },
   "controller.list": { risk: "read" },

@@ -1024,6 +1024,21 @@ export class Voice {
     else if (speech && name === TTS_MODELS[speech]) void this.loadTts();
   }
 
+  /**
+   * A client out of sight on its open connection (`client.away`): its conversation ends as on a
+   * close, so nothing is said to a phone in a pocket; the wake heads it runs and its codecs stay,
+   * since it comes back on the same connection and says neither again.
+   */
+  away(clientId: string): void {
+    const c = this.conversations.get(clientId);
+    if (!c) return;
+    c.dispose();
+    this.conversations.delete(clientId);
+    if (this.active === clientId) this.active = undefined;
+    this.holdSpeech();
+    this.log.debug("voice conversation ended: the client is out of sight", { client: clientId });
+  }
+
   /** A client went away: its conversation goes with it. */
   onDisconnect(clientId: string): void {
     this.phoneWake.delete(clientId);

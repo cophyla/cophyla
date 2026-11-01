@@ -573,6 +573,22 @@ export const clientRequests = {
        * while it is a node of a cluster, never relayed to the primary.
        */
       local: z.boolean().optional(),
+      /**
+       * The client this connection takes up again: one the same token was answered as, held by
+       * the node since it went out of sight (`client.away`) or its connection closed, with what
+       * it subscribed to and the notifications it missed. The node holds one for a few minutes;
+       * one it no longer holds, or holds no more, is not resumed, and the hello answers a new
+       * client as ever.
+       */
+      resume: ClientId.optional(),
+      /**
+       * With `resume`, from a client moving off a connection it still holds open (a phone going
+       * from the relay to a data channel or to the LAN): the client is taken up even though that
+       * connection is live, and `client.moved` is the last thing sent on it, so what was on its
+       * way there is heard before what comes here. Without it a live client is not resumed: what
+       * a connection that died unseen was sent is lost.
+       */
+      move: z.literal(true).optional(),
     }),
     result: z.object({
       client: Client,
@@ -581,6 +597,11 @@ export const clientRequests = {
       platformVersion: z.string(),
       /** The codecs the node takes and sends `voice.audio` in; PCM alone when absent. */
       audio: z.object({ codecs: z.array(AudioCodec) }).optional(),
+      /**
+       * The client named by `resume` was taken up: after this answer come the notifications it
+       * missed, in order, and no welcome. What it subscribed to holds.
+       */
+      resumed: z.literal(true).optional(),
     }),
   },
   "chat.send": {
@@ -868,6 +889,14 @@ export const clientRequests = {
   "lan.info": { params: Empty, result: LanState },
   "lan.enable": { params: Empty, result: LanState },
   "lan.disable": { params: Empty, result: LanState },
+  /**
+   * The host is out of sight but keeps its connection (the phone app in the background):
+   * `away: true` has the node hold the notifications it would send this client and push its
+   * asks as though it were gone; `away: false` answers, then sends what was held, in order.
+   * The node ends a connection away for too long, or one whose held notifications outgrew
+   * what it keeps, and the client is resumed or begun again as after any close.
+   */
+  "client.away": { params: z.object({ away: z.boolean() }), result: Empty },
   /** A paired controller asking its pairing node for the relay access it did not get at pairing; `unavailable` while the node cannot grant it. */
   "relay.info": { params: Empty, result: RelayAccess },
   /** A controller registers the device it receives push notifications on; `push.unregister` forgets it. */
@@ -1607,6 +1636,8 @@ export const clientNotifications = {
   "remote.pipe.data": PipeData,
   "remote.pipe.ack": PipeAck,
   "remote.pipe.close": PipeClose,
+  /** The last thing sent on a connection its client moved off (`hello` with `resume` and `move`): from here on it is sent on the new one. */
+  "client.moved": Empty,
   /** A connection's row when it is made, used, changes end or ends (`state: ended`, the last word about it). */
   "connection.state": Connection,
   /** A group's row when it is made, changes, or this side's copy goes (`left`, the last word about it). */
