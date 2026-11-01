@@ -10329,12 +10329,22 @@ button:disabled {
   flex-direction: column;
   gap: 10px;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   padding: 12px 16px;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
   background: var(--card);
   color: var(--ink);
+}
+
+/* The scrolling part of the panel: everything but the footer's keys, which stay pinned under it. */
+.dialog-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .dialog-title {
@@ -10444,7 +10454,8 @@ button:disabled {
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  margin-top: auto;
+  padding-top: 6px;
+  border-top: 1px solid var(--line);
 }
 
 .dialog-key {

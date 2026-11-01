@@ -43,11 +43,12 @@ export function drawDialogPanel(dock: HTMLElement, session: string, panel: Dialo
   const sig = JSON.stringify([session, panel, busy]);
   const old = dock.querySelector<HTMLElement>(":scope > .dialog-panel");
   if (old && signatures.get(dock) === sig) return;
-  const scroll = old?.scrollTop ?? 0;
+  const scroll = old?.querySelector<HTMLElement>(":scope > .dialog-body")?.scrollTop ?? 0;
   const node = panelNode(panel, busy, actions);
   dock.replaceChildren(node);
   signatures.set(dock, sig);
-  node.scrollTop = scroll;
+  const body = node.querySelector<HTMLElement>(":scope > .dialog-body");
+  if (body) body.scrollTop = scroll;
 }
 
 /**
@@ -123,5 +124,9 @@ function panelNode(panel: DialogPanel, busy: boolean, actions: DialogActions): H
   }
   foot.append(button("dialog-terminal", "Show terminal", false, actions.showTerminal));
   root.append(foot);
+  // The text, tabs and rows scroll; the footer's keys stay in view beneath them, so Escape is always there.
+  const body = el("div", "dialog-body");
+  body.append(...Array.from(root.children).filter((c) => c !== foot));
+  root.replaceChildren(body, foot);
   return root;
 }
