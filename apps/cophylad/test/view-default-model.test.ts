@@ -582,11 +582,11 @@ describe("default view model", () => {
     const s = ready();
     apply(s, { type: "session.state", params: session("sess_a", 150) });
     apply(s, { type: "audit.entry", params: audit("aud_1", 250, "session.send") });
-    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "the build" })], messages: [message("msg_1", "thr_1", 100, "user", "fix it"), message("msg_2", "thr_1", 200, "orchestrator", "on it", { content: [{ type: "text", text: "on it" }, { type: "quote", text: "tests pass", source: { kind: "session", session: "sess_a", seq: [3, 3] } }, { type: "ref", session: "sess_a" }] })], limit: 1 });
+    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "the build" })], messages: [message("msg_1", "thr_1", 100, "user", "fix it"), message("msg_2", "thr_1", 200, "orchestrator", "on it", { content: [{ type: "text", text: "on it" }, { type: "quote", text: "tests pass", source: { kind: "session", session: "sess_a", seq: [3, 3] } }, { type: "ref", session: "sess_a" }] })], more: true });
     expect(s.chatLoaded).toBe(true);
     expect(s.chatLoading).toBe(false);
-    expect(s.oldestThread).toBe("thr_1");
-    expect(s.threadsExhausted).toBe(false);
+    expect(s.oldestMessage).toBe("msg_1");
+    expect(s.messagesExhausted).toBe(false);
     const items = selectStream(s).items;
     expect(items.map((i) => i.kind)).toEqual(["thread", "message", "message", "audit"]);
     expect(selectGroups(s).flatMap((g) => g.sessions.map((c) => c.session.id))).toEqual(["sess_a"]);
@@ -662,19 +662,19 @@ describe("default view model", () => {
     expect(s.progress).toBeUndefined();
   });
 
-  test("a second chat.load prepends an earlier thread with its divider; a short page sets exhausted", () => {
+  test("a second page prepends the messages before it with their thread's divider; an empty page ends the history", () => {
     const s = ready();
-    apply(s, { type: "chat.loaded", threads: [thread("thr_2", 200, { topic: "later" })], messages: [message("msg_2", "thr_2", 210, "user", "b")], limit: 1 });
+    apply(s, { type: "chat.loaded", threads: [thread("thr_2", 200, { topic: "later" })], messages: [message("msg_2", "thr_2", 210, "user", "b")], more: true });
     apply(s, { type: "chat.loading" });
     expect(s.chatLoading).toBe(true);
-    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "earlier" })], messages: [message("msg_1", "thr_1", 110, "user", "a")], limit: 1 });
-    expect(s.oldestThread).toBe("thr_1");
-    expect(s.threadsExhausted).toBe(false);
+    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "earlier" })], messages: [message("msg_1", "thr_1", 110, "user", "a")], more: true });
+    expect(s.oldestMessage).toBe("msg_1");
+    expect(s.messagesExhausted).toBe(false);
     const items = selectStream(s).items;
     expect(items.map((i) => (i.kind === "thread" ? i.thread.topic : i.kind === "message" ? i.message.id : i.kind))).toEqual(["earlier", "msg_1", "later", "msg_2"]);
-    apply(s, { type: "chat.loaded", threads: [], messages: [], limit: 1 });
-    expect(s.threadsExhausted).toBe(true);
-    expect(s.oldestThread).toBe("thr_1");
+    apply(s, { type: "chat.loaded", threads: [], messages: [], more: false });
+    expect(s.messagesExhausted).toBe(true);
+    expect(s.oldestMessage).toBe("msg_1");
   });
 
   test("task rows follow task.state and leave when done, among the audit rows by time", () => {
@@ -727,7 +727,7 @@ describe("default view model", () => {
 
   test("thread.state upserts the divider and keeps the messages", () => {
     const s = ready();
-    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "the gate" })], messages: [message("msg_1", "thr_1", 110, "user", "fix it"), message("msg_2", "thr_1", 120, "orchestrator", "Done.")], limit: 1 });
+    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 100, { topic: "the gate" })], messages: [message("msg_1", "thr_1", 110, "user", "fix it"), message("msg_2", "thr_1", 120, "orchestrator", "Done.")], more: true });
     apply(s, { type: "thread.state", params: thread("thr_1", 100, { topic: "the gate tests", endedAt: 130 }) });
     expect(s.messages.size).toBe(2);
     const items = selectStream(s).items;
@@ -858,13 +858,15 @@ describe("default view: what streams and what loads", () => {
     expect(earlierButton(s, card)?.disabled).toBe(true);
   });
 
-  test("the chat's top button: Load history on a phone until a thread is loaded, nothing on the desktop meanwhile; then Earlier while there is an earlier thread", () => {
+  test("the chat's top button: Load history until the first page is in, on every client; then Earlier while older messages remain, none once the start is loaded", () => {
     const desk = ready();
-    expect(chatButton(desk)).toBeUndefined();
+    expect(chatButton(desk)).toEqual({ action: "chat-history", label: "Load history", disabled: false });
     apply(desk, { type: "chat.loading" });
+    expect(chatButton(desk)).toEqual({ action: "chat-history", label: "Loading…", disabled: true });
+    apply(desk, { type: "chat.loaded", threads: [thread("thr_2", 200)], messages: [message("msg_2", "thr_2", 210, "user", "b")], more: true });
+    expect(chatButton(desk)).toEqual({ action: "chat-history", label: "Earlier", disabled: false });
+    apply(desk, { type: "chat.loaded", threads: [], messages: [], more: false });
     expect(chatButton(desk)).toBeUndefined();
-    apply(desk, { type: "chat.loaded", threads: [thread("thr_2", 200)], messages: [], limit: 1 });
-    expect(chatButton(desk)).toEqual({ action: "threads-earlier", label: "Earlier", disabled: false });
 
     const phone = ready({ kind: "controller" });
     expect(chatButton(phone)).toEqual({ action: "chat-history", label: "Load history", disabled: false });
@@ -874,11 +876,11 @@ describe("default view: what streams and what loads", () => {
     apply(phone, { type: "chat.failed" });
     expect(chatButton(phone)).toEqual({ action: "chat-history", label: "Load history", disabled: false });
     apply(phone, { type: "chat.loading" });
-    apply(phone, { type: "chat.loaded", threads: [thread("thr_2", 200)], messages: [], limit: 1 });
-    expect(chatButton(phone)).toEqual({ action: "threads-earlier", label: "Earlier", disabled: false });
+    apply(phone, { type: "chat.loaded", threads: [thread("thr_2", 200)], messages: [message("msg_2", "thr_2", 210, "user", "b")], more: true });
+    expect(chatButton(phone)).toEqual({ action: "chat-history", label: "Earlier", disabled: false });
     apply(phone, { type: "chat.loading" });
-    expect(chatButton(phone)).toEqual({ action: "threads-earlier", label: "Loading…", disabled: true });
-    apply(phone, { type: "chat.loaded", threads: [], messages: [], limit: 1 });
+    expect(chatButton(phone)).toEqual({ action: "chat-history", label: "Loading…", disabled: true });
+    apply(phone, { type: "chat.loaded", threads: [], messages: [], more: false });
     expect(chatButton(phone)).toBeUndefined();
     // A disconnect forgets the load: back on the line, Load history fetches what was missed.
     apply(phone, { type: "host.state", params: { connected: false } });
@@ -898,11 +900,11 @@ describe("default view: what streams and what loads", () => {
       type: "chat.loaded",
       threads: [thread("thr_2", 250, { topic: "the build" })],
       messages: [message("msg_2", "thr_2", 260, "user", "fix it"), message("msg_3", "thr_2", 300, "user", "and now?"), message("msg_4", "thr_2", 310, "orchestrator", "Working on it.")],
-      limit: 1,
+      more: true,
     });
     expect(s.streaming.size).toBe(0);
     expect(s.threads.get("thr_2")!.topic).toBe("the build");
-    expect(s.oldestThread).toBe("thr_2");
+    expect(s.oldestMessage).toBe("msg_2");
     expect(selectStream(s).items.map(keyOf)).toEqual(["thread:thr_2", "message:msg_2", "message:msg_3", "message:msg_4"]);
     // A late delta for the loaded reply is ignored, and a live message after the load lands in its place.
     apply(s, { type: "chat.delta", params: { message: "msg_4", block: 0, delta: { type: "text", text: "!" } } });
@@ -911,16 +913,16 @@ describe("default view: what streams and what loads", () => {
     expect(selectStream(s).items.map(keyOf)).toEqual(["thread:thr_2", "message:msg_2", "message:msg_3", "message:msg_4", "message:msg_5"]);
   });
 
-  test("a thread known only from its state, closed while nothing was loaded, is paged through, not started behind", () => {
+  test("a thread known only from its state shows its divider once the messages paged in beside it arrive", () => {
     const s = ready({ kind: "controller" });
     // The archive closes the thread before, then the user starts a new one: both reach the phone live.
     apply(s, { type: "thread.state", params: thread("thr_4", 400, { endedAt: 450, topic: "the gate" }) });
     apply(s, { type: "chat.message", params: { message: message("msg_9", "thr_5", 500, "user", "next") } });
-    apply(s, { type: "chat.loaded", threads: [thread("thr_5", 500)], messages: [message("msg_9", "thr_5", 500, "user", "next")], limit: 1 });
-    expect(s.oldestThread).toBe("thr_5");
+    apply(s, { type: "chat.loaded", threads: [thread("thr_5", 500)], messages: [message("msg_9", "thr_5", 500, "user", "next")], more: true });
+    expect(s.oldestMessage).toBe("msg_9");
     // Earlier asks for the page before thr_5, which is thr_4 with its messages.
-    apply(s, { type: "chat.loaded", threads: [thread("thr_4", 400, { endedAt: 450, topic: "the gate" })], messages: [message("msg_8", "thr_4", 410, "user", "fix it")], limit: 1 });
-    expect(s.oldestThread).toBe("thr_4");
+    apply(s, { type: "chat.loaded", threads: [thread("thr_4", 400, { endedAt: 450, topic: "the gate" })], messages: [message("msg_8", "thr_4", 410, "user", "fix it")], more: true });
+    expect(s.oldestMessage).toBe("msg_8");
     expect(selectStream(s).items.map(keyOf)).toEqual(["thread:thr_4", "message:msg_8", "thread:thr_5", "message:msg_9"]);
   });
 
@@ -928,7 +930,7 @@ describe("default view: what streams and what loads", () => {
     const s = ready();
     apply(s, { type: "session.state", params: session("sess_a", 100, { title: "Tidy the build" }) });
     open(s, "sess_a");
-    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 200)], messages: [message("msg_1", "thr_1", 210, "user", "fix it"), message("msg_2", "thr_1", 220, "orchestrator", "On it.")], limit: 1 });
+    apply(s, { type: "chat.loaded", threads: [thread("thr_1", 200)], messages: [message("msg_1", "thr_1", 210, "user", "fix it"), message("msg_2", "thr_1", 220, "orchestrator", "On it.")], more: true });
     const rows = () => selectStream(s).items.map((i) => (i.kind === "message" ? i.message : i.kind === "thread" ? i.thread : i));
     const shown = rows();
     const who = s.sessions.get("sess_a")!.session;

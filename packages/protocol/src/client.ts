@@ -616,6 +616,15 @@ export const clientRequests = {
     params: z.object({ before: ThreadId.optional(), limit: z.number().int().positive().optional() }),
     result: z.object({ threads: z.array(ClientThread), messages: z.array(Message) }),
   },
+  /**
+   * The newest `limit` chat messages said before `before` (a message's id; the newest when absent),
+   * oldest first, across the threads they are in, with those threads for their dividers and whether
+   * older messages remain. The chat pages by message, so a long thread does not hold a page back.
+   */
+  "chat.history": {
+    params: z.object({ before: MessageId.optional(), limit: z.number().int().positive().max(200).optional() }),
+    result: z.object({ messages: z.array(Message), threads: z.array(ClientThread), more: z.boolean() }),
+  },
   "session.list": { params: Empty, result: z.object({ sessions: z.array(ClientSession) }) },
   "session.history": {
     params: z.object({
@@ -667,6 +676,13 @@ export const clientRequests = {
    * way there passes a looser mode are a `conflict`.
    */
   "session.mode": { params: z.object({ id: SessionId, mode: LaunchMode }), result: z.object({ mode: LaunchMode }) },
+  /** The models a session can be put on, and the one it is on where the agent says: an ACP agent's own list, or Claude Code's aliases for a session in a tether terminal. */
+  "session.models": {
+    params: z.object({ id: SessionId }),
+    result: z.object({ current: z.string().optional(), models: z.array(z.object({ value: z.string(), label: z.string() })) }),
+  },
+  /** Puts a session on a model: over ACP with `session/set_model`, in a tether terminal by typing `/model` there. */
+  "session.setModel": { params: z.object({ id: SessionId, model: z.string().min(1).max(200) }), result: z.object({ model: z.string() }) },
   /**
    * The sessions whose every event this client hears as it lands, as `session.event`: the
    * tab that is open. The list replaces the one before; an empty one stops them. Without

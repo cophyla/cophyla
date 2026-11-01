@@ -56,6 +56,10 @@
       ]
     },
     "chat.send": { "params": [{ "text": "what is the agent doing" }, { "text": "how many tasks", "mode": "quick" }], "results": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" }] },
+    "chat.history": {
+      "params": [{}, { "before": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB3", "limit": 60 }],
+      "results": [{ "messages": [], "threads": [], "more": false }]
+    },
     "chat.load": {
       "params": [{}, { "before": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "limit": 1 }],
       "results": [
@@ -85,6 +89,8 @@
     },
     "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "acceptEdits" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
+    "session.models": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{ "models": [{ "value": "sonnet", "label": "Sonnet" }] }, { "current": "gpt-6-astra[low]", "models": [{ "value": "gpt-6-astra[low]", "label": "GPT-6 Astra (low)" }] }] },
+    "session.setModel": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet" }], "results": [{ "model": "sonnet" }] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": ["", "apps", "apps/cophylad/src"] }],

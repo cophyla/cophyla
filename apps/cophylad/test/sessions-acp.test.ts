@@ -188,6 +188,19 @@ describe("acp sessions", () => {
     await mini.sessions.stopSession(s.id);
   });
 
+  test("a model is one the agent offered at its start, named by its id or its base name; the one it is on is what it last took", async () => {
+    const s = await spawn("say hi");
+    await waitFor(() => mini.sessions.get(s.id)?.status === "idle");
+    // The fake agent offers one model, with no name of its own: its id is the label.
+    expect(mini.sessions.models(s.id)).toEqual({ models: [{ value: "gpt-fake[low]", label: "gpt-fake[low]" }] });
+    expect(await mini.sessions.setModel(s.id, "gpt-fake")).toEqual({ model: "gpt-fake[low]" });
+    expect(mini.sessions.models(s.id).current).toBe("gpt-fake[low]");
+    expect(await mini.sessions.setModel(s.id, "gpt-fake[low]")).toEqual({ model: "gpt-fake[low]" });
+    const refused = await mini.sessions.setModel(s.id, "gpt-nope").then(() => undefined, (e: unknown) => e);
+    expect(refused).toMatchObject({ code: "unsupported", message: "the agent offers no gpt-nope model, only gpt-fake[low]" });
+    await mini.sessions.stopSession(s.id);
+  });
+
   test("a permission request is an Ask with the agent's options; the answer resolves the agent; a cancelled ask rejects", async () => {
     const asks: Ask[] = [];
     const off = mini.bus.on("ask.state", (a) => asks.push(a));

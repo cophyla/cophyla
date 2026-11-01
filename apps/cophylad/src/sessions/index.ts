@@ -456,6 +456,15 @@ const MIRROR_DELAY_MS = 2000;
 const BROADCAST_MS = 250;
 const WATCH_DEBOUNCE_MS = 150;
 const DETAIL_CHARS = 2000;
+/** The models a Claude Code session in a tether terminal is offered: the aliases its own `/model` takes. */
+const CLAUDE_TETHER_MODELS = [
+  { value: "default", label: "Default (recommended)" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" },
+] as const;
+/** A model's name as typed after `/model`: an alias or an id, nothing that could be a second command or a line break. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,199}$/;
 export const SEND_PREFIX = "[cophylad, relaying the user]";
 /** The agents' messages a session remembers having recorded, so an echo of one is recorded once. */
 const AGENT_SEEN = 200;
@@ -3251,6 +3260,40 @@ export class Sessions implements SessionHost {
   }
 
   // --- permission mode ------------------------------------------------------------------
+
+  /**
+   * The models a session can be put on, and the one it is on where it is known. Over ACP the agent's
+   * own list, from the session's start; in a Claude Code tether terminal Claude's aliases, which its
+   * `/model` takes, with no current model known. A Codex session in a terminal has none offered here.
+   */
+  models(id: string, part?: string): { current?: string; models: { value: string; label: string }[] } {
+    const rec = this.must(id, part);
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return this.acp.models(id);
+    }
+    if (rec.session.harness !== "claude") return { models: [] };
+    return { models: CLAUDE_TETHER_MODELS.map((m) => ({ ...m })) };
+  }
+
+  /**
+   * Puts a session on a model. Over ACP with `session/set_model`; in a Claude Code tether terminal by
+   * typing `/model <name>` there, as the user would, so the session runs it when its turn is free.
+   * A model name is an alias or a model id (`opus`, `sonnet[1m]`, `gpt-6-astra`); one that is not
+   * a plain name is `invalid`. A Codex session in a terminal changes its model in that terminal.
+   */
+  async setModel(id: string, model: string, part?: string): Promise<{ model: string }> {
+    const rec = this.must(id, part);
+    if (rec.session.status === "ended") throw new RpcError("conflict", "the session has ended: its model can be set when it runs again");
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return { model: await this.acp.setModel(id, model) };
+    }
+    if (rec.session.harness !== "claude") throw new RpcError("unsupported", "a Codex session's model is changed in its own terminal");
+    if (!MODEL_NAME.test(model)) throw new RpcError("invalid", "a model is named by an alias or an id: letters, digits, dots, dashes, underscores and brackets");
+    await this.send(id, `/model ${model}`, {}, part);
+    return { model };
+  }
 
   /**
    * Puts a Claude session in a permission mode. One cophylad runs over ACP is set there; one in

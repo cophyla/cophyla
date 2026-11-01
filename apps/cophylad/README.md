@@ -238,6 +238,16 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   (`claude/launch.ts`); a message typed meanwhile waits for the presses. Its risk is `exec`
   into a looser mode than manual, `write` otherwise. A session in a window of the user's own,
   or of another harness, is `unsupported`.
+- **Model.** `session.models {id}` lists the models a session can be put on and the one it is
+  on: over ACP, the list the agent gave at `session/new` (Claude's and Codex's own ids), with
+  the current one from the last `session/set_model`; in a Claude Code tether terminal, Claude's
+  aliases (`default`, `opus`, `sonnet`, `haiku`), with no current one known. A Codex session in
+  a terminal has none offered. `session.setModel {id, model}` sets it: over ACP with
+  `session/set_model`, a name the agent did not offer is `unsupported` (a base name stands for
+  an id with a bracketed suffix, `gpt-6-astra` for `gpt-6-astra[low]`); in a Claude terminal
+  `/model <name>` is typed there as the user would, once the prompt is free, and a name that is
+  not a plain alias or id (letters, digits, `.`, `_`, `-`, brackets) is `invalid` and never
+  typed. The chat's session is `AssistantState.session`.
 - **Focus.** `session.focus` on a session in tether raises the window used on it most
   recently, walking up from its `tether attach`, and opens one with `tether open` when none
   is attached; a background job gets `claude attach` in a tether terminal first. With

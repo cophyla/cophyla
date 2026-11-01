@@ -217,6 +217,7 @@ export const requestFilters = {
   hello: { names: "open" },
   "chat.send": { names: "global" },
   "chat.load": { names: "global" },
+  "chat.history": { names: "global" },
   "session.list": { names: "open", result: (r, keep) => ({ ...r, sessions: r.sessions.filter((s) => keep(sessionTarget(s))) }) },
   "session.history": { names: (p) => [{ session: p.id }] },
   "session.send": { names: (p) => [{ session: p.id }] },
@@ -225,6 +226,8 @@ export const requestFilters = {
   "session.closed": { names: "open", result: (r, keep) => ({ ...r, closed: r.closed.filter((c) => keep(sessionTarget(c.session))) }) },
   "session.reopen": { names: (p) => [{ session: p.id }] },
   "session.mode": { names: (p) => [{ session: p.id }] },
+  "session.models": { names: (p) => [{ session: p.id }] },
+  "session.setModel": { names: (p) => [{ session: p.id }] },
   "session.watch": { names: (p) => p.ids.map((id) => ({ session: id })) },
   // the session's own directory, the path its target is checked by, and nothing above it
   "session.files": { names: (p) => [{ session: p.id }] },

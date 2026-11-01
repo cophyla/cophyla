@@ -129,6 +129,7 @@ export function clientResult(name: ClientRequestName, result: unknown, access: A
       out = { ...r, workspaces: (r["workspaces"] as Workspace[]).map(clientRow) };
       break;
     case "chat.load":
+    case "chat.history":
       out = { ...r, threads: (r["threads"] as Thread[]).map(clientRow) };
       break;
     default:

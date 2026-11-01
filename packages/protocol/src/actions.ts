@@ -39,6 +39,8 @@ export const actions = {
   "session.reopen": { risk: "exec" },
   // `exec` at most: `sessionModeRisk` says which a given mode is.
   "session.mode": { risk: "exec" },
+  "session.models": { risk: "read" },
+  "session.setModel": { risk: "write" },
   "session.focus": { risk: "write" },
   "session.watch": { risk: "read" },
   "session.files": { risk: "read" },
@@ -118,6 +120,7 @@ export const actions = {
   "remote.screenshot": { risk: "exec" },
   "chat.send": { risk: "write" },
   "chat.load": { risk: "read" },
+  "chat.history": { risk: "read" },
   "voice.ptt": { risk: "write" },
   "voice.wakeword": { risk: "read" },
   "voice.wake": { risk: "write" },

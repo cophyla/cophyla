@@ -309,10 +309,10 @@ export interface ViewState {
   quick: boolean;
   /** `chat.load` has answered once since connecting. */
   chatLoaded: boolean;
-  /** The earliest thread loaded; `chat.load {before}` pages from here. */
-  oldestThread?: string;
-  /** A page came back short: there is no earlier thread. */
-  threadsExhausted: boolean;
+  /** The earliest message the chat's history loaded: `chat.history {before}` pages back from it. */
+  oldestMessage?: string;
+  /** A page came back with no older messages: the start of the chat is loaded. */
+  messagesExhausted: boolean;
   chatLoading: boolean;
   errors: string[];
   /** How many errors came in all, the ones dropped past `ERRORS_KEEP` too: what came since a moment is told by the count. */
@@ -354,7 +354,7 @@ export type Action =
   | { type: "chat.loading" }
   /** A load that failed: nothing is marked loaded, so the button that asked for it asks again. */
   | { type: "chat.failed" }
-  | { type: "chat.loaded"; threads: Thread[]; messages: Message[]; limit: number }
+  | { type: "chat.loaded"; threads: Thread[]; messages: Message[]; more: boolean }
   | { type: "task.state"; params: Task }
   /** A thread's row changed: opened, closed, or given a topic or a workspace. Its messages stay. */
   | { type: "thread.state"; params: Thread }
@@ -442,7 +442,8 @@ export type Action =
 export const AUDIT_KEEP = 200;
 export const ERRORS_KEEP = 20;
 export const HISTORY_PAGE = 50;
-export const THREAD_PAGE = 1;
+/** The messages a chat page holds: a screen or two, and the view asks for the next page as the user scrolls up to it. */
+export const CHAT_PAGE = 60;
 
 /** Where the spend starts: the last local midnight, so Today is the calendar day's. */
 export function spendFrom(now: number): number {
@@ -497,7 +498,7 @@ export function initialState(): ViewState {
     updates: new Map(),
     quick: false,
     chatLoaded: false,
-    threadsExhausted: false,
+    messagesExhausted: false,
     chatLoading: false,
     errors: [],
     errorsSeen: 0,
@@ -718,6 +719,8 @@ export function apply(state: ViewState, action: Action): ViewState {
         delete state.assistant;
         state.chatLoading = false;
         state.chatLoaded = false;
+        delete state.oldestMessage;
+        state.messagesExhausted = false;
         // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
         delete state.voice;
         delete state.heard;
@@ -914,13 +917,11 @@ export function apply(state: ViewState, action: Action): ViewState {
         state.streaming.delete(m.id);
         if (state.heard?.message === m.id) delete state.heard;
       }
-      // The next page starts before the earliest thread a page brought. A thread known only
-      // from its state or a live message has no messages loaded, so the pages pass over it
-      // in their turn rather than start behind it.
-      const cursor = state.oldestThread !== undefined ? state.threads.get(state.oldestThread) : undefined;
-      const oldest = [...action.threads, ...(cursor ? [cursor] : [])].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1))[0];
-      if (oldest) state.oldestThread = oldest.id;
-      if (action.threads.length < action.limit) state.threadsExhausted = true;
+      // A page is oldest first, so its first message is the next page's cursor. A page that
+      // came back empty, or without older messages, ends the history.
+      const first = action.messages[0];
+      if (first !== undefined) state.oldestMessage = first.id;
+      state.messagesExhausted = !action.more;
       return state;
     }
     case "task.state": {
@@ -1263,19 +1264,17 @@ export function earlierButton(state: ViewState, card: SessionCard): HistoryButto
 }
 
 /**
- * The button at the top of the chat. Before a thread is loaded, a client that loads history
- * only when asked offers Load history (`chat-history`); the desktop offers nothing, since it
- * loads the newest thread itself. Once one is loaded, Earlier (`threads-earlier`) pages back
- * a thread at a time while there is an earlier one.
+ * The button at the top of the chat. The chat loads its newest page by itself as it opens, and
+ * pages back as the user scrolls up, so the button is there for the two times it is needed: to
+ * load the first page again when that failed (Load history), and to page back by hand when the
+ * scroll does not reach it (Earlier). Neither shows once the start of the chat is loaded.
  */
-export function chatButton(state: ViewState): (HistoryButton & { action: "chat-history" | "threads-earlier" }) | undefined {
+export function chatButton(state: ViewState): (HistoryButton & { action: "chat-history" }) | undefined {
+  if (!state.scopes.includes("chat")) return undefined;
   const disabled = state.chatLoading || !state.connected;
-  if (!state.chatLoaded) {
-    if (loadsHistory(state) || !state.scopes.includes("chat")) return undefined;
-    return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Load history", disabled };
-  }
-  if (state.threadsExhausted || state.oldestThread === undefined) return undefined;
-  return { action: "threads-earlier", label: state.chatLoading ? "Loading…" : "Earlier", disabled };
+  if (!state.chatLoaded) return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Load history", disabled };
+  if (state.messagesExhausted) return undefined;
+  return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Earlier", disabled };
 }
 
 // --- selectors -----------------------------------------------------------------------------
