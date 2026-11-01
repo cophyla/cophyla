@@ -376,6 +376,47 @@ describe("a session the user started in tether", () => {
     await waitFor(() => mini.sessions.find("claude", "users-own")!.session.native.terminal === undefined);
   });
 
+  test("shows a dialog while its terminal shows one over the prompt, once the prompt has been up", async () => {
+    const own = fake.add({ argv: ["claude"], cwd }, 8124);
+    alive.add(8124);
+    writeRegistry(registry, { pid: 8124, sessionId: "users-dialog", cwd, status: "idle" });
+    await waitFor(() => tether.byPid(8124));
+    await mini.sessions.tick();
+    const cur = () => mini.sessions.find("claude", "users-dialog")!.session;
+    // The screen is read without the tick waiting on it: the flag follows the read.
+    const settled = (want: boolean) => waitFor(() => (Boolean(cur().dialog) === want ? true : undefined));
+    const read = async () => {
+      await mini.sessions.tick();
+      await sleep(50);
+    };
+    // Nothing on the screen yet, then a dialog before any prompt (a folder trust or sign-in screen of the start): neither opens the view.
+    await read();
+    own.setScreen(["Do you trust the files in this folder?", "", " ❯ 1. Yes, I trust this folder", "   2. No, exit"]);
+    await read();
+    expect(cur().dialog).toBeUndefined();
+    // The prompt up, empty: no dialog.
+    own.setScreen(EMPTY);
+    await read();
+    expect(cur().dialog).toBeUndefined();
+    // A slash command's picker over the prompt: the dialog is on.
+    own.setScreen(["Select model", "", " ❯ 1. Default (recommended)", "   2. Sonnet", "", " Enter to confirm · Esc to exit"]);
+    await mini.sessions.tick();
+    await settled(true);
+    // The prompt is back: the dialog is off.
+    own.setScreen(EMPTY);
+    await mini.sessions.tick();
+    await settled(false);
+    expect(cur().dialog).toBe(false);
+    // A terminal that goes takes the dialog with it.
+    own.setScreen(["Select model", "", " ❯ 1. Default (recommended)", "   2. Sonnet"]);
+    await mini.sessions.tick();
+    await settled(true);
+    own.exit(0);
+    await waitFor(() => cur().native.terminal === undefined);
+    await mini.sessions.tick();
+    await settled(false);
+  });
+
   test("is met with its terminal when a wrapper script started it", async () => {
     // `tether run -- claude-work.cmd`: the terminal's process is cmd.exe, and claude.exe its child.
     const own = fake.add({ argv: ["cmd.exe", "/d", "/c", "claude-work.cmd"], cwd }, 8200);

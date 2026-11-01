@@ -63,19 +63,17 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientClosedSession, ClientResult, UsageReport, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogTerminal, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
+import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
-import { SlashMenu } from "./slashview.ts";
-import type { ModelChoices, SlashHost, UsageSection } from "./slashview.ts";
 import { FileViewer } from "./fileview.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { RemotePanel } from "./remoteview.ts";
@@ -178,6 +176,8 @@ const talks = new TalkControl({
   draw: () => draw(),
 });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
+// The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
+const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
 const viewer = new FileViewer(
   rpc,
   (t) => folderAsked(t),
@@ -206,6 +206,7 @@ const narrow = matchMedia("(max-width: 1000px)");
 function draw(opts: RenderOptions = {}): void {
   render(roots, state, ui, { ...opts, railShown: railShown() });
   syncTerminal();
+  syncDialog();
   syncViewer();
   syncContext();
   syncRemote();
@@ -272,6 +273,27 @@ function syncTerminal(): void {
     }
   }
   terminal.hide();
+}
+
+/**
+ * The dialog the selected session's terminal shows over its prompt, drawn above the send box where
+ * the user answers it: the terminal's own window, typed into as the terminal is, so a slash command's
+ * view and an ask's question take the keys they take in the terminal.
+ */
+function syncDialog(): void {
+  const dock = roots.composer.querySelector<HTMLElement>(".dialog-dock");
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  const pane = card !== undefined ? paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) : undefined;
+  const own = card !== undefined && pane !== undefined ? dialogTerminal(state, card.session, pane) : undefined;
+  if (dock === null || own === undefined) {
+    if (dialog.shown !== undefined) dialog.hide();
+    if (dock !== null) dock.hidden = true;
+    return;
+  }
+  dock.hidden = false;
+  dialog.show(own.id, dock, { drive: false, scale: ui.scale, input: true });
+  dialog.update(own, false, false);
+  dialog.dock();
 }
 
 let scheduled = false;
@@ -4119,9 +4141,7 @@ document.addEventListener("submit", (ev) => {
       const text = input.value;
       input.value = "";
       fitField(input);
-      chatSlash.attach(form, roots.chat, input);
-      // A slash command the palette takes (a panel, a confirmation, a send) does not go to the chat as text.
-      if (!chatSlash.submit(text)) void chat(text);
+      void chat(text);
     }
     return;
   }
@@ -4130,22 +4150,14 @@ document.addEventListener("submit", (ev) => {
   const session = form.dataset["session"];
   const input = form.querySelector<HTMLTextAreaElement>(".send-text");
   if (session && input && !input.disabled) {
-    sessionSlash.attach(form, document.getElementById("panes")!, input);
-    // A slash command the palette takes (a model, a panel, a confirmation) leaves the box empty; a line it does not take is sent.
-    if (sessionSlash.submit(input.value)) {
+    // A line sent leaves the box empty, as the chat's composer does; the send itself carries the text it had.
+    const text = input.value;
+    if (text.trim()) {
       input.value = "";
       fitField(input);
       apply(state, { type: "draft", session, text: "" });
-    } else {
-      // A line sent leaves the box empty, as the chat's composer does; the send itself carries the text it had.
-      const text = input.value;
-      if (text.trim()) {
-        input.value = "";
-        fitField(input);
-        apply(state, { type: "draft", session, text: "" });
-      }
-      void send(session, text);
     }
+    void send(session, text);
   }
 });
 
@@ -4166,76 +4178,6 @@ document.addEventListener("keydown", (ev) => {
   team.keydown(ev);
 });
 
-/** Starts an ended session again and shows it once the view has it, which the node tells it of as it starts. */
-async function reopenSession(id: string): Promise<void> {
-  await rpc.request("session.reopen", { id });
-  for (let i = 0; i < 100 && !state.sessions.has(id); i++) await new Promise((done) => setTimeout(done, 100));
-  if (state.sessions.has(id)) select(id);
-}
-
-/** `/usage`: the logins' plan limits, and each session's spend over the last week, from the node that keeps the ledger. */
-async function usageSections(): Promise<UsageSection[]> {
-  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
-  const now = Date.now();
-  const logins = selectSpend(state).map((r) => ({
-    label: r.label,
-    cost: costWords(r.spend.cost),
-    tokens: `${tokenWords(r.spend.in + r.spend.out)} tokens`,
-    ...(r.limits?.session ? { limit: `session ${limitWords(r.limits.session)}` } : {}),
-  }));
-  const report = await rpc.request<UsageReport>("usage.report", { node: state.node, from: now - WEEK_MS, to: now, bucket: "day", tz: -new Date().getTimezoneOffset(), split: "session" });
-  const chatSession = state.assistant?.session;
-  const sessions = [...report.sessions]
-    .sort((a, b) => b.cost - a.cost)
-    .slice(0, 12)
-    .map((s) => ({
-      label: s.label ?? s.key,
-      cost: costWords(s.cost),
-      tokens: `${tokenWords(s.tokens.in + s.tokens.out)} tokens`,
-      ...(s.key === chatSession ? { current: true } : {}),
-    }));
-  return [
-    { heading: "Logins", rows: logins, empty: "No spend recorded yet." },
-    { heading: "Sessions, last 7 days", rows: sessions, empty: "No session spent anything in the last 7 days." },
-  ];
-}
-
-/** What a composer's slash commands do: its words go to the chat, or to the session its send box is for. */
-function slashHost(kind: "chat" | "session"): SlashHost {
-  return {
-    run: (line) => {
-      if (kind === "chat") void chat(line);
-      else if (ui.selected !== undefined) void send(ui.selected, line);
-    },
-    target: () => (kind === "chat" ? state.assistant?.session : ui.selected),
-    models: (id) => rpc.request<ModelChoices>("session.models", { id }),
-    setModel: async (id, model) => {
-      await rpc.request("session.setModel", { id, model });
-    },
-    reopen: reopenSession,
-    closed: async () => (await rpc.request<{ closed: ClientClosedSession[] }>("session.closed", { limit: 20 })).closed,
-    usage: usageSections,
-    fail: (message) => fail(kind === "chat" ? "chat" : "send", new Error(message)),
-  };
-}
-
-// The chat's composer and a session's send box each have a palette and a panel of their own.
-const chatSlash = new SlashMenu(slashHost("chat"));
-const sessionSlash = new SlashMenu(slashHost("session"));
-
-document.addEventListener("keydown", (ev) => {
-  const target = ev.target as HTMLElement | null;
-  if (ev.isComposing) return;
-  if (target?.matches?.(".composer-text") && chatSlash.key(ev)) return;
-  if (target?.matches?.(".send-text") && sessionSlash.key(ev)) return;
-});
-
-document.addEventListener("focusout", (ev) => {
-  const target = ev.target as HTMLElement | null;
-  if (target?.matches?.(".composer-text")) chatSlash.blur();
-  if (target?.matches?.(".send-text")) sessionSlash.blur();
-});
-
 // In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
 document.addEventListener("keydown", (ev) => {
   const input = ev.target as HTMLElement | null;
@@ -4253,9 +4195,6 @@ document.addEventListener("input", (ev) => {
   }
   if (input.classList.contains("composer-text")) {
     fitField(input as HTMLTextAreaElement);
-    const form = input.closest<HTMLFormElement>("form");
-    if (form) chatSlash.attach(form, roots.chat, input as HTMLTextAreaElement);
-    chatSlash.sync();
     typing(input.value.trim() !== "");
     return;
   }
@@ -4268,9 +4207,6 @@ document.addEventListener("input", (ev) => {
   fitField(input as HTMLTextAreaElement);
   const session = input.closest<HTMLElement>(".send")?.dataset["session"];
   if (session) apply(state, { type: "draft", session, text: input.value });
-  const sendForm = input.closest<HTMLFormElement>("form");
-  if (sendForm) sessionSlash.attach(sendForm, document.getElementById("panes")!, input as HTMLTextAreaElement);
-  sessionSlash.sync();
 });
 
 document.addEventListener("change", (ev) => {

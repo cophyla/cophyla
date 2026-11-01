@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogTerminal, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, timelinePosts, viewerRows } from "./model.ts";
@@ -4120,6 +4120,14 @@ function terminalSession(state: ViewState, ui: UiState): string | undefined {
   return card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "terminal" ? card.session.id : undefined;
 }
 
+/** The selected session whose terminal shows a dialog the pane embeds, when it does: that session's id. */
+export function dialogSession(state: ViewState, ui: UiState): string | undefined {
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  if (card === undefined) return undefined;
+  const pane = paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true);
+  return dialogTerminal(state, card.session, pane) !== undefined ? card.session.id : undefined;
+}
+
 /** The chat's pane shows its session's own terminal: the chat's tab, and the user chose it. */
 export function chatTerminal(state: ViewState, ui: UiState): string | undefined {
   if (ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined) return undefined;
@@ -4314,6 +4322,12 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
     form.append(messageField("send-text", "Message this session"), talkButton(), button);
     root.prepend(form);
   }
+  // Where a dialog the session's terminal shows is drawn for the user to answer (`syncDialog` in the view).
+  if (!root.querySelector(".dialog-dock")) {
+    const dock = el("div", "dialog-dock");
+    dock.hidden = true;
+    form.before(dock);
+  }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   // its Messages pane is read alone: what is typed to the session goes from its timeline
   const reading = card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "messages";
@@ -4356,7 +4370,7 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   const heightBefore = before?.scrollHeight ?? 0;
   const topBefore = before?.scrollTop ?? 0;
 
-  const { pinned, items } = selectStream(state, terminalSession(state, ui));
+  const { pinned, items } = selectStream(state, terminalSession(state, ui) ?? dialogSession(state, ui));
   renderPinned(roots.pinned, pinned, state, ui);
   // The rail is put away or shown only where the user did it; the CSS keeps each width's own otherwise.
   if (ui.rail) setData(roots.app, "rail", ui.rail);

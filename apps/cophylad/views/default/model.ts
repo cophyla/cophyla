@@ -1914,6 +1914,16 @@ export function sessionTerminal(state: ViewState, session: Session): Terminal | 
   return t && t.host === ref.host ? t : undefined;
 }
 
+/**
+ * The terminal whose dialog the chat shows embedded: a session's whose terminal the node says
+ * shows one over its prompt (a slash command's view, a permission or a question), while the pane
+ * shows its timeline. The terminal pane itself already shows everything the terminal does.
+ */
+export function dialogTerminal(state: ViewState, session: Session, pane: PaneMode): Terminal | undefined {
+  if (!session.dialog || !state.connected || pane !== "timeline") return undefined;
+  return sessionTerminal(state, session);
+}
+
 /** What a session's pane can show: what it said and did, the terminal it runs in, its messages with other agents. */
 export type PaneMode = "timeline" | "terminal" | "messages";
 

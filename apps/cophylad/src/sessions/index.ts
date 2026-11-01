@@ -63,6 +63,7 @@ import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
+import { dialogOn, promptUp } from "./dialog.ts";
 import { lastTurnContext } from "./codex/rollout.ts";
 import { CODEX_BYPASS, codexArgv, codexEnv, runsUnderCmd } from "./codex/start.ts";
 import type { ProcessInfo, WindowRaiser } from "./focus.ts";
@@ -321,6 +322,8 @@ interface LiveRecord extends SessionRecord {
   draining?: boolean;
   /** Claude: its process and the process's ancestors, read once per pid; `chain` is unset while the read runs. */
   ancestry?: { pid: number; chain?: ProcessInfo[] };
+  /** Claude or Codex: its prompt or composer has been seen up, so a screen without it is a dialog; until then the session is starting. */
+  prompted?: boolean;
   /** Hooks handled so far: tells a Stop's late settling that another hook came meanwhile. */
   hooks?: number;
   /** Claude: tool results from hooks waiting for their call to be recorded first, by the call's id. */
@@ -847,12 +850,47 @@ export class Sessions implements SessionHost {
           this.log.error("adapter tick failed", { harness: adapter.harness, error: e });
         }
       }
+      this.readDialogs();
     } finally {
       this.ticking = false;
       if (this.tickAgain) {
         this.tickAgain = false;
         setTimeout(() => void this.tick(), 0);
       }
+    }
+  }
+
+  /** The sessions whose screen is being read for `dialog`: one read at a time per session, so a slow terminal is not read again each tick. */
+  private readonly dialogReads = new Set<string>();
+
+  /**
+   * Whether a dialog or a view holds each Claude or Codex session's tether terminal in place of its prompt
+   * (`dialog`), read from each such session's screen. The reads are not waited for, so a tick never waits on a
+   * terminal; the flag follows on the next tick's read. Nothing is read before the prompt has been up once, so
+   * the folder trust and sign-in screens of a start do not open the chat's view; a session that ends, or loses
+   * its terminal, is not showing one.
+   */
+  private readDialogs(): void {
+    const tether = this.deps.tether;
+    for (const rec of this.byId.values()) {
+      const term = rec.session.native.terminal;
+      const harness = rec.session.harness;
+      if (!tether?.available || !term || rec.session.status === "ended" || this.stopped || (harness !== "claude" && harness !== "codex")) {
+        if (rec.session.dialog) this.patch(rec, { dialog: false });
+        continue;
+      }
+      if (this.dialogReads.has(rec.session.id)) continue;
+      this.dialogReads.add(rec.session.id);
+      void tether
+        .screen(term, "text")
+        .then((screen) => {
+          if (this.stopped || rec.session.status === "ended" || !sameTerminal(rec.session.native.terminal, term)) return;
+          if (!rec.prompted && promptUp(screen, harness)) rec.prompted = true;
+          const dialog = rec.prompted === true && dialogOn(screen, harness);
+          if (dialog !== (rec.session.dialog ?? false)) this.patch(rec, { dialog });
+        })
+        .catch(() => undefined)
+        .finally(() => this.dialogReads.delete(rec.session.id));
     }
   }
 
@@ -1935,6 +1973,7 @@ export class Sessions implements SessionHost {
     rec.session.endedAt = at;
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
     delete rec.session.ask;
+    delete rec.session.dialog;
     this.deps.store.sessions.update(rec.session);
     for (const p of this.injections.pending(rec.session.id)) {
       const settled = this.injections.settle(p.ref, "unconfirmed");

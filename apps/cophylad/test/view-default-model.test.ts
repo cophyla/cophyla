@@ -25,6 +25,7 @@ import type { TimelinePost, TurnPart } from "../views/default/model.ts";
 import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenStep, doorWords, selectDoor } from "../views/default/model.ts";
 import type { DoorState } from "@cophyla/protocol";
 import { selectUpdateNote, updateKey, waitingWords } from "../views/default/model.ts";
+import { dialogTerminal } from "../views/default/model.ts";
 
 const NODE = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const CLIENT: Client = { id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind: "ui", scopes: ["sessions:read", "sessions:write", "asks:answer", "audit:read", "chat", "tasks:read"], via: "direct", audio: { in: false, out: false }, connectedAt: 1 };
@@ -2372,6 +2373,21 @@ describe("default view: terminals", () => {
     expect(sessionTerminal(s, a)?.id).toBe("t1");
     expect(sessionTerminal(s, { ...a, native: { ...a.native, terminal: { host: "another", id: "t1" } } })).toBeUndefined();
     expect(sessionTerminal(s, session("sess_b", 100))).toBeUndefined();
+  });
+
+  test("a dialog the session's terminal shows is embedded in its chat only: on the timeline, with the terminal in reach", () => {
+    const s = ready();
+    const a = session("sess_a", 100, { native: { id: "n", transport: "pipe", terminal: { host: HOST, id: "t1" } } });
+    apply(s, { type: "session.state", params: a });
+    apply(s, { type: "terminals", terminals: [term("t1", 1, { session: "sess_a" })] });
+    scoped(s);
+    expect(dialogTerminal(s, a, "timeline")).toBeUndefined();
+    const up = { ...a, dialog: true };
+    expect(dialogTerminal(s, up, "timeline")?.id).toBe("t1");
+    expect(dialogTerminal(s, up, "terminal")).toBeUndefined();
+    expect(dialogTerminal(s, up, "messages")).toBeUndefined();
+    expect(dialogTerminal(s, { ...up, native: { ...a.native, terminal: undefined } }, "timeline")).toBeUndefined();
+    expect(dialogTerminal({ ...s, connected: false }, up, "timeline")).toBeUndefined();
   });
 
   test("a session can be killed from its pane while it runs and the node can end it, with the scope to write to sessions", () => {

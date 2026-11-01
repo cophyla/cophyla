@@ -351,6 +351,13 @@ export const Session = z.object({
    */
   mode: LaunchMode.optional(),
   ask: AskId.optional(),
+  /**
+   * The terminal of a Claude Code or Codex session shows a dialog or a view over its prompt: a slash
+   * command's, a permission or a question. The chat shows that terminal in place of the prompt
+   * until the prompt is back. Not stored: a restart learns it from the next screen read. Absent for a
+   * session with no terminal of its own.
+   */
+  dialog: z.boolean().optional(),
   startedAt: Timestamp,
   lastActivity: Timestamp,
   endedAt: Timestamp.optional(),
