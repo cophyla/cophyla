@@ -8,7 +8,7 @@ routes ciphertext by peer and reads nothing else.
 | File | Holds |
 |---|---|
 | `src/tunnel.ts` | `ephemeral()` (X25519, or P-256 when asked), `derive(role, self, peerKey, psk, binding)` → `Tunnel`, whose `seal`/`open` are AES-256-GCM records with an implicit sequence per direction; `pskFromHex` (a controller's pairing secret) and `pskFromToken` (a node's token, hashed) |
-| `src/session.ts` | `PeerSession`: the phone's `/ws/relay` client — `relay.auth`, `relay.open` with a fresh ephemeral, the derived tunnel, then `send`/`onText` in the inner protocol; `relay.close` from the server ends it with 4409, a record that fails to open with 4403 |
+| `src/session.ts` | `PeerSession`: the phone's `/ws/relay` client — `relay.auth`, `relay.open` with a fresh ephemeral made while the socket opens (a token's open sent right behind its auth, a round trip sooner; a grant's after the server named its peer), the derived tunnel, then `send`/`onText` in the inner protocol; `relay.close` from the server ends it with 4409, a record that fails to open with 4403 |
 | `src/chunk.ts` | `chunk(record)` and `Reassembler`: a record cut into data-channel messages of 16 KiB at most (`+` while more follow, `=` on the last) and put back together; `test/chunk-vectors.json` is read by cophyla-net's tests too |
 
 A data channel (milestone 16) is keyed the same way, with the kind `direct` and fresh
