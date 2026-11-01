@@ -13,7 +13,7 @@
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Controller, Grant, HarnessProfile, LanState, MetricsSample, Node, RemoteState, RemoteViewer, Scope } from "@cophyla/protocol";
-import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, loadsHistory, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, shortEmail, memoryWords, spendTitle, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
+import { apply, connectEmbeds, selectAgents, connectTitle, controllerWords, desktopWords, devicesWords, ERRORS_KEEP, initialState, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, machineFacts, selectBrowsers, selectLan, selectNodes, selectPhones, selectRemote, selectSpend, selectStatusMachines, selectStatusPhones, shortCost, shortEmail, memoryWords, spendTitle, statusMeters, viewerOwner, viewerRows } from "../views/default/model.ts";
 import type { HostReady, RemoteCard, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -248,14 +248,14 @@ describe("a desktop browser", () => {
     expect(selectRemote(browser, browser.nodes.get(LAPTOP)!)!.beside).toBe(false);
     expect(connectEmbeds(browser)).toBe(true);
     expect(connectTitle(browser)).toBe("Show this desktop over the whole page");
-    // loaded as the desktop app is: history comes unasked
-    expect(loadsHistory(browser)).toBe(true);
+    // loaded as the desktop app is: the desktop's page of history
+    expect(historyPage(browser)).toBe(HISTORY_PAGE);
 
     const phone = cluster("controller");
     remote(phone, { node: DESK, host: { kind: "apollo", status: "ready" }, streaming: false, viewers: [] });
     expect(selectRemote(phone, phone.nodes.get(DESK)!)!.beside).toBe(false);
     expect(connectEmbeds(phone)).toBe(false);
-    expect(loadsHistory(phone)).toBe(false);
+    expect(historyPage(phone)).toBe(PHONE_HISTORY_PAGE);
 
     // the desktop app: Moonlight's window, and never the page seeded for a browser
     const app = cluster();

@@ -64,7 +64,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientClosedSession, ClientResult, UsageReport, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
@@ -1910,10 +1910,11 @@ async function loadEarlier(session: string): Promise<void> {
   try {
     await watching;
     if (!card.open || card.opened !== opened) return;
-    const params: { id: string; limit: number; before?: number } = { id: session, limit: HISTORY_PAGE };
+    const limit = historyPage(state);
+    const params: { id: string; limit: number; before?: number } = { id: session, limit };
     if (card.oldestSeq !== undefined) params.before = card.oldestSeq;
     const { events } = await rpc.request<{ events: SessionEvent[] }>("session.history", params);
-    dispatch({ type: "history", session, opened, events, limit: HISTORY_PAGE }, { anchor: true });
+    dispatch({ type: "history", session, opened, events, limit }, { anchor: true });
   } catch (e) {
     dispatch({ type: "history", session, opened, events: [], limit: 0 });
     fail("earlier", e);
@@ -3342,8 +3343,8 @@ function land(where: "terminal" | "field" | "pane" | "files", text: string, fiel
 
 /**
  * Opens the selected tab afresh, or the chat: every other tab drops its timeline, the node is
- * told which session's events to stream, and the desktop loads the tab's newest page. A
- * phone or the web app shows what streams from here, with history a press away.
+ * told which session's events to stream, and the tab loads its newest page, on every client
+ * (a phone's is smaller, `historyPage`). The chat loads its own newest page on connect.
  */
 function openTab(): void {
   // A Kill or End left unconfirmed on the tab before is dropped; one on its way carries on.
@@ -3354,7 +3355,7 @@ function openTab(): void {
   ui.fileMenu = undefined;
   dispatch({ type: "tab.open", session: ui.selected });
   watch();
-  if (ui.selected !== undefined && state.connected && loadsHistory(state)) void loadEarlier(ui.selected);
+  if (ui.selected !== undefined && state.connected) void loadEarlier(ui.selected);
   // An agent's files show as its tab opens, read afresh.
   refreshExplorer();
 }

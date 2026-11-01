@@ -442,6 +442,7 @@ export type Action =
 export const AUDIT_KEEP = 200;
 export const ERRORS_KEEP = 20;
 export const HISTORY_PAGE = 50;
+export const PHONE_HISTORY_PAGE = 20;
 /** The messages a chat page holds: a screen or two, and the view asks for the next page as the user scrolls up to it. */
 export const CHAT_PAGE = 60;
 
@@ -1234,14 +1235,13 @@ function countSpend(state: ViewState, node: NodeId, samples: SpendDelta[]): void
 // --- what streams, and what loads ------------------------------------------------------------
 
 /**
- * Whether this client loads history unasked: the desktop app does, a tab's newest page as
- * it opens and the chat's newest thread on connect, and so does the page in a desktop browser,
- * which says what it is (`desk`; how it reaches the node cannot tell, a browser on a secondary's
- * network is relayed). A phone shows what streams from the moment it looks, and loads history a
- * page per press.
+ * How many events a tab's newest page holds when it opens or Show earlier is pressed. A phone
+ * and the web app (a controller) take a smaller page: it crosses the relay, where a page of
+ * long tool output is what the frame cap is about. The desktop page in a desktop browser (`desk`)
+ * is the desktop's own.
  */
-export function loadsHistory(state: ViewState): boolean {
-  return state.client?.kind !== "controller" || state.hostDesk;
+export function historyPage(state: ViewState): number {
+  return state.client?.kind !== "controller" || state.hostDesk ? HISTORY_PAGE : PHONE_HISTORY_PAGE;
 }
 
 /** The `session.watch` params for the tab shown, none for the chat; undefined while the view may not send it: offline, or without `sessions:read`. */
