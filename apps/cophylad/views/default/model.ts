@@ -1928,6 +1928,15 @@ export function paneMode(chosen: PaneMode | undefined, hasTerminal: boolean, has
 }
 
 /**
+ * A session's pane as the view has it unless the session has its own choice: the view the user
+ * last chose anywhere, the chat or a terminal, so every session opens on it until the user
+ * switches. A session's Messages pane is its own choice and stays so.
+ */
+export function tabChoice(override: PaneMode | undefined, view: "chat" | "terminal"): PaneMode | undefined {
+  return override ?? (view === "terminal" ? "terminal" : "timeline");
+}
+
+/**
  * Whether the user can kill a session from its pane: one still running whose end the node can
  * bring about, a child it spawned, a terminal it started, a session it runs on a harness's own
  * host, or a process it knows.

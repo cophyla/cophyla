@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, timelinePosts, viewerRows } from "./model.ts";
@@ -113,8 +113,8 @@ export interface UiState {
   modes: Map<string, PaneMode>;
   /** Messages panes: the party each one shows alone, and the read point as each opened, which marks the first new message (talkview.ts). */
   talk: TalkUi;
-  /** What the user chose the chat's pane to show: the conversation until they choose its session's terminal (`chatMode`). */
-  chatMode?: "chat" | "terminal";
+  /** The view the user last chose, the chat or a terminal: each session's pane and the chat's pane open on it until they choose again (`tabChoice`, `chatMode`). */
+  view: "chat" | "terminal";
   /** The chat's session is being started again from the menu. */
   chatRestarting?: boolean;
   /**
@@ -3257,7 +3257,7 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   fold.title = open ? "Fold the session's details away" : "Show the session's details";
   const terminal = sessionTerminal(state, s);
   const talk = state.talkOn === true;
-  const mode = paneMode(ui.modes.get(s.id), terminal !== undefined, talk);
+  const mode = paneMode(tabChoice(ui.modes.get(s.id), ui.view), terminal !== undefined, talk);
   setData(node, "mode", mode);
   const modes = node.querySelector<HTMLElement>(".pane-mode")!;
   setHidden(modes, terminal === undefined && !talk);
@@ -4117,13 +4117,13 @@ function renderVoice(root: HTMLElement, state: ViewState): void {
 /** The session whose pane shows its terminal, if the selected one's does. */
 function terminalSession(state: ViewState, ui: UiState): string | undefined {
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  return card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "terminal" ? card.session.id : undefined;
+  return card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "terminal" ? card.session.id : undefined;
 }
 
 /** The chat's pane shows its session's own terminal: the chat's tab, and the user chose it. */
 export function chatTerminal(state: ViewState, ui: UiState): string | undefined {
   if (ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined) return undefined;
-  return chatMode(ui.chatMode, state) === "terminal" ? chatHead(state)?.terminal : undefined;
+  return chatMode(ui.view, state) === "terminal" ? chatHead(state)?.terminal : undefined;
 }
 
 /** A terminal fills the pane: a bare one's tab, a session's shown on its terminal, or the chat's on its own. */
@@ -4166,7 +4166,7 @@ function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void 
   const leads = canLead(state, "chat");
   setHidden(head, h === undefined && !leads);
   setData(head, "agent", String(h !== undefined));
-  const mode = chatMode(ui.chatMode, state);
+  const mode = chatMode(ui.view, state);
   setData(root, "mode", mode);
   const lead = head.querySelector<HTMLElement>(".chat-lead")!;
   setHidden(lead, !leads);
@@ -4316,7 +4316,7 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   // its Messages pane is read alone: what is typed to the session goes from its timeline
-  const reading = card !== undefined && paneMode(ui.modes.get(card.session.id), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "messages";
+  const reading = card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "messages";
   setHidden(form, card === undefined || reading);
   if (!card) return;
   const s = card.session;

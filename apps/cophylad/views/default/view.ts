@@ -64,7 +64,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientClosedSession, ClientResult, UsageReport, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
@@ -104,6 +104,7 @@ const ui: UiState = {
   remoteDock: "beside",
   remoteWidth: REMOTE_VIEW_WIDTH.usual,
   modes: new Map(),
+  view: "chat",
   fit: false,
   scale: 100,
   folded: new Set(),
@@ -254,7 +255,7 @@ function syncTerminal(): void {
     const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
     const own = card ? sessionTerminal(state, card.session) : undefined;
     const pane = card ? roots.sessions.querySelector<HTMLElement>(`.session[data-session="${card.session.id}"]`) : null;
-    if (card && own && pane && paneMode(ui.modes.get(card.session.id), true, state.talkOn === true) === "terminal") {
+    if (card && own && pane && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), true, state.talkOn === true) === "terminal") {
       terminal.show(own.id, pane, { drive: ui.fit, scale: ui.scale, input: true });
       terminal.update(own, false, ui.fit);
       // Folded, the header's one line takes the terminal's controls too.
@@ -315,6 +316,7 @@ rpc.onNotification((n) => {
         ui.spendByProfile = prefs["spendNames"] === "profile";
         restoreViewerPrefs(prefs["viewer"]);
         restoreRemotePrefs(prefs["remoteView"]);
+        restoreViewChoice(prefs["view"]);
       }
       dispatch({ type: "host.ready", params: ready });
       return;
@@ -2580,7 +2582,7 @@ function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: n
 /** The agent whose own terminal the pane shows, if it shows one: its paths name its files. */
 function terminalAgent(): Session | undefined {
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
-  if (!card || !sessionTerminal(state, card.session) || paneMode(ui.modes.get(card.session.id), true, state.talkOn === true) !== "terminal") return undefined;
+  if (!card || !sessionTerminal(state, card.session) || paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), true, state.talkOn === true) !== "terminal") return undefined;
   return card.session;
 }
 
@@ -2712,6 +2714,22 @@ function restoreViewerPrefs(value: unknown): void {
   if (!viewerDrag) ui.viewerWidth = viewerWidth(v.width);
   if (typeof v.wrap === "boolean") ui.viewerWrap = v.wrap;
   if (typeof v.source === "boolean") ui.viewerSource = v.source;
+}
+
+/** The view the user last chose, as the device kept it; the chat until they chose one. */
+function restoreViewChoice(value: unknown): void {
+  if (value === "chat" || value === "terminal") ui.view = value;
+}
+
+/**
+ * The user chose the chat or a terminal: every session's pane and the chat's pane open on that
+ * from now on, until they choose again. A Messages pane's own choice is kept. Kept on the device.
+ */
+function chooseView(view: "chat" | "terminal"): void {
+  ui.view = view;
+  for (const [id, mode] of ui.modes) if (mode !== "messages") ui.modes.delete(id);
+  prefs = { ...prefs, view };
+  void rpc.request("host.savePrefs", { prefs }).catch(() => {});
 }
 
 function saveViewerPrefs(): void {
@@ -3538,7 +3556,7 @@ document.addEventListener("click", (ev) => {
     case "chat-mode": {
       const mode = target.dataset["mode"];
       if (mode !== "chat" && mode !== "terminal") return;
-      ui.chatMode = mode;
+      chooseView(mode);
       // The context lies over the conversation, not over a terminal.
       if (mode === "terminal") ui.contextOpen = false;
       draw();
@@ -3639,7 +3657,8 @@ document.addEventListener("click", (ev) => {
       const session = target.dataset["session"];
       const mode = target.dataset["mode"];
       if (!session || (mode !== "timeline" && mode !== "terminal" && mode !== "messages")) return;
-      ui.modes.set(session, mode);
+      if (mode === "messages") ui.modes.set(session, mode);
+      else chooseView(mode === "terminal" ? "terminal" : "chat");
       draw();
       if (mode === "terminal") terminal.focus();
       return;
@@ -4117,7 +4136,16 @@ document.addEventListener("submit", (ev) => {
       input.value = "";
       fitField(input);
       apply(state, { type: "draft", session, text: "" });
-    } else void send(session, input.value);
+    } else {
+      // A line sent leaves the box empty, as the chat's composer does; the send itself carries the text it had.
+      const text = input.value;
+      if (text.trim()) {
+        input.value = "";
+        fitField(input);
+        apply(state, { type: "draft", session, text: "" });
+      }
+      void send(session, text);
+    }
   }
 });
 
