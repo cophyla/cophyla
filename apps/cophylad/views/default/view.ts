@@ -1755,14 +1755,48 @@ async function loadChat(before?: string): Promise<void> {
   if (!state.connected || !state.scopes.includes("chat") || state.chatLoading) return;
   if (before === undefined && state.chatLoaded) return;
   if (before !== undefined && state.messagesExhausted) return;
+  // A new request starts from the top: any retry still waiting is for a load that is no longer wanted.
+  if (chatRetry !== undefined) clearTimeout(chatRetry);
+  chatRetry = undefined;
+  chatAttempts = 0;
+  await fetchChat(before);
+}
+
+/** A chat load that failed and is waiting to be tried again, and how many tries it has had. */
+let chatRetry: ReturnType<typeof setTimeout> | undefined;
+let chatAttempts = 0;
+/** How many more tries a chat load gets when its request fails on a line that is still up, before the failure is said. */
+const CHAT_RETRIES = 4;
+
+/**
+ * One request for a page of the chat. A phone that moves between networks drops the request in
+ * flight, and the line can be back a moment later: a failure while connected is tried again, the
+ * button keeps saying Loading meanwhile, and only the last failure is said.
+ */
+async function fetchChat(before?: string): Promise<void> {
   dispatch({ type: "chat.loading" });
   try {
     const params: { limit: number; before?: string } = { limit: CHAT_PAGE };
     if (before !== undefined) params.before = before;
     const { threads, messages, more } = await rpc.request<{ threads: Thread[]; messages: Message[]; more: boolean }>("chat.history", params);
+    chatAttempts = 0;
     dispatch({ type: "chat.loaded", threads, messages, more }, { anchor: before !== undefined });
     fillChat();
   } catch (e) {
+    // Gone while the request was out: the next connect loads the chat, so there is nothing to retry or say.
+    if (!state.connected) {
+      dispatch({ type: "chat.failed" });
+      return;
+    }
+    if (chatAttempts < CHAT_RETRIES) {
+      chatAttempts++;
+      chatRetry = setTimeout(() => {
+        chatRetry = undefined;
+        if (state.connected) void fetchChat(before);
+      }, 500 * chatAttempts);
+      return;
+    }
+    chatAttempts = 0;
     dispatch({ type: "chat.failed" });
     fail("chat", e);
   }
