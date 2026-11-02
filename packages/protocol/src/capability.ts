@@ -576,6 +576,13 @@ export const capabilityRequests = {
   "session.git": { params: z.object({ id: SessionId, log: z.number().int().positive().max(GIT_LOG_MAX).optional() }), result: z.object({ git: GitState.optional() }) },
   /** Puts a Claude session in a permission mode, as the client protocol's `session.mode` does. */
   "session.mode": { params: z.object({ id: SessionId, mode: LaunchMode }), result: z.object({ mode: LaunchMode }) },
+  /** The models a session can be put on, as the client protocol's `session.models` gives them. */
+  "session.models": {
+    params: z.object({ id: SessionId }),
+    result: z.object({ current: z.string().optional(), models: z.array(z.object({ value: z.string(), label: z.string() })) }),
+  },
+  /** Puts a session on a model, as the client protocol's `session.setModel` does. */
+  "session.setModel": { params: z.object({ id: SessionId, model: z.string().min(1).max(200) }), result: z.object({ model: z.string() }) },
   "ask.answer": {
     params: z.object({ id: AskId, option: z.string(), options: z.array(z.string()).optional(), text: z.string().optional() }),
     result: Empty,

@@ -33,6 +33,7 @@ describe("config", () => {
       install_hooks: true,
       discover: true,
       launch: "terminal",
+      claude_status_line: true,
       brain_sends: "pipe",
       type_into_busy: false,
     });

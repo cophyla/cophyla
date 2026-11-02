@@ -88,10 +88,12 @@ export interface ConversationHandlers {
    * `limit` with `listening` when the recogniser has one, `stopped` with a `transcribing` a stop forced.
    */
   state(state: VoiceState, detail?: StateDetail): void;
-  /** The words so far, while the utterance is heard and transcribed. */
-  partial(text: string): void;
+  /** The words so far, while the utterance is heard and transcribed; `dictating` while the press dictates them. */
+  partial(text: string, dictating?: boolean): void;
   /** The utterance's transcript; `overtaken` when another utterance began while it was transcribed. */
   final(text: string, overtaken?: boolean): void;
+  /** A dictated utterance's transcript, the client's to type: nothing goes to the chat. Without it a dictation comes to nothing. */
+  dictated?(text: string, overtaken?: boolean): void;
   /** The edges of the user speaking, for `user.activity`. */
   speaking(active: boolean): void;
   /** A slice of speech for reply `reply`; the reply's last call says `end` and may carry no samples. */
@@ -146,6 +148,10 @@ export class Conversation {
   private stream?: SttStream;
   /** What began the utterance in progress. */
   private began?: "wake" | "button";
+  /** The press asks for its words to be typed, not sent (`voice.ptt {dictate}`). */
+  private pressDictates = false;
+  /** The utterance under way is dictated: its words go back to the client to type. */
+  private dictating = false;
   /** Counts utterances begun, so one whose transcript lands after the next began leaves the state alone. */
   private utterances = 0;
   /** The stream of an utterance being transcribed, detached from the one being heard, so a cancel can drop it. */
@@ -345,14 +351,16 @@ export class Conversation {
     return true;
   }
 
-  /** The button, pressed and released. */
-  ptt(active: boolean): void {
+  /** The button, pressed and released; a press with `dictate` has its words typed by the client, not sent. */
+  ptt(active: boolean, opts: { dictate?: boolean } = {}): void {
     if (this.disposed) return;
     this.pttHeld = active;
     if (active) {
-      // Held, an utterance the wake word began is the button's to end.
+      this.pressDictates = opts.dictate === true;
+      // Held, an utterance the wake word began is the button's to end, and to dictate.
       this.clearStall();
       if (this.state !== "listening") this.begin("button");
+      else this.dictating = this.pressDictates;
       return;
     }
     if (this.state === "listening") void this.finish("button");
@@ -374,6 +382,7 @@ export class Conversation {
     this.stream?.dispose();
     this.stream = undefined;
     this.began = why;
+    this.dictating = why === "button" && this.pressDictates;
     this.samples = 0;
     this.heardFrames = 0;
     this.peak = 0;
@@ -388,7 +397,7 @@ export class Conversation {
       const stream = stt.stream();
       // The words go on to the clients while the last of them come in; a later utterance's stream is theirs.
       stream.onPartial = (text) => {
-        if (utterance === this.utterances && (this.state === "listening" || this.state === "transcribing")) this.deps.on.partial(text);
+        if (utterance === this.utterances && (this.state === "listening" || this.state === "transcribing")) this.deps.on.partial(text, this.dictating);
       };
       stream.onStop = (why) => {
         if (this.stream !== stream || this.state !== "listening") return;
@@ -403,7 +412,8 @@ export class Conversation {
         stream.heard?.();
       }
     }
-    this.setSpeaking(true);
+    // Dictating, the user writes; they are not speaking to anyone yet.
+    if (!this.dictating) this.setSpeaking(true);
     this.setState("listening", stt?.maxSeconds ? { limit: stt.maxSeconds } : undefined);
     if (this.abandonable()) this.armStall();
     this.deps.log?.debug("utterance begins", { client: this.client, why });
@@ -482,9 +492,11 @@ export class Conversation {
     this.stream = undefined;
     const utterance = this.utterances;
     const began = this.began;
+    const dictated = this.dictating;
     const heldMs = this.now() - this.beganAt;
     this.clearStall();
     this.began = undefined;
+    this.dictating = false;
     const stopped = why === "limit" || why === "quota" ? why : undefined;
     this.setState("transcribing", stopped ? { stopped } : undefined);
     // An utterance the VAD heard no speech in is not transcribed at all: a model that reads
@@ -518,7 +530,15 @@ export class Conversation {
       this.setState("idle", began === "button" ? { unheard } : undefined);
       return;
     }
-    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length, ...(latest ? {} : { overtaken: true }) });
+    this.deps.log?.info("utterance", { client: this.client, why, chars: text.length, ...(dictated ? { dictated: true } : {}), ...(latest ? {} : { overtaken: true }) });
+    if (dictated) {
+      // Typed where the user writes, and sent when they send it: nothing is waited on.
+      this.deps.on.dictated?.(text, !latest);
+      if (!latest) return;
+      this.setSpeaking(false);
+      this.setState("idle");
+      return;
+    }
     this.deps.on.final(text, !latest);
     if (!latest) return;
     this.setSpeaking(false);

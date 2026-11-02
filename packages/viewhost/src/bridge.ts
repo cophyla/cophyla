@@ -182,6 +182,9 @@ export interface BridgeIo {
   toView(frame: RpcMessage): void;
 }
 
+/** What a view may send while the host is away before the oldest of it is given up. */
+export const HELD_MAX = 64;
+
 export class Bridge {
   readonly scopes: Scope[];
   readonly manifest: ViewManifest;
@@ -211,6 +214,8 @@ export class Bridge {
   private recordingNow = false;
   /** wire id → the view's own id and method. */
   private pending = new Map<string, { id: RpcId; method: string }>();
+  /** The host stepped away: what the view sends waits here for the link, in order. */
+  private held?: (RpcRequest | RpcNotification)[];
 
   constructor(cfg: BridgeConfig, io: BridgeIo) {
     this.manifest = cfg.manifest;
@@ -270,7 +275,7 @@ export class Bridge {
       const signal = RpcNotification.safeParse(frame);
       if (!signal.success) return;
       const scope = signalScope(signal.data.method);
-      if (scope !== undefined && scope !== null && this.scopes.includes(scope)) this.io.toCophylad(signal.data);
+      if (scope !== undefined && scope !== null && this.scopes.includes(scope)) this.toCophylad(signal.data);
       return;
     }
     const parsed = RpcRequest.safeParse(data.frame);
@@ -300,7 +305,36 @@ export class Bridge {
     }
     const wire = `v${this.instance}-${++this.n}`;
     this.pending.set(wire, { id: req.id, method: req.method });
-    this.io.toCophylad({ ...req, id: wire });
+    this.toCophylad({ ...req, id: wire });
+  }
+
+  /** Out to cophylad, or kept while the host is away: the oldest given up past what is kept. */
+  private toCophylad(frame: RpcRequest | RpcNotification): void {
+    const held = this.held;
+    if (!held) {
+      this.io.toCophylad(frame);
+      return;
+    }
+    held.push(frame);
+    if (held.length <= HELD_MAX) return;
+    const dropped = held.shift()!;
+    if (!("id" in dropped) || typeof dropped.id !== "string") return;
+    const p = this.pending.get(dropped.id);
+    if (!p) return;
+    this.pending.delete(dropped.id);
+    this.io.toView(failure(p.id, protocolError("unavailable", `${p.method}: not connected to cophylad`)));
+  }
+
+  /** The host stepped away and means to come back: the view hears nothing of it, and what it sends waits. */
+  hold(): void {
+    this.held ??= [];
+  }
+
+  /** Back on the same client: what the view sent meanwhile goes now, in order. */
+  resume(): void {
+    const held = this.held;
+    this.held = undefined;
+    for (const frame of held ?? []) this.io.toCophylad(frame);
   }
 
   /** A request the host answers itself, within the view's scopes. */
@@ -393,6 +427,8 @@ export class Bridge {
 
   /** Fails every request in flight and tells the view the line is down. */
   disconnected(): void {
+    // what waited for the link is lost with it: a signal goes unsaid, a request fails below
+    this.held = undefined;
     for (const [wire, p] of this.pending) {
       this.pending.delete(wire);
       this.io.toView(failure(p.id, protocolError("unavailable", `${p.method}: not connected to cophylad`)));

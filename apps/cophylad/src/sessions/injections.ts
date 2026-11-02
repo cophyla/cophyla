@@ -16,7 +16,7 @@ export interface PendingSend {
   harness: "claude" | "codex" | "muse";
   /** What the user asked to send. */
   text: string;
-  /** What went over the wire: the text behind cophylad's one-line prefix, an agent's in its envelope, or, typed, the text itself. */
+  /** What went over the wire: the text behind cophylad's one-line prefix, an agent's in its envelope, or, typed or `plain`, the text itself. */
   body: string;
   /** Another agent's message: its delivery is recorded as that agent's turn. */
   agent?: EnvelopeInfo;
@@ -24,6 +24,8 @@ export interface PendingSend {
   more?: readonly { info: EnvelopeInfo; text: string }[];
   /** Typed into the session's terminal as the user's own words. */
   typed?: boolean;
+  /** Codex: the user's own words given to the thread as the user's turn, with nothing of cophylad's before them; its delivery is recorded as that turn. */
+  plain?: boolean;
   /** A leader's message, the user's words sent by the chat or one of the user's agents: its delivery is recorded as the user's turn, sent by it. */
   lead?: LeadInfo;
   /** Claude: the prompt it landed as, so the transcript's copy of that prompt is known for it. */

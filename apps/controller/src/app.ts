@@ -16,7 +16,8 @@
 //
 // In a browser the page also pairs with a key someone typed (`browser.pair`), may say it is a
 // shared computer (the credential then lives in the page's memory alone, and the page says so
-// when it has gone), and shows itself in the settings as the device it is. In a wide window on
+// when it has gone), and shows itself in the settings as the device it is, where the
+// notifications for agents' questions can be turned off (on by default). In a wide window on
 // a computer (`desk`) it is the whole panel: no bar and no Start screen, the view draws the
 // talk button, the Voice section is in the settings, the audio starts at the first click, and
 // a remote desktop's page lies beside the view where the view places it.
@@ -32,7 +33,7 @@ import { deriveChrome } from "./chrome.ts";
 import type { ChromeInput } from "./chrome.ts";
 import { LinkCore } from "./link-core.ts";
 import type { InviteWays, LinkCoreOptions } from "./link-core.ts";
-import { parseCode, parseInviteLink, readListen, SESSION_MARK, writeListen } from "./pairing.ts";
+import { parseCode, parseInviteLink, readAskPopups, readListen, SESSION_MARK, writeAskPopups, writeListen } from "./pairing.ts";
 import type { NodeAddress } from "./pairing.ts";
 import { StreamFrames } from "./remote.ts";
 import type { Transport } from "./transport.ts";
@@ -103,7 +104,7 @@ export interface App {
   ui: UiElements;
   state: ChromeInput;
   paint(): void;
-  /** The m8 rule on a phone going away: the microphone off, the button up, the link paused. */
+  /** The m8 rule on a phone going away: the microphone off and the button up at once; the link kept a while for a quick return, then paused. */
   background(): void;
   foreground(): void;
   /** A remote desktop covers the app, or no longer does: the microphone and the wake word stand down meanwhile, and the speaker is quiet. */
@@ -208,6 +209,8 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
 
   // The page as the paired device it is, for the settings: a browser's alone.
   const deviceWatchers = new Set<() => void>();
+  /** Agents' questions shown as the system's notifications here; turned off on the device's page. */
+  let askPopups = readAskPopups(storage);
   const device: DeviceSettings | undefined =
     platform.device === "browser"
       ? {
@@ -215,7 +218,7 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
             const c = io.credential;
             // a shared computer keeps nothing, an app of its own least of all
             const installable = platform.install?.available === true && !c?.session;
-            return { name: c?.name ?? platform.name, address: platform.address ?? "", connected: conn.connected, ...(c?.expiresAt !== undefined ? { expiresAt: c.expiresAt } : {}), ...(c?.session ? { session: true } : {}), ...(installable ? { installable: true } : {}) };
+            return { name: c?.name ?? platform.name, address: platform.address ?? "", connected: conn.connected, ...(c?.expiresAt !== undefined ? { expiresAt: c.expiresAt } : {}), ...(c?.session ? { session: true } : {}), ...(installable ? { installable: true } : {}), askPopups };
           },
           subscribe: (changed) => {
             deviceWatchers.add(changed);
@@ -223,6 +226,11 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
           },
           forget,
           ...(platform.install ? { install: async () => void (await platform.install!.prompt()) } : {}),
+          setAskPopups: (on) => {
+            askPopups = on;
+            writeAskPopups(storage, on);
+            for (const changed of [...deviceWatchers]) changed();
+          },
         }
       : undefined;
   platform.install?.subscribe(() => {
@@ -261,9 +269,12 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     answer: (id, option) => conn.request("ask.answer", { id, option }),
     showWindow: () => {},
     onError: (message) => console.warn(message),
+    enabled: () => askPopups,
   });
 
   let loaded = false;
+  /** The link was up at the last state: a hello on a new connection moved it, with no gap. */
+  let linkUp = false;
   /** A shared computer's credential is held: when it goes without being forgotten, the page says why. */
   let held = false;
   /** In a wide window the audio is started once, as soon as the page is paired: at the first click where the browser holds it back. */
@@ -377,8 +388,16 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     if (io.via === "p2p" && io.snapshot.path) state.path = io.snapshot.path;
     else delete state.path;
     voice.setVia(io.via);
-    if (snapshot.state !== "connected") cache.clear();
-    else notifier.onConnected();
+    // A pause keeps what the node said, for a node that takes the same client up again and
+    // sends only what it missed; one that answers a new client says everything again.
+    const resumed = snapshot.state === "connected" && snapshot.hello?.resumed === true;
+    if (snapshot.state !== "connected") {
+      if (!snapshot.paused) cache.clear();
+    } else if (!resumed) {
+      if (!linkUp) cache.clear();
+      notifier.onConnected();
+    }
+    linkUp = snapshot.state === "connected";
     // Down, the conversation is gone; up, it is a new one: the phone's word starts over with it.
     voice.linkChanged(snapshot.state === "connected");
     paint();
@@ -491,7 +510,8 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
       writeListen(storage, on);
       voice.listen(on);
     },
-    ptt: (down) => voice.ptt(down),
+    // the bar's button dictates: the words are typed where the view is open, and the user sends them
+    ptt: (down) => voice.ptt(down, { dictate: true }),
     mute: (on) => voice.mute(on),
     forget,
   });
@@ -506,11 +526,12 @@ export function boot(platform: AppPlatform, doc: Document = document): App {
     paint,
     background: () => {
       voice.pause();
-      io.suspend();
+      // the connection stays a while, the node told the phone is away: back soon, nothing to wait for
+      io.background();
     },
     watching: (on) => voice.watch(on),
     foreground: () => {
-      io.resume();
+      io.foreground();
       // The microphone is back after a gap: what the word carried on from is gone.
       void voice.resume();
     },

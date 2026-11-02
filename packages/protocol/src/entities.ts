@@ -988,6 +988,8 @@ export const AssistantState = z.object({
   effort: z.string().optional(),
   context: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }).optional(),
   terminal: TerminalRef.optional(),
+  /** The session the chat runs in, where it is running: what `session.models` and `session.setModel` take. */
+  session: SessionId.optional(),
   chosen: z.object({ harness: AssistantHarness.optional(), profile: ProfileId.optional() }).optional(),
   /** Why it is unavailable or down, in a line for the user. */
   detail: z.string().optional(),

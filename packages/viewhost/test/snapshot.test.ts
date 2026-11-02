@@ -139,6 +139,14 @@ describe("snapshot cache", () => {
     expect(c.heard).toBeUndefined();
   });
 
+  test("keeps no dictated words: those are typed into a field, not a message on its way", () => {
+    const c = new SnapshotCache();
+    c.upsert(n("voice.state", { state: "listening", client: "cli_1" }));
+    c.upsert(n("voice.partial", { client: "cli_1", text: "run the tests", dictate: true }));
+    expect(c.heard).toBeUndefined();
+    expect(c.replay().map((x) => x.method)).toEqual(["voice.state"]);
+  });
+
   test("keeps the account and a voice setup in progress, replayed after the voice state, so a late view is not signed out", () => {
     const c = new SnapshotCache();
     c.upsert(n("account.state", { plan: "free", limits: {} }));

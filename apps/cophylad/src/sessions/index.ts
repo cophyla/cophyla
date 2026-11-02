@@ -60,7 +60,7 @@ import { contextUsed, lastPermissionMode } from "./claude/transcript.ts";
 import type { ClaudeTranscriptState } from "./claude/transcript.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
-import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
+import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
 import { lastTurnContext } from "./codex/rollout.ts";
@@ -467,6 +467,15 @@ const MIRROR_DELAY_MS = 2000;
 const BROADCAST_MS = 250;
 const WATCH_DEBOUNCE_MS = 150;
 const DETAIL_CHARS = 2000;
+/** The models a Claude Code session in a tether terminal is offered: the aliases its own `/model` takes. */
+const CLAUDE_TETHER_MODELS = [
+  { value: "default", label: "Default (recommended)" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" },
+] as const;
+/** A model's name as typed after `/model`: an alias or an id, nothing that could be a second command or a line break. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,199}$/;
 export const SEND_PREFIX = "[cophylad, relaying the user]";
 /** The agents' messages a session remembers having recorded, so an echo of one is recorded once. */
 const AGENT_SEEN = 200;
@@ -2679,13 +2688,18 @@ export class Sessions implements SessionHost {
   /**
    * The command line a Claude session cophylad starts runs: its id and name, the profile's launch,
    * the model the brain named, and cophylad's settings file with the launch's own folded in.
+   * With `claude_status_line` off it leaves the profile's user scope out, and the file carries the
+   * profile's `settings.json` less its status line, and `--mcp-config` its user-scope servers.
    */
   private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined; resume?: boolean }): string[] {
     const value = launchFlags(o.launch).settings;
+    const quiet = this.config.claude_status_line === false;
+    const mcp = quiet ? userMcpConfig(this.deps.dataDir, o.profile.id, claudeGlobalConfig(o.profile.configDir, this.deps.home ?? homedir())) : undefined;
     return [
-      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}) }),
+      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}), ...(quiet ? { noUserScope: true } : {}) }),
+      ...(mcp ? ["--mcp-config", mcp] : []),
       "--settings",
-      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined),
+      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined, quiet ? join(o.profile.configDir, "settings.json") : undefined),
     ];
   }
 
@@ -3259,6 +3273,40 @@ export class Sessions implements SessionHost {
   // --- permission mode ------------------------------------------------------------------
 
   /**
+   * The models a session can be put on, and the one it is on where it is known. Over ACP the agent's
+   * own list, from the session's start; in a Claude Code tether terminal Claude's aliases, which its
+   * `/model` takes, with no current model known. A Codex session in a terminal has none offered here.
+   */
+  models(id: string, part?: string): { current?: string; models: { value: string; label: string }[] } {
+    const rec = this.must(id, part);
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return this.acp.models(id);
+    }
+    if (rec.session.harness !== "claude") return { models: [] };
+    return { models: CLAUDE_TETHER_MODELS.map((m) => ({ ...m })) };
+  }
+
+  /**
+   * Puts a session on a model. Over ACP with `session/set_model`; in a Claude Code tether terminal by
+   * typing `/model <name>` there, as the user would, so the session runs it when its turn is free.
+   * A model name is an alias or a model id (`opus`, `sonnet[1m]`, `gpt-6-astra`); one that is not
+   * a plain name is `invalid`. A Codex session in a terminal changes its model in that terminal.
+   */
+  async setModel(id: string, model: string, part?: string): Promise<{ model: string }> {
+    const rec = this.must(id, part);
+    if (rec.session.status === "ended") throw new RpcError("conflict", "the session has ended: its model can be set when it runs again");
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return { model: await this.acp.setModel(id, model) };
+    }
+    if (rec.session.harness !== "claude") throw new RpcError("unsupported", "a Codex session's model is changed in its own terminal");
+    if (!MODEL_NAME.test(model)) throw new RpcError("invalid", "a model is named by an alias or an id: letters, digits, dots, dashes, underscores and brackets");
+    await this.send(id, `/model ${model}`, {}, part);
+    return { model };
+  }
+
+  /**
    * Puts a Claude session in a permission mode. One cophylad runs over ACP is set there; one in
    * a tether terminal has Shift+Tab pressed until the footer under its prompt names the mode.
    * `dontAsk` is off the cycle, and so is any other harness's session.
@@ -3349,8 +3397,9 @@ export class Sessions implements SessionHost {
    * words are typed, and so are a leader's (`from: lead`: the chat's or an agent's that the
    * user made the session's leader); into a Muse session in one, everyone's are, as Muse has no
    * other way in. A session cophylad runs headless is prompted through what runs it. Anything
-   * else goes over the harness's own channel, which a Claude session reads as another agent's
-   * message: the brain's words too, when it does not lead the session. A leader's message to a
+   * else goes over the harness's own channel: a Codex thread takes the user's words there as the
+   * user's own turn, and a Claude session reads what comes over its pipe as another agent's
+   * message, the brain's words too when it does not lead the session. A leader's message to a
    * Claude session cophylad cannot type into is refused, as it would arrive as another
    * agent's; an agent leader's that starts with `!` too, as it would run a shell command there.
    * One that starts with `/` runs as the user's slash command would.
@@ -3408,9 +3457,13 @@ export class Sessions implements SessionHost {
       return { status: "queued", ref };
     }
     const ref = `cophylad-${ulid(this.now())}`;
-    // An agent's envelope names its sender, so it needs no prefix of cophylad's.
-    const body = agent ? wire : `${SEND_PREFIX}\n${text}`;
-    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}) });
+    // An agent's envelope names its sender, so it needs no prefix of cophylad's. Nor do the
+    // user's words into a Codex thread, a leader's among them: its app-server takes them as the
+    // user's own turn, as if typed there. Over Claude's pipe they reach the model as another
+    // session's message, and the brain's are its own, so there the prefix says whose they are.
+    const plain = !agent && adapter.harness === "codex" && opts.from !== "brain";
+    const body = agent || plain ? wire : `${SEND_PREFIX}\n${text}`;
+    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}), ...(plain ? { plain: true } : {}) });
     try {
       const r = await adapter.send(rec, body, ref);
       this.log.info("message sent", { session: id, ref, status: r.status });
@@ -3692,8 +3745,9 @@ export class Sessions implements SessionHost {
     } else if (p.lead) {
       // The user's words, sent by their leader: what the session is for is the user's to say, not its leader's.
       this.event(rec, "user_turn", leadTurn(p.lead, p.text, p.ref, promptId));
-    } else if (p.typed) {
-      this.event(rec, "user_turn", { text: capText(p.text), source: "typed", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
+    } else if (p.typed || p.plain) {
+      // The user's own turn: typed into its terminal, or given to a Codex thread as typed there.
+      this.event(rec, "user_turn", { text: capText(p.text), source: p.typed ? "typed" : "sent", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
       // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.
       if (rec.session.intent === undefined && p.text.trim() && !p.text.trimStart().startsWith("/")) this.patch(rec, { intent: oneLine(p.text) });
     } else {
