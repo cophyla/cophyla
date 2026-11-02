@@ -5,7 +5,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Client, RpcMessage, RpcNotification, RpcRequest, ViewManifest } from "@cophyla/protocol";
-import { Bridge, envelope, isEnvelope, PREFS_MAX } from "../src/bridge.ts";
+import { Bridge, envelope, HELD_MAX, isEnvelope, PREFS_MAX } from "../src/bridge.ts";
 import { prefsStore } from "../src/viewhost.ts";
 import type { HelloResult } from "../src/connection.ts";
 
@@ -398,6 +398,50 @@ describe("bridge", () => {
     // A late response for the failed request is dropped.
     bridge.fromCophylad({ jsonrpc: "2.0", id: "v1-1", result: {} });
     expect(toView).toHaveLength(4);
+  });
+
+  test("held while the host is away: what the view sends waits, in order, and goes once the same client is back", () => {
+    const { bridge, toCophylad, signals, toView } = make({ ...MANIFEST, scopes: [...(MANIFEST.scopes ?? []), "chat"] });
+    bridge.ready(HELLO);
+    toView.length = 0;
+    bridge.hold();
+    bridge.fromView(req("r1", "session.list", {}));
+    bridge.fromView(envelope({ jsonrpc: "2.0", method: "chat.typing", params: {} }));
+    bridge.fromView(req("r2", "session.history", { id: "sess_1" }));
+    expect(toCophylad).toEqual([]);
+    expect(signals).toEqual([]);
+    expect(toView).toEqual([]);
+    bridge.resume();
+    expect(toCophylad.map((f) => f.id)).toEqual(["v1-1", "v1-2"]);
+    expect(signals.map((f) => f.method)).toEqual(["chat.typing"]);
+    bridge.fromCophylad({ jsonrpc: "2.0", id: "v1-1", result: { sessions: [] } });
+    expect(toView).toEqual([{ jsonrpc: "2.0", id: "r1", result: { sessions: [] } }]);
+    // the view heard nothing of the pause
+    expect(toView.some((f) => (f as { method?: string }).method === "host.state")).toBe(false);
+  });
+
+  test("held, then the link comes back as a new client: what waited fails with the gap, and nothing of it is sent", () => {
+    const { bridge, toCophylad, toView } = make();
+    bridge.ready(HELLO);
+    toView.length = 0;
+    bridge.hold();
+    bridge.fromView(req("r1", "session.list", {}));
+    bridge.disconnected();
+    expect(toView[0]).toMatchObject({ id: "r1", error: { data: { code: "unavailable" } } });
+    expect(toView[1]).toEqual({ jsonrpc: "2.0", method: "host.state", params: { connected: false } });
+    bridge.ready(HELLO);
+    expect(toCophylad).toEqual([]);
+  });
+
+  test("held past what is kept, the oldest request is given up", () => {
+    const { bridge, toCophylad, toView } = make();
+    bridge.ready(HELLO);
+    toView.length = 0;
+    bridge.hold();
+    for (let i = 0; i <= HELD_MAX; i++) bridge.fromView(req(`r${i}`, "session.list", {}));
+    expect(toView).toEqual([expect.objectContaining({ id: "r0", error: expect.objectContaining({ data: expect.objectContaining({ code: "unavailable" }) }) })]);
+    bridge.resume();
+    expect(toCophylad).toHaveLength(HELD_MAX);
   });
 
   test("a host with a menu button says so in host.ready and passes each press on; one without says neither", () => {

@@ -296,6 +296,8 @@ export const SessionStats = z.object({
   context: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }).optional(),
   /** The model the counters are priced at, as the harness names it. */
   model: z.string().optional(),
+  /** The reasoning effort the last turn ran at, as the harness names it (`low`, `high`, ...), where the node records it. */
+  effort: z.string().optional(),
 });
 export type SessionStats = z.infer<typeof SessionStats>;
 
@@ -988,6 +990,8 @@ export const AssistantState = z.object({
   effort: z.string().optional(),
   context: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }).optional(),
   terminal: TerminalRef.optional(),
+  /** The session the chat runs in, where it is running: what `session.models` and `session.setModel` take. */
+  session: SessionId.optional(),
   chosen: z.object({ harness: AssistantHarness.optional(), profile: ProfileId.optional() }).optional(),
   /** Why it is unavailable or down, in a line for the user. */
   detail: z.string().optional(),

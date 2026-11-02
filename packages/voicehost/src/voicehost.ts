@@ -59,7 +59,7 @@ import type { WakeBook, WakeEvent, WakeMode } from "./wake/state.ts";
 /** The part of a host's connection voice uses: viewhost's `Connection` fits. */
 export interface VoiceLink {
   readonly connected: boolean;
-  readonly state: { hello?: { client: { id: string }; audio?: { codecs: AudioCodec[] } } };
+  readonly state: { hello?: { client: { id: string }; audio?: { codecs: AudioCodec[]; dictate?: true } } };
   request<T = unknown>(method: string, params?: unknown): Promise<T>;
   send(frame: object): Promise<void>;
 }
@@ -402,12 +402,19 @@ export class VoiceHost {
 
   // --- what the user does -----------------------------------------------------------------------
 
+  /** The node types a press's words for this host when asked (`voice.ptt {dictate}`), as its hello said. */
+  get dictates(): boolean {
+    return this.opts.link.state.hello?.audio?.dictate === true;
+  }
+
   /**
    * The button (or the key) held and let go. Let go, recording stops at once; the node's
    * `listening` for the press may still be on its way (a quick tap), and is not a new one. The
-   * node says its states for a press before it answers it, so its answer ends that wait.
+   * node says its states for a press before it answers it, so its answer ends that wait. A
+   * press with `dictate` has its words typed where the user writes, on a node that does that;
+   * an older one is asked nothing more, and makes them a message as before.
    */
-  ptt(down: boolean): void {
+  ptt(down: boolean, opts: { dictate?: boolean } = {}): void {
     if (this.talking === down) return;
     this.talking = down;
     this.talkRefused = false;
@@ -420,7 +427,8 @@ export class VoiceHost {
         this.released = false;
         this.refresh();
       };
-      void this.opts.link.request("voice.ptt", { active: down }).then(
+      const dictate = down && opts.dictate === true && this.dictates;
+      void this.opts.link.request("voice.ptt", { active: down, ...(dictate ? { dictate: true } : {}) }).then(
         () => {
           this.settle();
           answered();

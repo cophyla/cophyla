@@ -65,6 +65,8 @@ export class SnapshotCache {
     if (n.method === "voice.partial") {
       const p = n.params as VoicePartialParams | undefined;
       if (!p || typeof p !== "object" || typeof p.text !== "string") return;
+      // dictated words are typed where the user writes, not words on their way to the chat
+      if (p.dictate) return;
       if (p.message !== undefined) this.heard = undefined;
       else this.heard = { ...(p.client !== undefined ? { client: p.client } : {}), text: (this.heard?.text ?? "").slice(0, p.from ?? 0) + p.text };
       return;

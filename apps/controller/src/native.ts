@@ -10,9 +10,11 @@
 // it has direct connections on (`direct.ts`); the remote desktop, shown by the Kotlin
 // stream plugin in a dialog of its own through a forwarder on the phone's loopback (the
 // hello says `forward`, so the node answers the page's path); and the phone's own signals —
-// the app going to the background (the m8 rule: the button up, the microphone off, the
-// socket closed, a stream closed) and the network changing (the LAN tried again, and not at
-// all on mobile data).
+// the app going to the background (the m8 rule: the button up, the microphone off and a stream
+// closed at once; the socket kept two minutes for a quick return, with the node told the
+// phone is away, then closed) and the network changing (the LAN tried again, and not at all
+// on mobile data); and which network the phone is on, so the way that worked there last is
+// the way it opens.
 
 import { App as CapApp } from "@capacitor/app";
 import { AppLauncher } from "@capacitor/app-launcher";
@@ -22,7 +24,7 @@ import { Network } from "@capacitor/network";
 import { PushNotifications } from "@capacitor/push-notifications";
 import type { ViewContent } from "@cophyla/protocol";
 import { boot } from "./app.ts";
-import { guessName, inviteLanNodes, isInviteLink, nodeFromLan, parsePairLink, pkcePair, signInUrl } from "./pairing.ts";
+import { guessName, inviteLanNodes, isInviteLink, nodeFromLan, parsePairLink, pkcePair, signInUrl, storagePaths } from "./pairing.ts";
 import type { Credential, NodeAddress } from "./pairing.ts";
 import { inviteTransport, pairingTransport, relayTransport } from "./transport.ts";
 import { lanUrl, nativeTransport } from "./native/native-io.ts";
@@ -79,6 +81,9 @@ const app = boot({
     ...(p2p ? { p2p } : {}),
     // the link moves only while nothing would notice: no stream on the screen, the button up
     quiet: () => !streams?.open && !app.state.talking,
+    // back on the network where the relay carried it last, the relay opens at once
+    network: async () => (await socketPlugin.network()).handle,
+    paths: storagePaths(localStorage),
     lan: (credential: Credential | undefined) => (credential?.node && connectionType !== "cellular" ? [nativeTransport(credential.node, socketPlugin, { ...(credential.node.spki ? { pin: credential.node.spki } : {}) })] : []),
     relay: (access) => relayTransport(access),
     // the address typed at pairing and the key its socket learned go into the credential with the token
@@ -198,10 +203,10 @@ const app = boot({
       }
       // a tag in a group chat: the app comes back, and the group shows its unread posts
       if (url.startsWith("cophyla://group/")) {
-        a.io.resume();
+        a.io.foreground();
         return;
       }
-      if (push.onLink(url)) a.io.resume();
+      if (push.onLink(url)) a.io.foreground();
     };
     void CapApp.addListener("appUrlOpen", (e) => onUrl(e.url));
     void CapApp.getLaunchUrl().then((l) => {

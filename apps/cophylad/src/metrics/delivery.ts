@@ -79,7 +79,7 @@ export class SampleFeed {
   }
 }
 
-function addLlm(into: LlmCounts, from: LlmCounts): void {
+export function addLlm(into: LlmCounts, from: LlmCounts): void {
   for (const [model, c] of Object.entries(from)) {
     const cur = into[model] ?? { in: 0, out: 0 };
     into[model] = { in: cur.in + c.in, out: cur.out + c.out };

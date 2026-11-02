@@ -116,6 +116,9 @@ export class PushBridge {
           await this.deps.request("ask.answer", { id: q.ask, option: q.option });
         } catch (e) {
           this.deps.log?.(`ask.answer ${q.ask}: ${e instanceof Error ? e.message : String(e)}`);
+          // the link went under it (a connection kept out of sight that had died): it goes again once the link is back
+          const code = (e as { code?: unknown } | null)?.code;
+          if ((code === "unavailable" || code === "timeout") && !this.queue.some((w) => w.ask === q.ask)) this.queue.push(q);
         }
       }
     } finally {

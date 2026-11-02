@@ -16,6 +16,11 @@ export interface LinkSnapshot {
   since: number;
   error?: string;
   url?: string;
+  /**
+   * Down because the host stepped away (a phone's app in the background), not because the
+   * node was lost: the host means to come back, so what the view shows stays on screen.
+   */
+  paused?: true;
 }
 
 export interface TauriIo {

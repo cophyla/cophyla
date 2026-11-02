@@ -107,6 +107,40 @@ describe("chat", () => {
     expect(() => chat.history("thr_01ARZ3NDEKTSV4RRFFQ69G5FB9")).toThrow(/no thread/);
   });
 
+  test("page pages messages across threads by message, oldest first, with the threads they are in and whether older ones remain", () => {
+    const { chat } = setup();
+    chat.userMessage({ text: "u1", source: "ui" });
+    const t1 = chat.current();
+    chat.say([{ type: "text", text: "r1" }]);
+    chat.startThread({ topic: "two" });
+    chat.userMessage({ text: "u2", source: "ui" });
+    const t2 = chat.current();
+    chat.startThread({ topic: "three" });
+    chat.userMessage({ text: "u3", source: "ui" });
+    chat.say([{ type: "text", text: "r3" }]);
+    const t3 = chat.current();
+    const text = (ms: { content: { type: string; text?: string }[] }[]) => ms.map((m) => m.content[0]!.text);
+    // Everything, in one page: all three threads' dividers.
+    const all = chat.page({});
+    expect(text(all.messages)).toEqual(["u1", "r1", "u2", "u3", "r3"]);
+    expect(all.more).toBe(false);
+    expect(all.threads.map((t) => t.id)).toEqual([t1.id, t2.id, t3.id]);
+    // The newest two, then the two before them, then the rest: a page can end inside a thread.
+    const newest = chat.page({ limit: 2 });
+    expect(text(newest.messages)).toEqual(["u3", "r3"]);
+    expect(newest.more).toBe(true);
+    expect(newest.threads.map((t) => t.id)).toEqual([t3.id]);
+    const earlier = chat.page({ before: newest.messages[0]!.id, limit: 2 });
+    expect(text(earlier.messages)).toEqual(["r1", "u2"]);
+    expect(earlier.more).toBe(true);
+    expect(earlier.threads.map((t) => t.id)).toEqual([t1.id, t2.id]);
+    const oldest = chat.page({ before: earlier.messages[0]!.id, limit: 5 });
+    expect(text(oldest.messages)).toEqual(["u1"]);
+    expect(oldest.more).toBe(false);
+    // A cursor that is no message answers nothing.
+    expect(chat.page({ before: "msg_01ARZ3NDEKTSV4RRFFQ69G5FB9" })).toEqual({ messages: [], threads: [], more: false });
+  });
+
   test("ask opens a choice Ask answerable by the user and resolves with the answer; abort cancels; brain asks can be swept", async () => {
     const { bus, chat, asks } = setup();
     const opened: Ask[] = [];

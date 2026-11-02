@@ -271,4 +271,27 @@ describe("a session in a tether terminal", () => {
     const windowed = tm.sessions.ensure({ harness: "claude", nativeId: "mode-window", profile: tm.profiles.defaultFor("claude")!.id, cwd: dir, transport: "pipe", pid: 9999, status: "idle" }).session;
     expect(await failure(tm.sessions.setMode(windowed.id, "plan"))).toMatchObject({ code: "unsupported", message: expect.stringContaining("cannot type") });
   });
+
+  test("a Claude session in a terminal is offered its aliases, and a model is set by typing /model there", async () => {
+    const { s, term } = claudeIn({ cycle: WITH_AUTO, start: "default" });
+    // An empty prompt: the placeholder would read as half-typed words, which hold a message back.
+    term.setScreen([...idle("default", "❯ ").slice(0, -1), FOOTER.default]);
+    const offered = tm.sessions.models(s.id);
+    expect(offered.current).toBeUndefined();
+    expect(offered.models.map((m) => m.value)).toEqual(["default", "opus", "sonnet", "haiku"]);
+    expect(await tm.sessions.setModel(s.id, "opus")).toEqual({ model: "opus" });
+    // Typed once the prompt is free: the line, then Enter.
+    await waitFor(() => term.typed.includes("keys:Enter"), 5000);
+    expect(term.typed).toContain("paste:/model opus");
+    // A name that is not a plain alias or id is refused unsent, so nothing after it can run as a second command.
+    const before = term.typed.length;
+    expect(await failure(tm.sessions.setModel(s.id, "opus; rm -rf /"))).toMatchObject({ code: "invalid" });
+    expect(term.typed.length).toBe(before);
+  });
+
+  test("a Codex session in a terminal offers no models here, and its model is refused", async () => {
+    const codex = tm.sessions.ensure({ harness: "codex", nativeId: "codex-model", profile: tm.profiles.defaultFor("claude")!.id, cwd: dir, transport: "pipe", status: "idle" }).session;
+    expect(tm.sessions.models(codex.id)).toEqual({ models: [] });
+    expect(await failure(tm.sessions.setModel(codex.id, "gpt-6-astra"))).toMatchObject({ code: "unsupported", message: expect.stringContaining("own terminal") });
+  });
 });

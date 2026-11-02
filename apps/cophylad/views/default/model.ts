@@ -309,10 +309,10 @@ export interface ViewState {
   quick: boolean;
   /** `chat.load` has answered once since connecting. */
   chatLoaded: boolean;
-  /** The earliest thread loaded; `chat.load {before}` pages from here. */
-  oldestThread?: string;
-  /** A page came back short: there is no earlier thread. */
-  threadsExhausted: boolean;
+  /** The earliest message the chat's history loaded: `chat.history {before}` pages back from it. */
+  oldestMessage?: string;
+  /** A page came back with no older messages: the start of the chat is loaded. */
+  messagesExhausted: boolean;
   chatLoading: boolean;
   errors: string[];
   /** How many errors came in all, the ones dropped past `ERRORS_KEEP` too: what came since a moment is told by the count. */
@@ -354,7 +354,7 @@ export type Action =
   | { type: "chat.loading" }
   /** A load that failed: nothing is marked loaded, so the button that asked for it asks again. */
   | { type: "chat.failed" }
-  | { type: "chat.loaded"; threads: Thread[]; messages: Message[]; limit: number }
+  | { type: "chat.loaded"; threads: Thread[]; messages: Message[]; more: boolean }
   | { type: "task.state"; params: Task }
   /** A thread's row changed: opened, closed, or given a topic or a workspace. Its messages stay. */
   | { type: "thread.state"; params: Thread }
@@ -442,7 +442,8 @@ export type Action =
 export const AUDIT_KEEP = 200;
 export const ERRORS_KEEP = 20;
 export const HISTORY_PAGE = 50;
-export const THREAD_PAGE = 1;
+/** The messages a chat page holds: a screen or two, and the view asks for the next page as the user scrolls up to it. */
+export const CHAT_PAGE = 60;
 
 /** Where the spend starts: the last local midnight, so Today is the calendar day's. */
 export function spendFrom(now: number): number {
@@ -497,7 +498,7 @@ export function initialState(): ViewState {
     updates: new Map(),
     quick: false,
     chatLoaded: false,
-    threadsExhausted: false,
+    messagesExhausted: false,
     chatLoading: false,
     errors: [],
     errorsSeen: 0,
@@ -718,6 +719,8 @@ export function apply(state: ViewState, action: Action): ViewState {
         delete state.assistant;
         state.chatLoading = false;
         state.chatLoaded = false;
+        delete state.oldestMessage;
+        state.messagesExhausted = false;
         // The node is gone: whatever it was saying and whatever code it offered are stale, and so is every reading.
         delete state.voice;
         delete state.heard;
@@ -914,13 +917,11 @@ export function apply(state: ViewState, action: Action): ViewState {
         state.streaming.delete(m.id);
         if (state.heard?.message === m.id) delete state.heard;
       }
-      // The next page starts before the earliest thread a page brought. A thread known only
-      // from its state or a live message has no messages loaded, so the pages pass over it
-      // in their turn rather than start behind it.
-      const cursor = state.oldestThread !== undefined ? state.threads.get(state.oldestThread) : undefined;
-      const oldest = [...action.threads, ...(cursor ? [cursor] : [])].sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1))[0];
-      if (oldest) state.oldestThread = oldest.id;
-      if (action.threads.length < action.limit) state.threadsExhausted = true;
+      // A page is oldest first, so its first message is the next page's cursor. A page that
+      // came back empty, or without older messages, ends the history.
+      const first = action.messages[0];
+      if (first !== undefined) state.oldestMessage = first.id;
+      state.messagesExhausted = !action.more;
       return state;
     }
     case "task.state": {
@@ -950,9 +951,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       return state;
     }
     case "voice.partial": {
-      const { client, text, from, message } = action.params;
+      const { client, text, from, message, dictate } = action.params;
       // The node sends each client its own utterance's words alone.
       if (client !== undefined && client !== state.client?.id) return state;
+      // Dictated words are typed into a field (view.ts), not shown on their way to the chat.
+      if (dictate) return state;
       // Its message landed first: the ghost has had its time.
       if (message !== undefined && state.messages.has(message)) {
         delete state.heard;
@@ -1261,19 +1264,17 @@ export function earlierButton(state: ViewState, card: SessionCard): HistoryButto
 }
 
 /**
- * The button at the top of the chat. Before a thread is loaded, a client that loads history
- * only when asked offers Load history (`chat-history`); the desktop offers nothing, since it
- * loads the newest thread itself. Once one is loaded, Earlier (`threads-earlier`) pages back
- * a thread at a time while there is an earlier one.
+ * The button at the top of the chat. The chat loads its newest page by itself as it opens, and
+ * pages back as the user scrolls up, so the button is there for the two times it is needed: to
+ * load the first page again when that failed (Load history), and to page back by hand when the
+ * scroll does not reach it (Earlier). Neither shows once the start of the chat is loaded.
  */
-export function chatButton(state: ViewState): (HistoryButton & { action: "chat-history" | "threads-earlier" }) | undefined {
+export function chatButton(state: ViewState): (HistoryButton & { action: "chat-history" }) | undefined {
+  if (!state.scopes.includes("chat")) return undefined;
   const disabled = state.chatLoading || !state.connected;
-  if (!state.chatLoaded) {
-    if (loadsHistory(state) || !state.scopes.includes("chat")) return undefined;
-    return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Load history", disabled };
-  }
-  if (state.threadsExhausted || state.oldestThread === undefined) return undefined;
-  return { action: "threads-earlier", label: state.chatLoading ? "Loading…" : "Earlier", disabled };
+  if (!state.chatLoaded) return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Load history", disabled };
+  if (state.messagesExhausted) return undefined;
+  return { action: "chat-history", label: state.chatLoading ? "Loading…" : "Earlier", disabled };
 }
 
 // --- selectors -----------------------------------------------------------------------------
@@ -2043,6 +2044,148 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
   const pending = [...card.sends.values()].filter((s) => !receipted.has(s.ref)).sort((a, b) => a.at - b.at);
   for (const send of pending) rows.push({ kind: "send", key: `s${send.ref}`, send });
   return rows;
+}
+
+/** A tool an agent's turn called, and what came back once it did. */
+export interface TimelineStep {
+  key: string;
+  tool: string;
+  args: unknown;
+  truncated?: boolean;
+  result?: { value: unknown; error: boolean; truncated?: boolean };
+}
+
+/** A run of an agent's turn: what it wrote, or the tools it called one after another. */
+export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] };
+
+/**
+ * A session's timeline as cards, the way the chat and a group draw theirs: the user's messages
+ * (`receipt` while one is not plainly delivered, `lead` for a leader's), another agent's, each
+ * of the session's turns as one card of what it wrote and the tools it called between, asks,
+ * and quiet notes. Busy and idle are not drawn: idle ends a turn's card.
+ */
+export type TimelinePost =
+  | { kind: "user"; key: string; at: number; text: string; receipt?: { state: PendingSend["state"]; asPeer: boolean }; lead?: string }
+  | { kind: "agent"; key: string; at: number; text: string; who: string; harness?: string }
+  | { kind: "turn"; key: string; at: number; parts: TurnPart[] }
+  | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown }
+  | { kind: "note"; key: string; at: number; text: string };
+
+export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
+  const posts: TimelinePost[] = [];
+  let turn: Extract<TimelinePost, { kind: "turn" }> | undefined;
+  // the calls of the turn without their result yet, by id, and by tool for a harness that names none
+  let open = new Map<string, TimelineStep>();
+  let waiting: TimelineStep[] = [];
+  const end = () => {
+    turn = undefined;
+    open = new Map();
+    waiting = [];
+  };
+  const add = (post: TimelinePost) => {
+    end();
+    posts.push(post);
+  };
+  const into = (key: string, at: number) => {
+    if (!turn) {
+      turn = { kind: "turn", key: `t${key}`, at, parts: [] };
+      posts.push(turn);
+    }
+    return turn;
+  };
+  for (const row of rows) {
+    if (row.kind === "send") {
+      add({ kind: "user", key: row.key, at: row.send.at, text: row.send.text, receipt: { state: row.send.state, asPeer: false } });
+      continue;
+    }
+    const e = row.event;
+    const p = (e.payload ?? {}) as Record<string, unknown>;
+    switch (e.kind) {
+      case "status":
+        if (p["status"] === "idle") end();
+        break;
+      case "user_turn": {
+        const text = String(p["text"] ?? "");
+        if (row.from !== undefined) {
+          const from = (p["peer"] ?? p["from"]) as { harness?: unknown } | undefined;
+          add({ kind: "agent", key: row.key, at: e.at, text, who: row.from, ...(typeof from?.harness === "string" ? { harness: from.harness } : {}) });
+        } else if (p["source"] === "peer") add({ kind: "agent", key: row.key, at: e.at, text, who: "another agent" });
+        else add({ kind: "user", key: row.key, at: e.at, text, ...(row.lead !== undefined ? { lead: row.lead } : {}) });
+        break;
+      }
+      case "assistant_text": {
+        const t = into(row.key, e.at);
+        t.parts.push({ kind: "text", key: row.key, text: String(p["text"] ?? "") });
+        break;
+      }
+      case "tool_call": {
+        const t = into(row.key, e.at);
+        const last = t.parts.at(-1);
+        const step: TimelineStep = { key: row.key, tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
+        if (last?.kind === "steps") last.steps.push(step);
+        else t.parts.push({ kind: "steps", key: row.key, steps: [step] });
+        if (typeof p["id"] === "string") open.set(p["id"], step);
+        else waiting.push(step);
+        break;
+      }
+      case "tool_result": {
+        const tool = String(p["tool"] ?? "result");
+        const id = typeof p["id"] === "string" ? p["id"] : undefined;
+        let step = id !== undefined ? open.get(id) : undefined;
+        if (step && id !== undefined) open.delete(id);
+        if (!step) {
+          const i = waiting.findIndex((s) => s.tool === tool);
+          if (i >= 0) step = waiting.splice(i, 1)[0];
+        }
+        const result = { value: p["result"], error: p["isError"] === true, ...(p["truncated"] ? { truncated: true } : {}) };
+        if (step) {
+          step.result = result;
+          break;
+        }
+        // a result whose call is not in this turn: a step of its own
+        const t = into(row.key, e.at);
+        const last = t.parts.at(-1);
+        const alone: TimelineStep = { key: row.key, tool, args: undefined, result };
+        if (last?.kind === "steps") last.steps.push(alone);
+        else t.parts.push({ kind: "steps", key: row.key, steps: [alone] });
+        break;
+      }
+      case "ask":
+        add({ kind: "ask", key: row.key, at: e.at, ...(row.ask ? { ask: row.ask } : {}), payload: e.payload });
+        break;
+      case "notification": {
+        const type = String(p["type"] ?? "notification");
+        if (type === "message") {
+          const state = (p["state"] as PendingSend["state"] | undefined) ?? "delivered";
+          const receipt = state !== "delivered" || row.asPeer === true ? { receipt: { state, asPeer: row.asPeer === true } } : {};
+          add({ kind: "user", key: row.key, at: e.at, text: row.send?.text ?? String(p["text"] ?? ""), ...receipt });
+        } else if (type === "queued") add({ kind: "note", key: row.key, at: e.at, text: `queued: ${String(p["text"] ?? "")}` });
+        else if (type === "session_end") add({ kind: "note", key: row.key, at: e.at, text: `Ending (${String(p["reason"] ?? "")})` });
+        else if (type === "backgrounded") add({ kind: "note", key: row.key, at: e.at, text: "Sent to the background: it goes on as a background job" });
+        else {
+          const words = type.replace(/_/g, " ");
+          const message = String(p["message"] ?? "");
+          add({ kind: "note", key: row.key, at: e.at, text: message ? `${words}: ${message}` : words });
+        }
+        break;
+      }
+      case "ended":
+        add({ kind: "note", key: row.key, at: e.at, text: `Session ended${p["reason"] ? ` (${String(p["reason"])})` : ""}` });
+        break;
+    }
+  }
+  return posts;
+}
+
+/** A step in a few words, for the line a turn's steps fold to: the tool and what it was pointed at. */
+export function stepWords(step: Pick<TimelineStep, "tool" | "args">): string {
+  const a = (step.args ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof a[k] === "string" && (a[k] as string).trim() !== "" ? (a[k] as string).trim() : undefined);
+  const path = str("file_path") ?? str("path") ?? str("notebook_path");
+  const what = str("description") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url") ?? (path ? (path.split(/[\\/]/).pop() ?? path) : undefined) ?? str("prompt");
+  if (!what) return step.tool;
+  const line = what.split(/\r?\n/)[0]!;
+  return `${step.tool} ${line.length > 60 ? `${line.slice(0, 59)}…` : line}`;
 }
 
 export function workspaceName(state: ViewState, session: Session): string | undefined {
@@ -5051,6 +5194,13 @@ export function groupTabWords(g: Group): { title: string; label: string } {
   const people = g.members.filter((m) => m.kind === "agent" && !m.gone).length;
   const title = [g.purpose ? `${g.name}: ${g.purpose}` : g.name, `${people} agent${people === 1 ? "" : "s"}${counts.length > 0 ? ` · ${counts.join(" · ")}` : ""}`].join("\n");
   return { title, label };
+}
+
+/** Who is in a group, in a few words for its head folded to one line: its agents, those gone not counted, and its people. */
+export function groupMemberWords(g: Group): string {
+  const agents = g.members.filter((m) => m.kind === "agent" && !m.gone).length;
+  const people = g.members.filter((m) => m.kind === "person").length;
+  return `${agents} agent${agents === 1 ? "" : "s"} · ${people} ${people === 1 ? "person" : "people"}`;
 }
 
 /**
