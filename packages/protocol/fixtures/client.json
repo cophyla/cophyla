@@ -6,7 +6,9 @@
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true } },
         { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "forward": true },
         { "token": "6f1d…", "kind": "ui", "name": "cophyla", "audio": { "in": false, "out": false }, "local": true },
-        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } }
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true, "codecs": ["opus", "pcm"], "played": true } },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "resume": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8" },
+        { "token": "6f1d…", "kind": "controller", "audio": { "in": true, "out": true }, "resume": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "move": true }
       ],
       "results": [
         {
@@ -35,11 +37,29 @@
           "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
           "protocolVersion": 1,
           "platformVersion": "0.9.0",
-          "audio": { "codecs": ["opus", "pcm"] }
+          "audio": { "codecs": ["opus", "pcm"], "dictate": true }
+        },
+        {
+          "client": {
+            "id": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8",
+            "kind": "controller",
+            "scopes": ["chat", "voice", "asks:answer"],
+            "via": "direct",
+            "audio": { "in": true, "out": true },
+            "connectedAt": 1758196800000
+          },
+          "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV",
+          "protocolVersion": 1,
+          "platformVersion": "0.22.4",
+          "resumed": true
         }
       ]
     },
     "chat.send": { "params": [{ "text": "what is the agent doing" }, { "text": "how many tasks", "mode": "quick" }], "results": [{ "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB5" }] },
+    "chat.history": {
+      "params": [{}, { "before": "msg_01ARZ3NDEKTSV4RRFFQ69G5FB3", "limit": 60 }],
+      "results": [{ "messages": [], "threads": [], "more": false }]
+    },
     "chat.load": {
       "params": [{}, { "before": "thr_01ARZ3NDEKTSV4RRFFQ69G5FB3", "limit": 1 }],
       "results": [
@@ -69,6 +89,8 @@
     },
     "session.reopen": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "acceptEdits" }], "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "plan" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypassPermissions" }], "results": [{ "mode": "plan" }] },
+    "session.models": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }], "results": [{ "models": [{ "value": "sonnet", "label": "Sonnet" }] }, { "current": "gpt-6-astra[low]", "models": [{ "value": "gpt-6-astra[low]", "label": "GPT-6 Astra (low)" }] }] },
+    "session.setModel": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "model": "sonnet" }], "results": [{ "model": "sonnet" }] },
     "session.watch": { "params": [{ "ids": ["sess_01ARZ3NDEKTSV4RRFFQ69G5FB1"] }, { "ids": [] }], "results": [{}] },
     "session.files": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "dirs": ["", "apps", "apps/cophylad/src"] }],
@@ -132,7 +154,7 @@
     "workspace.list": { "params": [{}], "results": [{ "workspaces": [] }] },
     "workspace.put": { "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "path": "C:\\D\\other", "name": "other" }], "results": [{ "id": "ws_01ARZ3NDEKTSV4RRFFQ69G5FB1" }] },
     "event.list": { "params": [{}], "results": [{ "events": [] }] },
-    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }], "results": [{}] },
+    "voice.ptt": { "params": [{ "active": true }, { "active": false, "cancel": true }, { "active": true, "dictate": true }], "results": [{}] },
     "voice.wakeword": {
       "params": [{ "heads": ["cophyla_v0.1.onnx"] }, { "heads": [] }],
       "results": [
@@ -279,6 +301,7 @@
         }
       ]
     },
+    "client.away": { "params": [{ "away": true }, { "away": false }], "results": [{}] },
     "relay.info": {
       "params": [{}],
       "results": [{ "url": "https://orc.example", "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "token": "rly_3q2-7fWv0XcQkJ1Lm9ZpRtYuIoPaSdFgHjKl", "key": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }]
@@ -753,8 +776,10 @@
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "What is the status" },
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": " of the build?", "from": 18 },
       { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "", "from": 32, "message": "msg_01ARZ3NDEKTSV4RRFFQ69G5FC4" },
+      { "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "run the tests", "dictate": true },
       { "text": "" }
     ],
+    "voice.dictated": [{ "client": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "text": "Run the tests again, then tell me which ones failed." }],
     "voice.audio": [
       { "chunk": "AAAA" },
       { "chunk": "AwD4//8=", "codec": "opus", "rate": 24000, "seq": 0, "reply": 3 },
@@ -849,6 +874,7 @@
     "remote.pipe.data": [{ "pipe": "p7", "data": "SFRUUC8xLjEgMjAwIE9LDQo=" }],
     "remote.pipe.ack": [{ "pipe": "p7", "bytes": 1024 }],
     "remote.pipe.close": [{ "pipe": "p7" }],
+    "client.moved": [{}],
     "connection.state": [
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "active", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "peer": { "user": "bob", "name": "api-codex" }, "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "queued": 1 },
       { "id": "con_01ARZ3NDEKTSV4RRFFQ69G5FE1", "state": "ended", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "by": "agent", "createdAt": 1758196700000, "sent": 1, "received": 0, "reason": "bob ended it (ended by the user)" }

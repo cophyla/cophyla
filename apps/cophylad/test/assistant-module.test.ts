@@ -1416,7 +1416,10 @@ describe("on Claude Code", () => {
     expect(settings).toContain("Bearer hook-token");
     expect(settings).toContain(p.id);
     // where it stands names its terminal, for the pane that opens it
-    expect(w.assistant.state()).toEqual({ status: "idle", harness: "claude", model: "sonnet", effort: "low", profile: p.id, terminal: { host: "host-1", id: "t1" } });
+    // The chat's session is named where it runs; the rest is as it was.
+    const { session, ...rest } = w.assistant.state();
+    expect(session).toMatch(/^sess_/);
+    expect(rest).toEqual({ status: "idle", harness: "claude", model: "sonnet", effort: "low", profile: p.id, terminal: { host: "host-1", id: "t1" } });
     expect(w.saved()).toEqual({ harness: "claude", profile: p.id, native: "native-1", token: w.assistant.mcpToken, port: PORT, rules: await rulesName() });
     expect(w.sessions.hooks).toBeDefined();
   });

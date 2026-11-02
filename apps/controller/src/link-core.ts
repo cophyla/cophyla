@@ -35,6 +35,17 @@
 // and a LAN that answers takes over the same way. A data channel that stops answering has
 // the relay opened and promoted beside it before it is gone.
 //
+// The phone going out of sight keeps the link a while (`background`): the node is told the
+// phone is away (`client.away`), holds what it would send meanwhile and pushes asks as though
+// the phone were gone, and coming back within `LINGER_MS` asks the node for what it held on
+// the same connection, which costs one round trip. Past that the connection closes, and the
+// link is `paused`, never lost: what the view shows stays on screen. The hello that comes back
+// names the client it was (`resume`), and a node that kept it answers `resumed` and sends what
+// that client missed, so the view has nothing to load again; the same goes for every move
+// between transports. Which way carried the link last, and on which of the phone's networks,
+// is remembered: back on the network where the relay or a data channel carried it, the relay
+// is opened at once beside the LAN, with no head start to wait out.
+//
 // A stream's pipes are the app's too, never the view's: `pipeOpen` asks the node with the
 // core's own requests, `pipeSignal` sends a pipe's bytes, window and end on the connection
 // that carries the link, and the node's `remote.pipe.*` go to `onPipe` and nowhere else.
@@ -64,6 +75,10 @@ export const DRAIN_MS = 3000;
 export const PROMOTE_HELLO_MS = 10_000;
 /** How long a pipe may take to open: the node may carry it on to another. */
 export const PIPE_OPEN_MS = 20_000;
+/** After the app goes out of sight, how long its connection is kept for a quick return. */
+export const LINGER_MS = 120_000;
+/** Back in front after lingering: how long the node has to answer before the connection is taken as gone. */
+export const BACK_PROBE_MS = 1500;
 /** Ids of the frames this module sends for itself. */
 const CLAIM_ID = "p1";
 const HELLO_ID = "p2";
@@ -72,7 +87,19 @@ const PROMOTE_ID = "p4";
 /** The relay's close code for a token it no longer knows. */
 const RELAY_UNAUTHORIZED = 4401;
 /** What only this module sends: the handshakes, the relay access, a data channel's signalling. */
-const OWN_METHODS = new Set(["hello", "pair.claim", "pair.account", "invite.redeem", "browser.pair", "relay.info", "direct.info", "direct.offer", "direct.candidate"]);
+const OWN_METHODS = new Set(["hello", "pair.claim", "pair.account", "invite.redeem", "browser.pair", "relay.info", "client.away", "direct.info", "direct.offer", "direct.candidate"]);
+
+/** Which way carried the link last, and on which of the phone's networks. */
+export interface PathMemory {
+  network: string;
+  via: TransportKind;
+}
+
+/** Where the path is kept between runs of the app. */
+export interface PathStore {
+  read(): PathMemory | undefined;
+  write(path: PathMemory): void;
+}
 
 export interface Timers {
   setTimeout(handler: () => void, ms: number): unknown;
@@ -128,6 +155,12 @@ export interface LinkCoreOptions {
   credentialForLan?: (lan: PairedLan) => Partial<Credential>;
   /** Said in every `hello` beside the credential: the native app's `forward`. */
   helloExtra?: { forward?: boolean };
+  /** The network the device is on now, as a handle that changes when it leaves that network; none where the platform cannot tell. */
+  network?: () => Promise<string | undefined>;
+  /** Where the last path is kept between runs; in memory alone when absent. */
+  paths?: PathStore;
+  lingerMs?: number;
+  backProbeMs?: number;
 }
 
 type Handler = (payload: never) => void;
@@ -215,6 +248,24 @@ export class LinkCore implements TauriIo {
   private coreSeq = 0;
   private candidateListeners = new Set<(p: { peer: string; candidate: CandidateInit | null }) => void>();
   private pipeListeners = new Set<(method: string, params: unknown) => void>();
+  /**
+   * Out of sight with the connection kept: the connection, the timer that closes it, and
+   * whether the app is back and asking the node for what it held.
+   */
+  private away?: { active: Active; timer: unknown; back: boolean };
+  /** The client the last hello was answered as: the next hello asks to take it up again. */
+  private client?: string;
+  /** Down for a pause, not a loss, until a hello answers or the reconnect fails. */
+  private pausedGap = false;
+  /**
+   * The client moved to a new connection while the old one still carried what the node sent
+   * before it did: the old one's notifications are heard until it says `client.moved`, and the
+   * new one's wait meanwhile, so nothing is heard out of order.
+   */
+  private moving?: { from: Active; queue: string[]; timer: unknown };
+  /** The network the attempt under way was made on, and the path that carried the link last. */
+  private network?: string;
+  private path?: PathMemory;
   /** The data channel's tries on this connection: its timer, how far the backoff went, whether the node said no. */
   private upgrade: { timer?: unknown; backoff: number; blocked: boolean; running: boolean; seq: number } = { backoff: 0, blocked: false, running: false, seq: 0 };
 
@@ -224,6 +275,11 @@ export class LinkCore implements TauriIo {
 
   /** Reads the credential once; the host attaches after this. */
   async load(): Promise<Credential | undefined> {
+    try {
+      this.path = this.opts.paths?.read();
+    } catch {
+      this.path = undefined;
+    }
     this.cred = await this.opts.store.read();
     this.loaded = true;
     return this.cred;
@@ -292,7 +348,11 @@ export class LinkCore implements TauriIo {
   }
 
   private setState(state: LinkState, extra: Partial<CoreSnapshot> = {}): void {
-    this.state = { state, since: this.now(), ...extra };
+    // a pause holds through the reconnect that ends it, until a hello or a failure says how it went
+    if (extra.paused) this.pausedGap = true;
+    else if (state === "connected" || state === "unauthorized") this.pausedGap = false;
+    const paused = this.pausedGap && (state === "connecting" || state === "disconnected") ? { paused: true as const } : {};
+    this.state = { state, since: this.now(), ...extra, ...paused };
     this.emit(EVENT_STATE, this.state);
   }
 
@@ -331,6 +391,7 @@ export class LinkCore implements TauriIo {
     this.setState("connecting");
     this.helloDone = false;
     try {
+      this.network = await this.currentNetwork();
       if (this.pairing) {
         const pairing = this.pairing;
         try {
@@ -352,9 +413,12 @@ export class LinkCore implements TauriIo {
       }
       const relay = this.relayTransport();
       const lans = this.useRelay && relay ? [] : this.opts.lan(this.cred);
+      // on the network where the LAN did not carry it last, the relay opens beside the LAN at once
+      const known = this.network !== undefined && this.path?.network === this.network;
+      const headStart = known && this.path!.via !== "lan" ? 0 : undefined;
       let won: Active;
       try {
-        won = await this.openFirst(lans, relay);
+        won = await this.openFirst(lans, relay, headStart);
       } catch (e) {
         if (this.suspended) return;
         this.opening = false;
@@ -376,7 +440,7 @@ export class LinkCore implements TauriIo {
    * has passed or the LAN has failed. The first to open is the one; one that opens after it
    * is closed unused. Rejects when none opens, with the relay's reason when it was tried.
    */
-  private openFirst(lans: Transport[], relay: Transport | undefined): Promise<Active> {
+  private openFirst(lans: Transport[], relay: Transport | undefined, headStartMs?: number): Promise<Active> {
     return new Promise<Active>((resolve, reject) => {
       const timers = this.timers();
       let settled = false;
@@ -417,11 +481,13 @@ export class LinkCore implements TauriIo {
         );
       };
       running++;
-      if (relay && lans.length > 0) {
+      const lead = headStartMs ?? this.opts.lanHeadStartMs ?? LAN_HEAD_START_MS;
+      if (relay && lans.length > 0 && lead === 0) startRelay();
+      else if (relay && lans.length > 0) {
         headStart = timers.setTimeout(() => {
           headStart = undefined;
           startRelay();
-        }, this.opts.lanHeadStartMs ?? LAN_HEAD_START_MS);
+        }, lead);
       }
       void (async () => {
         for (const t of lans) {
@@ -481,8 +547,11 @@ export class LinkCore implements TauriIo {
     else this.send({ jsonrpc: "2.0", id: CLAIM_ID, method: "pair.account", params: { name: p.name } });
   }
 
-  private helloParams(credential: Credential): Record<string, unknown> {
-    return { token: credential.token, kind: "controller", name: credential.name, audio: { in: true, out: true, codecs: this.codecs, played: true }, ...(this.opts.helloExtra ?? {}) };
+  private helloParams(credential: Credential, move = false): Record<string, unknown> {
+    // the client this credential was last answered as: a node that kept it takes it up again,
+    // and one still live on the connection the link moves off when the hello says it moves
+    const resume = this.client !== undefined ? { resume: this.client, ...(move ? { move: true } : {}) } : {};
+    return { token: credential.token, kind: "controller", name: credential.name, audio: { in: true, out: true, codecs: this.codecs, played: true }, ...(this.opts.helloExtra ?? {}), ...resume };
   }
 
   private sayHello(): void {
@@ -510,9 +579,29 @@ export class LinkCore implements TauriIo {
       this.settleCore(frame.id, frame);
       return;
     }
+    const moving = this.moving;
+    if (moving && active === moving.from && frame.method !== undefined) {
+      if (frame.method === "client.moved") {
+        this.moved();
+        return;
+      }
+      // sent before the client moved: heard as the link's own, ahead of what waits on the new connection
+      this.onFrame(frame, text);
+      return;
+    }
     if (this.active !== active) {
       // A connection the link moved off: the answers to what the view asked on it still reach the view; its notifications are the new one's to give.
       if (this.draining.has(active) && frame.method === undefined && frame.id !== undefined) this.emit(EVENT_FRAME, text);
+      return;
+    }
+    if (moving && frame.method !== undefined && frame.id === undefined) {
+      moving.queue.push(text);
+      return;
+    }
+    if (frame.method === "client.moved") {
+      // The node moved the client to a connection the link did not take (its answer was lost, or
+      // came too late): this one carries it no more, and a new one takes it up where it is.
+      active.duplex.close(4000, "the client moved to a connection the link did not take");
       return;
     }
     if (frame.id === CLAIM_ID) {
@@ -527,6 +616,11 @@ export class LinkCore implements TauriIo {
       void this.onRelayInfo(frame);
       return;
     }
+    this.onFrame(frame, text);
+  }
+
+  /** A frame of the link's that is not a handshake's answer: the core's own signalling, or the host's. */
+  private onFrame(frame: { method?: unknown; params?: unknown }, text: string): void {
     if (frame.method === "direct.candidate") {
       for (const fn of [...this.candidateListeners]) fn(frame.params as { peer: string; candidate: CandidateInit | null });
       return;
@@ -584,6 +678,7 @@ export class LinkCore implements TauriIo {
   private onHello(active: Active, frame: { result?: unknown; error?: { data?: { code?: string; message?: string }; message?: string } }): void {
     if (frame.error || !frame.result) {
       // The node does not know this token any more: the desktop revoked it.
+      this.client = undefined;
       void this.saveCredential(undefined);
       const message = frame.error?.data?.message ?? frame.error?.message ?? "refused";
       this.setState("unauthorized", { error: message });
@@ -598,6 +693,8 @@ export class LinkCore implements TauriIo {
     this.helloDone = true;
     const kind = active.transport.kind;
     if (kind !== "p2p") this.useRelay = kind === "relay";
+    if (hello?.client.id) this.client = hello.client.id;
+    this.remember(kind);
     const path = kind === "p2p" ? (active.duplex as P2pDuplex).path : undefined;
     this.setState("connected", { hello, url: active.transport.label, via: kind, ...(path ? { path } : {}) });
     this.disarmUpgrade();
@@ -621,6 +718,8 @@ export class LinkCore implements TauriIo {
 
   private onClosed(code: number, reason: string, active: Active | undefined): void {
     if (active && this.active !== active) return;
+    // what waited for the old connection's last word is heard before the loss
+    this.moved();
     if (active) this.failCore(active, reason || `closed ${code}`);
     // A move under way takes over from a connection lost meanwhile, or the loss is taken as it came.
     if (active && this.promoting) {
@@ -654,8 +753,22 @@ export class LinkCore implements TauriIo {
         return;
       }
     }
+    const away = this.away;
+    if (away) {
+      this.away = undefined;
+      this.timers().clearTimeout(away.timer);
+      // back in front and asking for what the node held: that connection was gone, so a new one now, resuming
+      if (away.back && !this.suspended) {
+        this.attempt = 0;
+        this.setState("disconnected", { error: reason || `closed ${code}`, paused: true });
+        this.connect();
+        return;
+      }
+      // still out of sight: nothing reconnects until the app is back
+      this.suspended = true;
+    }
     if (this.suspended) {
-      this.setState("disconnected", { error: "paused" });
+      this.setState("disconnected", { error: "paused", paused: true });
       return;
     }
     // A refusal is not retried on a loop: the page has something to say to the user.
@@ -666,6 +779,8 @@ export class LinkCore implements TauriIo {
       void this.saveCredential(rest);
       this.useRelay = false;
     }
+    // a loss, not a pause: whatever was paused is over
+    this.pausedGap = false;
     this.setState("disconnected", { error: reason || `closed ${code}` });
     if (!this.cred) return;
     this.schedule();
@@ -694,7 +809,7 @@ export class LinkCore implements TauriIo {
    */
   private promote(transport: Transport, duplex: Duplex): Promise<boolean> {
     const credential = this.cred;
-    if (!credential || !this.active || this.promoting || this.suspended) {
+    if (!credential || !this.active || this.promoting || this.suspended || this.away) {
       duplex.close(1000, "the link is not there to move");
       return Promise.resolve(false);
     }
@@ -728,7 +843,7 @@ export class LinkCore implements TauriIo {
           return;
         }
         if (frame.id !== PROMOTE_ID) return;
-        if (frame.error || !frame.result || this.suspended || (!this.active && !promoting.lost)) {
+        if (frame.error || !frame.result || this.suspended || this.away || (!this.active && !promoting.lost)) {
           give(false, frame.error ? "hello refused" : "the link moved on");
           return;
         }
@@ -741,11 +856,29 @@ export class LinkCore implements TauriIo {
         duplex.onclose = (code, reason) => this.onClosed(code, reason, candidate);
         this.opts.onOpened?.(transport, duplex);
         if (old) this.drain(old);
+        // the same client, moved: what the old connection still carries is heard before the new one's
+        if (old && (frame.result as { resumed?: unknown }).resumed === true) {
+          const moving = { from: old, queue: [] as string[], timer: undefined as unknown };
+          moving.timer = timers.setTimeout(() => {
+            if (this.moving === moving) this.moved();
+          }, DRAIN_MS);
+          this.moving = moving;
+        }
         this.connected(candidate, frame.result as LinkSnapshot["hello"]);
         resolve(true);
       };
-      duplex.send(JSON.stringify({ jsonrpc: "2.0", id: PROMOTE_ID, method: "hello", params: this.helloParams(credential) }));
+      duplex.send(JSON.stringify({ jsonrpc: "2.0", id: PROMOTE_ID, method: "hello", params: this.helloParams(credential, this.active !== undefined) }));
     });
+  }
+
+  /** The old connection said its last, or went: what waited on the new one is heard now, in order. */
+  private moved(): void {
+    const moving = this.moving;
+    if (!moving) return;
+    this.moving = undefined;
+    this.timers().clearTimeout(moving.timer);
+    const active = this.active;
+    for (const text of moving.queue) if (active) this.onMessage(active, text);
   }
 
   /** The connection the link moved off: its answers still reach the view for a few seconds, then it closes. */
@@ -754,18 +887,20 @@ export class LinkCore implements TauriIo {
     old.duplex.onclose = () => {
       this.draining.delete(old);
       this.failCore(old, "moved");
+      if (this.moving?.from === old) this.moved();
     };
     this.timers().setTimeout(() => {
       if (!this.draining.delete(old)) return;
       old.duplex.onclose = null;
       this.failCore(old, "moved");
+      if (this.moving?.from === old) this.moved();
       old.duplex.close(1000, "the link moved");
     }, DRAIN_MS);
   }
 
   /** The data channel is failing: the relay is opened beside it and takes the link over, before the channel is lost. */
   private async fallBack(active: Active): Promise<void> {
-    if (this.active !== active || this.suspended) return;
+    if (this.active !== active || this.suspended || this.away) return;
     const relay = this.relayTransport();
     if (!relay) return;
     let duplex: Duplex;
@@ -884,7 +1019,7 @@ export class LinkCore implements TauriIo {
     const active = this.active;
     const p2p = this.opts.p2p;
     const credential = this.cred;
-    if (!p2p || !credential || !active || active.transport.kind !== "relay" || this.suspended || this.upgrade.running || this.promoting) return;
+    if (!p2p || !credential || !active || active.transport.kind !== "relay" || this.suspended || this.away || this.upgrade.running || this.promoting) return;
     if (this.opts.quiet && !this.opts.quiet()) {
       this.armUpgrade(QUIET_RETRY_MS);
       return;
@@ -893,7 +1028,7 @@ export class LinkCore implements TauriIo {
     const seq = ++this.upgrade.seq;
     try {
       const duplex = await p2p.open(this.signalling(active), credential);
-      if (seq !== this.upgrade.seq || this.active !== active || this.suspended) {
+      if (seq !== this.upgrade.seq || this.active !== active || this.suspended || this.away) {
         duplex.close(1000, "the link moved on");
         return;
       }
@@ -935,7 +1070,7 @@ export class LinkCore implements TauriIo {
   /** Off the LAN: tries it now (the timer fired, or the network changed); a LAN that answers takes the link over. */
   async retryLan(): Promise<boolean> {
     const active = this.active;
-    if (!active || active.transport.kind === "lan" || this.suspended || this.opening || this.promoting) return false;
+    if (!active || active.transport.kind === "lan" || this.suspended || this.away || this.opening || this.promoting) return false;
     this.disarmLanRetry();
     if (this.opts.quiet && !this.opts.quiet()) {
       this.armLanRetry();
@@ -962,6 +1097,9 @@ export class LinkCore implements TauriIo {
 
   /** The phone's network changed: the LAN is tried at once, and on the relay the data channel is tried afresh. */
   async networkChanged(): Promise<void> {
+    if (this.away) return;
+    // what carries the link from here is remembered for the network it is on now
+    if (this.opts.network) this.network = await this.currentNetwork();
     this.upgrade.backoff = 0;
     const kind = this.active?.transport.kind;
     if (kind === undefined || kind === "lan") return;
@@ -1081,6 +1219,8 @@ export class LinkCore implements TauriIo {
 
   /** Drops the credential and the connection: the phone is not paired any more. */
   forget(): void {
+    this.endAway();
+    this.client = undefined;
     void this.saveCredential(undefined);
     this.useRelay = false;
     this.setState("unauthorized", { error: "not paired" });
@@ -1097,6 +1237,8 @@ export class LinkCore implements TauriIo {
    * back waits for `resume`.
    */
   suspend(): void {
+    this.endAway();
+    this.moved();
     this.suspended = true;
     const timers = this.timers();
     if (this.timer !== undefined) timers.clearTimeout(this.timer);
@@ -1112,7 +1254,7 @@ export class LinkCore implements TauriIo {
       old.duplex.onclose = null;
       old.duplex.close(1000, "paused");
     }
-    this.setState("disconnected", { error: "paused" });
+    this.setState("disconnected", { error: "paused", paused: true });
   }
 
   /** The page is back: the LAN is tried first again. */
@@ -1122,5 +1264,100 @@ export class LinkCore implements TauriIo {
     this.attempt = 0;
     this.useRelay = false;
     this.connect();
+  }
+
+  /**
+   * The app went out of sight. A connection that is up is kept for `LINGER_MS`, with the node
+   * told the phone is away; anything else, a pairing aside, is suspended as before. The
+   * microphone is the app's to stop, and it does.
+   */
+  background(): void {
+    if (this.suspended || this.away) return;
+    const active = this.active;
+    if (!active || this.state.state !== "connected" || this.promoting || this.pairing) {
+      this.suspend();
+      return;
+    }
+    const timers = this.timers();
+    if (this.timer !== undefined) timers.clearTimeout(this.timer);
+    this.timer = undefined;
+    this.disarmLanRetry();
+    this.disarmUpgrade();
+    this.upgrade.seq++;
+    const timer = timers.setTimeout(() => {
+      if (this.away?.active === active && !this.away.back) this.suspend();
+    }, this.opts.lingerMs ?? LINGER_MS);
+    this.away = { active, timer, back: false };
+    this.coreRequest(active, "client.away", { away: true }, this.opts.backProbeMs ?? BACK_PROBE_MS).catch((e: unknown) => {
+      // a node that does not know it would go on sending: the link closes as it always did
+      if (this.away?.active === active && !this.away.back && codeOf(e) !== "timeout") this.suspend();
+    });
+  }
+
+  /**
+   * The app is back. A connection kept out of sight asks the node for what it held, and is
+   * taken as gone when that is not answered within `BACK_PROBE_MS`: a new one opens then,
+   * asking to resume the same client. A suspended link opens again.
+   */
+  foreground(): void {
+    const away = this.away;
+    if (!away) {
+      this.resume();
+      return;
+    }
+    if (away.back) return;
+    away.back = true;
+    this.timers().clearTimeout(away.timer);
+    const active = away.active;
+    this.coreRequest(active, "client.away", { away: false }, this.opts.backProbeMs ?? BACK_PROBE_MS).then(
+      () => {
+        if (this.away !== away) return;
+        this.away = undefined;
+        // back where it was: the moves that wait while out of sight may run again
+        if (this.active === active && this.state.state === "connected") this.rearm(active);
+      },
+      () => {
+        if (this.away !== away || this.active !== active) return;
+        // no answer: the connection died out of sight, and its close brings a new one at once
+        active.duplex.close(4000, "no answer after the app came back");
+      },
+    );
+  }
+
+  /** The moves a connection arms as it says hello, armed again once the app is back. */
+  private rearm(active: Active): void {
+    const kind = active.transport.kind;
+    if (kind === "lan") return;
+    this.armLanRetry();
+    if (kind === "relay") this.armUpgrade(this.opts.upgradeDelayMs ?? UPGRADE_DELAY_MS);
+  }
+
+  private endAway(): void {
+    const away = this.away;
+    if (!away) return;
+    this.away = undefined;
+    this.timers().clearTimeout(away.timer);
+  }
+
+  private async currentNetwork(): Promise<string | undefined> {
+    if (!this.opts.network) return undefined;
+    try {
+      return await this.opts.network();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The path that carries the link now, kept for the next attempt on the same network. */
+  private remember(via: TransportKind): void {
+    const network = this.network;
+    if (network === undefined) return;
+    if (this.path?.network === network && this.path.via === via) return;
+    this.path = { network, via };
+    try {
+      this.opts.paths?.write(this.path);
+    } catch {
+      // a store that fails keeps the path for this run
+    }
   }
 }

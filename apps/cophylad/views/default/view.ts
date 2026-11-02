@@ -63,9 +63,9 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, THREAD_PAGE, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import { selectUpdateNote } from "./model.ts";
+import type { AssistantState, BrowserInvite, ClientClosedSession, ClientResult, UsageReport, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, loadsHistory, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import type { DoorStream } from "./model.ts";
@@ -74,6 +74,8 @@ import { activePane, chatTerminal, draftOf, explorerSession, fitField, RAIL_SPLI
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
+import { SlashMenu } from "./slashview.ts";
+import type { ModelChoices, SlashHost, UsageSection } from "./slashview.ts";
 import { FileViewer } from "./fileview.ts";
 import type { ViewerTarget } from "./fileview.ts";
 import { RemotePanel } from "./remoteview.ts";
@@ -81,6 +83,8 @@ import type { RemoteCover } from "./remoteview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
+import { grown, spliceAt, spliced, terminalWords } from "./dictation.ts";
+import type { Splice } from "./dictation.ts";
 import { TeamControl } from "./teamctl.ts";
 import { newTeamUi } from "./teamview.ts";
 import { LeadControl } from "./leadctl.ts";
@@ -352,7 +356,7 @@ rpc.onNotification((n) => {
       dispatch({ type: "host.state", params: p });
       if (p.connected) {
         void loadProfiles();
-        if (loadsHistory(state)) void loadChat();
+        void loadChat();
         void loadControllers();
         void loadGrants();
         void loadConnections();
@@ -369,6 +373,7 @@ rpc.onNotification((n) => {
         whereNow();
       } else {
         typing(false);
+        dictationGone();
         waves.show(false);
         tickVoice();
         stopPairingClock();
@@ -450,6 +455,8 @@ rpc.onNotification((n) => {
       return;
     case "voice.state": {
       const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard; limit?: number; stopped?: VoiceStopped };
+      // this view's utterance is over: a dictation whose words never came leaves its field as it was
+      if (p.state === "idle" && (p.client === undefined || p.client === state.client?.id)) dictationGone();
       dispatch({ type: "voice.state", params: p });
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
       if (p.unheard !== undefined) {
@@ -459,8 +466,14 @@ rpc.onNotification((n) => {
       tickVoice();
       return;
     }
-    case "voice.partial":
-      dispatch({ type: "voice.partial", params: n.params as VoicePartial });
+    case "voice.partial": {
+      const p = n.params as VoicePartial;
+      if (p.dictate) dictationHeard(p);
+      dispatch({ type: "voice.partial", params: p });
+      return;
+    }
+    case "voice.dictated":
+      dictationDone(n.params as { client: string; text: string });
       return;
     case "voice.setup":
       dispatch({ type: "voice.setup", params: n.params as VoiceSetup });
@@ -1729,25 +1742,78 @@ async function loadProfiles(): Promise<void> {
   }
 }
 
+/** How close to the top of the chat the user scrolls before the page before it is loaded: about a screen. */
+const CHAT_EDGE_PX = 300;
+
 /**
- * The newest thread with its messages, on connect on the desktop and on Load history on a
- * phone or the web app; `before` pages one earlier thread at a time. A page the user asked
- * for keeps the viewport on what it showed.
+ * The chat's messages, a page at a time: the newest on connect, on every client, so the chat is
+ * full as it opens; then, as the user scrolls up to its top, the page before the earliest one
+ * loaded. One request at a time, and none once the start of the chat is loaded. A page loaded
+ * behind the user keeps the viewport on what it showed.
  */
 async function loadChat(before?: string): Promise<void> {
-  if (!state.scopes.includes("chat") || state.chatLoading) return;
+  if (!state.connected || !state.scopes.includes("chat") || state.chatLoading) return;
   if (before === undefined && state.chatLoaded) return;
-  const asked = before !== undefined || !loadsHistory(state);
+  if (before !== undefined && state.messagesExhausted) return;
+  // A new request starts from the top: any retry still waiting is for a load that is no longer wanted.
+  if (chatRetry !== undefined) clearTimeout(chatRetry);
+  chatRetry = undefined;
+  chatAttempts = 0;
+  await fetchChat(before);
+}
+
+/** A chat load that failed and is waiting to be tried again, and how many tries it has had. */
+let chatRetry: ReturnType<typeof setTimeout> | undefined;
+let chatAttempts = 0;
+/** How many more tries a chat load gets when its request fails on a line that is still up, before the failure is said. */
+const CHAT_RETRIES = 4;
+
+/**
+ * One request for a page of the chat. A phone that moves between networks drops the request in
+ * flight, and the line can be back a moment later: a failure while connected is tried again, the
+ * button keeps saying Loading meanwhile, and only the last failure is said.
+ */
+async function fetchChat(before?: string): Promise<void> {
   dispatch({ type: "chat.loading" });
   try {
-    const params: { limit: number; before?: string } = { limit: THREAD_PAGE };
+    const params: { limit: number; before?: string } = { limit: CHAT_PAGE };
     if (before !== undefined) params.before = before;
-    const { threads, messages } = await rpc.request<{ threads: Thread[]; messages: Message[] }>("chat.load", params);
-    dispatch({ type: "chat.loaded", threads, messages, limit: THREAD_PAGE }, { anchor: asked });
+    const { threads, messages, more } = await rpc.request<{ threads: Thread[]; messages: Message[]; more: boolean }>("chat.history", params);
+    chatAttempts = 0;
+    dispatch({ type: "chat.loaded", threads, messages, more }, { anchor: before !== undefined });
+    fillChat();
   } catch (e) {
+    // Gone while the request was out: the next connect loads the chat, so there is nothing to retry or say.
+    if (!state.connected) {
+      dispatch({ type: "chat.failed" });
+      return;
+    }
+    if (chatAttempts < CHAT_RETRIES) {
+      chatAttempts++;
+      chatRetry = setTimeout(() => {
+        chatRetry = undefined;
+        if (state.connected) void fetchChat(before);
+      }, 500 * chatAttempts);
+      return;
+    }
+    chatAttempts = 0;
     dispatch({ type: "chat.failed" });
     fail("chat", e);
   }
+}
+
+/**
+ * Pages back while the chat is shown and does not yet fill its pane: a page of short messages on a
+ * tall screen would otherwise leave the top bare and nothing to scroll to.
+ */
+function fillChat(): void {
+  requestAnimationFrame(() => {
+    const pane = roots.stream;
+    if (!chatShown() || pane.clientHeight === 0) return;
+    if (state.chatLoaded && !state.chatLoading && !state.messagesExhausted && pane.scrollHeight <= pane.clientHeight + CHAT_EDGE_PX) {
+      void loadChat(state.oldestMessage);
+    }
+  });
 }
 
 async function chat(text: string): Promise<void> {
@@ -1855,17 +1921,131 @@ async function loadEarlier(session: string): Promise<void> {
 }
 
 /**
- * The talk button, held and let go: `voice.ptt` on the host's own connection. The host streams
- * its microphone while the node listens to it, and what was said comes back as a message.
+ * The talk button, held and let go: `voice.ptt` on the host's own connection, dictating. The
+ * host streams its microphone while the node listens to it, and what was said comes back as
+ * words typed into the field beside the button held, for the user to send.
  */
-function talk(held: boolean): void {
+function talk(held: boolean, button?: HTMLButtonElement): void {
   if ((ui.talking === true) === held) return;
   ui.talking = held;
+  if (held) {
+    const field = button?.closest("form")?.querySelector<HTMLTextAreaElement>("textarea");
+    pressField = field ?? undefined;
+  }
   draw();
-  rpc.request("voice.ptt", { active: held }).catch((e: unknown) => {
+  rpc.request("voice.ptt", held ? { active: true, dictate: true } : { active: false }).catch((e: unknown) => {
     if (held) ui.talking = false;
     fail("talk", e);
   });
+}
+
+// --- dictation -------------------------------------------------------------------------------------
+
+/** A dictation under way: its words so far, and the field they are typed into (the terminal takes only the whole). */
+interface Dictation {
+  words: string;
+  field?: HTMLTextAreaElement | HTMLInputElement;
+  splice?: Splice;
+  /** Whose the field is: the shared send form swaps to another session's draft with its tab. */
+  owner?: string;
+  terminal?: true;
+}
+
+/** The field whose talk button is held: what is said is typed there. */
+let pressField: HTMLTextAreaElement | undefined;
+let dictating: Dictation | undefined;
+
+const fieldOwner = (field: HTMLTextAreaElement | HTMLInputElement): string => field.form?.dataset["session"] ?? field.form?.dataset["group"] ?? field.className;
+
+const typable = (field: Element | null): field is HTMLTextAreaElement | HTMLInputElement =>
+  (field instanceof HTMLTextAreaElement || (field instanceof HTMLInputElement && field.type === "text")) && !field.disabled && !field.readOnly && field.offsetParent !== null;
+
+/**
+ * Where a dictation's words go: the field of the talk button held; else, from a phone's bar,
+ * the field the user was writing in, the terminal on show when it is typed into, a group's post,
+ * or the chat's or the session's field. A session's Messages pane, or its terminal when it is
+ * read only, gives way to its timeline and field; with nothing else, the chat's field, its tab
+ * opened.
+ */
+function dictationPlace(): HTMLTextAreaElement | HTMLInputElement | "terminal" | undefined {
+  if (pressField?.isConnected && !pressField.disabled) return pressField;
+  if (typable(document.activeElement)) return document.activeElement;
+  if (terminal.shown !== undefined && terminal.droppable) return "terminal";
+  if (ui.group !== undefined) {
+    const post = roots.groups.querySelector<HTMLTextAreaElement>(".group-text");
+    if (typable(post)) return post;
+  }
+  if (ui.group === undefined && ui.terminal === undefined) {
+    let field = composerInput();
+    if (!field && ui.selected !== undefined && state.sessions.has(ui.selected)) {
+      ui.modes.set(ui.selected, "timeline");
+      draw();
+      field = composerInput();
+    }
+    if (field) return field;
+  }
+  if (!state.scopes.includes("chat")) return undefined;
+  select(undefined);
+  return composerInput() ?? undefined;
+}
+
+function startDictation(): Dictation {
+  const place = dictationPlace();
+  if (place === "terminal") return { words: "", terminal: true };
+  if (!place) return { words: "" };
+  // at the caret when the field has the focus; at the end of what is there when it has not
+  const focused = document.activeElement === place;
+  const start = focused ? (place.selectionStart ?? place.value.length) : place.value.length;
+  const end = focused ? (place.selectionEnd ?? start) : start;
+  return { words: "", field: place, splice: spliceAt(place.value, start, end), owner: fieldOwner(place) };
+}
+
+/** Puts `words` where the dictation types them, as if typed: the drafts keep them and the field grows to them. */
+function showDictated(d: Dictation, words: string): void {
+  const field = d.field;
+  if (!field || !d.splice || fieldOwner(field) !== d.owner) return;
+  const { value, caret } = spliced(d.splice, words);
+  if (field.value === value) return;
+  field.value = value;
+  field.setSelectionRange(caret, caret);
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** The words heard so far of this view's dictation: shown at the caret as they grow. */
+function dictationHeard(p: VoicePartial): void {
+  if (p.client !== undefined && p.client !== state.client?.id) return;
+  dictating ??= startDictation();
+  dictating.words = grown(dictating.words, p);
+  showDictated(dictating, dictating.words);
+}
+
+/** A dictation's words, whole: typed in, and the field left for the user to read over and send. */
+function dictationDone(p: { client: string; text: string }): void {
+  if (p.client !== state.client?.id) return;
+  let d = dictating ?? startDictation();
+  dictating = undefined;
+  pressField = undefined;
+  // the field went to another session's draft meanwhile: the words go where the user is now
+  if (d.field && d.owner !== fieldOwner(d.field)) d = startDictation();
+  if (d.terminal) {
+    terminal.paste(terminalWords(p.text));
+    return;
+  }
+  if (!d.field) {
+    fail("dictation", new Error("there is nothing here to type what was said into"));
+    return;
+  }
+  showDictated(d, p.text);
+  // on a computer the user can read it over and press Enter; a phone's keyboard would cover the page
+  if (!phone.matches) d.field.focus();
+}
+
+/** This view's utterance ended with no words (taken back, nothing heard), or the link went: the field as it was. */
+function dictationGone(): void {
+  const d = dictating;
+  dictating = undefined;
+  pressField = undefined;
+  if (d) showDictated(d, "");
 }
 
 /**
@@ -1887,6 +2067,12 @@ async function send(session: string, text: string): Promise<void> {
   try {
     const r = await rpc.request<{ status: "queued" | "held"; ref: string }>("session.send", { id: session, text: trimmed });
     dispatch({ type: "send.result", session, ref: r.ref, text: trimmed, at: Date.now(), status: r.status });
+    // The model just cleared the draft, but renderSend leaves a focused field alone, and after Enter it is focused.
+    const input = document.querySelector<HTMLTextAreaElement>(`form.send[data-session="${CSS.escape(session)}"] .send-text`);
+    if (input && input.value === text) {
+      input.value = "";
+      fitField(input);
+    }
   } catch (e) {
     fail("send", e);
   }
@@ -3538,10 +3724,8 @@ document.addEventListener("click", (ev) => {
       if (target.dataset["session"]) void loadEarlier(target.dataset["session"]);
       return;
     case "chat-history":
-      void loadChat();
-      return;
-    case "threads-earlier":
-      if (state.oldestThread) void loadChat(state.oldestThread);
+      // Load history before the first page is in, and Earlier after it: the page before the earliest loaded.
+      void loadChat(state.chatLoaded ? state.oldestMessage : undefined);
       return;
     case "quick":
       dispatch({ type: "quick.toggle" });
@@ -3921,7 +4105,9 @@ document.addEventListener("submit", (ev) => {
       const text = input.value;
       input.value = "";
       fitField(input);
-      void chat(text);
+      chatSlash.attach(form, roots.chat, input);
+      // A slash command the palette takes (a panel, a confirmation, a send) does not go to the chat as text.
+      if (!chatSlash.submit(text)) void chat(text);
     }
     return;
   }
@@ -3929,7 +4115,15 @@ document.addEventListener("submit", (ev) => {
   ev.preventDefault();
   const session = form.dataset["session"];
   const input = form.querySelector<HTMLTextAreaElement>(".send-text");
-  if (session && input && !input.disabled) void send(session, input.value);
+  if (session && input && !input.disabled) {
+    sessionSlash.attach(form, document.getElementById("panes")!, input);
+    // A slash command the palette takes (a model, a panel, a confirmation) leaves the box empty; a line it does not take is sent.
+    if (sessionSlash.submit(input.value)) {
+      input.value = "";
+      fitField(input);
+      apply(state, { type: "draft", session, text: "" });
+    } else void send(session, input.value);
+  }
 });
 
 // In New terminal's field, the arrow keys move along the places and Enter starts the shell in the one they are on.
@@ -3949,10 +4143,80 @@ document.addEventListener("keydown", (ev) => {
   team.keydown(ev);
 });
 
+/** Starts an ended session again and shows it once the view has it, which the node tells it of as it starts. */
+async function reopenSession(id: string): Promise<void> {
+  await rpc.request("session.reopen", { id });
+  for (let i = 0; i < 100 && !state.sessions.has(id); i++) await new Promise((done) => setTimeout(done, 100));
+  if (state.sessions.has(id)) select(id);
+}
+
+/** `/usage`: the logins' plan limits, and each session's spend over the last week, from the node that keeps the ledger. */
+async function usageSections(): Promise<UsageSection[]> {
+  const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+  const now = Date.now();
+  const logins = selectSpend(state).map((r) => ({
+    label: r.label,
+    cost: costWords(r.spend.cost),
+    tokens: `${tokenWords(r.spend.in + r.spend.out)} tokens`,
+    ...(r.limits?.session ? { limit: `session ${limitWords(r.limits.session)}` } : {}),
+  }));
+  const report = await rpc.request<UsageReport>("usage.report", { node: state.node, from: now - WEEK_MS, to: now, bucket: "day", tz: -new Date().getTimezoneOffset(), split: "session" });
+  const chatSession = state.assistant?.session;
+  const sessions = [...report.sessions]
+    .sort((a, b) => b.cost - a.cost)
+    .slice(0, 12)
+    .map((s) => ({
+      label: s.label ?? s.key,
+      cost: costWords(s.cost),
+      tokens: `${tokenWords(s.tokens.in + s.tokens.out)} tokens`,
+      ...(s.key === chatSession ? { current: true } : {}),
+    }));
+  return [
+    { heading: "Logins", rows: logins, empty: "No spend recorded yet." },
+    { heading: "Sessions, last 7 days", rows: sessions, empty: "No session spent anything in the last 7 days." },
+  ];
+}
+
+/** What a composer's slash commands do: its words go to the chat, or to the session its send box is for. */
+function slashHost(kind: "chat" | "session"): SlashHost {
+  return {
+    run: (line) => {
+      if (kind === "chat") void chat(line);
+      else if (ui.selected !== undefined) void send(ui.selected, line);
+    },
+    target: () => (kind === "chat" ? state.assistant?.session : ui.selected),
+    models: (id) => rpc.request<ModelChoices>("session.models", { id }),
+    setModel: async (id, model) => {
+      await rpc.request("session.setModel", { id, model });
+    },
+    reopen: reopenSession,
+    closed: async () => (await rpc.request<{ closed: ClientClosedSession[] }>("session.closed", { limit: 20 })).closed,
+    usage: usageSections,
+    fail: (message) => fail(kind === "chat" ? "chat" : "send", new Error(message)),
+  };
+}
+
+// The chat's composer and a session's send box each have a palette and a panel of their own.
+const chatSlash = new SlashMenu(slashHost("chat"));
+const sessionSlash = new SlashMenu(slashHost("session"));
+
+document.addEventListener("keydown", (ev) => {
+  const target = ev.target as HTMLElement | null;
+  if (ev.isComposing) return;
+  if (target?.matches?.(".composer-text") && chatSlash.key(ev)) return;
+  if (target?.matches?.(".send-text") && sessionSlash.key(ev)) return;
+});
+
+document.addEventListener("focusout", (ev) => {
+  const target = ev.target as HTMLElement | null;
+  if (target?.matches?.(".composer-text")) chatSlash.blur();
+  if (target?.matches?.(".send-text")) sessionSlash.blur();
+});
+
 // In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
 document.addEventListener("keydown", (ev) => {
   const input = ev.target as HTMLElement | null;
-  if (!input?.matches?.(".composer-text, .send-text") || !enterSends(ev)) return;
+  if (ev.defaultPrevented || !input?.matches?.(".composer-text, .send-text") || !enterSends(ev)) return;
   ev.preventDefault();
   input.closest("form")?.requestSubmit();
 });
@@ -3966,6 +4230,9 @@ document.addEventListener("input", (ev) => {
   }
   if (input.classList.contains("composer-text")) {
     fitField(input as HTMLTextAreaElement);
+    const form = input.closest<HTMLFormElement>("form");
+    if (form) chatSlash.attach(form, roots.chat, input as HTMLTextAreaElement);
+    chatSlash.sync();
     typing(input.value.trim() !== "");
     return;
   }
@@ -3978,6 +4245,9 @@ document.addEventListener("input", (ev) => {
   fitField(input as HTMLTextAreaElement);
   const session = input.closest<HTMLElement>(".send")?.dataset["session"];
   if (session) apply(state, { type: "draft", session, text: input.value });
+  const sendForm = input.closest<HTMLFormElement>("form");
+  if (sendForm) sessionSlash.attach(sendForm, document.getElementById("panes")!, input as HTMLTextAreaElement);
+  sessionSlash.sync();
 });
 
 document.addEventListener("change", (ev) => {
@@ -4140,7 +4410,7 @@ document.addEventListener("pointerdown", (ev) => {
   if (!button || button.disabled || ev.button !== 0) return;
   ev.preventDefault();
   button.setPointerCapture(ev.pointerId);
-  talk(true);
+  talk(true, button);
 });
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
   document.addEventListener(type, (ev) => {
@@ -4150,7 +4420,7 @@ for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const
 document.addEventListener("keydown", (ev) => {
   if ((ev.key === " " || ev.key === "Enter") && (ev.target as Element | null)?.classList.contains("talk")) {
     ev.preventDefault();
-    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true);
+    if (!ev.repeat && !(ev.target as HTMLButtonElement).disabled) talk(true, ev.target as HTMLButtonElement);
   }
 });
 document.addEventListener("keyup", (ev) => {
@@ -4165,10 +4435,10 @@ document.addEventListener("focusout", (ev) => {
   if ((ev.target as HTMLElement | null)?.classList.contains("composer-text")) typing(false);
 });
 
-// On the desktop the chat pages back as the user scrolls to its top; a phone or the web app
-// pages back only on the button.
+// The chat pages back as the user scrolls up to its top, on every client: the page before the
+// earliest one loaded comes in while the user is still about a screen from the start.
 roots.stream.addEventListener("scroll", () => {
-  if (roots.stream.scrollTop < 40 && loadsHistory(state) && state.chatLoaded && !state.threadsExhausted && state.oldestThread) void loadChat(state.oldestThread);
+  if (state.chatLoaded && roots.stream.scrollTop < Math.max(CHAT_EDGE_PX, roots.stream.clientHeight)) void loadChat(state.oldestMessage);
 });
 
 // A pane showing its newest keeps showing it when its box changes size: the frame shown after

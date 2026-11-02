@@ -271,8 +271,11 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
   shortcut (`tauri-plugin-global-shortcut`): held anywhere on the desktop it is push-to-talk,
   told to the page as `voice:ptt {down}`. The page keeps the choice and registers it with
   `ptt_shortcut` at every start; a key another app holds is refused with a word.
-- **The talk button** is the view's: `host.ready` says `talk`, and the default view draws a
-  microphone beside Send that holds `voice.ptt` while pressed. Escape in the view takes back
+- **The talk buttons** are the view's: `host.ready` says `talk`, and the default view draws a
+  microphone beside Send in the chat, in every agent's chat and in every group's post, that
+  holds `voice.ptt {dictate}` while pressed: what is said is typed into that field as it is
+  heard (`voice.partial {dictate}`, then `voice.dictated`), and the user sends it. The talk key
+  still speaks to the chat. Escape in the view takes back
   what is being heard or transcribed (`voice.ptt` with `cancel`), whether the wake word, the
   talk key or the button began it. A press that came to nothing says why in the view's voice
   row for a few seconds: no sound reached the node, only silence did (a microphone unplugged

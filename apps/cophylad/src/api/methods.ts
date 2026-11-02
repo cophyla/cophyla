@@ -188,6 +188,14 @@ export function attachMethods(deps: AttachDeps): MethodTable {
       risk: (p) => sessionModeRisk(p.mode),
       handler: (p) => deps.sessions.setMode(p.id, p.mode),
     },
+    "session.models": {
+      target: (p) => p.id,
+      handler: (p) => deps.sessions.models(p.id),
+    },
+    "session.setModel": {
+      target: (p) => p.id,
+      handler: (p) => deps.sessions.setModel(p.id, p.model),
+    },
     "session.closed": {
       handler: (p) => ({ closed: deps.sessions.closed({ ...(p.since !== undefined ? { since: p.since } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }) }),
     },
@@ -317,6 +325,9 @@ export function chatMethods(deps: ChatDeps): MethodTable {
     },
     "chat.load": {
       handler: (p) => deps.chat.load({ ...(p.before !== undefined ? { before: p.before } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }),
+    },
+    "chat.history": {
+      handler: (p) => deps.chat.page({ ...(p.before !== undefined ? { before: p.before } : {}), ...(p.limit !== undefined ? { limit: p.limit } : {}) }),
     },
   };
 }
@@ -576,7 +587,7 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     "voice.ptt": {
       handler: (p, ctx) => {
         if (p.cancel) deps.voice.cancel(ctx.client);
-        else deps.voice.ptt(ctx.client, p.active);
+        else deps.voice.ptt(ctx.client, p.active, p.dictate === true);
         return {};
       },
     },

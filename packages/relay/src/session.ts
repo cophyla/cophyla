@@ -120,6 +120,9 @@ export class PeerSession {
     ws.addEventListener("error", () => {
       if (!this.tunnel) this.onClosed(1006, "relay: connection failed");
     });
+    // The ephemeral is made while the socket opens: it costs nothing the handshake waits on.
+    const made = ephemeral(this.opts.curve);
+    made.catch(() => undefined);
     try {
       await Promise.race([
         new Promise<void>((resolve, reject) => {
@@ -132,15 +135,21 @@ export class PeerSession {
       const grant = this.opts.grant;
       if (!grant && this.opts.token === undefined) throw new PeerSessionError("invalid", "relay: a token or a grant is needed");
       const authParams = grant ? { grant: grant.grant, verifier: grant.verifier } : { token: this.opts.token };
-      const auth = (await Promise.race([this.request("relay.auth", authParams), timeout])) as { peer?: unknown; subject?: unknown; login?: unknown };
+      const eph = await made;
+      const openParams = { epk: eph.publicKey, ...(this.opts.curve ? { curve: this.opts.curve } : {}), ...(this.opts.node ? { node: this.opts.node } : {}) };
+      const authing = this.request("relay.auth", authParams);
+      // A token's peer is known before the server says it, and the server takes a token's auth
+      // before the next message on the socket: the open goes right behind it, a round trip
+      // sooner. A grant's peer is the server's to name, so its open waits for the answer.
+      const early = grant ? undefined : this.request("relay.open", openParams);
+      early?.catch(() => undefined);
+      const auth = (await Promise.race([authing, timeout])) as { peer?: unknown; subject?: unknown; login?: unknown };
       if (typeof auth?.peer !== "string" || !auth.peer) throw new PeerSessionError("invalid", "relay: a malformed auth answer");
       if (!grant && auth.peer !== this.opts.peer) throw new PeerSessionError("denied", "relay: the token names another peer");
       const peer = auth.peer;
       this.peer = peer;
       if (typeof auth.subject === "string" && typeof auth.login === "string") this.account = { subject: auth.subject, login: auth.login };
-      const eph = await ephemeral(this.opts.curve);
-      const openParams = { epk: eph.publicKey, ...(this.opts.curve ? { curve: this.opts.curve } : {}), ...(this.opts.node ? { node: this.opts.node } : {}) };
-      const opened = (await Promise.race([this.request("relay.open", openParams), timeout])) as { peer?: unknown; epk?: unknown; name?: unknown };
+      const opened = (await Promise.race([early ?? this.request("relay.open", openParams), timeout])) as { peer?: unknown; epk?: unknown; name?: unknown };
       if (typeof opened?.peer !== "string" || typeof opened.epk !== "string") throw new PeerSessionError("invalid", "relay: a malformed open answer");
       this.tunnel = await derive("initiator", eph, opened.epk, this.opts.psk, { kind: this.opts.kind ?? (grant ? "pair" : "controller"), peer });
       this.node = opened.peer;

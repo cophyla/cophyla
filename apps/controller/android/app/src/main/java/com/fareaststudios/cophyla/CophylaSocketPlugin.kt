@@ -7,6 +7,9 @@
 // connection), told apart by the id the page gives each.
 package com.fareaststudios.cophyla
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.os.Build
 import com.getcapacitor.JSObject
 import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
@@ -92,6 +95,21 @@ class CophylaSocketPlugin : Plugin() {
             notifyListeners("state", JSObject().put("id", id).put("state", "closed").put("code", code).put("reason", reason))
         }
         call.resolve()
+    }
+
+    /**
+     * The network the phone is on now, as a handle Android gives each attachment: the same while
+     * the phone stays on that Wi-Fi or that mobile data, a new one once it left and came back.
+     * The link opens the way that worked last when the handle is the one it worked on.
+     */
+    @PluginMethod
+    fun network(call: PluginCall) {
+        val data = JSObject()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            cm?.activeNetwork?.let { data.put("handle", it.networkHandle.toString()) }
+        }
+        call.resolve(data)
     }
 
     override fun handleOnDestroy() {
