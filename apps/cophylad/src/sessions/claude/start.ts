@@ -13,6 +13,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { pathKey } from "../paths.ts";
+import { withoutCophyladHooks } from "./hooks.ts";
 import { launchFlags, readSettingsValue, withoutUserScope } from "./launch-args.ts";
 import type { Launch } from "./launch-args.ts";
 
@@ -76,14 +77,20 @@ export function claudeArgv(start: ClaudeStart): string[] {
  * its content differs; its path.
  *
  * `userSettings`, the profile's own `settings.json`, is for a session that leaves the user scope
- * out so as to run no status line: Claude has no switch for the status line alone, and every run
- * of one starts a shell. That file goes in first and the launch's over it, merged as Claude
- * merges its sources, so the session keeps cophylad's hooks and the rest of the user's settings;
- * the status lines come out.
+ * out: to run no status line (Claude has no switch for the status line alone, and every run of
+ * one starts a shell), or because its launch's `--setting-sources` does. That file goes in first
+ * and the launch's over it, merged as Claude merges its sources, so the session keeps cophylad's
+ * hooks and the rest of the user's settings; the status lines come out.
+ *
+ * cophylad's hooks never come from the launch's own file: a `--settings` is read once, as the
+ * session starts, and the hooks a launch's file holds are another profile's or another daemon's
+ * (a `--settings ~/.claude/settings.json` names the default profile's). The session's come from
+ * its user scope, where the daemon keeps them current, or, with none, from `userSettings`.
  */
 export function cophyladSettings(dataDir: string, profile?: string, launch?: { settings: string; cwd: string }, userSettings?: string): string {
   const path = join(dataDir, "claude", profile ? `settings-${profile}.json` : "cophylad-settings.json");
-  let own = launch ? readSettingsValue(launch.settings, launch.cwd) : undefined;
+  const read = launch ? readSettingsValue(launch.settings, launch.cwd) : undefined;
+  let own = read ? withoutCophyladHooks(read) : undefined;
   if (userSettings !== undefined) {
     own = mergeSettings(readSettingsValue(userSettings, dataDir) ?? {}, own ?? {});
     delete own["statusLine"];

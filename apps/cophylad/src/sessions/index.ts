@@ -59,7 +59,7 @@ import type { ClaudeLaunch, PermissionMode } from "./claude/launch.ts";
 import { autoUnavailable, clearContextRow, dialogRows, footerMode, promptInput, tail, trustDialog, waitingOn } from "./claude/screen.ts";
 import { contextUsed, lastPermissionMode } from "./claude/transcript.ts";
 import type { ClaudeTranscriptState } from "./claude/transcript.ts";
-import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
+import { flagGroups, launchFlags, mirrorArgs, readsUserScope } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
 import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
@@ -2812,18 +2812,23 @@ export class Sessions implements SessionHost {
   /**
    * The command line a Claude session cophylad starts runs: its id and name, the profile's launch,
    * the model the brain named, and cophylad's settings file with the launch's own folded in.
-   * With `claude_status_line` off it leaves the profile's user scope out, and the file carries the
-   * profile's `settings.json` less its status line, and `--mcp-config` its user-scope servers.
+   * With `claude_status_line` off it leaves the profile's user scope out. A session that reads no
+   * user scope, for that or because its launch's `--setting-sources` leaves it out, would read
+   * none of the profile's `settings.json`, where cophylad's hooks and the agents' rules are, nor
+   * its user-scope servers: the file carries that `settings.json` less its status line, and
+   * `--mcp-config` the servers, so the session asks and reports as any other.
    */
   private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined; resume?: boolean }): string[] {
-    const value = launchFlags(o.launch).settings;
+    const flags = launchFlags(o.launch);
+    const value = flags.settings;
     const quiet = this.config.claude_status_line === false;
-    const mcp = quiet ? userMcpConfig(this.deps.dataDir, o.profile.id, claudeGlobalConfig(o.profile.configDir, this.deps.home ?? homedir())) : undefined;
+    const apart = quiet || !readsUserScope(flags.args);
+    const mcp = apart ? userMcpConfig(this.deps.dataDir, o.profile.id, claudeGlobalConfig(o.profile.configDir, this.deps.home ?? homedir())) : undefined;
     return [
       ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}), ...(quiet ? { noUserScope: true } : {}) }),
       ...(mcp ? ["--mcp-config", mcp] : []),
       "--settings",
-      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined, quiet ? join(o.profile.configDir, "settings.json") : undefined),
+      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined, apart ? join(o.profile.configDir, "settings.json") : undefined),
     ];
   }
 

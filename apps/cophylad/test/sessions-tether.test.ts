@@ -941,6 +941,40 @@ describe("how a session cophylad starts is launched", () => {
     }
   });
 
+  test("a launch whose --setting-sources leaves the user scope out still carries the profile's settings.json and servers: cophylad's hooks reach the session", async () => {
+    // As the gmail profile's mirror of a scratch kit's session had it: the kit's own file holds another daemon's hooks, frozen at launch.
+    const ours = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4826/hooks/claude", headers: { "x-cophylad": "1", "x-cophyla-profile": profileId("fake") } }] };
+    const kits = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4899/hooks/claude", headers: { "x-cophylad": "1" } }] };
+    const server = { type: "stdio", command: "C:/cophyla/cophyla-mcp.exe", args: ["claude"], env: {} };
+    const kit = join(cwd, "kit-settings.json");
+    writeFileSync(kit, JSON.stringify({ hooks: { PermissionRequest: [kits] }, env: { KIT: "1" } }));
+    writeFileSync(join(profileDir, "settings.json"), JSON.stringify({ hooks: { PermissionRequest: [ours], Stop: [ours] }, permissions: { allow: ["mcp__cophyla-agents__send_message"] } }));
+    writeFileSync(join(profileDir, ".claude.json"), JSON.stringify({ hasCompletedOnboarding: true, mcpServers: { "cophyla-agents": server } }));
+    mini.profiles.update(profileId("fake"), { launch: { mode: "bypassPermissions", args: ["--model", "haiku", "--setting-sources", "project", "--settings", kit] } });
+    try {
+      const argv = (await spawned("Kit flags")).fs.spawn.argv;
+      expect(argv.slice(argv.indexOf("--setting-sources"), argv.indexOf("--setting-sources") + 2)).toEqual(["--setting-sources", "project"]);
+      expect(JSON.parse(readFileSync(argv[argv.indexOf("--mcp-config") + 1]!, "utf8"))).toEqual({ mcpServers: { "cophyla-agents": server } });
+      expect(JSON.parse(readFileSync(argv[argv.indexOf("--settings") + 1]!, "utf8"))).toEqual({
+        hooks: { PermissionRequest: [ours], Stop: [ours] },
+        permissions: { allow: ["mcp__cophyla-agents__send_message"] },
+        env: { KIT: "1" },
+        showClearContextOnPlanAccept: true,
+      });
+      // Reading its user scope, it takes cophylad's hooks from there, live: the launch file's stay out of cophylad's.
+      mini.profiles.update(profileId("fake"), { launch: { mode: "bypassPermissions", args: ["--settings", kit] } });
+      const reading = (await spawned("User scope")).fs.spawn.argv;
+      expect(reading).not.toContain("--setting-sources");
+      expect(reading).not.toContain("--mcp-config");
+      expect(JSON.parse(readFileSync(reading[reading.indexOf("--settings") + 1]!, "utf8"))).toEqual({ env: { KIT: "1" }, showClearContextOnPlanAccept: true });
+    } finally {
+      mini.profiles.update(profileId("fake"), { launch: null });
+      rmSync(join(profileDir, "settings.json"), { force: true });
+      rmSync(join(profileDir, ".claude.json"), { force: true });
+      rmSync(kit, { force: true });
+    }
+  });
+
   test("the mode a start names replaces the launch's: bypassing permissions is --dangerously-skip-permissions, the launch's other flags stay", async () => {
     mini.profiles.update(profileId("fake"), { launch: { mode: "plan", args: ["--effort", "high"] } });
     try {

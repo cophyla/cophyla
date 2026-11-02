@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { flagGroups, launchFlags, launchProblem, mirrorArgs, splitMode, withoutUserScope } from "../src/sessions/claude/launch-args.ts";
+import { flagGroups, launchFlags, launchProblem, mirrorArgs, readsUserScope, splitMode, withoutUserScope } from "../src/sessions/claude/launch-args.ts";
 import { claudeArgv, cophyladSettings, userMcpConfig } from "../src/sessions/claude/start.ts";
 
 describe("mirroring the user's launch", () => {
@@ -100,6 +100,10 @@ describe("cophylad's settings file", () => {
     // Unreadable: the row alone.
     expect(JSON.parse(readFileSync(cophyladSettings(data, "prof_3", { settings: "missing.json", cwd }), "utf8"))).toEqual({ showClearContextOnPlanAccept: true });
     expect(cophyladSettings(data)).toBe(join(data, "claude", "cophylad-settings.json"));
+    // A launch file holding cophylad's hooks (`--settings ~/.claude/settings.json`) lends everything but them: a session's are its user scope's, kept current.
+    const hook = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4817/hooks/claude", headers: { "x-cophylad": "1", "x-cophyla-profile": "prof_default" } }] };
+    writeFileSync(join(cwd, "master.json"), JSON.stringify({ hooks: { Stop: [hook], PermissionRequest: [hook] }, theme: "dark" }));
+    expect(JSON.parse(readFileSync(cophyladSettings(data, "prof_4", { settings: "master.json", cwd }), "utf8"))).toEqual({ theme: "dark", showClearContextOnPlanAccept: true });
   });
 
   test("with no status line: the profile's settings.json under the launch's, merged as Claude merges, less the status lines", () => {
@@ -117,10 +121,13 @@ describe("cophylad's settings file", () => {
         model: "opus",
       }),
     );
-    writeFileSync(join(cwd, "launch.json"), JSON.stringify({ hooks: { Stop: [hook], PostToolUse: [hook] }, permissions: { allow: ["Bash(git:*)", "mcp__cophyla-agents__send_message"] }, model: "sonnet" }));
+    const theirs = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4817/hooks/claude", headers: { "x-cophylad": "1", "x-cophyla-profile": "prof_default" } }] };
+    const tool = { matcher: "Bash", hooks: [{ type: "command", command: "lint.sh" }] };
+    writeFileSync(join(cwd, "launch.json"), JSON.stringify({ hooks: { Stop: [theirs], PostToolUse: [theirs, tool] }, permissions: { allow: ["Bash(git:*)", "mcp__cophyla-agents__send_message"] }, model: "sonnet" }));
     const path = cophyladSettings(data, "prof_1", { settings: "launch.json", cwd }, join(cwd, "settings.json"));
+    // The launch file's cophylad hooks (another profile's, frozen at launch) stay out; its own tool hook and the profile's cophylad hook ride.
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
-      hooks: { Stop: [hook], PostToolUse: [hook] },
+      hooks: { Stop: [hook], PostToolUse: [tool] },
       permissions: { allow: ["mcp__cophyla-agents__send_message", "Bash(git:*)"] },
       crossSessionInbound: "accept",
       model: "sonnet",
@@ -145,6 +152,14 @@ describe("cophylad's settings file", () => {
 });
 
 describe("leaving the user scope out", () => {
+  test("a command line reads the user scope unless its --setting-sources leaves user out", () => {
+    expect(readsUserScope(["--dangerously-skip-permissions"])).toBe(true);
+    expect(readsUserScope(["--setting-sources", "user,project"])).toBe(true);
+    expect(readsUserScope(["--model", "haiku", "--setting-sources", "project", "--settings", "kit.json"])).toBe(false);
+    expect(readsUserScope(["--setting-sources=project,local"])).toBe(false);
+    expect(readsUserScope(["--setting-sources", ""])).toBe(false);
+  });
+
   test("drops user from the launch's own setting sources, or names every other source", () => {
     expect(withoutUserScope(["--dangerously-skip-permissions"])).toEqual(["--dangerously-skip-permissions", "--setting-sources", "project,local"]);
     expect(withoutUserScope(["--setting-sources", "user,project", "--effort", "high"])).toEqual(["--effort", "high", "--setting-sources", "project"]);

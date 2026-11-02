@@ -229,6 +229,19 @@ export function withoutUserScope(args: readonly string[]): string[] {
 }
 
 /**
+ * Whether flags let Claude read the profile's own `settings.json`: no `--setting-sources`, or one
+ * that names `user`. A launch mirrored from a session run with `--setting-sources project` reads
+ * none of it, cophylad's hooks there included.
+ */
+export function readsUserScope(args: readonly string[]): boolean {
+  for (const group of flagGroups(args)) {
+    if (flagName(group) !== "--setting-sources") continue;
+    return (flagValues(group)[0] ?? "").split(",").map((s) => s.trim()).includes("user");
+  }
+  return true;
+}
+
+/**
  * The settings a `--settings` value holds: inline JSON, or a file resolved against `cwd` as
  * the CLI resolves it. `undefined` when it cannot be read or is not an object.
  */
