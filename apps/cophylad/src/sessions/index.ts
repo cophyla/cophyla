@@ -3810,7 +3810,8 @@ export class Sessions implements SessionHost {
    * With `[sessions].record_sent_text`, the words of a message the user sent, for its receipt,
    * so the session's history shows them after the app that sent them has gone: a receipt
    * carries only the send's ref, and a harness whose transcript does not echo the message
-   * (Codex, a session over its pipe) keeps them nowhere else. Never an agent's or a leader's,
+   * (a session over its pipe) keeps them nowhere else; a Codex thread records the words of its
+   * sends as the user's turns. Never an agent's or a leader's,
    * whose delivery is recorded as a turn of its own.
    */
   private sentText(p: { text: string; agent?: unknown; lead?: unknown }): { text?: string } {
