@@ -5,7 +5,8 @@
 // none either, and neither do `invite.redeem` and `browser.pair`; `relay.info` and the push registration are the
 // host's own, about the phone itself, answered by the pairing node, never a view's;
 // `voice.wakeword` and `voice.wake` are the phone host's own, so no view can move where its
-// phone's wake word is detected or start an utterance on it. A terminal's row is a headline
+// phone's wake word is detected or start an utterance on it. `client.away` is the host's too:
+// the app going out of sight, which a view would only ever say wrongly. A terminal's row is a headline
 // like a session's; its screen and its keys need `terminal`, since raw keys can do what
 // `session.send` cannot. `session.mode` presses Shift+Tab for `sessions:write`, but only
 // into a mode the session's own launch offers, as a plan's answer can. A transfer reads and
@@ -13,8 +14,8 @@
 //
 // `null` means the host's alone, for signals and notifications too: a data channel's
 // signalling (`direct.*`), which hands out TURN credentials and moves the host's own link,
-// and a stream's pipes (`remote.pipe.*`), which carry another page's bytes. No view sends or
-// hears them.
+// and a stream's pipes (`remote.pipe.*`), which carry another page's bytes, and the word that a
+// client moved off a connection (`client.moved`). No view sends or hears them.
 
 import type { Scope } from "./entities.ts";
 import type { ClientNotificationName, ClientRequestName, ClientSignalName } from "./client.ts";
@@ -23,6 +24,7 @@ export const requestScopes = {
   hello: null,
   "chat.send": "chat",
   "chat.load": "chat",
+  "chat.history": "chat",
   "session.list": "sessions:read",
   "session.history": "sessions:read",
   "session.send": "sessions:write",
@@ -31,6 +33,8 @@ export const requestScopes = {
   "session.closed": "sessions:read",
   "session.reopen": "sessions:write",
   "session.mode": "sessions:write",
+  "session.models": "sessions:read",
+  "session.setModel": "sessions:write",
   "session.watch": "sessions:read",
   "session.files": "sessions:read",
   "session.git": "sessions:read",
@@ -71,6 +75,7 @@ export const requestScopes = {
   "lan.enable": "controllers",
   "lan.disable": "controllers",
   "relay.info": null,
+  "client.away": null,
   "push.register": null,
   "push.unregister": null,
   "controller.list": "controllers",
@@ -188,6 +193,7 @@ export const notificationScopes = {
   "ask.state": "asks:answer",
   "voice.state": "voice",
   "voice.partial": "voice",
+  "voice.dictated": "voice",
   "voice.audio": "voice",
   "voice.setup": "voice",
   "voice.next": "voice",
@@ -203,6 +209,7 @@ export const notificationScopes = {
   "remote.pipe.data": null,
   "remote.pipe.ack": null,
   "remote.pipe.close": null,
+  "client.moved": null,
   "connection.state": "controllers",
   "group.state": "sessions:read",
   "group.posted": "sessions:read",

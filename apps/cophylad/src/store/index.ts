@@ -754,6 +754,25 @@ export class Store {
     },
     /** Every message, oldest first, for a snapshot. */
     dump: (): Message[] => (this.db.query("SELECT * FROM messages ORDER BY at, id").all() as MessageRow[]).map(messageFromRow),
+    /**
+     * The newest `limit` messages across every thread said before `before` (a message's id; the
+     * newest when absent), oldest first, and whether older ones remain. A `before` that is no
+     * message answers nothing: the cursor is stale, and there is no earlier page to name.
+     */
+    recent: (before: string | undefined, limit: number): { messages: Message[]; more: boolean } => {
+      let rows: MessageRow[];
+      if (before === undefined) {
+        rows = this.db.query("SELECT * FROM messages ORDER BY at DESC, id DESC LIMIT $limit").all({ limit: limit + 1 }) as MessageRow[];
+      } else {
+        const anchor = this.db.query("SELECT at, id FROM messages WHERE id = $id").get({ id: before }) as { at: number; id: string } | null;
+        if (!anchor) return { messages: [], more: false };
+        rows = this.db
+          .query("SELECT * FROM messages WHERE at < $at OR (at = $at AND id < $id) ORDER BY at DESC, id DESC LIMIT $limit")
+          .all({ at: anchor.at, id: anchor.id, limit: limit + 1 }) as MessageRow[];
+      }
+      const more = rows.length > limit;
+      return { messages: rows.slice(0, limit).map(messageFromRow).reverse(), more };
+    },
     get: (id: string): Message | undefined => {
       const row = this.db.query("SELECT * FROM messages WHERE id = $id").get({ id }) as MessageRow | null;
       return row ? messageFromRow(row) : undefined;

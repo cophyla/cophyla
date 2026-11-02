@@ -89,6 +89,8 @@ interface AcpChild {
   stopping: boolean;
   /** The modes the agent said it offers at `session/new`, when it said. */
   modes?: string[];
+  /** The models the agent said it offers at `session/new`, when it said: what `session/set_model` takes. */
+  models?: { modelId: string; name?: string }[];
 }
 
 interface PermissionOption {
@@ -234,7 +236,7 @@ export class AcpAdapter {
           return rpc.request("session/new", { cwd: input.cwd, mcpServers }, { timeoutMs: timeout });
         }
         throw e;
-      })) as { sessionId: string; modes?: { availableModes?: { id: string }[] }; models?: { availableModels?: { modelId: string }[]; currentModelId?: string } };
+      })) as { sessionId: string; modes?: { availableModes?: { id: string }[] }; models?: { availableModels?: { modelId: string; name?: string }[]; currentModelId?: string } };
       const sessionId = created.sessionId;
       const now = this.deps.host.now();
       const rec = this.deps.host.ensure({
@@ -255,7 +257,8 @@ export class AcpAdapter {
       // The model the counters are priced at: the one asked for, or the agent's current one when it names it.
       const model = input.model ?? created.models?.currentModelId;
       const modes = created.modes?.availableModes?.map((m) => m.id);
-      child = { rpc, sessionId, rec, harness: input.harness, spawnedAt: now, queue: [], text: [], tools: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 }, ...(model ? { model } : {}) }, stopping: false, ...(modes ? { modes } : {}) };
+      const models = created.models?.availableModels;
+      child = { rpc, sessionId, rec, harness: input.harness, spawnedAt: now, queue: [], text: [], tools: new Map(), stats: { turns: 0, cost: 0, tokens: { in: 0, out: 0 }, ...(model ? { model } : {}) }, stopping: false, ...(modes ? { modes } : {}), ...(models ? { models } : {}) };
       this.children.set(rec.session.id, child);
       // Prompts must reach the queue: put the agent in its asking mode unless another was asked
       // for (a plan approved to go on unasked), and pick the model where the agent takes one.
@@ -362,6 +365,42 @@ export class AcpAdapter {
     }
     this.deps.host.noteMode(child.rec, modeId);
     this.log.info("acp session mode set", { session: child.rec.session.id, mode: modeId });
+  }
+
+  // --- model -----------------------------------------------------------------------------
+
+  /** The models the agent offered a session at its start, and the one it is on now. */
+  models(sessionId: string): { current?: string; models: { value: string; label: string }[] } {
+    const child = this.children.get(sessionId);
+    if (!child) throw new RpcError("not_found", `no ACP session ${sessionId}`);
+    return {
+      ...(child.stats.model ? { current: child.stats.model } : {}),
+      models: (child.models ?? []).map((m) => ({ value: m.modelId, label: m.name ?? m.modelId })),
+    };
+  }
+
+  /**
+   * Puts a session on one of its agent's models. The name is the model's own id, or its base name
+   * where the id carries a suffix (`gpt-6-astra` for `gpt-6-astra[low]`). One the agent does not
+   * offer, or refuses, is `unsupported`.
+   */
+  async setModel(sessionId: string, model: string): Promise<string> {
+    const child = this.children.get(sessionId);
+    if (!child) throw new RpcError("not_found", `no ACP session ${sessionId}`);
+    if (!child.rpc.alive || child.stopping) throw new RpcError("conflict", `ACP session ${sessionId} has ended`);
+    const offered = child.models ?? [];
+    const match = offered.find((m) => m.modelId === model) ?? offered.find((m) => m.modelId.startsWith(`${model}[`));
+    if (!match) {
+      throw new RpcError("unsupported", offered.length > 0 ? `the agent offers no ${model} model, only ${offered.map((m) => m.modelId).join(", ")}` : `the agent did not say which models it offers, so ${model} cannot be set`);
+    }
+    try {
+      await child.rpc.request("session/set_model", { sessionId: child.sessionId, modelId: match.modelId }, { timeoutMs: this.deps.config.spawn_timeout_ms });
+    } catch (e) {
+      throw new RpcError("unsupported", `the agent refused the ${match.modelId} model: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    child.stats.model = match.modelId;
+    this.log.info("acp session model set", { session: child.rec.session.id, model: match.modelId });
+    return match.modelId;
   }
 
   // --- stop ------------------------------------------------------------------------------

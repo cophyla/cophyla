@@ -294,7 +294,7 @@ describe("cloud relay", () => {
     const phone = new TunnelClient(claimed.relay!);
     await phone.connect();
     const hello = await phone.call("hello", { token: claimed.token, kind: "controller", audio: { in: true, out: true, codecs: ["opus", "pcm"], played: true } });
-    expect((hello.result as { audio?: unknown }).audio).toEqual({ codecs: ["opus", "pcm"] });
+    expect((hello.result as { audio?: unknown }).audio).toEqual({ codecs: ["opus", "pcm"], dictate: true });
     const state = (want: string) => phone.next((n) => n.method === "voice.state" && (n.params as { state: string }).state === want);
 
     // the button, and 240 ms of a tone as Opus, each frame numbered

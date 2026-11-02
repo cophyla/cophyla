@@ -43,6 +43,9 @@ class FakePlugin implements CophylaSocketPlugin {
     this.closed.push(options);
     this.state({ id: options.id, state: "closed", code: options.code ?? 1000, reason: options.reason ?? "" });
   }
+  async network(): Promise<{ handle?: string }> {
+    return { handle: "100" };
+  }
   async addListener(event: "frame" | "state", fn: ((e: FrameEvent) => void) | ((e: StateEvent) => void)): Promise<{ remove(): Promise<void> }> {
     if (event === "frame") {
       const f = fn as (e: FrameEvent) => void;
@@ -181,6 +184,33 @@ describe("push on the phone", () => {
     expect(calls).toHaveLength(1);
     // a link without an option is the body tap: nothing to answer
     expect(bridge.onLink("cophyla://ask/ask_3")).toEqual({ ask: "ask_3" });
+    expect(bridge.pending).toBe(0);
+  });
+
+  test("an answer the link dropped under (a connection kept out of sight that had died) goes again once it is back; one the node refused does not", async () => {
+    const calls: { method: string; params: unknown }[] = [];
+    let fail: { code: string } | undefined = { code: "unavailable" };
+    const bridge = new PushBridge({
+      request: async (method, params) => {
+        calls.push({ method, params });
+        if (fail) throw Object.assign(new Error(fail.code), fail);
+        return {};
+      },
+      connected: () => true,
+      platform: "android",
+    });
+    bridge.onLink("cophyla://ask/ask_1/allow");
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(1);
+    expect(bridge.pending).toBe(1);
+    fail = undefined;
+    bridge.onConnected();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(calls).toHaveLength(2);
+    expect(bridge.pending).toBe(0);
+    fail = { code: "not_found" };
+    bridge.onLink("cophyla://ask/ask_2/allow");
+    await new Promise((r) => setTimeout(r, 0));
     expect(bridge.pending).toBe(0);
   });
 });

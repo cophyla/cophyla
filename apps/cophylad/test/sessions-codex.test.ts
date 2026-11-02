@@ -301,7 +301,7 @@ describe("codex adapter over the fake app-server", () => {
   let cwd: string;
   let rolloutPath: string;
   const events = (id: string): SessionEvent[] => mini.store.sessionEvents.history(id, { limit: 500 });
-  const queueLog = () => readJson<{ op: string; clientUserMessageId?: string }[]>(join(home, "queue.json"), []);
+  const queueLog = () => readJson<{ op: string; clientUserMessageId?: string; input?: { type: string; text: string }[] }[]>(join(home, "queue.json"), []);
 
   beforeAll(async () => {
     const scratch = tempHome();
@@ -359,12 +359,14 @@ describe("codex adapter over the fake app-server", () => {
     expect(events(s.id).map((e) => e.kind)).toEqual(["status", "status", "user_turn", "assistant_text", "status"]);
   });
 
-  test("a send is queued through thread/queue/add, and withdrawn after the receipt window when idle", async () => {
+  test("a send is queued through thread/queue/add as the user's own words, and withdrawn after the receipt window when idle", async () => {
     const s = mini.sessions.list()[0]!;
     const r = await mini.sessions.send(s.id, "hello");
     expect(r.status).toBe("queued");
     expect(r.ref!.startsWith("cophylad-")).toBe(true);
-    await waitFor(() => queueLog().some((q) => q.op === "add" && q.clientUserMessageId === r.ref));
+    const added = await waitFor(() => queueLog().find((q) => q.op === "add" && q.clientUserMessageId === r.ref));
+    // nothing of cophylad's before them: the thread takes them as the user's turn
+    expect(added.input).toEqual([{ type: "text", text: "hello" }]);
     await waitFor(() => queueLog().some((q) => q.op === "delete"), 2000);
     const n = await waitFor(() => events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref));
     expect(n.payload).toEqual({ type: "message", ref: r.ref, state: "withdrawn" });
@@ -377,9 +379,11 @@ describe("codex adapter over the fake app-server", () => {
     const queuedRow = lines[11]!.replace("cophylad-01ARZ3NDEKTSV4RRFFQ69G5FC0", r.ref!);
     writeFileSync(rolloutPath, lines.slice(0, 11).join("\n") + "\n" + queuedRow + "\n", { flag: "w" });
     await mini.sessions.tick();
-    const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);
-    expect(n?.payload).toEqual({ type: "message", ref: r.ref, state: "delivered" });
-    expect(events(s.id).filter((e) => e.kind === "user_turn")).toHaveLength(1);
+    // delivered, it is the user's turn, never another's message
+    expect(events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref)).toBeUndefined();
+    const turns = events(s.id).filter((e) => e.kind === "user_turn");
+    expect(turns).toHaveLength(2);
+    expect(turns[1]!.payload).toEqual({ text: "run the tests", source: "sent", ref: r.ref });
     expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
     await sleep(400);
     expect(queueLog().filter((q) => q.op === "delete")).toHaveLength(1);
@@ -398,13 +402,13 @@ describe("codex adapter over the fake app-server", () => {
       expect(steered[0]!.threadId).toBe(THREAD);
       expect(steered[0]!.expectedTurnId).toBe(turn);
       expect(steered[0]!.clientUserMessageId).toBe(r.ref!);
-      expect(steered[0]!.input[0]!.text).toContain("look at the failing test too");
+      expect(steered[0]!.input[0]!.text).toBe("look at the failing test too");
       expect(queueLog().some((q) => q.clientUserMessageId === r.ref)).toBe(false);
       const row = { timestamp: "2026-09-17T13:06:55.000Z", ordinal: 22, type: "event_msg", payload: { type: "item_completed", thread_id: THREAD, turn_id: turn, item: { type: "UserMessage", id: "01a0af7a-2701-7000-8000-000000000002", client_id: r.ref, content: [{ type: "text", text: steered[0]!.input[0]!.text, text_elements: [] }] } } };
       writeFileSync(rolloutPath, JSON.stringify(row) + "\n", { flag: "a" });
       await mini.sessions.tick();
-      const n = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === r.ref);
-      expect(n?.payload).toEqual({ type: "message", ref: r.ref, state: "delivered" });
+      const n = events(s.id).find((e) => e.kind === "user_turn" && (e.payload as { ref?: string }).ref === r.ref);
+      expect(n?.payload).toEqual({ text: "look at the failing test too", source: "sent", ref: r.ref });
       expect(mini.store.sessions.get(s.id)?.status).toBe("busy");
 
       // An interrupt drops what the turn has not read yet: that message is queued instead, under the same ref.
@@ -414,12 +418,12 @@ describe("codex adapter over the fake app-server", () => {
       writeFileSync(rolloutPath, JSON.stringify(aborted) + "\n", { flag: "a" });
       await mini.sessions.tick();
       const queued = await waitFor(() => readJson<{ op: string; clientUserMessageId?: string; input?: { text: string }[] }[]>(join(home, "queue.json"), []).find((q) => q.op === "add" && q.clientUserMessageId === dropped.ref));
-      expect(queued.input![0]!.text).toContain("and the lint warnings");
+      expect(queued.input![0]!.text).toBe("and the lint warnings");
       const taken = { ...row, ordinal: 24, payload: { ...row.payload, turn_id: "01a0af7a-3000-7000-8000-000000000003", item: { ...row.payload.item, id: "01a0af7a-2702-7000-8000-000000000003", client_id: dropped.ref, content: [{ type: "text", text: queued.input![0]!.text, text_elements: [] }] } } };
       writeFileSync(rolloutPath, JSON.stringify(taken) + "\n", { flag: "a" });
       await mini.sessions.tick();
-      const m = events(s.id).find((e) => e.kind === "notification" && (e.payload as { ref: string }).ref === dropped.ref);
-      expect(m?.payload).toEqual({ type: "message", ref: dropped.ref, state: "delivered" });
+      const m = events(s.id).find((e) => e.kind === "user_turn" && (e.payload as { ref?: string }).ref === dropped.ref);
+      expect(m?.payload).toEqual({ text: "and the lint warnings", source: "sent", ref: dropped.ref });
     } finally {
       rmSync(join(home, "daemon.json"));
     }

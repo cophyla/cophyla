@@ -142,6 +142,8 @@ export interface AssistantHost {
   /** Lets go of it without ending it, as at a daemon stop. */
   release(): Promise<void>;
   native(): string | undefined;
+  /** The cophylad session the chat runs in, where it is running: what `session.models` takes. */
+  sessionId?(): string | undefined;
   terminal(): TerminalRef | undefined;
   /** The context it holds now, in tokens. */
   used(): number | undefined;
@@ -918,6 +920,7 @@ export class Assistant {
     const used = this.host?.used();
     const limit = this.harness === undefined ? undefined : (this.host?.limit() ?? this.deps.config.autocompact_tokens);
     const terminal = this.host?.terminal();
+    const sid = this.host?.sessionId?.();
     const chosen = this.prefs();
     return {
       status: this.status,
@@ -925,6 +928,7 @@ export class Assistant {
       ...(this.profile ? { profile: this.profile.id } : {}),
       ...(used !== undefined && limit !== undefined ? { context: { used, limit } } : {}),
       ...(terminal ? { terminal } : {}),
+      ...(sid !== undefined ? { session: sid } : {}),
       ...(chosen.harness !== undefined || chosen.profile !== undefined ? { chosen } : {}),
       ...(this.detail !== undefined ? { detail: this.detail } : {}),
     };
@@ -1042,6 +1046,10 @@ export class ClaudeHost implements AssistantHost {
 
   native(): string | undefined {
     return this.session?.native.id;
+  }
+
+  sessionId(): string | undefined {
+    return this.session?.id;
   }
 
   terminal(): TerminalRef | undefined {
