@@ -1973,7 +1973,7 @@ export class Sessions implements SessionHost {
     this.deps.store.sessions.update(rec.session);
     for (const p of this.injections.pending(rec.session.id)) {
       const settled = this.injections.settle(p.ref, "unconfirmed");
-      if (settled) this.event(rec, "notification", { type: "message", ref: p.ref, state: "unconfirmed" }, undefined, at);
+      if (settled) this.event(rec, "notification", { type: "message", ref: p.ref, state: "unconfirmed", ...this.sentText(p) }, undefined, at);
     }
     this.event(rec, "ended", { reason }, undefined, at);
     this.log.info("session ended", { id: rec.session.id, harness: rec.session.harness, reason });
@@ -3466,7 +3466,7 @@ export class Sessions implements SessionHost {
       void sent.then(() => {
         if (rec.session.status === "ended") return;
         // An agent's message, and a leader's, were recorded as their turns as they went.
-        if (!agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
+        if (!agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered", ...this.sentText({ text }) });
         this.log.info("prompt sent", { session: id, ref });
       });
       return { status: "queued", ref };
@@ -3476,7 +3476,7 @@ export class Sessions implements SessionHost {
     if (adapter.headless?.owns(rec)) {
       const ref = `cophylad-${ulid(this.now())}`;
       await adapter.headless.prompt(rec, wire, ref, wrapped, lead);
-      if (rec.session.status !== "ended" && !agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered" });
+      if (rec.session.status !== "ended" && !agent && !lead) this.event(rec, "notification", { type: "message", ref, state: "delivered", ...this.sentText({ text }) });
       this.log.info("prompt sent", { session: id, ref });
       return { status: "queued", ref };
     }
@@ -3586,7 +3586,7 @@ export class Sessions implements SessionHost {
         this.log.warn("message not typed", { session: rec.session.id, ref, error });
         const p = this.injections.get(ref);
         if (p) this.injections.settle(ref, "withdrawn");
-        if (rec.session.status !== "ended" && !this.stopped) this.event(rec, "notification", { type: "message", ref, state: "withdrawn", message: error });
+        if (rec.session.status !== "ended" && !this.stopped) this.event(rec, "notification", { type: "message", ref, state: "withdrawn", message: error, ...this.sentText({ text, ...(agent ? { agent } : {}), ...(lead ? { lead } : {}) }) });
       })
       .finally(() => {
         rec.toType = Math.max(0, (rec.toType ?? 1) - 1);
@@ -3775,7 +3775,7 @@ export class Sessions implements SessionHost {
       // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.
       if (rec.session.intent === undefined && p.text.trim() && !p.text.trimStart().startsWith("/")) this.patch(rec, { intent: oneLine(p.text) });
     } else {
-      this.event(rec, "notification", { type: "message", ref: p.ref, state: "delivered" });
+      this.event(rec, "notification", { type: "message", ref: p.ref, state: "delivered", ...this.sentText(p) });
     }
   }
 
@@ -3792,7 +3792,7 @@ export class Sessions implements SessionHost {
         const settled = this.injections.settle(p.ref, "withdrawn");
         if (settled) {
           this.log.info("message withdrawn: no receipt", { session: p.session, ref: p.ref });
-          this.event(rec, "notification", { type: "message", ref: p.ref, state: "withdrawn" });
+          this.event(rec, "notification", { type: "message", ref: p.ref, state: "withdrawn", ...this.sentText(p) });
         }
       };
       if (adapter?.withdraw) adapter.withdraw(rec, p.ref).then(done, (e) => {
@@ -3803,7 +3803,19 @@ export class Sessions implements SessionHost {
       return;
     }
     const settled = this.injections.settle(p.ref, "unconfirmed");
-    if (settled) this.event(rec, "notification", { type: "message", ref: p.ref, state: "unconfirmed" });
+    if (settled) this.event(rec, "notification", { type: "message", ref: p.ref, state: "unconfirmed", ...this.sentText(p) });
+  }
+
+  /**
+   * With `[sessions].record_sent_text`, the words of a message the user sent, for its receipt,
+   * so the session's history shows them after the app that sent them has gone: a receipt
+   * carries only the send's ref, and a harness whose transcript does not echo the message
+   * (a session over its pipe) keeps them nowhere else; a Codex thread records the words of its
+   * sends as the user's turns. Never an agent's or a leader's,
+   * whose delivery is recorded as a turn of its own.
+   */
+  private sentText(p: { text: string; agent?: unknown; lead?: unknown }): { text?: string } {
+    return this.config.record_sent_text && p.agent === undefined && p.lead === undefined && p.text !== "" ? { text: capText(p.text) } : {};
   }
 
   // --- focus ------------------------------------------------------------------------------

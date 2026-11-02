@@ -17,7 +17,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSy
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Session, SessionEvent } from "@cophyla/protocol";
+import type { ClaudeHookEvent, Session, SessionEvent } from "@cophyla/protocol";
 import { createLogger } from "../src/log.ts";
 import { ClaudeAdapter, claudeConfigDirOf, countOn, namesOneMModel, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
 import { installClaudeHooks, isCophyladGroup, isOwnGroup, readSettings, uninstallClaudeHooks, withCophyladHooks, withoutCophyladHooks } from "../src/sessions/claude/hooks.ts";
@@ -802,6 +802,25 @@ describe("claude adapter over a fake profile directory", () => {
   test("session.list serves Session entities that parse", async () => {
     const { Session } = await import("@cophyla/protocol");
     for (const s of mini.sessions.list() as Session[]) expect(Session.safeParse(s).success).toBe(true);
+  });
+
+  test("a pipe send's delivery receipt carries its words with [sessions].record_sent_text, and only its ref without", async () => {
+    const id = mini.sessions.find("claude", "sess-a")!.session.id;
+    const relayed = (text: string, promptId: string): ClaudeHookEvent =>
+      ({ session_id: "sess-a", transcript_path: transcriptPathFor(profileDir, cwd, "sess-a"), cwd, hook_event_name: "UserPromptSubmit", permission_mode: "default", prompt: `[cophylad, relaying the user]\n${text}`, prompt_id: promptId }) as ClaudeHookEvent;
+    const receipt = (ref: string | undefined) => events(id).find((e) => e.kind === "notification" && (e.payload as { ref?: string }).ref === ref);
+    try {
+      mini.sessions.config.record_sent_text = true;
+      const withWords = await mini.sessions.send(id, "words one");
+      await mini.sessions.onHook("claude", relayed("words one", "p-words"), { via: "http" });
+      expect(receipt(withWords.ref)?.payload).toEqual({ type: "message", ref: withWords.ref, state: "delivered", text: "words one" });
+      mini.sessions.config.record_sent_text = false;
+      const bare = await mini.sessions.send(id, "bare two");
+      await mini.sessions.onHook("claude", relayed("bare two", "p-bare"), { via: "http" });
+      expect(receipt(bare.ref)?.payload).toEqual({ type: "message", ref: bare.ref, state: "delivered" });
+    } finally {
+      mini.sessions.config.record_sent_text = false;
+    }
   });
 });
 

@@ -134,6 +134,13 @@ export const SessionsConfig = z.object({
    * turn ran at.
    */
   claude_window_and_effort: z.boolean().default(false),
+  /**
+   * A message's receipts (delivered, unconfirmed, withdrawn) carry only the send's ref, so the
+   * words of one whose harness does not echo them show only in the app that sent it, until it
+   * reloads. On, each receipt of a message the user sent carries its text, kept in the
+   * session's history.
+   */
+  record_sent_text: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -835,6 +842,7 @@ type_into_busy = false     # true: type into a busy session without waiting for 
 claude_status_line = true  # false: Claude sessions cophylad starts run no status line (each run starts Git Bash on Windows), and so skip the user's CLAUDE.md, skills, agents and commands
 resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
 claude_window_and_effort = false # true: a Claude session's stats infer its context window (200K or 1M) and carry its effort
+record_sent_text = false   # true: a message's receipts carry the text the user sent, so the history keeps it after a reload
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
