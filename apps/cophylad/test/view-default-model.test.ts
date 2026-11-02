@@ -1130,6 +1130,15 @@ describe("default view: what streams and what loads", () => {
     expect(tabChoice("timeline", "terminal")).toBe("timeline");
   });
 
+  test("until the user first chooses a view, a session opens on its terminal, as it always did", () => {
+    expect(tabChoice(undefined, undefined)).toBeUndefined();
+    expect(paneMode(tabChoice(undefined, undefined), true, false)).toBe("terminal");
+    expect(paneMode(tabChoice(undefined, undefined), false, false)).toBe("timeline");
+    // a session's own choice still holds
+    expect(paneMode(tabChoice("timeline", undefined), true, false)).toBe("timeline");
+    expect(paneMode(tabChoice("messages", undefined), true, true)).toBe("messages");
+  });
+
   test("choosing Timeline or Terminal on a session's Messages pane leaves it; other sessions' Messages panes stay", () => {
     const modes = new Map<string, PaneMode>([["a", "messages"], ["b", "messages"], ["c", "terminal"], ["d", "timeline"]]);
     // Chosen on a's pane: a leaves its messages and follows the view, as c and d do; b stays on its own.

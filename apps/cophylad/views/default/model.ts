@@ -2005,10 +2005,12 @@ export function paneMode(chosen: PaneMode | undefined, hasTerminal: boolean, has
 /**
  * A session's pane as the view has it unless the session has its own choice: the view the user
  * last chose anywhere, the chat or a terminal, so every session opens on it until the user
- * switches. A session's Messages pane is its own choice and stays so.
+ * switches. A session's Messages pane is its own choice and stays so. Until the user first
+ * chooses, nothing is chosen, and a session opens on its terminal (`paneMode`).
  */
-export function tabChoice(override: PaneMode | undefined, view: "chat" | "terminal"): PaneMode | undefined {
-  return override ?? (view === "terminal" ? "terminal" : "timeline");
+export function tabChoice(override: PaneMode | undefined, view: "chat" | "terminal" | undefined): PaneMode | undefined {
+  if (override !== undefined) return override;
+  return view === undefined ? undefined : view === "terminal" ? "terminal" : "timeline";
 }
 
 /**

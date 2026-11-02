@@ -118,8 +118,12 @@ export interface UiState {
   dialogModes: Map<string, DialogMode>;
   /** Messages panes: the party each one shows alone, and the read point as each opened, which marks the first new message (talkview.ts). */
   talk: TalkUi;
-  /** The view the user last chose, the chat or a terminal: each session's pane and the chat's pane open on it until they choose again (`tabChoice`, `chatMode`). */
-  view: "chat" | "terminal";
+  /**
+   * The view the user last chose, the chat or a terminal: each session's pane and the chat's pane
+   * open on it until they choose again (`tabChoice`, `chatMode`). Unset until they first choose:
+   * the chat then shows its conversation and a session its terminal, as they always did.
+   */
+  view?: "chat" | "terminal";
   /** The chat's session is being started again from the menu. */
   chatRestarting?: boolean;
   /**
@@ -4363,14 +4367,10 @@ function terminalShown(state: ViewState, ui: UiState): boolean {
 }
 
 /**
- * Over the conversation: what runs the chat (the harness, its model and effort), where it
- * stands, how full its context is against the size it is folded at, and Chat | Terminal where
- * its own terminal can be shown. Nothing from a node that says nothing of such a session.
- */
-/**
- * The chat's text size, − 100% +, in the terminal's own look: the conversation and the composer
- * take it as a zoom (`--chat-zoom`, set on the chat), so every size scales together and the
- * lines reflow to the pane. The percentage puts it back to 100 when pressed.
+ * The chat's text size, − 100% +, in the terminal's own look, over the chat and over a session's
+ * timeline: the conversation takes it as a zoom (`--chat-zoom`), so everything in it scales
+ * together and the lines reflow to the pane, and the message fields as their type size
+ * (`--field-scale`, renderComposer).
  */
 function chatScaleControl(): HTMLElement {
   const scale = el("span", "term-scale chat-scale");
@@ -4395,6 +4395,12 @@ function showChatScale(scale: HTMLElement, value: number): void {
   scale.querySelector<HTMLButtonElement>(".term-larger")!.disabled = stepScale(value, 1) === undefined;
 }
 
+/**
+ * Over the conversation: what runs the chat (the harness, its model and effort), where it
+ * stands, how full its context is against the size it is folded at, and Chat | Terminal where
+ * its own terminal can be shown, then the text size. Only Lead and the text size from a node
+ * that says nothing of such a session.
+ */
 function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void {
   let head = root.querySelector<HTMLElement>(":scope > .chat-head");
   if (!head) {
@@ -4542,9 +4548,9 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
-  // The conversation's text size reaches the composer while a conversation is on show (the chat's or a session's timeline), not a terminal or a group.
+  // The conversation's text size reaches the message fields while a conversation is on show (the chat's or a session's timeline), not a terminal or a group: as their type size, never a zoom (view.css).
   const conversation = ui.terminal === undefined && ui.group === undefined && !terminalShown(state, ui);
-  root.style.setProperty("--composer-zoom", String(conversation ? ui.chatScale / 100 : 1));
+  root.style.setProperty("--field-scale", String(conversation ? ui.chatScale / 100 : 1));
   // A group's pane has its own composer.
   setHidden(form, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   const canChat = state.connected && state.scopes.includes("chat");
@@ -4598,10 +4604,11 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   setData(form, "session", s.id);
   const input = form.querySelector<HTMLTextAreaElement>(".send-text")!;
   if (switched || (document.activeElement !== input && input.value !== card.draft)) input.value = card.draft;
-  fitField(input);
   const canSend = state.connected && s.status !== "ended";
   input.disabled = !canSend;
   input.placeholder = canSend ? `Message ${s.harness}` : s.status === "ended" ? "This session has ended" : "Waiting for cophylad";
+  // After the placeholder: an empty field is sized by it.
+  fitField(input);
   form.querySelector<HTMLButtonElement>(".send-button")!.disabled = !canSend;
   renderTalk(form.querySelector<HTMLButtonElement>(".talk")!, state, ui, canSend);
 }

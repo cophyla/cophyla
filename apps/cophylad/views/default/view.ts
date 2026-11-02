@@ -107,7 +107,6 @@ const ui: UiState = {
   remoteWidth: REMOTE_VIEW_WIDTH.usual,
   modes: new Map(),
   dialogModes: new Map(),
-  view: "chat",
   fit: false,
   scale: 100,
   chatScale: 100,
@@ -2824,7 +2823,7 @@ function restoreViewerPrefs(value: unknown): void {
   if (typeof v.source === "boolean") ui.viewerSource = v.source;
 }
 
-/** The view the user last chose, as the device kept it; the chat until they chose one. */
+/** The view the user last chose, as the device kept it; unset until they chose one. */
 function restoreViewChoice(value: unknown): void {
   if (value === "chat" || value === "terminal") ui.view = value;
 }
@@ -2842,14 +2841,16 @@ function chooseView(view: "chat" | "terminal", session?: string): void {
 }
 
 /**
- * The chat's text size, stepped to `to` and kept on the device. The conversation stays where the
- * user read it: the message that was at the top stays at the top, and at the foot it stays there.
+ * The chat's text size, stepped to `to` and kept on the device. The conversation on show (the
+ * chat's, or the selected session's timeline, each its own scroller) stays where the user read
+ * it: the row that was at the top stays at the top, and at the foot it stays there.
  */
 function setChatScale(to: number): void {
-  const stream = roots.stream;
+  const pane = ui.selected !== undefined ? roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(ui.selected)}"]`) : null;
+  const stream = pane && !pane.hidden ? pane : roots.stream;
   const top = stream.getBoundingClientRect().top;
   const atEnd = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 8;
-  const seen = [...stream.querySelectorAll<HTMLElement>(".items > *")].find((n) => n.getBoundingClientRect().bottom > top + 1);
+  const seen = [...stream.querySelectorAll<HTMLElement>(stream === roots.stream ? ".items > *" : ".timeline > *")].find((n) => n.getBoundingClientRect().bottom > top + 1);
   const offset = seen ? seen.getBoundingClientRect().top - top : 0;
   ui.chatScale = to;
   prefs = { ...prefs, chatScale: to };
@@ -4260,16 +4261,8 @@ document.addEventListener("submit", (ev) => {
   ev.preventDefault();
   const session = form.dataset["session"];
   const input = form.querySelector<HTMLTextAreaElement>(".send-text");
-  if (session && input && !input.disabled) {
-    // A line sent leaves the box empty, as the chat's composer does; the send itself carries the text it had.
-    const text = input.value;
-    if (text.trim()) {
-      input.value = "";
-      fitField(input);
-      apply(state, { type: "draft", session, text: "" });
-    }
-    void send(session, text);
-  }
+  // The box empties once the send is taken (`send`): a send that fails leaves the text to send again.
+  if (session && input && !input.disabled) void send(session, input.value);
 });
 
 // In New terminal's field, the arrow keys move along the places and Enter starts the shell in the one they are on.

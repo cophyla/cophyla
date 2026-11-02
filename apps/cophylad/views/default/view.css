@@ -6568,11 +6568,27 @@ button:disabled {
 
 @media (max-width: 640px) {
   .chat-head {
+    gap: 4px 8px;
     padding: 6px 12px;
   }
 
   .chat-context .context-meter {
     display: none;
+  }
+
+  /* The text size as − + alone, the buttons as small as a folded session header's: what runs the
+     chat keeps room on a phone's line. */
+  .chat-head .chat-scale .term-scale-value {
+    display: none;
+  }
+
+  .chat-head .chat-scale :is(.term-smaller, .term-larger) {
+    min-width: 20px;
+    padding: 1px 4px;
+  }
+
+  .chat-head .chat-scale .term-larger {
+    border-left: 1px solid var(--line);
   }
 }
 
@@ -10608,16 +10624,21 @@ button:disabled {
   margin-left: auto;
 }
 
-/* The conversation and its composer take the chat's text size as a zoom: everything scales
-   together, and the lines reflow to the pane. The head keeps its own size. */
+/* The conversation takes the chat's text size as a zoom: everything in it scales together, and
+   the lines reflow to the pane. The head keeps its own size. */
 /* Zoomed inside the scroller, not on it: its scroll position stays in the pane's own pixels. */
 #stream > *,
 .session-body {
   zoom: var(--chat-zoom, 1);
 }
 
-#composer {
-  zoom: var(--composer-zoom, 1);
+/* The composer is never zoomed: a zoom would narrow its field on a phone and multiply the field's
+   height cap and the dialog dock's, and xterm maps the mouse wrong in a zoomed terminal (the
+   dock's). Its message field takes the text size as its type size instead (`--field-scale`,
+   set by renderComposer), the field and its unseen copy alike, so the copy still sizes it. */
+.field > textarea,
+.field-copy {
+  font-size: calc(1em * var(--field-scale, 1));
 }
 
 /* A leader's message in a session's timeline: the user's own turn, and under it, after the
