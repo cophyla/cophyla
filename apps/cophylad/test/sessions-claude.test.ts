@@ -8,15 +8,18 @@
 // transcript's last lines with a resume recording nothing twice; then a session in a Claude
 // directory no profile has: listed under the profile its hooks name, flagged in its timeline
 // and once in the log, and moved to its own profile once a restart declares it.
+// With [sessions].claude_window_and_effort the stats infer a context window (200K, or 1M for a
+// [1m] model, named in the transcript or the profile's settings, or past 200K used) and carry
+// the effort each turn ran at.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { Session, SessionEvent } from "@cophyla/protocol";
+import type { ClaudeHookEvent, Session, SessionEvent } from "@cophyla/protocol";
 import { createLogger } from "../src/log.ts";
-import { ClaudeAdapter, claudeConfigDirOf, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
+import { ClaudeAdapter, claudeConfigDirOf, countOn, namesOneMModel, subagentTranscripts } from "../src/sessions/claude/adapter.ts";
 import { installClaudeHooks, isCophyladGroup, isOwnGroup, readSettings, uninstallClaudeHooks, withCophyladHooks, withoutCophyladHooks } from "../src/sessions/claude/hooks.ts";
 import { claudeFrames, injectClaude } from "../src/sessions/claude/inject.ts";
 import { readRegistry, transcriptDirName, transcriptPathFor } from "../src/sessions/claude/registry.ts";
@@ -229,6 +232,48 @@ describe("claude transcript parser", () => {
     expect(s.stats.turns).toBe(1);
     expect(s.stats.context).toEqual(contextBefore);
     expect(s.model).toBe("claude-opus-5-5");
+  });
+
+  test("with the window inferred, context has a limit and the stats carry the effort", () => {
+    expect(statsFor(state, undefined, { infer: true }).context).toEqual({ used: 31005, limit: 200_000 });
+    expect(statsFor(state, undefined, { infer: true, oneM: true }).context).toEqual({ used: 31005, limit: 1_000_000 });
+    const row = (id: string, used: number, extra: { effort?: string; model?: string } = {}) => ({
+      type: "assistant",
+      timestamp: "2026-10-20T10:00:00.000Z",
+      effort: extra.effort ?? "high",
+      message: { id, role: "assistant", model: extra.model ?? "claude-opus-5-5", content: [], usage: { input_tokens: used, output_tokens: 1 } },
+    });
+    const s = newClaudeState();
+    applyClaudeRow(s, row("m1", 80_000));
+    // Not asked: as before, no context and no effort.
+    expect(statsFor(s).context).toBeUndefined();
+    expect(statsFor(s).effort).toBeUndefined();
+    expect(statsFor(s, undefined, { infer: true })).toMatchObject({ context: { used: 80_000, limit: 200_000 }, effort: "high", model: "claude-opus-5-5" });
+    s.statsChanged = false;
+    applyClaudeRow(s, row("m2", 250_000, { effort: "medium" }));
+    expect(s.statsChanged).toBe(true);
+    expect(statsFor(s, undefined, { infer: true })).toMatchObject({ context: { used: 250_000, limit: 1_000_000 }, effort: "medium" });
+    const named = newClaudeState();
+    applyClaudeRow(named, row("m3", 1_000, { model: "claude-opus-5-5[1m]" }));
+    expect(statsFor(named, undefined, { infer: true }).context).toEqual({ used: 1_000, limit: 1_000_000 });
+  });
+
+  test("a profile's settings that name a [1m] model say the window, read again when they change", () => {
+    const dir = tempHome();
+    const path = join(dir, "settings.json");
+    expect(namesOneMModel(path)).toBe(false);
+    writeFileSync(path, JSON.stringify({ model: "opus[1m]" }));
+    expect(namesOneMModel(path)).toBe(true);
+    writeFileSync(path, JSON.stringify({ model: "sonnet", effortLevel: "high" }));
+    expect(namesOneMModel(path)).toBe(false);
+    writeFileSync(path, "{ not json");
+    expect(namesOneMModel(path)).toBe(false);
+  });
+
+  test("the effort counts on across a cleared context as the model does", () => {
+    const base = { turns: 2, cost: 0, tokens: { in: 10, out: 5 }, effort: "low" };
+    expect(countOn(base, { turns: 1, cost: 0, tokens: { in: 1, out: 1 } }).effort).toBe("low");
+    expect(countOn(base, { turns: 1, cost: 0, tokens: { in: 1, out: 1 }, effort: "high" }).effort).toBe("high");
   });
 });
 
@@ -757,6 +802,25 @@ describe("claude adapter over a fake profile directory", () => {
   test("session.list serves Session entities that parse", async () => {
     const { Session } = await import("@cophyla/protocol");
     for (const s of mini.sessions.list() as Session[]) expect(Session.safeParse(s).success).toBe(true);
+  });
+
+  test("a pipe send's delivery receipt carries its words with [sessions].record_sent_text, and only its ref without", async () => {
+    const id = mini.sessions.find("claude", "sess-a")!.session.id;
+    const relayed = (text: string, promptId: string): ClaudeHookEvent =>
+      ({ session_id: "sess-a", transcript_path: transcriptPathFor(profileDir, cwd, "sess-a"), cwd, hook_event_name: "UserPromptSubmit", permission_mode: "default", prompt: `[cophylad, relaying the user]\n${text}`, prompt_id: promptId }) as ClaudeHookEvent;
+    const receipt = (ref: string | undefined) => events(id).find((e) => e.kind === "notification" && (e.payload as { ref?: string }).ref === ref);
+    try {
+      mini.sessions.config.record_sent_text = true;
+      const withWords = await mini.sessions.send(id, "words one");
+      await mini.sessions.onHook("claude", relayed("words one", "p-words"), { via: "http" });
+      expect(receipt(withWords.ref)?.payload).toEqual({ type: "message", ref: withWords.ref, state: "delivered", text: "words one" });
+      mini.sessions.config.record_sent_text = false;
+      const bare = await mini.sessions.send(id, "bare two");
+      await mini.sessions.onHook("claude", relayed("bare two", "p-bare"), { via: "http" });
+      expect(receipt(bare.ref)?.payload).toEqual({ type: "message", ref: bare.ref, state: "delivered" });
+    } finally {
+      mini.sessions.config.record_sent_text = false;
+    }
   });
 });
 

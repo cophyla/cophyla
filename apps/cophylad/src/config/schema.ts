@@ -114,6 +114,33 @@ export const SessionsConfig = z.object({
    * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A message typed into a session in tether waits for the prompt to show empty. On, it is also
+   * typed into a busy session whose prompt is not on screen or holds only the message typed
+   * last, into a terminal that has shown no prompt for 5 s, and, with no ask open, into one
+   * whose prompt has not come free in 30 s, which types over what the prompt holds.
+   */
+  type_into_busy: z.boolean().default(false),
+  /**
+   * A Claude CLI that goes on to another thread in a terminal (`/resume`) leaves the terminal on
+   * the thread it left. On, the thread it runs now takes the terminal, and the one left, when it
+   * has no transcript (the new id the CLI started under), is ended; its process is not touched.
+   */
+  resume_takes_terminal: z.boolean().default(false),
+  /**
+   * A Claude transcript names no context window, so a Claude session's stats carry no
+   * `context`. On, the window is inferred (1M for a `[1m]` model, named by the transcript or the
+   * profile's settings, or once past 200K used; else 200K) and the stats carry the effort each
+   * turn ran at.
+   */
+  claude_window_and_effort: z.boolean().default(false),
+  /**
+   * A message's receipts (delivered, unconfirmed, withdrawn) carry only the send's ref, so the
+   * words of one whose harness does not echo them show only in the app that sent it, until it
+   * reloads. On, each receipt of a message the user sent carries its text, kept in the
+   * session's history.
+   */
+  record_sent_text: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -811,7 +838,11 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
+type_into_busy = false     # true: type into a busy session without waiting for an empty prompt; after 30 s with no ask open, type anyway
 claude_status_line = true  # false: Claude sessions cophylad starts run no status line (each run starts Git Bash on Windows), and so skip the user's CLAUDE.md, skills, agents and commands
+resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
+claude_window_and_effort = false # true: a Claude session's stats infer its context window (200K or 1M) and carry its effort
+record_sent_text = false   # true: a message's receipts carry the text the user sent, so the history keeps it after a reload
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]

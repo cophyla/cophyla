@@ -296,6 +296,8 @@ export const SessionStats = z.object({
   context: z.object({ used: z.number().int().nonnegative(), limit: z.number().int().positive() }).optional(),
   /** The model the counters are priced at, as the harness names it. */
   model: z.string().optional(),
+  /** The reasoning effort the last turn ran at, as the harness names it (`low`, `high`, ...), where the node records it. */
+  effort: z.string().optional(),
 });
 export type SessionStats = z.infer<typeof SessionStats>;
 

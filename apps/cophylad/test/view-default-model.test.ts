@@ -430,7 +430,7 @@ describe("default view model", () => {
     expect(posts[0]).not.toHaveProperty("receipt");
     const turn = posts[1] as Extract<TimelinePost, { kind: "turn" }>;
     expect(turn.key).toBe("te4");
-    expect(turn.parts.map((p) => (p.kind === "text" ? p.text : p.steps.map((st) => `${st.tool}:${st.result?.error === true ? "failed" : st.result ? "done" : "running"}`).join(",")))).toEqual(["Looking.", "Grep:done,Read:done", "Found it.", "Bash:failed", "Fixed."]);
+    expect(turn.parts.map((p) => (p.kind === "text" ? p.text : p.kind === "agent" ? "agent" : p.steps.map((st) => `${st.tool}:${st.result?.error === true ? "failed" : st.result ? "done" : "running"}`).join(",")))).toEqual(["Looking.", "Grep:done,Read:done", "Found it.", "Bash:failed", "Fixed."]);
     const read = (turn.parts[1] as Extract<TurnPart, { kind: "steps" }>).steps[1]!;
     expect(read.result?.value).toBe("<html>");
     expect(posts[2]).toMatchObject({ kind: "agent", who: "@api-codex · Codex", harness: "codex", text: "rerun e2e" });

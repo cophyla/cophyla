@@ -360,6 +360,13 @@ const CLOSE_ROLE_CHANGED = 4409;
 /** What the node closes a socket with on purpose (a refusal or revoke, the LAN turned off, a hold let go): its client is not held for a return. */
 const NOT_HELD_ON: ReadonlySet<number> = new Set([CLOSE_UNAUTHENTICATED, 4410, CLOSE_HOLD_ENDED]);
 const MAX_PAYLOAD = 16 * 1024 * 1024;
+/**
+ * What a socket may hold unsent. Past Bun's default (16 MiB) a send is dropped without a word,
+ * and a sealed node link cannot lose a record: the far end fails to open the next one (4403)
+ * and the link starts over, for good when what it sends first is larger, as a backup's replica
+ * snapshot can be. Far above the largest frame, and past it the socket is closed, never thinned.
+ */
+const BACKPRESSURE_LIMIT = 1024 * 1024 * 1024;
 /** Wrong codes one socket may try before it is closed. */
 const MAX_CLAIMS_PER_SOCKET = 3;
 
@@ -1192,6 +1199,8 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
     },
     websocket: {
       maxPayloadLength: MAX_PAYLOAD,
+      backpressureLimit: BACKPRESSURE_LIMIT,
+      closeOnBackpressureLimit: true,
       idleTimeout: 960,
       open(ws) {
         if (ws.data.kind === "remote") {
