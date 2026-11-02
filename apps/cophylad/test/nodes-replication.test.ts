@@ -144,7 +144,10 @@ describe("replication to a backup", () => {
   }, 30_000);
 
   test("a snapshot larger than the socket's default backpressure loses none of the records behind it", async () => {
-    primary = await startPrimary();
+    // Heartbeats as tight as the other tests' (200 ms) are missed while a loaded machine takes in a
+    // 30 MB snapshot, and the link then drops and comes back once, records intact. That is not the
+    // start-over this test is about, so the heartbeats here are slower (production's are 5 s).
+    primary = await startPrimary({ heartbeatMs: 2000 });
     // ~24 MB of kv: sealed and in base64 the snapshot's record is over 30 MB, past Bun's 16 MiB default.
     const row = "x".repeat(60_000);
     for (let i = 0; i < 400; i++) primary.d.store.kv.put("talk", `s/${String(i).padStart(9, "0")}`, { text: row });
@@ -152,7 +155,7 @@ describe("replication to a backup", () => {
     let n = 0;
     const writer = setInterval(() => primary!.d.store.kv.put("wake", "tick", { n: ++n }), 2);
     try {
-      backup = await startSecondary(primary, { backup: true });
+      backup = await startSecondary(primary, { backup: true, heartbeatMs: 2000 });
       await linked(backup, 10_000);
       await waitFor(() => backup!.nodes.replicaState?.snapshots === 1, 20_000);
       await Bun.sleep(500);
