@@ -142,4 +142,28 @@ describe("replication to a backup", () => {
     await primary.d.editable.rescan();
     await waitFor(() => !existsSync(join(backup!.paths.tools, "shout.ts")), 10_000);
   }, 30_000);
+
+  test("a snapshot larger than the socket's default backpressure loses none of the records behind it", async () => {
+    primary = await startPrimary();
+    // ~24 MB of kv: sealed and in base64 the snapshot's record is over 30 MB, past Bun's 16 MiB default.
+    const row = "x".repeat(60_000);
+    for (let i = 0; i < 400; i++) primary.d.store.kv.put("talk", `s/${String(i).padStart(9, "0")}`, { text: row });
+    // Writes all through the join, so records queue behind the snapshot and leave while it is still buffered.
+    let n = 0;
+    const writer = setInterval(() => primary!.d.store.kv.put("wake", "tick", { n: ++n }), 2);
+    try {
+      backup = await startSecondary(primary, { backup: true });
+      await linked(backup, 10_000);
+      await waitFor(() => backup!.nodes.replicaState?.snapshots === 1, 20_000);
+      await Bun.sleep(500);
+    } finally {
+      clearInterval(writer);
+    }
+    primary.d.store.kv.put("wake", "done", { n });
+    await waitFor(() => backup!.store.kv.get("wake", "done") !== undefined, 10_000);
+    expect(backup.store.kv.get("wake", "tick")).toEqual({ n });
+    // One link, one snapshot: no record failed to open, so the link never started over.
+    expect(backup.nodes.replicaState!.snapshots).toBe(1);
+    expect(backup.nodes.transitions.filter((t) => t.to === "linked").length).toBe(1);
+  }, 60_000);
 });
