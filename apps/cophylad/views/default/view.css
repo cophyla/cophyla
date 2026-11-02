@@ -1322,7 +1322,7 @@ button:disabled {
   gap: 6px;
 }
 
-.session-head .term-scale {
+.session-head :is(.term-scale, .chat-scale) {
   margin-left: 0;
 }
 
@@ -6267,8 +6267,7 @@ button:disabled {
 }
 
 /* − 100% +: one bordered control, the scale the terminal is drawn at between its steps. */
-.term-scale,
-.scale-control {
+.term-scale {
   display: inline-flex;
   flex: none;
   align-items: stretch;
@@ -6278,8 +6277,7 @@ button:disabled {
 }
 
 .term-smaller,
-.term-larger,
-.scale-step {
+.term-larger {
   min-width: 24px;
   padding: 2px 6px;
   border: 0;
@@ -6287,14 +6285,12 @@ button:disabled {
 }
 
 .term-smaller:hover:enabled,
-.term-larger:hover:enabled,
-.scale-step:hover:enabled {
+.term-larger:hover:enabled {
   background: var(--cophyla-wash);
   color: var(--cophyla-ink);
 }
 
-.term-scale-value,
-.scale-value {
+.term-scale-value {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6307,27 +6303,10 @@ button:disabled {
 
 .term-fit:disabled,
 .term-smaller:disabled,
-.term-larger:disabled,
-.scale-step:disabled,
-.chat-scale-reset:disabled {
+.term-larger:disabled {
   opacity: 0.45;
 }
 
-/* The chat's value is a button: it puts the text back to 100%, and reads as the number it is. */
-.chat-scale-reset {
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  cursor: pointer;
-}
-
-.chat-scale-reset:hover:enabled {
-  color: var(--ink);
-}
-
-.chat-scale-reset:disabled {
-  cursor: default;
-}
 
 .term-fit,
 .term-end,
@@ -10274,7 +10253,8 @@ button:disabled {
 /* The conversation and its composer take the chat's text size as a zoom: everything scales
    together, and the lines reflow to the pane. The head keeps its own size. */
 /* Zoomed inside the scroller, not on it: its scroll position stays in the pane's own pixels. */
-#stream > * {
+#stream > *,
+.session-body {
   zoom: var(--chat-zoom, 1);
 }
 

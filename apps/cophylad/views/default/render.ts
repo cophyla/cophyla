@@ -3235,7 +3235,7 @@ function createPane(): HTMLElement {
   const actions = el("div", "session-actions");
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
   // Lead, before Kill: this session a leader of the user's others, speaking to them as the user.
-  actions.append(modes, el("span", "session-term-slot"), connect, createLeadControl(), kill);
+  actions.append(modes, chatScaleControl(), el("span", "session-term-slot"), connect, createLeadControl(), kill);
   // The other people's agents this session is joined to, when it is: a press opens its Connect panel.
   const links = actionButton("session-links", "", "session-connect-show");
   // Beside them, what it leads while it leads, and the leaders that speak to it.
@@ -3272,6 +3272,11 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
     b.setAttribute("aria-pressed", b.dataset["mode"] === mode ? "true" : "false");
   }
   setHidden(modes.querySelector<HTMLElement>(".pane-mode-terminal")!, terminal === undefined);
+  // The conversation's text size, where its timeline shows (a terminal has its own control); its zoom is the pane's.
+  node.style.setProperty("--chat-zoom", String(ui.chatScale / 100));
+  const scale = node.querySelector<HTMLElement>(".chat-scale")!;
+  setHidden(scale, mode !== "timeline");
+  showChatScale(scale, ui.chatScale);
   const messages = modes.querySelector<HTMLElement>(".pane-mode-messages")!;
   setHidden(messages, !talk);
   if (talk) updateModeCount(messages, state, s.id);
@@ -4160,20 +4165,26 @@ function terminalShown(state: ViewState, ui: UiState): boolean {
  * lines reflow to the pane. The percentage puts it back to 100 when pressed.
  */
 function chatScaleControl(): HTMLElement {
-  const scale = el("span", "scale-control chat-scale");
+  const scale = el("span", "term-scale chat-scale");
   scale.setAttribute("role", "group");
   scale.setAttribute("aria-label", "Text size");
-  const smaller = actionButton("scale-step chat-smaller", "−", "chat-smaller");
+  // the terminal's own buttons and value, in its classes: the same look; the chat's actions take the clicks
+  const smaller = actionButton("term-smaller", "−", "chat-smaller");
   smaller.title = "Smaller text";
   smaller.setAttribute("aria-label", "Smaller text");
-  const value = actionButton("scale-value chat-scale-reset", "100%", "chat-scale-reset");
-  value.title = "Back to 100%";
-  value.setAttribute("aria-label", "Text size, back to 100%");
-  const larger = actionButton("scale-step chat-larger", "+", "chat-larger");
+  const value = el("span", "term-scale-value", "100%");
+  const larger = actionButton("term-larger", "+", "chat-larger");
   larger.title = "Larger text";
   larger.setAttribute("aria-label", "Larger text");
   scale.append(smaller, value, larger);
   return scale;
+}
+
+/** The text size control as it stands: its percentage, and which of its buttons have a step left to take. */
+function showChatScale(scale: HTMLElement, value: number): void {
+  setText(scale.querySelector(".term-scale-value")!, `${value}%`);
+  scale.querySelector<HTMLButtonElement>(".term-smaller")!.disabled = stepScale(value, -1) === undefined;
+  scale.querySelector<HTMLButtonElement>(".term-larger")!.disabled = stepScale(value, 1) === undefined;
 }
 
 function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void {
@@ -4212,10 +4223,7 @@ function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void 
   root.style.setProperty("--chat-zoom", String(ui.chatScale / 100));
   const scale = head.querySelector<HTMLElement>(".chat-scale")!;
   setHidden(scale, mode === "terminal");
-  setText(scale.querySelector(".scale-value")!, `${ui.chatScale}%`);
-  scale.querySelector<HTMLButtonElement>(".chat-smaller")!.disabled = stepScale(ui.chatScale, -1) === undefined;
-  scale.querySelector<HTMLButtonElement>(".chat-larger")!.disabled = stepScale(ui.chatScale, 1) === undefined;
-  scale.querySelector<HTMLButtonElement>(".chat-scale-reset")!.disabled = ui.chatScale === 100;
+  showChatScale(scale, ui.chatScale);
   const lead = head.querySelector<HTMLElement>(".chat-lead")!;
   setHidden(lead, !leads);
   updateChatLeadChip(lead.querySelector<HTMLElement>(".lead-leads")!, state);
@@ -4326,9 +4334,9 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
-  // The chat's text size reaches its composer while the chat is the pane on show, not a session's send box.
-  const onChat = ui.selected === undefined && ui.terminal === undefined && ui.group === undefined;
-  root.style.setProperty("--composer-zoom", String(onChat ? ui.chatScale / 100 : 1));
+  // The conversation's text size reaches the composer while a conversation is on show (the chat's or a session's timeline), not a terminal or a group.
+  const conversation = ui.terminal === undefined && ui.group === undefined && !terminalShown(state, ui);
+  root.style.setProperty("--composer-zoom", String(conversation ? ui.chatScale / 100 : 1));
   // A group's pane has its own composer.
   setHidden(form, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   const canChat = state.connected && state.scopes.includes("chat");

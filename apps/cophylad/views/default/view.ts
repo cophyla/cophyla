@@ -3774,9 +3774,6 @@ document.addEventListener("click", (ev) => {
       if (to !== undefined) setChatScale(to);
       return;
     }
-    case "chat-scale-reset":
-      setChatScale(100);
-      return;
     case "term-fit":
       ui.fit = !ui.fit;
       draw();
