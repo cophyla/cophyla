@@ -2136,8 +2136,19 @@ export interface TimelineStep {
   result?: { value: unknown; error: boolean; truncated?: boolean };
 }
 
-/** A run of an agent's turn: what it wrote, or the tools it called one after another. */
-export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] };
+/** A run of an agent's turn: what it wrote, the tools it called one after another, or a sub-agent it started. */
+export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] } | { kind: "agent"; key: string; step: TimelineStep };
+
+/**
+ * The sub-agent a Task or Agent call started: its type, what it was asked to do, and the prompt
+ * it was given. `undefined` for any other tool.
+ */
+export function subagentOf(step: Pick<TimelineStep, "tool" | "args">): { type: string; description: string; prompt: string } | undefined {
+  if (step.tool !== "Task" && step.tool !== "Agent") return undefined;
+  const a = (step.args ?? {}) as Record<string, unknown>;
+  const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string).trim() : "");
+  return { type: str("subagent_type") || "general-purpose", description: str("description") || "a sub-agent", prompt: str("prompt") };
+}
 
 /**
  * A session's timeline as cards, the way the chat and a group draw theirs: the user's messages
@@ -2203,7 +2214,8 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
         const t = into(row.key, e.at);
         const last = t.parts.at(-1);
         const step: TimelineStep = { key: row.key, tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
-        if (last?.kind === "steps") last.steps.push(step);
+        if (subagentOf(step) !== undefined) t.parts.push({ kind: "agent", key: row.key, step });
+        else if (last?.kind === "steps") last.steps.push(step);
         else t.parts.push({ kind: "steps", key: row.key, steps: [step] });
         if (typeof p["id"] === "string") open.set(p["id"], step);
         else waiting.push(step);

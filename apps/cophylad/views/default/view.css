@@ -1602,6 +1602,152 @@ button:disabled {
   color: var(--rust);
 }
 
+/* A sub-agent a turn started: a card of its type and task, its status at the head, folded to its prompt and report. */
+.tl-agent {
+  margin: 6px 0;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--moss);
+  background: var(--well);
+}
+
+.tl-agent[data-status="running"] {
+  border-left-color: var(--amber);
+}
+
+.tl-agent[data-status="failed"] {
+  border-left-color: var(--rust);
+}
+
+.tl-agent > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tl-agent > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tl-agent-mark {
+  color: var(--moss);
+  font-size: 11px;
+}
+
+.tl-agent[data-status="running"] .tl-agent-mark {
+  color: var(--amber);
+  animation: tl-agent-pulse 1.2s ease-in-out infinite;
+}
+
+.tl-agent[data-status="failed"] .tl-agent-mark {
+  color: var(--rust);
+}
+
+@keyframes tl-agent-pulse {
+  50% {
+    opacity: 0.3;
+  }
+}
+
+.tl-agent-type {
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font: 11px/1.6 var(--mono);
+}
+
+.tl-agent-what {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-agent-status {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tl-agent > pre {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  border-top: 1px solid var(--line);
+  color: var(--ink);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tl-agent-result[data-error="true"] {
+  color: var(--rust);
+}
+
+/* An ask in the chat: its title and detail, its options as the terminal lists them, and where it stands. */
+.tl-ask-title {
+  color: var(--ink);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.tl-ask-detail {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tl-ask-options {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tl-ask-option {
+  display: grid;
+  grid-template-columns: 14px minmax(0, 1fr);
+  gap: 0 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  background: var(--well);
+}
+
+.tl-ask-option[data-picked="1"] {
+  border-color: var(--amber);
+  color: var(--ink);
+}
+
+.tl-ask-mark {
+  color: var(--amber);
+}
+
+.tl-ask-label {
+  overflow-wrap: anywhere;
+}
+
+.tl-ask-desc {
+  grid-column: 2;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.tl-post[data-kind="ask"][data-status="open"] {
+  border-left-color: var(--amber);
+}
+
+.tl-post[data-kind="ask"][data-status="answered"] {
+  border-left-color: var(--moss);
+}
+
 /* Where the user's message stands, while that is not plainly delivered; a leader's, who sent it. */
 .tl-receipt {
   margin: 4px 0 0;

@@ -20,7 +20,7 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
-import { stepWords, timelinePosts } from "../views/default/model.ts";
+import { stepWords, subagentOf, timelinePosts } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
@@ -437,6 +437,26 @@ describe("default view model", () => {
     expect((posts[3] as Extract<TimelinePost, { kind: "turn" }>).parts).toEqual([{ kind: "text", key: "e16", text: "Green." }]);
     expect(posts.slice(4, 6).map((p) => (p as { text: string }).text)).toEqual(["context cleared", "Session ended (exit)"]);
     expect(posts[6]).toMatchObject({ kind: "user", text: "and the signup page", receipt: { state: "queued", asPeer: false } });
+  });
+
+  test("a sub-agent is a Task or Agent call: its type, task and prompt; its report comes back on its own call", () => {
+    expect(subagentOf({ tool: "Task", args: { subagent_type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" } })).toEqual({ type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" });
+    expect(subagentOf({ tool: "Agent", args: {} })).toEqual({ type: "general-purpose", description: "a sub-agent", prompt: "" });
+    expect(subagentOf({ tool: "Read", args: { file_path: "a.css" } })).toBeUndefined();
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const posts = timelinePosts([
+      ev(1, "status", { status: "busy" }),
+      ev(2, "tool_call", { tool: "Task", id: "a1", args: { subagent_type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" } }),
+      ev(3, "tool_call", { tool: "Read", id: "r1", args: { file_path: "a.css" } }),
+      ev(4, "tool_result", { tool: "Read", id: "r1", result: "body {}" }),
+      ev(5, "tool_result", { tool: "Task", id: "a1", result: "completed: Find the stylesheet\na.css" }),
+    ]);
+    expect(posts.map((p) => p.kind)).toEqual(["turn"]);
+    const parts = (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts;
+    expect(parts.map((p) => p.kind)).toEqual(["agent", "steps"]);
+    const agent = parts[0] as Extract<TurnPart, { kind: "agent" }>;
+    expect(agent.step.result?.value).toBe("completed: Find the stylesheet\na.css");
+    expect((parts[1] as Extract<TurnPart, { kind: "steps" }>).steps.map((st) => st.tool)).toEqual(["Read"]);
   });
 
   test("a turn's step in a few words: the tool and what it was pointed at", () => {

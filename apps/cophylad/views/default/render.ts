@@ -68,7 +68,7 @@ import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine,
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { stepScale } from "./model.ts";
 import type { DialogMode } from "./model.ts";
-import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, timelinePosts, viewerRows } from "./model.ts";
+import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, subagentOf, timelinePosts, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
 import type { SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
@@ -3522,6 +3522,11 @@ function createTimelinePost(post: TimelinePost): HTMLElement {
     head.append(icon);
   }
   head.append(el("span", "message-who"), el("time", "message-time"));
+  // An ask is drawn as the terminal draws its dialog: its title, its detail, its options with the one chosen marked, and where it stands.
+  if (post.kind === "ask") {
+    li.append(head, el("div", "tl-ask-title"), el("pre", "tl-ask-detail"), el("ol", "tl-ask-options"), el("p", "tl-receipt"));
+    return li;
+  }
   li.append(head, el("div", post.kind === "turn" ? "tl-parts" : "tl-text"));
   if (post.kind === "user") li.append(el("p", "tl-receipt"));
   return li;
@@ -3560,7 +3565,28 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
     case "ask": {
       const { label, text } = askEventText(post.payload as Record<string, unknown>, post.ask);
       setText(who, label);
-      renderText(li.querySelector<HTMLElement>(".tl-text")!, text, false);
+      const title = li.querySelector<HTMLElement>(".tl-ask-title")!;
+      const detail = li.querySelector<HTMLElement>(".tl-ask-detail")!;
+      const options = li.querySelector<HTMLElement>(".tl-ask-options")!;
+      const receipt = li.querySelector<HTMLElement>(".tl-receipt")!;
+      const ask = post.ask;
+      // Without the ask itself (its record is gone), the event's words alone.
+      if (ask === undefined) {
+        setText(title, text);
+        setHidden(detail, true);
+        setHidden(options, true);
+        setHidden(receipt, true);
+        return;
+      }
+      setData(li, "status", ask.status);
+      setText(title, ask.title);
+      setText(detail, ask.detail ?? "");
+      setHidden(detail, !ask.detail);
+      setHidden(options, ask.options.length === 0);
+      reconcile(options, ask.options, (o) => o.id, createAskOption, (n, o) => updateAskOption(n, o, ask));
+      const words = askWords(ask);
+      setText(receipt, words);
+      setHidden(receipt, words === "");
       return;
     }
     case "turn":
@@ -3575,6 +3601,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
 /** What a turn wrote, as markdown; or the tools it called one after another, folded to a line as a chat reply's steps are. */
 function createTurnPart(part: TurnPart): HTMLElement {
   if (part.kind === "text") return el("div", "tl-text");
+  if (part.kind === "agent") return createAgentCard();
   const root = el("details", "message-steps tl-steps");
   const summary = el("summary");
   summary.append(el("span", "steps-count"), el("span", "steps-line"));
@@ -3587,10 +3614,77 @@ function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: 
     renderText(node, part.text, true);
     return;
   }
+  if (part.kind === "agent") {
+    updateAgentCard(node, part.step);
+    return;
+  }
   const n = part.steps.length;
   setText(node.querySelector(".steps-count")!, n === 1 ? "1 step" : `${n} steps`);
   setText(node.querySelector(".steps-line")!, part.steps.map(stepWords).join(" · "));
   reconcile(node.querySelector<HTMLElement>(".steps-list")!, part.steps, (st) => st.key, createTimelineStep, (li, st) => updateTimelineStep(li, st, `${cardKey}/${st.key}`, ui));
+}
+
+/**
+ * A sub-agent a turn started, as the terminal draws a Task call: its type and what it was asked
+ * to do, its status, and, folded, the prompt it was given and the report it came back with.
+ */
+function createAgentCard(): HTMLElement {
+  const root = el("details", "tl-agent");
+  const summary = el("summary", "tl-agent-head");
+  summary.append(el("span", "tl-agent-mark"), el("span", "tl-agent-type"), el("span", "tl-agent-what"), el("span", "tl-agent-status"));
+  root.append(summary, el("pre", "tl-agent-prompt"), el("pre", "tl-agent-result"));
+  return root;
+}
+
+function updateAgentCard(node: HTMLElement, step: TimelineStep): void {
+  const sub = subagentOf(step);
+  if (sub === undefined) return;
+  const status = step.result === undefined ? "running" : step.result.error ? "failed" : "done";
+  setData(node, "status", status);
+  setText(node.querySelector(".tl-agent-mark")!, STEP_MARK[status] || "●");
+  setText(node.querySelector(".tl-agent-type")!, sub.type);
+  setText(node.querySelector(".tl-agent-what")!, sub.description);
+  setText(node.querySelector(".tl-agent-status")!, status);
+  const prompt = node.querySelector<HTMLElement>(".tl-agent-prompt")!;
+  setText(prompt, sub.prompt);
+  setHidden(prompt, sub.prompt === "");
+  const result = node.querySelector<HTMLElement>(".tl-agent-result")!;
+  const value = step.result?.value;
+  const text = value === undefined ? "" : typeof value === "string" ? value : pretty(value);
+  setText(result, text + (step.result?.truncated ? "\n…" : ""));
+  setData(result, "error", step.result?.error ? "true" : "false");
+  setHidden(result, text === "");
+}
+
+/** An ask's options as the terminal lists its choices: the one answered, marked; each one's description under it. */
+function createAskOption(): HTMLElement {
+  const li = el("li", "tl-ask-option");
+  li.append(el("span", "tl-ask-mark"), el("span", "tl-ask-label"), el("span", "tl-ask-desc"));
+  return li;
+}
+
+function updateAskOption(li: HTMLElement, option: Ask["options"][number], ask: Ask): void {
+  const picked = ask.answer !== undefined && (ask.answer.option === option.id || ask.answer.options?.includes(option.id) === true);
+  setData(li, "picked", picked ? "1" : "0");
+  setText(li.querySelector(".tl-ask-mark")!, picked ? "✓" : "");
+  setText(li.querySelector(".tl-ask-label")!, option.label);
+  const desc = li.querySelector<HTMLElement>(".tl-ask-desc")!;
+  setText(desc, option.description ?? "");
+  setHidden(desc, !option.description);
+}
+
+/** Where an ask stands, in the words the terminal would use: waiting on whom, answered how, or why it closed. */
+function askWords(ask: Ask): string {
+  switch (ask.status) {
+    case "open":
+      return ask.answerableBy.length === 0 ? "Waiting: answer it in the terminal." : "Waiting for your answer.";
+    case "answered":
+      return ask.answer ? `Answered ${answerWords(ask, ask.answer)}` : "Answered.";
+    case "expired":
+      return "Expired unanswered.";
+    case "cancelled":
+      return "Closed: answered in the terminal or no longer needed.";
+  }
 }
 
 /** A step: its mark (done, failed, or still running), the tool and what it was pointed at; pressed, what went in and what came back. */
