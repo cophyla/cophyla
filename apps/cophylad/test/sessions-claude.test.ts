@@ -564,6 +564,26 @@ describe("claude adapter prices a session with its sub-agents", () => {
     expect(s.stats!.tokens.in).toBe(1015);
   });
 
+  test("a sub-agent's work so far is the session's `subagents`, by the call that started it, read every few seconds while it works", async () => {
+    const path = transcriptPathFor(profileDir, cwd, "sess-p");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    const call = (id: string, name: string, input: Record<string, unknown>) =>
+      JSON.stringify({ type: "assistant", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { id, model: "claude-haiku-5-5", role: "assistant", content: [{ type: "tool_use", id: `tu_${id}`, name, input }], usage: { input_tokens: 1, output_tokens: 1 } } });
+    const startedAt = clock;
+    writeFileSync(join(subs, "agent-a3.meta.json"), JSON.stringify({ agentType: "Explore", description: "Find the css", toolUseId: "toolu_find" }));
+    writeFileSync(join(subs, "agent-a3.jsonl"), [JSON.stringify({ type: "user", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { role: "user", content: "find the css" } }), call("s3a", "Grep", { pattern: "stylesheet" }), call("s3b", "Read", { file_path: "C:\\app\\src\\app.css" })].join("\n") + "\n");
+    clock += 10_000;
+    await mini.sessions.tick();
+    const runs = () => mini.sessions.list().find((x) => x.native.id === "sess-p")!.subagents;
+    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", steps: 2, last: "Read app.css", model: "claude-haiku-5-5", startedAt, lastAt: startedAt }]);
+    // Working, it is read again in a few seconds: another step, then its meta says it finished.
+    clock += 3000;
+    writeFileSync(join(subs, "agent-a3.jsonl"), call("s3c", "Bash", { command: "rg css", description: "Search for css" }) + "\n", { flag: "a" });
+    writeFileSync(join(subs, "agent-a3.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_find", finished: true }));
+    await mini.sessions.tick();
+    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", steps: 3, last: "Bash Search for css", model: "claude-haiku-5-5", startedAt, lastAt: clock, finished: true }]);
+  });
+
   const costRecord = (sessionId: string, total: number, usage: Record<string, { in: number; out: number; read?: number }> = {}) =>
     JSON.stringify({
       type: "cost-state",

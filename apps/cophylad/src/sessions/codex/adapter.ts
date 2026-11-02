@@ -37,7 +37,7 @@ import { steerTurn } from "./control.ts";
 import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
 import type { TrustResult } from "./hooks.ts";
 import { readableReplies } from "./questions.ts";
-import { applyCodexRow, findRollout, newCodexState, readSessionIndex, statsFor } from "./rollout.ts";
+import { applyCodexRow, findRollout, lastAgentMessage, newCodexState, readSessionIndex, statsFor } from "./rollout.ts";
 import type { CodexRolloutState } from "./rollout.ts";
 
 const LIST_LIMIT = 50;
@@ -439,6 +439,23 @@ export class CodexAdapter implements HarnessAdapter {
           }
           case "assistant_text":
             if (record) this.host.event(rec, "assistant_text", { text: capText(item.text) }, rawIfSmall(row), item.at);
+            break;
+          case "subagent": {
+            if (!record) break;
+            // Done, its report is the last thing its own thread said.
+            const own = item.activity === "completed" && item.thread && entry ? findRollout(entry.codexHome, item.thread) : undefined;
+            const report = own ? lastAgentMessage(own) : undefined;
+            this.host.event(
+              rec,
+              "notification",
+              { type: "subagent", activity: item.activity, path: item.path, ...(item.thread ? { thread: item.thread } : {}), ...(item.callId ? { call: item.callId } : {}), ...(report ? { report: capText(report, 4000) } : {}) },
+              rawIfSmall(row),
+              item.at,
+            );
+            break;
+          }
+          case "compacted":
+            if (record) this.host.event(rec, "notification", { type: "context_compacted", message: "Codex compacted the conversation to free its context" }, rawIfSmall(row), item.at);
             break;
           case "tool_call": {
             if (!record) break;

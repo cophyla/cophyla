@@ -19,7 +19,8 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { HarnessProfile, Session, SessionStats, SessionWaiting, TerminalRef } from "@cophyla/protocol";
+import type { HarnessProfile, Session, SessionStats, SessionWaiting, SubagentRun, TerminalRef } from "@cophyla/protocol";
+import { SUBAGENTS_MAX } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
 import type { Logger } from "../../log.ts";
 import type { ProcessTree } from "../focus.ts";
@@ -35,7 +36,7 @@ import { classify, isAlive as defaultIsAlive, jobCreatedAt, readEntry, readRegis
 import type { ClaudeLive, IsAlive } from "./registry.ts";
 import { conversationKey } from "../../usage/ledger.ts";
 import type { SideSpend, SpendCall, SpendSink } from "../../usage/ledger.ts";
-import { subagentInfo, subagentTranscripts } from "./subagents.ts";
+import { countSubagentRow, subagentInfo, subagentMeta, subagentTranscripts } from "./subagents.ts";
 import type { SubagentInfo } from "./subagents.ts";
 import { applyClaudeCostRecord, applyClaudeRow, applyClaudeUsage, isCostRecord, newClaudeState, rowAt, statsFor } from "./transcript.ts";
 import type { ClaudePrice, ClaudeStatsOptions, ClaudeTranscriptState } from "./transcript.ts";
@@ -51,6 +52,10 @@ const STOP_POLL_MS = 50;
 const STOP_POLLS = 10;
 /** How often a session's sub-agents' transcripts are read: a sub-agent works while its session waits, its own transcript still. */
 const SUBAGENT_READ_MS = 10000;
+/** How often while one of them has not finished: its card in the chat follows its work. */
+const SUBAGENT_LIVE_MS = 3000;
+/** How long since its last step a sub-agent that never said it finished still counts as working. */
+const SUBAGENT_LIVE_FOR_MS = 15 * 60_000;
 /** How long a transcript left behind (the session ended, cleared, or resumed another) is read on for Claude's cost record. */
 const CLOSING_READ_MS = 30000;
 
@@ -62,6 +67,8 @@ interface SubagentTails {
   readAt: number;
   /** What each is, how far the spend ledger has it, and what started the turn it was first seen in. */
   info: Map<string, SubagentInfo & { mark: number; trigger: string }>;
+  /** How far each has got, by its file: the session's `subagents` once its call is known. */
+  runs: Map<string, { call?: string; agent?: string; steps: number; last?: string; model?: string; startedAt: number; lastAt: number; finished?: boolean }>;
 }
 
 /**
@@ -573,7 +580,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     state.onUsage = undefined;
     // Its sub-agents after its own lines: the launches those name are known by then.
-    this.tailSubagents(state, path, now);
+    if (this.tailSubagents(state, path, now)) patch.subagents = this.subagentRuns(state);
     if (state.statsChanged) {
       state.statsChanged = false;
       patch.stats = countOn(rec.statsBase, statsFor(state, this.price, this.statsOptions(rec)));
@@ -640,14 +647,17 @@ export class ClaudeAdapter implements HarnessAdapter {
    * not read them, then every `SUBAGENT_READ_MS`, the folders looked in again each time for a
    * sub-agent started since.
    */
-  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): void {
+  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): boolean {
     let subs = this.subagents.get(state);
     if (!subs) {
-      subs = { tails: new Map(), readAt: -Infinity, info: new Map() };
+      subs = { tails: new Map(), readAt: -Infinity, info: new Map(), runs: new Map() };
       this.subagents.set(state, subs);
     }
-    if (!force && now - subs.readAt < SUBAGENT_READ_MS) return;
+    // One working shows on a card: one that has not finished, but did something in the last while.
+    const working = [...subs.runs.values()].some((r) => r.call !== undefined && !r.finished && now - r.lastAt < SUBAGENT_LIVE_FOR_MS);
+    if (!force && now - subs.readAt < (working ? SUBAGENT_LIVE_MS : SUBAGENT_READ_MS)) return false;
     subs.readAt = now;
+    let changed = false;
     const feed = this.feeds.get(state);
     const files = subagentTranscripts(path);
     const fresh = files.filter((f) => !subs.tails.has(f));
@@ -665,10 +675,26 @@ export class ClaudeAdapter implements HarnessAdapter {
     for (const file of files) {
       const tail = subs.tails.get(file)!;
       const info = subs.info.get(file)!;
+      let run = subs.runs.get(file);
+      if (!run) subs.runs.set(file, (run = { agent: info.id, steps: 0, startedAt: 0, lastAt: 0 }));
+      // Its meta names the call that started it as it starts, and says when it has finished.
+      if (run.call === undefined || !run.finished) {
+        const meta = subagentMeta(file);
+        if (meta.call !== undefined && meta.call !== run.call) {
+          run.call = meta.call;
+          changed = true;
+        }
+        if (meta.finished === true && !run.finished) {
+          run.finished = true;
+          changed = true;
+        }
+      }
       for (const line of tail.read()) {
         state.onUsage = feed && line.offset >= info.mark ? (u) => feed.calls.push(u) : undefined;
         try {
-          applyClaudeUsage(state, JSON.parse(line.text), { agent: info.agent, trigger: state.agentTriggers.get(info.id) ?? info.trigger });
+          const row = JSON.parse(line.text) as unknown;
+          applyClaudeUsage(state, row, { agent: info.agent, trigger: state.agentTriggers.get(info.id) ?? info.trigger });
+          if (countSubagentRow(run, row) && run.call !== undefined) changed = true;
         } catch {
           // a line that is not JSON counts nothing
         }
@@ -679,6 +705,23 @@ export class ClaudeAdapter implements HarnessAdapter {
       }
     }
     state.onUsage = keep;
+    return changed;
+  }
+
+  /** The session's sub-agents as its `subagents` lists them: those whose call is known, the newest last, as many as the protocol takes. */
+  private subagentRuns(state: ClaudeTranscriptState): SubagentRun[] {
+    const runs = [...(this.subagents.get(state)?.runs.values() ?? [])].filter((r): r is typeof r & { call: string } => r.call !== undefined);
+    runs.sort((a, b) => a.startedAt - b.startedAt);
+    return runs.slice(-SUBAGENTS_MAX).map((r) => ({
+      call: r.call,
+      ...(r.agent !== undefined ? { agent: r.agent } : {}),
+      steps: r.steps,
+      ...(r.last !== undefined ? { last: r.last } : {}),
+      ...(r.model !== undefined ? { model: r.model } : {}),
+      startedAt: r.startedAt || r.lastAt,
+      lastAt: r.lastAt || r.startedAt,
+      ...(r.finished ? { finished: true } : {}),
+    }));
   }
 
   /**

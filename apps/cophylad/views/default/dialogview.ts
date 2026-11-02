@@ -52,29 +52,31 @@ export function drawDialogPanel(dock: HTMLElement, session: string, panel: Dialo
 }
 
 /**
- * The way back to the panel, above the terminal the dock shows for a dialog: a bar with a Show panel
- * button, or none when `showNative` is not given. The panel itself is taken away with it.
+ * The way back to the panel, above the terminal the dock shows for a dialog: a bar with a button
+ * named `label` (Show panel; Show the question while the session asks), or none when `showNative`
+ * is not given. The panel and the ask card are taken away with it.
  */
-export function drawDialogSwitch(dock: HTMLElement, session: string, showNative: (() => void) | undefined): void {
-  dock.querySelector(":scope > .dialog-panel")?.remove();
+export function drawDialogSwitch(dock: HTMLElement, session: string, showNative: (() => void) | undefined, label = "Show panel"): void {
+  dock.querySelectorAll(":scope > .dialog-panel, :scope > .dock-asks").forEach((n) => n.remove());
   signatures.delete(dock);
   const old = dock.querySelector<HTMLElement>(":scope > .dialog-switch");
   if (showNative === undefined) {
     old?.remove();
     return;
   }
-  // The bar belongs to the session it was drawn for: another session's is replaced.
-  if (old && old.dataset["session"] === session) return;
+  // The bar belongs to the session and the label it was drawn for: another is replaced.
+  if (old && old.dataset["session"] === session && old.dataset["label"] === label) return;
   old?.remove();
   const bar = el("div", "dialog-switch");
   bar.dataset["session"] = session;
-  bar.append(button("dialog-show", "Show panel", false, showNative));
+  bar.dataset["label"] = label;
+  bar.append(button("dialog-show", label, false, showNative));
   dock.prepend(bar);
 }
 
-/** Takes the dock's panel and its bar away. */
+/** Takes the dock's panel, its ask card and its bar away. */
 export function clearDialogDock(dock: HTMLElement): void {
-  dock.querySelectorAll(":scope > .dialog-panel, :scope > .dialog-switch").forEach((n) => n.remove());
+  dock.querySelectorAll(":scope > .dialog-panel, :scope > .dock-asks, :scope > .dialog-switch").forEach((n) => n.remove());
   signatures.delete(dock);
 }
 

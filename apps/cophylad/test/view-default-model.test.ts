@@ -20,7 +20,7 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
-import { stepWords, subagentOf, timelinePosts } from "../views/default/model.ts";
+import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
@@ -457,6 +457,258 @@ describe("default view model", () => {
     const agent = parts[0] as Extract<TurnPart, { kind: "agent" }>;
     expect(agent.step.result?.value).toBe("completed: Find the stylesheet\na.css");
     expect((parts[1] as Extract<TurnPart, { kind: "steps" }>).steps.map((st) => st.tool)).toEqual(["Read"]);
+  });
+
+  test("a long call's arguments, kept as JSON cut short, still say what the sub-agent is and what the step did", () => {
+    const cut = '{"description":"Node: watch terminal dialogs","subagent_type":"general-purpose","prompt":"You are working in the repo at C:\\\\D\\\\orchestrator.\\nDo NOT commit…';
+    expect(callArgs(cut)).toEqual({ description: "Node: watch terminal dialogs", subagent_type: "general-purpose", prompt: "You are working in the repo at C:\\D\\orchestrator.\nDo NOT commit…" });
+    expect(subagentOf({ tool: "Agent", args: cut })).toEqual({ type: "general-purpose", description: "Node: watch terminal dialogs", prompt: "You are working in the repo at C:\\D\\orchestrator.\nDo NOT commit…" });
+    expect(callArgs('{"command":"git log","description":"Show the log"}')).toEqual({ command: "git log", description: "Show the log" });
+    expect(stepWords({ tool: "Bash", args: '{"command":"bun test 2>&1 | tail -40","description":"Run the tests"…' })).toBe("Bash Run the tests");
+    expect(callArgs("plain words")).toEqual({});
+    // A cut after a lone backslash keeps the field up to it; one inside a \u escape leaves the field out, and the ones before it stand.
+    expect(callArgs('{"description":"Find it","prompt":"line\\')).toEqual({ description: "Find it", prompt: "line" });
+    expect(callArgs('{"description":"Find it","prompt":"caf\\u00')).toEqual({ description: "Find it" });
+  });
+
+  test("a sub-agent sent to the background runs until its notice, which ends its card with its report; other notices are their summary", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const notice = (id: string, status: string, summary: string, result?: string) =>
+      `<task-notification>\n<task-id>x${id}</task-id>\n<tool-use-id>${id}</tool-use-id>\n<output-file>C:\\t\\x.output</output-file>\n<status>${status}</status>\n<summary>${summary}</summary>\n${result !== undefined ? `<result>${result}` : ""}`;
+    const rows = [
+      ev(1, "status", { status: "busy" }),
+      ev(2, "tool_call", { tool: "Agent", id: "a1", args: { subagent_type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" } }),
+      ev(3, "tool_result", { tool: "Agent", id: "a1", result: "async_launched: Find the stylesheet" }),
+      ev(4, "tool_call", { tool: "Agent", id: "a2", args: { description: "Run the suite", prompt: "bun test" } }),
+      ev(5, "tool_result", { tool: "Agent", id: "a2", result: "async_launched: Run the suite" }),
+      ev(6, "status", { status: "idle" }),
+    ];
+    const agents = (posts: TimelinePost[]) => (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts.filter((p): p is Extract<TurnPart, { kind: "agent" }> => p.kind === "agent").map((p) => p.step.run);
+    expect(agents(timelinePosts(rows))).toEqual([{ state: "running" }, { state: "running" }]);
+    // The notices come in later turns, cut at their cap: the cards take them, and no line of their own shows.
+    const later = [
+      ...rows,
+      ev(7, "notification", { type: "queued", text: notice("a1", "completed", 'Agent "Find the stylesheet" finished', "It is in src/app.css, line 4.</result>\n</task-notification>") }),
+      ev(8, "notification", { type: "queued", text: notice("b9", "completed", 'Background command "Run the build" completed (exit code 0)') + "</task-notification>" }),
+      ev(9, "notification", { type: "queued", text: notice("a2", "completed", 'Agent "Run the suite" is waiting on its own background work', "Started the run; 40 of 2571 so fa…") }),
+      ev(10, "notification", { type: "queued", text: "check the logs too" }),
+    ];
+    const posts = timelinePosts(later);
+    expect(agents(posts)).toEqual([
+      { state: "done", summary: 'Agent "Find the stylesheet" finished', report: "It is in src/app.css, line 4." },
+      { state: "waiting", summary: 'Agent "Run the suite" is waiting on its own background work', report: "Started the run; 40 of 2571 so fa…" },
+    ]);
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
+    expect(taskNotice(notice("a3", "killed", 'Agent "x" was stopped'))).toEqual({ toolUseId: "a3", taskId: "xa3", status: "killed", summary: 'Agent "x" was stopped' });
+    expect(taskNotice("<cophyla-message>hi</cophyla-message>")).toBeUndefined();
+    const stopped = timelinePosts([...rows.slice(0, 3), ev(4, "notification", { type: "queued", text: notice("a1", "killed", 'Agent "Find the stylesheet" was stopped') })]);
+    expect(agents(stopped)).toEqual([{ state: "stopped", summary: 'Agent "Find the stylesheet" was stopped' }]);
+    // One that ran in its call (no background) stands by its result, as before.
+    expect(agents(timelinePosts([ev(1, "tool_call", { tool: "Task", id: "s1", args: {} }), ev(2, "tool_result", { tool: "Task", id: "s1", result: "completed: x\nfound" })]))).toEqual([undefined]);
+  });
+
+  test("where hooks run, a notice comes as a turn too, even before the call it ends: one card's ending, one note, never the user's words", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const agentNotice = '<task-notification>\n<task-id>a5</task-id>\n<tool-use-id>t1</tool-use-id>\n<status>completed</status>\n<summary>Agent "Find it" finished</summary>\n<result>REPORT: src/app.css</result>\n</task-notification>';
+    const bashNotice = '<task-notification>\n<task-id>b7</task-id>\n<tool-use-id>t9</tool-use-id>\n<status>completed</status>\n<summary>Background command "Build" completed (exit code 0)</summary>\n</task-notification>';
+    const posts = timelinePosts([
+      ev(1, "user_turn", { text: "use an agent", source: "typed" }),
+      // the sub-agent was done in a moment: the prompt hook's turn is recorded before the transcript's call
+      ev(2, "user_turn", { text: agentNotice, source: "hook" }),
+      ev(3, "tool_call", { tool: "Agent", id: "t1", args: { description: "Find it", prompt: "find it" } }),
+      ev(4, "tool_result", { tool: "Agent", id: "t1", result: "async_launched: Find it" }),
+      ev(5, "notification", { type: "queued", text: agentNotice }),
+      ev(6, "user_turn", { text: bashNotice, source: "hook" }),
+      ev(7, "notification", { type: "queued", text: bashNotice }),
+    ]);
+    expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "note"]);
+    const card = (posts[1] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>;
+    expect(card.step.run).toEqual({ state: "done", summary: 'Agent "Find it" finished', report: "REPORT: src/app.css" });
+    expect((posts[2] as Extract<TimelinePost, { kind: "note" }>).text).toBe('Background command "Build" completed (exit code 0)');
+  });
+
+  test("a sub-agent's card has how far it has got: its steps, how long, its model, the step it is on while it works", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const rows = [ev(1, "tool_call", { tool: "Agent", id: "t1", args: { description: "Find it", prompt: "find" } }), ev(2, "tool_result", { tool: "Agent", id: "t1", result: "async_launched: Find it" })];
+    const run = { call: "t1", steps: 7, last: "Read app.css", model: "claude-haiku-5-5", startedAt: 10_000, lastAt: 70_000 };
+    const step = ((timelinePosts(rows, { subagents: [run, { ...run, call: "other" }] })[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>).step;
+    expect(step.progress).toEqual(run);
+    expect(agentState(step)).toBe("running");
+    expect(agentFacts(step, 202_000)).toEqual({ facts: "7 steps · 3m 12s · haiku 5.5", doing: "Read app.css" });
+    // Its own transcript says it has finished, before its notice: done, timed to its last step, no step it is on.
+    const ended = { ...step, progress: { ...run, finished: true } };
+    expect(agentState(ended)).toBe("done");
+    expect(agentFacts(ended, 999_999)).toEqual({ facts: "7 steps · 1m · haiku 5.5" });
+    expect(agentFacts({ result: undefined }, 0)).toEqual({ facts: "" });
+    expect([elapsedWords(4_400), elapsedWords(60_000), elapsedWords(3_725_000)]).toEqual(["4s", "1m", "1h 2m"]);
+    expect([shortModel("claude-opus-5-5"), shortModel("claude-sonnet-5-5[1m]"), shortModel("gpt-6-astra")]).toEqual(["opus 5.5", "sonnet 5.5[1m]", "gpt-6-astra"]);
+  });
+
+  test("a sub-agent's own tools are its card's steps, wherever their results fall; an unknown sub-agent's stay the session's", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const rows = [
+      // the hook's result for the sub-agent's first tool lands before the transcript's call that started it
+      ev(1, "tool_result", { tool: "Read", id: "s1", input: { file_path: "C:\\w\\README.md" }, result: "# kit", agent: "a3" }),
+      ev(2, "tool_call", { tool: "Agent", id: "t1", args: { description: "Find it", prompt: "find" } }),
+      ev(3, "tool_result", { tool: "Agent", id: "t1", result: "async_launched: Find it" }),
+      ev(4, "tool_result", { tool: "Grep", id: "s2", input: { pattern: "kit" }, result: "README.md", agent: "a3" }),
+      ev(5, "tool_result", { tool: "Glob", id: "s9", input: { pattern: "*.md" }, result: "x.md", agent: "zz" }),
+    ];
+    const posts = timelinePosts(rows, { subagents: [{ call: "t1", agent: "a3", steps: 2, startedAt: 1, lastAt: 2 }] });
+    expect(posts.map((p) => p.kind)).toEqual(["turn"]);
+    const parts = (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts;
+    const card = parts[0] as Extract<TurnPart, { kind: "agent" }>;
+    expect(card.step.steps?.map((s) => [stepWords(s), s.result?.value])).toEqual([
+      ["Read README.md", "# kit"],
+      ["Grep kit", "README.md"],
+    ]);
+    // Another sub-agent's, which the node lists not, is a step of the session's as before.
+    expect((parts[1] as Extract<TurnPart, { kind: "steps" }>).steps.map((s) => s.tool)).toEqual(["Glob"]);
+    // Without the node's runs, they all stay the session's steps.
+    expect((timelinePosts(rows)[0] as Extract<TimelinePost, { kind: "turn" }>).parts.map((p) => p.kind)).toEqual(["steps", "agent", "steps"]);
+  });
+
+  test("a shell or a monitor sent to the background stands on its own step's line until its notice; no line of its own", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const notice = (id: string, inner: string) => `<task-notification>\n<task-id>x${id}</task-id>\n<tool-use-id>${id}</tool-use-id>\n${inner}\n</task-notification>`;
+    const head = [
+      ev(1, "tool_call", { tool: "Bash", id: "b1", args: { command: "bun test", description: "Run the suite", run_in_background: true } }),
+      ev(2, "tool_result", { tool: "Bash", id: "b1", result: "Command running in background with ID: bxyz. Output is being written to: C:\\t\\bxyz.output" }),
+      ev(3, "tool_call", { tool: "Monitor", id: "m1", args: { description: "Watch the log" } }),
+      ev(4, "tool_result", { tool: "Monitor", id: "m1", result: "Monitor started (task mabc, expires in 5m)." }),
+      ev(5, "status", { status: "idle" }),
+    ];
+    const steps = (posts: TimelinePost[]) => (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts.flatMap((p) => (p.kind === "steps" ? p.steps : []));
+    expect(steps(timelinePosts(head)).map((s) => s.run)).toEqual([{ state: "running" }, { state: "running" }]);
+    // As the node words a shell's result (`(in the background: <id>)`).
+    const worded = timelinePosts([ev(1, "tool_call", { tool: "Bash", id: "b2", args: { command: "sleep 6" } }), ev(2, "tool_result", { tool: "Bash", id: "b2", result: "(in the background: bnyxqmrll)" })]);
+    expect(steps(worded)[0]!.run).toEqual({ state: "running" });
+    const later = timelinePosts([
+      ...head,
+      ev(6, "notification", { type: "queued", text: notice("m1", "<event>ERROR cophylad crashed\nstack…</event>") }),
+      ev(7, "notification", { type: "queued", text: notice("b1", '<status>completed</status>\n<summary>Background command "Run the suite" completed (exit code 0)</summary>') }),
+    ]);
+    expect(later.map((p) => p.kind)).toEqual(["turn"]);
+    const [bash, monitor] = steps(later);
+    expect(bash!.run).toEqual({ state: "done", summary: 'Background command "Run the suite" completed (exit code 0)' });
+    expect(backgroundWords(bash!.run!)).toBe("completed (exit code 0)");
+    expect(monitor!.run).toEqual({ state: "running", summary: "ERROR cophylad crashed" });
+    expect(backgroundWords(monitor!.run!)).toBe("in the background · ERROR cophylad crashed");
+    expect(backgroundWords({ state: "running" })).toBe("in the background");
+  });
+
+  test("a Codex sub-agent is a card from its spawn to its end, its report the last its own thread said; one spawned off the page ends in a line", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const rows = [
+      ev(1, "tool_call", { tool: "spawn_agent", id: "call_9", args: { task_name: "review_v3_abc", agent_type: "worker", message: "gAAAAABqx3Gj-sealed" } }),
+      ev(2, "notification", { type: "subagent", activity: "started", path: "/root/review_v3_abc", thread: "th1", call: "call_9" }),
+      ev(3, "tool_result", { tool: "spawn_agent", id: "call_9", result: '{"task_name":"/root/review_v3_abc"}' }),
+    ];
+    const card = (posts: TimelinePost[]) => ((posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>).step;
+    const running = card(timelinePosts(rows));
+    expect(subagentOf(running)).toEqual({ type: "worker", description: "review v3 abc", prompt: "" });
+    expect(running.run).toEqual({ state: "running" });
+    const posts = timelinePosts([...rows, ev(4, "status", { status: "idle" }), ev(5, "notification", { type: "subagent", activity: "completed", path: "/root/review_v3_abc", thread: "th1", report: "Reviewed 24 clips: 10 keep." }), ev(6, "notification", { type: "subagent", activity: "completed", path: "/root/older_one" })]);
+    expect(card(posts).run).toEqual({ state: "done", report: "Reviewed 24 clips: 10 keep." });
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(["Sub-agent older one finished"]);
+  });
+
+  test("a Codex script's step says what it does: the command it runs, the files it patches, the image it looks at; its input reads as command lines", () => {
+    const run = 'const r = await tools.exec_command({cmd:"Get-Content -LiteralPath \'Tools/README.md\'","workdir":"C:\\\\x","tty":true}); text(r.output);';
+    expect(stepWords({ tool: "exec", args: run })).toBe("Run Get-Content -LiteralPath 'Tools/README.md'");
+    expect(stepInput({ tool: "exec", args: run })).toBe("$ Get-Content -LiteralPath 'Tools/README.md'");
+    const patch = 'text(await tools.apply_patch("*** Begin Patch\\n*** Update File: C:/w/scripts/em_render.py\\n@@\\n VIEWS = {\\n+def capture_complete():\\n-    pass\\n*** End Patch"));';
+    expect(stepWords({ tool: "exec", args: patch })).toBe("Edit em_render.py");
+    expect(stepWords({ tool: "exec", args: "await tools.view_image({path:'C:/w/grids/a.jpg'}); await tools.view_image({path:'b.jpg'});" })).toBe("View a.jpg (+1 more)");
+    expect(stepWords({ tool: "exec", args: "const x = 1;" })).toBe("exec");
+    expect(stepInput({ tool: "Bash", args: { command: "git status", description: "Status" } })).toBe("$ git status");
+    expect(stepInput({ tool: "Read", args: { file_path: "a.ts" } })).toBeUndefined();
+    expect(stepDiff({ tool: "exec", args: patch })).toEqual([
+      {
+        path: "C:/w/scripts/em_render.py",
+        lines: [
+          { kind: "hunk", text: "@@" },
+          { kind: "ctx", text: "VIEWS = {" },
+          { kind: "add", text: "def capture_complete():" },
+          { kind: "del", text: "    pass" },
+        ],
+      },
+    ]);
+  });
+
+  test("an edit opens as a diff: what went out and came in between the lines both share; a write as its lines; a long one cut with its count", () => {
+    expect(stepDiff({ tool: "Edit", args: { file_path: "C:\\a.ts", old_string: "one\ntwo\nthree\nfour\nfive", new_string: "one\ntwo\nTHREE\nfour\nfive" } })).toEqual([
+      {
+        path: "C:\\a.ts",
+        lines: [
+          { kind: "ctx", text: "one" },
+          { kind: "ctx", text: "two" },
+          { kind: "del", text: "three" },
+          { kind: "add", text: "THREE" },
+          { kind: "ctx", text: "four" },
+          { kind: "ctx", text: "five" },
+        ],
+      },
+    ]);
+    expect(stepDiff({ tool: "Write", args: { file_path: "b.md", content: "# B\nbody" } })).toEqual([{ path: "b.md", lines: [{ kind: "add", text: "# B" }, { kind: "add", text: "body" }] }]);
+    expect(stepDiff({ tool: "MultiEdit", args: { file_path: "c.ts", edits: [{ old_string: "a", new_string: "b" }] } })![0]!.lines).toEqual([{ kind: "hunk", text: "@@" }, { kind: "del", text: "a" }, { kind: "add", text: "b" }]);
+    const long = stepDiff({ tool: "Write", args: { file_path: "big.txt", content: Array.from({ length: 450 }, (_, i) => `line ${i}`).join("\n") } })![0]!.lines;
+    expect(long.length).toBe(401);
+    expect(long.at(-1)).toEqual({ kind: "hunk", text: "… 50 more lines" });
+    // A long call kept cut short still opens as the diff it holds.
+    expect(stepDiff({ tool: "Edit", args: '{"file_path":"d.ts","old_string":"x","new_string":"y and more…' })![0]!.lines).toEqual([{ kind: "del", text: "x" }, { kind: "add", text: "y and more…" }]);
+    expect(stepDiff({ tool: "Read", args: { file_path: "a.ts" } })).toBeUndefined();
+  });
+
+  test("an ask is one post where it was asked: its answer and its closing are news for it, its question's words kept", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
+    const posts = timelinePosts([
+      ev(1, "ask", { ask: "ask_1", phase: "opened", tool: "AskUserQuestion", question: 1, of: 2, title: "Which database?" }),
+      ev(2, "ask", { ask: "ask_1", phase: "answered", answer: { option: "SQLite", by: { kind: "user" }, at: 5 } }),
+      ev(3, "ask", { ask: "ask_2", phase: "opened", tool: "AskUserQuestion", question: 2, of: 2, title: "Which linters?" }),
+      ev(4, "ask", { ask: "ask_2", phase: "closed", reason: "terminal" }),
+    ]);
+    expect(posts.map((p) => [p.kind, p.key])).toEqual([
+      ["ask", "e1"],
+      ["ask", "e3"],
+    ]);
+    const first = posts[0] as Extract<TimelinePost, { kind: "ask" }>;
+    expect(askEventText(first.payload as Record<string, unknown>, undefined)).toEqual({ label: "question", text: "Which database?: SQLite" });
+    expect(first.payload).toMatchObject({ title: "Which database?", phase: "answered" });
+    expect(askEventText((posts[1] as Extract<TimelinePost, { kind: "ask" }>).payload as Record<string, unknown>, undefined).text).toBe("Which linters?: closed (terminal)");
+    // The asking tool's result finds its call in the card before the ask: no card of one lone step.
+    const around = timelinePosts([
+      ev(1, "tool_call", { tool: "AskUserQuestion", id: "q1", args: { questions: [] } }),
+      ev(2, "ask", { ask: "ask_9", phase: "opened", tool: "AskUserQuestion", title: "Which?" }),
+      ev(3, "ask", { ask: "ask_9", phase: "answered", answer: { option: "A", by: { kind: "user" }, at: 5 } }),
+      ev(4, "tool_result", { tool: "AskUserQuestion", id: "q1", result: "Which? → A" }),
+      ev(5, "assistant_text", { text: "Going with A." }),
+    ]);
+    expect(around.map((p) => p.kind)).toEqual(["turn", "ask", "turn"]);
+    const call = (around[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "steps" }>;
+    expect(call.steps[0]!.result?.value).toBe("Which? → A");
+    expect((around[2] as Extract<TimelinePost, { kind: "turn" }>).parts.map((p) => p.kind)).toEqual(["text"]);
+  });
+
+  test("a session's open asks are the dock's card on its timeline: not on its terminal, not another's, not once the user chose the terminal, not offline", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    apply(s, { type: "session.state", params: session("sess_b", 100) });
+    apply(s, { type: "ask.state", params: ask("ask_1", 500, { type: "choice", title: "Which database?", options: [{ id: "PostgreSQL", label: "PostgreSQL", description: "The server one" }, { id: "SQLite", label: "SQLite" }], allowsText: true }) });
+    apply(s, { type: "ask.state", params: ask("ask_2", 510, { source: { kind: "harness", session: "sess_b" } }) });
+    apply(s, { type: "ask.state", params: ask("ask_3", 520, { status: "answered" }) });
+    apply(s, { type: "ask.state", params: ask("ask_4", 530, { source: { kind: "brain" } }) });
+    const a = s.sessions.get("sess_a")!.session;
+    const none = new Map<string, "native" | "terminal">();
+    expect(dockAsks(s, a, "timeline", none).map((x) => x.id)).toEqual(["ask_1"]);
+    expect(dockAsks(s, a, "terminal", none)).toEqual([]);
+    expect(dockAsks(s, a, "messages", none)).toEqual([]);
+    expect(dockAsks(s, a, "timeline", new Map([["sess_a", "terminal"]]))).toEqual([]);
+    expect(dockAsks(s, a, "timeline", new Map([["sess_b", "terminal"]])).map((x) => x.id)).toEqual(["ask_1"]);
+    // The pinned prompts leave the session's own to the dock, and keep the rest.
+    expect(pinnedAsks(s, "sess_a").map((x) => x.id)).toEqual(["ask_2", "ask_4"]);
+    apply(s, { type: "host.state", params: { connected: false } });
+    expect(dockAsks(s, a, "timeline", none)).toEqual([]);
   });
 
   test("a turn's step in a few words: the tool and what it was pointed at", () => {

@@ -64,14 +64,14 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
+import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks } from "./render.ts";
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
@@ -289,18 +289,34 @@ const dialogPresses = new Set<string>();
  * the user answers it: as a native panel of its title, text, tabs, rows and keys (`dialogview.ts`), or
  * else the terminal's own window, typed into as the terminal is, so a slash command's view and an ask's
  * question take the keys they take in the terminal. The panel is the default; the terminal is for a
- * dialog it cannot draw, or the one the user chose.
+ * dialog it cannot draw, or the one the user chose. While the session asks (a question, a permission,
+ * a plan), the dock is its ask card instead, answered there as a pinned prompt is, and the terminal's
+ * own dialog is a press away.
  */
 function syncDialog(): void {
   const dock = roots.composer.querySelector<HTMLElement>(".dialog-dock");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const pane = card !== undefined ? paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) : undefined;
+  const asks = card !== undefined && pane !== undefined ? dockAsks(state, card.session, pane, ui.dialogModes) : [];
+  if (dock !== null && card !== undefined && asks.length > 0) {
+    const id = card.session.id;
+    if (dialog.shown !== undefined) dialog.hide();
+    dock.hidden = false;
+    const terminal = pane !== undefined && dialogTerminal(state, card.session, pane) !== undefined;
+    renderDockAsks(dock, id, asks, state, terminal ? () => {
+      ui.dialogModes.set(id, "terminal");
+      draw();
+    } : undefined);
+    return;
+  }
   const panel = card !== undefined && pane !== undefined ? dialogPanelFor(state, card.session, pane) : undefined;
   if (dock === null || card === undefined || pane === undefined || panel === undefined) {
     hideDialog(dock);
     return;
   }
   const id = card.session.id;
+  // The user chose the terminal over the session's ask card: the bar's way back is to the question.
+  const asking = dockAsks(state, card.session, pane, new Map()).length > 0;
   if (dialogNative(panel, ui.dialogModes, id)) {
     if (dialog.shown !== undefined) dialog.hide();
     dock.hidden = false;
@@ -323,10 +339,10 @@ function syncDialog(): void {
     return;
   }
   dock.hidden = false;
-  drawDialogSwitch(dock, id, panel.native ? () => {
+  drawDialogSwitch(dock, id, panel.native || asking ? () => {
     ui.dialogModes.delete(id);
     draw();
-  } : undefined);
+  } : undefined, asking ? "Show the question" : "Show panel");
   dialog.show(own.id, dock, { drive: false, scale: ui.scale, input: true });
   dialog.update(own, false, false);
   dialog.dock();

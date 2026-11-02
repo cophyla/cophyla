@@ -1602,28 +1602,33 @@ button:disabled {
   color: var(--rust);
 }
 
-/* A sub-agent a turn started: a card of its type and task, its status at the head, folded to its prompt and report. */
+/* A sub-agent a turn started, a card of its own: its head says what it is, how far it has got and
+   where it stands, and while it works the step it is on; open, its report written out, and the
+   prompt it was given, folded. */
 .tl-agent {
-  margin: 6px 0;
+  margin: 8px 0;
+  overflow: hidden;
   border: 1px solid var(--line);
-  border-left: 3px solid var(--moss);
+  border-radius: 8px;
   background: var(--well);
 }
 
-.tl-agent[data-status="running"] {
-  border-left-color: var(--amber);
+.tl-agent[data-status="running"],
+.tl-agent[data-status="waiting"] {
+  border-color: color-mix(in srgb, var(--amber) 45%, var(--line));
 }
 
 .tl-agent[data-status="failed"] {
-  border-left-color: var(--rust);
+  border-color: color-mix(in srgb, var(--rust) 50%, var(--line));
 }
 
 .tl-agent > summary {
   display: flex;
-  align-items: baseline;
-  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   min-width: 0;
-  padding: 6px 10px;
+  padding: 8px 12px;
   cursor: pointer;
   list-style: none;
 }
@@ -1632,40 +1637,77 @@ button:disabled {
   display: none;
 }
 
+.tl-agent > summary:hover {
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
 .tl-agent-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--moss) 16%, transparent);
   color: var(--moss);
   font-size: 11px;
 }
 
 .tl-agent[data-status="running"] .tl-agent-mark {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
   color: var(--amber);
   animation: tl-agent-pulse 1.2s ease-in-out infinite;
 }
 
+.tl-agent[data-status="waiting"] .tl-agent-mark {
+  background: color-mix(in srgb, var(--amber) 16%, transparent);
+  color: var(--amber);
+}
+
 .tl-agent[data-status="failed"] .tl-agent-mark {
+  background: color-mix(in srgb, var(--rust) 16%, transparent);
   color: var(--rust);
+}
+
+.tl-agent[data-status="stopped"] .tl-agent-mark {
+  background: color-mix(in srgb, var(--muted) 16%, transparent);
+  color: var(--muted);
 }
 
 @keyframes tl-agent-pulse {
   50% {
-    opacity: 0.3;
+    opacity: 0.35;
   }
 }
 
 .tl-agent-type {
-  padding: 0 6px;
-  border: 1px solid var(--line);
+  flex: none;
+  padding: 1px 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
   color: var(--muted);
-  font: 11px/1.6 var(--mono);
+  font: 11px/1.5 var(--mono);
 }
 
 .tl-agent-what {
-  flex: 1;
+  flex: 1 1 160px;
   min-width: 0;
   overflow: hidden;
   color: var(--ink);
+  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tl-agent-facts {
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-agent-facts[hidden] {
+  display: none;
 }
 
 .tl-agent-status {
@@ -1673,22 +1715,185 @@ button:disabled {
   font-size: 12px;
 }
 
-.tl-agent > pre {
-  max-height: 320px;
-  margin: 0;
-  overflow: auto;
-  padding: 8px 10px;
+.tl-agent[data-status="running"] .tl-agent-status,
+.tl-agent[data-status="waiting"] .tl-agent-status {
+  color: var(--amber);
+}
+
+.tl-agent[data-status="failed"] .tl-agent-status {
+  color: var(--rust);
+}
+
+/* The step it is on, under its head, while it works. */
+.tl-agent-doing {
+  display: flex;
+  flex: 1 0 100%;
+  gap: 6px;
+  min-width: 0;
+  padding-left: 26px;
+  color: var(--muted);
+  font: 12px/1.5 var(--mono);
+}
+
+.tl-agent-doing[hidden] {
+  display: none;
+}
+
+.tl-agent-doing-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-agent-section {
+  padding: 8px 12px 10px;
   border-top: 1px solid var(--line);
+}
+
+.tl-agent-section[hidden] {
+  display: none;
+}
+
+.tl-agent-label {
+  margin-bottom: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tl-agent-result {
+  max-height: 420px;
+  overflow: auto;
   color: var(--ink);
-  font: 12px/1.45 var(--mono);
-  white-space: pre-wrap;
-  word-break: break-word;
 }
 
 .tl-agent-result[data-error="true"] {
   color: var(--rust);
 }
 
+.tl-agent-brief > summary,
+.tl-agent-work > summary {
+  margin: 0;
+  cursor: pointer;
+  list-style: none;
+}
+
+.tl-agent-brief > summary::-webkit-details-marker,
+.tl-agent-work > summary::-webkit-details-marker {
+  display: none;
+}
+
+.tl-agent-brief > summary::before,
+.tl-agent-work > summary::before {
+  content: "▸ ";
+}
+
+.tl-agent-brief[open] > summary::before,
+.tl-agent-work[open] > summary::before {
+  content: "▾ ";
+}
+
+.tl-agent-prompt {
+  max-height: 260px;
+  margin: 4px 0 0;
+  overflow: auto;
+  color: var(--ink);
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* What the sub-agent did, step by step, under its card's report. */
+.tl-agent-steps {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* A call sent to the background: where it stands, after its words on its line. */
+.tl-step-run {
+  flex: none;
+  max-width: 45%;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tl-step-run[hidden] {
+  display: none;
+}
+
+.tl-step[data-background="true"][data-status="running"] .tl-step-run {
+  color: var(--amber);
+}
+
+/* An edit's diff: each file's path, then its lines, what went out and what came in on their colours. */
+.tl-step-diff {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  background: var(--well);
+}
+
+.tl-step-diff[hidden] {
+  display: none;
+}
+
+.tl-step-diff + .tl-step-in,
+.tl-step-diff + .tl-step-in + .tl-step-out,
+.tl-step-diff + .tl-step-in[hidden] + .tl-step-out {
+  border-top: 0;
+}
+
+.tl-diff-file + .tl-diff-file {
+  border-top: 1px solid var(--line);
+}
+
+.tl-diff-path {
+  position: sticky;
+  top: 0;
+  padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  background: var(--card);
+  color: var(--ink);
+  font: 12px/1.5 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.tl-diff-lines {
+  margin: 0;
+  padding: 4px 0;
+  font: 12px/1.45 var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tl-diff-line {
+  display: block;
+  padding: 0 10px;
+}
+
+.tl-diff-add {
+  background: color-mix(in srgb, var(--moss) 18%, transparent);
+  color: var(--ink);
+}
+
+.tl-diff-del {
+  background: color-mix(in srgb, var(--rust) 18%, transparent);
+  color: var(--ink);
+}
+
+.tl-diff-ctx {
+  color: var(--muted);
+}
+
+.tl-diff-hunk {
+  color: var(--muted);
+  font-style: italic;
+}
 /* An ask in the chat: its title and detail, its options as the terminal lists them, and where it stands. */
 .tl-ask-title {
   color: var(--ink);
@@ -1702,6 +1907,13 @@ button:disabled {
   font: 12px/1.45 var(--mono);
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* A question's detail is its header and place, not a tool's input: a plain line, as its card has it. */
+.tl-post[data-kind="ask"][data-type="choice"] .tl-ask-detail,
+.tl-post[data-kind="ask"][data-type="input"] .tl-ask-detail {
+  font: inherit;
+  font-size: 13px;
 }
 
 .tl-ask-options {
@@ -10665,4 +10877,50 @@ button:disabled {
   font: inherit;
   font-size: 13px;
   cursor: pointer;
+}
+
+/* A session's ask card in the dock, in place of its terminal's dialog: the pinned prompt's form, as
+   tall as its asks up to the dock's own height, scrolled inside, the way to the terminal beneath. */
+.dialog-dock:has(> .dock-asks) {
+  height: auto;
+  max-height: min(46vh, 420px);
+}
+
+.dock-asks {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 45%, var(--line-strong));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cophyla) 7%, var(--card));
+}
+
+.dock-asks-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.dock-asks .ask {
+  max-width: none;
+}
+
+/* The session that asks is the one the pane shows: nothing names it again. */
+.dock-asks .ask-source,
+.dock-asks .ask-session {
+  display: none;
+}
+
+.dock-asks-foot {
+  display: flex;
+  flex: none;
+  justify-content: flex-end;
+  padding: 0 12px;
+  border-top: 1px solid var(--line);
+}
+
+.dock-asks-foot[hidden] {
+  display: none;
 }

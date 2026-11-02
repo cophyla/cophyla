@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { stepScale } from "./model.ts";
@@ -71,7 +71,8 @@ import type { DialogMode } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, subagentOf, timelinePosts, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
-import type { SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
+import type { AgentRun, DiffFile, SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
+import { agentFacts, agentState, backgroundWords, stepDiff, stepInput } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import { placeGroupChats } from "./model.ts";
@@ -503,6 +504,37 @@ function renderPinned(root: HTMLElement, asks: Ask[], state: ViewState, ui: UiSt
   if (!folded && ui.pinnedFocus && !root.contains(document.activeElement)) {
     list.querySelector<HTMLElement>("button:not(:disabled), input:not(:disabled)")?.focus();
   }
+}
+
+/**
+ * A session's open asks as the dock's card, above the send box: each the form a pinned prompt is
+ * (its question or the tool it would run, what it means, its options and what each does, a field
+ * for another answer), answered as one is. Under them, the way to the terminal's own dialog, where
+ * the session's terminal shows one (`showTerminal`). The panel and the terminal's bar make way.
+ */
+export function renderDockAsks(dock: HTMLElement, session: string, asks: Ask[], state: ViewState, showTerminal: (() => void) | undefined): void {
+  dock.querySelectorAll(":scope > .dialog-panel, :scope > .dialog-switch").forEach((n) => n.remove());
+  let card = dock.querySelector<HTMLElement>(":scope > .dock-asks");
+  // The card is its session's: another session's is drawn afresh, its ticks and words with it.
+  if (card && card.dataset["session"] !== session) {
+    card.remove();
+    card = null;
+  }
+  if (!card) {
+    card = el("section", "dock-asks");
+    card.dataset["session"] = session;
+    card.setAttribute("aria-label", "What the session asks");
+    const terminal = el("button", "dialog-terminal dock-asks-terminal", "Show terminal");
+    terminal.type = "button";
+    const foot = el("div", "dock-asks-foot");
+    foot.append(terminal);
+    card.append(el("div", "dock-asks-list"), foot);
+    dock.append(card);
+  }
+  reconcile(card.querySelector<HTMLElement>(".dock-asks-list")!, asks, (a) => `ask:${a.id}`, createAsk, (node, ask) => updateAsk(node, ask, state));
+  const terminal = card.querySelector<HTMLButtonElement>(".dock-asks-terminal")!;
+  terminal.onclick = showTerminal ?? null;
+  setHidden(card.querySelector<HTMLElement>(".dock-asks-foot")!, showTerminal === undefined);
 }
 
 function textPlaceholder(ask: Ask): string {
@@ -3337,7 +3369,7 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
 
   const timeline = node.querySelector<HTMLElement>(".timeline")!;
   const cardKey = `session:${s.id}`;
-  const posts = timelinePosts(selectTimeline(state, card));
+  const posts = timelinePosts(selectTimeline(state, card), { ...(card.session.subagents ? { subagents: card.session.subagents } : {}) });
   reconcile(timeline, posts, (p) => p.key, createTimelinePost, (li, post) => updateTimelinePost(li, post, s, cardKey, ui));
   updateWorking(node.querySelector<HTMLElement>(".tl-working")!, s, posts);
 }
@@ -3579,10 +3611,12 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
         return;
       }
       setData(li, "status", ask.status);
+      setData(li, "type", ask.type);
       setText(title, ask.title);
       setText(detail, ask.detail ?? "");
       setHidden(detail, !ask.detail);
-      setHidden(options, ask.options.length === 0);
+      // Open, its options are the card's to press, above the send box; settled, they are what was picked.
+      setHidden(options, ask.options.length === 0 || ask.status === "open");
       reconcile(options, ask.options, (o) => o.id, createAskOption, (n, o) => updateAskOption(n, o, ask));
       const words = askWords(ask);
       setText(receipt, words);
@@ -3615,45 +3649,83 @@ function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: 
     return;
   }
   if (part.kind === "agent") {
-    updateAgentCard(node, part.step);
+    updateAgentCard(node, part.step, cardKey, ui);
     return;
   }
   const n = part.steps.length;
-  setText(node.querySelector(".steps-count")!, n === 1 ? "1 step" : `${n} steps`);
+  // Folded, the line still says what goes on in the background.
+  const going = part.steps.filter((s) => s.run?.state === "running").length;
+  setText(node.querySelector(".steps-count")!, `${n === 1 ? "1 step" : `${n} steps`}${going > 0 ? ` · ${going} in the background` : ""}`);
   setText(node.querySelector(".steps-line")!, part.steps.map(stepWords).join(" · "));
   reconcile(node.querySelector<HTMLElement>(".steps-list")!, part.steps, (st) => st.key, createTimelineStep, (li, st) => updateTimelineStep(li, st, `${cardKey}/${st.key}`, ui));
 }
 
 /**
- * A sub-agent a turn started, as the terminal draws a Task call: its type and what it was asked
- * to do, its status, and, folded, the prompt it was given and the report it came back with.
+ * A sub-agent a turn started: its type and what it was asked to do, how far it has got (its steps,
+ * how long, its model) and where it stands at the head, and while it works the step it is on under
+ * it; open, the report it came back with, written out, and the prompt it was given, folded.
  */
 function createAgentCard(): HTMLElement {
   const root = el("details", "tl-agent");
   const summary = el("summary", "tl-agent-head");
-  summary.append(el("span", "tl-agent-mark"), el("span", "tl-agent-type"), el("span", "tl-agent-what"), el("span", "tl-agent-status"));
-  root.append(summary, el("pre", "tl-agent-prompt"), el("pre", "tl-agent-result"));
+  const doing = el("span", "tl-agent-doing");
+  doing.append(el("span", "tl-agent-doing-mark", "›"), el("span", "tl-agent-doing-text"));
+  summary.append(el("span", "tl-agent-mark"), el("span", "tl-agent-type"), el("span", "tl-agent-what"), el("span", "tl-agent-facts"), el("span", "tl-agent-status"), doing);
+  const report = el("section", "tl-agent-section tl-agent-report");
+  report.append(el("div", "tl-agent-label", "Report"), el("div", "tl-agent-result"));
+  const work = el("details", "tl-agent-section tl-agent-work");
+  work.append(el("summary", "tl-agent-label tl-agent-work-head"), el("ol", "steps-list tl-agent-steps"));
+  const prompt = el("details", "tl-agent-section tl-agent-brief");
+  const promptHead = el("summary", "tl-agent-label", "Prompt");
+  prompt.append(promptHead, el("pre", "tl-agent-prompt"));
+  root.append(summary, report, work, prompt);
   return root;
 }
 
-function updateAgentCard(node: HTMLElement, step: TimelineStep): void {
+/** Where a sub-agent stands, in a word on its card's head, and its mark. */
+const AGENT_WORD: Record<AgentRun["state"], string> = { running: "working", done: "done", failed: "failed", stopped: "stopped", waiting: "waiting on its own work" };
+const AGENT_MARK: Record<AgentRun["state"], string> = { running: "●", done: "✓", failed: "✕", stopped: "■", waiting: "◐" };
+
+function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string, ui: UiState): void {
   const sub = subagentOf(step);
   if (sub === undefined) return;
-  const status = step.result === undefined ? "running" : step.result.error ? "failed" : "done";
+  // What it did, step by step, folded: each one opens as the session's own steps do.
+  const work = node.querySelector<HTMLElement>(".tl-agent-work")!;
+  const own = step.steps ?? [];
+  setText(work.querySelector(".tl-agent-work-head")!, own.length === 1 ? "1 step it took" : `${own.length} steps it took`);
+  setHidden(work, own.length === 0);
+  reconcile(work.querySelector<HTMLElement>(".tl-agent-steps")!, own, (st) => st.key, createTimelineStep, (li, st) => updateTimelineStep(li, st, `${cardKey}/${step.key}/${st.key}`, ui));
+  const status = agentState(step);
   setData(node, "status", status);
-  setText(node.querySelector(".tl-agent-mark")!, STEP_MARK[status] || "●");
+  setText(node.querySelector(".tl-agent-mark")!, AGENT_MARK[status]);
   setText(node.querySelector(".tl-agent-type")!, sub.type);
   setText(node.querySelector(".tl-agent-what")!, sub.description);
-  setText(node.querySelector(".tl-agent-status")!, status);
-  const prompt = node.querySelector<HTMLElement>(".tl-agent-prompt")!;
-  setText(prompt, sub.prompt);
-  setHidden(prompt, sub.prompt === "");
-  const result = node.querySelector<HTMLElement>(".tl-agent-result")!;
-  const value = step.result?.value;
-  const text = value === undefined ? "" : typeof value === "string" ? value : pretty(value);
-  setText(result, text + (step.result?.truncated ? "\n…" : ""));
-  setData(result, "error", step.result?.error ? "true" : "false");
-  setHidden(result, text === "");
+  const { facts, doing } = agentFacts(step, Date.now());
+  const factsNode = node.querySelector<HTMLElement>(".tl-agent-facts")!;
+  setText(factsNode, facts);
+  setHidden(factsNode, facts === "");
+  const word = node.querySelector<HTMLElement>(".tl-agent-status")!;
+  setText(word, AGENT_WORD[status]);
+  word.title = step.run?.summary ?? "";
+  const doingNode = node.querySelector<HTMLElement>(".tl-agent-doing")!;
+  setText(doingNode.querySelector(".tl-agent-doing-text")!, doing ?? "");
+  setHidden(doingNode, doing === undefined);
+  const brief = node.querySelector<HTMLElement>(".tl-agent-brief")!;
+  setText(brief.querySelector(".tl-agent-prompt")!, sub.prompt);
+  setHidden(brief, sub.prompt === "");
+  // Its report: a background one's comes in its notice (its call's words are only the launch's receipt); one its call ran, less the call's own line.
+  const value = step.run !== undefined ? step.run.report : step.result?.value;
+  let text = value === undefined ? "" : typeof value === "string" ? value : pretty(value);
+  if (step.run === undefined && /^[a-z_]+: /.test(text) && text.split("\n", 1)[0]!.endsWith(sub.description)) {
+    const nl = text.indexOf("\n");
+    text = nl < 0 ? "" : text.slice(nl + 1);
+  }
+  if (step.run === undefined && step.result?.truncated) text += "\n\n…";
+  const report = node.querySelector<HTMLElement>(".tl-agent-report")!;
+  const result = report.querySelector<HTMLElement>(".tl-agent-result")!;
+  setData(result, "error", status === "failed" ? "true" : "false");
+  if (text.trim() !== "") renderText(result, text.trim(), true);
+  setHidden(report, text.trim() === "");
 }
 
 /** An ask's options as the terminal lists its choices: the one answered, marked; each one's description under it. */
@@ -3693,18 +3765,29 @@ function createTimelineStep(): HTMLElement {
   const line = el("button", "tl-step-line");
   line.type = "button";
   line.dataset["action"] = "toggle";
-  line.append(el("span", "progress-mark"), el("span", "progress-text"));
+  line.append(el("span", "progress-mark"), el("span", "progress-text"), el("span", "tl-step-run"));
   const body = el("div", "tl-step-body");
-  body.append(el("pre", "tl-step-in"), el("pre", "tl-step-out"));
+  body.append(el("div", "tl-step-diff"), el("pre", "tl-step-in"), el("pre", "tl-step-out"));
   li.append(line, body);
   return li;
 }
 
+/**
+ * A step's line: its mark and words, and for a call sent to the background where it stands (still
+ * going, or how it ended). Pressed, what went in, as one reads it (a command line, an edit's diff),
+ * and what came back (a background call's report, once it has one).
+ */
 function updateTimelineStep(li: HTMLElement, step: TimelineStep, key: string, ui: UiState): void {
-  const status = step.result === undefined ? "running" : step.result.error ? "failed" : "done";
+  const run = step.run;
+  const status = run ? (run.state === "running" ? "running" : run.state === "failed" || run.state === "stopped" ? "failed" : "done") : step.result === undefined ? "running" : step.result.error ? "failed" : "done";
   setData(li, "status", status);
+  setData(li, "background", run ? "true" : "false");
   setText(li.querySelector(".progress-mark")!, STEP_MARK[status]);
   setText(li.querySelector(".progress-text")!, stepWords(step));
+  const runNode = li.querySelector<HTMLElement>(".tl-step-run")!;
+  const words = run ? backgroundWords(run) : "";
+  setText(runNode, words);
+  setHidden(runNode, words === "");
   const line = li.querySelector<HTMLButtonElement>(".tl-step-line")!;
   const open = ui.expanded.has(key);
   setData(line, "target", key);
@@ -3712,15 +3795,44 @@ function updateTimelineStep(li: HTMLElement, step: TimelineStep, key: string, ui
   line.title = open ? "Hide what went in and what came back" : "Show what went in and what came back";
   const body = li.querySelector<HTMLElement>(".tl-step-body")!;
   setHidden(body, !open);
+  const diffNode = li.querySelector<HTMLElement>(".tl-step-diff")!;
   const input = li.querySelector<HTMLElement>(".tl-step-in")!;
   const output = li.querySelector<HTMLElement>(".tl-step-out")!;
-  const args = step.args === undefined ? "" : pretty(step.args) + (step.truncated ? "\n…" : "");
-  const result = step.result === undefined ? "" : pretty(step.result.value) + (step.result.truncated ? "\n…" : "");
+  const diff = open ? stepDiff(step) : undefined;
+  drawDiff(diffNode, diff);
+  setHidden(diffNode, diff === undefined);
+  // An edit's diff says what went in; another call's input reads as a command line where it is one.
+  const args = diff !== undefined || step.args === undefined ? "" : (stepInput(step) ?? pretty(step.args)) + (step.truncated ? "\n…" : "");
+  const came = run?.report ?? (step.result === undefined ? undefined : step.result.value);
+  const result = came === undefined ? "" : pretty(came) + (run?.report === undefined && step.result?.truncated ? "\n…" : "");
   setText(input, open ? args : "");
   setHidden(input, !open || args === "");
   setText(output, open ? result : "");
   setHidden(output, !open || result === "");
-  setData(output, "error", String(step.result?.error === true));
+  setData(output, "error", String(status === "failed"));
+}
+
+/** The diff a dock draws, by its node: one drawn again only when it changed. */
+const drawnDiffs = new WeakMap<HTMLElement, string>();
+
+/** An edit's files as a diff: each file's path, then its lines, what went out and what came in marked and coloured. */
+function drawDiff(node: HTMLElement, files: DiffFile[] | undefined): void {
+  const sig = files === undefined ? "" : JSON.stringify(files);
+  if (drawnDiffs.get(node) === sig) return;
+  drawnDiffs.set(node, sig);
+  node.replaceChildren();
+  for (const f of files ?? []) {
+    const file = el("div", "tl-diff-file");
+    if (f.path) file.append(el("div", "tl-diff-path", f.path));
+    const lines = el("pre", "tl-diff-lines");
+    for (const l of f.lines) {
+      const row = el("span", `tl-diff-line tl-diff-${l.kind}`);
+      row.textContent = `${l.kind === "add" ? "+" : l.kind === "del" ? "-" : l.kind === "hunk" ? "" : " "}${l.kind === "hunk" ? "" : " "}${l.text}\n`;
+      lines.append(row);
+    }
+    file.append(lines);
+    node.append(file);
+  }
 }
 
 /** Under the timeline while the session works: a pulse, and the step it is on when one is running. */
@@ -4225,11 +4337,13 @@ function terminalSession(state: ViewState, ui: UiState): string | undefined {
   return card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "terminal" ? card.session.id : undefined;
 }
 
-/** The selected session whose terminal shows a dialog the pane embeds, when it does: that session's id. */
+/** The selected session whose asks or terminal dialog the pane's dock draws, when it does: that session's id. */
 export function dialogSession(state: ViewState, ui: UiState): string | undefined {
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   if (card === undefined) return undefined;
   const pane = paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true);
+  // The dock draws the session's own asks: the pinned prompts leave them to it.
+  if (dockAsks(state, card.session, pane, ui.dialogModes).length > 0) return card.session.id;
   const panel = dialogPanelFor(state, card.session, pane);
   if (panel === undefined) return undefined;
   // The native panel needs no terminal: it hides the session's pinned asks as soon as it is drawn.

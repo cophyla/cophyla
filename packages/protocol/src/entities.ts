@@ -342,6 +342,27 @@ export const DialogView = z.object({
 export type DialogKey = z.infer<typeof DialogKey>;
 export type DialogView = z.infer<typeof DialogView>;
 
+/** The most sub-agents a session lists, the newest. */
+export const SUBAGENTS_MAX = 30;
+
+/**
+ * A sub-agent's work so far: the call that started it (`call`, a tool use id), how many tools it has
+ * called, the last one in a few words, the model it runs, when it started and last did something, and
+ * whether it has finished.
+ */
+export const SubagentRun = z.object({
+  call: z.string().max(200),
+  /** The sub-agent's own id, which its tools' results carry. */
+  agent: z.string().max(200).optional(),
+  steps: z.number().int().nonnegative(),
+  last: z.string().max(200).optional(),
+  model: z.string().max(120).optional(),
+  startedAt: Timestamp,
+  lastAt: Timestamp,
+  finished: z.boolean().optional(),
+});
+export type SubagentRun = z.infer<typeof SubagentRun>;
+
 export const Session = z.object({
   id: SessionId,
   node: NodeId,
@@ -386,6 +407,13 @@ export const Session = z.object({
    * screen read gives it again. Absent when the prompt is up, or for a session with no terminal of its own.
    */
   dialog: DialogView.optional(),
+  /**
+   * The sub-agents the session started and how far each has got, read off their own transcripts as
+   * they work, for the chat's sub-agent cards: by the call that started each. Not stored: a restart
+   * reads them again. Absent for a session that started none, or a harness whose sub-agents' work
+   * cophylad does not read.
+   */
+  subagents: z.array(SubagentRun).max(SUBAGENTS_MAX).optional(),
   startedAt: Timestamp,
   lastActivity: Timestamp,
   endedAt: Timestamp.optional(),

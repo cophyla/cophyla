@@ -30,7 +30,7 @@ import { createLogger, silentLogger } from "../src/log.ts";
 import { CodexAdapter, isManagedDaemon } from "../src/sessions/codex/adapter.ts";
 import { CodexAppServer } from "../src/sessions/codex/appserver.ts";
 import { installCodexHooks, isCophyladCodexGroup, readHooksFile, trustCodexHooks, trustEdit, uninstallCodexHooks } from "../src/sessions/codex/hooks.ts";
-import { applyCodexRow, findRollout, newCodexState, readSessionIndex, statsFor } from "../src/sessions/codex/rollout.ts";
+import { applyCodexRow, findRollout, lastAgentMessage, newCodexState, readSessionIndex, statsFor } from "../src/sessions/codex/rollout.ts";
 import type { CodexItem } from "../src/sessions/codex/rollout.ts";
 import type { WindowRaiser } from "../src/sessions/focus.ts";
 import { Injections } from "../src/sessions/injections.ts";
@@ -58,6 +58,29 @@ describe("codex rollout parser", () => {
   for (const line of readFileSync(FIXTURE, "utf8").split("\n")) {
     if (line.trim()) items.push(...applyCodexRow(state, JSON.parse(line)));
   }
+
+  test("a sub-agent's start (naming the spawning call) and end are items, what passes between them is not; a compaction is one; a thread's last words are its report", () => {
+    const s = newCodexState();
+    const at = "2026-10-08T12:30:00.000Z";
+    const activity = (kind: string, id: string) => ({ timestamp: at, type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id, kind, agent_thread_id: "th-child", agent_path: "/root/review_v3_abc" } } });
+    expect(applyCodexRow(s, activity("started", "call_956e"))).toEqual([{ kind: "subagent", activity: "started", path: "/root/review_v3_abc", thread: "th-child", callId: "call_956e", at: Date.parse(at) }]);
+    expect(applyCodexRow(s, activity("interacted", "call_x"))).toEqual([]);
+    expect(applyCodexRow(s, activity("completed", "subagent-completed-1"))).toEqual([{ kind: "subagent", activity: "completed", path: "/root/review_v3_abc", thread: "th-child", at: Date.parse(at) }]);
+    expect(applyCodexRow(s, { timestamp: at, type: "event_msg", payload: { type: "item_completed", item: { type: "ContextCompaction", id: "c1" } } })).toEqual([{ kind: "compacted", at: Date.parse(at) }]);
+    const child = join(tempHome(), "rollout-child.jsonl");
+    writeFileSync(
+      child,
+      [
+        { timestamp: at, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", last_agent_message: "First pass done." } },
+        { timestamp: at, type: "response_item", payload: { type: "message", role: "assistant", content: [{ type: "output_text", text: "more" }] } },
+        { timestamp: at, type: "event_msg", payload: { type: "task_complete", turn_id: "t2", last_agent_message: "Reviewed 24 clips: 10 keep." } },
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n",
+    );
+    expect(lastAgentMessage(child)).toBe("Reviewed 24 clips: 10 keep.");
+    expect(lastAgentMessage(join(tempHome(), "missing.jsonl"))).toBeUndefined();
+  });
 
   test("yields the session meta, turns, typed and queued user messages, tool calls and results, assistant text", () => {
     expect(items.map((i) => i.kind)).toEqual([

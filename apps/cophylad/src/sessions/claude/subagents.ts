@@ -46,6 +46,61 @@ export interface SubagentInfo {
   key: string;
 }
 
+/** What a sub-agent's `.meta.json` says of it: the call that started it, and whether it has finished. */
+export interface SubagentMeta {
+  call?: string;
+  finished?: boolean;
+}
+
+export function subagentMeta(file: string): SubagentMeta {
+  try {
+    const meta = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8")) as { toolUseId?: unknown; finished?: unknown };
+    return { ...(typeof meta.toolUseId === "string" && meta.toolUseId !== "" ? { call: meta.toolUseId } : {}), ...(meta.finished === true ? { finished: true } : {}) };
+  } catch {
+    // written as it starts: not yet, or a sub-agent of an older Claude
+    return {};
+  }
+}
+
+/** One row of a sub-agent's transcript counted into its run: its tools called, the last in a few words, its model, its times. Whether it changed the run. */
+export function countSubagentRow(run: { steps: number; last?: string; model?: string; startedAt: number; lastAt: number }, row: unknown): boolean {
+  if (row === null || typeof row !== "object") return false;
+  const r = row as Record<string, unknown>;
+  const at = typeof r["timestamp"] === "string" ? Date.parse(r["timestamp"]) : NaN;
+  let changed = false;
+  if (Number.isFinite(at)) {
+    if (run.startedAt === 0 || at < run.startedAt) run.startedAt = at;
+    if (at > run.lastAt) run.lastAt = at;
+  }
+  if (r["type"] !== "assistant") return changed;
+  const message = r["message"] as Record<string, unknown> | undefined;
+  const model = typeof message?.["model"] === "string" && message["model"] !== "<synthetic>" ? message["model"] : undefined;
+  if (model !== undefined && model !== run.model) {
+    run.model = model;
+    changed = true;
+  }
+  const content = Array.isArray(message?.["content"]) ? (message["content"] as Record<string, unknown>[]) : [];
+  for (const block of content) {
+    if (block?.["type"] !== "tool_use") continue;
+    run.steps += 1;
+    run.last = callWords(String(block["name"] ?? "tool"), block["input"]);
+    changed = true;
+  }
+  return changed;
+}
+
+/** A tool call in a few words, as a turn's steps line has it: the tool and what it was pointed at. */
+export function callWords(name: string, input: unknown): string {
+  const a = input !== null && typeof input === "object" ? (input as Record<string, unknown>) : {};
+  const str = (k: string) => (typeof a[k] === "string" && (a[k] as string).trim() !== "" ? (a[k] as string).trim() : undefined);
+  const path = str("file_path") ?? str("path") ?? str("notebook_path");
+  const what = str("description") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url") ?? (path ? (path.split(/[\\/]/).pop() ?? path) : undefined) ?? str("prompt");
+  const tool = name.startsWith("mcp__") ? name.split("__").slice(2).join(" ") || name : name;
+  if (!what) return tool.slice(0, 200);
+  const line = what.split(/\r?\n/)[0]!;
+  return `${tool} ${line.length > 80 ? `${line.slice(0, 79)}…` : line}`.slice(0, 200);
+}
+
 export function subagentInfo(transcript: string, file: string): SubagentInfo {
   const id = basename(file, ".jsonl").replace(/^agent-/, "");
   let agent = "sub";

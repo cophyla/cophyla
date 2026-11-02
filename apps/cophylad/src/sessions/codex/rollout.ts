@@ -24,7 +24,10 @@ export type CodexItem =
   | { kind: "user_message"; text: string; clientId?: string; replies?: QuestionReply[]; at: number }
   | { kind: "assistant_text"; text: string; at: number }
   | { kind: "tool_call"; callId: string; name: string; input: unknown; at: number }
-  | { kind: "tool_result"; callId: string; name?: string; output: unknown; at: number };
+  | { kind: "tool_result"; callId: string; name?: string; output: unknown; at: number }
+  /** A sub-agent the thread started (`spawn_agent`), started or done: its path (`/root/<task_name>`) and its own thread. */
+  | { kind: "subagent"; activity: "started" | "completed"; path: string; thread?: string; callId?: string; at: number }
+  | { kind: "compacted"; at: number };
 
 export interface CodexRolloutState {
   stats: SessionStats;
@@ -177,7 +180,17 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
               state.statsChanged = true;
             }
             items.push(out);
-          }
+          } else if (item["type"] === "SubAgentActivity" && (item["kind"] === "started" || item["kind"] === "completed") && typeof item["agent_path"] === "string") {
+            // Its starting and its end: what passes between it and the thread meanwhile ("interacted") is the thread's own business.
+            items.push({
+              kind: "subagent",
+              activity: item["kind"],
+              path: item["agent_path"],
+              ...(typeof item["agent_thread_id"] === "string" ? { thread: item["agent_thread_id"] } : {}),
+              ...(item["kind"] === "started" && typeof item["id"] === "string" ? { callId: item["id"] } : {}),
+              at: when,
+            });
+          } else if (item["type"] === "ContextCompaction") items.push({ kind: "compacted", at: when });
           break;
         }
         default:
@@ -249,6 +262,18 @@ function turnContextOf(text: string): TurnContext | undefined {
   try {
     const item = applyCodexRow(newCodexState(), JSON.parse(text))[0];
     return item?.kind === "turn_context" ? item : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** What a thread said as its last turn ended (`task_complete`'s last message): a sub-agent's report. */
+export function lastAgentMessage(path: string): string | undefined {
+  const line = lastLineWhere(path, (text) => text.includes('"task_complete"') && text.includes('"last_agent_message"'));
+  if (line === undefined) return undefined;
+  try {
+    const item = applyCodexRow(newCodexState(), JSON.parse(line)).find((i) => i.kind === "task_complete");
+    return item?.kind === "task_complete" ? item.lastMessage : undefined;
   } catch {
     return undefined;
   }

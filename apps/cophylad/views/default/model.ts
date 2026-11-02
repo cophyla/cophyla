@@ -29,7 +29,7 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, TalkMessage, TalkSummary, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare } from "@cophyla/protocol";
 import { applyTalk } from "./talkmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, DoorState, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
@@ -1972,6 +1972,18 @@ export function dialogPanelFor(state: ViewState, session: Session, pane: PaneMod
   return dialogPanel(session.dialog);
 }
 
+/**
+ * The open asks of a session the chat's dock draws as its card, above the send box, where the user
+ * answers them as they answer a pinned prompt: the session's questions and permission prompts,
+ * while its pane shows the timeline. They take the place of its terminal's dialog there (the same
+ * question, asked twice), but for a user who chose the terminal for it. The terminal pane is left
+ * as it is: the terminal asks there itself.
+ */
+export function dockAsks(state: ViewState, session: Session, pane: PaneMode, modes: ReadonlyMap<string, DialogMode>): Ask[] {
+  if (!state.connected || pane !== "timeline" || modes.get(session.id) === "terminal") return [];
+  return openAsks(state).filter((a) => a.source.kind === "harness" && a.source.session === session.id);
+}
+
 /** Whether the dock draws the native panel rather than the terminal: a dialog the panel can draw, and not the terminal the user chose (native by default). */
 export function dialogNative(panel: DialogPanel, modes: ReadonlyMap<string, DialogMode>, session: string): boolean {
   return panel.native && (modes.get(session) ?? "native") === "native";
@@ -2130,24 +2142,143 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
 /** A tool an agent's turn called, and what came back once it did. */
 export interface TimelineStep {
   key: string;
+  /** The call's own id, where the harness names one. */
+  id?: string;
   tool: string;
   args: unknown;
   truncated?: boolean;
   result?: { value: unknown; error: boolean; truncated?: boolean };
+  /** A call that went on in the background (a sub-agent, a shell, a monitor): its call came back at once, and its notice says how it ended. */
+  run?: AgentRun;
+  /** A sub-agent's work so far, as the node reads it off the sub-agent's own transcript. */
+  progress?: SubagentRun;
+  /** A sub-agent's own tool calls, as their results came in: its card lists them. */
+  steps?: TimelineStep[];
+}
+
+/**
+ * Where a call run in the background stands: `running` from its launch until its notice comes,
+ * then `done`, `failed`, `stopped`, or `waiting` on background work of its own (its report so far).
+ */
+export interface AgentRun {
+  state: "running" | "done" | "failed" | "stopped" | "waiting";
+  summary?: string;
+  report?: string;
 }
 
 /** A run of an agent's turn: what it wrote, the tools it called one after another, or a sub-agent it started. */
 export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] } | { kind: "agent"; key: string; step: TimelineStep };
 
 /**
- * The sub-agent a Task or Agent call started: its type, what it was asked to do, and the prompt
- * it was given. `undefined` for any other tool.
+ * A call's arguments as fields. A long call is kept as its JSON text cut short with `…`: the
+ * string fields it still holds are read from that text, the one it ends inside up to the cut.
+ */
+export function callArgs(args: unknown): Record<string, unknown> {
+  if (args !== null && typeof args === "object" && !Array.isArray(args)) return args as Record<string, unknown>;
+  if (typeof args !== "string" || !args.trimStart().startsWith("{")) return {};
+  try {
+    const whole = JSON.parse(args) as unknown;
+    if (whole !== null && typeof whole === "object" && !Array.isArray(whole)) return whole as Record<string, unknown>;
+  } catch {
+    // cut short: read field by field below
+  }
+  const out: Record<string, unknown> = {};
+  for (const m of args.matchAll(/"([A-Za-z_][\w-]*)"\s*:\s*"((?:[^"\\]|\\.)*)/g)) {
+    try {
+      out[m[1]!] = JSON.parse(`"${m[2]}"`) as string;
+    } catch {
+      // the cut fell inside an escape: the field is left out
+    }
+  }
+  return out;
+}
+
+/**
+ * The sub-agent a call started: Claude's Task or Agent (its type, what it was asked to do, the
+ * prompt it was given), or Codex's `spawn_agent` (its type and task's name; its message is sealed,
+ * so no prompt). `undefined` for any other tool.
  */
 export function subagentOf(step: Pick<TimelineStep, "tool" | "args">): { type: string; description: string; prompt: string } | undefined {
-  if (step.tool !== "Task" && step.tool !== "Agent") return undefined;
-  const a = (step.args ?? {}) as Record<string, unknown>;
+  const a = callArgs(step.args);
   const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string).trim() : "");
+  if (step.tool === "spawn_agent") {
+    const message = str("message");
+    return { type: str("agent_type") || "agent", description: str("task_name").replace(/_/g, " ") || "a sub-agent", prompt: /^gAAAA/.test(message) ? "" : message };
+  }
+  if (step.tool !== "Task" && step.tool !== "Agent") return undefined;
   return { type: str("subagent_type") || "general-purpose", description: str("description") || "a sub-agent", prompt: str("prompt") };
+}
+
+/** What a background task's notice says (Claude's `<task-notification>`): the call it ended, how, in a line, and its result. */
+export interface TaskNotice {
+  toolUseId?: string;
+  taskId?: string;
+  status?: string;
+  summary?: string;
+  result?: string;
+  /** A monitor's latest line. */
+  event?: string;
+}
+
+/** The notice in a message Claude queued for its own next turn, or `undefined` for a message that is none. */
+export function taskNotice(text: string): TaskNotice | undefined {
+  if (!text.trimStart().startsWith("<task-notification")) return undefined;
+  const tag = (name: string) => new RegExp(`<${name}>([\\s\\S]*?)</${name}>`).exec(text)?.[1]?.trim();
+  // A notice is cut at its length cap: the result runs to the cut.
+  const result = /<result>([\s\S]*?)(?:<\/result>|$)/.exec(text)?.[1]?.trim();
+  const n: TaskNotice = {};
+  const id = tag("tool-use-id");
+  const task = tag("task-id");
+  const status = tag("status");
+  const summary = tag("summary");
+  const event = tag("event");
+  if (id) n.toolUseId = id;
+  if (task) n.taskId = task;
+  if (status) n.status = status;
+  if (summary) n.summary = summary;
+  if (result) n.result = result;
+  if (event) n.event = event;
+  return n;
+}
+
+/** The notice an event carries: a turn the prompt hook reported, or a row Claude queued for its next turn. */
+function noticeOf(e: SessionEvent): TaskNotice | undefined {
+  const p = (e.payload ?? {}) as Record<string, unknown>;
+  if (e.kind === "user_turn" && p["source"] !== "agent" && p["source"] !== "peer") return taskNotice(String(p["text"] ?? ""));
+  if (e.kind === "notification" && p["type"] === "queued") return taskNotice(String(p["text"] ?? ""));
+  return undefined;
+}
+
+/** Which task a notice is about, so its two copies are one: the call it ends, else the task's own id. */
+function noticeKey(n: TaskNotice): string {
+  return n.toolUseId ?? n.taskId ?? n.summary ?? "";
+}
+
+/**
+ * How a notice leaves its call: done, unless it failed or was stopped, or it waits on work of its own
+ * and reports so far. A monitor's notice of a line it saw leaves it running, that line its summary.
+ */
+function runOf(n: TaskNotice): AgentRun {
+  const status = (n.status ?? "completed").toLowerCase();
+  const summary = n.summary ?? (n.event ? firstWords(n.event) : undefined);
+  if (n.event && !n.status) return { state: "running", ...(summary ? { summary } : {}) };
+  const state: AgentRun["state"] = /fail|error/.test(status) ? "failed" : /kill|stop|cancel/.test(status) ? "stopped" : /waiting on its own background work/.test(n.summary ?? "") ? "waiting" : "done";
+  return { state, ...(summary ? { summary } : {}), ...(n.result ? { report: n.result } : {}) };
+}
+
+function firstWords(text: string, max = 120): string {
+  const line = text.split(/\r?\n/).find((l) => l.trim() !== "")?.trim() ?? "";
+  return line.length > max ? `${line.slice(0, max - 1)}…` : line;
+}
+
+/**
+ * A call's result that says it went on in the background: Claude's sub-agent (`async_launched`), a
+ * shell sent there (`Command running in background with ID`), a monitor started; Codex's spawned agent.
+ */
+function launchedInBackground(step: Pick<TimelineStep, "tool">, result: unknown): boolean {
+  if (step.tool === "spawn_agent") return true;
+  // A shell's as the node words it (`(in the background: <id>)`), or as Claude does.
+  return typeof result === "string" && (/^\s*async_launched\b/.test(result) || /\(in the background: [^)]+\)\s*$/.test(result) || /running in (the )?background with ID/i.test(result) || (step.tool === "Monitor" && /\bmonitor\b.*\b(started|running|armed)\b/i.test(result)));
 }
 
 /**
@@ -2163,12 +2294,58 @@ export type TimelinePost =
   | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown }
   | { kind: "note"; key: string; at: number; text: string };
 
-export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
+export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly SubagentRun[] } = {}): TimelinePost[] {
   const posts: TimelinePost[] = [];
   let turn: Extract<TimelinePost, { kind: "turn" }> | undefined;
   // the calls of the turn without their result yet, by id, and by tool for a harness that names none
   let open = new Map<string, TimelineStep>();
   let waiting: TimelineStep[] = [];
+  // Every background task's notice, read first: one can land before the call it ends (a sub-agent
+  // done in a moment), and where hooks run each comes twice (the prompt hook's turn, the queue's row).
+  // A Codex sub-agent's start (which names the spawning call) and its end, by its path, likewise.
+  const notices = new Map<string, TaskNotice>();
+  const calls = new Set<string>();
+  const spawned = new Map<string, string>();
+  const spawnNames = new Map<string, string>();
+  const finished = new Map<string, { report?: string }>();
+  for (const row of rows) {
+    if (row.kind !== "event") continue;
+    const p = (row.event.payload ?? {}) as Record<string, unknown>;
+    if (row.event.kind === "tool_call" && typeof p["id"] === "string") {
+      calls.add(p["id"]);
+      if (p["tool"] === "spawn_agent") spawnNames.set(p["id"], `/root/${String(callArgs(p["args"])["task_name"] ?? "")}`);
+    }
+    if (row.event.kind === "notification" && p["type"] === "subagent" && typeof p["path"] === "string") {
+      if (p["activity"] === "started" && typeof p["call"] === "string") spawned.set(p["call"], p["path"]);
+      if (p["activity"] === "completed") finished.set(p["path"], typeof p["report"] === "string" ? { report: p["report"] } : {});
+    }
+    const n = noticeOf(row.event);
+    if (n) notices.set(noticeKey(n), n);
+  }
+  // A sub-agent's own tools' results, by the sub-agent: its card's steps, wherever they fall among the session's own.
+  const known = new Set((opts.subagents ?? []).flatMap((r) => (r.agent !== undefined ? [r.agent] : [])));
+  const subSteps = new Map<string, TimelineStep[]>();
+  for (const row of rows) {
+    if (row.kind !== "event" || row.event.kind !== "tool_result") continue;
+    const p = (row.event.payload ?? {}) as Record<string, unknown>;
+    const agent = typeof p["agent"] === "string" ? p["agent"] : undefined;
+    if (agent === undefined || !known.has(agent)) continue;
+    const list = subSteps.get(agent) ?? [];
+    list.push({ key: row.key, ...(typeof p["id"] === "string" ? { id: p["id"] } : {}), tool: String(p["tool"] ?? "tool"), args: p["input"], result: { value: p["result"], error: p["isError"] === true, ...(p["truncated"] ? { truncated: true } : {}) } });
+    subSteps.set(agent, list);
+  }
+  const pathOf = (call: string) => spawned.get(call) ?? spawnNames.get(call);
+  const cardPaths = new Set([...spawnNames.keys()].map(pathOf).filter((x): x is string => x !== undefined));
+  const noted = new Set<string>();
+  /** A notice in the timeline: one for a call here is that call's (its step's mark, its card's ending), another task's is one line, once. */
+  const notice = (n: TaskNotice, key: string, at: number) => {
+    const k = noticeKey(n);
+    if ((n.toolUseId !== undefined && calls.has(n.toolUseId)) || noted.has(k)) return;
+    noted.add(k);
+    add({ kind: "note", key, at, text: n.summary ?? (n.event ? firstWords(n.event) : "A background task ended") });
+  };
+  // one post per ask, where it was asked: its later phases are the same ask
+  const asked = new Map<string, Extract<TimelinePost, { kind: "ask" }>>();
   const end = () => {
     turn = undefined;
     open = new Map();
@@ -2198,7 +2375,10 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
         break;
       case "user_turn": {
         const text = String(p["text"] ?? "");
-        if (row.from !== undefined) {
+        // A background task's notice, which the prompt hook reports as a turn: never the user's words.
+        const n = row.from === undefined && p["source"] !== "peer" ? taskNotice(text) : undefined;
+        if (n) notice(n, row.key, e.at);
+        else if (row.from !== undefined) {
           const from = (p["peer"] ?? p["from"]) as { harness?: unknown } | undefined;
           add({ kind: "agent", key: row.key, at: e.at, text, who: row.from, ...(typeof from?.harness === "string" ? { harness: from.harness } : {}) });
         } else if (p["source"] === "peer") add({ kind: "agent", key: row.key, at: e.at, text, who: "another agent" });
@@ -2213,15 +2393,32 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
       case "tool_call": {
         const t = into(row.key, e.at);
         const last = t.parts.at(-1);
-        const step: TimelineStep = { key: row.key, tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
-        if (subagentOf(step) !== undefined) t.parts.push({ kind: "agent", key: row.key, step });
+        const id = typeof p["id"] === "string" ? p["id"] : undefined;
+        const step: TimelineStep = { key: row.key, ...(id !== undefined ? { id } : {}), tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
+        const agent = subagentOf(step) !== undefined;
+        if (agent) t.parts.push({ kind: "agent", key: row.key, step });
         else if (last?.kind === "steps") last.steps.push(step);
         else t.parts.push({ kind: "steps", key: row.key, steps: [step] });
-        if (typeof p["id"] === "string") open.set(p["id"], step);
+        if (id !== undefined) open.set(id, step);
         else waiting.push(step);
+        if (id === undefined) break;
+        // How far a sub-agent has got, as the node reads its own transcript.
+        const progress = agent ? opts.subagents?.find((r) => r.call === id) : undefined;
+        if (progress) step.progress = progress;
+        const own = progress?.agent !== undefined ? subSteps.get(progress.agent) : undefined;
+        if (own) step.steps = own;
+        // A call whose notice is in: it ran in the background, and stands as the notice says.
+        const n = notices.get(id);
+        if (n) step.run = runOf(n);
+        // A Codex sub-agent that has ended, with what its own thread said last.
+        const path = step.tool === "spawn_agent" ? pathOf(id) : undefined;
+        const done = path !== undefined ? finished.get(path) : undefined;
+        if (done) step.run = { state: "done", ...(done.report ? { report: done.report } : {}) };
         break;
       }
       case "tool_result": {
+        // A known sub-agent's tool is its card's step, not the session's.
+        if (typeof p["agent"] === "string" && known.has(p["agent"])) break;
         const tool = String(p["tool"] ?? "result");
         const id = typeof p["id"] === "string" ? p["id"] : undefined;
         let step = id !== undefined ? open.get(id) : undefined;
@@ -2233,6 +2430,8 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
         const result = { value: p["result"], error: p["isError"] === true, ...(p["truncated"] ? { truncated: true } : {}) };
         if (step) {
           step.result = result;
+          // A call sent to the background runs on until its notice; one whose notice is in keeps it.
+          if (step.run === undefined && !result.error && launchedInBackground(step, result.value)) step.run = { state: "running" };
           break;
         }
         // a result whose call is not in this turn: a step of its own
@@ -2243,16 +2442,39 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
         else t.parts.push({ kind: "steps", key: row.key, steps: [alone] });
         break;
       }
-      case "ask":
-        add({ kind: "ask", key: row.key, at: e.at, ...(row.ask ? { ask: row.ask } : {}), payload: e.payload });
+      case "ask": {
+        const id = typeof p["ask"] === "string" ? p["ask"] : undefined;
+        const was = id !== undefined ? asked.get(id) : undefined;
+        // Answered or closed, it is the ask already drawn: that post takes the news, its question's words kept.
+        if (was) {
+          was.payload = { ...((was.payload ?? {}) as Record<string, unknown>), ...p };
+          if (row.ask) was.ask = row.ask;
+          break;
+        }
+        const post: Extract<TimelinePost, { kind: "ask" }> = { kind: "ask", key: row.key, at: e.at, ...(row.ask ? { ask: row.ask } : {}), payload: e.payload };
+        // It ends the turn's card, but not its calls: the asking tool's result, and any other
+        // call's, still finds its call in the card before, rather than a card of its own.
+        turn = undefined;
+        posts.push(post);
+        if (id !== undefined) asked.set(id, post);
         break;
+      }
       case "notification": {
         const type = String(p["type"] ?? "notification");
         if (type === "message") {
           const state = (p["state"] as PendingSend["state"] | undefined) ?? "delivered";
           const receipt = state !== "delivered" || row.asPeer === true ? { receipt: { state, asPeer: row.asPeer === true } } : {};
           add({ kind: "user", key: row.key, at: e.at, text: row.send?.text ?? String(p["text"] ?? ""), ...receipt });
-        } else if (type === "queued") add({ kind: "note", key: row.key, at: e.at, text: `queued: ${String(p["text"] ?? "")}` });
+        } else if (type === "queued") {
+          const queued = String(p["text"] ?? "");
+          const n = taskNotice(queued);
+          if (n) notice(n, row.key, e.at);
+          else add({ kind: "note", key: row.key, at: e.at, text: `queued: ${queued}` });
+        } else if (type === "subagent") {
+          // A Codex sub-agent's start and end are its card's; one whose spawning is not on the page ends in a line.
+          const path = String(p["path"] ?? "");
+          if (p["activity"] === "completed" && !cardPaths.has(path)) add({ kind: "note", key: row.key, at: e.at, text: `Sub-agent ${path.split("/").pop()?.replace(/_/g, " ") || path} finished` });
+        }
         else if (type === "session_end") add({ kind: "note", key: row.key, at: e.at, text: `Ending (${String(p["reason"] ?? "")})` });
         else if (type === "backgrounded") add({ kind: "note", key: row.key, at: e.at, text: "Sent to the background: it goes on as a background job" });
         else {
@@ -2272,13 +2494,208 @@ export function timelinePosts(rows: TimelineRow[]): TimelinePost[] {
 
 /** A step in a few words, for the line a turn's steps fold to: the tool and what it was pointed at. */
 export function stepWords(step: Pick<TimelineStep, "tool" | "args">): string {
-  const a = (step.args ?? {}) as Record<string, unknown>;
+  const short = (s: string) => {
+    const line = s.split(/\r?\n/)[0]!;
+    return line.length > 60 ? `${line.slice(0, 59)}…` : line;
+  };
+  // Codex's code-mode call: the tools its script calls, in words.
+  if (step.tool === "exec" && typeof step.args === "string") {
+    const done = execCalls(step.args);
+    if (done.length > 0) return done.length > 1 ? `${short(done[0]!.words)} (+${done.length - 1} more)` : short(done[0]!.words);
+  }
+  const a = callArgs(step.args);
   const str = (k: string) => (typeof a[k] === "string" && (a[k] as string).trim() !== "" ? (a[k] as string).trim() : undefined);
   const path = str("file_path") ?? str("path") ?? str("notebook_path");
-  const what = str("description") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url") ?? (path ? (path.split(/[\\/]/).pop() ?? path) : undefined) ?? str("prompt");
+  const what = str("description") ?? str("command") ?? str("pattern") ?? str("query") ?? str("url") ?? (path ? (path.split(/[\\/]/).pop() ?? path) : undefined) ?? str("prompt") ?? str("target") ?? str("task_name");
   if (!what) return step.tool;
-  const line = what.split(/\r?\n/)[0]!;
-  return `${step.tool} ${line.length > 60 ? `${line.slice(0, 59)}…` : line}`;
+  return `${step.tool} ${short(what)}`;
+}
+
+/** A JavaScript string literal's text: double, single or backtick quoted, its escapes read. */
+function jsString(literal: string): string {
+  const body = literal.slice(1, literal.endsWith(literal[0]!) && literal.length > 1 ? -1 : undefined);
+  return body.replace(/\\(u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_m, c: string) => {
+    if (c[0] === "u" && c.length === 5) return String.fromCharCode(parseInt(c.slice(1), 16));
+    if (c[0] === "x" && c.length === 3) return String.fromCharCode(parseInt(c.slice(1), 16));
+    return c === "n" ? "\n" : c === "t" ? "\t" : c === "r" ? "\r" : c;
+  });
+}
+
+const JS_STRING = String.raw`"(?:[^"\\]|\\.)*"?|'(?:[^'\\]|\\.)*'?|\x60(?:[^\x60\\]|\\.)*\x60?`;
+
+/**
+ * What a Codex `exec` script calls, in order: a command it runs (`exec_command`'s `cmd`), a patch it
+ * applies (`apply_patch`, the files it touches), an image it looks at (`view_image`), keys it types
+ * into a running command (`write_stdin`). Read off the script's text, which may be cut short.
+ */
+export function execCalls(script: string): { tool: string; words: string; arg?: string }[] {
+  const out: { tool: string; words: string; arg?: string }[] = [];
+  for (const m of script.matchAll(/tools\.([a-z_][\w]*)\(/g)) {
+    const tool = m[1]!;
+    const after = script.slice(m.index! + m[0].length, m.index! + m[0].length + 20000);
+    if (tool === "exec_command") {
+      const cmd = new RegExp(String.raw`["']?cmd["']?\s*:\s*(${JS_STRING})`).exec(after.slice(0, 4000));
+      const text = cmd ? jsString(cmd[1]!) : undefined;
+      out.push({ tool, words: text ? `Run ${text}` : "Run a command", ...(text ? { arg: text } : {}) });
+    } else if (tool === "apply_patch") {
+      const lit = new RegExp(String.raw`^\s*(${JS_STRING})`).exec(after);
+      const patch = lit ? jsString(lit[1]!) : "";
+      const files = [...patch.matchAll(/^\*\*\* (?:Update|Add|Delete) File: (.+)$/gm)].map((f) => f[1]!.trim().split(/[\\/]/).pop() ?? f[1]!);
+      out.push({ tool, words: files.length > 0 ? `Edit ${files.join(", ")}` : "Edit files", ...(patch ? { arg: patch } : {}) });
+    } else if (tool === "view_image") {
+      const lit = new RegExp(String.raw`(?:["']?path["']?\s*:\s*)?(${JS_STRING})`).exec(after.slice(0, 2000));
+      const path = lit ? jsString(lit[1]!) : "";
+      out.push({ tool, words: path ? `View ${path.split(/[\\/]/).pop()}` : "View an image" });
+    } else if (tool === "write_stdin") out.push({ tool, words: "Type into a running command" });
+    else if (tool.startsWith("mcp__")) out.push({ tool, words: tool.split("__").slice(2).join(" ") || tool });
+  }
+  return out;
+}
+
+/** What went into a call, as one reads it: a shell's command line, a script's commands, or nothing special (`undefined`: its arguments as they are). */
+export function stepInput(step: Pick<TimelineStep, "tool" | "args">): string | undefined {
+  if (step.tool === "exec" && typeof step.args === "string") {
+    const runs = execCalls(step.args).filter((c) => c.tool === "exec_command" && c.arg !== undefined);
+    return runs.length > 0 ? runs.map((c) => `$ ${c.arg}`).join("\n") : undefined;
+  }
+  if (step.tool === "Bash" || step.tool === "PowerShell" || step.tool === "shell") {
+    const a = callArgs(step.args);
+    const command = typeof a["command"] === "string" ? a["command"] : Array.isArray(a["command"]) ? (a["command"] as unknown[]).join(" ") : undefined;
+    return command !== undefined ? `$ ${command}` : undefined;
+  }
+  return undefined;
+}
+
+/** A file an edit changed, as its lines read: the ones taken out, put in, around them, and where each part starts. */
+export interface DiffFile {
+  path: string;
+  lines: { kind: "add" | "del" | "ctx" | "hunk"; text: string }[];
+}
+
+/** The most lines a step's diff draws: a long one says how many it left out. */
+export const DIFF_LINES = 400;
+
+/**
+ * The change an edit made, as a diff to read: Claude's Edit (and MultiEdit) as the lines it took
+ * out and put in, around the lines they share; its Write as the lines written; a Codex patch
+ * (`apply_patch`, or one inside an `exec` script) as its own hunks. `undefined` for any other call.
+ */
+export function stepDiff(step: Pick<TimelineStep, "tool" | "args">): DiffFile[] | undefined {
+  const a = callArgs(step.args);
+  const str = (k: string, from: Record<string, unknown> = a) => (typeof from[k] === "string" ? (from[k] as string) : undefined);
+  const path = str("file_path") ?? str("path") ?? "";
+  if (step.tool === "Edit" && str("old_string") !== undefined) return capDiff([{ path, lines: editLines(str("old_string")!, str("new_string") ?? "") }]);
+  if (step.tool === "MultiEdit" && Array.isArray(a["edits"])) {
+    const lines: DiffFile["lines"] = [];
+    for (const e of a["edits"] as Record<string, unknown>[]) {
+      lines.push({ kind: "hunk", text: "@@" }, ...editLines(str("old_string", e) ?? "", str("new_string", e) ?? ""));
+    }
+    return capDiff([{ path, lines }]);
+  }
+  if (step.tool === "Write" && str("content") !== undefined) return capDiff([{ path, lines: str("content")!.split(/\r?\n/).map((text) => ({ kind: "add" as const, text })) }]);
+  const patch = step.tool === "apply_patch" ? (typeof step.args === "string" ? step.args : str("input") ?? str("patch")) : step.tool === "exec" && typeof step.args === "string" ? execCalls(step.args).find((c) => c.tool === "apply_patch")?.arg : undefined;
+  return patch !== undefined ? capDiff(patchFiles(patch)) : undefined;
+}
+
+/** An edit's lines: those both sides share at its start and end as context (two of each), and between them what went out and what came in. */
+function editLines(before: string, after: string): DiffFile["lines"] {
+  const a = before.split(/\r?\n/);
+  const b = after.split(/\r?\n/);
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  const ctx = (text: string) => ({ kind: "ctx" as const, text });
+  return [
+    ...a.slice(Math.max(0, head - 2), head).map(ctx),
+    ...a.slice(head, a.length - tail).map((text) => ({ kind: "del" as const, text })),
+    ...b.slice(head, b.length - tail).map((text) => ({ kind: "add" as const, text })),
+    ...a.slice(a.length - tail, a.length - tail + 2).map(ctx),
+  ];
+}
+
+/**
+ * Where a sub-agent stands: as its notice left it (a background one), else by its call's result; one
+ * still said to run whose own transcript says it has finished is done.
+ */
+export function agentState(step: Pick<TimelineStep, "run" | "result" | "progress">): AgentRun["state"] {
+  const state = step.run?.state ?? (step.result === undefined ? "running" : step.result.error ? "failed" : "done");
+  return state === "running" && step.progress?.finished === true ? "done" : state;
+}
+
+/**
+ * A sub-agent card's facts in a line, and while it runs the step it is on: how many tools it has
+ * called, how long it has worked (to now while it runs), the model it runs on.
+ */
+export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress">, now: number): { facts: string; doing?: string } {
+  const p = step.progress;
+  if (!p) return { facts: "" };
+  const running = agentState(step) === "running";
+  const parts = [p.steps === 1 ? "1 step" : `${p.steps} steps`];
+  const ms = (running ? now : p.lastAt) - p.startedAt;
+  if (p.startedAt > 0 && ms >= 0) parts.push(elapsedWords(ms));
+  if (p.model) parts.push(shortModel(p.model));
+  return { facts: parts.join(" · "), ...(running && p.last ? { doing: p.last } : {}) };
+}
+
+/**
+ * Where a call sent to the background stands, after its words on its step's line: still going, or
+ * how its notice says it ended, less the name the line already gives (`Background command "x"
+ * completed (exit code 0)` is "completed (exit code 0)").
+ */
+export function backgroundWords(run: AgentRun): string {
+  if (run.state === "running") return run.summary ? `in the background · ${run.summary}` : "in the background";
+  const tail = run.summary ? (/^[^"]*"[^"]*"\s+(.+)$/.exec(run.summary)?.[1] ?? run.summary) : undefined;
+  return tail ?? (run.state === "done" ? "finished" : run.state);
+}
+
+/** A span of work, to the second while it is short: 42s, 2m 10s, 1h 5m. */
+export function elapsedWords(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}m ${s % 60}s` : `${m}m`;
+  return m % 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${Math.floor(m / 60)}h`;
+}
+
+/** A model's name as a person says it: claude-opus-5-5 is opus 5.5, gpt-6-astra stays itself. */
+export function shortModel(model: string): string {
+  return model.replace(/^claude-/, "").replace(/-(\d+)-(\d+)(?=$|\[)/, " $1.$2").replace(/-(\d{8})$/, "");
+}
+
+/** A Codex patch's files, each with its hunks as written: `*** Update File:` (or Add, Delete) starts a file, `@@` a hunk. */
+function patchFiles(patch: string): DiffFile[] {
+  const files: DiffFile[] = [];
+  let file: DiffFile | undefined;
+  for (const line of patch.split(/\r?\n/)) {
+    const head = /^\*\*\* (Update|Add|Delete) File: (.+)$/.exec(line);
+    if (head) {
+      file = { path: head[2]!.trim(), lines: head[1] === "Delete" ? [{ kind: "hunk", text: "deleted" }] : [] };
+      files.push(file);
+      continue;
+    }
+    if (!file || line.startsWith("*** ")) continue;
+    if (line.startsWith("@@")) file.lines.push({ kind: "hunk", text: line });
+    else if (line.startsWith("+")) file.lines.push({ kind: "add", text: line.slice(1) });
+    else if (line.startsWith("-")) file.lines.push({ kind: "del", text: line.slice(1) });
+    else file.lines.push({ kind: "ctx", text: line.startsWith(" ") ? line.slice(1) : line });
+  }
+  return files;
+}
+
+/** No more than `DIFF_LINES` lines in all; the last file kept says how many were left out. */
+function capDiff(files: DiffFile[]): DiffFile[] | undefined {
+  if (files.length === 0) return undefined;
+  let left = DIFF_LINES;
+  let cut = 0;
+  const out = files.map((f) => {
+    const keep = f.lines.slice(0, Math.max(0, left));
+    cut += f.lines.length - keep.length;
+    left -= keep.length;
+    return { path: f.path, lines: keep };
+  });
+  if (cut > 0) out[out.length - 1]!.lines.push({ kind: "hunk", text: `… ${cut} more line${cut === 1 ? "" : "s"}` });
+  return out;
 }
 
 export function workspaceName(state: ViewState, session: Session): string | undefined {
@@ -3979,7 +4396,9 @@ export function answerWords(ask: Ask, answer: AskAnswer): string {
 export function askEventText(payload: Record<string, unknown>, ask: Ask | undefined): { label: "question" | "prompt"; text: string } {
   const phase = String(payload["phase"] ?? "");
   const question = ask ? ask.type !== "permission" : payload["tool"] === "AskUserQuestion" || payload["question"] !== undefined;
-  const title = ask?.title ?? (question ? "a question" : payload["tool"] ? `${String(payload["tool"])} permission` : "a prompt");
+  // The ask itself gone, the words it was opened with (`askShown`) still name it.
+  const shown = typeof payload["title"] === "string" && payload["title"].trim() !== "" ? payload["title"] : undefined;
+  const title = ask?.title ?? shown ?? (question ? "a question" : payload["tool"] ? `${String(payload["tool"])} permission` : "a prompt");
   let text = title;
   if (phase === "opened") text = `${title}: waiting`;
   else if (phase === "answered") {

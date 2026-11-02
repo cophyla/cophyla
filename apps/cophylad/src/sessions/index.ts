@@ -4120,6 +4120,8 @@ export class Sessions implements SessionHost {
           result: result.value,
           ...(result.truncated ? { truncated: true } : {}),
           ...(hook.name === "PostToolUseFailure" ? { isError: true } : {}),
+          // A sub-agent's tool: its card in the chat lists it among the sub-agent's steps.
+          ...(hook.agentId ? { agent: hook.agentId } : {}),
         };
         // Claude writes a call's row to its transcript with the result's, just after the hook:
         // the result waits for its call, unless a sub-agent ran it or the call is in already.
