@@ -535,6 +535,11 @@ export function fontScale(font: number): number {
   return Math.round((font / FONT_DRIVE) * 100);
 }
 
+/** The chat's text size the device kept, one of `SCALES`; 100 when it kept none, or one that is no step. */
+export function chatScaleFrom(value: unknown): number {
+  return typeof value === "number" && (SCALES as readonly number[]).includes(value) ? value : 100;
+}
+
 /** The font a driven terminal is drawn at, at `scale` percent. */
 export function scaleFont(scale: number): number {
   return (FONT_DRIVE * scale) / 100;
@@ -1992,6 +1997,15 @@ export function paneMode(chosen: PaneMode | undefined, hasTerminal: boolean, has
  */
 export function tabChoice(override: PaneMode | undefined, view: "chat" | "terminal"): PaneMode | undefined {
   return override ?? (view === "terminal" ? "terminal" : "timeline");
+}
+
+/**
+ * The sessions' own choices once the user chose the chat or a terminal, on `session`'s pane or on
+ * the chat's: the other sessions' Messages panes stay theirs, the rest follow the view. The session
+ * it was chosen on leaves its Messages pane too, or its own choice would hold it there.
+ */
+export function keptChoices(modes: ReadonlyMap<string, PaneMode>, session?: string): Map<string, PaneMode> {
+  return new Map([...modes].filter(([id, mode]) => mode === "messages" && id !== session));
 }
 
 /**

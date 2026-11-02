@@ -66,6 +66,7 @@ import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
+import { stepScale } from "./model.ts";
 import type { DialogMode } from "./model.ts";
 import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, machineFacts, selectStatusMachines, selectStatusPhones, shortCost, stepWords, timelinePosts, viewerRows } from "./model.ts";
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
@@ -127,6 +128,8 @@ export interface UiState {
   update?: { dismissed?: string; pending?: "update" | "now" | "cancel"; note?: string };
   /** Terminals shown here are sized to the pane ("Fit to this window") rather than followed. */
   fit: boolean;
+  /** The chat's text size in percent, stepped through `SCALES` as a terminal's is; kept on the device. */
+  chatScale: number;
   /** The font they are sized at, in percent of the default: − and + step it, and drive them. */
   scale: number;
   /** The rail's folder groups the user folded away, by group key, and Terminals (`TERMINALS_GROUP`). */
@@ -4151,6 +4154,28 @@ function terminalShown(state: ViewState, ui: UiState): boolean {
  * stands, how full its context is against the size it is folded at, and Chat | Terminal where
  * its own terminal can be shown. Nothing from a node that says nothing of such a session.
  */
+/**
+ * The chat's text size, − 100% +, in the terminal's own look: the conversation and the composer
+ * take it as a zoom (`--chat-zoom`, set on the chat), so every size scales together and the
+ * lines reflow to the pane. The percentage puts it back to 100 when pressed.
+ */
+function chatScaleControl(): HTMLElement {
+  const scale = el("span", "scale-control chat-scale");
+  scale.setAttribute("role", "group");
+  scale.setAttribute("aria-label", "Text size");
+  const smaller = actionButton("scale-step chat-smaller", "−", "chat-smaller");
+  smaller.title = "Smaller text";
+  smaller.setAttribute("aria-label", "Smaller text");
+  const value = actionButton("scale-value chat-scale-reset", "100%", "chat-scale-reset");
+  value.title = "Back to 100%";
+  value.setAttribute("aria-label", "Text size, back to 100%");
+  const larger = actionButton("scale-step chat-larger", "+", "chat-larger");
+  larger.title = "Larger text";
+  larger.setAttribute("aria-label", "Larger text");
+  scale.append(smaller, value, larger);
+  return scale;
+}
+
 function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void {
   let head = root.querySelector<HTMLElement>(":scope > .chat-head");
   if (!head) {
@@ -4173,16 +4198,24 @@ function renderChatHead(root: HTMLElement, state: ViewState, ui: UiState): void 
     // At its end, what Cophyla leads while it does, and Lead.
     const lead = el("div", "chat-lead");
     lead.append(createLeaderChip(), createLeadControl());
-    head.append(dot, el("span", "chat-agent"), el("span", "chat-agent-note"), held, modes, lead);
+    head.append(dot, el("span", "chat-agent"), el("span", "chat-agent-note"), held, modes, lead, chatScaleControl());
     root.prepend(head);
   }
   const h = chatHead(state);
   // Lead shows wherever the node keeps leaders: from a node that says nothing of the chat's session, alone in the head.
   const leads = canLead(state, "chat");
-  setHidden(head, h === undefined && !leads);
+  // The head always shows: its text size is the chat's own control, whatever the session.
+  setHidden(head, false);
   setData(head, "agent", String(h !== undefined));
   const mode = chatMode(ui.view, state);
   setData(root, "mode", mode);
+  root.style.setProperty("--chat-zoom", String(ui.chatScale / 100));
+  const scale = head.querySelector<HTMLElement>(".chat-scale")!;
+  setHidden(scale, mode === "terminal");
+  setText(scale.querySelector(".scale-value")!, `${ui.chatScale}%`);
+  scale.querySelector<HTMLButtonElement>(".chat-smaller")!.disabled = stepScale(ui.chatScale, -1) === undefined;
+  scale.querySelector<HTMLButtonElement>(".chat-larger")!.disabled = stepScale(ui.chatScale, 1) === undefined;
+  scale.querySelector<HTMLButtonElement>(".chat-scale-reset")!.disabled = ui.chatScale === 100;
   const lead = head.querySelector<HTMLElement>(".chat-lead")!;
   setHidden(lead, !leads);
   updateChatLeadChip(lead.querySelector<HTMLElement>(".lead-leads")!, state);
@@ -4238,8 +4271,9 @@ export function messageField(className: string, placeholder: string): HTMLElemen
 /** Copies a message field's text into its unseen twin, which sizes it: after it changes other than by typing too. */
 export function fitField(input: HTMLTextAreaElement): void {
   const copy = input.previousElementSibling;
-  // With a space after it, a last empty line is a line too.
-  if (copy?.classList.contains("field-copy")) setText(copy, `${input.value} `);
+  // With a space after it, a last empty line is a line too. Empty, it is the placeholder's lines that
+  // count: a placeholder that wraps (a text size that makes it so) keeps the field as tall as it.
+  if (copy?.classList.contains("field-copy")) setText(copy, input.value === "" ? input.placeholder : `${input.value} `);
 }
 
 /** The talk button beside a message field: held, what the user says is typed into the field, for them to send. */
@@ -4292,6 +4326,9 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   context.setAttribute("aria-pressed", ui.contextOpen ? "true" : "false");
   // Under a terminal there is no input at all: the terminal takes the typing.
   setHidden(root, terminalShown(state, ui));
+  // The chat's text size reaches its composer while the chat is the pane on show, not a session's send box.
+  const onChat = ui.selected === undefined && ui.terminal === undefined && ui.group === undefined;
+  root.style.setProperty("--composer-zoom", String(onChat ? ui.chatScale / 100 : 1));
   // A group's pane has its own composer.
   setHidden(form, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   const canChat = state.connected && state.scopes.includes("chat");

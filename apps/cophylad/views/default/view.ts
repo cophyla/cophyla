@@ -68,6 +68,7 @@ import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams,
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
+import { keptChoices } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render } from "./render.ts";
@@ -83,6 +84,7 @@ import type { RemoteCover } from "./remoteview.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
+import { chatScaleFrom } from "./model.ts";
 import { grown, spliceAt, spliced, terminalWords } from "./dictation.ts";
 import type { Splice } from "./dictation.ts";
 import { TeamControl } from "./teamctl.ts";
@@ -108,6 +110,7 @@ const ui: UiState = {
   view: "chat",
   fit: false,
   scale: 100,
+  chatScale: 100,
   folded: new Set(),
   directBusy: new Set(),
   agentsBusy: new Set(),
@@ -399,6 +402,7 @@ rpc.onNotification((n) => {
         restoreViewerPrefs(prefs["viewer"]);
         restoreRemotePrefs(prefs["remoteView"]);
         restoreViewChoice(prefs["view"]);
+        ui.chatScale = chatScaleFrom(prefs["chatScale"]);
       }
       dispatch({ type: "host.ready", params: ready });
       return;
@@ -2804,14 +2808,33 @@ function restoreViewChoice(value: unknown): void {
 }
 
 /**
- * The user chose the chat or a terminal: every session's pane and the chat's pane open on that
- * from now on, until they choose again. A Messages pane's own choice is kept. Kept on the device.
+ * The user chose the chat or a terminal, on `session`'s pane or on the chat's: every session's
+ * pane and the chat's pane open on that from now on, until they choose again. Another session's
+ * Messages pane stays its own choice (`keptChoices`). Kept on the device.
  */
-function chooseView(view: "chat" | "terminal"): void {
+function chooseView(view: "chat" | "terminal", session?: string): void {
   ui.view = view;
-  for (const [id, mode] of ui.modes) if (mode !== "messages") ui.modes.delete(id);
+  ui.modes = keptChoices(ui.modes, session);
   prefs = { ...prefs, view };
   void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+}
+
+/**
+ * The chat's text size, stepped to `to` and kept on the device. The conversation stays where the
+ * user read it: the message that was at the top stays at the top, and at the foot it stays there.
+ */
+function setChatScale(to: number): void {
+  const stream = roots.stream;
+  const top = stream.getBoundingClientRect().top;
+  const atEnd = stream.scrollHeight - stream.scrollTop - stream.clientHeight < 8;
+  const seen = [...stream.querySelectorAll<HTMLElement>(".items > *")].find((n) => n.getBoundingClientRect().bottom > top + 1);
+  const offset = seen ? seen.getBoundingClientRect().top - top : 0;
+  ui.chatScale = to;
+  prefs = { ...prefs, chatScale: to };
+  void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+  draw();
+  if (atEnd) stream.scrollTop = stream.scrollHeight;
+  else if (seen?.isConnected) stream.scrollTop += seen.getBoundingClientRect().top - top - offset;
 }
 
 function saveViewerPrefs(): void {
@@ -3740,11 +3763,20 @@ document.addEventListener("click", (ev) => {
       const mode = target.dataset["mode"];
       if (!session || (mode !== "timeline" && mode !== "terminal" && mode !== "messages")) return;
       if (mode === "messages") ui.modes.set(session, mode);
-      else chooseView(mode === "terminal" ? "terminal" : "chat");
+      else chooseView(mode === "terminal" ? "terminal" : "chat", session);
       draw();
       if (mode === "terminal") terminal.focus();
       return;
     }
+    case "chat-smaller":
+    case "chat-larger": {
+      const to = stepScale(ui.chatScale, target.dataset["action"] === "chat-larger" ? 1 : -1);
+      if (to !== undefined) setChatScale(to);
+      return;
+    }
+    case "chat-scale-reset":
+      setChatScale(100);
+      return;
     case "term-fit":
       ui.fit = !ui.fit;
       draw();

@@ -17,10 +17,12 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
+import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { stepWords, timelinePosts } from "../views/default/model.ts";
+import { keptChoices } from "../views/default/model.ts";
+import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
 import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenStep, doorWords, selectDoor } from "../views/default/model.ts";
 import type { DoorState } from "@cophyla/protocol";
@@ -854,6 +856,19 @@ describe("default view: what streams and what loads", () => {
     expect(paneMode(tabChoice(undefined, "chat"), true, false)).toBe("timeline");
     expect(tabChoice("messages", "chat")).toBe("messages");
     expect(tabChoice("timeline", "terminal")).toBe("timeline");
+  });
+
+  test("choosing Timeline or Terminal on a session's Messages pane leaves it; other sessions' Messages panes stay", () => {
+    const modes = new Map<string, PaneMode>([["a", "messages"], ["b", "messages"], ["c", "terminal"], ["d", "timeline"]]);
+    // Chosen on a's pane: a leaves its messages and follows the view, as c and d do; b stays on its own.
+    const kept = keptChoices(modes, "a");
+    expect([...kept]).toEqual([["b", "messages"]]);
+    expect(paneMode(tabChoice(kept.get("a"), "terminal"), true, true)).toBe("terminal");
+    expect(paneMode(tabChoice(kept.get("a"), "chat"), true, true)).toBe("timeline");
+    // Chosen on the chat's pane: every Messages pane stays.
+    expect([...keptChoices(modes)]).toEqual([["a", "messages"], ["b", "messages"]]);
+    // What it was given is left as it was.
+    expect(modes.size).toBe(4);
   });
 
   test("the button above a timeline: Load history while nothing is loaded, Show earlier once something is, none at the start", () => {
@@ -2508,6 +2523,16 @@ describe("default view: terminals", () => {
     // Unmeasured, a hidden pane, keeps the font it has.
     expect(followFont({ width: 0, height: 0 }, drawn, 14)).toBe(14);
     expect(followFont({ width: 800, height: 900 }, { width: 0, height: 0 }, 14)).toBe(14);
+  });
+
+  test("the chat's text size is one of the steps the device kept, or 100", () => {
+    // What the device kept is one of the steps the chat's − and + walk; anything else reads as 100.
+    expect(chatScaleFrom(150)).toBe(150);
+    expect(chatScaleFrom(SCALES[0]!)).toBe(SCALES[0]!);
+    expect(chatScaleFrom(137)).toBe(100);
+    expect(chatScaleFrom("150")).toBe(100);
+    expect(chatScaleFrom(undefined)).toBe(100);
+    expect(chatScaleFrom(null)).toBe(100);
   });
 
   test("− and + step the scale from what the terminal is drawn at, and stop at either end", () => {

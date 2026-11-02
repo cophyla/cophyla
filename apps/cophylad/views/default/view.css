@@ -6161,7 +6161,10 @@ button:disabled {
   font-size: 12.5px;
 }
 
+/* What the chat runs takes the room the head has, so its controls sit at the end of the bar. */
 .chat-agent {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   color: var(--ink);
   text-overflow: ellipsis;
@@ -6264,7 +6267,8 @@ button:disabled {
 }
 
 /* − 100% +: one bordered control, the scale the terminal is drawn at between its steps. */
-.term-scale {
+.term-scale,
+.scale-control {
   display: inline-flex;
   flex: none;
   align-items: stretch;
@@ -6274,7 +6278,8 @@ button:disabled {
 }
 
 .term-smaller,
-.term-larger {
+.term-larger,
+.scale-step {
   min-width: 24px;
   padding: 2px 6px;
   border: 0;
@@ -6282,12 +6287,14 @@ button:disabled {
 }
 
 .term-smaller:hover:enabled,
-.term-larger:hover:enabled {
+.term-larger:hover:enabled,
+.scale-step:hover:enabled {
   background: var(--cophyla-wash);
   color: var(--cophyla-ink);
 }
 
-.term-scale-value {
+.term-scale-value,
+.scale-value {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -6300,8 +6307,26 @@ button:disabled {
 
 .term-fit:disabled,
 .term-smaller:disabled,
-.term-larger:disabled {
+.term-larger:disabled,
+.scale-step:disabled,
+.chat-scale-reset:disabled {
   opacity: 0.45;
+}
+
+/* The chat's value is a button: it puts the text back to 100%, and reads as the number it is. */
+.chat-scale-reset {
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-scale-reset:hover:enabled {
+  color: var(--ink);
+}
+
+.chat-scale-reset:disabled {
+  cursor: default;
 }
 
 .term-fit,
@@ -10236,14 +10261,25 @@ button:disabled {
   max-width: none;
 }
 
-.chat-context[hidden] + .chat-mode[hidden] + .chat-lead,
-.chat-head[data-agent="false"] .chat-lead {
+/* From a node that says nothing of the chat's session, Lead alone, and the text size at the end. */
+.chat-head[data-agent="false"] > :not(.chat-lead):not(.chat-scale) {
+  display: none;
+}
+
+/* The text size is the head's last control, at its far end. */
+.chat-scale {
   margin-left: auto;
 }
 
-/* From a node that says nothing of the chat's session, Lead alone. */
-.chat-head[data-agent="false"] > :not(.chat-lead) {
-  display: none;
+/* The conversation and its composer take the chat's text size as a zoom: everything scales
+   together, and the lines reflow to the pane. The head keeps its own size. */
+/* Zoomed inside the scroller, not on it: its scroll position stays in the pane's own pixels. */
+#stream > * {
+  zoom: var(--chat-zoom, 1);
+}
+
+#composer {
+  zoom: var(--composer-zoom, 1);
 }
 
 /* A leader's message in a session's timeline: the user's own turn, and under it, after the
