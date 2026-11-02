@@ -3,8 +3,12 @@
 // fresh tail reads the whole file, so a parser's state is whole, but says from which offset
 // its lines are new to the record: the end of what an earlier tail recorded, or the last
 // `replayBytes` of a file no tail has recorded, so history is recorded once.
+// A big file is read in pieces of at most `MAX_READ`, over as many calls as it takes.
 
 import { closeSync, fstatSync, openSync, readSync, statSync } from "node:fs";
+
+/** The most a single `read()` takes in; the rest follows on the next calls. */
+const MAX_READ = 64 * 1024 * 1024;
 
 /** Only this much of a transcript that predates the attach is recorded as events; the rest feeds stats and intent. */
 export const REPLAY_BYTES = 256 * 1024;
@@ -91,13 +95,16 @@ export class Tail {
   readonly initialSize: number;
   /** Lines starting here or later are recorded; earlier ones only feed the parser. */
   readonly recordFrom: number;
+  /** The most one `read()` takes in (`MAX_READ`; a test makes it small). */
+  private readonly maxRead: number;
 
   /**
    * `recordedTo` is where an earlier tail of the same file stopped recording; one past the
    * file's size means the file shrank, and only the replay rule applies.
    */
-  constructor(path: string, opts: { replayBytes?: number; recordedTo?: number } = {}) {
+  constructor(path: string, opts: { replayBytes?: number; recordedTo?: number; maxRead?: number } = {}) {
     this.path = path;
+    this.maxRead = opts.maxRead ?? MAX_READ;
     this.initialSize = Tail.sizeOf(path);
     const replay = opts.replayBytes !== undefined && this.initialSize > opts.replayBytes ? this.initialSize - opts.replayBytes : 0;
     this.recordFrom = opts.recordedTo !== undefined && opts.recordedTo <= this.initialSize ? Math.max(replay, opts.recordedTo) : replay;
@@ -164,7 +171,9 @@ export class Tail {
         this.partialStart = 0;
       }
       if (size === this.offset) return [];
-      const buf = Buffer.alloc(size - this.offset);
+      // A transcript can outgrow one Buffer (4 GiB): a 4.7 GB one failed every tick of its adapter, so no session on
+      // the node updated. Each call takes at most `maxRead`; the rest follows on the next calls.
+      const buf = Buffer.alloc(Math.min(size - this.offset, this.maxRead));
       let read = 0;
       while (read < buf.length) {
         const n = readSync(fd, buf, read, buf.length - read, this.offset + read);
