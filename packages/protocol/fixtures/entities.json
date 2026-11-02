@@ -138,7 +138,8 @@
         "cost": 0.12,
         "tokens": { "in": 1200, "out": 800, "cacheRead": 45000, "cacheWrite": 3000 },
         "context": { "used": 51000, "limit": 200000 },
-        "model": "claude-sonnet-5"
+        "model": "claude-sonnet-5",
+        "effort": "high"
       },
       "transcript": { "path": "C:\\Users\\me\\.claude\\projects\\C--D-orchestrator\\3f0c1b2a.jsonl" }
     },

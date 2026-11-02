@@ -127,6 +127,13 @@ export const SessionsConfig = z.object({
    * has no transcript (the new id the CLI started under), is ended; its process is not touched.
    */
   resume_takes_terminal: z.boolean().default(false),
+  /**
+   * A Claude transcript names no context window, so a Claude session's stats carry no
+   * `context`. On, the window is inferred (1M for a `[1m]` model, named by the transcript or the
+   * profile's settings, or once past 200K used; else 200K) and the stats carry the effort each
+   * turn ran at.
+   */
+  claude_window_and_effort: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -827,6 +834,7 @@ launch = "terminal"        # where a session cophylad starts runs: "terminal" (i
 type_into_busy = false     # true: type into a busy session without waiting for an empty prompt; after 30 s with no ask open, type anyway
 claude_status_line = true  # false: Claude sessions cophylad starts run no status line (each run starts Git Bash on Windows), and so skip the user's CLAUDE.md, skills, agents and commands
 resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
+claude_window_and_effort = false # true: a Claude session's stats infer its context window (200K or 1M) and carry its effort
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
