@@ -264,6 +264,8 @@
       "results": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }]
     },
     "session.mode": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "mode": "acceptEdits" }], "results": [{ "mode": "acceptEdits" }] },
+    "session.models": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }], "results": [{ "models": [{ "value": "sonnet", "label": "Sonnet" }] }, { "current": "gpt-6-astra[low]", "models": [{ "value": "gpt-6-astra[low]", "label": "GPT-6 Astra (low)" }] }] },
+    "session.setModel": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "model": "sonnet" }], "results": [{ "model": "sonnet" }] },
     "session.git": {
       "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2", "log": 10 }],
       "results": [

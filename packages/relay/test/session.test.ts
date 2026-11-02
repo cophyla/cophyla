@@ -21,6 +21,8 @@ interface FakeNode {
 
 let server: ReturnType<typeof Bun.serve>;
 let node: FakeNode;
+/** What the relay saw of a slow auth: the methods that came while its answer was held. */
+const slow = { held: false, during: [] as string[] };
 const sockets = new Set<{ send(s: string): void; close(c: number, r: string): void }>();
 
 beforeAll(() => {
@@ -49,10 +51,21 @@ beforeAll(() => {
             ws.data = { authed: true, peer: PAIRING, kind: "pair" };
             return reply({ peer: PAIRING, subject: "usr_123", login: "octocat" });
           }
+          if (m.params["token"] === "rly_slow") {
+            // taken at once, as the server takes a token, and answered late
+            ws.data.authed = true;
+            slow.held = true;
+            setTimeout(() => {
+              slow.held = false;
+              reply({ peer: PEER });
+            }, 120);
+            return;
+          }
           if (m.params["token"] !== "rly_good") return fail("denied", "unknown token");
           ws.data.authed = true;
           return reply({ peer: PEER });
         }
+        if (slow.held) slow.during.push(m.method);
         if (!ws.data.authed) return fail("denied", "auth first");
         if (m.method === "relay.open") {
           const eph = await ephemeral();
@@ -94,6 +107,15 @@ describe("peer session", () => {
     expect(texts).toEqual(Array.from({ length: 20 }, (_, i) => `echo:frame ${i}`));
     s.close();
     node.received.length = 0;
+  });
+
+  test("a token's open goes right behind its auth, before the auth is answered", async () => {
+    const s = new PeerSession({ url: origin(), token: "rly_slow", peer: PEER, psk: pskFromHex(PSK_HEX) });
+    const { peer } = await s.connect();
+    expect(peer).toBe(NODE);
+    expect(slow.during).toEqual(["relay.open"]);
+    s.close();
+    slow.during.length = 0;
   });
 
   test("a bad token is refused before any tunnel exists", async () => {

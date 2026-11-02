@@ -35,6 +35,7 @@ import {
   closedPlaces,
   focusWords,
   groupMe,
+  groupMemberWords,
   groupTabWords,
   machineName,
   memberChips,
@@ -52,7 +53,7 @@ import {
   connectedRows,
 } from "./model.ts";
 import type { BroadPlace, CandidateGroup, CandidateItem, ClosedPlace, ConnectAgentRow, ConnectedRow, ConnectTeamBlock, MemberChip, PostView, TeamAgentsSeen, TeamConnectionRow, TeammateRow, ViewState } from "./model.ts";
-import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, sectionHead, setData, setHidden, setText } from "./render.ts";
+import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, renderTalk, sectionHead, setData, setHidden, setText, talkButton } from "./render.ts";
 import type { FolderBrowse, UiState } from "./render.ts";
 
 // --- what the user has open ---------------------------------------------------------------------
@@ -99,6 +100,8 @@ export interface TeamUi {
   editGroup?: { group: string; busy?: boolean; error?: string };
   /** A group's ⋮, with Delete or End asked in place, and on its way. */
   groupMenu?: { group: string; asking?: "delete" | "end"; busy?: boolean; error?: string };
+  /** The user opened a group's head to its purpose and members; until then it is folded to one line. The same for every group. */
+  headOpen?: boolean;
   /** The post the composer answers. */
   replyTo?: { group: string; post: string };
   /** Why the last post was refused, in the composer of its group. */
@@ -499,12 +502,17 @@ function updateAgentRow(row: HTMLElement, r: ConnectAgentRow, b: ConnectTeamBloc
 
 // --- the group's pane --------------------------------------------------------------------------------
 
-/** The group's pane, built once into `root`: its head, its posts, its composer. */
+/**
+ * The group's pane, built once into `root`: its head, its posts, its composer. The head is
+ * folded to one line until opened: the name, who is in it in a few words, Edit and ⋮.
+ */
 function createGroupPane(root: HTMLElement): void {
   const head = el("header", "group-head");
   const top = el("div", "group-head-top");
+  const fold = actionButton("fold group-fold", "", "group-fold");
+  fold.setAttribute("aria-label", "Group details");
   const titles = el("div", "group-titles");
-  titles.append(el("h2", "group-name"), el("p", "group-purpose"));
+  titles.append(el("h2", "group-name"), el("span", "group-summary"), el("p", "group-purpose"));
   const edit = actionButton("group-tool group-edit", "Edit", "group-edit");
   edit.title = "Change the name and the purpose";
   const more = actionButton("group-tool group-more", "", "group-menu");
@@ -523,7 +531,7 @@ function createGroupPane(root: HTMLElement): void {
   menu.append(del, end);
   const mark = el("span", "group-mark group-head-mark");
   mark.setAttribute("aria-hidden", "true");
-  top.append(mark, titles, edit, more, menu);
+  top.append(fold, mark, titles, edit, more, menu);
   // Delete or End, asked in place under the line.
   const ask = el("div", "group-ask");
   ask.setAttribute("role", "alert");
@@ -586,7 +594,8 @@ function createGroupComposer(): HTMLElement {
   const send = el("button", "group-send", "Send");
   send.type = "submit";
   const attach = createAttach();
-  row.append(attach.buttons, messageField("group-text", "Post"), send);
+  // Held, what the user says is typed into the post, to send when they are ready.
+  row.append(attach.buttons, messageField("group-text", "Post"), talkButton(), send);
   form.append(reply, error, complete, attach.strip, row, el("p", "group-closed"));
   return form;
 }
@@ -669,7 +678,13 @@ export function renderGroupPane(root: HTMLElement, state: ViewState, ui: UiState
 
 function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiState, canWrite: boolean): void {
   const ended = g.ended !== undefined;
+  const open = ui.team.headOpen === true;
+  setData(head, "open", String(open));
+  const fold = head.querySelector<HTMLButtonElement>(".group-fold")!;
+  fold.setAttribute("aria-expanded", String(open));
+  fold.title = open ? "Fold the purpose and the members away" : "Show the purpose and the members";
   setText(head.querySelector(".group-name")!, g.name);
+  setText(head.querySelector(".group-summary")!, groupMemberWords(g));
   const purpose = head.querySelector<HTMLElement>(".group-purpose")!;
   setText(purpose, g.purpose ?? "");
   setHidden(purpose, !g.purpose);
@@ -909,6 +924,7 @@ function renderGroupComposer(form: HTMLFormElement, g: Group, state: ViewState, 
   input.disabled = !mayPost;
   input.placeholder = ended ? "This group ended" : !state.connected ? "Waiting for cophylad" : !state.scopes.includes("sessions:write") ? "This view may not post" : `Post in ${g.name}: @ tags an agent`;
   form.querySelector<HTMLButtonElement>(".group-send")!.disabled = !mayPost || ui.team.posting === g.id;
+  renderTalk(form.querySelector<HTMLButtonElement>(".talk")!, state, ui, mayPost);
   renderAttach(form, ui.team.media.attached.get(g.id) ?? [], mayPost);
   setText(form.querySelector(".group-send")!, ui.team.posting === g.id ? "Sending…" : "Send");
   // left, or taken out: this side's copy stays, read only

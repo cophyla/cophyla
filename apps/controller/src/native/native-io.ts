@@ -13,6 +13,8 @@ export interface CophylaSocketPlugin {
   attach(options: { id: string; url: string; pin?: string }): Promise<void>;
   send(options: { id: string; frame: string }): Promise<void>;
   close(options: { id: string; code?: number; reason?: string }): Promise<void>;
+  /** The network the phone is on now: a handle Android gives each attachment, none before Android 6. */
+  network(): Promise<{ handle?: string }>;
   addListener(event: "frame", fn: (e: FrameEvent) => void): Promise<{ remove(): Promise<void> }>;
   addListener(event: "state", fn: (e: StateEvent) => void): Promise<{ remove(): Promise<void> }>;
 }

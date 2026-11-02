@@ -54,7 +54,7 @@ class FakeTunnel {
 }
 
 describe("api: a tunnel served as a connection", () => {
-  test("hello by controller token, served through the gate with via relay; the LAN-only requests are unsupported; the close is a disconnect", async () => {
+  test("hello by controller token, served through the gate with via relay; the LAN-only requests are unsupported; the close holds the phone for its return, and a revoke ends it", async () => {
     const d = (current = await testDaemon("[controller]\nenabled = true\nport = 0\n"));
     const ui = await TestClient.connect(d.api.url);
     await ui.hello(d.token, { name: "desktop" });
@@ -89,10 +89,13 @@ describe("api: a tunnel served as a connection", () => {
     expect(d.grants.pushOf(controller.id)).toMatchObject({ platform: "android", token: "fcm-secret-token" });
     expect(JSON.stringify(d.store.audit.list({ limit: 20 }))).not.toContain("fcm-secret-token");
     expect((await ui.request<{ controllers: Controller[] }>("controller.list", {})).controllers[0]!.push).toMatchObject({ platform: "android" });
-    // the tunnel ends: the client is gone
+    // the tunnel ends: the phone is held for its return, and is not there meanwhile
     t2.handler.close(4409, "tunnel closed");
-    await waitFor(() => d.clients.get(client.id) === undefined);
+    await waitFor(() => d.clients.held(client.id) === "parked");
     expect((await ui.request<{ controllers: Controller[] }>("controller.list", {})).controllers[0]!.connected).toBe(false);
+    // its grant revoked, the held client goes too
+    await ui.request("controller.revoke", { id: controller.id });
+    await waitFor(() => d.clients.get(client.id) === undefined);
     ui.close();
   });
 

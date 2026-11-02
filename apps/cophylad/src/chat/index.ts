@@ -44,6 +44,8 @@ export type SpeechHook = (message: string, input: UserMessageInput) => boolean |
 
 /** How long a brain question stays open before it expires; 0 keeps it open. */
 export const BRAIN_ASK_TIMEOUT_MS = 0;
+/** The messages a chat history page holds when the client names no size: a screen or two, and the view asks for more as it is read back. */
+export const HISTORY_MESSAGES = 60;
 
 export class Chat {
   private deps: ChatDeps;
@@ -163,6 +165,19 @@ export class Chat {
     const messages: Message[] = [];
     for (const t of threads) messages.push(...this.deps.store.messages.byThread(t.id));
     return { threads, messages };
+  }
+
+  /**
+   * The newest `limit` messages said before `before` (a message's id; the newest when absent), oldest
+   * first, across the threads they are in: the chat's history as the view pages it, by message rather
+   * than by thread, so a long thread neither floods a page nor holds one back. With the threads those
+   * messages are in, for their dividers, and whether older messages remain.
+   */
+  page(input: { before?: string; limit?: number } = {}): { messages: Message[]; threads: Thread[]; more: boolean } {
+    const { messages, more } = this.deps.store.messages.recent(input.before, input.limit ?? HISTORY_MESSAGES);
+    const ids = [...new Set(messages.map((m) => m.thread))];
+    const threads = ids.map((id) => this.deps.store.threads.get(id)).filter((t): t is Thread => t !== undefined);
+    return { messages, threads, more };
   }
 
   /** Stores the user's message in the current thread and wakes the brain with it. */

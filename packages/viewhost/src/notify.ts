@@ -12,7 +12,8 @@
 // `AWAY_MS`, and its desktop not streamed to another (whose own input would count here). An
 // ask that opens with no one here is held, and toasted once someone is, if it is still open
 // then; the machine is looked at every `RETURN_POLL_MS` while any is held. A host that cannot
-// tell (`idleMs` absent, or answering undefined) toasts at once.
+// tell (`idleMs` absent, or answering undefined) toasts at once. A host whose user turned the
+// toasts off (`enabled` answering false) toasts none: the asks stay in the view.
 
 import type { Ask, RemoteState, RpcNotification } from "@cophyla/protocol";
 
@@ -48,6 +49,8 @@ export interface AskNotifierDeps {
   node?: () => string | undefined;
   /** Runs `fn` after `ms`; the returned function cancels it. */
   schedule?: (fn: () => void, ms: number) => () => void;
+  /** Whether asks are toasted here; on when absent. Off, an ask that opens is not toasted, nor held for later. */
+  enabled?: () => boolean;
 }
 
 export class AskNotifier {
@@ -80,7 +83,7 @@ export class AskNotifier {
       return;
     }
     this.replayed?.add(ask.id);
-    if (!ask.answerableBy.includes("user") || this.seen.has(ask.id) || this.held.has(ask.id)) return;
+    if (!ask.answerableBy.includes("user") || this.seen.has(ask.id) || this.held.has(ask.id) || this.deps.enabled?.() === false) return;
     const toast: NotifyAsk = { id: ask.id, title: ask.title, options: ask.options.map((o) => ({ id: o.id, label: o.label })) };
     if (ask.detail !== undefined) toast.detail = ask.detail;
     if (ask.multiple === true) toast.multiple = true;

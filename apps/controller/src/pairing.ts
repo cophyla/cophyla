@@ -164,6 +164,46 @@ export function writeListen(storage: Pick<Storage, "setItem" | "removeItem"> | u
   }
 }
 
+/** Where the page remembers that the user turned off the notifications for agents' questions; nothing is stored while they are on. */
+export const ASK_POPUPS_KEY = "cophyla.controller.askPopups";
+
+/** Agents' questions shown as the system's notifications: on, unless the user turned them off in the settings. */
+export function readAskPopups(storage: Pick<Storage, "getItem"> | undefined): boolean {
+  try {
+    return storage?.getItem(ASK_POPUPS_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
+export function writeAskPopups(storage: Pick<Storage, "setItem" | "removeItem"> | undefined, on: boolean): void {
+  try {
+    if (on) storage?.removeItem(ASK_POPUPS_KEY);
+    else storage?.setItem(ASK_POPUPS_KEY, "off");
+  } catch {
+    // a page that cannot store it keeps the choice until it is closed
+  }
+}
+
+export const PATH_KEY = "cophyla.controller.path";
+
+/**
+ * Which way carried the link last and on which network, kept in the page's storage between
+ * runs: nothing secret, only a network handle and a transport's kind.
+ */
+export function storagePaths(storage: Pick<Storage, "getItem" | "setItem"> | undefined): { read(): { network: string; via: "lan" | "relay" | "p2p" } | undefined; write(path: { network: string; via: "lan" | "relay" | "p2p" }): void } {
+  return {
+    read: () => {
+      const raw = storage?.getItem(PATH_KEY);
+      if (!raw) return undefined;
+      const p = JSON.parse(raw) as { network?: unknown; via?: unknown };
+      if (typeof p.network !== "string" || (p.via !== "lan" && p.via !== "relay" && p.via !== "p2p")) return undefined;
+      return { network: p.network, via: p.via };
+    },
+    write: (path) => storage?.setItem(PATH_KEY, JSON.stringify(path)),
+  };
+}
+
 /** Six digits from what the user typed, or from `?code=`; spaces and dashes are theirs to type. */
 export function parseCode(input: string): string | undefined {
   const digits = input.replace(/[\s-]/g, "");

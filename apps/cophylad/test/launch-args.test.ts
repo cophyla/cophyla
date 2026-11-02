@@ -5,8 +5,8 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { flagGroups, launchFlags, launchProblem, mirrorArgs, splitMode } from "../src/sessions/claude/launch-args.ts";
-import { cophyladSettings } from "../src/sessions/claude/start.ts";
+import { flagGroups, launchFlags, launchProblem, mirrorArgs, splitMode, withoutUserScope } from "../src/sessions/claude/launch-args.ts";
+import { claudeArgv, cophyladSettings, userMcpConfig } from "../src/sessions/claude/start.ts";
 
 describe("mirroring the user's launch", () => {
   test("keeps the flags that shape a session, never the ones that say which conversation or what it is asked", () => {
@@ -100,5 +100,60 @@ describe("cophylad's settings file", () => {
     // Unreadable: the row alone.
     expect(JSON.parse(readFileSync(cophyladSettings(data, "prof_3", { settings: "missing.json", cwd }), "utf8"))).toEqual({ showClearContextOnPlanAccept: true });
     expect(cophyladSettings(data)).toBe(join(data, "claude", "cophylad-settings.json"));
+  });
+
+  test("with no status line: the profile's settings.json under the launch's, merged as Claude merges, less the status lines", () => {
+    const data = mkdtempSync(join(tmpdir(), "cophyla-settings-"));
+    const cwd = mkdtempSync(join(tmpdir(), "cophyla-cwd-"));
+    const hook = { matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:4826/hooks/claude" }] };
+    writeFileSync(
+      join(cwd, "settings.json"),
+      JSON.stringify({
+        statusLine: { type: "command", command: "node statusline.js", refreshInterval: 60 },
+        subagentStatusLine: { type: "command", command: "node sub.js" },
+        hooks: { Stop: [hook] },
+        permissions: { allow: ["mcp__cophyla-agents__send_message"] },
+        crossSessionInbound: "accept",
+        model: "opus",
+      }),
+    );
+    writeFileSync(join(cwd, "launch.json"), JSON.stringify({ hooks: { Stop: [hook], PostToolUse: [hook] }, permissions: { allow: ["Bash(git:*)", "mcp__cophyla-agents__send_message"] }, model: "sonnet" }));
+    const path = cophyladSettings(data, "prof_1", { settings: "launch.json", cwd }, join(cwd, "settings.json"));
+    expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+      hooks: { Stop: [hook], PostToolUse: [hook] },
+      permissions: { allow: ["mcp__cophyla-agents__send_message", "Bash(git:*)"] },
+      crossSessionInbound: "accept",
+      model: "sonnet",
+      showClearContextOnPlanAccept: true,
+    });
+    // No launch file, an unreadable settings.json: the row alone.
+    expect(JSON.parse(readFileSync(cophyladSettings(data, "prof_2", undefined, join(cwd, "missing.json")), "utf8"))).toEqual({ showClearContextOnPlanAccept: true });
+  });
+
+  test("the user-scope MCP servers go to a file of the profile's own, or nowhere when there are none", () => {
+    const data = mkdtempSync(join(tmpdir(), "cophyla-settings-"));
+    const home = mkdtempSync(join(tmpdir(), "cophyla-home-"));
+    const server = { type: "stdio", command: "C:/cophyla/cophylad.exe", args: ["agent-mcp"], env: {} };
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ numStartups: 3, mcpServers: { "cophyla-agents": server }, projects: { "C:/w": { mcpServers: { unreal: server } } } }));
+    const path = userMcpConfig(data, "prof_1", join(home, ".claude.json"));
+    expect(path).toBe(join(data, "claude", "mcp-prof_1.json"));
+    expect(JSON.parse(readFileSync(path!, "utf8"))).toEqual({ mcpServers: { "cophyla-agents": server } });
+    writeFileSync(join(home, "none.json"), JSON.stringify({ mcpServers: {} }));
+    expect(userMcpConfig(data, "prof_2", join(home, "none.json"))).toBeUndefined();
+    expect(userMcpConfig(data, "prof_3", join(home, "missing.json"))).toBeUndefined();
+  });
+});
+
+describe("leaving the user scope out", () => {
+  test("drops user from the launch's own setting sources, or names every other source", () => {
+    expect(withoutUserScope(["--dangerously-skip-permissions"])).toEqual(["--dangerously-skip-permissions", "--setting-sources", "project,local"]);
+    expect(withoutUserScope(["--setting-sources", "user,project", "--effort", "high"])).toEqual(["--effort", "high", "--setting-sources", "project"]);
+    expect(withoutUserScope(["--setting-sources=user"])).toEqual(["--setting-sources", ""]);
+  });
+
+  test("a session's command line carries it after the launch, before the model", () => {
+    const argv = claudeArgv({ command: "claude", sessionId: "s1", resume: true, launch: { mode: "bypassPermissions", args: ["--effort", "high", "--settings", "x.json"] }, model: "opus", noUserScope: true });
+    expect(argv).toEqual(["claude", "--resume", "s1", "--dangerously-skip-permissions", "--effort", "high", "--setting-sources", "project,local", "--model", "opus"]);
+    expect(claudeArgv({ command: "claude", sessionId: "s1", resume: true })).toEqual(["claude", "--resume", "s1"]);
   });
 });

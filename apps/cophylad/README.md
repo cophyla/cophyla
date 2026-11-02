@@ -180,12 +180,21 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   its profile's directory (Claude's own `~/.claude` by leaving `CLAUDE_CONFIG_DIR` unset),
   with the profile's launch (its mode replaced by the one `session.spawn` names, `bypassPermissions`
   as `--dangerously-skip-permissions`) and one `--settings <data>/claude/settings-<profile>.json` that
-  folds in the launch's own (`claude/start.ts`, `claude/launch-args.ts`), shows in the apps
+  folds in the launch's own (`claude/start.ts`, `claude/launch-args.ts`). With
+  `[sessions].claude_status_line = false` it runs no status line: Claude has no switch for that
+  alone (`statusLine` takes only a shell command, run through Git Bash on Windows, where every
+  program Git Bash starts can leak kernel memory until a reboot), so the session leaves the user
+  scope out (`--setting-sources` less `user`), the file carries the profile's `settings.json`
+  less `statusLine` and `subagentStatusLine`, and `--mcp-config <data>/claude/mcp-<profile>.json`
+  its user-scope MCP servers, cophyla-agents among them; the user's CLAUDE.md, skills, agents
+  and commands are not loaded, project and local scope and auto-memory are. It shows in the apps
   with no window of its own (`[tether].window_on_start` opens one at once; `session.focus`
   does when asked), and has its first prompt typed once it registers.
   A client's `session.send` is typed with no prefix, waiting while an ask is open or the
-  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen), and so is a
-  leader's (`from: "lead"`, see `leaders/`), recorded as the user's turn sent by it; the brain's
+  prompt holds half-typed text (`claude/screen.ts` reads Claude's screen; with
+  `[sessions].type_into_busy`, off by default, a busy session is typed into without waiting
+  for its prompt, and a prompt not free in 30 s with no ask open is typed into all the same),
+  and so is a leader's (`from: "lead"`, see `leaders/`), recorded as the user's turn sent by it; the brain's
   sends stay on the pipe unless the user made the chat the session's leader. A send may prepare
   the session first, in order: `clear` types `/clear` whoever sends it and waits for the new
   context, `mode` (plan or default) is set as `session.mode` sets it, and `task` is written
@@ -231,6 +240,16 @@ that terminal (New terminal's shell), and otherwise its process alone, leaving t
   (`claude/launch.ts`); a message typed meanwhile waits for the presses. Its risk is `exec`
   into a looser mode than manual, `write` otherwise. A session in a window of the user's own,
   or of another harness, is `unsupported`.
+- **Model.** `session.models {id}` lists the models a session can be put on and the one it is
+  on: over ACP, the list the agent gave at `session/new` (Claude's and Codex's own ids), with
+  the current one from the last `session/set_model`; in a Claude Code tether terminal, Claude's
+  aliases (`default`, `opus`, `sonnet`, `haiku`), with no current one known. A Codex session in
+  a terminal has none offered. `session.setModel {id, model}` sets it: over ACP with
+  `session/set_model`, a name the agent did not offer is `unsupported` (a base name stands for
+  an id with a bracketed suffix, `gpt-6-astra` for `gpt-6-astra[low]`); in a Claude terminal
+  `/model <name>` is typed there as the user would, once the prompt is free, and a name that is
+  not a plain alias or id (letters, digits, `.`, `_`, `-`, brackets) is `invalid` and never
+  typed. The chat's session is `AssistantState.session`.
 - **Focus.** `session.focus` on a session in tether raises the window used on it most
   recently, walking up from its `tether attach`, and opens one with `tether open` when none
   is attached; a background job gets `claude attach` in a tether terminal first. With
@@ -304,7 +323,7 @@ daemon's, which runs every CLI's threads. The README of a shipped build says so.
 
 `[sessions]` in `config.toml` tunes it: `poll_ms`, `codex_list_ms`, `hook_timeout_s`,
 `receipt_timeout_ms`, `codex_recent_ms`, `claude_hook_grace_ms`, `install_hooks`,
-`discover`, `launch`, `resume_takes_terminal` (a Claude CLI that resumes another thread in a terminal takes the terminal to it; off), and a repeatable `[[profiles]]` block for an installation beyond the
+`discover`, `launch`, `type_into_busy`, `resume_takes_terminal` (a Claude CLI that resumes another thread in a terminal takes the terminal to it; off), and a repeatable `[[profiles]]` block for an installation beyond the
 discovered one; the retired `brain_sends` is still read once, on the primary, where `typed`
 becomes the chat leading every agent. `[tether]` names the binary (`command`), tether's state folder (`dir`), a
 host's idle exit (`idle_exit_s`, 600), where a window opens (`window`: `auto`, `wt`,

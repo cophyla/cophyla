@@ -263,6 +263,68 @@ describe("voice", () => {
     expect(states(phone)).toEqual(["listening", "transcribing", "thinking"]);
   }, 20_000);
 
+  test("a press that dictates: its words come back to the phone to type, whole and as they grow, and nothing goes to the chat or the brain", async () => {
+    const { d, ui, phone } = await start({ voice: `wake = "off"\n` });
+    const transcripts: string[] = [];
+    d.bus.on("voice.transcript", (t) => transcripts.push(t.text));
+    const activity: string[] = [];
+    d.bus.on("user.activity", (a) => activity.push(`${a.state}:${a.source}`));
+    await phone.request("voice.ptt", { active: true, dictate: true });
+    speak(phone, 6);
+    await sleep(50);
+    await phone.request("voice.ptt", { active: false });
+    const dictated = await phone.next(isMethod("voice.dictated"));
+    expect(dictated.params).toMatchObject({ text: TRANSCRIPT });
+    expect((dictated.params as { client: string }).client).toMatch(/^cli_/);
+    // it ends idle: there is no reply to wait for
+    await waitFor(() => states(phone).at(-1) === "idle");
+    expect(states(phone)).toEqual(["listening", "transcribing", "idle"]);
+    // the words as they grew said they were dictated, and none named a message
+    const partials = phone.notifications.filter(isMethod("voice.partial")).map((n) => n.params as { dictate?: true; message?: string });
+    expect(partials.length).toBeGreaterThanOrEqual(1);
+    expect(partials.every((p) => p.dictate === true && p.message === undefined)).toBe(true);
+    await sleep(100);
+    expect(ui.notifications.filter(isMethod("chat.message"))).toHaveLength(0);
+    expect(ui.notifications.some(isMethod("voice.dictated"))).toBe(false);
+    expect(transcripts).toEqual([]);
+    expect(activity.filter((a) => a.startsWith("speaking"))).toEqual([]);
+  }, 20_000);
+
+  test("the next press without dictate is a message to the chat again", async () => {
+    const { ui, phone } = await start({ voice: `wake = "off"\n` });
+    await phone.request("voice.ptt", { active: true, dictate: true });
+    speak(phone, 6);
+    await phone.request("voice.ptt", { active: false });
+    await phone.next(isMethod("voice.dictated"));
+    await waitFor(() => states(phone).at(-1) === "idle");
+    await phone.request("voice.ptt", { active: true });
+    speak(phone, 6);
+    await phone.request("voice.ptt", { active: false });
+    const message = await ui.next(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
+    expect((message.params as { message: Message }).message.content).toEqual([{ type: "text", text: TRANSCRIPT }]);
+    expect(phone.notifications.filter(isMethod("voice.dictated"))).toHaveLength(1);
+  }, 20_000);
+
+  test("a dictating press over a wake word's utterance takes it over, and dictates it", async () => {
+    const { ui, phone } = await start();
+    say(phone, wakeChunk());
+    await waitFor(() => states(phone).at(-1) === "listening");
+    await phone.request("voice.ptt", { active: true, dictate: true });
+    speak(phone, 6);
+    await phone.request("voice.ptt", { active: false });
+    await phone.next(isMethod("voice.dictated"));
+    await sleep(100);
+    expect(ui.notifications.filter(isMethod("chat.message"))).toHaveLength(0);
+  }, 20_000);
+
+  test("hello says the node dictates", async () => {
+    const { d } = await start({ voice: `wake = "off"\n` });
+    const c = await TestClient.connect(d.api.url);
+    const r = await c.request<{ audio?: { dictate?: true } }>("hello", { token: d.token, kind: "controller", audio: { in: true, out: true } });
+    expect(r.audio?.dictate).toBe(true);
+    c.close();
+  }, 20_000);
+
   test("an utterance taken back is never sent, and another client's is not the caller's to take", async () => {
     const { ui, phone, engines } = await start({ voice: `wake = "off"\n` });
     await phone.request("voice.ptt", { active: true });

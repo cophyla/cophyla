@@ -60,7 +60,7 @@ import { contextUsed, lastPermissionMode } from "./claude/transcript.ts";
 import type { ClaudeTranscriptState } from "./claude/transcript.ts";
 import { flagGroups, launchFlags, mirrorArgs } from "./claude/launch-args.ts";
 import type { Launch } from "./claude/launch-args.ts";
-import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName } from "./claude/start.ts";
+import { claudeArgv, claudeEnv, newSessionId, cophyladSettings, sessionName, userMcpConfig } from "./claude/start.ts";
 import { desktopOriginated, isManagedDaemon } from "./codex/adapter.ts";
 import { composerUp as codexComposerUp, waitingOn as codexWaitingOn } from "./codex/screen.ts";
 import { lastTurnContext } from "./codex/rollout.ts";
@@ -132,6 +132,8 @@ export interface SessionsDeps {
   reopenHookMs?: number;
   /** How long a send that clears a context waits for the new one; a test shortens it. */
   clearWaitMs?: number;
+  /** With `[sessions].type_into_busy`, how long a message waits with no prompt seen, and with the prompt held, before it is typed; a test shortens them. */
+  typeWaits?: { noPromptMs?: number; heldMs?: number };
   /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
   resultHoldMs?: number;
   /** Prices a session's tokens when the harness states no cost of its own; undefined for a model with no price. */
@@ -311,6 +313,8 @@ interface LiveRecord extends SessionRecord {
   typing?: Promise<void>;
   /** How many of those are not typed yet. */
   toType?: number;
+  /** The last message typed into its terminal, which a busy CLI can still hold in its prompt (`[sessions].type_into_busy`). */
+  lastTyped?: string;
   /** Sends that cleared its context, waiting for the record to follow it to its new id. */
   clearWaiters?: (() => void)[];
   /** Claude: a change of permission mode being pressed in its terminal; the next waits for it, and so does a message typed meanwhile. */
@@ -410,6 +414,13 @@ const RECENT_CALLS = 256;
 /** The most rows the folder trust dialog's pointer is moved before it is left alone. */
 const TRUST_MOVES = 4;
 const TYPE_POLL_MS = 400;
+/**
+ * With `[sessions].type_into_busy`: how long a message waits for a prompt to show before it is
+ * typed (a terminal met again after a restart stays blank until its CLI redraws), and how long
+ * it waits for a prompt that shows held before it is typed all the same, with no ask open.
+ */
+const TYPE_NO_PROMPT_MS = 5000;
+const TYPE_HELD_MS = 30000;
 /** How long a message typed and sent waits for the harness to show it before Enter is pressed once more. */
 const TYPE_VERIFY_MS = 6000;
 /** How long the plan dialog is looked for once the hook is released. */
@@ -456,6 +467,15 @@ const MIRROR_DELAY_MS = 2000;
 const BROADCAST_MS = 250;
 const WATCH_DEBOUNCE_MS = 150;
 const DETAIL_CHARS = 2000;
+/** The models a Claude Code session in a tether terminal is offered: the aliases its own `/model` takes. */
+const CLAUDE_TETHER_MODELS = [
+  { value: "default", label: "Default (recommended)" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" },
+] as const;
+/** A model's name as typed after `/model`: an alias or an id, nothing that could be a second command or a line break. */
+const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._[\]-]{0,199}$/;
 export const SEND_PREFIX = "[cophylad, relaying the user]";
 /** The agents' messages a session remembers having recorded, so an echo of one is recorded once. */
 const AGENT_SEEN = 200;
@@ -2692,13 +2712,18 @@ export class Sessions implements SessionHost {
   /**
    * The command line a Claude session cophylad starts runs: its id and name, the profile's launch,
    * the model the brain named, and cophylad's settings file with the launch's own folded in.
+   * With `claude_status_line` off it leaves the profile's user scope out, and the file carries the
+   * profile's `settings.json` less its status line, and `--mcp-config` its user-scope servers.
    */
   private claudeCommand(o: { command: string; sessionId: string; intent: string; profile: HarnessProfile; cwd: string; launch: Launch | undefined; model: string | undefined; resume?: boolean }): string[] {
     const value = launchFlags(o.launch).settings;
+    const quiet = this.config.claude_status_line === false;
+    const mcp = quiet ? userMcpConfig(this.deps.dataDir, o.profile.id, claudeGlobalConfig(o.profile.configDir, this.deps.home ?? homedir())) : undefined;
     return [
-      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}) }),
+      ...claudeArgv({ command: o.command, sessionId: o.sessionId, name: o.intent, ...(o.launch ? { launch: o.launch } : {}), ...(o.model ? { model: o.model } : {}), ...(o.resume ? { resume: true } : {}), ...(quiet ? { noUserScope: true } : {}) }),
+      ...(mcp ? ["--mcp-config", mcp] : []),
       "--settings",
-      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined),
+      cophyladSettings(this.deps.dataDir, o.profile.id, value !== undefined ? { settings: value, cwd: o.cwd } : undefined, quiet ? join(o.profile.configDir, "settings.json") : undefined),
     ];
   }
 
@@ -3272,6 +3297,40 @@ export class Sessions implements SessionHost {
   // --- permission mode ------------------------------------------------------------------
 
   /**
+   * The models a session can be put on, and the one it is on where it is known. Over ACP the agent's
+   * own list, from the session's start; in a Claude Code tether terminal Claude's aliases, which its
+   * `/model` takes, with no current model known. A Codex session in a terminal has none offered here.
+   */
+  models(id: string, part?: string): { current?: string; models: { value: string; label: string }[] } {
+    const rec = this.must(id, part);
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return this.acp.models(id);
+    }
+    if (rec.session.harness !== "claude") return { models: [] };
+    return { models: CLAUDE_TETHER_MODELS.map((m) => ({ ...m })) };
+  }
+
+  /**
+   * Puts a session on a model. Over ACP with `session/set_model`; in a Claude Code tether terminal by
+   * typing `/model <name>` there, as the user would, so the session runs it when its turn is free.
+   * A model name is an alias or a model id (`opus`, `sonnet[1m]`, `gpt-6-astra`); one that is not
+   * a plain name is `invalid`. A Codex session in a terminal changes its model in that terminal.
+   */
+  async setModel(id: string, model: string, part?: string): Promise<{ model: string }> {
+    const rec = this.must(id, part);
+    if (rec.session.status === "ended") throw new RpcError("conflict", "the session has ended: its model can be set when it runs again");
+    if (rec.session.native.transport === "acp") {
+      if (!this.acp) throw new RpcError("unsupported", "no ACP adapter");
+      return { model: await this.acp.setModel(id, model) };
+    }
+    if (rec.session.harness !== "claude") throw new RpcError("unsupported", "a Codex session's model is changed in its own terminal");
+    if (!MODEL_NAME.test(model)) throw new RpcError("invalid", "a model is named by an alias or an id: letters, digits, dots, dashes, underscores and brackets");
+    await this.send(id, `/model ${model}`, {}, part);
+    return { model };
+  }
+
+  /**
    * Puts a Claude session in a permission mode. One cophylad runs over ACP is set there; one in
    * a tether terminal has Shift+Tab pressed until the footer under its prompt names the mode.
    * `dontAsk` is off the cycle, and so is any other harness's session.
@@ -3362,8 +3421,9 @@ export class Sessions implements SessionHost {
    * words are typed, and so are a leader's (`from: lead`: the chat's or an agent's that the
    * user made the session's leader); into a Muse session in one, everyone's are, as Muse has no
    * other way in. A session cophylad runs headless is prompted through what runs it. Anything
-   * else goes over the harness's own channel, which a Claude session reads as another agent's
-   * message: the brain's words too, when it does not lead the session. A leader's message to a
+   * else goes over the harness's own channel: a Codex thread takes the user's words there as the
+   * user's own turn, and a Claude session reads what comes over its pipe as another agent's
+   * message, the brain's words too when it does not lead the session. A leader's message to a
    * Claude session cophylad cannot type into is refused, as it would arrive as another
    * agent's; an agent leader's that starts with `!` too, as it would run a shell command there.
    * One that starts with `/` runs as the user's slash command would.
@@ -3421,9 +3481,13 @@ export class Sessions implements SessionHost {
       return { status: "queued", ref };
     }
     const ref = `cophylad-${ulid(this.now())}`;
-    // An agent's envelope names its sender, so it needs no prefix of cophylad's.
-    const body = agent ? wire : `${SEND_PREFIX}\n${text}`;
-    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}) });
+    // An agent's envelope names its sender, so it needs no prefix of cophylad's. Nor do the
+    // user's words into a Codex thread, a leader's among them: its app-server takes them as the
+    // user's own turn, as if typed there. Over Claude's pipe they reach the model as another
+    // session's message, and the brain's are its own, so there the prefix says whose they are.
+    const plain = !agent && adapter.harness === "codex" && opts.from !== "brain";
+    const body = agent || plain ? wire : `${SEND_PREFIX}\n${text}`;
+    const pending = this.injections.add({ ref, session: rec.session.id, harness: adapter.harness, text, body, at: this.now(), ...(agent ? { agent } : {}), ...(wrapped?.more ? { more: wrapped.more } : {}), ...(lead ? { lead } : {}), ...(plain ? { plain: true } : {}) });
     try {
       const r = await adapter.send(rec, body, ref);
       this.log.info("message sent", { session: id, ref, status: r.status });
@@ -3535,10 +3599,17 @@ export class Sessions implements SessionHost {
    * user's and would go along with it. A busy session is typed into anyway: the harness queues
    * what is sent while it works. Then the message is pasted, Enter pressed on its own, and its
    * landing awaited; when the text still sits in the prompt, Enter is pressed once more.
+   *
+   * With `[sessions].type_into_busy` the prompt need not show empty (`mayTypeOver`), and with
+   * no ask open a message waits for it at most `TYPE_HELD_MS`, then is typed, and what held it
+   * is logged.
    */
   private async typeNow(rec: LiveRecord, text: string, ref: string, agent?: Wrapped, lead?: LeadInfo): Promise<void> {
     const tether = this.deps.tether!;
-    const deadline = this.now() + this.config.hook_timeout_s * 1000;
+    const since = this.now();
+    const deadline = since + this.config.hook_timeout_s * 1000;
+    const heldMs = this.deps.typeWaits?.heldMs ?? TYPE_HELD_MS;
+    let askLogged = false;
     let term: TerminalRef | undefined;
     for (;;) {
       // Not in the middle of Shift+Tab presses, whose passing modes the turn would start in.
@@ -3547,16 +3618,44 @@ export class Sessions implements SessionHost {
       term = rec.session.native.terminal;
       if (!term) throw new Error("the session's terminal is gone");
       const asking = (rec.held !== undefined && !rec.held.settled) || rec.inputAsk !== undefined;
-      if (!asking && this.promptOf(rec, await tether.screen(term)) === "") break;
+      const prompt = this.promptOf(rec, await tether.screen(term));
+      if (!asking && (prompt === "" || (this.config.type_into_busy && this.mayTypeOver(rec, prompt, since)))) break;
+      if (this.config.type_into_busy && this.now() - since > heldMs) {
+        if (!asking) {
+          this.log.warn("message typed after waiting for the prompt", { session: rec.session.id, ref, status: rec.session.status, prompt: prompt === undefined ? "<none on screen>" : prompt.slice(0, 80) });
+          break;
+        }
+        if (!askLogged) {
+          askLogged = true;
+          this.log.info("message waits for an open ask", { session: rec.session.id, ref, held: rec.held !== undefined && !rec.held.settled, inputAsk: rec.inputAsk !== undefined });
+        }
+      }
       if (this.now() > deadline) throw new Error("the session's prompt was never free to type into");
       await sleep(TYPE_POLL_MS);
     }
     const at = term;
     this.injections.add({ ref, session: rec.session.id, harness: rec.session.harness as AttachedHarness, text: agent?.text ?? text, body: text, at: this.now(), typed: true, ...(agent ? { agent: agent.info } : {}), ...(agent?.more ? { more: agent.more } : {}), ...(lead ? { lead } : {}) });
     await submit(await tether.client(at.host), at.id, text);
+    rec.lastTyped = text;
     this.log.info("message typed", { session: rec.session.id, ref, terminal: at.id });
     // The next message waits only for the prompt to be free; this one's landing is watched apart.
     void this.watchTyped(rec, at, text, ref);
+  }
+
+  /**
+   * With `[sessions].type_into_busy`, whether a prompt that does not show empty is typed into
+   * all the same: a busy session with no prompt on screen (tool output or a small terminal hides
+   * it), whose CLI queues the message itself; any session whose terminal still shows no prompt
+   * once the message has waited `TYPE_NO_PROMPT_MS` (a terminal met again after a restart is
+   * blank until its CLI redraws, and an idle one does not); and a busy session whose prompt
+   * holds only the message typed last, which the CLI keeps there until its turn ends and takes
+   * with the next.
+   */
+  private mayTypeOver(rec: LiveRecord, prompt: string | undefined, since: number): boolean {
+    const busy = rec.session.status === "busy";
+    if (prompt === undefined) return busy || this.now() - since > (this.deps.typeWaits?.noPromptMs ?? TYPE_NO_PROMPT_MS);
+    const last = rec.lastTyped?.replace(/\s+/g, " ").trim().slice(0, 40);
+    return busy && last !== undefined && last !== "" && prompt.replace(/\s+/g, " ").includes(last);
   }
 
   /**
@@ -3670,8 +3769,9 @@ export class Sessions implements SessionHost {
     } else if (p.lead) {
       // The user's words, sent by their leader: what the session is for is the user's to say, not its leader's.
       this.event(rec, "user_turn", leadTurn(p.lead, p.text, p.ref, promptId));
-    } else if (p.typed) {
-      this.event(rec, "user_turn", { text: capText(p.text), source: "typed", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
+    } else if (p.typed || p.plain) {
+      // The user's own turn: typed into its terminal, or given to a Codex thread as typed there.
+      this.event(rec, "user_turn", { text: capText(p.text), source: p.typed ? "typed" : "sent", ref: p.ref, ...(promptId !== undefined ? { promptId } : {}) });
       // A slash command the CLI runs itself (`/clear`) says nothing of what the session is for.
       if (rec.session.intent === undefined && p.text.trim() && !p.text.trimStart().startsWith("/")) this.patch(rec, { intent: oneLine(p.text) });
     } else {

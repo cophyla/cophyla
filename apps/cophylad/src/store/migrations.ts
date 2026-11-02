@@ -397,4 +397,8 @@ export const MIGRATIONS: string[] = [
     offset INTEGER NOT NULL
   );
   `,
+  // 15: the chat's history pages back across threads by time
+  `
+  CREATE INDEX messages_at ON messages(at);
+  `,
 ];

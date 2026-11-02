@@ -99,11 +99,28 @@ export const SessionsConfig = z.object({
    */
   launch: z.enum(["terminal", "acp"]).default("terminal"),
   /**
+   * The status line in the Claude sessions cophylad starts. Off is for Windows, where every run
+   * of one starts Git Bash and each program Git Bash starts can leak kernel memory until a
+   * reboot. Claude has no switch for the status line alone, so such a session leaves the
+   * profile's user scope out (`--setting-sources` without `user`): cophylad's settings file
+   * carries the profile's `settings.json` less its status line, and `--mcp-config` its
+   * user-scope MCP servers, but the user's CLAUDE.md, skills, agents and commands are not
+   * loaded. Project and local scope, and auto-memory, are.
+   */
+  claude_status_line: z.boolean().default(true),
+  /**
    * Retired: whether the brain's messages to a session in tether were typed as the user's.
    * Leaders say it now (see `leaders/`): the primary reads `typed` once, as the chat leading
    * every agent, and nothing else reads it. Still parsed, so an old config loads.
    */
   brain_sends: z.enum(["pipe", "typed"]).default("pipe"),
+  /**
+   * A message typed into a session in tether waits for the prompt to show empty. On, it is also
+   * typed into a busy session whose prompt is not on screen or holds only the message typed
+   * last, into a terminal that has shown no prompt for 5 s, and, with no ask open, into one
+   * whose prompt has not come free in 30 s, which types over what the prompt holds.
+   */
+  type_into_busy: z.boolean().default(false),
   /**
    * A Claude CLI that goes on to another thread in a terminal (`/resume`) leaves the terminal on
    * the thread it left. On, the thread it runs now takes the terminal, and the one left, when it
@@ -807,6 +824,8 @@ claude_hook_grace_ms = 600000 # a Claude session known only from its hooks ends 
 install_hooks = true       # write cophylad's hooks into each profile at start
 discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus CLAUDE_CONFIG_DIR and CODEX_HOME when they name another
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
+type_into_busy = false     # true: type into a busy session without waiting for an empty prompt; after 30 s with no ask open, type anyway
+claude_status_line = true  # false: Claude sessions cophylad starts run no status line (each run starts Git Bash on Windows), and so skip the user's CLAUDE.md, skills, agents and commands
 resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.

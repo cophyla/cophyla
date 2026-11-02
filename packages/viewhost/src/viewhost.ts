@@ -89,6 +89,8 @@ interface Mounted {
   frame: HTMLIFrameElement;
   bridge: Bridge;
   manifest: ViewManifest;
+  /** Where the view stands: told the line is open, or kept as it was while the host stepped away. */
+  link?: "up" | "paused";
 }
 
 /** The view the host shows from a `view.list`: the default, else the first. */
@@ -286,11 +288,14 @@ export class ViewHost {
       // the view loaded itself again: what the host laid over its last document goes
       if (loaded) this.deps.onUnmount?.();
       loaded = true;
+      const m = this.mounted;
       if (conn.connected && conn.state.hello) {
         bridge.ready(conn.state.hello);
         for (const n of this.deps.cache.replay()) bridge.fromCophylad(n);
+        if (m) m.link = "up";
       } else {
         bridge.disconnected();
+        if (m) delete m.link;
       }
     });
     container.replaceChildren(frame);
@@ -360,16 +365,36 @@ export class ViewHost {
     this.mounted?.bridge.fromCophylad(frame);
   }
 
+  /**
+   * The link's state, as the view hears it. A pause (the host stepped away and means to come
+   * back) is kept from the view: it goes on showing what it showed, and what it asks waits for
+   * the link. A hello that took the same client up again (`resumed`) ends the pause, or a move
+   * between connections, with nothing to tell: the node sends what the client missed. Any other
+   * hello is a new client, and the view hears the gap and the new line, and loads again.
+   */
   handleState(snapshot: LinkSnapshot): void {
     const m = this.mounted;
     if (!m) return;
     if (snapshot.state === "connected" && snapshot.hello) {
+      const was = m.link;
+      m.link = "up";
+      if (snapshot.hello.resumed === true && was !== undefined) {
+        m.bridge.resume();
+        return;
+      }
+      if (was === "paused") m.bridge.disconnected();
       m.bridge.ready(snapshot.hello);
       for (const n of this.deps.cache.replay()) m.bridge.fromCophylad(n);
       void this.reloadIfStale(m.manifest);
-    } else {
-      m.bridge.disconnected();
+      return;
     }
+    if (snapshot.paused && m.link !== undefined) {
+      m.link = "paused";
+      m.bridge.hold();
+      return;
+    }
+    delete m.link;
+    m.bridge.disconnected();
   }
 
   /**

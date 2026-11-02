@@ -7,8 +7,8 @@
 // the real two.
 
 import { describe, expect, test } from "bun:test";
-import { CoreError, DRAIN_MS, LAN_HEAD_START_MS, LinkCore, QUIET_RETRY_MS, UPGRADE_BACKOFF_MS, UPGRADE_DELAY_MS } from "../src/link-core.ts";
-import type { LinkCoreOptions, P2pDuplex, P2pTransport, Timers } from "../src/link-core.ts";
+import { BACK_PROBE_MS, CoreError, DRAIN_MS, LAN_HEAD_START_MS, LINGER_MS, LinkCore, QUIET_RETRY_MS, UPGRADE_BACKOFF_MS, UPGRADE_DELAY_MS } from "../src/link-core.ts";
+import type { LinkCoreOptions, P2pDuplex, P2pTransport, PathMemory, PathStore, Timers } from "../src/link-core.ts";
 import type { Signalling } from "../src/direct.ts";
 import { STORAGE_KEY, readCredential, syncStore, writeCredential } from "../src/pairing.ts";
 import type { Credential, Storage } from "../src/pairing.ts";
@@ -978,3 +978,278 @@ describe("the data channel", () => {
     expect(d.closed?.reason).toBe("the link moved");
   });
 });
+
+// --- out of sight, and back ------------------------------------------------------------------------
+
+describe("out of sight", () => {
+  const paired: Credential = { token: "t", controller: "ctl_1", name: "Pixel", lan: ["wss://node.test/ws/client"], relay: ACCESS };
+  const away = (d: FakeDuplex) => d.sent.filter((f) => f["method"] === "client.away");
+  const answer = (d: FakeDuplex, frame: Record<string, unknown>) => d.deliver({ jsonrpc: "2.0", id: frame["id"], result: {} });
+
+  /** Said hello on the LAN, or on the relay when the LAN is out of reach. */
+  async function linked(opts: { relay?: boolean; extra?: Partial<LinkCoreOptions> } = {}) {
+    const s = await setup({ credential: paired, extra: opts.extra ?? {} });
+    if (opts.relay) s.lan.reachable = false;
+    const frames: string[] = [];
+    await s.core.listen<string>("cophylad:frame", (t) => frames.push(t));
+    const snaps: { state: string; paused?: true }[] = [];
+    await s.core.listen<{ state: string; paused?: true }>("cophylad:state", (snap) => snaps.push(snap));
+    s.core.connect();
+    await tick();
+    await tick();
+    const d = (opts.relay ? s.relay : s.lan).opened.at(-1)!;
+    d.deliver(helloOk(String(d.last((f) => f["method"] === "hello")!["id"])));
+    return { ...s, d, frames, snaps };
+  }
+
+  test("the connection is kept, the node told the phone is away; back, it asks for what was held on the same one", async () => {
+    const { core, d, lan } = await linked();
+    core.background();
+    expect(d.closed).toBeUndefined();
+    expect(away(d)).toEqual([{ jsonrpc: "2.0", id: "d1", method: "client.away", params: { away: true } }]);
+    answer(d, away(d)[0]!);
+    core.foreground();
+    expect(away(d)[1]).toMatchObject({ method: "client.away", params: { away: false } });
+    answer(d, away(d)[1]!);
+    await tick();
+    expect(core.snapshot.state).toBe("connected");
+    expect(lan.opened).toHaveLength(1);
+    // a view may not say it
+    await expect(core.invoke("cophylad_send", { frame: { jsonrpc: "2.0", id: 1, method: "client.away", params: { away: true } } })).rejects.toThrow(/denied/);
+  });
+
+  test("out of sight the link does not move: no data channel, no LAN tried; back, both may again", async () => {
+    const p2p = new FakeP2pForAway();
+    const { core, d, timers, lan } = await linked({ relay: true, extra: { p2p } });
+    core.background();
+    answer(d, away(d)[0]!);
+    timers.advance(UPGRADE_DELAY_MS + 60_000);
+    await tick();
+    expect(p2p.opens).toBe(0);
+    expect(lan.tries).toBe(1);
+    core.foreground();
+    answer(d, away(d)[1]!);
+    await tick();
+    timers.advance(UPGRADE_DELAY_MS);
+    expect(p2p.opens).toBe(1);
+  });
+
+  test("past the linger the connection closes and the link is paused; back, a new one says hello naming the client it was", async () => {
+    const { core, d, lan, timers, snaps } = await linked();
+    core.background();
+    answer(d, away(d)[0]!);
+    timers.advance(LINGER_MS);
+    expect(d.closed).toBeDefined();
+    expect(core.snapshot).toMatchObject({ state: "disconnected", paused: true });
+    // nothing reconnects while out of sight
+    timers.advance(60_000);
+    await tick();
+    expect(lan.opened).toHaveLength(1);
+    core.foreground();
+    await tick();
+    await tick();
+    expect(lan.opened).toHaveLength(2);
+    // still paused as it opens: the host keeps the view as it was
+    expect(snaps.at(-1)).toMatchObject({ state: "connecting", paused: true });
+    expect(lan.opened[1]!.last((f) => f["method"] === "hello")).toMatchObject({ params: { resume: "cli_1" } });
+    expect(lan.opened[1]!.last((f) => f["method"] === "hello")!["params"]).not.toHaveProperty("move");
+    lan.opened[1]!.deliver(helloOk(String(lan.opened[1]!.last((f) => f["method"] === "hello")!["id"])));
+    expect(core.snapshot.state).toBe("connected");
+    expect(core.snapshot.paused).toBeUndefined();
+  });
+
+  test("a node that does not know client.away has the connection closed as before", async () => {
+    const { core, d } = await linked();
+    core.background();
+    d.deliver({ jsonrpc: "2.0", id: "d1", error: { code: -32601, message: "unknown method client.away", data: { code: "unsupported", message: "unknown method client.away" } } });
+    await tick();
+    expect(d.closed).toBeDefined();
+    expect(core.snapshot).toMatchObject({ state: "disconnected", paused: true });
+  });
+
+  test("back, a connection that does not answer is taken as gone: a new one opens at once, resuming", async () => {
+    const { core, d, lan, timers } = await linked();
+    core.background();
+    answer(d, away(d)[0]!);
+    core.foreground();
+    timers.advance(BACK_PROBE_MS);
+    await tick();
+    expect(d.closed?.code).toBe(4000);
+    await tick();
+    await tick();
+    expect(lan.opened).toHaveLength(2);
+    expect(lan.opened[1]!.last((f) => f["method"] === "hello")).toMatchObject({ params: { resume: "cli_1" } });
+  });
+
+  test("a connection that closes out of sight leaves the link paused until the app is back", async () => {
+    const { core, d, lan, timers } = await linked();
+    core.background();
+    answer(d, away(d)[0]!);
+    d.close(1006, "gone");
+    expect(core.snapshot).toMatchObject({ state: "disconnected", paused: true });
+    timers.advance(30_000);
+    await tick();
+    expect(lan.opened).toHaveLength(1);
+    core.foreground();
+    await tick();
+    await tick();
+    expect(lan.opened).toHaveLength(2);
+  });
+
+  test("a pause and its reconnect say paused; a lost connection does not", async () => {
+    const { core, lan, snaps } = await linked();
+    core.suspend();
+    expect(snaps.at(-1)).toMatchObject({ state: "disconnected", paused: true });
+    core.resume();
+    await tick();
+    expect(snaps.at(-1)).toMatchObject({ state: "connecting", paused: true });
+    await tick();
+    const d = lan.opened.at(-1)!;
+    d.deliver(helloOk(String(d.last((f) => f["method"] === "hello")!["id"])));
+    d.close(1006, "gone");
+    expect(snaps.at(-1)!.state).toBe("disconnected");
+    expect(snaps.at(-1)!.paused).toBeUndefined();
+  });
+});
+
+describe("the way that worked, by network", () => {
+  const paired: Credential = { token: "t", controller: "ctl_1", name: "Pixel", lan: ["wss://node.test/ws/client"], relay: ACCESS };
+
+  test("on the network where the relay carried it, the relay opens at once beside the LAN; on another the LAN has its head start", async () => {
+    let network = "net-a";
+    const kept: PathMemory[] = [];
+    const paths: PathStore = { read: () => kept.at(-1), write: (p) => void kept.push(p) };
+    const { core, lan, relay, timers } = await setup({ credential: paired, extra: { network: async () => network, paths } });
+    lan.hold = true;
+    core.connect();
+    await tick();
+    // the LAN silent: its head start passes, then the relay carries it
+    timers.advance(LAN_HEAD_START_MS);
+    await tick();
+    const r = relay.opened.at(-1)!;
+    r.deliver(helloOk(String(r.last((f) => f["method"] === "hello")!["id"])));
+    expect(kept.at(-1)).toEqual({ network: "net-a", via: "relay" });
+    lan.refuse("silent");
+    // back on the same network: the relay is opened with the LAN, no head start
+    core.suspend();
+    const before = relay.tries;
+    core.resume();
+    await tick();
+    await tick();
+    expect(relay.tries).toBe(before + 1);
+    // on another network: the LAN first again
+    core.suspend();
+    network = "net-b";
+    const tries = relay.tries;
+    core.resume();
+    await tick();
+    await tick();
+    expect(relay.tries).toBe(tries);
+    timers.advance(LAN_HEAD_START_MS);
+    await tick();
+    expect(relay.tries).toBe(tries + 1);
+  });
+});
+
+describe("moving the link, the same client", () => {
+  const paired: Credential = { token: "t", controller: "ctl_1", name: "Pixel", lan: ["wss://node.test/ws/client"], relay: ACCESS };
+
+  test("the move's hello names the client and says it moves; what the old connection carries is heard first, the new one's after client.moved", async () => {
+    const p2p = new FakeP2pForAway(true);
+    const s = await setup({ credential: paired, extra: { p2p } });
+    s.lan.reachable = false;
+    const frames: string[] = [];
+    await s.core.listen<string>("cophylad:frame", (t) => frames.push(t));
+    s.core.connect();
+    await tick();
+    await tick();
+    const r = s.relay.opened.at(-1)!;
+    r.deliver(helloOk(String(r.last((f) => f["method"] === "hello")!["id"])));
+    s.timers.advance(UPGRADE_DELAY_MS);
+    const d = p2p.answer();
+    await tick();
+    expect(d.last((f) => f["method"] === "hello")).toMatchObject({ params: { resume: "cli_1", move: true } });
+    const ok = helloOk("p4");
+    d.deliver({ ...ok, result: { ...ok.result, resumed: true } });
+    expect(s.core.snapshot).toMatchObject({ state: "connected", via: "p2p" });
+    d.deliver({ jsonrpc: "2.0", method: "ask.state", params: { n: 3 } });
+    r.deliver({ jsonrpc: "2.0", method: "ask.state", params: { n: 1 } });
+    r.deliver({ jsonrpc: "2.0", method: "ask.state", params: { n: 2 } });
+    expect(frames.map((f) => (JSON.parse(f) as { params: { n: number } }).params.n)).toEqual([1, 2]);
+    r.deliver({ jsonrpc: "2.0", method: "client.moved", params: {} });
+    d.deliver({ jsonrpc: "2.0", method: "ask.state", params: { n: 4 } });
+    expect(frames.map((f) => (JSON.parse(f) as { params: { n: number } }).params.n)).toEqual([1, 2, 3, 4]);
+  });
+
+  test("an old connection that never says it heard the move holds the new one's notifications no longer than the drain", async () => {
+    const p2p = new FakeP2pForAway(true);
+    const s = await setup({ credential: paired, extra: { p2p } });
+    s.lan.reachable = false;
+    const frames: string[] = [];
+    await s.core.listen<string>("cophylad:frame", (t) => frames.push(t));
+    s.core.connect();
+    await tick();
+    await tick();
+    const r = s.relay.opened.at(-1)!;
+    r.deliver(helloOk(String(r.last((f) => f["method"] === "hello")!["id"])));
+    s.timers.advance(UPGRADE_DELAY_MS);
+    const d = p2p.answer();
+    await tick();
+    const ok = helloOk("p4");
+    d.deliver({ ...ok, result: { ...ok.result, resumed: true } });
+    d.deliver({ jsonrpc: "2.0", method: "ask.state", params: { n: 1 } });
+    expect(frames).toHaveLength(0);
+    s.timers.advance(DRAIN_MS);
+    expect(frames).toHaveLength(1);
+  });
+});
+
+describe("a move the link did not take", () => {
+  const paired: Credential = { token: "t", controller: "ctl_1", name: "Pixel", lan: ["wss://node.test/ws/client"], relay: ACCESS };
+
+  test("the node moved the client but its answer never came: the old connection hears client.moved, and a new one takes the client up", async () => {
+    const p2p = new FakeP2pForAway(true);
+    const s = await setup({ credential: paired, extra: { p2p } });
+    s.lan.reachable = false;
+    s.core.connect();
+    await tick();
+    await tick();
+    const r = s.relay.opened.at(-1)!;
+    r.deliver(helloOk(String(r.last((f) => f["method"] === "hello")!["id"])));
+    s.timers.advance(UPGRADE_DELAY_MS);
+    p2p.answer();
+    await tick();
+    // the channel's answer is lost; the link stays on the relay
+    s.timers.advance(10_000);
+    expect(s.core.snapshot.via).toBe("relay");
+    r.deliver({ jsonrpc: "2.0", method: "client.moved", params: {} });
+    expect(r.closed?.code).toBe(4000);
+    s.timers.advance(2000);
+    await tick();
+    await tick();
+    const again = s.relay.opened.at(-1)!;
+    expect(again).not.toBe(r);
+    expect(again.last((f) => f["method"] === "hello")).toMatchObject({ params: { resume: "cli_1" } });
+  });
+});
+
+/** A data channel for these tests: counts its opens, and answers the last when asked. */
+class FakeP2pForAway implements P2pTransport {
+  readonly label = "direct";
+  opens = 0;
+  private pending?: (d: P2pDuplex) => void;
+  private hold: boolean;
+  constructor(hold = false) {
+    this.hold = hold;
+  }
+  open(): Promise<P2pDuplex> {
+    this.opens++;
+    if (!this.hold) return new Promise<P2pDuplex>(() => {});
+    return new Promise<P2pDuplex>((resolve) => (this.pending = resolve));
+  }
+  answer(): FakeDuplex & P2pDuplex {
+    const d = Object.assign(new FakeDuplex(), { onfailing: null, path: "direct" as const }) as FakeDuplex & P2pDuplex;
+    this.pending!(d);
+    return d;
+  }
+}

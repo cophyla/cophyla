@@ -222,12 +222,12 @@ describe("pairing", () => {
 });
 
 describe("the controller listener", () => {
-  test("serves a view under a ticket with the frame policy, and forgets it when the client goes", async () => {
+  test("serves a view under a ticket with the frame policy, keeps it while the phone is held for its return, and forgets it when the client goes", async () => {
     const { d, ui, wss, origin } = await start();
     const offer = await ui.request<{ code: string }>("pair.start", {});
     const p = await phone(wss);
-    const claimed = await p.request<{ token: string }>("pair.claim", { code: offer.code, name: "Pixel" });
-    await p.request("hello", { token: claimed.token, kind: "controller", audio: { in: true, out: true } });
+    const claimed = await p.request<{ token: string; client: { id: string } }>("pair.claim", { code: offer.code, name: "Pixel" });
+    const hello = await p.request<{ client: { id: string } }>("hello", { token: claimed.token, kind: "controller", audio: { in: true, out: true } });
 
     const views = await p.request<{ views: ViewManifest[] }>("view.list", {});
     const id = views.views.find((v) => v.default)!.id;
@@ -262,7 +262,12 @@ describe("the controller listener", () => {
     const climb = await fetch(staged.base + "..%2f..%2fconfig.toml", { tls: { rejectUnauthorized: false } } as never);
     expect(climb.status).toBe(404);
 
+    // the phone's socket goes: held for its return, its view still staged for it
     p.close();
+    await waitFor(() => d.clients.held(hello.client.id) === "parked");
+    expect(d.tickets.size).toBe(1);
+    // let go (here by a revoke), the client goes and its ticket with it
+    await ui.request("controller.revoke", { id: claimed.client.id });
     await waitFor(() => d.tickets.size === 0);
   });
 

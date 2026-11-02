@@ -333,6 +333,9 @@ function closed(k: Kit, id: string): void {
   writeJson(path, rows.map((r) => (r.sessionId === id ? { ...r, open: false, updatedAt: iso(Date.now()) } : r)));
 }
 
+/** The last time a log was stamped: each growth stamps later, even two in one millisecond. */
+let stamped = 0;
+
 /** More of a session's view, and its log written. */
 function grow(k: Kit, id: string, more: ViewEvent[]): void {
   const path = join(k.data, "muse", "views", `${id}.json`);
@@ -340,7 +343,9 @@ function grow(k: Kit, id: string, more: ViewEvent[]): void {
   writeJson(path, [...events, ...more]);
   const log = logPath(k.data, id);
   appendFileSync(log, "{}\n");
-  const t = new Date(Date.now() + 1000);
+  // the adapter reads a log only when its mtime moved past the last read's
+  stamped = Math.max(Date.now() + 1000, stamped + 1);
+  const t = new Date(stamped);
   utimesSync(log, t, t);
 }
 
