@@ -35,6 +35,7 @@ describe("config", () => {
       launch: "terminal",
       claude_status_line: true,
       brain_sends: "pipe",
+      resume_takes_terminal: false,
       type_into_busy: false,
     });
     expect(c.tether).toEqual({ idle_exit_s: 600, window: "auto", window_on_start: false, profiles: true, on_path: true });

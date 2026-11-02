@@ -121,6 +121,12 @@ export const SessionsConfig = z.object({
    * whose prompt has not come free in 30 s, which types over what the prompt holds.
    */
   type_into_busy: z.boolean().default(false),
+  /**
+   * A Claude CLI that goes on to another thread in a terminal (`/resume`) leaves the terminal on
+   * the thread it left. On, the thread it runs now takes the terminal, and the one left, when it
+   * has no transcript (the new id the CLI started under), is ended; its process is not touched.
+   */
+  resume_takes_terminal: z.boolean().default(false),
 });
 export type SessionsConfig = z.infer<typeof SessionsConfig>;
 
@@ -820,6 +826,7 @@ discover = true            # scan ~/.claude, ~/.codex and ~/.config/muse, plus C
 launch = "terminal"        # where a session cophylad starts runs: "terminal" (in tether when found, shown in the apps) or "acp" (no window)
 type_into_busy = false     # true: type into a busy session without waiting for an empty prompt; after 30 s with no ask open, type anyway
 claude_status_line = true  # false: Claude sessions cophylad starts run no status line (each run starts Git Bash on Windows), and so skip the user's CLAUDE.md, skills, agents and commands
+resume_takes_terminal = false # true: a Claude that /resumes another thread in a terminal takes the terminal to that thread
 
 # tether: the pseudo-terminal host sessions run in, so what the user sends is typed as theirs.
 [tether]
