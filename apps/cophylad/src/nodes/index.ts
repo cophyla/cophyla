@@ -1934,7 +1934,9 @@ export class Nodes {
   private accountStance(): Stance {
     if (this.role.hands) return { kind: "hands" };
     if (this.joining || this.stopped || this.role.is("claiming", "promoting", "stepping_down")) return { kind: "busy" };
-    if (!this.membership) return { kind: "alone" };
+    // alone in a cluster of its own whatever its role: a machine an older daemon left seeking the
+    // account's primary, which never gave it a grant, is one, and joins as any machine alone does
+    if (!this.membership || this.aloneHere()) return { kind: "alone" };
     if (this.role.role !== "primary") return { kind: "follows" };
     const me = this.deps.identity.id;
     const members: Member[] = [];
@@ -1952,10 +1954,13 @@ export class Nodes {
    */
   private async accountJoinSelf(invite: string, how: "alone" | "leads" | "follows"): Promise<Joined> {
     const m = this.membership;
-    const saved = this.role.role === "primary" ? this.saveBeforeJoin() : undefined;
+    // what the machine had is its own when it is a primary, or founded its cluster and was left seeking another
+    const saved = this.role.role === "primary" || m?.via === "self" ? this.saveBeforeJoin() : undefined;
     if (how === "leads") this.letMembersGo();
     const keep: JoinOpts = how === "follows" && m ? { ...(m.paths ? { paths: m.paths } : {}), ...(m.answerHere ? { answerHere: true } : {}), ...(m.askPrimary ? { askPrimary: true } : {}) } : {};
-    const r = await this.join(invite, { ...keep, ...(how !== "alone" ? { moving: true } : {}) });
+    // a machine that is not the primary of what it is in lets its old seek and link go as it joins
+    const moving = how !== "alone" || (m !== undefined && this.role.role !== "primary");
+    const r = await this.join(invite, { ...keep, ...(moving ? { moving: true } : {}) });
     return { primary: r.primary, ...(saved ? { saved } : {}) };
   }
 

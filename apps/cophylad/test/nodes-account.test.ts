@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { runCommand } from "../src/cli.ts";
 import { paths } from "../src/config/load.ts";
 import { readLinkFile } from "../src/grants/link-file.ts";
+import { Store } from "../src/store/index.ts";
 import { FakeServer } from "./fakes/server.ts";
 import { sleep, tempHome, waitFor } from "./helpers.ts";
 import type { TestClient } from "./helpers.ts";
@@ -181,6 +182,34 @@ describe("the account's machines", () => {
     expect(back.nodes.self().account).toMatchObject({ state: "joined" });
     expect(fake.joins.at(-1)).toMatchObject({ by: memberId, node: memberId, ok: true });
   }, 60_000);
+
+  test("a machine an older version left stuck (it chose the account's primary, which never gave it a grant) joins once it runs this one", async () => {
+    fake = new FakeServer({ leaseMs: 5000, closeGraceMs: 300 });
+    const desk = await machine(fake);
+    await waitFor(() => fake!.primaryOf()?.primary === desk.d.identity.id, 5000);
+    // a machine of its own cluster, signed out, with a word of its own in its chat
+    const lh = cloudHome(fake, false);
+    const first = await machine(fake, { home: lh });
+    const laptopId = first.d.identity.id;
+    const ownCluster = first.d.nodes.member()!.cluster;
+    await first.d.stop();
+    daemons.splice(daemons.indexOf(first.d), 1);
+    // what the older version left: the account's primary kept as its choice, and an account token
+    const store = new Store(paths(lh.home).db);
+    store.migrate();
+    store.meta.set("chosen_primary", desk.d.identity.id);
+    store.close();
+    writeFileSync(paths(lh.home).accountToken, fake.mintToken() + "\n", { mode: 0o600 });
+    const laptop = await machine(fake, { home: lh });
+    expect(laptop.d.identity.id).toBe(laptopId);
+    expect(laptop.d.nodes.member()).toMatchObject({ cluster: ownCluster, via: "self" });
+    // it starts seeking the desk, as it did (never claiming a role of its own), and joins it this time
+    expect(laptop.d.nodes.transitions.some((t) => t.from === "claiming")).toBe(false);
+    await waitFor(() => laptop.d.nodes.linked() && laptop.d.nodes.primaryId() === desk.d.identity.id, 20_000);
+    expect(laptop.d.nodes.member()).toMatchObject({ cluster: desk.d.nodes.member()!.cluster, via: "join", role: "full" });
+    expect(laptop.d.nodes.self().account).toMatchObject({ state: "joined", primary: desk.d.identity.name });
+    expect(existsSync(laptop.d.nodes.self().account!.saved!)).toBe(true);
+  }, 40_000);
 
   test("a machine the user took out stays out: it left, and the account does not pull it back until Join them", async () => {
     fake = new FakeServer({ leaseMs: 5000, closeGraceMs: 300 });

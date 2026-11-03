@@ -952,7 +952,8 @@ with the scheduler and the hooks inactive.
 Signed in, a machine needs no invite to join its own other machines: the machines of one
 account are one cluster, the one the server's registry names in every answer (its lease's
 holders'), and a machine in another (a new install starts a cluster of its own) joins it on
-its own (`nodes/account.ts`). It never steps down to that holder, which it holds no key for;
+its own (`nodes/account.ts`), and so does one an older version left seeking that primary,
+alone in a cluster of its own. It never steps down to that holder, which it holds no key for;
 it asks the server with `account.join`, the server asks the account's primary
 (`account.invite`), which mints a full invite for that machine alone, good for five minutes,
 with no one asked (the account is the trust, as for a phone signing in), and the machine
