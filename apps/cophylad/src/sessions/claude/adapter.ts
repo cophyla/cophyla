@@ -494,6 +494,8 @@ export class ClaudeAdapter implements HarnessAdapter {
     if (!path) return;
     let tail = rec.tail;
     if (!tail || tail.path !== path) {
+      // A transcript it went back to is read through this tail, from its start: none read on as left behind.
+      this.closing = this.closing.filter((c) => c.rec !== rec || c.tail?.path !== path);
       tail = this.host.openTail(rec, path);
       // A name the user gave outlives a cleared context: the host keeps it on the parser it drops.
       const named = (rec.parser as { named?: boolean } | undefined)?.named === true;
@@ -784,8 +786,10 @@ export class ClaudeAdapter implements HarnessAdapter {
         const after = statsFor(c.state, this.price);
         const more = statsDelta(after, c.counted);
         c.counted = after;
-        // What the old transcript turned out to have spent is part of the base the new one counts on from.
+        // What the old transcript turned out to have spent is part of the base the new one counts on from,
+        // and of what its conversation had spent, kept for a return to it.
         c.rec.statsBase = plusStats(c.rec.statsBase, more);
+        for (const left of c.rec.left?.values() ?? []) if (left.path === c.tail.path && left.spent) left.spent = plusStats(left.spent, more);
         this.host.patch(c.rec, { stats: plusStats(c.rec.session.stats, more) }, now);
       }
       return !c.state.settled && now < c.until;
@@ -833,7 +837,10 @@ export class ClaudeAdapter implements HarnessAdapter {
   }
 
   onHook(hook: NormalisedHook, rec: SessionRecord | undefined, meta: HookMeta): SessionRecord | undefined {
-    const found = rec ?? this.resolve(hook, meta);
+    // A conversation the record left by a clear starts again (`/resume`): the registry says
+    // which process runs it, and so which record it is now. Unlisted yet, the record stands.
+    const again = rec && hook.name === "SessionStart" && hook.sessionId !== rec.session.native.id ? this.listed(hook.sessionId) : undefined;
+    const found = (again && again !== "none" ? this.meet(again.live, again.profile, again.running, this.host.now(), hook.transcriptPath) : undefined) ?? rec ?? this.resolve(hook, meta);
     if (!found) return undefined;
     found.lastHookAt = this.host.now();
     this.findProcess(found, meta);
@@ -905,17 +912,25 @@ export class ClaudeAdapter implements HarnessAdapter {
       });
   }
 
-  private resolve(hook: NormalisedHook, meta: HookMeta): SessionRecord | undefined {
-    // A hook can arrive before the next registry poll: read the registries now.
+  /**
+   * A session id's entry in the registries as they are now, with its profile and the ids running
+   * there; `none` for a spare's or a window's on the agents screen, which are no session.
+   */
+  private listed(sessionId: string): { live: ClaudeLive; profile: HarnessProfile; running: Set<string> } | "none" | undefined {
     for (const profile of this.profiles) {
       const entries = classify(readRegistry(join(profile.configDir, "sessions"), this.isAlive));
-      // A spare's own start, or a window on the agents screen: no session.
-      if ([...entries.spares, ...entries.parked].some((l) => l.sessionId === hook.sessionId)) return undefined;
-      const live = entries.sessions.find((l) => l.sessionId === hook.sessionId);
-      if (!live) continue;
-      const running = new Set(entries.sessions.map((e) => e.sessionId));
-      return this.meet(live, profile, running, this.host.now(), hook.transcriptPath);
+      if ([...entries.spares, ...entries.parked].some((l) => l.sessionId === sessionId)) return "none";
+      const live = entries.sessions.find((l) => l.sessionId === sessionId);
+      if (live) return { live, profile, running: new Set(entries.sessions.map((e) => e.sessionId)) };
     }
+    return undefined;
+  }
+
+  private resolve(hook: NormalisedHook, meta: HookMeta): SessionRecord | undefined {
+    // A hook can arrive before the next registry poll: read the registries now.
+    const entry = this.listed(hook.sessionId);
+    if (entry === "none") return undefined;
+    if (entry) return this.meet(entry.live, entry.profile, entry.running, this.host.now(), hook.transcriptPath);
     // Not in any registry. The agents screen and `claude attach` register nothing, yet send a
     // Notification (a job done) and a SessionEnd of their own: neither is a conversation.
     if (hook.name === "Notification" || hook.name === "SessionEnd") return undefined;

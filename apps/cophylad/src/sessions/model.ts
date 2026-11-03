@@ -55,6 +55,11 @@ export interface SessionRecord {
   ancestorsChecked?: boolean;
   /** Claude: what the session had spent under the ids it had before its context was cleared; its stats count on from here. */
   statsBase?: SessionStats;
+  /**
+   * Claude: the conversations it left as its context was cleared, by session id, the latest
+   * last: a process that goes back to one (`/resume`) has the record pick it up from there.
+   */
+  left?: Map<string, LeftConversation>;
   /** Claude: when the last hook came, which keeps a session with no known process alive for a grace period. */
   lastHookAt?: number;
   /**
@@ -73,6 +78,16 @@ export interface SessionRecord {
   originator?: string;
   /** Codex: the sandbox its last turn ran in (`danger-full-access` with approval `never` is no prompts at all). */
   sandbox?: string;
+}
+
+/** A conversation a Claude record left by a clear, as it stood then. */
+export interface LeftConversation {
+  /** Its transcript, and where the record had recorded it up to. */
+  path?: string;
+  offset?: number;
+  /** What it had spent of the session's stats. */
+  spent?: SessionStats;
+  intent?: string;
 }
 
 export interface SessionSeed {

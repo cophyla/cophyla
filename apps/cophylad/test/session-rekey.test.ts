@@ -4,7 +4,9 @@
 // is the new conversation's: its first prompt, or the plan a clear-context row carries. The new
 // id is followed from a rewritten registry entry, or from its first hook when the old one's
 // `SessionEnd` said it was clearing. A clear with no new id ends the session once the grace
-// runs out, and a new process that reused the pid is a new session.
+// runs out, and a new process that reused the pid is a new session. A process that goes back to
+// the conversation it cleared (`/resume`) takes the record back with it, recording on where it
+// stopped and counting it once; another window resuming that conversation is a session of its own.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -82,6 +84,9 @@ describe("a session whose id changes in the same process", () => {
     // The registry still names the old id; the hook under the new one comes first.
     await mini.sessions.onHook("claude", b("b-new", "SessionStart", { source: "clear" }), { via: "http" });
     expect(mini.sessions.find("claude", "b-new")).toBe(rec);
+    expect(rec.session.native.id).toBe("b-new");
+    // A poll before the entry is rewritten: the entry lags, the process has not gone back to the old id.
+    await mini.sessions.tick();
     expect(rec.session.native.id).toBe("b-new");
     clearRegistry(registry, 400);
     writeRegistry(registry, { pid: 400, sessionId: "b-new", cwd: join(cwd, "b") });
@@ -190,6 +195,118 @@ describe("a session whose id changes in the same process", () => {
     const fresh = mini.sessions.find("claude", "d-new")!;
     expect(fresh).not.toBe(old);
     expect(old.session.native.id).toBe("d-old");
+  });
+});
+
+describe("going back to a conversation it left by a clear", () => {
+  const stamp = () => new Date().toISOString();
+  const user = (text: string) => JSON.stringify({ type: "user", message: { role: "user", content: text }, timestamp: stamp() }) + "\n";
+  const reply = (id: string) => JSON.stringify({ type: "assistant", timestamp: stamp(), message: { id, model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text: "done" }], usage: { input_tokens: 10, output_tokens: 20 } } }) + "\n";
+  const turns = (id: string, text: string) => events(id).filter((e) => e.kind === "user_turn" && (e.payload as { text: string }).text === text).length;
+
+  /** A session in its own folder that worked in `<name>-old`, then cleared to `<name>-new` and worked there. */
+  async function clearedOnce(pid: number, name: string) {
+    alive.add(pid);
+    const dir = join(cwd, name);
+    mkdirSync(dir, { recursive: true });
+    const file = (id: string) => join(dir, `${id}.jsonl`);
+    const on = (id: string, event: ClaudeHookEvent["hook_event_name"], extra: Record<string, unknown> = {}) => mini.sessions.onHook("claude", { ...hook(id, event, extra), cwd: dir, transcript_path: file(id) } as ClaudeHookEvent, { via: "http" });
+    const list = (sessionId: string, p = pid, procStart?: string) => {
+      clearRegistry(registry, p);
+      writeRegistry(registry, { pid: p, sessionId, cwd: dir, ...(procStart !== undefined ? { procStart } : {}) });
+    };
+    const [old, next] = [`${name}-old`, `${name}-new`];
+    writeFileSync(file(old), user(`work in ${old}`) + reply(`msg_${old}`));
+    list(old);
+    await mini.sessions.tick();
+    const rec = mini.sessions.find("claude", old)!;
+    await on(old, "SessionStart", { source: "startup" });
+    await mini.sessions.tick();
+    // `/clear`, and a turn in the new conversation.
+    await on(old, "SessionEnd", { reason: "clear" });
+    writeFileSync(file(next), user(`work in ${next}`) + reply(`msg_${next}`));
+    await on(next, "SessionStart", { source: "clear" });
+    list(next);
+    await mini.sessions.tick();
+    expect(rec.session.native.id).toBe(next);
+    expect(rec.session.stats?.turns).toBe(2);
+    return { rec, on, list, file, old, next };
+  }
+
+  test("its process goes back (`/resume`): the record follows it, recording on where it stopped and counting it once", async () => {
+    const { rec, on, list, file, old, next } = await clearedOnce(800, "f");
+    // Claude ends the conversation it leaves, then names the one it resumed in its entry.
+    await on(next, "SessionEnd", { reason: "resume" });
+    expect(rec.session.status).toBe("ended");
+    list(old);
+    await mini.sessions.tick();
+    expect(mini.sessions.find("claude", old)).toBe(rec);
+    expect(rec.session.native).toMatchObject({ id: old, pid: 800 });
+    expect(rec.session.status).not.toBe("ended");
+    expect(rec.session.transcript?.path).toBe(file(old));
+    // What a reopen resumes.
+    expect(mini.store.sessions.get(rec.session.id)?.native.id).toBe(old);
+    expect(mini.sessions.list().filter((s) => s.native.pid === 800)).toHaveLength(1);
+    const back = events(rec.session.id).filter((e) => e.kind === "notification" && (e.payload as { type: string }).type === "context_cleared").at(-1)!;
+    expect(back.payload).toEqual({ type: "context_cleared", from: next, to: old, resumed: true });
+    expect(rec.session.intent).toBe(`work in ${old}`);
+    // Its start's hook, after the entry, changes nothing.
+    await on(old, "SessionStart", { source: "resume" });
+    expect(rec.session.native.id).toBe(old);
+    // Its transcript goes on: what was recorded is not recorded again, and the stats count it once.
+    writeFileSync(file(old), user("and the docs") + reply("msg_f-old-2"), { flag: "a" });
+    await mini.sessions.tick();
+    expect(turns(rec.session.id, `work in ${old}`)).toBe(1);
+    expect(turns(rec.session.id, "and the docs")).toBe(1);
+    expect(rec.session.stats?.turns).toBe(3);
+    expect(rec.session.stats?.tokens).toMatchObject({ in: 30, out: 60 });
+  });
+
+  test("its start's hook before the poll: the registry, read then, says the process went back", async () => {
+    const { rec, on, list, old, next } = await clearedOnce(810, "g");
+    await on(next, "SessionEnd", { reason: "resume" });
+    list(old);
+    await on(old, "SessionStart", { source: "resume" });
+    expect(rec.session.native).toMatchObject({ id: old, pid: 810 });
+    expect(rec.session.status).not.toBe("ended");
+  });
+
+  test("its start's hook before the entry is rewritten: the record goes back once the entry names it", async () => {
+    const { rec, on, list, old, next } = await clearedOnce(820, "h");
+    await on(next, "SessionEnd", { reason: "resume" });
+    await on(old, "SessionStart", { source: "resume" });
+    await mini.sessions.tick();
+    list(old);
+    await mini.sessions.tick();
+    expect(rec.session.native).toMatchObject({ id: old, pid: 820 });
+    expect(rec.session.status).not.toBe("ended");
+    expect(mini.sessions.list().filter((s) => s.native.pid === 820)).toHaveLength(1);
+  });
+
+  test("another window resumes it while the record runs on: that is a session of its own", async () => {
+    const { rec, list, old, next } = await clearedOnce(830, "k");
+    alive.add(831);
+    list(old, 831, "999");
+    await mini.sessions.tick();
+    await mini.sessions.tick();
+    const other = mini.sessions.find("claude", old)!;
+    expect(other).not.toBe(rec);
+    expect(other.session.native).toMatchObject({ id: old, pid: 831 });
+    expect(rec.session.native).toMatchObject({ id: next, pid: 830 });
+  });
+
+  test("once the record has ended, a window that resumes it brings the record back", async () => {
+    const { rec, on, list, old, next } = await clearedOnce(840, "m");
+    await on(next, "SessionEnd", { reason: "prompt_input_exit" });
+    clearRegistry(registry, 840);
+    alive.delete(840);
+    expect(rec.session.status).toBe("ended");
+    alive.add(841);
+    list(old, 841, "777");
+    await mini.sessions.tick();
+    expect(mini.sessions.find("claude", old)).toBe(rec);
+    expect(rec.session.native).toMatchObject({ id: old, pid: 841 });
+    expect(rec.session.status).not.toBe("ended");
   });
 });
 

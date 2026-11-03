@@ -38,7 +38,7 @@ import type { FSWatcher } from "node:fs";
 import { copyFileSync, cpSync, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
-import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionScope, SessionScopeState, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
+import type { Ask, AskAnswer, ClaudeHookEvent, ClosedSession, CodexHookEvent, HarnessKind, HarnessProfile, ModelRef, MuseHookEvent, NodeId, Session, SessionEvent, SessionEventKind, SessionScope, SessionScopeState, SessionStats, SessionStatus, SessionWaiting, TerminalRef, WorkMode } from "@cophyla/protocol";
 import { CLOSED_MAX, newId, RpcError, ulid } from "@cophyla/protocol";
 import type { DialogView } from "@cophyla/protocol";
 import { submit } from "@tether-pty/client";
@@ -75,7 +75,7 @@ import { leadCommand, leadTurn } from "./lead.ts";
 import type { LeadInfo } from "./lead.ts";
 import type { PendingSend } from "./injections.ts";
 import { askShown, capText, normaliseHook, oneLine, rawIfSmall, stableStringify, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "./model.ts";
-import type { AgentInstall, AttachedHarness, HarnessAdapter, HookInstallSpec, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
+import type { AgentInstall, AttachedHarness, HarnessAdapter, HookInstallSpec, LeftConversation, NormalisedHook, SessionHost, SessionRecord, SessionSeed, ViewMark } from "./model.ts";
 import { agentEntry, applyAgentSettings, sameEntry, stamp } from "./claude/mcp.ts";
 import { claudeGlobalConfig } from "./profiles.ts";
 import { AGENT_MCP_SERVER } from "@cophyla/protocol";
@@ -324,6 +324,11 @@ interface LiveRecord extends SessionRecord {
   moding?: Promise<void>;
   /** Claude: its context was just cleared (`SessionEnd` with reason `clear`); it ends unless its new id turns up first. */
   clearing?: ReturnType<typeof setTimeout>;
+  /**
+   * Claude: the id a hook moved it to after a clear, which its registry entry has yet to name:
+   * till it does, the entry's old id is the entry lagging, not the process going back to it.
+   */
+  unconfirmed?: string;
   /** Inside `end`'s last tail pass, which must not end it again. */
   draining?: boolean;
   /** Claude: its process and the process's ancestors, read once per pid; `chain` is unset while the read runs. */
@@ -406,6 +411,8 @@ const FOLD_MS = 2000;
 
 /** How long a session whose context was cleared waits for its new id before it counts as ended. */
 const CLEAR_GRACE_MS = 5000;
+/** How many of the conversations a session left by a clear it keeps, to go back to (`left`). */
+const LEFT_KEPT = 16;
 /** How long a send that types `/clear` waits for the new context. */
 const CLEAR_WAIT_MS = 10000;
 /**
@@ -491,6 +498,24 @@ export const AGENT_ACCEPT_NS = "agentmsg.accept";
 
 function nativeKey(harness: string, nativeId: string): string {
   return `${harness}:${nativeId}`;
+}
+
+/** What `total` holds beyond `part`: turns, cost and tokens, none of them below 0; the rest is `total`'s. */
+function statsLess(total: SessionStats, part: SessionStats | undefined): SessionStats {
+  if (!part) return total;
+  const d = (a = 0, b = 0) => Math.max(0, a - b);
+  const { cacheRead, cacheWrite } = total.tokens;
+  return {
+    ...total,
+    turns: d(total.turns, part.turns),
+    cost: Math.round(d(total.cost, part.cost) * 1e6) / 1e6,
+    tokens: {
+      in: d(total.tokens.in, part.tokens.in),
+      out: d(total.tokens.out, part.tokens.out),
+      ...(cacheRead !== undefined ? { cacheRead: d(cacheRead, part.tokens.cacheRead) } : {}),
+      ...(cacheWrite !== undefined ? { cacheWrite: d(cacheWrite, part.tokens.cacheWrite) } : {}),
+    },
+  };
 }
 
 function unref(t: unknown): void {
@@ -1212,6 +1237,10 @@ export class Sessions implements SessionHost {
    * the user gave stays, as the id does: the new conversation's generated title never
    * replaces it. What the session spent under the old id is kept as the base its stats count
    * on from.
+   *
+   * The conversation it leaves is kept as it stood (`left`). Going back to one (`/resume`), the
+   * record picks it up there: its transcript recorded on from where it stopped, its intent, and
+   * the stats it had spent taken out of the base, as its transcript counts them again.
    */
   rekey(rec: SessionRecord, nativeId: string, at = this.now()): void {
     const live = rec as LiveRecord;
@@ -1221,6 +1250,7 @@ export class Sessions implements SessionHost {
       clearTimeout(live.clearing);
       live.clearing = undefined;
     }
+    live.unconfirmed = undefined;
     // The old transcript's last lines, then it is read no further (but by the adapter, for what it still needs of it).
     const adapter = rec.session.native.transport === "acp" ? undefined : this.adapters.get(rec.session.harness as AttachedHarness);
     try {
@@ -1229,22 +1259,45 @@ export class Sessions implements SessionHost {
       this.log.warn("last pass over a transcript left behind failed", { id: rec.session.id, error: e instanceof Error ? e.message : String(e) });
     }
     this.flushResults(live);
+    const left = (rec.left ??= new Map());
+    const back = left.get(nativeId);
+    left.delete(nativeId);
+    left.set(from, this.leaving(rec));
+    for (const id of left.keys()) if (left.size > LEFT_KEPT) left.delete(id);
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
     rec.session.native = { ...rec.session.native, id: nativeId };
-    if (rec.session.stats) rec.statsBase = rec.session.stats;
+    if (rec.session.stats) rec.statsBase = back?.spent ? statsLess(rec.session.stats, back.spent) : rec.session.stats;
     delete rec.session.intent;
     delete rec.session.transcript;
+    if (back?.intent !== undefined) rec.session.intent = back.intent;
+    if (back?.path !== undefined) {
+      rec.session.transcript = { path: back.path };
+      if (back.offset !== undefined) this.deps.store.sessions.setTail(rec.session.id, back.path, back.offset);
+    }
     rec.tail = undefined;
     // The adapter reads the new transcript with a parser of its own; only the name carries over.
     rec.parser = (rec.parser as { named?: boolean } | undefined)?.named === true ? { named: true } : undefined;
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
     this.deps.store.sessions.update(rec.session);
-    this.log.info("session re-keyed", { id: rec.session.id, from, to: nativeId });
-    this.event(rec, "notification", { type: "context_cleared", from, to: nativeId }, undefined, at);
+    if (back) this.log.info("session went back to a conversation it had left", { id: rec.session.id, from, to: nativeId });
+    else this.log.info("session re-keyed", { id: rec.session.id, from, to: nativeId });
+    this.event(rec, "notification", { type: "context_cleared", from, to: nativeId, ...(back ? { resumed: true } : {}) }, undefined, at);
     this.broadcast(rec, true);
     const waiters = live.clearWaiters;
     live.clearWaiters = undefined;
     for (const w of waiters ?? []) w();
+  }
+
+  /** The conversation a record is leaving, as it stands (`LeftConversation`). */
+  private leaving(rec: SessionRecord): LeftConversation {
+    const path = rec.session.transcript?.path;
+    const recorded = path !== undefined ? this.deps.store.sessions.tail(rec.session.id) : undefined;
+    return {
+      ...(path !== undefined ? { path } : {}),
+      ...(path !== undefined && recorded && (recorded.path === path || sameFile(recorded.path, path)) ? { offset: recorded.offset } : {}),
+      ...(rec.session.stats ? { spent: statsLess(rec.session.stats, rec.statsBase) } : {}),
+      ...(rec.session.intent !== undefined ? { intent: rec.session.intent } : {}),
+    };
   }
 
   /**
@@ -1266,6 +1319,9 @@ export class Sessions implements SessionHost {
     if (live.held) this.closeHeld(live, "stopped", rec.session.status === "ended" ? "ended" : "idle");
     if (live.inputAsk) this.closeInput(live, "stopped");
     this.flushResults(live);
+    // What it left in the window by a clear stays the window's: a process there going back to one is not the job.
+    delete rec.left;
+    live.unconfirmed = undefined;
     const { pid, terminal } = rec.session.native;
     if (pid !== undefined && terminal) this.leftBehind.set(pid, terminal);
     this.byNative.set(nativeKey(rec.session.harness, nativeId), rec.session.id);
@@ -1518,6 +1574,7 @@ export class Sessions implements SessionHost {
     const waiting = [...this.byId.values()].filter((r) => r.clearing && r.session.harness === "claude" && r.session.status !== "ended" && r.session.cwd === hook.cwd);
     if (waiting.length !== 1) return undefined;
     this.rekey(waiting[0]!, hook.sessionId);
+    waiting[0]!.unconfirmed = hook.sessionId;
     return waiting[0];
   }
 
@@ -1698,6 +1755,14 @@ export class Sessions implements SessionHost {
       this.claim(rec, seed, now);
       return rec;
     }
+    // Listed under the id the record goes by, after a clear only a hook had told of: the entry has caught up.
+    if (rec && rec.unconfirmed === seed.nativeId && seed.pid !== undefined) rec.unconfirmed = undefined;
+    // Listed under a conversation the record left by a clear: the record may go back to it.
+    let back = false;
+    if (rec && rec.session.native.id !== seed.nativeId && rec.left?.has(seed.nativeId)) {
+      rec = this.cameBack(rec, seed, now);
+      back = rec !== undefined && rec.session.native.id === seed.nativeId;
+    }
     if (!rec) {
       const stored = this.deps.store.sessions.getByNative(seed.harness, seed.nativeId);
       if (stored) {
@@ -1759,7 +1824,8 @@ export class Sessions implements SessionHost {
         return rec;
       }
     } else if (rec.session.status === "ended") {
-      if (!this.ranAfterEnd(rec, seed)) return rec;
+      // A process went back to it, which is running again.
+      if (!back && !this.ranAfterEnd(rec, seed)) return rec;
       this.revive(rec, seed, now);
       revived = true;
     }
@@ -1774,7 +1840,8 @@ export class Sessions implements SessionHost {
       const terminal = seed.terminal ?? this.terminalOf(seed.harness, seed.pid ?? rec.session.native.pid);
       if (terminal) patch.native = { ...(patch.native ?? rec.session.native), terminal };
     }
-    if (seed.transcriptPath !== undefined && rec.session.transcript?.path !== seed.transcriptPath) patch.transcript = { path: seed.transcriptPath };
+    // A conversation the record left keeps its own transcript.
+    if (seed.transcriptPath !== undefined && seed.nativeId === rec.session.native.id && rec.session.transcript?.path !== seed.transcriptPath) patch.transcript = { path: seed.transcriptPath };
     if (seed.title !== undefined && rec.session.title === undefined) patch.title = seed.title;
     // Follows the registry, so a rename moves what other agents address the session by; the router still takes the old one.
     if (seed.name !== undefined && rec.session.name !== seed.name) patch.name = seed.name;
@@ -1826,6 +1893,33 @@ export class Sessions implements SessionHost {
       if (mtime !== undefined) return mtime > endedAt;
     }
     return seed.activeAt !== undefined && seed.activeAt > endedAt;
+  }
+
+  /**
+   * A seed under a conversation the record left by a clear. The record's process went back to
+   * it (`/resume`), or a process resumed it after the record ended or while the record knew of
+   * none of its own: the record follows it there (`rekey`), and the record is returned. Another
+   * process resumed it while the record runs on in its own: the old id is the record's no more,
+   * and `undefined` makes the conversation a session of its own. Nothing changes for a seed
+   * with no process (a late hook's), or for an entry still naming the id a clear left, which
+   * only a hook has told of so far.
+   */
+  private cameBack(rec: LiveRecord, seed: SessionSeed, now: number): LiveRecord | undefined {
+    const s = rec.session;
+    if (seed.pid === undefined || s.native.transport === "acp") return rec;
+    const ended = s.status === "ended";
+    const started = rec.handles.procStart;
+    const listed = seed.handles?.procStart;
+    const own = s.native.pid === undefined || (s.native.pid === seed.pid && (started === undefined || listed === undefined || started === listed));
+    if (!ended && !own) {
+      this.byNative.delete(nativeKey(s.harness, seed.nativeId));
+      rec.left?.delete(seed.nativeId);
+      this.log.info("a conversation a session had left was resumed in another process: a session of its own", { id: s.id, native: seed.nativeId, pid: seed.pid });
+      return undefined;
+    }
+    if (!ended && rec.unconfirmed === s.native.id) return rec;
+    this.rekey(rec, seed.nativeId, now);
+    return rec;
   }
 
   /** A session seen running again after it ended: a resume keeps the id. */
@@ -4043,7 +4137,8 @@ export class Sessions implements SessionHost {
     // A hook comes from a live process: a session that had ended is running again. Not a bare
     // Notification: an agents screen sends those under the id of a conversation it sent away.
     const revives = hook.name !== "SessionEnd" && hook.name !== "Notification";
-    if (rec && rec.session.status === "ended" && revives) this.reviveOnHook(rec, hook, now);
+    // Under an id the record left, the adapter first says which record that conversation is now.
+    if (rec && rec.session.status === "ended" && revives && rec.session.native.id === hook.sessionId) this.reviveOnHook(rec, hook, now);
     const resolved = adapter.onHook(hook, rec, meta);
     // A child's hook, or one from a session the adapter runs itself: no session of its own here.
     if (resolved === null) return {};
@@ -4063,7 +4158,8 @@ export class Sessions implements SessionHost {
       // so the ask need not wait on it.
       if (hook.permissionMode === "plan") void this.launchOf(rec);
     }
-    if (hook.transcriptPath && rec.session.transcript?.path !== hook.transcriptPath) this.patch(rec, { transcript: { path: hook.transcriptPath } }, now);
+    // A late hook of a conversation the record left names that one's transcript, not the record's.
+    if (hook.transcriptPath && hook.sessionId === rec.session.native.id && rec.session.transcript?.path !== hook.transcriptPath) this.patch(rec, { transcript: { path: hook.transcriptPath } }, now);
 
     // Any event past an Elicitation means the terminal answered it.
     if (rec.inputAsk && hook.name !== "Elicitation") this.closeInput(rec, "stopped");
