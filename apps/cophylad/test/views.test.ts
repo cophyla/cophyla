@@ -79,10 +79,40 @@ describe("views: files", () => {
     }
   });
 
-  test("CSS goes without its comments and indentation, a quoted string kept as it is", () => {
+  test("CSS goes without its comments and the whitespace a browser does not read, a quoted string kept as it is", () => {
     const css = '/* the rail */\n.rail {\n  color: red; /* why */\n  content: "/* not a comment */";\n  background: url(\'a.png\');\n}\n\n\n.b { margin: 0 }\n';
     const out = minifyCss(css);
-    expect(out).toBe('.rail {\ncolor: red; \ncontent: "/* not a comment */";\nbackground: url(\'a.png\');\n}\n.b { margin: 0 }\n');
+    expect(out).toBe('.rail{color:red;content:"/* not a comment */";background:url(\'a.png\');}.b{margin:0}\n');
+  });
+
+  test("CSS keeps every space that parts words (a selector's, a value's, calc's, the strings of grid areas) and the one after a comma", () => {
+    const css = [
+      ".a .b,\n.c > .d:hover {",
+      "  margin: 0 auto;",
+      "  width: calc(100% - 2 * 8px);",
+      "  grid-template-areas:",
+      '    "mark what facts"',
+      '    ". doing doing";',
+      "  transition:",
+      "    opacity 0.2s ease,",
+      "    transform 0.2s ease;",
+      "  display: none !important;",
+      "}",
+      "@media (max-width: 640px) and (hover: none) {",
+      "  .x :is(.y, .z) { color: rgba( 0, 0, 0, 0.5 ) }",
+      "}",
+      "@keyframes beat {",
+      "  50% {",
+      "    opacity: 0.4;",
+      "  }",
+      "}",
+      ".e/* between */.f { color: red }",
+      "",
+    ].join("\r\n");
+    expect(minifyCss(css)).toBe(
+      '.a .b, .c > .d:hover{margin:0 auto;width:calc(100% - 2 * 8px);grid-template-areas:"mark what facts" ". doing doing";transition:opacity 0.2s ease, transform 0.2s ease;display:none !important;}' +
+        "@media (max-width:640px) and (hover:none){.x :is(.y, .z){color:rgba(0, 0, 0, 0.5)}}@keyframes beat{50%{opacity:0.4;}}.e.f{color:red}\n",
+    );
   });
 
   test("versionOf is 16 hex, order-independent, and moves with one byte", () => {

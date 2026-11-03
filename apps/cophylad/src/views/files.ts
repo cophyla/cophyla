@@ -150,18 +150,34 @@ export function toViewFile(path: string, bytes: Buffer, transpile: Transpile): V
 }
 
 /**
- * CSS without its comments and the indentation of its lines: what a browser reads is the same.
- * A quoted string is copied as it is, so a `/*` inside one is never taken for a comment.
+ * CSS without its comments and the whitespace a browser does not read: a run of spaces, tabs and
+ * line ends is one space, or none beside `{ } ;`, before `, )` and after `: (`, where none is needed. A space
+ * that parts words (`0 auto`, a selector's `a b`, `calc(a + b)`, `"a" "b"`) stays, and so does one after a
+ * comma: a `var()`'s fallback and a custom property's value are kept as written. A quoted string
+ * is copied as it is, so a `/*` inside one is never taken for a comment. The default view goes to a
+ * phone in one relayed message, and every byte here is one it has room for.
  */
 export function minifyCss(source: string): string {
   let out = "";
   let i = 0;
+  // whitespace (or a comment beside it) waits here until the next character says whether a space is needed
+  let space = false;
   while (i < source.length) {
     const c = source[i]!;
     if (c === "/" && source[i + 1] === "*") {
       const end = source.indexOf("*/", i + 2);
       i = end < 0 ? source.length : end + 2;
       continue;
+    }
+    if (c === " " || c === "\t" || c === "\r" || c === "\n") {
+      space = true;
+      i++;
+      continue;
+    }
+    if (space) {
+      space = false;
+      const last = out[out.length - 1];
+      if (last !== undefined && !"{};:(".includes(last) && !"{};,)".includes(c)) out += " ";
     }
     if (c === '"' || c === "'") {
       let j = i + 1;
@@ -170,14 +186,8 @@ export function minifyCss(source: string): string {
       i = j + 1;
       continue;
     }
-    if (c === "\n") {
-      out += "\n";
-      i++;
-      while (i < source.length && (source[i] === " " || source[i] === "\t" || source[i] === "\r" || source[i] === "\n")) i++;
-      continue;
-    }
     out += c;
     i++;
   }
-  return out.trim() + "\n";
+  return out + "\n";
 }
