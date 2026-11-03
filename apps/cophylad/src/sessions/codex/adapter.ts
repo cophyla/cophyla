@@ -32,6 +32,7 @@ import { toolResultText } from "../results.ts";
 import { mtimeOf } from "../tail.ts";
 import { CodexAppServer } from "./appserver.ts";
 import { CodexAsking } from "./asking.ts";
+import { CodexChildren } from "./children.ts";
 import type { DialogTiming, QuestionTerminal } from "./asking.ts";
 import { steerTurn } from "./control.ts";
 import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
@@ -125,6 +126,8 @@ export class CodexAdapter implements HarnessAdapter {
   private retryAt = new WeakMap<SessionRecord, number>();
   /** Records whose process was told apart, or is being: the tick's look at a held pid is made once. */
   private classified = new WeakSet<SessionRecord>();
+  /** Each thread's sub-agents and how far each has got: its `subagents`. */
+  private children = new WeakMap<SessionRecord, CodexChildren>();
   private retryMs: number;
   private asking?: CodexAsking;
 
@@ -285,6 +288,7 @@ export class CodexAdapter implements HarnessAdapter {
     for (const rec of this.host.records("codex")) {
       const entry = this.entries.get(rec.session.profile);
       this.tailRollout(rec, entry, now);
+      this.readChildren(rec, entry, now);
       this.checkLiveness(rec, now);
       this.heal(rec);
       // With nothing new read: a question shown for want of a terminal is asked once one is linked.
@@ -366,6 +370,7 @@ export class CodexAdapter implements HarnessAdapter {
     if (!tail || tail.path !== path) {
       tail = this.host.openTail(rec, path);
       rec.parser = newCodexState();
+      this.children.delete(rec);
       this.host.watch(dirname(path));
       // What a fresh tail reads first is history: it counts by when the file last changed.
       const mtime = mtimeOf(path);
@@ -378,6 +383,7 @@ export class CodexAdapter implements HarnessAdapter {
     const recordFrom = tail.recordFrom;
     const patch: Partial<Session> = {};
     let status: SessionStatus | undefined;
+    let kids = false;
     for (const line of lines) {
       let row: unknown;
       try {
@@ -441,6 +447,10 @@ export class CodexAdapter implements HarnessAdapter {
             if (record) this.host.event(rec, "assistant_text", { text: capText(item.text) }, rawIfSmall(row), item.at);
             break;
           case "subagent": {
+            // Its start and end, history included: the thread's sub-agents are known again after a restart.
+            if (item.activity === "started") this.kidsOf(rec).started(item.callId, item.path, item.thread, item.at);
+            else this.kidsOf(rec).completed(item.path, item.thread, item.at);
+            kids = true;
             if (!record) break;
             // Done, its report is the last thing its own thread said.
             const own = item.activity === "completed" && item.thread && entry ? findRollout(entry.codexHome, item.thread) : undefined;
@@ -458,6 +468,10 @@ export class CodexAdapter implements HarnessAdapter {
             if (record) this.host.event(rec, "notification", { type: "context_compacted", message: "Codex compacted the conversation to free its context" }, rawIfSmall(row), item.at);
             break;
           case "tool_call": {
+            if (item.name === "spawn_agent") {
+              this.kidsOf(rec).spawned(item.callId, item.input, item.at);
+              kids = true;
+            }
             if (!record) break;
             const input = summariseValue(item.input, TOOL_CALL_CAP);
             this.host.event(rec, "tool_call", { tool: item.name, id: item.callId, args: input.value, ...(input.truncated ? { truncated: true } : {}) }, rawIfSmall(row), item.at);
@@ -481,11 +495,28 @@ export class CodexAdapter implements HarnessAdapter {
       state.statsChanged = false;
       patch.stats = statsFor(state);
     }
+    if (kids) patch.subagents = this.kidsOf(rec).list();
     if (Object.keys(patch).length > 0) this.host.patch(rec, patch, now);
     // The questions still waiting once the read is whole: one answered or let go in the same read is never asked.
     this.asking?.sync(rec, state.questions, now);
     if (status && !this.asking?.holds(rec)) this.host.setStatus(rec, status, now);
     this.host.tailed(rec);
+  }
+
+  /** The thread's sub-agents still working, read on from their own rollouts: the panel and the cards follow them while the thread itself is quiet. */
+  private readChildren(rec: SessionRecord, entry: ProfileEntry | undefined, now: number): void {
+    const kids = this.children.get(rec);
+    if (!kids?.working || rec.session.status === "ended") return;
+    if (kids.read(entry?.codexHome, now)) this.host.patch(rec, { subagents: kids.list() }, now);
+  }
+
+  private kidsOf(rec: SessionRecord): CodexChildren {
+    let kids = this.children.get(rec);
+    if (!kids) {
+      kids = new CodexChildren();
+      this.children.set(rec, kids);
+    }
+    return kids;
   }
 
   drain(rec: SessionRecord, now: number): void {

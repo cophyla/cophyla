@@ -1811,6 +1811,58 @@ button:disabled {
   list-style: none;
 }
 
+/* Agents started together: one line over them, how many and how many are at it, and their cards
+   hung off a rule under it, as Claude Code draws its tree of them. */
+.tl-agents {
+  margin: 8px 0;
+}
+
+.tl-agents-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 2px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.tl-agents-mark {
+  color: var(--moss);
+  font-size: 11px;
+}
+
+.tl-agents[data-status="running"] .tl-agents-mark {
+  color: var(--amber);
+  animation: tl-agent-pulse 1.2s ease-in-out infinite;
+}
+
+.tl-agents-list {
+  margin: 4px 0 0 7px;
+  padding-left: 12px;
+  border-left: 2px solid var(--line);
+}
+
+.tl-agents-list > .tl-agent {
+  margin: 6px 0;
+}
+
+/* A sub-agent's end, where it came: a line that goes to its card. */
+.tl-note[data-agent="end"] {
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.tl-note[data-agent="end"]::before {
+  margin-right: 6px;
+  color: var(--moss);
+  content: "✓";
+}
+
+.tl-note[data-agent="end"]:hover {
+  color: var(--ink);
+}
+
 /* A call sent to the background: where it stands, after its words on its line. */
 .tl-step-run {
   flex: none;
@@ -2706,6 +2758,201 @@ button:disabled {
 .composer-form > button,
 .send > button {
   min-height: 37px;
+}
+
+/* The session's sub-agents at work, over the send box: a line saying how many, which folds the
+   list to it, then a row each, as Claude Code lists its background agents under its prompt. */
+.agents-panel {
+  box-sizing: border-box;
+  max-width: 960px;
+  margin: 10px auto 0;
+  padding: 0 20px;
+}
+
+.agents-panel[hidden] {
+  display: none;
+}
+
+.agents-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line));
+  border-radius: 8px 8px 0 0;
+  background: color-mix(in srgb, var(--amber) 7%, var(--card));
+  color: var(--ink);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agents-panel[data-folded="true"] .agents-head {
+  border-radius: 8px;
+}
+
+.agents-head:hover {
+  background: color-mix(in srgb, var(--amber) 11%, var(--card));
+}
+
+.agents-pulse {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: tl-agent-pulse 1.2s ease-in-out infinite;
+}
+
+.agents-count {
+  flex: none;
+  font-weight: 600;
+}
+
+.agents-names {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-names[hidden] {
+  display: none;
+}
+
+.agents-chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--muted);
+}
+
+/* One grid for every row, so their columns line up. */
+.agents-list {
+  display: grid;
+  grid-template-columns: 14px auto minmax(0, 1fr) minmax(0, 1.3fr) auto;
+  column-gap: 8px;
+  align-content: start;
+  max-height: 30vh;
+  margin: 0;
+  padding: 2px 0;
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line));
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+  background: var(--card);
+  list-style: none;
+}
+
+.agents-list[hidden] {
+  display: none;
+}
+
+.agents-row,
+.agents-row-line {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+
+.agents-row-line {
+  grid-template-areas: "mark type what doing facts";
+  align-items: center;
+  row-gap: 2px;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agents-row-line:hover {
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+}
+
+.agents-row-mark {
+  grid-area: mark;
+  color: var(--amber);
+  font-size: 12px;
+  animation: tl-agent-pulse 1.2s ease-in-out infinite;
+}
+
+.agents-row[data-waiting="true"] .agents-row-mark {
+  animation: none;
+}
+
+.agents-row-type {
+  grid-area: type;
+  justify-self: start;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted);
+  font: 11px/1.5 var(--mono);
+  white-space: nowrap;
+}
+
+.agents-row-what {
+  grid-area: what;
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-row-doing {
+  grid-area: doing;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font: 12px/1.5 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agents-row-doing[hidden] {
+  display: none;
+}
+
+.agents-row-facts {
+  display: flex;
+  grid-area: facts;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.agents-row-tokens::before {
+  margin-right: 6px;
+  content: "·";
+}
+
+.agents-row-tokens[hidden] {
+  display: none;
+}
+
+/* Narrow, what it was asked has the line to itself, its type and the step it is on under it. */
+@media (max-width: 640px) {
+  .agents-list {
+    grid-template-columns: 14px auto minmax(0, 1fr) auto;
+  }
+
+  .agents-row-line {
+    grid-template-areas:
+      "mark what what facts"
+      ". type doing doing";
+  }
 }
 
 /* A message field grows with its lines up to two fifths of the window, then scrolls: an unseen

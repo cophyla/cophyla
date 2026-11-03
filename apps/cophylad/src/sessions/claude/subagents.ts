@@ -46,24 +46,33 @@ export interface SubagentInfo {
   key: string;
 }
 
-/** What a sub-agent's `.meta.json` says of it: the call that started it, and whether it has finished. */
+/** What a sub-agent's `.meta.json` says of it: the call that started it, its type and what it was asked, and whether it has finished. */
 export interface SubagentMeta {
   call?: string;
+  type?: string;
+  description?: string;
   finished?: boolean;
 }
 
 export function subagentMeta(file: string): SubagentMeta {
   try {
-    const meta = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8")) as { toolUseId?: unknown; finished?: unknown };
-    return { ...(typeof meta.toolUseId === "string" && meta.toolUseId !== "" ? { call: meta.toolUseId } : {}), ...(meta.finished === true ? { finished: true } : {}) };
+    const meta = JSON.parse(readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8")) as { toolUseId?: unknown; agentType?: unknown; description?: unknown; finished?: unknown };
+    const str = (v: unknown, max: number) => (typeof v === "string" && v.trim() !== "" ? v.trim().slice(0, max) : undefined);
+    const call = str(meta.toolUseId, 200);
+    const type = str(meta.agentType, 120);
+    const description = str(meta.description, 300);
+    return { ...(call ? { call } : {}), ...(type ? { type } : {}), ...(description ? { description } : {}), ...(meta.finished === true ? { finished: true } : {}) };
   } catch {
     // written as it starts: not yet, or a sub-agent of an older Claude
     return {};
   }
 }
 
-/** One row of a sub-agent's transcript counted into its run: its tools called, the last in a few words, its model, its times. Whether it changed the run. */
-export function countSubagentRow(run: { steps: number; last?: string; model?: string; startedAt: number; lastAt: number }, row: unknown): boolean {
+/**
+ * One row of a sub-agent's transcript counted into its run: its tools called, the last in a few
+ * words, its model, the tokens its context held at its latest model call, its times. Whether it changed the run.
+ */
+export function countSubagentRow(run: { steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number }, row: unknown): boolean {
   if (row === null || typeof row !== "object") return false;
   const r = row as Record<string, unknown>;
   const at = typeof r["timestamp"] === "string" ? Date.parse(r["timestamp"]) : NaN;
@@ -78,6 +87,16 @@ export function countSubagentRow(run: { steps: number; last?: string; model?: st
   if (model !== undefined && model !== run.model) {
     run.model = model;
     changed = true;
+  }
+  // Its context's size as Claude Code's agent list gives it: what went in, cached or not, and what came out.
+  const usage = message?.["usage"] as Record<string, unknown> | undefined;
+  if (model !== undefined && usage) {
+    const n = (k: string) => (typeof usage[k] === "number" && Number.isFinite(usage[k]) ? Math.max(0, Math.round(usage[k] as number)) : 0);
+    const tokens = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens") + n("output_tokens");
+    if (tokens > 0 && tokens !== run.tokens) {
+      run.tokens = tokens;
+      changed = true;
+    }
   }
   const content = Array.isArray(message?.["content"]) ? (message["content"] as Record<string, unknown>[]) : [];
   for (const block of content) {

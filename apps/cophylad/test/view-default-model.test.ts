@@ -21,6 +21,7 @@ import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, wi
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
+import { agentEndWords, agentsAtWork, agentsGroupWords, compactTokens, workingAgents } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
@@ -483,9 +484,13 @@ describe("default view model", () => {
       ev(5, "tool_result", { tool: "Agent", id: "a2", result: "async_launched: Run the suite" }),
       ev(6, "status", { status: "idle" }),
     ];
-    const agents = (posts: TimelinePost[]) => (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts.filter((p): p is Extract<TurnPart, { kind: "agent" }> => p.kind === "agent").map((p) => p.step.run);
+    // Started one after the other, the two are one group under a line of its own; one alone is a card.
+    const agents = (posts: TimelinePost[]) => (posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts.flatMap((p) => (p.kind === "agent" ? [p.step] : p.kind === "agents" ? p.steps : [])).map((s) => s.run);
+    const parts = (timelinePosts(rows)[0] as Extract<TimelinePost, { kind: "turn" }>).parts;
+    expect(parts.map((p) => [p.kind, p.key])).toEqual([["agents", "ge2"]]);
+    expect(agentsGroupWords((parts[0] as Extract<TurnPart, { kind: "agents" }>).steps)).toBe("2 agents · 2 working");
     expect(agents(timelinePosts(rows))).toEqual([{ state: "running" }, { state: "running" }]);
-    // The notices come in later turns, cut at their cap: the cards take them, and no line of their own shows.
+    // The notices come in later turns, cut at their cap: the cards take them, and a sub-agent's end is a line where it came, which goes to its card.
     const later = [
       ...rows,
       ev(7, "notification", { type: "queued", text: notice("a1", "completed", 'Agent "Find the stylesheet" finished', "It is in src/app.css, line 4.</result>\n</task-notification>") }),
@@ -498,7 +503,9 @@ describe("default view model", () => {
       { state: "done", summary: 'Agent "Find the stylesheet" finished', report: "It is in src/app.css, line 4." },
       { state: "waiting", summary: 'Agent "Run the suite" is waiting on its own background work', report: "Started the run; 40 of 2571 so fa…" },
     ]);
-    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Agent "Find the stylesheet" finished', 'Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
+    expect((posts[1] as Extract<TimelinePost, { kind: "note" }>).call).toBe("a1");
+    expect(agentsGroupWords(((posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agents" }>).steps)).toBe("2 agents · 1 working");
     expect(taskNotice(notice("a3", "killed", 'Agent "x" was stopped'))).toEqual({ toolUseId: "a3", taskId: "xa3", status: "killed", summary: 'Agent "x" was stopped' });
     expect(taskNotice("<cophyla-message>hi</cophyla-message>")).toBeUndefined();
     const stopped = timelinePosts([...rows.slice(0, 3), ev(4, "notification", { type: "queued", text: notice("a1", "killed", 'Agent "Find the stylesheet" was stopped') })]);
@@ -521,10 +528,12 @@ describe("default view model", () => {
       ev(6, "user_turn", { text: bashNotice, source: "hook" }),
       ev(7, "notification", { type: "queued", text: bashNotice }),
     ]);
-    expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "note"]);
+    // The agent's end line comes after its card (the copy the transcript queued), once.
+    expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "note", "note"]);
     const card = (posts[1] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>;
     expect(card.step.run).toEqual({ state: "done", summary: 'Agent "Find it" finished', report: "REPORT: src/app.css" });
-    expect((posts[2] as Extract<TimelinePost, { kind: "note" }>).text).toBe('Background command "Build" completed (exit code 0)');
+    expect(posts[2]).toMatchObject({ kind: "note", text: 'Agent "Find it" finished', call: "t1" });
+    expect((posts[3] as Extract<TimelinePost, { kind: "note" }>).text).toBe('Background command "Build" completed (exit code 0)');
   });
 
   test("a sub-agent's card has how far it has got: its steps, how long, its model, the step it is on while it works", () => {
@@ -542,6 +551,54 @@ describe("default view model", () => {
     expect(agentFacts({ result: undefined }, 0)).toEqual({ facts: "" });
     expect([elapsedWords(4_400), elapsedWords(60_000), elapsedWords(3_725_000)]).toEqual(["4s", "1m", "1h 2m"]);
     expect([shortModel("claude-opus-5-5"), shortModel("claude-sonnet-5-5[1m]"), shortModel("gpt-6-astra")]).toEqual(["opus 5.5", "sonnet 5.5[1m]", "gpt-6-astra"]);
+    // How full its context is, as Claude Code's list of agents gives it.
+    expect(agentFacts({ ...step, progress: { ...run, tokens: 11_400 } }, 202_000).facts).toBe("7 steps · 3m 12s · 11.4k tokens · haiku 5.5");
+    expect([compactTokens(950), compactTokens(11_400), compactTokens(250_000), compactTokens(1_200_000), compactTokens(2_000_000)]).toEqual(["950", "11.4k", "250k", "1.2M", "2M"]);
+    expect([agentEndWords("Scan it", "done", 13_400), agentEndWords("Scan it", "failed", 2_000), agentEndWords("Scan it", "stopped", 400)]).toEqual(['Agent "Scan it" finished · 13s', 'Agent "Scan it" failed · 2s', 'Agent "Scan it" was stopped']);
+  });
+
+  test("the agents panel lists the sub-agents still at work, the oldest first, as Claude Code lists them under its prompt; their tab waits on them", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 9_000_000 + seq, kind, payload } as unknown as SessionEvent });
+    const rows = [
+      ev(1, "tool_call", { tool: "Agent", id: "a1", args: { subagent_type: "Explore", description: "List files", prompt: "x" } }),
+      ev(2, "tool_call", { tool: "Agent", id: "a2", args: { description: "Scan the readme", prompt: "y" } }),
+      ev(3, "tool_result", { tool: "Agent", id: "a1", result: "async_launched: List files" }),
+      ev(4, "tool_result", { tool: "Agent", id: "a2", result: "async_launched: Scan the readme" }),
+      ev(5, "status", { status: "idle" }),
+    ];
+    const now = 10_000_000;
+    const subagents = [
+      { call: "a1", agent: "x1", steps: 3, last: "Glob **/*.md", model: "claude-opus-5-5", tokens: 11_400, startedAt: 9_990_000, lastAt: 9_999_000 },
+      // its own transcript says it is done: off the panel before its notice
+      { call: "a2", agent: "x2", steps: 1, last: "Read README.md", startedAt: 9_991_000, lastAt: 9_998_000, finished: true },
+      // started before the page's first row: its own type and task, as the node read them
+      { call: "off", type: "general-purpose", description: "Older work", steps: 2, last: "Grep todo", startedAt: 9_980_000, lastAt: 9_997_000 },
+      // quiet for longer than a sub-agent counts as at work unheard from
+      { call: "stale", steps: 1, startedAt: 1_000_000, lastAt: 1_000_000 },
+    ];
+    const posts = timelinePosts(rows, { subagents });
+    const idle = { status: "idle" as const, subagents };
+    expect(workingAgents(posts, idle, now)).toEqual([
+      { call: "off", type: "general-purpose", description: "Older work", doing: "Grep todo", steps: 2, since: 9_980_000 },
+      { call: "a1", type: "Explore", description: "List files", doing: "Glob **/*.md", steps: 3, since: 9_990_000, tokens: 11_400, model: "claude-opus-5-5" },
+    ]);
+    // Its notice ends it there too; a session that ended has none at work.
+    const notice = '<task-notification>\n<task-id>z</task-id>\n<tool-use-id>a1</tool-use-id>\n<status>completed</status>\n<summary>Agent "List files" finished</summary>\n</task-notification>';
+    expect(workingAgents(timelinePosts([...rows, ev(6, "notification", { type: "queued", text: notice })], { subagents }), idle, now).map((a) => a.call)).toEqual(["off"]);
+    expect(workingAgents(posts, { status: "ended", subagents }, now)).toEqual([]);
+    // Its hooks ahead of its transcript's next read: the step it is on is the newest its hooks gave.
+    const hooked = timelinePosts([...rows, ev(6, "tool_result", { tool: "Read", id: "s9", input: { file_path: "C:\\w\\notes.txt" }, result: "x", agent: "x9" })], { subagents: [{ call: "a1", agent: "x9", steps: 0, startedAt: 9_990_000, lastAt: 9_990_000 }] });
+    expect(workingAgents(hooked, idle, now).find((a) => a.call === "a1")).toMatchObject({ doing: "Read notes.txt", steps: 1 });
+    // One the node reads nothing of counts from its launch, an hour at most.
+    const unread = timelinePosts(rows.slice(0, 3));
+    expect(workingAgents(unread, { status: "idle" }, 9_000_000 + 60_000).map((a) => [a.call, a.steps, a.since])).toEqual([["a1", 0, 9_000_001], ["a2", 0, 9_000_001]]);
+    expect(workingAgents(unread, { status: "idle" }, 9_000_000 + 2 * 3_600_000)).toEqual([]);
+    // The tab: idle, with sub-agents at work, it waits on them as on its shells.
+    expect(agentsAtWork(idle, now)).toBe(2);
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 1, { subagents }) });
+    expect(tabTone(s.sessions.get("sess_a")!, now)).toBe("shell");
+    expect(tabTone(s.sessions.get("sess_a")!, now + 3_600_000)).toBe("quiet");
   });
 
   test("a sub-agent's own tools are its card's steps, wherever their results fall; an unknown sub-agent's stay the session's", () => {
@@ -610,7 +667,8 @@ describe("default view model", () => {
     expect(running.run).toEqual({ state: "running" });
     const posts = timelinePosts([...rows, ev(4, "status", { status: "idle" }), ev(5, "notification", { type: "subagent", activity: "completed", path: "/root/review_v3_abc", thread: "th1", report: "Reviewed 24 clips: 10 keep." }), ev(6, "notification", { type: "subagent", activity: "completed", path: "/root/older_one" })]);
     expect(card(posts).run).toEqual({ state: "done", report: "Reviewed 24 clips: 10 keep." });
-    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(["Sub-agent older one finished"]);
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Agent "review v3 abc" finished', "Sub-agent older one finished"]);
+    expect((posts[1] as Extract<TimelinePost, { kind: "note" }>).call).toBe("call_9");
   });
 
   test("a Codex script's step says what it does: the command it runs, the files it patches, the image it looks at; its input reads as command lines", () => {

@@ -72,7 +72,8 @@ import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, mach
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
 import type { AgentRun, DiffFile, SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
-import { agentFacts, agentState, backgroundWords, stepDiff, stepInput } from "./model.ts";
+import { agentFacts, agentsAtWork, agentsGroupWords, agentState, backgroundWords, compactTokens, elapsedWords, stepDiff, stepInput, workingAgents } from "./model.ts";
+import type { WorkingAgent } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import { placeGroupChats } from "./model.ts";
@@ -102,6 +103,8 @@ export function railSplit(value: unknown): number {
 export interface UiState {
   /** Collapsibles the user opened: `<card key>/<row key>`, and the rail's folds. */
   expanded: Set<string>;
+  /** Sessions whose agents panel, over the send box, the user folded to its line. */
+  agentsFolded?: Set<string>;
   /** The session whose tab is selected; undefined is the chat, unless a bare terminal's or a group's is. */
   selected?: string;
   /** The bare terminal whose tab is selected. */
@@ -718,7 +721,13 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
   setData(icon, "tone", tone);
   setData(icon, "tether", inTether(s) ? "1" : "0");
   const where = s.native.job !== undefined ? " background job" : inTether(s) ? " in a terminal" : "";
-  const toneWord = tone === "ask" && s.waiting?.on === "user" && s.waiting.detail ? `${TONE_WORD.ask}: ${s.waiting.detail}` : TONE_WORD[tone];
+  const agents = agentsAtWork(s, Date.now());
+  const toneWord =
+    tone === "ask" && s.waiting?.on === "user" && s.waiting.detail
+      ? `${TONE_WORD.ask}: ${s.waiting.detail}`
+      : tone === "shell" && s.waiting?.on !== "shell" && agents > 0
+        ? `waiting on ${agents === 1 ? "a sub-agent" : `${agents} sub-agents`}`
+        : TONE_WORD[tone];
   const words = `${s.harness}${where}, ${toneWord}`;
   icon.setAttribute("aria-label", words);
   setText(tab.querySelector(".tab-title")!, sessionLabel(s));
@@ -3374,6 +3383,7 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   const timeline = node.querySelector<HTMLElement>(".timeline")!;
   const cardKey = `session:${s.id}`;
   const posts = timelinePosts(selectTimeline(state, card), { ...(card.session.subagents ? { subagents: card.session.subagents } : {}) });
+  shownPosts.set(s.id, posts);
   reconcile(timeline, posts, (p) => p.key, createTimelinePost, (li, post) => updateTimelinePost(li, post, s, cardKey, ui));
   updateWorking(node.querySelector<HTMLElement>(".tl-working")!, s, posts);
 }
@@ -3571,7 +3581,13 @@ function createTimelinePost(post: TimelinePost): HTMLElement {
 function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, cardKey: string, ui: UiState): void {
   if (post.kind === "note") {
     setText(li, post.text);
-    li.title = clock(post.at);
+    li.title = post.call !== undefined ? `${clock(post.at)} · show its card` : clock(post.at);
+    // A sub-agent's end goes to its card, up where it was started.
+    if (post.call !== undefined) {
+      li.dataset["action"] = "agent-show";
+      li.dataset["call"] = post.call;
+    }
+    setData(li, "agent", post.call !== undefined ? "end" : "");
     return;
   }
   const time = li.querySelector<HTMLElement>(".message-time")!;
@@ -3640,6 +3656,13 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
 function createTurnPart(part: TurnPart): HTMLElement {
   if (part.kind === "text") return el("div", "tl-text");
   if (part.kind === "agent") return createAgentCard();
+  if (part.kind === "agents") {
+    const root = el("section", "tl-agents");
+    const head = el("div", "tl-agents-head");
+    head.append(el("span", "tl-agents-mark"), el("span", "tl-agents-words"));
+    root.append(head, el("div", "tl-agents-list"));
+    return root;
+  }
   const root = el("details", "message-steps tl-steps");
   const summary = el("summary");
   summary.append(el("span", "steps-count"), el("span", "steps-line"));
@@ -3654,6 +3677,18 @@ function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: 
   }
   if (part.kind === "agent") {
     updateAgentCard(node, part.step, cardKey, ui);
+    return;
+  }
+  if (part.kind === "agents") {
+    // Started together: one line over them all, how many and how many are still at it, then each one's card.
+    const working = part.steps.some((st) => {
+      const state = agentState(st);
+      return state === "running" || state === "waiting";
+    });
+    setData(node, "status", working ? "running" : "done");
+    setText(node.querySelector(".tl-agents-mark")!, working ? "●" : "✓");
+    setText(node.querySelector(".tl-agents-words")!, agentsGroupWords(part.steps));
+    reconcile(node.querySelector<HTMLElement>(".tl-agents-list")!, part.steps, (st) => st.key, createAgentCard, (n, st) => updateAgentCard(n, st, cardKey, ui));
     return;
   }
   const n = part.steps.length;
@@ -3701,6 +3736,7 @@ function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string,
   reconcile(work.querySelector<HTMLElement>(".tl-agent-steps")!, own, (st) => st.key, createTimelineStep, (li, st) => updateTimelineStep(li, st, `${cardKey}/${step.key}/${st.key}`, ui));
   const status = agentState(step);
   setData(node, "status", status);
+  setData(node, "call", step.id ?? "");
   setText(node.querySelector(".tl-agent-mark")!, AGENT_MARK[status]);
   setText(node.querySelector(".tl-agent-type")!, sub.type);
   setText(node.querySelector(".tl-agent-what")!, sub.description);
@@ -3856,7 +3892,9 @@ function updateWorking(node: HTMLElement, s: Session, posts: TimelinePost[]): vo
   const last = posts.at(-1);
   const part = last?.kind === "turn" ? last.parts.at(-1) : undefined;
   const step = part?.kind === "steps" ? part.steps.at(-1) : undefined;
-  setText(node.querySelector(".progress-text")!, step && step.result === undefined ? `${stepWords(step)}…` : "Working…");
+  // Nothing of its own going on, only its sub-agents' work: it waits on them, as Claude Code's spinner says.
+  const agents = step && step.result === undefined ? 0 : workingAgents(posts, s, Date.now()).length;
+  setText(node.querySelector(".progress-text")!, step && step.result === undefined ? `${stepWords(step)}…` : agents > 0 ? `Waiting for ${agents === 1 ? "1 agent" : `${agents} agents`} to finish` : "Working…");
 }
 
 // --- audit rows ------------------------------------------------------------------------------
@@ -4577,6 +4615,88 @@ function renderComposer(root: HTMLElement, state: ViewState, ui: UiState): void 
   }
 }
 
+/** Each session's timeline as its pane last drew it: the agents panel lists the sub-agents on it still at work. */
+const shownPosts = new Map<string, TimelinePost[]>();
+
+/**
+ * The agents panel: a line saying how many of the session's sub-agents are at work, which folds
+ * the list away, then one row each, as Claude Code lists its background agents under its prompt
+ * (and Codex's `/subagents`): its type, what it was asked, the step it is on, how long it has
+ * worked and how full its context is. A row shows its card in the timeline.
+ */
+function createAgentsPanel(): HTMLElement {
+  const panel = el("section", "agents-panel");
+  panel.setAttribute("aria-label", "Sub-agents at work");
+  panel.hidden = true;
+  const head = actionButton("agents-head", "", "agents-fold");
+  head.append(el("span", "agents-pulse"), el("span", "agents-count"), el("span", "agents-names"), el("span", "agents-chevron"));
+  panel.append(head, el("ol", "agents-list"));
+  return panel;
+}
+
+function updateAgentsPanel(panel: HTMLElement, agents: WorkingAgent[], session: string | undefined, ui: UiState): void {
+  setHidden(panel, agents.length === 0 || session === undefined);
+  if (agents.length === 0 || session === undefined) return;
+  const folded = ui.agentsFolded?.has(session) === true;
+  setData(panel, "folded", folded ? "true" : "false");
+  setData(panel, "session", session);
+  const head = panel.querySelector<HTMLButtonElement>(".agents-head")!;
+  head.dataset["session"] = session;
+  head.setAttribute("aria-expanded", folded ? "false" : "true");
+  head.title = folded ? "Show the sub-agents at work" : "Fold the list to its line";
+  const waiting = agents.filter((a) => a.waiting).length;
+  const busy = agents.length - waiting;
+  setText(head.querySelector(".agents-count")!, busy > 0 ? `${agents.length === 1 ? "1 agent" : `${agents.length} agents`} working` : `${agents.length === 1 ? "1 agent" : `${agents.length} agents`} waiting on their own work`);
+  // Folded, the line names them.
+  const names = head.querySelector<HTMLElement>(".agents-names")!;
+  setText(names, folded ? agents.map((a) => a.description).join(" · ") : "");
+  setHidden(names, !folded);
+  setText(head.querySelector(".agents-chevron")!, folded ? "▴" : "▾");
+  const list = panel.querySelector<HTMLElement>(".agents-list")!;
+  setHidden(list, folded);
+  reconcile(list, folded ? [] : agents, (a) => a.call, createAgentsRow, updateAgentsRow);
+}
+
+function createAgentsRow(): HTMLElement {
+  const li = el("li", "agents-row");
+  const line = actionButton("agents-row-line", "", "agent-show");
+  const facts = el("span", "agents-row-facts");
+  facts.append(el("span", "agents-row-clock"), el("span", "agents-row-tokens"));
+  line.append(el("span", "agents-row-mark"), el("span", "agents-row-type"), el("span", "agents-row-what"), el("span", "agents-row-doing"), facts);
+  li.append(line);
+  return li;
+}
+
+function updateAgentsRow(li: HTMLElement, a: WorkingAgent): void {
+  const line = li.querySelector<HTMLButtonElement>(".agents-row-line")!;
+  line.dataset["call"] = a.call;
+  setData(li, "waiting", a.waiting ? "true" : "false");
+  line.title = [`${a.type}: ${a.description}`, a.steps === 1 ? "1 step so far" : `${a.steps} steps so far`, a.model, "Show its card"].filter(Boolean).join("\n");
+  setText(li.querySelector(".agents-row-mark")!, a.waiting ? "◐" : "◌");
+  setText(li.querySelector(".agents-row-type")!, a.type);
+  setText(li.querySelector(".agents-row-what")!, a.description);
+  const doing = li.querySelector<HTMLElement>(".agents-row-doing")!;
+  const words = a.waiting ? "waiting on its own work" : (a.doing ?? (a.steps === 0 ? "starting…" : ""));
+  setText(doing, words);
+  setHidden(doing, words === "");
+  // Its time ticks on between draws (the view's clock), from here.
+  const clock = li.querySelector<HTMLElement>(".agents-row-clock")!;
+  clock.dataset["since"] = String(a.since);
+  setText(clock, elapsedWords(Date.now() - a.since));
+  const tokens = li.querySelector<HTMLElement>(".agents-row-tokens")!;
+  setText(tokens, a.tokens !== undefined && a.tokens > 0 ? `${compactTokens(a.tokens)} tokens` : "");
+  setHidden(tokens, a.tokens === undefined || a.tokens <= 0);
+}
+
+/** The agents panel's times, to the second, between draws: every working sub-agent's since it started. */
+export function tickAgentClocks(root: ParentNode): void {
+  const now = Date.now();
+  for (const c of Array.from(root.querySelectorAll<HTMLElement>(".agents-row-clock[data-since]"))) {
+    const since = Number(c.dataset["since"]);
+    if (Number.isFinite(since)) setText(c, elapsedWords(now - since));
+  }
+}
+
 /** One send form for whichever session is selected; the draft lives in the model, so the form swaps with the tab. */
 function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
   let form = root.querySelector<HTMLFormElement>("form.send");
@@ -4594,10 +4714,18 @@ function renderSend(root: HTMLElement, state: ViewState, ui: UiState): void {
     dock.hidden = true;
     form.before(dock);
   }
+  // Over the dock, the session's sub-agents at work, as Claude Code lists them under its prompt.
+  let panel = root.querySelector<HTMLElement>(":scope > .agents-panel");
+  if (!panel) {
+    panel = createAgentsPanel();
+    root.querySelector(".dialog-dock")!.before(panel);
+  }
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   // its Messages pane is read alone: what is typed to the session goes from its timeline
   const reading = card !== undefined && paneMode(tabChoice(ui.modes.get(card.session.id), ui.view), sessionTerminal(state, card.session) !== undefined, state.talkOn === true) === "messages";
   setHidden(form, card === undefined || reading);
+  const agents = card !== undefined && !reading ? workingAgents(shownPosts.get(card.session.id) ?? [], card.session, Date.now()) : [];
+  updateAgentsPanel(panel, agents, card?.session.id, ui);
   if (!card) return;
   const s = card.session;
   const switched = form.dataset["session"] !== s.id;

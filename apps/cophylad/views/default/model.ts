@@ -2042,11 +2042,12 @@ export function stoppable(state: ViewState, session: Session): boolean {
  */
 export type TabTone = "ask" | "active" | "shell" | "done" | "quiet";
 
-export function tabTone(card: SessionCard): TabTone {
+export function tabTone(card: SessionCard, now = Date.now()): TabTone {
   const s = card.session;
   if (s.status === "needs_input" || s.status === "needs_permission" || s.ask !== undefined || s.waiting?.on === "user") return "ask";
   if (s.status === "busy") return "active";
-  if (s.waiting?.on === "shell") return "shell";
+  // Its turn over, it still waits on its shells or on sub-agents it sent off.
+  if (s.waiting?.on === "shell" || agentsAtWork(s, now) > 0) return "shell";
   return card.unseen ? "done" : "quiet";
 }
 
@@ -2168,8 +2169,16 @@ export interface AgentRun {
   report?: string;
 }
 
-/** A run of an agent's turn: what it wrote, the tools it called one after another, or a sub-agent it started. */
-export type TurnPart = { kind: "text"; key: string; text: string } | { kind: "steps"; key: string; steps: TimelineStep[] } | { kind: "agent"; key: string; step: TimelineStep };
+/**
+ * A run of an agent's turn: what it wrote, the tools it called one after another, a sub-agent it
+ * started, or several started together (one call after another, nothing between), as Claude Code
+ * draws them under one line.
+ */
+export type TurnPart =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "steps"; key: string; steps: TimelineStep[] }
+  | { kind: "agent"; key: string; step: TimelineStep }
+  | { kind: "agents"; key: string; steps: TimelineStep[] };
 
 /**
  * A call's arguments as fields. A long call is kept as its JSON text cut short with `…`: the
@@ -2294,7 +2303,7 @@ export type TimelinePost =
   | { kind: "agent"; key: string; at: number; text: string; who: string; harness?: string }
   | { kind: "turn"; key: string; at: number; parts: TurnPart[] }
   | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown }
-  | { kind: "note"; key: string; at: number; text: string };
+  | { kind: "note"; key: string; at: number; text: string; call?: string };
 
 export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly SubagentRun[] } = {}): TimelinePost[] {
   const posts: TimelinePost[] = [];
@@ -2307,6 +2316,8 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
   // A Codex sub-agent's start (which names the spawning call) and its end, by its path, likewise.
   const notices = new Map<string, TaskNotice>();
   const calls = new Set<string>();
+  // The sub-agents' calls: what each was asked to do, and when, for the line its end puts at the bottom.
+  const agentCalls = new Map<string, { description: string; at: number }>();
   const spawned = new Map<string, string>();
   const spawnNames = new Map<string, string>();
   const finished = new Map<string, { report?: string }>();
@@ -2315,6 +2326,8 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
     const p = (row.event.payload ?? {}) as Record<string, unknown>;
     if (row.event.kind === "tool_call" && typeof p["id"] === "string") {
       calls.add(p["id"]);
+      const sub = subagentOf({ tool: String(p["tool"] ?? ""), args: p["args"] });
+      if (sub) agentCalls.set(p["id"], { description: sub.description, at: row.event.at });
       if (p["tool"] === "spawn_agent") spawnNames.set(p["id"], `/root/${String(callArgs(p["args"])["task_name"] ?? "")}`);
     }
     if (row.event.kind === "notification" && p["type"] === "subagent" && typeof p["path"] === "string") {
@@ -2339,10 +2352,25 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
   const pathOf = (call: string) => spawned.get(call) ?? spawnNames.get(call);
   const cardPaths = new Set([...spawnNames.keys()].map(pathOf).filter((x): x is string => x !== undefined));
   const noted = new Set<string>();
-  /** A notice in the timeline: one for a call here is that call's (its step's mark, its card's ending), another task's is one line, once. */
+  // The calls the walk below has passed: a sub-agent's end line comes after its card, never over it.
+  const passed = new Set<string>();
+  /**
+   * A notice in the timeline: one for a call here is that call's (its step's mark, its card's
+   * ending), and a sub-agent's end is also a line where it came, as Claude Code writes one under
+   * the conversation; another task's is one line, once.
+   */
   const notice = (n: TaskNotice, key: string, at: number) => {
     const k = noticeKey(n);
-    if ((n.toolUseId !== undefined && calls.has(n.toolUseId)) || noted.has(k)) return;
+    if (noted.has(k)) return;
+    if (n.toolUseId !== undefined && calls.has(n.toolUseId)) {
+      const agent = agentCalls.get(n.toolUseId);
+      const run = runOf(n);
+      // A notice before its call (a sub-agent done in a moment, its hook's copy) leaves the line to the copy after.
+      if (agent === undefined || !passed.has(n.toolUseId) || run.state === "running" || run.state === "waiting") return;
+      noted.add(k);
+      add({ kind: "note", key, at, text: agentEndWords(agent.description, run.state, at - agent.at), call: n.toolUseId });
+      return;
+    }
     noted.add(k);
     add({ kind: "note", key, at, text: n.summary ?? (n.event ? firstWords(n.event) : "A background task ended") });
   };
@@ -2398,12 +2426,16 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         const id = typeof p["id"] === "string" ? p["id"] : undefined;
         const step: TimelineStep = { key: row.key, ...(id !== undefined ? { id } : {}), tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
         const agent = subagentOf(step) !== undefined;
-        if (agent) t.parts.push({ kind: "agent", key: row.key, step });
+        // A second agent started right after another: the two (and any after) are one group, under a key of its own.
+        if (agent && last?.kind === "agent") t.parts.splice(-1, 1, { kind: "agents", key: `g${last.key}`, steps: [last.step, step] });
+        else if (agent && last?.kind === "agents") last.steps.push(step);
+        else if (agent) t.parts.push({ kind: "agent", key: row.key, step });
         else if (last?.kind === "steps") last.steps.push(step);
         else t.parts.push({ kind: "steps", key: row.key, steps: [step] });
         if (id !== undefined) open.set(id, step);
         else waiting.push(step);
         if (id === undefined) break;
+        passed.add(id);
         // How far a sub-agent has got, as the node reads its own transcript.
         const progress = agent ? opts.subagents?.find((r) => r.call === id) : undefined;
         if (progress) step.progress = progress;
@@ -2473,9 +2505,14 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
           if (n) notice(n, row.key, e.at);
           else add({ kind: "note", key: row.key, at: e.at, text: `queued: ${queued}` });
         } else if (type === "subagent") {
-          // A Codex sub-agent's start and end are its card's; one whose spawning is not on the page ends in a line.
+          // A Codex sub-agent's start and end are its card's, its end a line where it came too; one whose spawning is not on the page ends in a line alone.
           const path = String(p["path"] ?? "");
-          if (p["activity"] === "completed" && !cardPaths.has(path)) add({ kind: "note", key: row.key, at: e.at, text: `Sub-agent ${path.split("/").pop()?.replace(/_/g, " ") || path} finished` });
+          if (p["activity"] === "completed") {
+            const call = cardPaths.has(path) ? [...spawnNames.keys()].find((c) => pathOf(c) === path) : undefined;
+            const agent = call !== undefined ? agentCalls.get(call) : undefined;
+            if (call !== undefined && agent !== undefined) add({ kind: "note", key: row.key, at: e.at, text: agentEndWords(agent.description, "done", e.at - agent.at), call });
+            else if (!cardPaths.has(path)) add({ kind: "note", key: row.key, at: e.at, text: `Sub-agent ${path.split("/").pop()?.replace(/_/g, " ") || path} finished` });
+          }
         }
         else if (type === "session_end") add({ kind: "note", key: row.key, at: e.at, text: `Ending (${String(p["reason"] ?? "")})` });
         else if (type === "backgrounded") add({ kind: "note", key: row.key, at: e.at, text: "Sent to the background: it goes on as a background job" });
@@ -2629,15 +2666,125 @@ export function agentState(step: Pick<TimelineStep, "run" | "result" | "progress
  * A sub-agent card's facts in a line, and while it runs the step it is on: how many tools it has
  * called, how long it has worked (to now while it runs), the model it runs on.
  */
-export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress">, now: number): { facts: string; doing?: string } {
+export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress" | "steps">, now: number): { facts: string; doing?: string } {
   const p = step.progress;
   if (!p) return { facts: "" };
   const running = agentState(step) === "running";
-  const parts = [p.steps === 1 ? "1 step" : `${p.steps} steps`];
+  // Its steps' hooks can be ahead of its transcript's next read: the count is the larger.
+  const n = Math.max(p.steps, step.steps?.length ?? 0);
+  const parts = [n === 1 ? "1 step" : `${n} steps`];
   const ms = (running ? now : p.lastAt) - p.startedAt;
   if (p.startedAt > 0 && ms >= 0) parts.push(elapsedWords(ms));
+  if (p.tokens !== undefined && p.tokens > 0) parts.push(`${compactTokens(p.tokens)} tokens`);
   if (p.model) parts.push(shortModel(p.model));
   return { facts: parts.join(" · "), ...(running && p.last ? { doing: p.last } : {}) };
+}
+
+/** A sub-agent's end in a line, as Claude Code writes it: `Agent "Find the stylesheet" finished · 13s`. */
+export function agentEndWords(description: string, state: AgentRun["state"], ms: number): string {
+  const how = state === "failed" ? "failed" : state === "stopped" ? "was stopped" : "finished";
+  return `Agent "${description}" ${how}${ms >= 1000 ? ` · ${elapsedWords(ms)}` : ""}`;
+}
+
+/** A count of tokens as a list of agents gives it: 950, 11.4k, 1.2M. */
+export function compactTokens(n: number): string {
+  if (n < 1000) return String(Math.round(n));
+  if (n < 1_000_000) return `${(n / 1000).toFixed(n < 100_000 ? 1 : 0).replace(/\.0$/, "")}k`;
+  return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
+}
+
+/** How long a sub-agent that never said it finished counts as at work after it last did something: the node's own reckoning. */
+export const AGENT_LIVE_FOR_MS = 15 * 60_000;
+/** The same for a sub-agent the node reads nothing of (an older node, another harness): from its launch. */
+const AGENT_UNREAD_FOR_MS = 60 * 60_000;
+
+/**
+ * A sub-agent at work, as the panel over the send box lists it, the way Claude Code lists its
+ * agents under its prompt (and Codex's `/subagents`): its type, what it was asked, the step it is
+ * on, how long it has worked, how full its context is.
+ */
+export interface WorkingAgent {
+  /** The call that started it: its card's. */
+  call: string;
+  type: string;
+  description: string;
+  doing?: string;
+  steps: number;
+  /** When it started: its time counts from here. */
+  since: number;
+  tokens?: number;
+  model?: string;
+  /** It waits on background work of its own, its report so far in. */
+  waiting?: boolean;
+}
+
+/**
+ * The sub-agents of a session still at work, the oldest first: every sub-agent card on its
+ * timeline that has not ended (no result, no notice, its run not finished) and did something in
+ * the last while, then any the node lists working whose launch is not on the page.
+ */
+export function workingAgents(posts: readonly TimelinePost[], session: Pick<Session, "status" | "subagents">, now: number): WorkingAgent[] {
+  if (session.status === "ended") return [];
+  const out: WorkingAgent[] = [];
+  const seen = new Set<string>();
+  for (const post of posts) {
+    if (post.kind !== "turn") continue;
+    for (const part of post.parts) {
+      const steps = part.kind === "agent" ? [part.step] : part.kind === "agents" ? part.steps : [];
+      for (const step of steps) {
+        const sub = subagentOf(step);
+        if (sub === undefined || step.id === undefined) continue;
+        seen.add(step.id);
+        const state = agentState(step);
+        if (state !== "running" && state !== "waiting") continue;
+        const p = step.progress;
+        if (p ? now - Math.max(p.lastAt, p.startedAt) > AGENT_LIVE_FOR_MS : now - post.at > AGENT_UNREAD_FOR_MS) continue;
+        // The step it is on as its transcript has it, else its newest one its hooks gave.
+        const own = step.steps?.at(-1);
+        const doing = p?.last ?? (own ? stepWords(own) : undefined);
+        out.push({
+          call: step.id,
+          type: sub.type,
+          description: sub.description,
+          ...(doing !== undefined && state === "running" ? { doing } : {}),
+          steps: Math.max(p?.steps ?? 0, step.steps?.length ?? 0),
+          since: p && p.startedAt > 0 ? p.startedAt : post.at,
+          ...(p?.tokens !== undefined ? { tokens: p.tokens } : {}),
+          ...(p?.model !== undefined ? { model: p.model } : {}),
+          ...(state === "waiting" ? { waiting: true } : {}),
+        });
+      }
+    }
+  }
+  for (const run of session.subagents ?? []) {
+    if (seen.has(run.call) || run.finished || now - Math.max(run.lastAt, run.startedAt) > AGENT_LIVE_FOR_MS) continue;
+    out.push({
+      call: run.call,
+      type: run.type ?? "agent",
+      description: run.description ?? "a sub-agent",
+      ...(run.last !== undefined ? { doing: run.last } : {}),
+      steps: run.steps,
+      since: run.startedAt,
+      ...(run.tokens !== undefined ? { tokens: run.tokens } : {}),
+      ...(run.model !== undefined ? { model: run.model } : {}),
+    });
+  }
+  return out.sort((a, b) => a.since - b.since);
+}
+
+/** How many sub-agents the node lists at work for a session, for its tab: those that have not finished and did something in the last while. */
+export function agentsAtWork(session: Pick<Session, "status" | "subagents">, now: number): number {
+  if (session.status === "ended") return 0;
+  return (session.subagents ?? []).filter((r) => !r.finished && now - Math.max(r.lastAt, r.startedAt) <= AGENT_LIVE_FOR_MS).length;
+}
+
+/** The line over a group of agents started together: how many, and how many are still at it, or how they ended. */
+export function agentsGroupWords(steps: readonly Pick<TimelineStep, "run" | "result" | "progress">[]): string {
+  const states = steps.map((s) => agentState(s));
+  const working = states.filter((s) => s === "running" || s === "waiting").length;
+  const failed = states.filter((s) => s === "failed" || s === "stopped").length;
+  if (working > 0) return `${steps.length} agents · ${working} working`;
+  return failed > 0 ? `${steps.length} agents finished · ${failed} failed` : `${steps.length} agents finished`;
 }
 
 /**

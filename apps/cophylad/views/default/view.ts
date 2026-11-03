@@ -71,7 +71,7 @@ import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
-import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks } from "./render.ts";
+import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks, tickAgentClocks } from "./render.ts";
 import type { FolderBrowse, RenderOptions, Roots, SendPanel, TerminalMenu, UiState } from "./render.ts";
 import { DroppedPaths, linkText, webView2 } from "./dropped.ts";
 import { ContextView } from "./contextview.ts";
@@ -2248,6 +2248,26 @@ async function focus(session: string): Promise<void> {
 /** How long an item a chip brought into view stays outlined. */
 const FLASH_MS = 1500;
 
+/**
+ * A sub-agent's card in the selected session's timeline, opened, brought into view and outlined a
+ * moment: from its row in the agents panel, or from the line its end left at the bottom.
+ */
+function showAgentCard(call: string): void {
+  if (ui.selected === undefined) return;
+  const pane = roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(ui.selected)}"]`);
+  const card = pane?.querySelector<HTMLDetailsElement>(`.tl-agent[data-call="${CSS.escape(call)}"]`);
+  if (!card) return;
+  card.open = true;
+  card.scrollIntoView({ block: "center" });
+  card.dataset["flash"] = "1";
+  setTimeout(() => delete card.dataset["flash"], FLASH_MS);
+}
+
+// The agents panel's times tick to the second between draws, as Claude Code's list does.
+setInterval(() => {
+  if (document.visibilityState === "visible") tickAgentClocks(roots.composer);
+}, 1000);
+
 /** Brings what a chat chip names into view and outlines it a moment: a thread (or a message in it), a task, an audit row, or an open prompt. */
 function goto(kind: string, id: string, message?: string): void {
   if (ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined) select(undefined);
@@ -3781,6 +3801,18 @@ document.addEventListener("click", (ev) => {
       if (b?.listing) void newTerminal(folderPlace(b.node), b.listing.path, folderPlace(b.node));
       return;
     }
+    case "agents-fold": {
+      const session = target.dataset["session"];
+      if (!session) return;
+      ui.agentsFolded ??= new Set();
+      if (ui.agentsFolded.has(session)) ui.agentsFolded.delete(session);
+      else ui.agentsFolded.add(session);
+      draw();
+      return;
+    }
+    case "agent-show":
+      if (target.dataset["call"]) showAgentCard(target.dataset["call"]);
+      return;
     case "pane-mode": {
       const session = target.dataset["session"];
       const mode = target.dataset["mode"];

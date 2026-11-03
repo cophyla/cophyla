@@ -68,7 +68,7 @@ interface SubagentTails {
   /** What each is, how far the spend ledger has it, and what started the turn it was first seen in. */
   info: Map<string, SubagentInfo & { mark: number; trigger: string }>;
   /** How far each has got, by its file: the session's `subagents` once its call is known. */
-  runs: Map<string, { call?: string; agent?: string; steps: number; last?: string; model?: string; startedAt: number; lastAt: number; finished?: boolean }>;
+  runs: Map<string, { call?: string; agent?: string; type?: string; description?: string; steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number; finished?: boolean }>;
 }
 
 /**
@@ -679,11 +679,19 @@ export class ClaudeAdapter implements HarnessAdapter {
       const info = subs.info.get(file)!;
       let run = subs.runs.get(file);
       if (!run) subs.runs.set(file, (run = { agent: info.id, steps: 0, startedAt: 0, lastAt: 0 }));
-      // Its meta names the call that started it as it starts, and says when it has finished.
+      // Its meta names the call that started it as it starts, what it is and was asked, and says when it has finished.
       if (run.call === undefined || !run.finished) {
         const meta = subagentMeta(file);
         if (meta.call !== undefined && meta.call !== run.call) {
           run.call = meta.call;
+          changed = true;
+        }
+        if (meta.type !== undefined && meta.type !== run.type) {
+          run.type = meta.type;
+          changed = true;
+        }
+        if (meta.description !== undefined && meta.description !== run.description) {
+          run.description = meta.description;
           changed = true;
         }
         if (meta.finished === true && !run.finished) {
@@ -717,9 +725,12 @@ export class ClaudeAdapter implements HarnessAdapter {
     return runs.slice(-SUBAGENTS_MAX).map((r) => ({
       call: r.call,
       ...(r.agent !== undefined ? { agent: r.agent } : {}),
+      ...(r.type !== undefined ? { type: r.type } : {}),
+      ...(r.description !== undefined ? { description: r.description } : {}),
       steps: r.steps,
       ...(r.last !== undefined ? { last: r.last } : {}),
       ...(r.model !== undefined ? { model: r.model } : {}),
+      ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
       startedAt: r.startedAt || r.lastAt,
       lastAt: r.lastAt || r.startedAt,
       ...(r.finished ? { finished: true } : {}),
@@ -845,6 +856,10 @@ export class ClaudeAdapter implements HarnessAdapter {
     found.lastHookAt = this.host.now();
     this.findProcess(found, meta);
     this.checkAccount(found, hook, meta);
+    // A sub-agent's tool from one the session does not list yet: its sub-agents are read at the
+    // hook's own read, so its card takes the step rather than the session showing it a while.
+    const subs = hook.agentId !== undefined && found.parser ? this.subagents.get(found.parser as ClaudeTranscriptState) : undefined;
+    if (subs && ![...subs.runs.values()].some((r) => r.agent === hook.agentId && r.call !== undefined)) subs.readAt = -Infinity;
     return found;
   }
 

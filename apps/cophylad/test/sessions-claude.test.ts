@@ -575,13 +575,27 @@ describe("claude adapter prices a session with its sub-agents", () => {
     clock += 10_000;
     await mini.sessions.tick();
     const runs = () => mini.sessions.list().find((x) => x.native.id === "sess-p")!.subagents;
-    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", steps: 2, last: "Read app.css", model: "claude-haiku-5-5", startedAt, lastAt: startedAt }]);
+    // Its type and what it was asked come from its meta; its context, from its latest call's usage.
+    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", type: "Explore", description: "Find the css", steps: 2, last: "Read app.css", model: "claude-haiku-5-5", tokens: 2, startedAt, lastAt: startedAt }]);
     // Working, it is read again in a few seconds: another step, then its meta says it finished.
     clock += 3000;
     writeFileSync(join(subs, "agent-a3.jsonl"), call("s3c", "Bash", { command: "rg css", description: "Search for css" }) + "\n", { flag: "a" });
     writeFileSync(join(subs, "agent-a3.meta.json"), JSON.stringify({ agentType: "Explore", toolUseId: "toolu_find", finished: true }));
     await mini.sessions.tick();
-    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", steps: 3, last: "Bash Search for css", model: "claude-haiku-5-5", startedAt, lastAt: clock, finished: true }]);
+    expect(runs()).toEqual([{ call: "toolu_find", agent: "a3", type: "Explore", description: "Find the css", steps: 3, last: "Bash Search for css", model: "claude-haiku-5-5", tokens: 2, startedAt, lastAt: clock, finished: true }]);
+  });
+
+  test("a hook from a sub-agent it does not list yet has its sub-agents read at once: its card takes the step, never the session", async () => {
+    const path = transcriptPathFor(profileDir, cwd, "sess-p");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    const runs = () => mini.sessions.list().find((x) => x.native.id === "sess-p")!.subagents ?? [];
+    clock += 1000;
+    writeFileSync(join(subs, "agent-a4.meta.json"), JSON.stringify({ agentType: "general-purpose", description: "Scan the readme", toolUseId: "toolu_scan" }));
+    writeFileSync(join(subs, "agent-a4.jsonl"), JSON.stringify({ type: "assistant", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { id: "s4a", model: "claude-haiku-5-5", role: "assistant", content: [{ type: "tool_use", id: "tu_s4a", name: "Read", input: { file_path: "C:\\w\\README.md" } }], usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
+    // Read a second ago, its sub-agents are not due again: only the hook brings the new one in.
+    expect(runs().some((r) => r.agent === "a4")).toBe(false);
+    await mini.sessions.onHook("claude", { session_id: "sess-p", transcript_path: path, cwd, hook_event_name: "PostToolUse", tool_name: "Read", tool_input: { file_path: "C:\\w\\README.md" }, tool_response: "# kit", tool_use_id: "tu_s4a", agent_id: "a4" }, { via: "http" });
+    expect(runs().find((r) => r.agent === "a4")).toMatchObject({ call: "toolu_scan", description: "Scan the readme", steps: 1, last: "Read README.md" });
   });
 
   const costRecord = (sessionId: string, total: number, usage: Record<string, { in: number; out: number; read?: number }> = {}) =>

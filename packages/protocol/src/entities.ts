@@ -346,17 +346,23 @@ export type DialogView = z.infer<typeof DialogView>;
 export const SUBAGENTS_MAX = 30;
 
 /**
- * A sub-agent's work so far: the call that started it (`call`, a tool use id), how many tools it has
- * called, the last one in a few words, the model it runs, when it started and last did something, and
- * whether it has finished.
+ * A sub-agent's work so far: the call that started it (`call`, a tool use id), what it is and was
+ * asked to do, how many tools it has called, the last one in a few words, the model it runs, how
+ * many tokens its context holds, when it started and last did something, and whether it has finished.
  */
 export const SubagentRun = z.object({
   call: z.string().max(200),
   /** The sub-agent's own id, which its tools' results carry. */
   agent: z.string().max(200).optional(),
+  /** Its kind, as the harness names it: Claude's agent type (`general-purpose`, `Explore`), Codex's role. */
+  type: z.string().max(120).optional(),
+  /** What it was started to do, in a few words: the call's description, or Codex's task name. */
+  description: z.string().max(300).optional(),
   steps: z.number().int().nonnegative(),
   last: z.string().max(200).optional(),
   model: z.string().max(120).optional(),
+  /** The tokens of its context at its latest model call, its answer included: what Claude Code's agent list shows. */
+  tokens: z.number().int().nonnegative().optional(),
   startedAt: Timestamp,
   lastAt: Timestamp,
   finished: z.boolean().optional(),

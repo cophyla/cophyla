@@ -508,6 +508,38 @@ describe("codex adapter over the fake app-server", () => {
     expect(unseen.transcript?.path).not.toBe(childPath);
   });
 
+  test("a sub-agent the thread spawned is its `subagents`: its type and task from the call, its steps, model and context from its own rollout, until it completed", async () => {
+    // Its times are now's: one quiet for longer than a sub-agent works unheard from is not read.
+    const base = Date.now() - 60_000;
+    const at = (s: number) => base + s * 1000;
+    const iso = (s: number) => new Date(at(s)).toISOString();
+    const s = mini.sessions.list().find((x) => x.native.id === THREAD)!;
+    const child = "01a0af90-2222-7333-8444-555566667777";
+    const childPath = join(dirname(rolloutPath), `rollout-2026-09-17T15-30-00-${child}.jsonl`);
+    const usage = { input_tokens: 4000, cached_input_tokens: 0, output_tokens: 200, total_tokens: 4200 };
+    writeFileSync(
+      childPath,
+      [
+        { timestamp: iso(1), type: "turn_context", payload: { model: "gpt-6.1-sol", cwd } },
+        { timestamp: iso(2), type: "response_item", payload: { type: "function_call", name: "exec_command", arguments: JSON.stringify({ cmd: "rg -n clip src" }), call_id: "c1" } },
+        { timestamp: iso(3), type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage, model_context_window: 258400 } } },
+      ]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n",
+    );
+    const spawn = { timestamp: iso(0), type: "response_item", payload: { type: "function_call", name: "spawn_agent", arguments: JSON.stringify({ task_name: "review_v3_abc", agent_type: "worker", message: "gAAAAB-sealed" }), call_id: "call_spawn_1" } };
+    const activity = (kind: string, id: string, at: string) => ({ timestamp: at, type: "event_msg", payload: { type: "item_completed", item: { type: "SubAgentActivity", id, kind, agent_thread_id: child, agent_path: "/root/review_v3_abc" } } });
+    writeFileSync(rolloutPath, [spawn, activity("started", "call_spawn_1", iso(1))].map((r) => JSON.stringify(r)).join("\n") + "\n", { flag: "a" });
+    await mini.sessions.tick();
+    const runs = () => mini.sessions.list().find((x) => x.id === s.id)!.subagents;
+    expect(runs()).toEqual([
+      { call: "call_spawn_1", agent: child, type: "worker", description: "review v3 abc", steps: 1, last: "Run rg -n clip src", model: "gpt-6.1-sol", tokens: 4200, startedAt: at(0), lastAt: at(2) },
+    ]);
+    writeFileSync(rolloutPath, JSON.stringify(activity("completed", "subagent-completed-9", iso(61))) + "\n", { flag: "a" });
+    await mini.sessions.tick();
+    expect(runs()![0]).toMatchObject({ call: "call_spawn_1", finished: true, lastAt: at(61) });
+  });
+
   test("with [sessions].record_sent_text, a message's receipts carry the text the user sent", async () => {
     const s = mini.sessions.list().find((x) => x.native.id === THREAD)!;
     mini.sessions.config.record_sent_text = true;
