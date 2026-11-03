@@ -159,6 +159,8 @@ export function toViewFile(path: string, bytes: Buffer, transpile: Transpile): V
  */
 export function minifyCss(source: string): string {
   let out = "";
+  // the last character written, kept apart: reading it back off `out` as it grows copies it each time
+  let last = "";
   let i = 0;
   // whitespace (or a comment beside it) waits here until the next character says whether a space is needed
   let space = false;
@@ -176,17 +178,19 @@ export function minifyCss(source: string): string {
     }
     if (space) {
       space = false;
-      const last = out[out.length - 1];
-      if (last !== undefined && !"{};:(".includes(last) && !"{};,)".includes(c)) out += " ";
+      if (last !== "" && !"{};:(".includes(last) && !"{};,)".includes(c)) out += " ";
     }
     if (c === '"' || c === "'") {
       let j = i + 1;
       while (j < source.length && source[j] !== c && source[j] !== "\n") j += source[j] === "\\" ? 2 : 1;
-      out += source.slice(i, j + 1);
+      const quoted = source.slice(i, j + 1);
+      out += quoted;
+      last = quoted[quoted.length - 1] ?? c;
       i = j + 1;
       continue;
     }
     out += c;
+    last = c;
     i++;
   }
   return out + "\n";

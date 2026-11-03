@@ -85,6 +85,16 @@ describe("views: files", () => {
     expect(out).toBe('.rail{color:red;content:"/* not a comment */";background:url(\'a.png\');}.b{margin:0}\n');
   });
 
+  test("CSS minifies in time that grows with its length: a big stylesheet is a moment's work, every view load", () => {
+    // reading back what was written, off the growing output, once made each step copy it: 0.3 s for view.css, minutes for this
+    const rule = '.row-a .b,\n.c > .d:hover {\n  margin: 0 auto;\n  content: "x: y";\n  color: rgba(0, 0, 0, 0.5);\n}\n';
+    const css = rule.repeat(Math.ceil((2 * 1024 * 1024) / rule.length));
+    const t = performance.now();
+    const out = minifyCss(css);
+    expect(performance.now() - t).toBeLessThan(1500);
+    expect(out.startsWith('.row-a .b, .c > .d:hover{margin:0 auto;content:"x: y";color:rgba(0, 0, 0, 0.5);}')).toBe(true);
+  });
+
   test("CSS keeps every space that parts words (a selector's, a value's, calc's, the strings of grid areas) and the one after a comma", () => {
     const css = [
       ".a .b,\n.c > .d:hover {",
