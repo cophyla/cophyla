@@ -533,7 +533,7 @@ describe("codex adapter over the fake app-server", () => {
     await mini.sessions.tick();
     const runs = () => mini.sessions.list().find((x) => x.id === s.id)!.subagents;
     expect(runs()).toEqual([
-      { call: "call_spawn_1", agent: child, type: "worker", description: "review v3 abc", steps: 1, last: "Run rg -n clip src", model: "gpt-6.1-sol", tokens: 4200, startedAt: at(0), lastAt: at(2) },
+      { call: "call_spawn_1", agent: child, type: "worker", description: "review v3 abc", steps: 1, last: "Run rg -n clip src", model: "gpt-6.1-sol", tokens: 4200, window: 258400, startedAt: at(0), lastAt: at(2) },
     ]);
     writeFileSync(rolloutPath, JSON.stringify(activity("completed", "subagent-completed-9", iso(61))) + "\n", { flag: "a" });
     await mini.sessions.tick();

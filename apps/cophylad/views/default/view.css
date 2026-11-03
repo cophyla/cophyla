@@ -2942,6 +2942,39 @@ button:disabled {
   display: none;
 }
 
+/* How full its context is, after its count: a short bar, amber past half, red past four fifths. */
+.agents-row-meter {
+  position: relative;
+  flex: none;
+  align-self: center;
+  width: 36px;
+  height: 4px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--line-strong);
+}
+
+.agents-row-meter[hidden] {
+  display: none;
+}
+
+.agents-row-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  border-radius: 2px;
+  background: var(--moss);
+}
+
+.agents-row-meter[data-level="mid"] .agents-row-fill {
+  background: var(--amber);
+}
+
+.agents-row-meter[data-level="high"] .agents-row-fill {
+  background: var(--rust);
+}
+
 /* Narrow, what it was asked has the line to itself, its type and the step it is on under it. */
 @media (max-width: 640px) {
   .agents-list {

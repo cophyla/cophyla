@@ -363,6 +363,8 @@ export const SubagentRun = z.object({
   model: z.string().max(120).optional(),
   /** The tokens of its context at its latest model call, its answer included: what Claude Code's agent list shows. */
   tokens: z.number().int().nonnegative().optional(),
+  /** Its context window, where the harness says it (Codex's `model_context_window`); a view otherwise reckons it from the model. */
+  window: z.number().int().positive().optional(),
   startedAt: Timestamp,
   lastAt: Timestamp,
   finished: z.boolean().optional(),

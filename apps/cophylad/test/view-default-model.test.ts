@@ -21,7 +21,7 @@ import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, wi
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
-import { agentEndWords, agentsAtWork, agentsGroupWords, compactTokens, workingAgents } from "../views/default/model.ts";
+import { agentEndWords, agentKind, agentsAtWork, agentsGroupWords, agentWindow, compactTokens, contextWords, workingAgents } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
@@ -503,7 +503,7 @@ describe("default view model", () => {
       { state: "done", summary: 'Agent "Find the stylesheet" finished', report: "It is in src/app.css, line 4." },
       { state: "waiting", summary: 'Agent "Run the suite" is waiting on its own background work', report: "Started the run; 40 of 2571 so fa…" },
     ]);
-    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Agent "Find the stylesheet" finished', 'Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Explore agent "Find the stylesheet" finished', 'Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
     expect((posts[1] as Extract<TimelinePost, { kind: "note" }>).call).toBe("a1");
     expect(agentsGroupWords(((posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agents" }>).steps)).toBe("2 agents · 1 working");
     expect(taskNotice(notice("a3", "killed", 'Agent "x" was stopped'))).toEqual({ toolUseId: "a3", taskId: "xa3", status: "killed", summary: 'Agent "x" was stopped' });
@@ -543,18 +543,57 @@ describe("default view model", () => {
     const step = ((timelinePosts(rows, { subagents: [run, { ...run, call: "other" }] })[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>).step;
     expect(step.progress).toEqual(run);
     expect(agentState(step)).toBe("running");
-    expect(agentFacts(step, 202_000)).toEqual({ facts: "7 steps · 3m 12s · haiku 5.5", doing: "Read app.css" });
+    // Its model is in its kind, at the card's head; the facts are how far it has got.
+    expect(agentFacts(step, 202_000)).toEqual({ facts: "7 steps · 3m 12s", doing: "Read app.css" });
+    expect(agentKind({ ...subagentOf(step)!, model: run.model })).toBe("Haiku 5.5 agent");
     // Its own transcript says it has finished, before its notice: done, timed to its last step, no step it is on.
     const ended = { ...step, progress: { ...run, finished: true } };
     expect(agentState(ended)).toBe("done");
-    expect(agentFacts(ended, 999_999)).toEqual({ facts: "7 steps · 1m · haiku 5.5" });
+    expect(agentFacts(ended, 999_999)).toEqual({ facts: "7 steps · 1m" });
     expect(agentFacts({ result: undefined }, 0)).toEqual({ facts: "" });
     expect([elapsedWords(4_400), elapsedWords(60_000), elapsedWords(3_725_000)]).toEqual(["4s", "1m", "1h 2m"]);
     expect([shortModel("claude-opus-5-5"), shortModel("claude-sonnet-5-5[1m]"), shortModel("gpt-6-astra")]).toEqual(["opus 5.5", "sonnet 5.5[1m]", "gpt-6-astra"]);
-    // How full its context is, as Claude Code's list of agents gives it.
-    expect(agentFacts({ ...step, progress: { ...run, tokens: 11_400 } }, 202_000).facts).toBe("7 steps · 3m 12s · 11.4k tokens · haiku 5.5");
+    // How full its context is, against its window: Claude's usual one for its model, or the session's when it runs the same model.
+    expect(agentFacts({ ...step, progress: { ...run, tokens: 11_400 } }, 202_000).facts).toBe("7 steps · 3m 12s · 11.4k / 200k context");
+    expect(agentFacts({ ...step, progress: { ...run, tokens: 11_400 } }, 202_000, { stats: { model: "claude-haiku-5-5", context: { limit: 1_000_000 } } }).facts).toBe("7 steps · 3m 12s · 11.4k / 1M context");
     expect([compactTokens(950), compactTokens(11_400), compactTokens(250_000), compactTokens(1_200_000), compactTokens(2_000_000)]).toEqual(["950", "11.4k", "250k", "1.2M", "2M"]);
     expect([agentEndWords("Scan it", "done", 13_400), agentEndWords("Scan it", "failed", 2_000), agentEndWords("Scan it", "stopped", 400)]).toEqual(['Agent "Scan it" finished · 13s', 'Agent "Scan it" failed · 2s', 'Agent "Scan it" was stopped']);
+  });
+
+  test("a sub-agent is named by what kind of agent it is: its model, its type, its name, all that is known", () => {
+    // its model as it ran wins over the one asked for; the plain type says nothing
+    expect(agentKind({ type: "Explore", model: "claude-sonnet-5-5" })).toBe("Sonnet 5.5 Explore agent");
+    expect(agentKind({ type: "general-purpose", model: "claude-opus-5-5[1m]" })).toBe("Opus 5.5 agent");
+    expect(agentKind({ type: "Explore", model: "haiku" })).toBe("Haiku Explore agent");
+    expect(agentKind({ type: "flow-tracer", model: "inherit" })).toBe("Flow-tracer agent");
+    expect(agentKind({ type: "general-purpose" })).toBe("Agent");
+    expect(agentKind({ type: "Explore", model: "claude-sonnet-5-5", name: "researcher" })).toBe("researcher · Sonnet 5.5 Explore agent");
+    // another harness's model keeps its own name and case
+    expect(agentKind({ type: "worker", model: "gpt-6.1-sol" })).toBe("gpt-6.1-sol worker agent");
+    // the call's own model and name
+    expect(subagentOf({ tool: "Agent", args: { subagent_type: "Explore", description: "Find it", prompt: "p", model: "sonnet", name: "finder" } })).toEqual({ type: "Explore", description: "Find it", prompt: "p", model: "sonnet", name: "finder" });
+    // the end line names it so, the model as the node read it
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq * 1000, kind, payload } as unknown as SessionEvent });
+    const notice = '<task-notification>\n<task-id>z</task-id>\n<tool-use-id>a1</tool-use-id>\n<status>completed</status>\n<summary>done</summary>\n</task-notification>';
+    const posts = timelinePosts(
+      [ev(1, "tool_call", { tool: "Agent", id: "a1", args: { subagent_type: "Explore", description: "List files", prompt: "x", model: "haiku" } }), ev(2, "tool_result", { tool: "Agent", id: "a1", result: "async_launched: x" }), ev(9, "notification", { type: "queued", text: notice })],
+      { subagents: [{ call: "a1", steps: 2, model: "claude-haiku-5-5", startedAt: 2000, lastAt: 8000, finished: true }] },
+    );
+    expect((posts.at(-1) as Extract<TimelinePost, { kind: "note" }>).text).toBe('Haiku 5.5 Explore agent "List files" finished · 8s');
+  });
+
+  test("a sub-agent's context, against its window: as the harness said it, else the session's for the same model, else Claude's for the model", () => {
+    expect(agentWindow({ model: "gpt-6.1-sol", tokens: 9000, window: 258_400 })).toBe(258_400);
+    expect(agentWindow({ model: "gpt-6.1-sol", tokens: 9000 })).toBeUndefined();
+    expect(agentWindow({ model: "claude-opus-5-5", tokens: 11_400 })).toBe(200_000);
+    expect(agentWindow({ model: "claude-opus-5-5[1m]", tokens: 11_400 })).toBe(1_000_000);
+    expect(agentWindow({ model: "claude-opus-5-5", tokens: 240_000 })).toBe(1_000_000);
+    expect(agentWindow({ model: "claude-opus-5-5", tokens: 11_400 }, { stats: { model: "claude-opus-5-5", context: { limit: 1_000_000 } } })).toBe(1_000_000);
+    // a session on another model says nothing of this one's window
+    expect(agentWindow({ model: "claude-haiku-5-5", tokens: 11_400 }, { stats: { model: "claude-opus-5-5", context: { limit: 1_000_000 } } })).toBe(200_000);
+    expect(agentWindow({ tokens: 11_400 })).toBeUndefined();
+    expect(agentWindow(undefined)).toBeUndefined();
+    expect([contextWords(11_720, 200_000), contextWords(450_000, 1_000_000), contextWords(9000, undefined)]).toEqual(["11.7k / 200k", "450k / 1M", "9k"]);
   });
 
   test("the agents panel lists the sub-agents still at work, the oldest first, as Claude Code lists them under its prompt; their tab waits on them", () => {
@@ -579,8 +618,8 @@ describe("default view model", () => {
     const posts = timelinePosts(rows, { subagents });
     const idle = { status: "idle" as const, subagents };
     expect(workingAgents(posts, idle, now)).toEqual([
-      { call: "off", type: "general-purpose", description: "Older work", doing: "Grep todo", steps: 2, since: 9_980_000 },
-      { call: "a1", type: "Explore", description: "List files", doing: "Glob **/*.md", steps: 3, since: 9_990_000, tokens: 11_400, model: "claude-opus-5-5" },
+      { call: "off", type: "general-purpose", kind: "Agent", description: "Older work", doing: "Grep todo", steps: 2, since: 9_980_000 },
+      { call: "a1", type: "Explore", kind: "Opus 5.5 Explore agent", description: "List files", doing: "Glob **/*.md", steps: 3, since: 9_990_000, tokens: 11_400, window: 200_000, model: "claude-opus-5-5" },
     ]);
     // Its notice ends it there too; a session that ended has none at work.
     const notice = '<task-notification>\n<task-id>z</task-id>\n<tool-use-id>a1</tool-use-id>\n<status>completed</status>\n<summary>Agent "List files" finished</summary>\n</task-notification>';
@@ -667,7 +706,7 @@ describe("default view model", () => {
     expect(running.run).toEqual({ state: "running" });
     const posts = timelinePosts([...rows, ev(4, "status", { status: "idle" }), ev(5, "notification", { type: "subagent", activity: "completed", path: "/root/review_v3_abc", thread: "th1", report: "Reviewed 24 clips: 10 keep." }), ev(6, "notification", { type: "subagent", activity: "completed", path: "/root/older_one" })]);
     expect(card(posts).run).toEqual({ state: "done", report: "Reviewed 24 clips: 10 keep." });
-    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Agent "review v3 abc" finished', "Sub-agent older one finished"]);
+    expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Worker agent "review v3 abc" finished', "Sub-agent older one finished"]);
     expect((posts[1] as Extract<TimelinePost, { kind: "note" }>).call).toBe("call_9");
   });
 

@@ -72,7 +72,7 @@ import { desktopWords, devicesWords, HARNESS_NAMES, limitLevel, limitWords, mach
 import { codeWords, connectableSessions, connectElseFolded, connectionBlock, connectNote, headConnectOffered, headConnectView, selectConnections, sessionLinks } from "./model.ts";
 import { machineName, selectTransfers, sendBlocked, sendTargets } from "./model.ts";
 import type { AgentRun, DiffFile, SendTarget, TimelinePost, TimelineStep, TransferRow, TurnPart } from "./model.ts";
-import { agentFacts, agentsAtWork, agentsGroupWords, agentState, backgroundWords, compactTokens, elapsedWords, stepDiff, stepInput, workingAgents } from "./model.ts";
+import { agentFacts, agentKind, agentsAtWork, agentsGroupWords, agentState, agentWindow, backgroundWords, contextWords, elapsedWords, stepDiff, stepInput, workingAgents } from "./model.ts";
 import type { WorkingAgent } from "./model.ts";
 import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
@@ -3652,7 +3652,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       setData(icon!, "harness", s.harness);
       setData(icon!, "tone", "active");
       setText(who, HARNESS_NAMES[s.harness] ?? s.harness);
-      reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui));
+      reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui, s));
       return;
   }
 }
@@ -3675,13 +3675,13 @@ function createTurnPart(part: TurnPart): HTMLElement {
   return root;
 }
 
-function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: UiState): void {
+function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: UiState, s: Session): void {
   if (part.kind === "text") {
     renderText(node, part.text, true);
     return;
   }
   if (part.kind === "agent") {
-    updateAgentCard(node, part.step, cardKey, ui);
+    updateAgentCard(node, part.step, cardKey, ui, s);
     return;
   }
   if (part.kind === "agents") {
@@ -3693,7 +3693,7 @@ function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: 
     setData(node, "status", working ? "running" : "done");
     setText(node.querySelector(".tl-agents-mark")!, working ? "●" : "✓");
     setText(node.querySelector(".tl-agents-words")!, agentsGroupWords(part.steps));
-    reconcile(node.querySelector<HTMLElement>(".tl-agents-list")!, part.steps, (st) => st.key, createAgentCard, (n, st) => updateAgentCard(n, st, cardKey, ui));
+    reconcile(node.querySelector<HTMLElement>(".tl-agents-list")!, part.steps, (st) => st.key, createAgentCard, (n, st) => updateAgentCard(n, st, cardKey, ui, s));
     return;
   }
   const n = part.steps.length;
@@ -3730,7 +3730,7 @@ function createAgentCard(): HTMLElement {
 const AGENT_WORD: Record<AgentRun["state"], string> = { running: "working", done: "done", failed: "failed", stopped: "stopped", waiting: "waiting on its own work" };
 const AGENT_MARK: Record<AgentRun["state"], string> = { running: "●", done: "✓", failed: "✕", stopped: "■", waiting: "◐" };
 
-function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string, ui: UiState): void {
+function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string, ui: UiState, s: Session): void {
   const sub = subagentOf(step);
   if (sub === undefined) return;
   // What it did, step by step, folded: each one opens as the session's own steps do.
@@ -3743,9 +3743,13 @@ function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string,
   setData(node, "status", status);
   setData(node, "call", step.id ?? "");
   setText(node.querySelector(".tl-agent-mark")!, AGENT_MARK[status]);
-  setText(node.querySelector(".tl-agent-type")!, sub.type);
+  // What kind of agent it is: its model (as it ran, else as asked), its type, its name.
+  const kind = agentKind({ ...sub, model: step.progress?.model ?? sub.model });
+  const typeNode = node.querySelector<HTMLElement>(".tl-agent-type")!;
+  setText(typeNode, kind);
+  typeNode.title = [sub.name, sub.type, step.progress?.model ?? sub.model].filter(Boolean).join(" · ");
   setText(node.querySelector(".tl-agent-what")!, sub.description);
-  const { facts, doing } = agentFacts(step, Date.now());
+  const { facts, doing } = agentFacts(step, Date.now(), s);
   const factsNode = node.querySelector<HTMLElement>(".tl-agent-facts")!;
   setText(factsNode, facts);
   setHidden(factsNode, facts === "");
@@ -4723,7 +4727,9 @@ function createAgentsRow(): HTMLElement {
   const li = el("li", "agents-row");
   const line = actionButton("agents-row-line", "", "agent-show");
   const facts = el("span", "agents-row-facts");
-  facts.append(el("span", "agents-row-clock"), el("span", "agents-row-tokens"));
+  const meter = el("span", "agents-row-meter");
+  meter.append(el("span", "agents-row-fill"));
+  facts.append(el("span", "agents-row-clock"), el("span", "agents-row-tokens"), meter);
   line.append(el("span", "agents-row-mark"), el("span", "agents-row-type"), el("span", "agents-row-what"), el("span", "agents-row-doing"), facts);
   li.append(line);
   return li;
@@ -4733,9 +4739,9 @@ function updateAgentsRow(li: HTMLElement, a: WorkingAgent): void {
   const line = li.querySelector<HTMLButtonElement>(".agents-row-line")!;
   line.dataset["call"] = a.call;
   setData(li, "waiting", a.waiting ? "true" : "false");
-  line.title = [`${a.type}: ${a.description}`, a.steps === 1 ? "1 step so far" : `${a.steps} steps so far`, a.model, "Show its card"].filter(Boolean).join("\n");
+  line.title = [`${a.kind}: ${a.description}`, a.steps === 1 ? "1 step so far" : `${a.steps} steps so far`, a.model, "Show its card"].filter(Boolean).join("\n");
   setText(li.querySelector(".agents-row-mark")!, a.waiting ? "◐" : "◌");
-  setText(li.querySelector(".agents-row-type")!, a.type);
+  setText(li.querySelector(".agents-row-type")!, a.kind);
   setText(li.querySelector(".agents-row-what")!, a.description);
   const doing = li.querySelector<HTMLElement>(".agents-row-doing")!;
   const words = a.waiting ? "waiting on its own work" : (a.doing ?? (a.steps === 0 ? "starting…" : ""));
@@ -4745,9 +4751,23 @@ function updateAgentsRow(li: HTMLElement, a: WorkingAgent): void {
   const clock = li.querySelector<HTMLElement>(".agents-row-clock")!;
   clock.dataset["since"] = String(a.since);
   setText(clock, elapsedWords(Date.now() - a.since));
+  // How full its context is: against its window, with a meter, where the window is known.
+  const known = a.tokens !== undefined && a.tokens > 0;
   const tokens = li.querySelector<HTMLElement>(".agents-row-tokens")!;
-  setText(tokens, a.tokens !== undefined && a.tokens > 0 ? `${compactTokens(a.tokens)} tokens` : "");
-  setHidden(tokens, a.tokens === undefined || a.tokens <= 0);
+  setText(tokens, known ? contextWords(a.tokens!, a.window) : "");
+  setHidden(tokens, !known);
+  const meter = li.querySelector<HTMLElement>(".agents-row-meter")!;
+  const share = known && a.window !== undefined ? Math.min(1, a.tokens! / a.window) : undefined;
+  setHidden(meter, share === undefined);
+  if (share !== undefined) {
+    const fill = meter.querySelector<HTMLElement>(".agents-row-fill")!;
+    const width = `${Math.max(2, Math.round(share * 100))}%`;
+    if (fill.style.width !== width) fill.style.width = width;
+    setData(meter, "level", share >= 0.8 ? "high" : share >= 0.5 ? "mid" : "low");
+  }
+  const contextTitle = known ? `Context: ${a.tokens!.toLocaleString("en-US")}${a.window !== undefined ? ` of ${a.window.toLocaleString("en-US")} tokens (${Math.round((share ?? 0) * 100)}%)` : " tokens"}` : "";
+  tokens.title = contextTitle;
+  meter.title = contextTitle;
 }
 
 /** The agents panel's times, to the second, between draws: every working sub-agent's since it started. */

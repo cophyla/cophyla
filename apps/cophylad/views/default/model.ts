@@ -2209,15 +2209,64 @@ export function callArgs(args: unknown): Record<string, unknown> {
  * prompt it was given), or Codex's `spawn_agent` (its type and task's name; its message is sealed,
  * so no prompt). `undefined` for any other tool.
  */
-export function subagentOf(step: Pick<TimelineStep, "tool" | "args">): { type: string; description: string; prompt: string } | undefined {
+export function subagentOf(step: Pick<TimelineStep, "tool" | "args">): { type: string; description: string; prompt: string; model?: string; name?: string } | undefined {
   const a = callArgs(step.args);
   const str = (k: string) => (typeof a[k] === "string" ? (a[k] as string).trim() : "");
+  // The model asked for (`sonnet`, `opus`, a full id) and a name of its own, where the call gives them.
+  const extra = { ...(str("model") ? { model: str("model") } : {}), ...(str("name") ? { name: str("name") } : {}) };
   if (step.tool === "spawn_agent") {
     const message = str("message");
-    return { type: str("agent_type") || "agent", description: str("task_name").replace(/_/g, " ") || "a sub-agent", prompt: /^gAAAA/.test(message) ? "" : message };
+    return { type: str("agent_type") || "agent", description: str("task_name").replace(/_/g, " ") || "a sub-agent", prompt: /^gAAAA/.test(message) ? "" : message, ...extra };
   }
   if (step.tool !== "Task" && step.tool !== "Agent") return undefined;
-  return { type: str("subagent_type") || "general-purpose", description: str("description") || "a sub-agent", prompt: str("prompt") };
+  return { type: str("subagent_type") || "general-purpose", description: str("description") || "a sub-agent", prompt: str("prompt"), ...extra };
+}
+
+/**
+ * What kind of agent a sub-agent is, in words, from all that is known of it: the model it runs
+ * (as it ran, else as asked), its type unless it is the plain one, and its name. `Opus 5.5
+ * Explore agent`, `Sonnet agent`, `flow-tracer agent`; `researcher · Haiku 5.5 agent` when named.
+ */
+export function agentKind(a: { type?: string; model?: string; name?: string }): string {
+  const type = a.type?.trim();
+  const plain = !type || /^(general-purpose|agent|default)$/i.test(type);
+  const model = modelWords(a.model);
+  const words = [model, plain ? undefined : type, "agent"].filter((w): w is string => w !== undefined).join(" ");
+  // a model's own id keeps its case; a type or "agent" alone starts the label
+  const kind = model !== undefined ? words : words.charAt(0).toUpperCase() + words.slice(1);
+  return a.name ? `${a.name} · ${kind}` : kind;
+}
+
+/** A model as an agent's kind names it: claude-opus-5-5 is Opus 5.5, an alias (`sonnet`) Sonnet, `inherit` nothing, another harness's model itself. */
+function modelWords(model: string | undefined): string | undefined {
+  const m = model?.trim();
+  if (!m || /^(inherit|default)$/i.test(m)) return undefined;
+  const short = shortModel(m).replace(/\[1m\]$/i, "");
+  return /^(opus|sonnet|haiku|fable)\b/i.test(short) ? short.charAt(0).toUpperCase() + short.slice(1) : short;
+}
+
+/** Claude's context windows: the usual one, and a `[1m]` model's. */
+const CLAUDE_WINDOW = 200_000;
+const CLAUDE_WINDOW_1M = 1_000_000;
+
+/**
+ * A sub-agent's context window: as the harness said it (Codex); else, for a Claude model, the
+ * session's own window when it runs the same model, or Claude's window for the model (1M for a
+ * `[1m]` one, or past 200K used), as the node reckons a session's. Unknown otherwise.
+ */
+export function agentWindow(run: Pick<SubagentRun, "model" | "tokens" | "window"> | undefined, session?: { stats?: { model?: string; context?: { limit: number } } }): number | undefined {
+  if (!run) return undefined;
+  if (run.window !== undefined && run.window > 0) return run.window;
+  const model = run.model;
+  if (!model || !/^claude-/i.test(model)) return undefined;
+  const limit = session?.stats?.context?.limit;
+  if (limit !== undefined && limit > 0 && session?.stats?.model === model) return limit;
+  return /\[1m\]/i.test(model) || (run.tokens ?? 0) > CLAUDE_WINDOW ? CLAUDE_WINDOW_1M : CLAUDE_WINDOW;
+}
+
+/** How full a context is, in a few words: `11.7k / 200k`, or the tokens alone with no window known. */
+export function contextWords(tokens: number, window: number | undefined): string {
+  return window !== undefined && window > 0 ? `${compactTokens(tokens)} / ${compactTokens(window)}` : compactTokens(tokens);
 }
 
 /** What a background task's notice says (Claude's `<task-notification>`): the call it ended, how, in a line, and its result. */
@@ -2316,8 +2365,10 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
   // A Codex sub-agent's start (which names the spawning call) and its end, by its path, likewise.
   const notices = new Map<string, TaskNotice>();
   const calls = new Set<string>();
-  // The sub-agents' calls: what each was asked to do, and when, for the line its end puts at the bottom.
-  const agentCalls = new Map<string, { description: string; at: number }>();
+  // The sub-agents' calls: what each is and was asked to do, and when, for the line its end puts at the bottom.
+  const agentCalls = new Map<string, { description: string; type: string; model?: string; name?: string; at: number }>();
+  /** A sub-agent's kind as its end line names it: the model it ran, as the node read it, else as its call asked. */
+  const kindOf = (call: string, a: { type: string; model?: string; name?: string }) => agentKind({ ...a, model: opts.subagents?.find((r) => r.call === call)?.model ?? a.model });
   const spawned = new Map<string, string>();
   const spawnNames = new Map<string, string>();
   const finished = new Map<string, { report?: string }>();
@@ -2327,7 +2378,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
     if (row.event.kind === "tool_call" && typeof p["id"] === "string") {
       calls.add(p["id"]);
       const sub = subagentOf({ tool: String(p["tool"] ?? ""), args: p["args"] });
-      if (sub) agentCalls.set(p["id"], { description: sub.description, at: row.event.at });
+      if (sub) agentCalls.set(p["id"], { description: sub.description, type: sub.type, ...(sub.model ? { model: sub.model } : {}), ...(sub.name ? { name: sub.name } : {}), at: row.event.at });
       if (p["tool"] === "spawn_agent") spawnNames.set(p["id"], `/root/${String(callArgs(p["args"])["task_name"] ?? "")}`);
     }
     if (row.event.kind === "notification" && p["type"] === "subagent" && typeof p["path"] === "string") {
@@ -2368,7 +2419,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
       // A notice before its call (a sub-agent done in a moment, its hook's copy) leaves the line to the copy after.
       if (agent === undefined || !passed.has(n.toolUseId) || run.state === "running" || run.state === "waiting") return;
       noted.add(k);
-      add({ kind: "note", key, at, text: agentEndWords(agent.description, run.state, at - agent.at), call: n.toolUseId });
+      add({ kind: "note", key, at, text: agentEndWords(agent.description, run.state, at - agent.at, kindOf(n.toolUseId, agent)), call: n.toolUseId });
       return;
     }
     noted.add(k);
@@ -2510,7 +2561,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
           if (p["activity"] === "completed") {
             const call = cardPaths.has(path) ? [...spawnNames.keys()].find((c) => pathOf(c) === path) : undefined;
             const agent = call !== undefined ? agentCalls.get(call) : undefined;
-            if (call !== undefined && agent !== undefined) add({ kind: "note", key: row.key, at: e.at, text: agentEndWords(agent.description, "done", e.at - agent.at), call });
+            if (call !== undefined && agent !== undefined) add({ kind: "note", key: row.key, at: e.at, text: agentEndWords(agent.description, "done", e.at - agent.at, kindOf(call, agent)), call });
             else if (!cardPaths.has(path)) add({ kind: "note", key: row.key, at: e.at, text: `Sub-agent ${path.split("/").pop()?.replace(/_/g, " ") || path} finished` });
           }
         }
@@ -2666,7 +2717,7 @@ export function agentState(step: Pick<TimelineStep, "run" | "result" | "progress
  * A sub-agent card's facts in a line, and while it runs the step it is on: how many tools it has
  * called, how long it has worked (to now while it runs), the model it runs on.
  */
-export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress" | "steps">, now: number): { facts: string; doing?: string } {
+export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress" | "steps">, now: number, session?: { stats?: { model?: string; context?: { limit: number } } }): { facts: string; doing?: string } {
   const p = step.progress;
   if (!p) return { facts: "" };
   const running = agentState(step) === "running";
@@ -2675,15 +2726,15 @@ export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress
   const parts = [n === 1 ? "1 step" : `${n} steps`];
   const ms = (running ? now : p.lastAt) - p.startedAt;
   if (p.startedAt > 0 && ms >= 0) parts.push(elapsedWords(ms));
-  if (p.tokens !== undefined && p.tokens > 0) parts.push(`${compactTokens(p.tokens)} tokens`);
-  if (p.model) parts.push(shortModel(p.model));
+  // How full its context is, against its window; its model is in its kind, at the card's head.
+  if (p.tokens !== undefined && p.tokens > 0) parts.push(`${contextWords(p.tokens, agentWindow(p, session))} context`);
   return { facts: parts.join(" · "), ...(running && p.last ? { doing: p.last } : {}) };
 }
 
-/** A sub-agent's end in a line, as Claude Code writes it: `Agent "Find the stylesheet" finished · 13s`. */
-export function agentEndWords(description: string, state: AgentRun["state"], ms: number): string {
+/** A sub-agent's end in a line, as Claude Code writes it, with what kind of agent it was: `Opus 5.5 Explore agent "Find the stylesheet" finished · 13s`. */
+export function agentEndWords(description: string, state: AgentRun["state"], ms: number, kind = "Agent"): string {
   const how = state === "failed" ? "failed" : state === "stopped" ? "was stopped" : "finished";
-  return `Agent "${description}" ${how}${ms >= 1000 ? ` · ${elapsedWords(ms)}` : ""}`;
+  return `${kind} "${description}" ${how}${ms >= 1000 ? ` · ${elapsedWords(ms)}` : ""}`;
 }
 
 /** A count of tokens as a list of agents gives it: 950, 11.4k, 1.2M. */
@@ -2707,12 +2758,16 @@ export interface WorkingAgent {
   /** The call that started it: its card's. */
   call: string;
   type: string;
+  /** What kind of agent it is, in words (`agentKind`). */
+  kind: string;
   description: string;
   doing?: string;
   steps: number;
   /** When it started: its time counts from here. */
   since: number;
   tokens?: number;
+  /** Its context window, where known (`agentWindow`). */
+  window?: number;
   model?: string;
   /** It waits on background work of its own, its report so far in. */
   waiting?: boolean;
@@ -2723,7 +2778,7 @@ export interface WorkingAgent {
  * timeline that has not ended (no result, no notice, its run not finished) and did something in
  * the last while, then any the node lists working whose launch is not on the page.
  */
-export function workingAgents(posts: readonly TimelinePost[], session: Pick<Session, "status" | "subagents">, now: number): WorkingAgent[] {
+export function workingAgents(posts: readonly TimelinePost[], session: Pick<Session, "status" | "subagents"> & { stats?: { model?: string; context?: { limit: number } } }, now: number): WorkingAgent[] {
   if (session.status === "ended") return [];
   const out: WorkingAgent[] = [];
   const seen = new Set<string>();
@@ -2742,14 +2797,17 @@ export function workingAgents(posts: readonly TimelinePost[], session: Pick<Sess
         // The step it is on as its transcript has it, else its newest one its hooks gave.
         const own = step.steps?.at(-1);
         const doing = p?.last ?? (own ? stepWords(own) : undefined);
+        const window = agentWindow(p, session);
         out.push({
           call: step.id,
           type: sub.type,
+          kind: agentKind({ ...sub, model: p?.model ?? sub.model }),
           description: sub.description,
           ...(doing !== undefined && state === "running" ? { doing } : {}),
           steps: Math.max(p?.steps ?? 0, step.steps?.length ?? 0),
           since: p && p.startedAt > 0 ? p.startedAt : post.at,
           ...(p?.tokens !== undefined ? { tokens: p.tokens } : {}),
+          ...(window !== undefined ? { window } : {}),
           ...(p?.model !== undefined ? { model: p.model } : {}),
           ...(state === "waiting" ? { waiting: true } : {}),
         });
@@ -2758,14 +2816,17 @@ export function workingAgents(posts: readonly TimelinePost[], session: Pick<Sess
   }
   for (const run of session.subagents ?? []) {
     if (seen.has(run.call) || run.finished || now - Math.max(run.lastAt, run.startedAt) > AGENT_LIVE_FOR_MS) continue;
+    const window = agentWindow(run, session);
     out.push({
       call: run.call,
       type: run.type ?? "agent",
+      kind: agentKind({ ...(run.type !== undefined ? { type: run.type } : {}), ...(run.model !== undefined ? { model: run.model } : {}) }),
       description: run.description ?? "a sub-agent",
       ...(run.last !== undefined ? { doing: run.last } : {}),
       steps: run.steps,
       since: run.startedAt,
       ...(run.tokens !== undefined ? { tokens: run.tokens } : {}),
+      ...(window !== undefined ? { window } : {}),
       ...(run.model !== undefined ? { model: run.model } : {}),
     });
   }

@@ -46,7 +46,7 @@ describe("a Codex thread's sub-agents", () => {
     // Read too soon after the last look: left for the next.
     expect(kids.read(home, 11_000)).toBe(false);
     expect(kids.read(home, 13_000)).toBe(true);
-    expect(kids.list()[0]).toMatchObject({ agent: THREAD, steps: 1, last: "Run rg -n todo src", model: "gpt-6.1-sol", tokens: 9300, lastAt: Date.parse(t(2)) });
+    expect(kids.list()[0]).toMatchObject({ agent: THREAD, steps: 1, last: "Run rg -n todo src", model: "gpt-6.1-sol", tokens: 9300, window: 200_000, lastAt: Date.parse(t(2)) });
     // Code mode's script, by the tool it calls; then its turn ends, and so does it.
     appendFileSync(file, custom(4, "exec", 'const r = await tools.apply_patch("*** Begin Patch\\n*** Update File: a.ts\\n");') + event(5, { type: "task_complete", turn_id: "tu1", last_agent_message: "Done." }));
     expect(kids.read(home, 16_000)).toBe(true);

@@ -30,6 +30,7 @@ interface Child {
   last?: string;
   model?: string;
   tokens?: number;
+  window?: number;
   startedAt: number;
   lastAt: number;
   finished?: boolean;
@@ -121,6 +122,11 @@ export class CodexChildren {
           kid.tokens = tokens;
           changed = true;
         }
+        const window = kid.state!.stats.context?.limit;
+        if (window !== undefined && window > 0 && window !== kid.window) {
+          kid.window = window;
+          changed = true;
+        }
       }
     }
     return changed;
@@ -143,6 +149,7 @@ export class CodexChildren {
       ...(k.last !== undefined ? { last: k.last } : {}),
       ...(k.model !== undefined ? { model: k.model } : {}),
       ...(k.tokens !== undefined ? { tokens: k.tokens } : {}),
+      ...(k.window !== undefined ? { window: k.window } : {}),
       startedAt: k.startedAt,
       lastAt: Math.max(k.lastAt, k.startedAt),
       ...(k.finished ? { finished: true } : {}),
