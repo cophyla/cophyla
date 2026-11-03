@@ -1877,6 +1877,12 @@ describe("default view: nodes and metrics", () => {
     apply(alone, { type: "nodes", nodes: [node(OTHER, "laptop", { backup: true }), node(NODE, "desk", { status: "offline" })] });
     expect(promoteOffer(alone, node(OTHER, "laptop", { backup: true }))).toEqual({ title: "desk cannot be reached: make laptop the primary", ask: "Make laptop the primary? desk cannot be reached now; when it is back, it follows laptop as a secondary." });
     expect(promoteOffer(alone, node("node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "attic", { backup: true }))).toBeUndefined();
+    // a machine that left its cluster has no primary to take over from: nothing
+    const left = initialState();
+    apply(left, { type: "host.ready", params: { ...READY, node: OTHER, client: { ...CLIENT, node: OTHER }, scopes: [...CLIENT.scopes, "nodes"] as Scope[] } });
+    apply(left, { type: "host.state", params: { connected: true } });
+    apply(left, { type: "nodes", nodes: [node(OTHER, "laptop", { backup: true })] });
+    expect(promoteOffer(left, node(OTHER, "laptop", { backup: true }))).toBeUndefined();
   });
 
   test("Rename: the machine the app talks to, and from the primary each connected one; never a hands node", () => {

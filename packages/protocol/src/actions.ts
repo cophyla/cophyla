@@ -157,6 +157,7 @@ export const actions = {
   "grant.rekey": { risk: "write", control: true },
   "node.join": { risk: "exec" },
   "node.leave": { risk: "write" },
+  "node.accountJoin": { risk: "write" },
   "guest.add": { risk: "exec" },
   "guest.list": { risk: "read" },
   "guest.join": { risk: "exec" },

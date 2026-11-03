@@ -52,11 +52,13 @@ export interface PushDevice {
   pending?: boolean;
 }
 
-/** A pending grant's invite: its secret's hash, the throwaway relay peer it may be redeemed through, and until when. */
+/** A pending grant's invite: its secret's hash, the throwaway relay peer it may be redeemed through, until when, and the one node it opens for, when it was minted for one. */
 export interface InviteRow {
   secretHash: string;
   peer?: string;
   expiresAt: number;
+  /** A machine of the account let in through the server (`account.invite`): no other node id may redeem it. */
+  for?: string;
 }
 
 /** One grant as the store keeps it. */
@@ -409,9 +411,10 @@ export class Grants {
    * A pending grant and the one secret its invite carries, returned once and kept only as its
    * hash. A node's grant is a `grt_` id; a phone's is its controller id. `invitePeer` is the
    * throwaway relay peer the invite may be redeemed through. `secret` is the invite's when the
-   * caller makes it itself (a browser's key, which a person types).
+   * caller makes it itself (a browser's key, which a person types). `forNode` keeps a node
+   * invite to that one node id.
    */
-  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string; form?: GrantForm; session?: boolean; secret?: string }): { row: GrantRow; secret: string } {
+  mint(opts: { kind: GrantKind; name: string; access: Access; role?: GrantRole; expiresAt?: number; inviteExpiresAt: number; invitePeer?: string; form?: GrantForm; session?: boolean; secret?: string; forNode?: string }): { row: GrantRow; secret: string } {
     const now = this.now();
     const secret = opts.secret ?? freshSecret();
     if (opts.form === "browser" && opts.expiresAt === undefined) throw new RpcError("invalid", "a browser's grant has an end");
@@ -420,7 +423,7 @@ export class Grants {
       kind: opts.kind,
       name: opts.name,
       access: opts.access,
-      invite: { secretHash: hashSecret(secret), expiresAt: opts.inviteExpiresAt, ...(opts.invitePeer !== undefined ? { peer: opts.invitePeer } : {}) },
+      invite: { secretHash: hashSecret(secret), expiresAt: opts.inviteExpiresAt, ...(opts.invitePeer !== undefined ? { peer: opts.invitePeer } : {}), ...(opts.forNode !== undefined && opts.kind === "node" ? { for: opts.forNode } : {}) },
       createdAt: now,
       ...(opts.role !== undefined ? { role: opts.role } : {}),
       ...(opts.expiresAt !== undefined ? { expiresAt: opts.expiresAt } : {}),
@@ -473,12 +476,13 @@ export class Grants {
   /**
    * Redeems a node grant's invite: the grant is bound to `node` and given a fresh key, and the
    * invite burns. The check and the burn happen with nothing in between, so two redemptions
-   * racing each other cannot both win. Refused: an invite that is not open, a node id that is
-   * this node's own or another grant's.
+   * racing each other cannot both win. Refused: an invite that is not open, one minted for
+   * another node, a node id that is this node's own or another grant's.
    */
   enrollNode(id: string, node: string, selfId: string): { row: GrantRow; key: string } {
     const row = this.pending(id);
     if (!row || row.kind !== "node") throw new RpcError("denied", "that invite is not open");
+    if (row.invite?.for !== undefined && row.invite.for !== node) throw new RpcError("denied", "that invite is for another machine");
     if (node === selfId) throw new RpcError("conflict", "a node cannot join itself");
     const bound = this.forNode(node);
     if (bound && bound.id !== id) throw new RpcError("conflict", `node ${node} already holds grant ${bound.id}`);

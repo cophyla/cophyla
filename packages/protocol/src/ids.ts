@@ -164,3 +164,6 @@ export type UploadId = z.infer<typeof UploadId>;
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");
 export type Timestamp = z.infer<typeof Timestamp>;
+
+/** A cluster's id: 16 hex characters, random, minted by its first primary. */
+export const ClusterId = z.string().regex(/^[0-9a-f]{16}$/, { message: "expected 16 hex characters" });

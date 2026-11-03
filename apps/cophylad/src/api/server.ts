@@ -1443,7 +1443,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
 }
 
 /** The requests a relayed client still gets answered by the node it is on: its own files, its own file manager, its own phones (and their relay and push rows), its own viewer, its own data channel, its own membership. */
-const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "transfer.reveal", "pair.start", "browser.invite", "lan.info", "lan.enable", "lan.disable", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave"]);
+const LOCAL_ONLY = new Set(["view.stage", "session.reveal", "transfer.reveal", "pair.start", "browser.invite", "lan.info", "lan.enable", "lan.disable", "controller.list", "controller.revoke", "remote.open", "remote.close", "remote.pipe.open", "relay.info", "push.register", "push.unregister", "direct.info", "direct.offer", "node.join", "node.leave", "node.accountJoin"]);
 
 /** The signals a relayed client sends this node itself: a data channel's candidates end here, where its helper is, and a stream's pipes where they were opened. */
 const LOCAL_SIGNALS = new Set(["direct.candidate", "remote.pipe.data", "remote.pipe.ack", "remote.pipe.close"]);

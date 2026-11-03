@@ -13,7 +13,7 @@ import { ACCESS_PRESETS, inviteLink } from "@cophyla/protocol";
 import type { Client, Controller, Grant, Node, Scope, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { encode } from "uqr";
 import { terminalQr } from "../src/cli.ts";
-import { accessWords, apply, BROWSER_ENDS, browserInviteParams, endWords, GRANT_ENDS, initialState, keyWords, minterWords, joinAsksDoor, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
+import { accessWords, accountWords, apply, BROWSER_ENDS, browserInviteParams, endWords, GRANT_ENDS, initialState, keyWords, minterWords, joinAsksDoor, joinPaths, limitChoices, membershipOffer, nodeGrant, nodeGrantWords, nodeInviteParams, PHONE_PRESETS, phoneInviteParams, selectPendingInvites } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 import { QR_BORDER, qrModules, qrPath } from "../views/default/qr.ts";
 
@@ -234,6 +234,38 @@ describe("default view: the phones' access and the machines' grants", () => {
     const phone = connected("controller");
     apply(phone, { type: "nodes", nodes: [node(NODE, "Studio")] });
     expect(membershipOffer(phone)).toBeUndefined();
+    // a secondary's own app is relayed to its primary, which answers its hello: this computer is the one its client row names
+    const relayed = initialState();
+    const hello = ready("ui", [...ACCESS_PRESETS.full.scopes]);
+    apply(relayed, { type: "host.ready", params: { ...hello, client: { ...hello.client, node: OTHER } } });
+    apply(relayed, { type: "host.state", params: { connected: true } });
+    apply(relayed, { type: "nodes", nodes: [node(NODE, "Studio"), node(OTHER, "Laptop")] });
+    apply(relayed, { type: "grants", grants: [grant("grt_self", { kind: "node", node: NODE, role: "full", name: "Studio" }), grant("grt_laptop", { kind: "node", node: OTHER, role: "full", name: "Laptop" })] });
+    expect(membershipOffer(relayed)).toBe("leave");
+    // its own grant and the primary's are not its to remove
+    expect(nodeGrantWords(relayed, relayed.nodes.get(OTHER)!, NOW).removable).toBe(false);
+    expect(nodeGrantWords(relayed, relayed.nodes.get(NODE)!, NOW).removable).toBe(false);
+  });
+
+  test("how this computer stands toward the account's machines, in words, with Join them where it may ask; another machine's card says it joined", () => {
+    const words = (account: Node["account"], kind: Client["kind"] = "ui", id = NODE) => {
+      const s = connected(kind);
+      apply(s, { type: "nodes", nodes: [node(NODE, "Laptop", account && id === NODE ? { account } : {}), node(OTHER, "Desk", account && id === OTHER ? { account } : {})] });
+      return accountWords(s, s.nodes.get(id)!);
+    };
+    expect(words(undefined)).toBeUndefined();
+    expect(words({ state: "joining", primary: "Desk", since: NOW })).toEqual({ text: "Joining Desk's machines through your account…", tone: "note" });
+    expect(words({ state: "moving", since: NOW })).toEqual({ text: "Bringing this computer and the machines it leads into your account's machines…", tone: "note" });
+    expect(words({ state: "waiting", primary: "Desk", detail: "Desk, the account's primary, is not connected", since: NOW })).toEqual({ text: "Joins Desk's machines once it can: Desk, the account's primary, is not connected.", tone: "note" });
+    expect(words({ state: "failed", primary: "Desk", detail: "Desk lets no machine in through the account: [nodes] account_join is off there", since: NOW })).toEqual({ text: "Couldn't join Desk's machines: Desk lets no machine in through the account: [nodes] account_join is off there.", tone: "warn", join: "Try again" });
+    expect(words({ state: "off", since: NOW })).toEqual({ text: "Kept apart from your account's machines, since it was taken out of them.", tone: "note", join: "Join them" });
+    expect(words({ state: "joined", primary: "Desk", saved: "/home/me/.cophyla/data/before-join/x.json", since: NOW })).toEqual({ text: "Joined Desk's machines through your account. What it had before is kept in /home/me/.cophyla/data/before-join/x.json.", tone: "note" });
+    expect(words({ state: "joined", primary: "Desk", left: ["ansar", "box"], since: NOW })).toEqual({ text: "Joined Desk's machines through your account. Not reached, so invite them again: ansar, box.", tone: "warn" });
+    // a phone, which cannot ask for this machine, reads it with no button
+    expect(words({ state: "off", since: NOW }, "controller")).toEqual({ text: "Kept apart from your account's machines, since it was taken out of them.", tone: "note" });
+    // another machine's card
+    expect(words({ state: "joined", primary: "Laptop", since: NOW }, "ui", OTHER)).toEqual({ text: "Joined through your account", tone: "note" });
+    expect(words({ state: "waiting", since: NOW }, "ui", OTHER)).toBeUndefined();
   });
 
   test("the join asks about this machine's sign-in door on Windows, where its Cophyla has one", () => {

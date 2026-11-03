@@ -381,6 +381,7 @@
       "results": [{ "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "name": "desk" }, "role": "hands" }]
     },
     "node.leave": { "params": [{}], "results": [{}] },
+    "node.accountJoin": { "params": [{}], "results": [{}] },
     "guest.add": {
       "params": [{ "folder": "/home/me/work/friend" }, { "folder": "/home/me/work/friend", "name": "friend", "profile": "prof_01ARZ3NDEKTSV4RRFFQ69G5FB8", "invite": "cophyla-invite:eyJ2IjoxfQ" }],
       "results": [{ "folder": "/home/me/work/friend", "name": "friend" }, { "folder": "/home/me/work/friend", "name": "friend", "guest": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FC0", "name": "friend", "folder": "/home/me/work/friend", "state": "linked", "cluster": "0123456789abcdef", "primary": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "their desk" }, "via": "relay" } }]

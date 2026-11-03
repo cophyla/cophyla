@@ -978,6 +978,12 @@ export const clientRequests = {
   /** This node leaves the primary it joined: the link closes and the grant is forgotten here. */
   "node.leave": { params: Empty, result: Empty },
   /**
+   * This machine joins the machines of the account it is signed in to, now: what it does on
+   * its own when it signs in, asked again after it was taken out (it left, or was removed) or
+   * after a join that failed. Answered once the join has started; `node.state` says how it goes.
+   */
+  "node.accountJoin": { params: Empty, result: Empty },
+  /**
    * Lends a folder of this machine to another person's cluster, as a workspace node that
    * redeems `invite` (a hands invite that cluster's primary minted). Without `invite` the
    * folder is only checked, and the name it would go by answered. On this machine's loopback

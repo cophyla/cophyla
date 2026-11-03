@@ -15,7 +15,10 @@
 // version rule of the real server, the bytes gauge against a cap a test can lower) and
 // answers `compute.embed` with deterministic vectors of a small width. Since milestone 16 it
 // mints TURN credentials (`turn.credentials`, recorded by username) and keeps every
-// `direct.report`.
+// `direct.report`. Since milestone 34 its registry keeps the account's cluster with the lease,
+// names it in every answer, refuses a node of another cluster the lease while the account's
+// machines are about, keeps the clusters a primary moved in (`merged`), and serves
+// `account.join` by asking the account's primary for an invite (`account.invite`).
 
 import { generateKeyPairSync, sign } from "node:crypto";
 import type { KeyObject } from "node:crypto";
@@ -99,6 +102,8 @@ interface Lease {
   node: string;
   epoch: number;
   until: number;
+  /** The account's cluster: the one the lease's holders are of. */
+  cluster?: string;
 }
 
 export const FAKE_LEASE_MS = 45_000;
@@ -205,7 +210,11 @@ export class FakeServer {
   embedDim = FAKE_EMBED_DIM;
   /** The registry: one lease for the one account, and every node row seen. */
   lease: Lease | undefined;
-  readonly nodeRows = new Map<string, { role: string; epoch: number; via: string }>();
+  readonly nodeRows = new Map<string, { role: string; epoch: number; via: string; name?: string; cluster?: string; seen?: number }>();
+  /** The clusters a primary moved into the account's machines, by the cluster moved. */
+  readonly merges = new Map<string, string>();
+  /** Every `account.join` the fake served, and how. */
+  readonly joins: { by: string; node: string; role: string; from?: string; ok: boolean; code?: string }[] = [];
   /** Every `registry.*` answer, for the tests. */
   readonly registryLog: { method: string; node: string; answer: unknown; chosen?: boolean }[] = [];
   private tunnels = new Set<Tunnel>();
@@ -291,9 +300,33 @@ export class FakeServer {
     return { primary: l.node, epoch: l.epoch };
   }
 
-  /** For a test: the role is held elsewhere (a node this fake never sees) until released. */
-  holdLease(node: string, epoch: number, forMs = 3600_000): void {
-    this.lease = { node, epoch, until: this.now() + forMs };
+  /** For a test: the role is held elsewhere (a node this fake never sees) until released; `cluster`, the account's machines are that one. */
+  holdLease(node: string, epoch: number, forMs = 3600_000, cluster?: string): void {
+    this.lease = { node, epoch, until: this.now() + forMs, ...(cluster !== undefined ? { cluster } : {}) };
+  }
+
+  /** The account's machines are about: their lease holds, one of them is linked, or one registered in the last thirty days. */
+  private about(): boolean {
+    const l = this.lease;
+    if (!l) return false;
+    if (l.until > this.now()) return true;
+    const since = this.now() - 30 * 24 * 3_600_000;
+    for (const [id, row] of this.nodeRows) if (row.cluster === l.cluster && (this.linked(id) || (row.seen ?? 0) > since)) return true;
+    return false;
+  }
+
+  /** A node of `cluster` is a stranger to the account's machines. */
+  private stranger(cluster: string | undefined): boolean {
+    const l = this.lease;
+    if (!l?.cluster || cluster === undefined || cluster === l.cluster) return false;
+    return this.about();
+  }
+
+  /** `merged` for a node of a cluster moved into the account's. */
+  private mergedFor(cluster: string | undefined): { merged?: true } {
+    const l = this.lease;
+    if (!l?.cluster || cluster === undefined || cluster === l.cluster) return {};
+    return this.merges.get(cluster) === l.cluster ? { merged: true } : {};
   }
 
   /** For a test: the held lease lapses now (the row stays, as on the real server, so the next grant lands above its epoch). */
@@ -313,24 +346,28 @@ export class FakeServer {
     return false;
   }
 
-  /** A grant that changes hands lands above the previous holder's epoch. */
-  private grant(node: string, epoch: number): { primary: string; epoch: number } {
+  /** A grant that changes hands lands above the previous holder's epoch; told when the holder changed or took it again after it ran out. */
+  private grant(node: string, epoch: number, cluster?: string): { primary: string; epoch: number; cluster?: string } {
     const prev = this.lease;
     const held = prev !== undefined && prev.node === node;
+    const lapsed = prev !== undefined && prev.until <= this.now();
     const next = !prev ? epoch : held ? Math.max(epoch, prev.epoch) : Math.max(epoch, prev.epoch + 1);
-    this.lease = { node, epoch: next, until: this.now() + this.leaseMs() };
-    if (!held) {
+    const account = cluster ?? prev?.cluster;
+    this.lease = { node, epoch: next, until: this.now() + this.leaseMs(), ...(account !== undefined ? { cluster: account } : {}) };
+    if (!held || lapsed) {
       for (const s of this.sockets) {
         if (s.data.kind !== "link" || !s.data.token || s.data.node === node) continue;
-        this.write(s, { jsonrpc: "2.0", method: "registry.primary", params: { primary: node, epoch: next } });
+        this.write(s, { jsonrpc: "2.0", method: "registry.primary", params: { primary: node, epoch: next, ...(account !== undefined ? { cluster: account } : {}) } });
       }
     }
-    return { primary: node, epoch: next };
+    return { primary: node, epoch: next, ...(account !== undefined ? { cluster: account } : {}) };
   }
 
-  private holder(): { primary?: string; epoch?: number } {
+  /** The holder while its lease holds, and the account's cluster. */
+  private holder(): { primary?: string; epoch?: number; cluster?: string } {
     const h = this.primaryOf();
-    return h ? { primary: h.primary, epoch: h.epoch } : {};
+    const cluster = this.lease?.cluster;
+    return { ...(h ? { primary: h.primary, epoch: h.epoch } : {}), ...(cluster !== undefined ? { cluster } : {}) };
   }
 
   // --- the relay ---------------------------------------------------------------------------
@@ -789,11 +826,13 @@ export class FakeServer {
         const epoch = typeof p["epoch"] === "number" ? p["epoch"] : 0;
         // another person's account (a connection's far end): a registry of its own, its one node the primary
         if (this.otherAccount(ws)) return node.role === "primary" ? { primary: node.id, epoch } : {};
-        this.nodeRows.set(node.id, { role: node.role, epoch, via: node.via });
+        const cluster = typeof p["cluster"] === "string" ? p["cluster"] : undefined;
+        const before = this.nodeRows.get(node.id);
+        this.nodeRows.set(node.id, { role: node.role, epoch, via: node.via, name: node.name, seen: this.now(), ...((cluster ?? before?.cluster) !== undefined ? { cluster: cluster ?? before?.cluster } : {}) });
         let answer: unknown;
-        if (node.role !== "primary") answer = this.holder();
-        else if (this.arbitrate({ node: node.id, epoch, chosen: p["chosen"] === true }, "register")) answer = this.grant(node.id, epoch);
-        else answer = { primary: this.lease!.node, epoch: this.lease!.epoch };
+        if (node.role !== "primary" || this.stranger(cluster)) answer = { ...this.holder(), ...this.mergedFor(cluster) };
+        else if (this.arbitrate({ node: node.id, epoch, chosen: p["chosen"] === true }, "register")) answer = this.grant(node.id, epoch, cluster);
+        else answer = this.holder();
         this.registryLog.push({ method, node: node.id, answer, ...(p["chosen"] === true ? { chosen: true } : {}) });
         return answer;
       }
@@ -802,7 +841,8 @@ export class FakeServer {
         const node = String(p["node"] ?? "");
         if (this.otherAccount(ws)) return { primary: node, epoch: 0 };
         const l = this.lease;
-        const answer = l && l.until > this.now() && l.node !== node ? { primary: l.node, epoch: l.epoch } : this.grant(node, l?.epoch ?? 0);
+        const cluster = this.nodeRows.get(node)?.cluster;
+        const answer = l && l.until > this.now() && l.node !== node ? this.holder() : l && l.node !== node && l.cluster !== undefined && this.about() && cluster !== l.cluster ? this.holder() : this.grant(node, l?.epoch ?? 0, cluster);
         this.registryLog.push({ method, node, answer });
         return answer;
       }
@@ -811,9 +851,53 @@ export class FakeServer {
         const node = String(p["node"] ?? "");
         const epoch = typeof p["epoch"] === "number" ? p["epoch"] : 0;
         if (this.otherAccount(ws)) return { granted: true, primary: node, epoch };
-        const answer = this.arbitrate({ node, epoch, chosen: p["chosen"] === true }) ? { granted: true, ...this.grant(node, epoch) } : { granted: false, primary: this.lease!.node, epoch: this.lease!.epoch };
+        const cluster = typeof p["cluster"] === "string" ? p["cluster"] : undefined;
+        const answer = !this.stranger(cluster) && this.arbitrate({ node, epoch, chosen: p["chosen"] === true }) ? { granted: true, ...this.grant(node, epoch, cluster) } : { granted: false, ...this.holder() };
         this.registryLog.push({ method, node, answer, ...(p["chosen"] === true ? { chosen: true } : {}) });
         return answer;
+      }
+      case "account.join": {
+        if (this.plan !== "pro") throw fail("denied", "the plan has no relay: the registry is part of it");
+        const by = ws.data.node ?? "";
+        const want = (p["node"] ?? {}) as { id?: unknown; name?: unknown };
+        const node = { id: String(want.id ?? ""), name: String(want.name ?? "") };
+        const role = p["role"] === "hands" ? "hands" : "full";
+        const from = typeof p["from"] === "string" ? p["from"] : undefined;
+        const l = this.lease;
+        const name = l ? this.nodeRows.get(l.node)?.name : undefined;
+        const named = l && name ? { primary: { id: l.node, name } } : {};
+        const away = name ? `${name}, the account's primary, is not connected` : "no primary of the account is connected";
+        const log = (ok: boolean, code?: string) => this.joins.push({ by, node: node.id, role, ...(from !== undefined ? { from } : {}), ok, ...(code !== undefined ? { code } : {}) });
+        if (!l || l.until <= this.now()) {
+          log(false, "unavailable");
+          throw fail("unavailable", away, { provider: "server", ...named });
+        }
+        if (by === l.node || node.id === l.node) {
+          log(false, "conflict");
+          throw fail("conflict", "the account's primary does not join itself");
+        }
+        const link = this.linkOf(l.node);
+        if (!link) {
+          log(false, "unavailable");
+          throw fail("unavailable", away, { provider: "server", ...named });
+        }
+        let r: unknown;
+        try {
+          r = await this.requestOf(link, "account.invite", { node, role, by });
+        } catch (e) {
+          const err = (e as { error?: { code?: string; message?: string } }).error;
+          const code = (err?.code ?? "unavailable") as Parameters<typeof protocolError>[0];
+          log(false, code);
+          throw fail(code, err?.message ?? (e instanceof Error ? e.message : String(e)), { ...named, from: "primary" });
+        }
+        const invite = (r as { invite?: unknown })?.invite;
+        if (typeof invite !== "string") {
+          log(false, "unavailable");
+          throw fail("unavailable", "the account's primary answered no invite", { provider: "server", ...named });
+        }
+        if (from !== undefined && node.id === by && l.cluster && from !== l.cluster) this.merges.set(from, l.cluster);
+        log(true);
+        return { invite };
       }
       case "push.register": {
         this.pushes.push({ method, params: p });

@@ -42,17 +42,38 @@
             "versions": { "platform": "0.1.0", "protocol": 1 },
             "lastSeen": 1758196800000
           }
+        },
+        {
+          "epoch": 0,
+          "cluster": "0123456789abcdef",
+          "node": {
+            "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW",
+            "name": "laptop",
+            "role": "secondary",
+            "status": "online",
+            "via": "relay",
+            "platform": "macos",
+            "scope": { "kind": "machine" },
+            "capabilities": { "harnesses": ["claude"], "voice": { "wake": false, "stt": false, "tts": false }, "remote": false, "brain": false },
+            "versions": { "platform": "0.24.0", "protocol": 1 },
+            "lastSeen": 1758196800000,
+            "account": { "state": "waiting", "primary": "desk", "detail": "desk, the account's primary, is not connected", "since": 1758196800000 }
+          }
         }
       ],
-      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, {}, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }]
+      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, {}, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3, "cluster": "fedcba9876543210" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3, "cluster": "fedcba9876543210", "merged": true }, { "cluster": "fedcba9876543210" }]
     },
     "registry.heartbeat": {
       "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }],
-      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }, {}]
+      "results": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }, {}, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3, "cluster": "fedcba9876543210" }]
     },
     "registry.claim": {
-      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4, "chosen": true }],
-      "results": [{ "granted": false }, { "granted": true, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "granted": false, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }]
+      "params": [{ "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4, "chosen": true }, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 1, "chosen": true, "cluster": "0123456789abcdef" }],
+      "results": [{ "granted": false }, { "granted": true, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "granted": false, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3 }, { "granted": false, "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3, "cluster": "fedcba9876543210" }, { "granted": false, "cluster": "fedcba9876543210" }]
+    },
+    "account.join": {
+      "params": [{ "node": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "laptop" } }, { "node": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "name": "build box" }, "role": "hands" }, { "node": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "laptop" }, "role": "full", "from": "0123456789abcdef" }],
+      "results": [{ "invite": "cophyla-invite:eyJ2IjoxfQ" }]
     },
     "relay.grant": {
       "params": [
@@ -143,6 +164,10 @@
     }
   },
   "inbound": {
+    "account.invite": {
+      "params": [{ "node": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "name": "laptop" }, "role": "full", "by": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }, { "node": { "id": "node_01ARZ3NDEKTSV4RRFFQ69G5FAX", "name": "build box" }, "role": "hands", "by": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW" }],
+      "results": [{ "invite": "cophyla-invite:eyJ2IjoxfQ" }]
+    },
     "relay.open": {
       "params": [
         { "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "kind": "controller", "epk": "hSDwCYkwp1R0i33ctD73Wg2/Og0mOBr066SpjqqbTmo=" },
@@ -156,7 +181,7 @@
   "frames": {
     "relay": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1", "frame": "AAAA" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "frame": "AAAAAAAAAAEbW2hd…" }],
     "relay.close": [{ "peer": "ctl_01ARZ3NDEKTSV4RRFFQ69G5FC1" }, { "peer": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "reason": "unauthorized" }],
-    "registry.primary": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }],
+    "registry.primary": [{ "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV" }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "epoch": 4 }, { "primary": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "epoch": 3, "cluster": "fedcba9876543210" }],
     "entitlement.updated": [{ "token": "eyJhbGciOiJFZERTQSJ9.e30.sig" }],
     "llm.delta": [
       { "id": 12, "delta": { "type": "text", "text": "Nothing " } },

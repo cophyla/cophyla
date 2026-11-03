@@ -42,6 +42,30 @@ function signedInHome(f: FakeServer): { home: string; toml: string; nodes: strin
 
 const cloudOf = (f: FakeServer) => ({ cloud: { keys: [f.publicKey] } });
 
+/**
+ * The home knows `id` as a machine of its own cluster, its old primary: the registry row an
+ * older server's answer is judged by, since it names no cluster (a holder never heard of,
+ * by a machine alone in a cluster of its own, is another cluster's, and not followed).
+ */
+function knowsNode(home: string, id: string): void {
+  const store = new Store(paths(home).db);
+  store.migrate();
+  store.nodes.upsert({
+    id,
+    name: "elsewhere",
+    role: "primary",
+    status: "offline",
+    via: "relay",
+    platform: "windows",
+    scope: { kind: "machine" },
+    capabilities: { harnesses: [], voice: { wake: false, stt: false, tts: false }, remote: false, brain: true },
+    versions: { platform: "0.24.0", protocol: 1 },
+    lastSeen: Date.now(),
+    endpoints: [],
+  });
+  store.close();
+}
+
 describe("chosenPrimary", () => {
   test("the kept choice; else the node that minted the cluster, this one or the one that invited it", () => {
     const self = "node_self";
@@ -113,6 +137,7 @@ describe("the role through the registry", () => {
     fake = new FakeServer({ leaseMs: 60_000 });
     fake.holdLease("node_01ARZ3NDEKTSV4RRFFQ69G5ZZZ", 7);
     const ph = signedInHome(fake);
+    knowsNode(ph.home, "node_01ARZ3NDEKTSV4RRFFQ69G5ZZZ");
     primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes + "reconnect_ms = 100\nreconnect_max_ms = 300\n", daemon: cloudOf(fake) });
     expect(primary.d.nodes.roleOf()).toBe("secondary");
     expect(primary.d.nodes.epoch()).toBe(7);
@@ -139,6 +164,7 @@ describe("the role through the registry", () => {
     fake = new FakeServer({ leaseMs: 60_000 });
     fake.holdLease("node_01ARZ3NDEKTSV4RRFFQ69G5ZZZ", 7);
     const ph = signedInHome(fake);
+    knowsNode(ph.home, "node_01ARZ3NDEKTSV4RRFFQ69G5ZZZ");
     primary = await startPrimary({ home: ph.home, toml: ph.toml, nodes: ph.nodes + "reconnect_ms = 100\nreconnect_max_ms = 300\n", daemon: cloudOf(fake) });
     expect(primary.d.nodes.roleOf()).toBe("secondary");
     const c = await client(primary.d);

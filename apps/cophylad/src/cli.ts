@@ -17,6 +17,9 @@
 //       --trust and --ask answer beforehand, and on Windows, joining the whole machine,
 //       whether its sign-in door comes on (no unless answered yes), which --door and
 //       --no-door answer beforehand
+//   cophylad join --account
+//       joins the machines of the account this machine is signed in to, with no invite: what
+//       signing in does on its own, asked again after the machine was taken out of them
 //   cophylad leave
 //   cophylad lan on|off|status
 //       whether this machine serves devices on its network (a phone, a browser on another
@@ -226,6 +229,7 @@ export async function runCommand(command: Command, argv: string[], how: { local?
       trust: { type: "boolean" },
       door: { type: "boolean" },
       "no-door": { type: "boolean" },
+      account: { type: "boolean" },
       help: { type: "boolean", short: "h" },
     },
     strict: true,
@@ -273,6 +277,12 @@ export async function runCommand(command: Command, argv: string[], how: { local?
         return 0;
       }
       case "join": {
+        if (values.account) {
+          if (values.file !== undefined || (values.workspace ?? []).length > 0) throw new Error("--account takes no invite and shares no folders: it joins the account's machines as a full member");
+          await call(where, "node.accountJoin", {}, as);
+          process.stdout.write("Joining your account's machines. Devices in the app shows how it goes.\n");
+          return 0;
+        }
         const flags = { ...(values.ask ? { ask: true } : {}), ...(values.trust ? { trust: true } : {}) };
         if (flags.ask && flags.trust) throw new Error("--ask and --trust answer the same question: give one");
         const questions = process.stdin.isTTY ? terminalQuestions() : undefined;

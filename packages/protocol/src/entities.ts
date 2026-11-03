@@ -128,6 +128,26 @@ export type NodeVersions = z.infer<typeof NodeVersions>;
 export const DirectPathType = z.enum(["host", "srflx", "prflx", "predicted", "mapped", "relay"]);
 export type DirectPathType = z.infer<typeof DirectPathType>;
 
+/**
+ * A machine signed in to an account whose machines are another cluster than its own, and what
+ * it is doing about it: `joining` them; `moving` the machines it leads in with it; `waiting`
+ * for their primary, which the server cannot reach now; `failed`, with the reason; `off`, kept
+ * apart because the user took it out (it left, or was removed) or turned it off; `apart`,
+ * because it leads machines a move could not take; and, for a day after, `joined`.
+ * `primary` names the account's primary; `saved` is where what the machine had before the
+ * join (its chat, tasks, memory and tools) was kept; `left` the machines it led that were not
+ * reached, to be invited again.
+ */
+export const NodeAccount = z.object({
+  state: z.enum(["joining", "moving", "waiting", "failed", "off", "apart", "joined"]),
+  primary: z.string().optional(),
+  detail: z.string().max(500).optional(),
+  saved: z.string().optional(),
+  left: z.array(z.string()).optional(),
+  since: Timestamp,
+});
+export type NodeAccount = z.infer<typeof NodeAccount>;
+
 export const Node = z.object({
   id: NodeId,
   name: z.string(),
@@ -149,6 +169,8 @@ export const Node = z.object({
    * locked with Cophyla not running (`locked`), and only its desktop can be reached.
    */
   door: z.enum(["signin", "locked"]).optional(),
+  /** How this machine stands toward the account's machines, while it is not one of them or has just become one (`NodeAccount`). */
+  account: NodeAccount.optional(),
 });
 export type Node = z.infer<typeof Node>;
 

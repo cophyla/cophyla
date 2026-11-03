@@ -1868,6 +1868,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
         invite: (o) => nodes!.invite(o),
         join: (invite, o) => nodes!.join(invite, o),
         leave: () => nodes!.leave(),
+        accountJoinNow: () => nodes!.accountJoinNow(),
         revoke: (id) => nodes!.revoke(id),
       },
       revokeController,

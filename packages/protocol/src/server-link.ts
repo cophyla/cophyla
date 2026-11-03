@@ -10,8 +10,8 @@
 
 import { z } from "zod";
 import { LlmComplete, LlmResult, capabilityNotices, capabilityRequests } from "./capability.ts";
-import { DirectReport, IceServer, Node, PushPlatform, Usage, VoiceStopped } from "./entities.ts";
-import { ConnectionId, ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { DirectReport, GrantRole, IceServer, Node, PushPlatform, Usage, VoiceStopped } from "./entities.ts";
+import { ClusterId, ConnectionId, ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
 
 const Empty = z.object({});
@@ -121,24 +121,43 @@ export const serverLinkRequests = {
    * Every signed-in daemon at each link-up, with itself at its current role and epoch. A
    * primary's register is arbitrated like a claim: the answer names the holder when it is
    * another node, and the daemon steps down to it. `chosen`: the user made this node the
-   * primary at this epoch, which alone lets a higher epoch take a live lease.
+   * primary at this epoch, which alone lets a higher epoch take a live lease. `cluster` is
+   * the one this node is in; the answer's is the account's, the cluster its machines are in,
+   * and a node of another one never steps down to that holder: it joins the account's
+   * machines with `account.join` instead, and is refused the lease while they are about.
+   * `merged`: this node's cluster was moved into the account's by its primary, and this node
+   * was not reached then: it joins on its own.
    */
   "registry.register": {
-    params: z.object({ node: Node, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional() }),
-    result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
+    params: z.object({ node: Node, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional(), cluster: ClusterId.optional() }),
+    result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional(), cluster: ClusterId.optional(), merged: z.boolean().optional() }),
   },
   /** The primary's lease renewal; an answer naming another node means the lease went elsewhere. */
   "registry.heartbeat": {
     params: z.object({ node: NodeId }),
-    result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
+    result: z.object({ primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional(), cluster: ClusterId.optional() }),
   },
   /**
    * A node asking for the primary role at `epoch`; refused, the answer names the holder.
-   * `chosen` as on `registry.register`: without it a live lease is never taken.
+   * `chosen` as on `registry.register`: without it a live lease is never taken. `cluster` as
+   * on `registry.register`.
    */
   "registry.claim": {
-    params: z.object({ node: NodeId, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional() }),
-    result: z.object({ granted: z.boolean(), primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional() }),
+    params: z.object({ node: NodeId, epoch: z.number().int().nonnegative().optional(), chosen: z.boolean().optional(), cluster: ClusterId.optional() }),
+    result: z.object({ granted: z.boolean(), primary: NodeId.optional(), epoch: z.number().int().nonnegative().optional(), cluster: ClusterId.optional() }),
+  },
+  /**
+   * A machine signed in to the account, outside the account's cluster, asks to be let in: the
+   * server asks the account's primary for an invite (`account.invite`) and answers it here,
+   * to be redeemed as any invite is. `node` is this machine, or one it leads and moves along
+   * with it (`node.move`), whose `role` it keeps. The account is the whole of the trust: the
+   * primary lets in a machine the server says is the account's, as a phone signs in. `from`:
+   * the asker is the primary of that cluster, moving it in; once its own invite is handed
+   * over, a machine of that cluster that registers later hears `merged`.
+   */
+  "account.join": {
+    params: z.object({ node: z.object({ id: NodeId, name: z.string().min(1).max(200) }), role: GrantRole.optional(), from: ClusterId.optional() }),
+    result: z.object({ invite: z.string().min(1) }),
   },
   /**
    * The node that keeps a grant mints its relay token; the peer presents it at `/ws/relay`. A
@@ -242,7 +261,7 @@ export const serverLinkRequests = {
 
 export type ServerLinkRequestName = keyof typeof serverLinkRequests;
 
-/** Requests the server sends to a daemon: the far end of a relay tunnel being opened. */
+/** Requests the server sends to a daemon: the far end of a relay tunnel being opened, and an invite for one of the account's machines. */
 export const serverLinkInbound = {
   /**
    * A peer wants a tunnel to this node; the daemon derives the keys from `epk` and answers its
@@ -251,6 +270,15 @@ export const serverLinkInbound = {
   "relay.open": {
     params: z.object({ peer: z.string().min(1), kind: RelayPeerKind, epk: z.string(), curve: RelayCurve.optional(), subject: z.string().optional(), login: z.string().optional() }),
     result: z.object({ epk: z.string() }),
+  },
+  /**
+   * To the account's primary: a machine of the account (`by`, signed in there) asked to join
+   * it, for itself or for `node`, a machine it leads; the answer is a node invite for `node`,
+   * of `role`, that only `node` may redeem, good for a few minutes.
+   */
+  "account.invite": {
+    params: z.object({ node: z.object({ id: NodeId, name: z.string().min(1).max(200) }), role: GrantRole, by: NodeId }),
+    result: z.object({ invite: z.string().min(1) }),
   },
 } as const;
 
@@ -262,7 +290,8 @@ export const serverLinkFrames = {
   relay: z.object({ peer: z.string(), frame: z.string().describe("ciphertext, base64") }),
   /** The tunnel to `peer` is over: the far end left, was revoked, or the server had to drop it. */
   "relay.close": z.object({ peer: z.string(), reason: z.string().optional() }),
-  "registry.primary": z.object({ primary: NodeId, epoch: z.number().int().nonnegative().optional() }),
+  /** Down: who holds the primary role now, and the account's cluster; also when the holder took it again after its lease ran out. */
+  "registry.primary": z.object({ primary: NodeId, epoch: z.number().int().nonnegative().optional(), cluster: ClusterId.optional() }),
   "entitlement.updated": z.object({ token: z.string() }),
   /** A chunk of a hosted `llm.complete` in flight: the capability protocol's own notice. */
   "llm.delta": capabilityNotices["llm.delta"],

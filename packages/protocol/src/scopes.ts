@@ -87,6 +87,7 @@ export const requestScopes = {
   "node.list": "nodes",
   "node.join": "nodes",
   "node.leave": "nodes",
+  "node.accountJoin": "nodes",
   "guest.add": "nodes",
   "guest.list": "nodes",
   "guest.join": "nodes",

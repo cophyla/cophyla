@@ -1646,6 +1646,22 @@ async function renameNode(form: HTMLFormElement): Promise<void> {
 }
 
 /** Leaves the primary once the user confirmed on this node's card. */
+/** Join them: this computer joins the account's machines now, after it was taken out or a join failed. */
+async function joinAccount(): Promise<void> {
+  if (ui.accountJoining) return;
+  ui.accountJoining = true;
+  draw();
+  try {
+    await rpc.request("node.accountJoin", {});
+  } catch (e) {
+    fail("join your account's machines", e);
+  } finally {
+    ui.accountJoining = false;
+    draw();
+  }
+  void loadNodes();
+}
+
 async function leavePrimary(): Promise<void> {
   ui.leaving = "leaving";
   draw();
@@ -4244,6 +4260,9 @@ document.addEventListener("click", (ev) => {
       return;
     case "node-leave-confirm":
       void leavePrimary();
+      return;
+    case "node-account-join":
+      void joinAccount();
       return;
     case "node-grant-cancel":
       ui.removing = undefined;

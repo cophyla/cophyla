@@ -5,7 +5,8 @@
 // are routed to it by id, the audio of a live transcription goes up as `stt.audio` frames
 // naming its request, and
 // `entitlement.updated`, `registry.primary` and the relay's frames go to the owner. The
-// server asks one thing of the daemon, `relay.open`, served through `onRequest`. A refused
+// server asks two things of the daemon, `relay.open` and, of the account's primary,
+// `account.invite`, served through `onRequest`. A refused
 // `auth` keeps the link retrying at the slowest pace: the token may be revoked, or the
 // server may be having a moment.
 
@@ -35,7 +36,7 @@ export interface ServerLinkDeps {
   onAuthRefused?: (message: string) => void;
   /** A frame that is not about a request in flight: `entitlement.updated`, `registry.primary`, the relay's `relay` and `relay.close`. */
   onFrame?: (method: string, params: unknown) => void;
-  /** A request the server makes of this daemon: `relay.open` for a tunnel ending here. Absent, every one answers `unsupported`. */
+  /** A request the server makes of this daemon: `relay.open` for a tunnel ending here, `account.invite` for a machine of the account joining. Absent, every one answers `unsupported`. */
   onRequest?: (method: string, params: unknown) => Promise<unknown>;
 }
 

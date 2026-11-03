@@ -23,6 +23,8 @@ export interface GrantMethodDeps {
     join(invite: string, opts: { paths?: string[]; answerHere?: boolean; askPrimary?: boolean }): Promise<{ primary: { id: string; name: string }; role: GrantRole }>;
     leave(): Promise<void>;
     revoke(id: string): Promise<void>;
+    /** Joins the machines of the account this machine is signed in to, now. */
+    accountJoinNow(): Promise<void>;
   };
   /** Ends a phone's grant: its sockets close, its relay and push go. */
   revokeController: (id: string) => void;
@@ -113,6 +115,13 @@ export function grantMethods(deps: GrantMethodDeps): MethodTable {
       handler: async (_p, ctx) => {
         onThisMachine(ctx, "leaving the primary");
         await deps.nodes.leave();
+        return {};
+      },
+    },
+    "node.accountJoin": {
+      handler: async (_p, ctx) => {
+        onThisMachine(ctx, "joining the account's machines");
+        await deps.nodes.accountJoinNow();
         return {};
       },
     },

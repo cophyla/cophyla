@@ -133,6 +133,8 @@ export interface OutboundDeps {
   terminals?: () => NodeTerminals | undefined;
   /** The primary handed this node's grant a new key: kept for every link after this one. */
   onRekey: (key: string) => void;
+  /** The primary moves this node into the account's machines with an invite there (`node.move`); resolves once it is redeemed. */
+  onMove?: (invite: string) => Promise<void>;
   platformVersion: string;
   self: () => Node;
   selfEndpoints: () => string[];
@@ -654,6 +656,13 @@ export class Outbound {
       const parsed = nodeLinkRequests["grant.rekey"].params.safeParse(params ?? {});
       if (!parsed.success) throw new RpcError("invalid", "bad grant.rekey");
       this.deps.onRekey(parsed.data.key);
+      return {};
+    }
+    if (method === "node.move") {
+      const parsed = nodeLinkRequests["node.move"].params.safeParse(params ?? {});
+      if (!parsed.success) throw new RpcError("invalid", "bad node.move");
+      if (!this.deps.onMove) throw new RpcError("unsupported", "this node is not moved");
+      await this.deps.onMove(parsed.data.invite);
       return {};
     }
     if (method === "node.takeover") {

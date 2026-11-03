@@ -260,6 +260,7 @@ describe("joining and leaving", () => {
         },
         leave: async () => void calls.push("leave"),
         revoke: async () => undefined,
+        accountJoinNow: async () => void calls.push("account"),
       },
       revokeController: () => undefined,
       phones: {
@@ -274,8 +275,12 @@ describe("joining and leaving", () => {
     for (const listener of ["controller", "cloud"] as const) {
       expect(await outcome(Promise.resolve().then(() => table["node.join"]!.handler({ invite: "x" }, ctx(listener))))).toMatch(/this machine alone/);
       expect(await outcome(Promise.resolve().then(() => table["node.leave"]!.handler({}, ctx(listener))))).toMatch(/this machine alone/);
+      expect(await outcome(Promise.resolve().then(() => table["node.accountJoin"]!.handler({}, ctx(listener))))).toMatch(/this machine alone/);
     }
     expect(calls).toEqual([]);
+    await table["node.accountJoin"]!.handler({}, ctx("loopback"));
+    expect(calls).toEqual(["account"]);
+    calls.length = 0;
     await table["node.join"]!.handler({ invite: "x" }, ctx("loopback"));
     expect(calls).toEqual(["join"]);
 

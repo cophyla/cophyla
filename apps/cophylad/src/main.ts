@@ -48,6 +48,8 @@ if (values.help) {
   cophylad join [--file F|-] [--workspace P]... [--answer-here] [--ask|--trust] [--door|--no-door]
                  this machine joins the primary whose invite is read from F or stdin;
                  --door turns its sign-in door on too (Windows)
+  cophylad join --account
+                 this machine joins the machines of the account it is signed in to
   cophylad leave    this machine leaves the primary it joined
 
   Lending one folder to another person's cluster is the cophyla command's:

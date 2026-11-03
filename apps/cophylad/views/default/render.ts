@@ -63,7 +63,7 @@ import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeI
 import { renderBlocks } from "./blocks.ts";
 import { renderText, setLinkedText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { stepScale } from "./model.ts";
@@ -241,6 +241,8 @@ export interface UiState {
   renaming?: { node: string; busy?: boolean };
   /** This node leaving the primary it joined: asked in place, then on its way. */
   leaving?: "asking" | "leaving";
+  /** This computer asked to join the account's machines, and the answer has not come. */
+  accountJoining?: boolean;
   /** Whether Copy put the invite's text on the clipboard, for the invite it was pressed on. */
   copied?: { grant: string; ok: boolean };
   /** The invite's QR code shows large, over the view, for a camera across the desk. */
@@ -1009,7 +1011,9 @@ function createNodeCard(): HTMLElement {
   const title = el("div", "node-title");
   const line = el("div", "node-name-line");
   line.append(el("h3", "node-name"), el("span", "node-tags"));
-  title.append(line, createRenameForm(), el("p", "node-facts"));
+  const account = el("div", "node-account");
+  account.append(el("p", "node-account-text"), actionButton("node-account-join", "Join them", "node-account-join"));
+  title.append(line, createRenameForm(), el("p", "node-facts"), account);
   head.append(el("span", "dot"), title, actionButton("node-rename", "Rename", "node-rename"));
   const foot = el("footer", "node-foot");
   foot.append(createNodePromote(), createRestart(), createNodeGrant());
@@ -1060,6 +1064,18 @@ function updateNodeHead(node: HTMLElement, card: NodeCard, state: ViewState, ui:
     },
   );
   setText(node.querySelector(".node-facts")!, facts.line);
+  const words = accountWords(state, card.node);
+  const account = node.querySelector<HTMLElement>(".node-account")!;
+  setHidden(account, words === undefined);
+  if (words) {
+    setData(account, "tone", words.tone);
+    setText(account.querySelector(".node-account-text")!, words.text);
+    const join = account.querySelector<HTMLButtonElement>(".node-account-join")!;
+    setHidden(join, words.join === undefined);
+    setText(join, ui.accountJoining ? "Joining…" : (words.join ?? "Join them"));
+    join.disabled = !state.connected || ui.accountJoining === true;
+    join.title = "Join the machines of the account this computer is signed in to";
+  }
   const form = node.querySelector<HTMLFormElement>(".node-rename-form")!;
   setHidden(form, !renaming);
   form.dataset["node"] = card.node.id;
@@ -1119,7 +1135,7 @@ function createNodeGrant(): HTMLElement {
 }
 
 function updateNodeGrant(block: HTMLElement, card: NodeCard, state: ViewState, ui: UiState, words: ReturnType<typeof nodeGrantWords>): void {
-  const self = card.node.id === state.node;
+  const self = card.node.id === hereNode(state);
   const leaving = self && membershipOffer(state) === "leave";
   const removing = ui.removing?.node === card.node.id ? ui.removing : undefined;
   setHidden(block, !(words.removable || leaving));

@@ -206,6 +206,7 @@ describe("config", () => {
       relink_grace_ms: 8000,
       relay: true,
       registry_heartbeat_ms: 15000,
+      account_join: true,
     });
     expect(c.node.backup_rank).toBe(1);
     // the failover timer is gone (the user chooses the primary): an old config's line is ignored

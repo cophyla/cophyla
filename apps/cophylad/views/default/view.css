@@ -4025,6 +4025,24 @@ button:disabled {
   font-size: 12px;
 }
 
+.node-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.node-account-text {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.node-account[data-tone="warn"] .node-account-text {
+  color: var(--amber);
+}
+
 .node-head .node-rename {
   flex: 0 0 auto;
 }

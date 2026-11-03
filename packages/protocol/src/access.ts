@@ -286,6 +286,7 @@ export const requestFilters = {
   "node.restart": { names: "global" },
   "node.join": { names: "global" },
   "node.leave": { names: "global" },
+  "node.accountJoin": { names: "global" },
   "guest.add": { names: "global" },
   "guest.list": { names: "global" },
   "guest.join": { names: "global" },

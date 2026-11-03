@@ -33,10 +33,16 @@
 // holder steps down to it. The relay, reached with the relay token this node's own grant
 // was given at enrollment and no account of its own, is the last candidate of a seek, and
 // the first after a step-down to a node with no LAN endpoint.
+//
+// The account's machines are one cluster, which the registry names in every answer: a holder
+// of another cluster than this node's is no primary of ours, never stepped down to or sought,
+// and this node joins the account's machines instead (`account.ts`), through the server: an
+// invite the account's primary mints for it alone (`account.invite`, answered here), redeemed
+// as any other. A primary with others moves them in first (`node.move`, inside each link).
 
 import { randomBytes } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { existsSync, mkdirSync, statSync, writeFileSync } from "node:fs";
+import { join as joinPath, resolve as resolvePath } from "node:path";
 import { FILE_PIECE_BYTES, FULL, inviteLink, inviteText, newId, nodeLinkRequests, parseInvite, RpcError, UNNAMED_NODE } from "@cophyla/protocol";
 import type { Ask, ClientNotificationParams, FolderPick, Grant, GrantRole, IceServer, InviteBody, InviteOffer, LinkLeaveReason, MetricsSample, Node, NodeRecord, NodeRole, RiskClass, Session, TargetLookup, Terminal, ToolSource, Transfer, Via, Workspace } from "@cophyla/protocol";
 import { pskFromHex } from "@cophyla/relay";
@@ -75,7 +81,7 @@ import type { Store } from "../store/index.ts";
 import type { Tasks } from "../tasks/index.ts";
 import type { TaskScheduler } from "../tasks/scheduler.ts";
 import type { Chat } from "../chat/index.ts";
-import type { Arbiter } from "../cloud/registry.ts";
+import type { Arbiter, HolderAnswer, InviteAsk } from "../cloud/registry.ts";
 import type { Workspaces } from "../workspaces/index.ts";
 import { udpTransport } from "./discovery.ts";
 import type { Datagram, DiscoverySocket, DiscoveryTransport, Remote } from "./discovery.ts";
@@ -88,7 +94,10 @@ import { Mirror } from "./mirror.ts";
 import { Outbound } from "./outbound.ts";
 import type { LinkTarget } from "./outbound.ts";
 import { Registry } from "./registry.ts";
-import { Replica, Replicator } from "./replication.ts";
+import { editableFiles, EXCLUDED_KV_NS, Replica, Replicator } from "./replication.ts";
+import { CLUSTER_NS, GRANTS_NS } from "../grants/namespaces.ts";
+import { AccountJoin } from "./account.ts";
+import type { Joined, Member, Stance } from "./account.ts";
 import { RoleMachine } from "./role.ts";
 import { endpointCandidates, linkCandidates, Seeker } from "./seek.ts";
 import type { CandidateSources } from "./seek.ts";
@@ -218,10 +227,17 @@ export function chosenPrimary(opts: { kept?: string; self: string; via?: "self" 
 export const DEFAULT_INVITE_MS = 60 * 60 * 1000;
 /** How long a revoke waits for the node to be told before its relay token goes anyway. */
 const REVOKE_TOLD_MS = 2000;
+/** How long an invite the account's primary mints for a machine of the account may be redeemed. */
+export const ACCOUNT_INVITE_MS = 5 * 60_000;
+/** How long a machine being moved into the account's machines may take to redeem its invite: the LAN's ways and the relay. */
+const ACCOUNT_MOVE_TIMEOUT_MS = 60_000;
 
 /** How often one endpoint a datagram named may be probed, and how many probes may run at once. */
 const PROBE_INTERVAL_MS = 1000;
 const MAX_PROBES = 4;
+
+/** How a join goes: the folders shared and how asks go, as the user said; `moving`, into the account's machines, from a cluster this node is not alone in. */
+type JoinOpts = { paths?: string[]; answerHere?: boolean; askPrimary?: boolean; moving?: boolean };
 
 interface Candidate {
   endpoint: string;
@@ -268,6 +284,10 @@ export class Nodes {
   private membership?: LinkFile;
   /** A join in flight: a second one waits for no one. */
   private joining = false;
+  /** The account's machines: joining them on its own while the server names another cluster than this one's. */
+  readonly account: AccountJoin;
+  /** A primary the registry did not grant: the account's machines are another cluster, so it holds no lease to renew. */
+  private apartFromAccount = false;
   private stopped = false;
   private started = false;
   private offBus: (() => void)[] = [];
@@ -294,6 +314,19 @@ export class Nodes {
     this.role.onChange((from, to) => {
       this.transitions.push({ from, to, at: this.now() });
       this.log.info("role", { from, to, epoch: this.role.epoch });
+    });
+    this.account = new AccountJoin({
+      log: this.log.child("account"),
+      enabled: () => deps.config.nodes.account_join && deps.config.nodes.relay,
+      arbiter: () => (this.arbiterActive() ? this.arbiter() : undefined),
+      self: () => ({ id: deps.identity.id, name: deps.identity.name }),
+      cluster: () => this.membership?.cluster,
+      stance: () => this.accountStance(),
+      joinSelf: (invite, how) => this.accountJoinSelf(invite, how),
+      move: (member, invite) => this.inbound.move(member, invite, ACCOUNT_MOVE_TIMEOUT_MS),
+      meta: deps.store.meta,
+      changed: () => this.announce(),
+      ...(deps.now ? { now: deps.now } : {}),
     });
     this.registry = new Registry({
       store: deps.store,
@@ -389,6 +422,7 @@ export class Nodes {
       membership: () => this.membership,
       hands: () => this.role.hands,
       onRekey: (key) => this.onRekey(key),
+      onMove: (invite) => this.onMove(invite),
       confine: () => this.confinement(),
       answerHere: () => this.membership?.answerHere === true,
       // a membership from before the question was asked trusts its primary, as the default answer does
@@ -486,9 +520,11 @@ export class Nodes {
 
   // --- what the rest of the daemon reads ------------------------------------------------------
 
-  /** This node's row at the current role, with the brain's version when it runs here. */
+  /** This node's row at the current role, with the brain's version when it runs here, and how it stands toward the account's machines. */
   self(): Node {
-    return this.deps.self();
+    const row = this.deps.self();
+    const account = this.account?.state();
+    return account ? { ...row, account } : row;
   }
 
   roleOf(): NodeRole {
@@ -931,6 +967,8 @@ export class Nodes {
     if (!this.membership) {
       if (this.role.state === "unlinked") {
         this.log.warn("this node is in no cluster and runs alone: join one with `cophylad join` and an invite from the primary", { role: config.node.role });
+        // signed in, the account's machines are named at the link-up, and joined
+        this.watchArbiter();
         return;
       }
       this.foundCluster();
@@ -956,7 +994,9 @@ export class Nodes {
     const arb = this.arbiter();
     if (!arb || !this.deps.config.nodes.relay || this.offArbiter.length > 0) return;
     this.offArbiter.push(arb.onUp(() => void this.onArbiterUp()));
-    this.offArbiter.push(arb.onPrimary((primary, epoch) => this.onRegistryPrimary(primary, epoch)));
+    this.offArbiter.push(arb.onPrimary((primary, epoch, cluster) => this.onRegistryPrimary(primary, epoch, cluster)));
+    arb.onInvite((ask) => this.accountInvite(ask));
+    this.offArbiter.push(() => arb.onInvite(undefined));
   }
 
   /** Listens `claim_wait_ms` for a live primary before taking the role: a returning primary yields to the one that took over. */
@@ -1007,14 +1047,22 @@ export class Nodes {
     const arb = this.arbiter()!;
     let answer: Awaited<ReturnType<Arbiter["claim"]>>;
     try {
-      answer = await arb.claim(epoch);
+      answer = await arb.claim(epoch, this.membership?.cluster);
     } catch (e) {
       this.log.warn("the registry did not answer the claim; the LAN's answer stands", { error: e instanceof Error ? e.message : String(e) });
       return true;
     }
+    this.account.hear(answer);
     if (answer.granted) {
+      this.apartFromAccount = false;
       if (answer.epoch !== undefined) this.role.setEpoch(answer.epoch);
       this.log.info("the registry granted the primary role", { epoch: this.role.epoch });
+      return true;
+    }
+    if (this.stranger(answer)) {
+      // the account's machines are another cluster: this one keeps its own role, and joins them
+      this.log.warn("the account's machines are another cluster; this node keeps its own role and joins them", { holder: answer.primary ?? null, cluster: answer.cluster ?? null });
+      this.apartFromAccount = true;
       return true;
     }
     this.log.warn("the registry refused the primary role; another node holds it", { holder: answer.primary, epoch: answer.epoch, mine: epoch });
@@ -1044,29 +1092,37 @@ export class Nodes {
     const arb = this.arbiter()!;
     let answer: Awaited<ReturnType<Arbiter["register"]>>;
     try {
-      answer = await arb.register(this.self(), this.role.epoch);
+      answer = await arb.register(this.self(), this.role.epoch, this.membership?.cluster);
     } catch (e) {
       this.log.warn("registry.register failed", { error: e instanceof Error ? e.message : String(e) });
       return;
     }
     if (this.stopped) return;
     const me = this.deps.identity.id;
+    this.account.hear(answer);
     if (answer.primary && this.isHands(answer.primary)) {
       this.log.warn("the registry names a hands node as the primary; ignored", { node: answer.primary });
       return;
     }
+    // a holder of another cluster is no primary of this node's: it joins the account's machines instead
+    const stranger = this.stranger(answer);
     switch (this.role.state) {
       case "primary":
         if (answer.primary === me) {
+          this.apartFromAccount = false;
           if (answer.epoch !== undefined) this.role.setEpoch(answer.epoch);
           this.startRegistryHeartbeat();
+        } else if (stranger) {
+          // its own primary still, with no lease to renew
+          this.apartFromAccount = true;
+          this.stopRegistryHeartbeat();
         } else if (answer.primary) {
           this.log.warn("the registry holds the primary role elsewhere; stepping down", { holder: answer.primary, epoch: answer.epoch });
           void this.stepDown(answer.primary, this.registry.endpointsOf(answer.primary), answer.epoch ?? this.role.epoch + 1, true);
         }
         return;
       case "seeking":
-        if (answer.primary && answer.primary !== me) this.aimAt(answer.primary, answer.epoch);
+        if (answer.primary && answer.primary !== me && !stranger) this.aimAt(answer.primary, answer.epoch);
         this.kickSeek();
         return;
       default:
@@ -1074,9 +1130,15 @@ export class Nodes {
     }
   }
 
-  /** A grant went to another node: a primary of a lower epoch steps down to it; a seeker aims at it. */
-  private onRegistryPrimary(primary: string, epoch: number): void {
+  /** A grant went to another node: a primary of a lower epoch steps down to it; a seeker aims at it. One of another cluster: a join of the account's machines tries now. */
+  private onRegistryPrimary(primary: string, epoch: number, cluster?: string): void {
     if (this.stopped) return;
+    const told: HolderAnswer = { primary, epoch, ...(cluster !== undefined ? { cluster } : {}) };
+    this.account.hear(told);
+    if (this.stranger(told)) {
+      this.account.kick();
+      return;
+    }
     if (this.isHands(primary)) {
       this.log.warn("the registry names a hands node as the primary; ignored", { node: primary, epoch });
       return;
@@ -1113,6 +1175,12 @@ export class Nodes {
         .heartbeat()
         .then((a) => {
           if (this.stopped || this.role.state !== "primary") return;
+          this.account.hear(a);
+          if (this.stranger(a)) {
+            this.apartFromAccount = true;
+            this.stopRegistryHeartbeat();
+            return;
+          }
           if (a.primary && a.primary !== this.deps.identity.id && a.primary !== this.handingOver) {
             this.log.warn("the registry names another primary; stepping down", { holder: a.primary, epoch: a.epoch });
             void this.stepDown(a.primary, this.registry.endpointsOf(a.primary), a.epoch ?? this.role.epoch + 1, true);
@@ -1144,6 +1212,7 @@ export class Nodes {
   async stop(): Promise<void> {
     if (this.stopped) return;
     this.stopped = true;
+    this.account.stop();
     this.clearTimers();
     this.settled();
     this.stopMembershipClock();
@@ -1197,8 +1266,8 @@ export class Nodes {
     this.registry.demoteOthers();
     this.replicator.start();
     this.startBeacon();
-    // granted by the registry (the claim came through it): the lease is renewed from now on
-    if (this.arbiterActive()) {
+    // granted by the registry (the claim came through it): the lease is renewed from now on; a primary apart from the account's machines holds none
+    if (this.arbiterActive() && !this.apartFromAccount) {
       this.startRegistryHeartbeat();
       void this.ensureRelayToken();
     }
@@ -1206,6 +1275,8 @@ export class Nodes {
     this.log.info("primary", { epoch: this.role.epoch, initial: opts.initial, endpoints: this.selfEndpoints() });
     this.deps.onRole?.(true);
     if (!opts.initial) this.announce();
+    // the role settled: a join of the account's machines that waited on it goes now
+    this.account.kick();
   }
 
   /**
@@ -1219,7 +1290,7 @@ export class Nodes {
       const arb = this.arbiter()!;
       let answer: Awaited<ReturnType<Arbiter["claim"]>>;
       try {
-        answer = await arb.claim(epoch);
+        answer = await arb.claim(epoch, this.membership?.cluster);
       } catch (e) {
         throw new RpcError("unavailable", `the registry did not answer the claim: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
       }
@@ -1253,9 +1324,9 @@ export class Nodes {
       let answer: Awaited<ReturnType<Arbiter["claim"]>>;
       try {
         // a secondary's register names the holder and takes nothing: the choice lands above it
-        const holder = await arb.register(this.self(), this.role.epoch);
+        const holder = await arb.register(this.self(), this.role.epoch, this.membership?.cluster);
         if (holder.epoch !== undefined) epoch = Math.max(epoch, holder.epoch + 1);
-        answer = await arb.claim(epoch);
+        answer = await arb.claim(epoch, this.membership?.cluster);
       } catch (e) {
         throw new RpcError("unavailable", `the registry did not answer: ${e instanceof Error ? e.message : String(e)}`, { provider: "server" });
       }
@@ -1433,9 +1504,10 @@ export class Nodes {
   private async missed(): Promise<boolean> {
     if (this.arbiterActive()) {
       try {
-        const answer = await this.arbiter()!.register(this.self(), this.role.epoch);
+        const answer = await this.arbiter()!.register(this.self(), this.role.epoch, this.membership?.cluster);
+        this.account.hear(answer);
         if (this.role.state !== "seeking" || this.stopped) return true;
-        if (answer.primary && answer.primary !== this.deps.identity.id) this.aimAt(answer.primary, answer.epoch);
+        if (answer.primary && answer.primary !== this.deps.identity.id && !this.stranger(answer)) this.aimAt(answer.primary, answer.epoch);
       } catch (e) {
         this.log.debug("registry register after a fruitless seek failed", { error: e instanceof Error ? e.message : String(e) });
       }
@@ -1490,6 +1562,7 @@ export class Nodes {
   private onPrimaryLeaving(reason: LinkLeaveReason, primary?: string): void {
     if (reason === "revoked") {
       this.forget("the primary ended this node's grant");
+      this.account.keepApart("removed by its primary");
       return;
     }
     if (reason === "stepdown" && primary === this.deps.identity.id) return;
@@ -1619,7 +1692,7 @@ export class Nodes {
    * Mints a node invite: a pending grant and the text that redeems it, naming this node's LAN
    * listener and, when the server can grant one, a throwaway relay peer. The primary alone.
    */
-  async invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number; endsBy?: number }): Promise<{ grant: Grant; invite: InviteOffer }> {
+  async invite(opts: { name: string; role: GrantRole; expiresIn?: number; inviteExpiresIn?: number; endsBy?: number; forNode?: string }): Promise<{ grant: Grant; invite: InviteOffer }> {
     if (this.role.role !== "primary" || !this.membership) throw new RpcError("conflict", "only the primary invites a node");
     const now = this.now();
     const inviteExpiresAt = now + (opts.inviteExpiresIn ?? DEFAULT_INVITE_MS);
@@ -1642,7 +1715,7 @@ export class Nodes {
       }
     }
     if (!lan && !relay) throw new RpcError("unavailable", "no way in for a new node: turn on [nodes] accept for the LAN listener, or sign in for the relay");
-    const { row, secret } = this.deps.grants.mint({ kind: "node", name: opts.name, access: FULL, role: opts.role, ...(expiresAt !== undefined ? { expiresAt } : {}), inviteExpiresAt, ...(relay ? { invitePeer: relay.peer } : {}) });
+    const { row, secret } = this.deps.grants.mint({ kind: "node", name: opts.name, access: FULL, role: opts.role, ...(expiresAt !== undefined ? { expiresAt } : {}), inviteExpiresAt, ...(relay ? { invitePeer: relay.peer } : {}), ...(opts.forNode !== undefined ? { forNode: opts.forNode } : {}) });
     const body: InviteBody = { v: 1, kind: "node", grant: row.id, secret, expiresAt: inviteExpiresAt, node: { id: this.deps.identity.id, name: this.deps.identity.name }, ...(lan ? { lan } : {}), ...(relay ? { relay } : {}) };
     this.log.info("node invited", { grant: row.id, name: opts.name, role: opts.role, lan: lan !== undefined, relay: relay !== undefined, inviteExpiresAt, ...(expiresAt !== undefined ? { expiresAt } : {}) });
     return { grant: this.deps.grants.entity(row), invite: { text: inviteText(body), link: inviteLink(body), expiresAt: inviteExpiresAt } };
@@ -1710,14 +1783,32 @@ export class Nodes {
     void this.deps.revokeRelay?.(peer);
   }
 
+  /** Alone in a cluster of its own: no node linked, and no node grant, redeemed or open, but its own. */
+  private aloneHere(): boolean {
+    const m = this.membership;
+    return m !== undefined && m.via === "self" && this.inbound.linkedIds().length === 0 && this.deps.grants.rows().every((r) => r.kind !== "node" || r.node === this.deps.identity.id);
+  }
+
   /** Whether this node may join a cluster now: in none, or alone in one of its own. */
   private mayJoin(): void {
     if (this.stopped) throw new RpcError("unavailable", "this node is stopping");
     const m = this.membership;
     if (!m) return;
-    const alone = m.via === "self" && this.inbound.linkedIds().length === 0 && this.deps.grants.rows().every((r) => r.kind !== "node" || r.node === this.deps.identity.id);
-    if (alone) return;
+    if (this.aloneHere()) return;
     throw new RpcError("conflict", m.via === "self" ? "this node is the primary of a cluster with other nodes, or open invites, in it" : "this node is in a cluster already: leave it first");
+  }
+
+  /**
+   * A registry answer names the account's machines as another cluster than this node's: its
+   * holder is no primary of ours, to step down to or to seek. From an older server, which
+   * names no cluster, a holder this node never heard of is one, for a node alone in a cluster
+   * of its own.
+   */
+  private stranger(a: HolderAnswer): boolean {
+    if (a.cluster !== undefined) return a.cluster !== this.membership?.cluster;
+    const holder = a.primary;
+    if (holder === undefined || holder === this.deps.identity.id || this.registry.get(holder) !== undefined || holder === this.membership?.primary?.id) return false;
+    return this.aloneHere();
   }
 
   /**
@@ -1725,14 +1816,31 @@ export class Nodes {
    * its own gives that cluster up first (the role, if it held it); `paths`, `answerHere` and
    * `askPrimary` are kept for what the primary may reach here and whether it asks first.
    */
-  async join(text: string, opts: { paths?: string[]; answerHere?: boolean; askPrimary?: boolean } = {}): Promise<{ primary: { id: string; name: string }; role: GrantRole }> {
-    let body: InviteBody;
+  async join(text: string, opts: JoinOpts = {}): Promise<{ primary: { id: string; name: string }; role: GrantRole }> {
+    const body = this.parseInviteText(text);
+    const paths = this.joinChecks(body, opts);
+    this.joining = true;
     try {
-      body = parseInvite(text);
+      const answer = await this.redeem(body);
+      return await this.adopt(answer, paths, opts);
+    } finally {
+      this.joining = false;
+    }
+  }
+
+  private parseInviteText(text: string): InviteBody {
+    try {
+      return parseInvite(text);
     } catch (e) {
       throw new RpcError("invalid", e instanceof Error ? e.message : String(e));
     }
-    this.mayJoin();
+  }
+
+  /** What a join checks before anything is redeemed; the folders it shares, resolved. A move (`moving`) is not alone, and joins anyway. */
+  private joinChecks(body: InviteBody, opts: JoinOpts): string[] {
+    if (opts.moving) {
+      if (this.stopped) throw new RpcError("unavailable", "this node is stopping");
+    } else this.mayJoin();
     if (this.joining) throw new RpcError("conflict", "a join is in flight");
     if (this.deps.guests?.()?.knows(body.node.id)) throw new RpcError("conflict", "that invite is from a cluster a workspace node here is in: the machine joins a cluster of its own");
     // The folders to share must be there, and absolute, before anything is redeemed.
@@ -1740,13 +1848,24 @@ export class Nodes {
     for (const p of paths) {
       if (!existsSync(p) || !statSync(p).isDirectory()) throw new RpcError("invalid", `no folder ${p} to share`);
     }
-    this.joining = true;
-    try {
-      const account = this.deps.account?.();
-      const answer = await redeemNodeInvite(body, { id: this.deps.identity.id, name: this.deps.identity.name }, { timeoutMs: this.helloTimeoutMs, log: this.log.child("enroll"), now: this.now(), ...(account !== undefined ? { account } : {}) });
-      this.mayJoin();
+    return paths;
+  }
+
+  private redeem(body: InviteBody): ReturnType<typeof redeemNodeInvite> {
+    const account = this.deps.account?.();
+    return redeemNodeInvite(body, { id: this.deps.identity.id, name: this.deps.identity.name }, { timeoutMs: this.helloTimeoutMs, log: this.log.child("enroll"), now: this.now(), ...(account !== undefined ? { account } : {}) });
+  }
+
+  /** The invite was redeemed: this node gives up what it was in and is the new primary's, from here on. */
+  private async adopt(answer: Awaited<ReturnType<typeof redeemNodeInvite>>, paths: string[], opts: JoinOpts): Promise<{ primary: { id: string; name: string }; role: GrantRole }> {
+    {
+      if (!opts.moving) this.mayJoin();
       if (this.deps.guests?.()?.clusters().includes(answer.cluster)) throw new RpcError("conflict", "a workspace node here is in that cluster: the machine joins a cluster of its own");
       if (this.role.role === "primary") await this.abdicate("joined another primary");
+      else if (opts.moving) this.dropOldLink();
+      this.apartFromAccount = false;
+      // what this node knew of its old cluster's machines is theirs no more
+      if (opts.moving) for (const r of this.registry.peers()) this.registry.forget(r.id);
       this.deps.grants.forgetCluster();
       const file: LinkFile = {
         v: 1,
@@ -1781,10 +1900,170 @@ export class Nodes {
       this.seeker.resetBackoff();
       this.startSeeking();
       this.announce();
+      // the server's row of this node follows the join: its cluster is the new one from now on
+      void this.registerCluster();
       return { primary: answer.primary, role: answer.role };
-    } finally {
-      this.joining = false;
     }
+  }
+
+  /** Tells the registry, when it can be asked, which cluster this node is in now. */
+  private async registerCluster(): Promise<void> {
+    const arb = this.arbiter();
+    if (!arb || this.stopped || !this.arbiterActive()) return;
+    try {
+      this.account.hear(await arb.register(this.self(), this.role.epoch, this.membership?.cluster));
+    } catch (e) {
+      this.log.debug("registry register after a join failed", { error: e instanceof Error ? e.message : String(e) });
+    }
+  }
+
+  /** A secondary moving into the account's machines: the old link, the seek and the replica go, and the old primary hears this node left for good. */
+  private dropOldLink(): void {
+    this.clearTimers();
+    this.seeker.abandon();
+    this.seekingSince = undefined;
+    this.settled();
+    if (this.outbound.linked()) this.outbound.leave("left");
+    this.replica?.dispose();
+    this.replica = undefined;
+  }
+
+  // --- the account's machines ------------------------------------------------------------------
+
+  /** What this node is, for joining the account's machines. */
+  private accountStance(): Stance {
+    if (this.role.hands) return { kind: "hands" };
+    if (this.joining || this.stopped || this.role.is("claiming", "promoting", "stepping_down")) return { kind: "busy" };
+    if (!this.membership) return { kind: "alone" };
+    if (this.role.role !== "primary") return { kind: "follows" };
+    const me = this.deps.identity.id;
+    const members: Member[] = [];
+    for (const row of this.deps.grants.rows()) {
+      if (row.kind !== "node" || !row.node || row.node === me || this.deps.grants.status(row) !== "active") continue;
+      members.push({ node: row.node, name: this.registry.get(row.node)?.name ?? row.name, role: row.role ?? "full", linked: this.inbound.linked(row.node) });
+    }
+    return members.length === 0 ? { kind: "alone" } : { kind: "leads", members };
+  }
+
+  /**
+   * Joins the account's machines with the invite the server handed over. A primary saves what
+   * it had first; one that led others lets their relay tokens go, since what it held of them is
+   * forgotten; a secondary keeps what it shares and how it asks.
+   */
+  private async accountJoinSelf(invite: string, how: "alone" | "leads" | "follows"): Promise<Joined> {
+    const m = this.membership;
+    const saved = this.role.role === "primary" ? this.saveBeforeJoin() : undefined;
+    if (how === "leads") this.letMembersGo();
+    const keep: JoinOpts = how === "follows" && m ? { ...(m.paths ? { paths: m.paths } : {}), ...(m.answerHere ? { answerHere: true } : {}), ...(m.askPrimary ? { askPrimary: true } : {}) } : {};
+    const r = await this.join(invite, { ...keep, ...(how !== "alone" ? { moving: true } : {}) });
+    return { primary: r.primary, ...(saved ? { saved } : {}) };
+  }
+
+  /** The machines this primary led, as it moves: their relay tokens and its open invites' peers go; no one is told, the moved ones have left already. */
+  private letMembersGo(): void {
+    for (const row of this.deps.grants.rows()) {
+      if (row.kind !== "node" || row.node === this.deps.identity.id) continue;
+      if (row.relay) void this.deps.revokeRelay?.(row.id);
+      if (row.invite?.peer) void this.deps.revokeRelay?.(row.invite.peer);
+    }
+  }
+
+  /**
+   * What this machine had as a primary, kept before the account's replaces it: its threads and
+   * messages, tasks, workspaces, its state and its editable files, as a replica snapshot would
+   * carry them, without the cluster's grants and keys. `data/before-join/<time>.json`, readable
+   * by its owner alone.
+   */
+  private saveBeforeJoin(): string | undefined {
+    try {
+      const dir = joinPath(this.deps.paths.data, "before-join");
+      mkdirSync(dir, { recursive: true });
+      const at = this.now();
+      const file = joinPath(dir, `${new Date(at).toISOString().replace(/[:.]/g, "-")}.json`);
+      const copy = {
+        v: 1,
+        at,
+        node: { id: this.deps.identity.id, name: this.deps.identity.name },
+        cluster: this.membership?.cluster ?? null,
+        tables: this.deps.store.replicaSnapshot([...EXCLUDED_KV_NS, GRANTS_NS, CLUSTER_NS]),
+        files: editableFiles(this.deps.paths),
+      };
+      writeFileSync(file, JSON.stringify(copy), { mode: 0o600 });
+      this.log.info("what this machine had is saved before it joins the account's machines", { file, threads: copy.tables.threads.length, messages: copy.tables.messages.length, tasks: copy.tables.tasks.length, files: copy.files.length });
+      return file;
+    } catch (e) {
+      this.log.warn("what this machine had could not be saved before the join", { error: e instanceof Error ? e.message : String(e) });
+      return undefined;
+    }
+  }
+
+  /**
+   * The server's `account.invite`: a machine signed in to this account (`by`, for itself or a
+   * machine it leads) asks to join. The account's primary invites it, for that machine alone and
+   * for a few minutes, with no one asked: the account is the trust, as for a phone signing in.
+   * A grant this node still holds for that machine is stale (it is in another cluster now) and
+   * goes first.
+   */
+  private async accountInvite(ask: InviteAsk): Promise<string> {
+    const name = this.deps.identity.name;
+    if (!this.deps.config.nodes.account_join) throw new RpcError("denied", `${name} lets no machine in through the account: [nodes] account_join is off there`);
+    if (this.role.role !== "primary" || !this.membership) throw new RpcError("unavailable", `${name} is not the primary now`);
+    if (this.role.hands) throw new RpcError("denied", "a machine joined as hands lets no one in");
+    if (ask.node.id === this.deps.identity.id) throw new RpcError("conflict", "this machine does not join itself");
+    const bound = this.deps.grants.forNode(ask.node.id);
+    if (bound) {
+      this.log.info("a machine of the account asks to join again; its old grant goes", { node: ask.node.id, grant: bound.id });
+      await this.revoke(bound.id);
+    }
+    const { invite } = await this.invite({ name: ask.node.name, role: ask.role, inviteExpiresIn: ACCOUNT_INVITE_MS, forNode: ask.node.id });
+    this.log.info("a machine of the account asked to join; invited", { node: ask.node.id, name: ask.node.name, role: ask.role, by: ask.by });
+    return invite.text;
+  }
+
+  /**
+   * `node.move` from this node's primary: its cluster moves into the account's machines, and
+   * this is this node's invite there. Answered once it is redeemed; the old link goes after the
+   * answer has left, and this node seeks its new primary, keeping what it shares.
+   */
+  private async onMove(text: string): Promise<void> {
+    const m = this.membership;
+    if (this.role.role === "primary" || !m) throw new RpcError("conflict", "only a secondary is moved");
+    const body = this.parseInviteText(text);
+    const keep: JoinOpts = { ...(m.paths ? { paths: m.paths } : {}), ...(m.answerHere ? { answerHere: true } : {}), ...(m.askPrimary ? { askPrimary: true } : {}), moving: true };
+    const paths = this.joinChecks(body, keep);
+    this.joining = true;
+    let answer: Awaited<ReturnType<typeof redeemNodeInvite>>;
+    try {
+      answer = await this.redeem(body);
+    } catch (e) {
+      this.joining = false;
+      throw e;
+    }
+    this.log.info("moved into the account's machines by this node's primary", { primary: answer.primary.id, name: answer.primary.name });
+    const t = setTimeout(() => {
+      void this.adopt(answer, paths, keep)
+        .then((r) => this.account.moved(r.primary))
+        .catch((e: unknown) => this.log.warn("the move into the account's machines failed after the invite was spent", { error: e instanceof Error ? e.message : String(e) }))
+        .finally(() => {
+          this.joining = false;
+        });
+    }, 0);
+    if (typeof t === "object" && "unref" in t) t.unref();
+  }
+
+  /** `node.accountJoin`: this machine joins the account's machines now, on its own word, the server asked afresh where they are. */
+  async accountJoinNow(): Promise<void> {
+    if (this.role.hands) throw new RpcError("denied", "a machine joined as hands joins nothing on its own");
+    this.watchArbiter();
+    const arb = this.arbiter();
+    if (arb && this.arbiterActive()) {
+      try {
+        this.account.hear(await arb.register(this.self(), this.role.epoch, this.membership?.cluster));
+      } catch (e) {
+        this.log.debug("registry register before joining the account's machines failed", { error: e instanceof Error ? e.message : String(e) });
+      }
+    }
+    await this.account.joinNow();
   }
 
   /** A primary alone in its cluster gives the role up to join another: the brain and the scheduler stop, its clients reconnect. */
@@ -1892,6 +2171,7 @@ export class Nodes {
   /** The primary ended this node's grant while its sign-in door held the link: the node forgets its membership, as it would have heard it itself. */
   revokedAway(): void {
     this.forget("the primary ended this node's grant while it was at its sign-in screen");
+    this.account.keepApart("removed by its primary");
   }
 
   private membershipListeners = new Set<() => void>();
@@ -1940,6 +2220,7 @@ export class Nodes {
       const t = setTimeout(() => this.outbound.leave("left"), 0);
       if (typeof t === "object" && "unref" in t) t.unref();
     });
+    this.account.keepApart("left its cluster");
   }
 
   /**
@@ -1971,6 +2252,8 @@ export class Nodes {
     this.membership = undefined;
     this.membershipChanged();
     this.role.hands = false;
+    // the cluster's machines are no longer this node's to show
+    for (const r of this.registry.peers()) this.registry.forget(r.id);
     const forgotten = this.deps.grants.forgetCluster();
     this.log.warn("this node is in no cluster now and runs alone", { why, cluster: m.cluster, grant: m.grant, forgotten });
     this.closeOwnClients(why, true);
@@ -1987,7 +2270,10 @@ export class Nodes {
     this.membershipTimer = setTimeout(() => {
       this.membershipTimer = undefined;
       if (this.membership?.expiresAt === undefined) return;
-      if (this.membership.expiresAt <= this.now()) this.forget("this node's grant ran out");
+      if (this.membership.expiresAt <= this.now()) {
+        this.forget("this node's grant ran out");
+        this.account.keepApart("its grant ran out");
+      }
       else this.armMembershipClock();
     }, Math.min(Math.max(0, end - this.now()), 2 ** 31 - 1));
     if (typeof this.membershipTimer === "object" && "unref" in this.membershipTimer) this.membershipTimer.unref();

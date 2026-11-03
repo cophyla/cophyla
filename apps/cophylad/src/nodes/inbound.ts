@@ -1047,6 +1047,13 @@ export class Inbound {
 
   // --- leaving -----------------------------------------------------------------------------------
 
+  /** Hands a linked node its invite into the account's machines (`node.move`), over the link it holds now; resolves once it redeemed it there. */
+  async move(node: string, invite: string, timeoutMs: number): Promise<void> {
+    const peer = this.peers.get(node);
+    if (!peer?.open) throw new RpcError("unavailable", `${node} is not linked`);
+    await peer.request("node.move", { invite }, { timeoutMs });
+  }
+
   /** Asks a linked node to take a new key for its grant, over the link it holds now. */
   async rekey(node: string, key: string, timeoutMs: number): Promise<boolean> {
     const peer = this.peers.get(node);

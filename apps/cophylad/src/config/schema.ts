@@ -629,6 +629,12 @@ export const NodesConfig = z.object({
   relay: z.boolean().default(true),
   /** Milliseconds between a primary's lease renewals on the server's registry. */
   registry_heartbeat_ms: z.number().int().positive().default(15000),
+  /**
+   * A machine signed in to an account whose machines are another cluster joins them on its
+   * own, through the server, with the machines it leads; and the account's primary lets such a
+   * machine in. Off, neither: a machine joins only with an invite.
+   */
+  account_join: z.boolean().default(true),
 });
 export type NodesConfig = z.infer<typeof NodesConfig>;
 
@@ -1096,6 +1102,7 @@ hello_timeout_ms = 5000
 relink_grace_ms = 8000         # a secondary that lost its link holds its own app this long for it
 relay = true                   # reach a primary on another network through the server's relay (signed in, a plan with it)
 registry_heartbeat_ms = 15000  # a primary renews its lease on the server's registry this often
+account_join = true            # signed in, join the account's machines on its own, and let them in here
 
 # Remote desktop: see a node's screen and drive it. enabled shares this desktop through a
 # streaming host (Apollo, or Sunshine) that runs as a service on Windows and is installed

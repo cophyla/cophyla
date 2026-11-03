@@ -12,15 +12,13 @@
 
 import { z } from "zod";
 import { Access, AgentListing, AgentMode, AgentRef, AudioCapabilities, Ask, ClientKind, ConnectionListing, Focus, GrantRole, GroupPhotoType, IceServer, MachineListing, Node, NodeRole, Session, TeammateListing, Terminal, Transfer, TransferReason, Workspace } from "./entities.ts";
-import { AgentMessageId, AskId, ClientId, ConnectionId, GrantId, GrantRef, GroupId, GroupPhotoId, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
+import { AgentMessageId, AskId, ClientId, ClusterId, ConnectionId, GrantId, GrantRef, GroupId, GroupPhotoId, NodeId, SessionId, TeammateId, Timestamp } from "./ids.ts";
 import { clientNotifications, clientRequests, clientSignals, DisplaySize, IceCandidate, PipeId, StreamTransport } from "./client.ts";
 import { Secret } from "./invite.ts";
 import { FilePiece, FileTreePage, GroupPhotoRef, PeerSource, PhotoPiece, TreeEntry } from "./peer-files.ts";
 
 const Empty = z.object({});
 
-/** A cluster's id: 16 hex characters, random. */
-export const ClusterId = z.string().regex(/^[0-9a-f]{16}$/, { message: "expected 16 hex characters" });
 
 /** A `host:port` a node can be reached at. */
 export const Endpoint = z.string().regex(/^.+:\d{1,5}$/, { message: "expected host:port" });
@@ -179,6 +177,12 @@ export const nodeLinkRequests = {
   },
   /** Primary → node: the grant's key changes to this one, from the next link on; the live link carries on. */
   "grant.rekey": { params: z.object({ key: Secret }), result: Empty },
+  /**
+   * Primary → node: this cluster is moving into the account's machines, and `invite` is this
+   * node's way in, minted there for it alone. The node redeems it, keeping what it shares and
+   * how it asks, and answers once it is a member there; the link closes after.
+   */
+  "node.move": { params: z.object({ invite: z.string().min(1) }), result: Empty },
   /** Secondary → primary: a client of the secondary said hello; the primary registers it and answers as it would on its own socket. */
   "relay.open": {
     params: z.object({

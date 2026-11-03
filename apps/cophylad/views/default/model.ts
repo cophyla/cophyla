@@ -4548,7 +4548,8 @@ export function nodeGrantWords(state: ViewState, node: Node, now: number): { bad
   const grant = nodeGrant(state, node.id);
   const badge = node.hands ? "hands" : grant?.role;
   const end = endWords(grant?.expiresAt, now);
-  const removable = grant !== undefined && node.id !== state.node && state.scopes.includes("controllers");
+  // the node that answers (the primary, for a secondary's app relayed to it) and the computer the app runs on keep their own grants
+  const removable = grant !== undefined && node.id !== state.node && node.id !== hereNode(state) && state.scopes.includes("controllers");
   const removeWords = node.backup ? `Remove ${node.name}? It can no longer reach this node, and the other nodes get new keys, since it held them all.` : `Remove ${node.name}? It can no longer reach this node.`;
   return { ...(badge ? { badge } : {}), ...(end ? { end } : {}), reinvite: grant?.status === "reinvite", removable, removeWords };
 }
@@ -4556,11 +4557,13 @@ export function nodeGrantWords(state: ViewState, node: Node, now: number): { bad
 /**
  * What the desktop offers this node itself: Join a primary while it is alone (no other node in
  * the list), Leave once it is a secondary. A phone is never offered either: joining and leaving
- * are asked on the machine itself.
+ * are asked on the machine itself. This node is the computer the app runs on, which a
+ * secondary's app, relayed to its primary, says in its client row (`hereNode`).
  */
 export function membershipOffer(state: ViewState): "join" | "leave" | undefined {
-  if (state.client?.kind !== "ui" || !state.scopes.includes("nodes") || state.node === undefined) return undefined;
-  const self = state.nodes.get(state.node);
+  const here = hereNode(state);
+  if (state.client?.kind !== "ui" || !state.scopes.includes("nodes") || here === undefined) return undefined;
+  const self = state.nodes.get(here);
   if (!self) return undefined;
   if (self.role === "secondary" && [...state.nodes.values()].some((n) => n.role === "primary" && n.id !== self.id)) return "leave";
   if ([...state.nodes.keys()].every((id) => id === self.id)) return "join";
@@ -4770,9 +4773,11 @@ export function promoteOffer(state: ViewState, node: Node): { title: string; ask
     if (node.status !== "online" || !node.backup) return undefined;
     return { title: `Make ${node.name} the primary: the brain, the chat and the tasks move there`, ask: `Make ${node.name} the primary? The brain, the chat and the tasks move there, and ${talking.name} becomes a secondary.` };
   }
-  // the app sees a secondary on its own: its primary is out of reach
+  // the app sees a secondary on its own: its primary is out of reach; one in no cluster (it left) has none to take over from
   if (node.id !== talking.id) return undefined;
-  const old = [...state.nodes.values()].find((n) => n.role === "primary" && n.id !== node.id)?.name ?? "The primary";
+  const primary = [...state.nodes.values()].find((n) => n.role === "primary" && n.id !== node.id);
+  if (!primary) return undefined;
+  const old = primary.name;
   return { title: `${old} cannot be reached: make ${node.name} the primary`, ask: `Make ${node.name} the primary? ${old} cannot be reached now; when it is back, it follows ${node.name} as a secondary.` };
 }
 
@@ -5577,6 +5582,42 @@ export function viewerRows(state: Pick<ViewState, "nodes" | "client">, remote: R
 export function viewerWords(viewer: RemoteViewer, now: number): string {
   if (viewer.kind === "web") return viewer.connected ? "watching in a browser" : `browser, opened ${ago(viewer.since, now)}`;
   return viewer.connected ? "watching" : `paired ${ago(viewer.since, now)}`;
+}
+
+/**
+ * What a machine's card says of it and the account's machines: on this computer, what it is
+ * doing about joining them (or that it did, for a day, and where what it had went), with Join
+ * them where the user may ask again; on another machine's card, that it joined through the
+ * account. Nothing once it is one of them and the day is over.
+ */
+export function accountWords(state: ViewState, node: Node): { text: string; tone: "note" | "warn"; join?: string } | undefined {
+  const a = node.account;
+  if (!a) return undefined;
+  const self = node.id === hereNode(state);
+  const theirs = a.primary ? `${a.primary}'s machines` : "your account's machines";
+  const reason = a.detail ? a.detail.replace(/[.\s]+$/, "") : undefined;
+  // the user may ask from this computer's own app alone: the request is this machine's to make
+  const may = self && state.client?.kind === "ui" && state.scopes.includes("nodes");
+  if (!self) return a.state === "joined" ? { text: "Joined through your account", tone: "note" } : undefined;
+  switch (a.state) {
+    case "joining":
+      return { text: `Joining ${theirs} through your account…`, tone: "note" };
+    case "moving":
+      return { text: `Bringing this computer and the machines it leads into ${theirs}…`, tone: "note" };
+    case "waiting":
+      return { text: `Joins ${theirs} once it can${reason ? `: ${reason}` : ""}.`, tone: "note" };
+    case "failed":
+      return { text: `Couldn't join ${theirs}${reason ? `: ${reason}` : ""}.`, tone: "warn", ...(may ? { join: "Try again" } : {}) };
+    case "off":
+      return { text: "Kept apart from your account's machines, since it was taken out of them.", tone: "note", ...(may ? { join: "Join them" } : {}) };
+    case "apart":
+      return { text: `Not joined to ${theirs}${reason ? `: ${reason}` : ""}.`, tone: "warn" };
+    case "joined": {
+      const saved = a.saved ? ` What it had before is kept in ${a.saved}.` : "";
+      const left = a.left && a.left.length > 0 ? ` Not reached, so invite ${a.left.length === 1 ? "it" : "them"} again: ${a.left.join(", ")}.` : "";
+      return { text: `Joined ${theirs} through your account.${saved}${left}`, tone: left ? "warn" : "note" };
+    }
+  }
 }
 
 /** A machine's head in Devices: what it is, as tags beside its name, and a line of facts under it. */

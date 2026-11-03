@@ -215,8 +215,9 @@ export class Cloud {
     this.log.debug("frame from the server ignored", { method });
   }
 
-  /** The one request the server makes: a tunnel ending here. */
+  /** The two requests the server makes: a tunnel ending here, and an invite for a machine of the account joining it. */
   private onRequest(method: string, params: unknown): Promise<unknown> {
+    if (method === "account.invite") return this.registry.invite(params);
     if (method !== "relay.open") return Promise.reject(new RpcError("unsupported", `unsupported: ${method}`));
     const relay = this.hostedAllowed("relay");
     if (relay) return Promise.reject(relay);
