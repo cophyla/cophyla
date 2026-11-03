@@ -85,7 +85,7 @@ import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
 import { chatScaleFrom } from "./model.ts";
-import { grown, spliceAt, spliced, terminalWords } from "./dictation.ts";
+import { grown, spliceAt, spliced, tapped, terminalWords } from "./dictation.ts";
 import type { Splice } from "./dictation.ts";
 import { TeamControl } from "./teamctl.ts";
 import { newTeamUi } from "./teamview.ts";
@@ -453,6 +453,7 @@ rpc.onNotification((n) => {
       if (p.connected) ui.restart = undefined;
       else {
         ui.talking = false;
+        ui.talkLatched = undefined;
         // the stream read through the node: the host closes its page, and the panel goes
         ui.remoteView = remoteViewStep(ui.remoteView, { type: "lost" });
       }
@@ -560,6 +561,11 @@ rpc.onNotification((n) => {
       const p = n.params as { state: VoiceState; client?: string; unheard?: VoiceUnheard; limit?: number; stopped?: VoiceStopped };
       // this view's utterance is over: a dictation whose words never came leaves its field as it was
       if (p.state === "idle" && (p.client === undefined || p.client === state.client?.id)) dictationGone();
+      // A tapped press the node ended itself (its limit): it no longer listens, and the talk and send buttons are back.
+      if (ui.talkLatched !== undefined && ui.talking && p.state !== "listening" && (p.client === state.client?.id || (p.state === "idle" && p.client === undefined))) {
+        ui.talking = false;
+        ui.talkLatched = undefined;
+      }
       dispatch({ type: "voice.state", params: p });
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
       if (p.unheard !== undefined) {
@@ -2025,9 +2031,10 @@ async function loadEarlier(session: string): Promise<void> {
 }
 
 /**
- * The talk button, held and let go: `voice.ptt` on the host's own connection, dictating. The
+ * The talk button, pressed and let go: `voice.ptt` on the host's own connection, dictating. The
  * host streams its microphone while the node listens to it, and what was said comes back as
- * words typed into the field beside the button held, for the user to send.
+ * words typed into the field beside the button pressed, for the user to send. Tapped rather
+ * than held, it listens on until Stop, Stop and send or Cancel (`release`).
  */
 function talk(held: boolean, button?: HTMLButtonElement): void {
   if ((ui.talking === true) === held) return;
@@ -2035,12 +2042,41 @@ function talk(held: boolean, button?: HTMLButtonElement): void {
   if (held) {
     const field = button?.closest("form")?.querySelector<HTMLTextAreaElement>("textarea");
     pressField = field ?? undefined;
-  }
+    pressAt = Date.now();
+  } else ui.talkLatched = undefined;
   draw();
   rpc.request("voice.ptt", held ? { active: true, dictate: true } : { active: false }).catch((e: unknown) => {
     if (held) ui.talking = false;
     fail("talk", e);
   });
+}
+
+/** When the talk button was pressed: let go within `TAP_MS`, it was a tap. */
+let pressAt = 0;
+
+/**
+ * The talk button let go, by the pointer or the key: held a while, the listening ends there; tapped,
+ * it goes on, and Cancel, Stop and Stop and send take the talk and send buttons' place beside its
+ * field. Its second release (the pointer's capture let go after its `pointerup`) changes nothing.
+ */
+function release(): void {
+  if (!ui.talking || ui.talkLatched !== undefined) return;
+  const kind = pressField ? (["composer-text", "send-text", "group-text"].find((c) => pressField!.classList.contains(c)) ?? undefined) : undefined;
+  if (!tapped(Date.now() - pressAt) || kind === undefined) {
+    talk(false);
+    return;
+  }
+  // The key that tapped it leaves the focus on a button that goes: Stop takes it.
+  const focused = (document.activeElement as Element | null)?.classList.contains("talk") === true;
+  ui.talkLatched = kind;
+  draw();
+  if (focused) pressField?.closest("form")?.querySelector<HTMLButtonElement>(".talk-stop")?.focus();
+}
+
+/** Stop and send: the listening ends, and once its words are typed in, the field's form is sent. */
+function stopAndSend(): void {
+  sendNext = true;
+  talk(false);
 }
 
 // --- dictation -------------------------------------------------------------------------------------
@@ -2058,6 +2094,8 @@ interface Dictation {
 /** The field whose talk button is held: what is said is typed there. */
 let pressField: HTMLTextAreaElement | undefined;
 let dictating: Dictation | undefined;
+/** Stop and send was pressed: the dictation's words, once typed in, are sent with the field's form. */
+let sendNext = false;
 
 const fieldOwner = (field: HTMLTextAreaElement | HTMLInputElement): string => field.form?.dataset["session"] ?? field.form?.dataset["group"] ?? field.className;
 
@@ -2129,8 +2167,11 @@ function dictationDone(p: { client: string; text: string }): void {
   let d = dictating ?? startDictation();
   dictating = undefined;
   pressField = undefined;
-  // the field went to another session's draft meanwhile: the words go where the user is now
-  if (d.field && d.owner !== fieldOwner(d.field)) d = startDictation();
+  const send = sendNext;
+  sendNext = false;
+  // the field went to another session's draft meanwhile: the words go where the user is now, unsent
+  const moved = d.field !== undefined && d.owner !== fieldOwner(d.field);
+  if (moved) d = startDictation();
   if (d.terminal) {
     terminal.paste(terminalWords(p.text));
     return;
@@ -2140,6 +2181,11 @@ function dictationDone(p: { client: string; text: string }): void {
     return;
   }
   showDictated(d, p.text);
+  // Stop and send: the field's form goes with what was typed and said, as its Send would send it.
+  if (send && !moved && p.text.trim() !== "") {
+    d.field.form?.requestSubmit();
+    return;
+  }
   // on a computer the user can read it over and press Enter; a phone's keyboard would cover the page
   if (!phone.matches) d.field.focus();
 }
@@ -2149,6 +2195,7 @@ function dictationGone(): void {
   const d = dictating;
   dictating = undefined;
   pressField = undefined;
+  sendNext = false;
   if (d) showDictated(d, "");
 }
 
@@ -2158,8 +2205,10 @@ function dictationGone(): void {
  * go with it, so its own release later sends nothing.
  */
 function cancelVoice(): void {
+  sendNext = false;
   if (ui.talking) {
     ui.talking = false;
+    ui.talkLatched = undefined;
     draw();
   }
   rpc.request("voice.ptt", { active: false, cancel: true }).catch((e: unknown) => fail("cancel", e));
@@ -3801,6 +3850,15 @@ document.addEventListener("click", (ev) => {
       if (b?.listing) void newTerminal(folderPlace(b.node), b.listing.path, folderPlace(b.node));
       return;
     }
+    case "talk-stop":
+      if (ui.talking) talk(false);
+      return;
+    case "talk-send":
+      if (ui.talking) stopAndSend();
+      return;
+    case "talk-cancel":
+      cancelVoice();
+      return;
     case "agents-fold": {
       const session = target.dataset["session"];
       if (!session) return;
@@ -4499,7 +4557,8 @@ document.addEventListener("keydown", (ev) => {
 });
 
 // The talk button listens while it is held: by the pointer, which it captures so a release
-// outside it still counts, or by Space or Enter while it has the focus.
+// outside it still counts, or by Space or Enter while it has the focus. Tapped, it listens on
+// until Stop, Stop and send or Cancel (`release`).
 document.addEventListener("pointerdown", (ev) => {
   const button = (ev.target as Element | null)?.closest<HTMLButtonElement>(".talk");
   if (!button || button.disabled || ev.button !== 0) return;
@@ -4509,7 +4568,7 @@ document.addEventListener("pointerdown", (ev) => {
 });
 for (const type of ["pointerup", "pointercancel", "lostpointercapture"] as const) {
   document.addEventListener(type, (ev) => {
-    if (ui.talking && (ev.target as Element | null)?.closest(".talk")) talk(false);
+    if (ui.talking && (ev.target as Element | null)?.closest(".talk")) release();
   });
 }
 document.addEventListener("keydown", (ev) => {
@@ -4519,12 +4578,23 @@ document.addEventListener("keydown", (ev) => {
   }
 });
 document.addEventListener("keyup", (ev) => {
-  if ((ev.key === " " || ev.key === "Enter") && ui.talking && (ev.target as Element | null)?.classList.contains("talk")) talk(false);
+  if ((ev.key === " " || ev.key === "Enter") && ui.talking && (ev.target as Element | null)?.classList.contains("talk")) release();
 });
-// A window that loses the focus mid-hold never sees the key come up.
+// A window that loses the focus mid-hold never sees the key come up; a tapped press is not held, and listens on.
 window.addEventListener("blur", () => {
-  if (ui.talking) talk(false);
+  if (ui.talking && ui.talkLatched === undefined) talk(false);
 });
+// While a tapped press listens, Enter in its field is Stop and send (before a group's composer takes the key).
+document.addEventListener(
+  "keydown",
+  (ev) => {
+    if (ui.talkLatched === undefined || !ui.talking || ev.target !== pressField || !enterSends(ev)) return;
+    ev.preventDefault();
+    ev.stopImmediatePropagation();
+    stopAndSend();
+  },
+  true,
+);
 
 document.addEventListener("focusout", (ev) => {
   if ((ev.target as HTMLElement | null)?.classList.contains("composer-text")) typing(false);

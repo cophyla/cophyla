@@ -224,8 +224,13 @@ export interface UiState {
   grantForm?: "node" | "join" | "phone" | "browser";
   /** The switch for devices on this network is on its way. */
   lanBusy?: boolean;
-  /** The talk button is held: Cophyla listens until it is let go. */
+  /** The talk button is pressed: Cophyla listens until it is let go, or, tapped, until Stop, Stop and send or Cancel. */
   talking?: boolean;
+  /**
+   * The talk button was tapped, not held: it listens on, and by the field of this class (`composer-text`,
+   * `send-text`, `group-text`) Cancel, Stop and Stop and send take the talk and send buttons' place.
+   */
+  talkLatched?: string;
   /** A grant request on its way: the forms' buttons wait for its answer. */
   grantBusy?: boolean;
   /** A machine being removed from its card: asked in place, then on its way. */
@@ -4544,7 +4549,11 @@ export function talkButton(): HTMLButtonElement {
   return talk;
 }
 
-/** A talk button as things stand: shown where the host has a microphone and no button of its own, live while the field beside it is. */
+/**
+ * A talk button as things stand: shown where the host has a microphone and no button of its own,
+ * live while the field beside it is. Tapped rather than held, it listens on, and it and the send
+ * button beside it give way to Cancel, Stop and Stop and send until one of them is pressed.
+ */
 export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiState, fieldLive: boolean): void {
   const canTalk = state.hostTalk && state.connected && state.scopes.includes("voice") && fieldLive;
   setHidden(talk, !state.hostTalk);
@@ -4552,11 +4561,64 @@ export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiStat
   talk.setAttribute("aria-pressed", ui.talking ? "true" : "false");
   const off = micOff(state);
   setData(talk, "mic", off !== undefined ? "off" : "on");
-  const talkWords = !state.connected ? "Waiting for cophylad" : !state.scopes.includes("voice") ? "This view may not listen" : !fieldLive ? "Nothing to type into here" : off !== undefined ? `The microphone is off: ${off}` : "Hold to talk: what you say is typed here, for you to send";
+  const talkWords = !state.connected ? "Waiting for cophylad" : !state.scopes.includes("voice") ? "This view may not listen" : !fieldLive ? "Nothing to type into here" : off !== undefined ? `The microphone is off: ${off}` : "Hold to talk, or tap to talk until you stop: what you say is typed here, for you to send";
   if (talk.title !== talkWords) {
     talk.title = talkWords;
     talk.setAttribute("aria-label", talkWords);
   }
+  const row = talk.parentElement;
+  if (!row) return;
+  const field = row.querySelector("textarea");
+  const latched = ui.talking === true && ui.talkLatched !== undefined && field?.classList.contains(ui.talkLatched) === true;
+  setData(row, "talking", latched ? "latched" : "");
+  let controls = row.querySelector<HTMLElement>(":scope > .talk-controls");
+  if (!controls) {
+    controls = createTalkControls();
+    talk.after(controls);
+  }
+  setHidden(controls, !latched);
+  for (const b of Array.from(controls.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = !state.connected;
+}
+
+/**
+ * What takes the talk and send buttons' place while a tapped talk button listens: Cancel (the
+ * field as it was), Stop (what was said typed in, for the user to send) and Stop and send.
+ */
+function createTalkControls(): HTMLElement {
+  const box = el("div", "talk-controls");
+  box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "Listening");
+  box.hidden = true;
+  const button = (kind: "cancel" | "stop" | "send", label: string, title: string) => {
+    const b = actionButton(`talk-control talk-${kind}`, "", `talk-${kind}`);
+    b.title = title;
+    b.setAttribute("aria-label", title);
+    b.append(kind === "stop" ? el("span", "talk-live") : controlIcon(kind), el("span", "talk-control-label", label));
+    return b;
+  };
+  box.append(
+    button("cancel", "Cancel", "Cancel: what was said is dropped, the field as it was"),
+    button("stop", "Stop", "Stop: what you said is typed here, for you to read over and send"),
+    button("send", "Stop & send", "Stop and send: what you said is typed here and sent"),
+  );
+  return box;
+}
+
+/** A cross (Cancel) or an arrow (Stop and send), drawn in the text's colour. */
+function controlIcon(kind: "cancel" | "send"): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("focusable", "false");
+  const path = document.createElementNS(SVG_NS, "path");
+  path.setAttribute("d", kind === "cancel" ? "M6.5 6.5l11 11M17.5 6.5l-11 11" : "M4.5 12h14M13 6.5l5.5 5.5-5.5 5.5");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "2");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  svg.append(path);
+  return svg;
 }
 
 /** The input under the pane: the chat's, or the selected session's send when its timeline shows. */

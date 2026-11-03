@@ -3056,6 +3056,98 @@ button:disabled {
   display: none;
 }
 
+/* Tapped rather than held, the talk button listens on: it and the send button beside it give way
+   to Cancel, Stop and Stop and send until one is pressed. */
+[data-talking="latched"] > .talk,
+[data-talking="latched"] > button[type="submit"] {
+  display: none;
+}
+
+.talk-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.talk-controls[hidden] {
+  display: none;
+}
+
+.talk-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 37px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+.talk-control:hover:enabled {
+  border-color: var(--muted);
+}
+
+.talk-control:disabled {
+  opacity: 0.45;
+}
+
+.talk-control svg {
+  flex: none;
+  width: 16px;
+  height: 16px;
+}
+
+.talk-cancel {
+  background: transparent;
+  color: var(--muted);
+}
+
+.talk-cancel:hover:enabled {
+  color: var(--ink);
+}
+
+/* Stop's mark: a square in the recording's red, beating while it listens. */
+.talk-live {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--rust);
+  animation: talk-live-beat 1.2s ease-in-out infinite;
+}
+
+@keyframes talk-live-beat {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.talk-send {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.talk-send:hover:enabled {
+  border-color: var(--cophyla-ink);
+}
+
+/* On a phone the three are their marks alone, so the field keeps its room. */
+@media (max-width: 640px) {
+  .talk-control {
+    padding: 6px 10px;
+  }
+
+  .talk-control-label {
+    display: none;
+  }
+}
+
 /* the speaker beside the chat's tab: dim while nothing is to be read out, lit while the next
    reply will be, pulsing while one is read, struck through once hushed */
 .speak-next {

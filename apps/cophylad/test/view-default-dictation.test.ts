@@ -5,9 +5,18 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Client } from "@cophyla/protocol";
-import { grown, spliceAt, spliced, terminalWords } from "../views/default/dictation.ts";
+import { grown, spliceAt, spliced, TAP_MS, tapped, terminalWords } from "../views/default/dictation.ts";
 import { apply, heardText, initialState } from "../views/default/model.ts";
 import type { HostReady } from "../views/default/model.ts";
+
+describe("the talk button pressed", () => {
+  test("let go at once it was tapped, and listens on; held a while, its release ends it", () => {
+    expect([tapped(0), tapped(120), tapped(TAP_MS - 1)]).toEqual([true, true, true]);
+    expect([tapped(TAP_MS), tapped(1800)]).toEqual([false, false]);
+    // a clock that went back says nothing of a tap
+    expect(tapped(-5)).toBe(false);
+  });
+});
 
 describe("dictated words in a field", () => {
   test("into an empty field, the words alone, the caret after them", () => {
