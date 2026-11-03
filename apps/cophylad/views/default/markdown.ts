@@ -4,9 +4,15 @@
 // HTML, so raw HTML in it shows as the text it is. GitHub's flavour (tables, task lists,
 // strikethrough, bare links), and a single newline is a line break, as a chat means it; in a
 // file the viewer shows, as in a README on GitHub, it is not. A
-// link is drawn as one with its address for a title; in a chat it goes nowhere, and in a file
-// it carries its address (`data-href`) and takes the focus, for the viewer to follow on a click
-// (fileview.ts). An image is its alt text, its title and address in its tooltip:
+// link is drawn as one with its address for a title, and carries its address (`data-href`). In
+// a file it takes the focus, and the viewer follows it on a click (fileview.ts). In a message, as in
+// a terminal, every link opens on a click (view.ts): a web page's, written as a link or as a bare
+// address anywhere in the words, a code span's and a code block's too (`data-action` "link"),
+// in the browser; a path, written in the words (`src/app.ts:12`, `C:\repo\x.ts`) or as where a
+// link goes (`[app.ts](src/app.ts#L12)`), is a `.md-path` (`data-action` "path") the view opens
+// in its file viewer, or in Files for a folder, when it can place it in an agent's folder.
+// Text shown as typed gets the same links (`setLinkedText` for the view's other text). An image
+// is its alt text, its title and address in its tooltip:
 // the frame has no network. A file's markdown may be given a hook that draws an image itself
 // (the viewer's, which reads one in the file's folder whole and draws it as data); what the
 // hook declines, an image on the web, stays its alt text. The top-level blocks are
@@ -17,7 +23,8 @@
 
 import { Lexer } from "./vendor/marked.mjs";
 import type { MarkedToken, Token, Tokens } from "./vendor/marked.mjs";
-import { SLOT, SLOT_OPEN } from "./model.ts";
+import { hrefPath, linksIn, SLOT, SLOT_OPEN } from "./model.ts";
+import type { PathInText } from "./model.ts";
 
 const OPTIONS = { gfm: true, breaks: true };
 /** A file's markdown: lines wrapped by hand join into their paragraph. */
@@ -37,19 +44,73 @@ export type ImageHook = (href: string, alt: string, title: string | null) => HTM
 let imageHook: ImageHook | undefined;
 /** Whether the text being rendered is a file's, whose links the viewer follows: set while it renders, as the hook is. */
 let fileLinks = false;
+/** Whether a link's own words are being built, which hold no links of their own. */
+let inLink = false;
 
 
-/** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill. */
+/** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill, and its links made links. */
 function withSlots(parent: HTMLElement, text: string): void {
   let at = 0;
   for (const m of text.matchAll(SLOT)) {
-    if (m.index > at) parent.append(text.slice(at, m.index));
+    if (m.index > at) withLinks(parent, text.slice(at, m.index));
     const span = el("span", "slot");
     span.dataset["slot"] = m[1]!;
     parent.append(span);
     at = m.index + m[0].length;
   }
-  if (at < text.length) parent.append(text.slice(at));
+  if (at < text.length) withLinks(parent, at === 0 ? text : text.slice(at));
+}
+
+/** Past this many characters a text is shown with no links found in it: an output that long is read, not clicked through. */
+const LINKED_MAX = 200_000;
+
+/** A string as text, each web address in it a link and each path a `.md-path`; a file's text as it is, its own links being the viewer's to follow. */
+function withLinks(parent: HTMLElement, text: string): void {
+  if (fileLinks || inLink || text.length > LINKED_MAX) {
+    parent.append(text);
+    return;
+  }
+  let at = 0;
+  for (const l of linksIn(text)) {
+    if (l.start > at) parent.append(text.slice(at, l.start));
+    const words = text.slice(l.start, l.end);
+    parent.append(l.kind === "web" ? webLink(el("a", "md-link", words), l.url) : pathLink(el("span", undefined, words), l.path));
+    at = l.end;
+  }
+  if (at < text.length) parent.append(at === 0 ? text : text.slice(at));
+}
+
+/**
+ * A link to a web page, which the view opens in the browser on a click. It takes no focus: Chrome
+ * draws no selection in a drag over a focusable link's words, and its words are to copy too.
+ */
+function webLink(a: HTMLElement, href: string): HTMLElement {
+  a.title = href;
+  a.dataset["href"] = href;
+  a.dataset["action"] = "link";
+  return a;
+}
+
+/** A path, which the view opens on a click when it can place it (`linked`: it is where a link goes, so no guess). */
+function pathLink(node: HTMLElement, p: PathInText, linked = false): HTMLElement {
+  node.classList.add("md-path");
+  node.dataset["action"] = "path";
+  node.dataset["path"] = p.path;
+  if (p.line !== undefined) node.dataset["line"] = String(p.line);
+  if (p.folder) node.dataset["folder"] = "1";
+  if (p.plain) node.dataset["plain"] = "1";
+  if (linked) node.dataset["linked"] = "1";
+  return node;
+}
+
+/**
+ * Sets a node's text as typed (for `white-space: pre-wrap` or a `pre` to show), its web
+ * addresses and paths made links as a message's are; built again only when the text changed.
+ */
+export function setLinkedText(node: HTMLElement, text: string): void {
+  if (node.textContent === text) return;
+  node.replaceChildren();
+  withLinks(node, text);
 }
 
 function el<K extends keyof HTMLElementTagNameMap>(tag: K, className?: string, text?: string): HTMLElementTagNameMap[K] {
@@ -94,11 +155,18 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
         parent.append(el("br"));
         break;
       case "link": {
+        // A link's words are its own: a path in them goes where the link does.
+        inLink = true;
         const a = inline(el("a", "md-link"), t.tokens);
+        inLink = false;
         a.title = t.href;
         if (fileLinks) {
           a.dataset["href"] = t.href;
           a.tabIndex = 0;
+        } else if (/^https?:\/\//i.test(t.href)) webLink(a, t.href);
+        else {
+          const p = hrefPath(t.href);
+          if (p) pathLink(a, p, true);
         }
         parent.append(a);
         break;
@@ -224,7 +292,8 @@ function renderMarkdown(container: HTMLElement, text: string, options: typeof OP
 
 /**
  * Sets a container's text: as markdown (class `md`) when a model wrote it, else as it was
- * typed, for `white-space: pre-wrap` to show. Text that marked cannot read is shown as typed.
+ * typed, for `white-space: pre-wrap` to show, its links made links either way. Text that marked
+ * cannot read is shown as typed.
  * A `file`'s markdown keeps a single newline inside its paragraph, its links carry where they
  * go, and its images are drawn by `image` when it is given one.
  */
@@ -242,13 +311,15 @@ export function renderText(container: HTMLElement, text: string, markdown: boole
     } finally {
       imageHook = undefined;
       fileLinks = false;
+      inLink = false;
     }
   }
   container.classList.remove("md");
   const was = sources.delete(container);
   if (!text.includes(SLOT_OPEN)) {
     typed.delete(container);
-    if (was || container.textContent !== text) container.textContent = text;
+    if (was) container.replaceChildren();
+    setLinkedText(container, text);
     return;
   }
   if (!was && typed.get(container) === text) return;

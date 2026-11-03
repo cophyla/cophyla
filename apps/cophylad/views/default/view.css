@@ -2439,11 +2439,34 @@ button:disabled {
   text-align: right;
 }
 
-/* A link goes nowhere (the frame has no way out); its address is its title. */
-.md .md-link {
+/* A link, in a message's markdown or in text shown as typed; its address is its title. A web
+   page's opens in the browser on a click, and a path's in the viewer (view.ts). */
+.md-link {
   color: var(--cophyla-ink);
   text-decoration: underline;
   text-decoration-color: rgba(199, 163, 240, 0.4);
+  text-underline-offset: 2px;
+}
+
+.md-link[data-action] {
+  cursor: pointer;
+}
+
+.md-link[data-action]:hover {
+  text-decoration-color: currentColor;
+}
+
+/* A link to a path no agent's folder holds names it only. */
+.md-link[data-open="0"] {
+  cursor: auto;
+}
+
+/* A path in the words is a link where the view can open it: it shows as one under the mouse, as
+   a terminal's does. */
+.md-path[data-open="1"]:hover {
+  cursor: pointer;
+  text-decoration: underline;
+  text-decoration-color: currentColor;
   text-underline-offset: 2px;
 }
 

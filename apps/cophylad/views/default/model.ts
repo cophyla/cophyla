@@ -3518,6 +3518,78 @@ export function pathsIn(text: string): PathInText[] {
   return out;
 }
 
+/** A link in a message's words: a web page's address, or a path as `pathsIn` finds one, and where it stands in them. */
+export type LinkInText = { kind: "web"; start: number; end: number; url: string } | { kind: "path"; start: number; end: number; path: PathInText };
+
+const WEB_IN_TEXT = /\bhttps?:\/\/[^\s<>"'`]+/gi;
+const CLOSES: Record<string, string> = { ")": "(", "]": "[", "}": "{" };
+
+/** A web address as a sentence ends it: the stop, comma or quote after it is the sentence's, and so is a bracket it never opened. */
+function webEnd(url: string): string {
+  let u = url;
+  for (;;) {
+    const last = u[u.length - 1];
+    if (last === undefined) return u;
+    const opens = CLOSES[last];
+    const count = (c: string) => u.split(c).length - 1;
+    if (!".,;:!?*_~'\"".includes(last) && (opens === undefined || count(last) <= count(opens))) return u;
+    u = u.slice(0, -1);
+  }
+}
+
+/**
+ * The links in a message's words, in their order: each web page's address (http or https, the
+ * punctuation of the sentence it ends left off), and each path `pathsIn` finds outside them.
+ * Which of the paths the view can open is the view's to say, when one is pointed at.
+ */
+export function linksIn(text: string): LinkInText[] {
+  const out: LinkInText[] = [];
+  for (const m of text.matchAll(WEB_IN_TEXT)) {
+    const url = webEnd(m[0]);
+    if (/^https?:\/\/[^/]/i.test(url)) out.push({ kind: "web", start: m.index, end: m.index + url.length, url });
+  }
+  const webs = out.length;
+  for (const p of pathsIn(text)) {
+    if (out.slice(0, webs).some((w) => p.start < w.end && w.start < p.end)) continue;
+    out.push({ kind: "path", start: p.start, end: p.end, path: p });
+  }
+  return out.sort((a, b) => a.start - b.start);
+}
+
+/**
+ * The path a markdown link in a message points to, as Claude Code writes them: `src/app.ts`,
+ * `src/app.ts#L12` or `#L12-L20`, `src/app.ts:12`, `file:///C:/repo/x.ts`, spaces as `%20`;
+ * with its line, and a folder's marked by the separator after it. None for a web page's, a mail
+ * address's or one to a heading.
+ */
+export function hrefPath(href: string): PathInText | undefined {
+  let h = href.trim();
+  const file = /^file:\/\//i.test(h);
+  if (file) h = h.replace(/^file:\/\/(localhost)?/i, "").replace(/^\/([A-Za-z]:)/, "$1");
+  // A scheme (`mailto:`, `vscode:`), not a file's name and line (`app.ts:12`).
+  else if (/^[A-Za-z][\w+.-]+:(?!\d)/.test(h) || h.startsWith("#") || h.startsWith("//")) return undefined;
+  let line: number | undefined;
+  const hash = h.indexOf("#");
+  if (hash >= 0) {
+    const l = /^#L(\d+)/i.exec(h.slice(hash));
+    if (l) line = Number(l[1]);
+    h = h.slice(0, hash);
+  }
+  h = h.replace(/\?.*$/, "");
+  try {
+    h = decodeURIComponent(h);
+  } catch {
+    // As written.
+  }
+  const at = /^(.+?):(\d+)(?::\d+)?$/.exec(h);
+  if (at && !/^[A-Za-z]$/.test(at[1]!)) {
+    h = at[1]!;
+    line ??= Number(at[2]);
+  }
+  if (h.replace(/^(?:[A-Za-z]:|\.{1,2})?[\\/]/, "") === "" || /[\0\n]/.test(h)) return undefined;
+  return { start: 0, end: 0, path: h, ...(line !== undefined && line > 0 ? { line } : {}), ...(/[\\/]$/.test(h) ? { folder: true as const } : {}) };
+}
+
 /** A relative path as the explorer keys it, `/` between the names and no `./` before; undefined for one that climbs out, or is absolute. */
 export function relativeFile(path: string): string | undefined {
   if (/^([A-Za-z]:)?[\\/]/.test(path)) return undefined;

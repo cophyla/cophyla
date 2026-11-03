@@ -180,9 +180,9 @@ const talks = new TalkControl({
   dispatch: (action, opts) => dispatch(action, opts),
   draw: () => draw(),
 });
-const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
+const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
-const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => canOpenPath(path), open: (path) => openPath(path) });
+const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(dialogWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(dialogWritten(), (at) => openPath(path, at)) });
 const viewer = new FileViewer(
   rpc,
   (t) => folderAsked(t),
@@ -2763,23 +2763,71 @@ function terminalAgent(): Session | undefined {
 }
 
 /**
- * Where a path a terminal wrote is, and what reads it. In an agent's own terminal: a relative
- * one under that agent's folder, an absolute one in whichever live agent's folder holds it,
- * that agent's first. In a bare terminal: one under the folder it started in (a shell that
- * moved elsewhere since writes paths that are not), else an absolute one in a live agent's
- * folder. None past all of those.
+ * Where a path was written, which says what a relative one is under: an agent's terminal or its
+ * timeline (that agent's folder), a bare terminal (the folder it started in), or the chat, a
+ * group or a talk, where only an absolute path says where it is.
  */
-function pathHome(path: string): { from: ViewerSource; rel: string } | undefined {
+type WrittenIn = { session: Session } | { terminal: Terminal } | "chat";
+
+/** Where the paths the terminal shown writes are written: the agent's whose terminal it is, or the bare terminal's; none when neither shows. */
+function terminalWritten(): WrittenIn | undefined {
   const s = terminalAgent();
-  if (s) {
+  if (s) return { session: s };
+  const t = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
+  return t ? { terminal: t } : undefined;
+}
+
+/** Where the paths the session's dialog shows are written: in its agent's terminal, whatever the pane shows. */
+function dialogWritten(): WrittenIn | undefined {
+  const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
+  return card ? { session: card.session } : undefined;
+}
+
+/** Where a link in the view's words was written: in an agent's tab, that agent's timeline; elsewhere, the chat's or a group's. */
+function linkWritten(node: Element): WrittenIn | undefined {
+  const pane = node.closest<HTMLElement>(".session[data-session]");
+  if (!pane) return "chat";
+  const card = state.sessions.get(pane.dataset["session"]!);
+  return card ? { session: card.session } : undefined;
+}
+
+/** What `use` makes of where paths are written, when they are written anywhere. */
+function withWritten<T>(at: WrittenIn | undefined, use: (at: WrittenIn) => T): T | undefined {
+  return at !== undefined ? use(at) : undefined;
+}
+
+/** The live agent whose folder holds an absolute path, on whichever computer: the innermost folder, then the agent worked in last. */
+function homeAnywhere(path: string): { session: Session; rel: string } | undefined {
+  let best: { session: Session; rel: string } | undefined;
+  for (const node of new Set([...state.sessions.values()].map((c) => c.session.node))) {
+    const home = fileHome(state, node, path);
+    if (home && (!best || home.session.cwd.length > best.session.cwd.length || (home.session.cwd.length === best.session.cwd.length && home.session.lastActivity > best.session.lastActivity))) best = home;
+  }
+  return best;
+}
+
+/**
+ * Where a path is, and what reads it. Written by an agent: a relative one under that agent's
+ * folder, an absolute one in whichever live agent's folder holds it, that agent's first. In a
+ * bare terminal: one under the folder it started in (a shell that moved elsewhere since writes
+ * paths that are not), else an absolute one in a live agent's folder. In the chat or a group: an
+ * absolute one in a live agent's folder, on any computer. None past all of those.
+ */
+function pathHome(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
+  if (at === "chat") {
+    if (!state.scopes.includes("sessions:read")) return undefined;
+    const home = homeAnywhere(path);
+    return home && home.rel !== "" ? { from: { session: home.session.id }, rel: home.rel } : undefined;
+  }
+  if ("session" in at) {
+    const s = at.session;
     if (!state.scopes.includes("sessions:read")) return undefined;
     const rel = relativeFile(path);
     if (rel !== undefined) return { from: { session: s.id }, rel };
     const home = fileHome(state, s.node, path, s.id);
     return home && home.rel !== "" ? { from: { session: home.session.id }, rel: home.rel } : undefined;
   }
-  const t = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
-  if (!t) return undefined;
+  const t = at.terminal;
   if (state.scopes.includes("terminal")) {
     const rel = relativeFile(path) ?? relUnder(t.cwd, path, state.nodes.get(t.node)?.platform);
     if (rel !== undefined && rel !== "") return { from: { terminal: t.id }, rel };
@@ -2790,49 +2838,95 @@ function pathHome(path: string): { from: ViewerSource; rel: string } | undefined
 }
 
 /**
- * Which agent's Files panel can show a path a terminal wrote, and where under its folder: in an
- * agent's own terminal, a relative path is under that agent's folder, and an absolute one in
- * whichever live agent's folder holds it, that agent's first; in a bare terminal, a relative one
- * is under the folder the shell started in, and it or an absolute one goes to whichever live
- * agent's folder holds it, as a chip's does.
+ * Which agent's Files panel can show a path, and where under its folder: written by an agent, a
+ * relative path is under that agent's folder, and an absolute one in whichever live agent's
+ * folder holds it, that agent's first; in a bare terminal, a relative one is under the folder the
+ * shell started in, and it or an absolute one goes to whichever live agent's folder holds it, as
+ * a chip's does; in the chat or a group, an absolute one goes there too, on any computer.
  */
-function folderHome(path: string): { session: Session; rel: string } | undefined {
+function folderHome(path: string, at: WrittenIn): { session: Session; rel: string } | undefined {
   if (!state.scopes.includes("sessions:read")) return undefined;
+  if (at === "chat") return homeAnywhere(path);
   const rel = relativeFile(path.replace(/[\\/]+$/, ""));
-  const s = terminalAgent();
-  if (s) return rel !== undefined ? { session: s, rel } : fileHome(state, s.node, path, s.id);
-  const t = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
-  return t ? fileHome(state, t.node, rel !== undefined ? joinPath(t.cwd, rel) : path) : undefined;
+  if ("session" in at) return rel !== undefined ? { session: at.session, rel } : fileHome(state, at.session.node, path, at.session.id);
+  return fileHome(state, at.terminal.node, rel !== undefined ? joinPath(at.terminal.cwd, rel) : path);
 }
 
 /**
- * Whether a path a terminal wrote is a link: a folder's when Files can show it, anything else
- * when the viewer can read it. A relative path with no extension and no separator after it is a
- * folder, a file such as `Makefile`, or no path at all (`and/or`, `1/2`): it counts only in an
- * agent's terminal, when its first name is a folder the agent's Files listed at the top.
+ * Whether a path is a link: a folder's when Files can show it, anything else when the viewer can
+ * read it. A relative path with no extension and no separator after it is a folder, a file such
+ * as `Makefile`, or no path at all (`and/or`, `1/2`): it counts only where an agent wrote it,
+ * when its first name is a folder the agent's Files listed at the top. In a message (`words`),
+ * where `console.log` is no file, a name with no folder before it counts only when Files listed
+ * it there too; a path a link goes to (`linked`) is taken as it is written.
  */
-function canOpenPath(p: PathInText): boolean {
-  if (p.plain && relativeFile(p.path) !== undefined) {
-    const s = terminalAgent();
-    if (!s || !underListedFolder(state.explorers.get(explorerKey(state, s)), p.path)) return false;
+function canOpenPath(p: PathInText, at: WrittenIn, how: { words?: boolean; linked?: boolean } = {}): boolean {
+  const rel = relativeFile(p.path);
+  if (!how.linked && rel !== undefined && (p.plain || (how.words && !rel.includes("/")))) {
+    if (at === "chat" || !("session" in at)) return false;
+    const ex = state.explorers.get(explorerKey(state, at.session));
+    if (p.plain ? !underListedFolder(ex, p.path) : !(ex?.dirs.get("")?.entries?.some((e) => e.name === rel) ?? false)) return false;
   }
-  return p.folder ? folderHome(p.path) !== undefined : pathHome(p.path) !== undefined;
+  return p.folder ? folderHome(p.path, at) !== undefined : pathHome(p.path, at) !== undefined;
 }
 
 /**
- * A path Ctrl+clicked in a terminal. A folder, known as one by the separator after it or by its
- * listing in Files, shows in Files; anything else opens at its line in the viewer of that
- * terminal's tab, over or beside it, with the focus, and goes to Files after all when the node
- * says it is a folder (`folderAsked`).
+ * A path Ctrl+clicked in a terminal, or clicked in a message. A folder, known as one by the
+ * separator after it or by its listing in Files, shows in Files; anything else opens at its line
+ * in the viewer of the tab it was written in, over or beside it, with the focus, and goes to Files
+ * after all when the node says it is a folder (`folderAsked`). One written in the chat or a group
+ * opens as a chip naming it does, in the tab of the agent whose folder holds it.
  */
-function openPath(p: PathInText): void {
-  const folder = folderHome(p.path);
+function openPath(p: PathInText, at: WrittenIn): void {
+  const folder = folderHome(p.path, at);
   if (folder && (p.folder || listedKind(state.explorers.get(explorerKey(state, folder.session)), folder.rel) === "dir")) return showFolder(folder.session, folder.rel);
-  const home = pathHome(p.path);
-  const tab = viewerTab(ui.selected, ui.terminal);
+  if (at === "chat") {
+    const home = homeAnywhere(p.path);
+    if (home) revealFile(home.session.node, p.path, p.line);
+    return;
+  }
+  const home = pathHome(p.path, at);
+  const tab = "session" in at ? at.session.id : viewerTab(undefined, at.terminal.id);
   if (!home || tab === undefined) return;
   openFile(tab, home.from, home.rel, { focus: true, ...(p.line !== undefined ? { line: p.line } : {}) });
 }
+
+/** The path a link in a message names, from what it carries. */
+function linkedPath(node: HTMLElement): PathInText {
+  const line = Number(node.dataset["line"]);
+  return { start: 0, end: 0, path: node.dataset["path"] ?? "", ...(Number.isInteger(line) && line > 0 ? { line } : {}), ...(node.dataset["folder"] === "1" ? { folder: true as const } : {}), ...(node.dataset["plain"] === "1" ? { plain: true as const } : {}) };
+}
+
+/** Whether a path's link in a message can open, said on it for the mouse that is on it: it then looks like a link and says what it does. */
+function pathLinkOpens(node: HTMLElement): boolean {
+  const at = linkWritten(node);
+  const p = linkedPath(node);
+  const opens = at !== undefined && p.path !== "" && canOpenPath(p, at, { words: true, linked: node.dataset["linked"] === "1" });
+  const open = opens ? "1" : "0";
+  if (node.dataset["open"] !== open) node.dataset["open"] = open;
+  const title = !opens ? (node.dataset["linked"] === "1" ? p.path : "") : p.folder ? `Show the folder in Files: ${p.path}` : `Open the file: ${p.path}${p.line !== undefined ? `, at line ${p.line}` : ""}`;
+  if (title !== "") node.title = title;
+  else node.removeAttribute("title");
+  return opens;
+}
+
+/** A link in a message was clicked: a web page opens in the browser, a path in the viewer or Files, unless the click was a drag that selected its words. */
+function followLink(node: HTMLElement): void {
+  if (!(getSelection()?.isCollapsed ?? true)) return;
+  if (node.dataset["action"] === "link") {
+    const url = node.dataset["href"] ?? "";
+    if (/^https?:\/\//i.test(url)) rpc.request("host.openLink", { url }).catch((e: unknown) => console.warn(`the link did not open: ${e instanceof Error ? e.message : String(e)}`));
+    return;
+  }
+  const at = linkWritten(node);
+  if (at !== undefined && pathLinkOpens(node)) openPath(linkedPath(node), at);
+}
+
+// A path in a message is a link where the view can open it: it says so as the mouse comes onto it.
+document.addEventListener("pointerover", (ev) => {
+  const node = (ev.target as Element | null)?.closest<HTMLElement>(".md-path[data-action]");
+  if (node && ev.pointerType !== "touch") pathLinkOpens(node);
+});
 
 /** Closes the file open in the tab that shows; the focus, when it was in the viewer, goes back to the terminal or to the file's row. */
 function closeViewer(): void {
@@ -3652,6 +3746,10 @@ document.addEventListener("click", (ev) => {
       return;
     case "goto":
       if (target.dataset["kind"] && target.dataset["ref"]) goto(target.dataset["kind"], target.dataset["ref"], target.dataset["message"]);
+      return;
+    case "link":
+    case "path":
+      followLink(target);
       return;
     case "reveal-file": {
       const line = Number(target.dataset["line"]);

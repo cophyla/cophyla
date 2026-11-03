@@ -8,7 +8,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import type { FileText } from "@cophyla/protocol";
 import { VENDOR_DIR } from "../scripts/vendor-view.ts";
-import { bytesOf, FIND_MAX, fileErrorWords, fileLanguage, fileLines, findInLines, findWords, GRAMMARS, grammarName, headingAnchors, imageKind, isHtml, isPdf, linesBetween, listedKind, pathsIn, readsWhole, relativeFile, relUnder, resolveRel, underListedFolder, VIEWER_WIDTH, viewerMeta, viewerNote, viewerTab, viewerWidth } from "../views/default/model.ts";
+import { bytesOf, FIND_MAX, fileErrorWords, fileLanguage, fileLines, findInLines, findWords, GRAMMARS, grammarName, headingAnchors, hrefPath, imageKind, isHtml, isPdf, linesBetween, linksIn, listedKind, pathsIn, readsWhole, relativeFile, relUnder, resolveRel, underListedFolder, VIEWER_WIDTH, viewerMeta, viewerNote, viewerTab, viewerWidth } from "../views/default/model.ts";
 
 const file = (over: Partial<FileText>): FileText => ({ path: "src/main.py", size: 1200, modified: 1, text: "x", ...over });
 
@@ -113,6 +113,36 @@ describe("view default file viewer", () => {
     // A root alone names nothing; a name without a separator or an extension is a word.
     expect(found("at / and C:\\ and ./ or Dockerfile")).toEqual([]);
     expect(found("/usr/lib/os-release")).toEqual([["/usr/lib/os-release", false, true]]);
+  });
+
+  test("the links in a message's words: web addresses without the sentence's punctuation, and the paths outside them", () => {
+    const found = (text: string) => linksIn(text).map((l) => [l.kind, text.slice(l.start, l.end), l.kind === "web" ? l.url : l.path.path, l.kind === "path" ? l.path.line : undefined]);
+    expect(found("See https://github.com/cophyla/cophyla/pull/7. Then edit src/app.py:12 and C:\\repo\\x.ts.")).toEqual([
+      ["web", "https://github.com/cophyla/cophyla/pull/7", "https://github.com/cophyla/cophyla/pull/7", undefined],
+      ["path", "src/app.py:12", "src/app.py", 12],
+      ["path", "C:\\repo\\x.ts", "C:\\repo\\x.ts", undefined],
+    ]);
+    // A bracket the address opened stays, one it did not goes with the sentence; a quote and a comma too.
+    expect(found("(read https://en.wikipedia.org/wiki/Tree_(graph_theory)), \"http://localhost:4931/x\", <https://a.org/b>")).toEqual([
+      ["web", "https://en.wikipedia.org/wiki/Tree_(graph_theory)", "https://en.wikipedia.org/wiki/Tree_(graph_theory)", undefined],
+      ["web", "http://localhost:4931/x", "http://localhost:4931/x", undefined],
+      ["web", "https://a.org/b", "https://a.org/b", undefined],
+    ]);
+    // The paths in an address are the address's; a scheme alone, another scheme, or a word with one in it, none.
+    expect(found("https://x.org/a/b.ts and https:// and ftp://h/a and xhttps://y.org")).toEqual([["web", "https://x.org/a/b.ts", "https://x.org/a/b.ts", undefined]]);
+    expect(found("nothing to see, e.g. here")).toEqual([]);
+  });
+
+  test("where a markdown link in a message goes, as a path: Claude Code's `#L12`, a line after a colon, a file URL; none for a page, a mail or a heading", () => {
+    expect(hrefPath("src/app.ts")).toEqual({ start: 0, end: 0, path: "src/app.ts" });
+    expect(hrefPath("src/app.ts#L12")).toEqual({ start: 0, end: 0, path: "src/app.ts", line: 12 });
+    expect(hrefPath("src/app.ts#L12-L20")).toEqual({ start: 0, end: 0, path: "src/app.ts", line: 12 });
+    expect(hrefPath("app.ts:42")).toEqual({ start: 0, end: 0, path: "app.ts", line: 42 });
+    expect(hrefPath("C:\\repo\\x.ts:7:3")).toEqual({ start: 0, end: 0, path: "C:\\repo\\x.ts", line: 7 });
+    expect(hrefPath("file:///C:/D/my%20notes.md")).toEqual({ start: 0, end: 0, path: "C:/D/my notes.md" });
+    expect(hrefPath("file:///home/me/a.py#L3")).toEqual({ start: 0, end: 0, path: "/home/me/a.py", line: 3 });
+    expect(hrefPath("apps/web/")).toEqual({ start: 0, end: 0, path: "apps/web/", folder: true });
+    for (const none of ["https://x.org/a.ts", "mailto:me@x.org", "vscode://file/x", "#setup", "//cdn.x/a.js", "/", "C:\\", "./"]) expect(hrefPath(none)).toBeUndefined();
   });
 
   test("which relative paths name a folder the explorer listed at its top, and what a listing says a path is", () => {

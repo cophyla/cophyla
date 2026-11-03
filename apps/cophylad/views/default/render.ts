@@ -61,7 +61,7 @@
 
 import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
-import { renderText } from "./markdown.ts";
+import { renderText, setLinkedText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, answerParams, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
@@ -3638,7 +3638,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       setData(li, "status", ask.status);
       setData(li, "type", ask.type);
       setText(title, ask.title);
-      setText(detail, ask.detail ?? "");
+      setLinkedText(detail, ask.detail ?? "");
       setHidden(detail, !ask.detail);
       // Open, its options are the card's to press, above the send box; settled, they are what was picked.
       setHidden(options, ask.options.length === 0 || ask.status === "open");
@@ -3854,9 +3854,9 @@ function updateTimelineStep(li: HTMLElement, step: TimelineStep, key: string, ui
   const args = diff !== undefined || step.args === undefined ? "" : (stepInput(step) ?? pretty(step.args)) + (step.truncated ? "\n…" : "");
   const came = run?.report ?? (step.result === undefined ? undefined : step.result.value);
   const result = came === undefined ? "" : pretty(came) + (run?.report === undefined && step.result?.truncated ? "\n…" : "");
-  setText(input, open ? args : "");
+  setLinkedText(input, open ? args : "");
   setHidden(input, !open || args === "");
-  setText(output, open ? result : "");
+  setLinkedText(output, open ? result : "");
   setHidden(output, !open || result === "");
   setData(output, "error", String(status === "failed"));
 }
@@ -3872,7 +3872,11 @@ function drawDiff(node: HTMLElement, files: DiffFile[] | undefined): void {
   node.replaceChildren();
   for (const f of files ?? []) {
     const file = el("div", "tl-diff-file");
-    if (f.path) file.append(el("div", "tl-diff-path", f.path));
+    if (f.path) {
+      const path = el("div", "tl-diff-path");
+      setLinkedText(path, f.path);
+      file.append(path);
+    }
     const lines = el("pre", "tl-diff-lines");
     for (const l of f.lines) {
       const row = el("span", `tl-diff-line tl-diff-${l.kind}`);
