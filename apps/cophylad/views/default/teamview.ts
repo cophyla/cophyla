@@ -55,7 +55,7 @@ import {
 import type { BroadPlace, CandidateGroup, CandidateItem, ClosedPlace, ConnectAgentRow, ConnectedRow, ConnectTeamBlock, MemberChip, PostView, TeamAgentsSeen, TeamConnectionRow, TeammateRow, ViewState } from "./model.ts";
 import { actionButton, clock, createFolderPicker, el, fitField, messageField, reconcile, renderFolderPicker, renderTalk, sectionHead, setData, setHidden, setText, talkButton } from "./render.ts";
 import type { FolderBrowse, UiState } from "./render.ts";
-import { createJoinTeam, createNewTeam, createTeamHome, renderJoinTeam, renderNewTeam, renderTeamHome, teamOverlayTitle } from "./teamsview.ts";
+import { createHubTeamRow, createJoinTeam, createNewTeam, createTeamHome, renderJoinTeam, renderNewTeam, renderTeamHome, teamOverlayTitle, updateHubTeamRow } from "./teamsview.ts";
 import type { JoinUi, NewTeamUi, TeamPageUi } from "./teamsview.ts";
 
 // --- what the user has open ---------------------------------------------------------------------
@@ -201,12 +201,12 @@ export function renderGroupChats(list: HTMLElement, chats: Group[], folded: bool
   reconcile(list, chats, (g) => g.id, createGroupTab, (tab, g) => updateGroupTab(tab, g, ui));
 }
 
-/** Groups: the group chats no folder group holds, under a heading folded as a folder's. */
+/** Groups: the group chats no folder group or team holds, under a heading folded as a folder's. */
 export function createGroupsHeading(): HTMLElement {
   const node = el("div", "tab-group groups-group");
   const name = actionButton("tab-group-name", "Groups", "group-fold");
   name.dataset["group"] = GROUPS_GROUP;
-  name.title = "Group chats that belong to no team";
+  name.title = "Group chats whose folder has no session open here now";
   node.append(name, el("div", "tab-group-chats"));
   return node;
 }
@@ -220,27 +220,16 @@ export function renderGroupsHeading(node: HTMLElement, loose: Group[], ui: UiSta
   renderGroupChats(node.querySelector<HTMLElement>(":scope > .tab-group-chats")!, loose, folded, ui);
 }
 
-/** The ⋮ menu's items: New team, with the right to manage devices; New group, with the right to change sessions; Teammates by code, while one made with a code is in no team. */
+/** The ⋮ menu's item: New group, with the right to change sessions. Teams and teammates are under Teams in the rail. */
 export function createMenuItems(): HTMLElement[] {
-  const newTeam = actionButton("rail-menu-item team-new-item", "New team", "team-new");
-  newTeam.setAttribute("role", "menuitem");
-  newTeam.title = "People who work together, each linked to every other, with a chat of their own";
   const group = actionButton("rail-menu-item group-new-item", "New group", "group-new");
   group.setAttribute("role", "menuitem");
   group.title = "A group chat of agents, yours and your teammates', and you";
-  const team = actionButton("rail-menu-item team-item", "Teammates by code", "team-open");
-  team.setAttribute("role", "menuitem");
-  team.title = "Teammates made with a code, whose Cophyla is older than teams; codes waiting to be used";
-  return [newTeam, group, team];
+  return [group];
 }
 
 export function renderMenuItems(menu: HTMLElement, state: ViewState): void {
-  const controllers = state.scopes.includes("controllers");
-  setHidden(menu.querySelector<HTMLElement>(".team-new-item")!, !controllers);
   setHidden(menu.querySelector<HTMLElement>(".group-new-item")!, !state.scopes.includes("sessions:write"));
-  // a teammate made with a code is moved into a team of two once both sides can: the old page stays while one is not
-  const byCode = [...state.teammates.values()].some((t) => t.state === "pending" || (t.state === "active" && (t.teams?.length ?? 0) === 0));
-  setHidden(menu.querySelector<HTMLElement>(".team-item")!, !controllers || !byCode);
 }
 
 /** A tab's focus mark: shown while its session is in focus, its words in the tab's hover. */
@@ -1008,7 +997,7 @@ function createTeamOverlay(root: HTMLElement): void {
   note.setAttribute("role", "alert");
   const body = el("div", "devices-body");
   body.tabIndex = -1;
-  body.append(createNewGroup(), createTeamPage(), createNewTeam(), createTeamHome(), createJoinTeam());
+  body.append(createNewGroup(), createTeamsHub(), createTeamHome());
   root.append(head, note, body);
 }
 
@@ -1063,24 +1052,32 @@ function createNewGroup(): HTMLElement {
   return column;
 }
 
-function createTeamPage(): HTMLElement {
+/**
+ * Teams, over the panes: Make a team, Invite a teammate and Join with a code, the one picked open
+ * below them; then the user's teams, each opening its page, and Teammates, the people linked by a
+ * code who are in no team, with the codes not used yet.
+ */
+function createTeamsHub(): HTMLElement {
   const column = el("div", "devices-column team-page");
   const blocked = el("p", "devices-empty team-blocked");
-  const list = el("section", "devices-section team-list");
-  list.append(
-    sectionHead("Your teammates", "Other Cophyla users. Their agents and yours message each other, and share group chats, in the folders each of you shares; nothing else of yours reaches them."),
-    el("div", "team-rows"),
-    el("p", "devices-empty team-empty", "No teammates yet: invite someone, or enter the code they gave you."),
-  );
+  const ways = el("div", "teams-hub-ways");
+  for (const [label, action, title] of [
+    ["Make a team", "team-new", "People who work together: everyone's Cophyla links to everyone else's, and the team has its own chat"],
+    ["Invite a teammate", "team-share-invite", "One person, with a code you send them: good for a day, once"],
+    ["Join with a code", "team-join", "Paste the invite or the code someone sent you"],
+  ] as const) {
+    const b = actionButton("team-start teams-hub-way", label, action);
+    b.title = title;
+    b.setAttribute("aria-pressed", "false");
+    ways.append(b);
+  }
   const invite = el("section", "devices-section team-invite");
-  const inviteStart = actionButton("team-start", "Invite a teammate", "team-share-invite");
-  inviteStart.title = "A code another Cophyla user enters, good for a day and once";
-  invite.append(sectionHead("Invite a teammate", "Pick what to share with them, then give them the code."), inviteStart, el("div", "team-share-slot"), createCodePanel());
-  const accept = el("section", "devices-section team-accept");
-  const acceptStart = actionButton("team-start", "Enter a code", "team-share-accept");
-  acceptStart.title = "Become the teammate of the person who gave you a code";
-  accept.append(sectionHead("Enter a code", "Someone gave you a teammate's code: paste it, and pick what you share with them."), acceptStart, el("div", "team-share-slot"));
-  column.append(blocked, list, invite, accept);
+  invite.append(el("p", "team-field-label", "What you share with them"), el("div", "team-share-slot"), createCodePanel());
+  const teams = el("section", "devices-section teams-hub-teams");
+  teams.append(el("h3", "devices-heading", "Your teams"), el("div", "teams-hub-rows"));
+  const list = el("section", "devices-section team-list");
+  list.append(el("h3", "devices-heading", "Teammates"), el("div", "team-rows"));
+  column.append(blocked, ways, createNewTeam(), invite, createJoinTeam(), teams, list);
   return column;
 }
 
@@ -1093,7 +1090,7 @@ function createCodePanel(): HTMLElement {
   text.setAttribute("aria-label", "The code");
   const buttons = el("div", "invite-buttons");
   buttons.append(actionButton("invite-copy", "Copy", "team-code-copy"), actionButton("invite-done", "Done", "team-code-done"));
-  panel.append(el("p", "invite-head", "A teammate's code"), el("p", "invite-hint", "Give it to the other person: they enter it under ⋮ → Teammates → Enter a code. It works once."), text, el("p", "invite-left"), buttons);
+  panel.append(el("p", "invite-head", "A teammate's code"), el("p", "invite-hint", "Send it to the other person: they paste it in Cophyla, Teams → Join with a code. It works once."), text, el("p", "invite-left"), buttons);
   return panel;
 }
 
@@ -1152,21 +1149,19 @@ function createShareForm(): HTMLElement {
   return form;
 }
 
-/** New group's form, Teammates by code, New team, a team's page or Join, over the panes while one is open. */
+/** New group's form, Teams, or a team's page, over the panes while one is open. */
 export function renderTeamOverlay(root: HTMLElement, state: ViewState, ui: UiState): void {
   const newGroup = ui.team.newGroup;
   const page = ui.team.page;
-  const teams = teamOverlayTitle(state, ui);
-  const open = newGroup !== undefined || page !== undefined || teams !== undefined;
+  const home = teamOverlayTitle(state, ui);
+  const open = newGroup !== undefined || page !== undefined || home !== undefined;
   setHidden(root, !open);
   if (!open) return;
   if (!root.firstChild) createTeamOverlay(root);
-  const show = newGroup ? "group" : ui.team.newTeam ? "team-new" : ui.team.join ? "team-join" : ui.team.teamPage && teams ? "team-home" : "team";
+  const show = newGroup ? "group" : page ? "team" : "team-home";
   setData(root, "show", show);
-  const rows = page ? selectTeammates(state, Date.now()) : [];
-  const active = rows.filter((r) => r.state === "active").length;
-  setText(root.querySelector(".team-title")!, newGroup ? "New group" : teams ? teams.title : "Teammates by code");
-  setText(root.querySelector(".team-meta")!, newGroup ? "" : teams ? teams.meta : active === 0 ? "" : `${active} teammate${active === 1 ? "" : "s"}`);
+  setText(root.querySelector(".team-title")!, newGroup ? "New group" : page ? "Teams" : home!.title);
+  setText(root.querySelector(".team-meta")!, newGroup || page ? "" : home!.meta);
   const since = page?.errorsAt ?? ui.team.teamErrorsAt;
   const error = since !== undefined && state.errorsSeen > since ? state.errors.at(-1) : undefined;
   const note = root.querySelector<HTMLElement>(".devices-note")!;
@@ -1177,27 +1172,32 @@ export function renderTeamOverlay(root: HTMLElement, state: ViewState, ui: UiSta
   if (newGroup) renderNewGroup(groupColumn, newGroup, state);
   const teamColumn = root.querySelector<HTMLElement>(".team-page")!;
   setHidden(teamColumn, show !== "team");
-  if (show === "team" && page) renderTeamPage(teamColumn, rows, state, ui);
-  const newTeam = root.querySelector<HTMLElement>(".team-new")!;
-  setHidden(newTeam, show !== "team-new");
-  if (show === "team-new") renderNewTeam(newTeam, state, ui);
-  const home = root.querySelector<HTMLElement>(".team-home")!;
-  setHidden(home, show !== "team-home");
-  if (show === "team-home") renderTeamHome(home, state, ui);
-  const join = root.querySelector<HTMLElement>(".team-join")!;
-  setHidden(join, show !== "team-join");
-  if (show === "team-join") renderJoinTeam(join, state, ui);
-  // the share form goes under what opened it, on the team's columns too
+  if (show === "team") renderTeamsHub(teamColumn, state, ui);
+  const homeColumn = root.querySelector<HTMLElement>(".team-home")!;
+  setHidden(homeColumn, show !== "team-home");
+  if (show === "team-home") renderTeamHome(homeColumn, state, ui);
+  // The share form goes under what opened it: Make a team, Invite a teammate, Join with a code
+  // (a team's invite or a teammate's code), a teammate's Edit, or a team's Change.
   const share = ui.team.share;
-  if (share && (share.kind === "create" || share.kind === "join" || share.kind === "team")) {
-    let form = root.querySelector<HTMLElement>(".team-share");
-    if (!form) form = createShareForm();
-    const slot = root.querySelector<HTMLElement>(`${share.kind === "create" ? ".team-new" : share.kind === "join" ? ".team-join" : ".team-home"} .team-share-slot`);
-    if (slot && form.parentElement !== slot) slot.append(form);
-    const offerShown = share.kind !== "join" || (ui.team.join?.offer !== undefined && state.teamOffers.has(ui.team.join.offer));
-    setHidden(form, !slot || !offerShown);
-    if (slot && offerShown) renderShareForm(form, share, state, ui);
+  let form = root.querySelector<HTMLElement>(".team-share");
+  if (!share) {
+    if (form) setHidden(form, true);
+    return;
   }
+  form ??= createShareForm();
+  const where: Record<ShareForm["kind"], string> = {
+    create: ".team-new .team-share-slot",
+    invite: ".team-invite .team-share-slot",
+    join: ".team-join-offer .team-share-slot",
+    accept: ".team-join-teammate .team-share-slot",
+    edit: `.team-row[data-id="${share.teammate ?? ""}"] .team-share-slot`,
+    team: ".team-home .team-share-slot",
+  };
+  const slot = root.querySelector<HTMLElement>(where[share.kind]);
+  if (slot && form.parentElement !== slot) slot.append(form);
+  const offerShown = share.kind !== "join" || (ui.team.join?.offer !== undefined && state.teamOffers.has(ui.team.join.offer));
+  setHidden(form, !slot || !offerShown);
+  if (slot && offerShown) renderShareForm(form, share, state, ui);
 }
 
 function renderNewGroup(column: HTMLElement, f: NewGroupForm, state: ViewState): void {
@@ -1212,33 +1212,46 @@ function renderNewGroup(column: HTMLElement, f: NewGroupForm, state: ViewState):
   setHidden(error, f.error === undefined);
 }
 
-function renderTeamPage(column: HTMLElement, rows: TeammateRow[], state: ViewState, ui: UiState): void {
+/** Teammates on the Teams page: those linked by a code who are in no team, and the codes not used yet. */
+function codeTeammates(state: ViewState): TeammateRow[] {
+  return selectTeammates(state, Date.now()).filter((r) => r.state === "pending" || (state.teammates.get(r.id)?.teams?.length ?? 0) === 0);
+}
+
+function renderTeamsHub(column: HTMLElement, state: ViewState, ui: UiState): void {
+  const t = ui.team;
   const blocked = teamBlock(state);
   const blockedLine = column.querySelector<HTMLElement>(".team-blocked")!;
   setText(blockedLine, blocked ?? "");
   setHidden(blockedLine, blocked === undefined);
-  const list = column.querySelector<HTMLElement>(".team-list")!;
-  reconcile(list.querySelector<HTMLElement>(".team-rows")!, rows, (r) => r.id, createTeammateRow, (n, r) => updateTeammateRow(n, r, state, ui));
-  setHidden(list.querySelector<HTMLElement>(".team-empty")!, rows.length > 0);
-  const share = ui.team.share;
-  const invite = column.querySelector<HTMLElement>(".team-invite")!;
-  const accept = column.querySelector<HTMLElement>(".team-accept")!;
+  const share = t.share;
   const code = state.teammateCode;
-  for (const [section, kind] of [
-    [invite, "invite"],
-    [accept, "accept"],
-  ] as const) {
-    const start = section.querySelector<HTMLButtonElement>(".team-start")!;
-    setHidden(start, share?.kind === kind || (kind === "invite" && code !== undefined));
-    start.disabled = blocked !== undefined || !state.connected || (share !== undefined && share.busy === true);
+  const inviting = share?.kind === "invite" || code !== undefined;
+  // the three ways in: the one open pressed, and pressed again it closes
+  for (const b of Array.from(column.querySelectorAll<HTMLButtonElement>(".teams-hub-way"))) {
+    const action = b.dataset["action"];
+    const on = action === "team-new" ? t.newTeam !== undefined : action === "team-join" ? t.join !== undefined : inviting;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.disabled = blocked !== undefined || !state.connected || share?.busy === true;
   }
-  // The share form goes under what opened it: Invite, Enter a code, or a teammate's Edit.
-  let form = column.querySelector<HTMLElement>(".team-share");
-  if (!form) form = createShareForm();
-  const slot = share?.kind === "edit" ? column.querySelector<HTMLElement>(`.team-row[data-id="${share.teammate}"] .team-share-slot`) : share ? (share.kind === "invite" ? invite : accept).querySelector<HTMLElement>(".team-share-slot") : null;
-  if (slot && form.parentElement !== slot) slot.append(form);
-  setHidden(form, !share || !slot);
-  if (share && slot) renderShareForm(form, share, state, ui);
+  const make = column.querySelector<HTMLElement>(".team-new")!;
+  setHidden(make, t.newTeam === undefined);
+  if (t.newTeam) renderNewTeam(make, state, ui);
+  const join = column.querySelector<HTMLElement>(".team-join")!;
+  setHidden(join, t.join === undefined);
+  if (t.join) renderJoinTeam(join, state, ui);
+  // the user's teams, each opening its page
+  const teams = [...state.teams.values()].sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  const teamsSection = column.querySelector<HTMLElement>(".teams-hub-teams")!;
+  setHidden(teamsSection, teams.length === 0);
+  reconcile(teamsSection.querySelector<HTMLElement>(".teams-hub-rows")!, teams, (x) => x.id, createHubTeamRow, (n, x) => updateHubTeamRow(n, x, state));
+  // Teammates: linked by a code, in no team
+  const rows = codeTeammates(state);
+  const list = column.querySelector<HTMLElement>(".team-list")!;
+  setHidden(list, rows.length === 0);
+  reconcile(list.querySelector<HTMLElement>(".team-rows")!, rows, (r) => r.id, createTeammateRow, (n, r) => updateTeammateRow(n, r, state, ui));
+  const invite = column.querySelector<HTMLElement>(".team-invite")!;
+  setHidden(invite, !inviting);
+  setHidden(invite.querySelector<HTMLElement>(".team-field-label")!, share?.kind !== "invite");
   const panel = invite.querySelector<HTMLElement>(".team-code")!;
   setHidden(panel, code === undefined);
   if (code) {

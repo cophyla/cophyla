@@ -36,6 +36,8 @@ export interface TeamDeps {
 const AGENTS_EVERY_MS = 30_000;
 /** A teammate's change asks their agents again, at most this often. */
 const AGENTS_AGAIN_MS = 5_000;
+/** A teammate's code, as against a team's invite (`cophyla-join:`): both are pasted in Join with a code. */
+const TEAMMATE_CODE = "cophyla-team:";
 
 export class TeamControl {
   private d: TeamDeps;
@@ -629,23 +631,36 @@ export class TeamControl {
     }
   }
 
-  // --- Teammates ----------------------------------------------------------------------------------------
+  // --- Teams: make one, invite a teammate, join with a code ------------------------------------------
 
+  /** The Teams page, from the rail's button. */
   openPage(): void {
-    const { ui, state } = this.d;
-    ui.railMenu = undefined;
-    ui.devices = undefined;
-    ui.contextOpen = false;
-    ui.team.newGroup = undefined;
-    ui.team.page ??= { errorsAt: state.errorsSeen };
-    this.d.putRailAway();
+    this.toHub();
     this.d.draw();
     this.d.roots.team.querySelector<HTMLElement>(".devices-body")?.focus({ preventScroll: true });
-    void this.loadTeammates();
     void this.loadWorkspaces();
   }
 
-  /** New group and Teammates leave the panes: a tab picked, Devices opened, Escape or ×. */
+  /** The Teams page over the panes, opened if it is not, with none of its three ways open. */
+  private toHub(): void {
+    const { ui, state } = this.d;
+    if (ui.team.page === undefined) {
+      ui.railMenu = undefined;
+      ui.devices = undefined;
+      ui.contextOpen = false;
+      this.closeOverlay();
+      ui.team.page = { errorsAt: state.errorsSeen };
+      ui.team.teamErrorsAt = state.errorsSeen;
+      this.d.putRailAway();
+      void this.loadTeammates();
+    }
+    ui.team.newTeam = undefined;
+    ui.team.join = undefined;
+    ui.team.share = undefined;
+    ui.team.ending = undefined;
+  }
+
+  /** New group, Teams and a team's page leave the panes: a tab picked, Devices opened, Escape or ×. */
   closeOverlay(): void {
     const t = this.d.ui.team;
     t.page = undefined;
@@ -657,7 +672,7 @@ export class TeamControl {
     t.join = undefined;
   }
 
-  /** Whether New group, Teammates, New team, a team's page or Join lies over the panes. */
+  /** Whether New group, Teams or a team's page lies over the panes. */
   overlayShown(): boolean {
     const t = this.d.ui.team;
     return t.page !== undefined || t.newGroup !== undefined || t.newTeam !== undefined || t.teamPage !== undefined || t.join !== undefined;
@@ -665,7 +680,14 @@ export class TeamControl {
 
   // --- teams ---------------------------------------------------------------------------------------------
 
-  /** Opens one of the team columns over the panes, the others closed. */
+  /** Back to the Teams page as it opens, unless a request from it is on its way. */
+  private backToHub(): void {
+    if (this.d.ui.team.share?.busy || this.d.ui.team.join?.busy) return;
+    this.toHub();
+    this.d.draw();
+  }
+
+  /** A team's page over the panes, all else closed. */
   private overTeams(): void {
     const { ui, state } = this.d;
     ui.railMenu = undefined;
@@ -677,7 +699,7 @@ export class TeamControl {
   }
 
   openNewTeam(): void {
-    this.overTeams();
+    this.toHub();
     this.d.ui.team.newTeam = {};
     this.openShare("create");
     for (const input of Array.from(this.d.roots.team.querySelectorAll<HTMLInputElement>(".team-new input"))) input.value = "";
@@ -686,7 +708,7 @@ export class TeamControl {
   }
 
   openJoin(offer?: string): void {
-    this.overTeams();
+    this.toHub();
     this.d.ui.team.join = offer !== undefined ? { offer } : {};
     if (offer !== undefined) this.openShare("join", undefined, undefined, undefined, offer);
     else {
@@ -749,8 +771,15 @@ export class TeamControl {
     if (!j || j.busy) return;
     const code = (this.d.roots.team.querySelector<HTMLTextAreaElement>(".team-join-code")?.value ?? "").trim();
     if (!code) {
-      j.error = "Paste the invite they sent you.";
+      j.error = "Paste the invite or code they sent you.";
       this.d.draw();
+      return;
+    }
+    if (code.startsWith(TEAMMATE_CODE)) {
+      j.error = undefined;
+      this.openShare("accept");
+      const box = this.d.roots.team.querySelector<HTMLTextAreaElement>(".team-share .team-code-input");
+      if (box) box.value = code;
       return;
     }
     j.busy = true;
@@ -1084,6 +1113,7 @@ export class TeamControl {
         const r = await this.d.rpc.request<{ teammate: Teammate }>("teammate.accept", { code, share });
         this.d.dispatch({ type: "teammate.state", params: r.teammate });
         if (codeBox) codeBox.value = "";
+        ui.team.join = undefined;
       } else {
         const r = await this.d.rpc.request<{ teammate: Teammate }>("teammate.update", { id: f.teammate, share });
         this.d.dispatch({ type: "teammate.state", params: r.teammate });
@@ -1349,10 +1379,15 @@ export class TeamControl {
         else this.openPage();
         return true;
       case "team-new":
-        this.openNewTeam();
+        if (t.page && t.newTeam) this.backToHub();
+        else this.openNewTeam();
         return true;
       case "team-join":
-        this.openJoin();
+        if (t.page && t.join) this.backToHub();
+        else this.openJoin();
+        return true;
+      case "team-hub-back":
+        this.backToHub();
         return true;
       case "team-join-look":
         void this.lookCode();
@@ -1487,7 +1522,11 @@ export class TeamControl {
         if (data["key"]) void this.placeAction(data["key"], data["action"] === "team-place-open" ? "open" : "exclude");
         return true;
       case "team-share-invite":
-        this.openShare("invite");
+        if (t.share?.kind === "invite") this.backToHub();
+        else if (!t.share?.busy) {
+          this.toHub();
+          this.openShare("invite");
+        }
         return true;
       case "team-share-accept":
         this.openShare("accept");
@@ -1496,8 +1535,12 @@ export class TeamControl {
         if (data["id"]) this.openShare("edit", data["id"]);
         return true;
       case "team-share-close":
-        if (!t.share?.busy) t.share = undefined;
-        this.d.draw();
+        // on the Teams page, Cancel folds what it opened; on a teammate's row or a team's page, the form alone
+        if (t.share?.kind === "create" || t.share?.kind === "invite" || t.share?.kind === "join" || t.share?.kind === "accept") this.backToHub();
+        else {
+          if (!t.share?.busy) t.share = undefined;
+          this.d.draw();
+        }
         return true;
       case "team-share-mode":
         if (t.share && (data["mode"] === "include" || data["mode"] === "exclude")) {

@@ -6100,27 +6100,41 @@ export function groupMemberWords(g: Group): string {
 }
 
 /**
- * Where each group chat's tab stands in the rail: under the folder group its home names, the
- * innermost one at or around that folder on its machine, counted in that group's heading and
- * in every heading around it; with no home, or no group there now, under Groups. In the order
- * they were made, so nothing moves as they are posted in. `groups` is `selectGroups`' tree, whose
- * counts this adds to.
+ * Where each group chat's tab stands in the rail. A team's own chat stands under its team. Any
+ * other group stands under the folder group its home names, the innermost one at or around that
+ * folder on its machine, counted in that group's heading and in every heading around it. With no
+ * home, or no group there now, it stands under its team when it has one, else under Groups. In
+ * the order they were made, so nothing moves as they are posted in. `groups` is `selectGroups`'
+ * tree, whose counts this adds to.
  */
-export function placeGroupChats(state: Pick<ViewState, "groups" | "nodes"> & Partial<Pick<ViewState, "teams">>, _groups: SessionGroup[]): { placed: Map<string, Group[]>; loose: Group[]; byTeam: Map<string, Group[]> } {
-  // A group stands where it belongs and stays there: under its team, the team's own chat first,
-  // or under Groups. It no longer follows the folder of a session open now.
+export function placeGroupChats(state: Pick<ViewState, "groups" | "nodes"> & Partial<Pick<ViewState, "teams">>, groups: SessionGroup[]): { placed: Map<string, Group[]>; loose: Group[]; byTeam: Map<string, Group[]> } {
   const placed = new Map<string, Group[]>();
   const loose: Group[] = [];
   const byTeam = new Map<string, Group[]>();
+  const toTeam = (team: string, chat: Group) => {
+    const list = byTeam.get(team) ?? [];
+    list.push(chat);
+    byTeam.set(team, list);
+  };
   const chats = [...state.groups.values()].sort((a, b) => Number(b.teamChat === true) - Number(a.teamChat === true) || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
   for (const chat of chats) {
-    if (chat.team && state.teams?.has(chat.team)) {
-      const list = byTeam.get(chat.team) ?? [];
-      list.push(chat);
-      byTeam.set(chat.team, list);
+    const team = chat.team !== undefined && state.teams?.has(chat.team) ? chat.team : undefined;
+    if (team && chat.teamChat) {
+      toTeam(team, chat);
       continue;
     }
-    loose.push(chat);
+    const home = chat.home;
+    const path = home ? groupPathTo(groups, home.node, placeKey(home.path, state.nodes.get(home.node)?.platform)) : [];
+    const at = path.at(-1);
+    if (at) {
+      const list = placed.get(at.key) ?? [];
+      list.push(chat);
+      placed.set(at.key, list);
+      for (const g of path) g.count += 1;
+      continue;
+    }
+    if (team) toTeam(team, chat);
+    else loose.push(chat);
   }
   return { placed, loose, byTeam };
 }
@@ -6518,7 +6532,7 @@ export function teamworkFailure(code: string | undefined, message: string): stri
 /** Why this view makes no teammate, when it does not: one that may not manage devices, or a node signed out of its account. */
 export function teamBlock(state: Pick<ViewState, "scopes" | "account">): string | undefined {
   if (!state.scopes.includes("controllers")) return "This device may not manage teammates.";
-  if (state.account?.subject === undefined) return "Teammates need a Cophyla account: sign in under Machines and account → Account, then invite someone or enter their code.";
+  if (state.account?.subject === undefined) return "Teams need a Cophyla account: sign in under Machines and account → Account.";
   return undefined;
 }
 
@@ -6628,7 +6642,7 @@ export interface TeamCode {
   offered?: boolean;
 }
 
-/** A team in the rail: its name, how many people, its own chat first and its other groups, and how much is unread across them. */
+/** A team in the rail: its name, how many people, its own chat first and its groups no folder holds, and how much is unread across them. */
 export interface RailTeam {
   id: string;
   name: string;
@@ -6639,8 +6653,7 @@ export interface RailTeam {
   ended: boolean;
 }
 
-export function railTeams(state: Pick<ViewState, "teams" | "groups" | "nodes">): RailTeam[] {
-  const { byTeam } = placeGroupChats(state, []);
+export function railTeams(state: Pick<ViewState, "teams" | "groups" | "nodes">, byTeam: Map<string, Group[]> = placeGroupChats(state, []).byTeam): RailTeam[] {
   return [...state.teams.values()]
     .sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1))
     .map((t) => {

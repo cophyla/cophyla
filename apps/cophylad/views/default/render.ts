@@ -2164,11 +2164,12 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   const canTerminal = state.scopes.includes("terminal");
   // An agent CLI waiting for its first prompt stands with the sessions in its folder.
   const groups = selectGroups(state, canTerminal ? selectWaitingAgents(state) : []);
-  // A group chat stands under the folder its home names, or under Groups when none here holds it.
+  // A group chat stands under the folder its home names; a team's own chat, and a team's group no
+  // folder here holds, under the team; else under Groups.
   const chats = placeGroupChats(state, groups);
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui, chats.placed));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0 || chats.loose.length > 0);
-  renderTeamsSection(root.querySelector<HTMLElement>(".teams-group")!, state, ui);
+  renderTeamsSection(root.querySelector<HTMLElement>(".teams-group")!, state, ui, chats.byTeam);
   renderGroupsHeading(root.querySelector<HTMLElement>(".groups-group")!, chats.loose, ui, groupHeading);
   renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
   renderTransfers(root.querySelector<HTMLElement>(".transfers-group")!, canTerminal ? selectTransfers(state) : [], state, ui);
@@ -3053,8 +3054,8 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
   const chat = ui.group !== undefined ? state.groups.get(ui.group) : undefined;
-  const teamOver = ui.team.newTeam ? "New team" : ui.team.join ? "Join a team" : ui.team.teamPage ? (state.teams.get(ui.team.teamPage.team)?.name ?? "Team") : undefined;
-  const over = ui.devices ? "Machines and account" : ui.team.newGroup ? "New group" : ui.team.page ? "Teammates by code" : teamOver;
+  const teamOver = ui.team.teamPage ? (state.teams.get(ui.team.teamPage.team)?.name ?? "Team") : undefined;
+  const over = ui.devices ? "Machines and account" : ui.team.newGroup ? "New group" : ui.team.page ? "Teams" : teamOver;
   setText(root.querySelector(".railbar-title")!, over ?? (card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : chat ? chat.name : "Cophyla Chat"));
 }
 

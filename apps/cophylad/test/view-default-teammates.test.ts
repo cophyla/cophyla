@@ -358,9 +358,9 @@ describe("teammates in the view", () => {
     expect(broadWords([home, drive], "bob", true, () => "Desk")).toBe("Share your whole home folder on Desk and all of D:\\ on Desk with bob? Every project under them is open to them.");
   });
 
-  test("teammates need the right to manage devices, and an account", () => {
+  test("teams and teammates need the right to manage devices, and an account", () => {
     const state = connected();
-    expect(teamBlock(state)).toBe("Teammates need a Cophyla account: sign in under Machines and account → Account, then invite someone or enter their code.");
+    expect(teamBlock(state)).toBe("Teams need a Cophyla account: sign in under Machines and account → Account.");
     apply(state, { type: "account.state", params: { plan: "pro", limits: {}, subject: "usr_alice" } });
     expect(teamBlock(state)).toBeUndefined();
     expect(teamBlock({ ...state, scopes: ["sessions:read"] })).toBe("This device may not manage teammates.");

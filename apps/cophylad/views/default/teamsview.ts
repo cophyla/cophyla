@@ -1,11 +1,13 @@
-// Teams in the default view (milestone 35): their own category in the rail, a page for each, a
-// form to make one and a page to join one, and Waiting for you under Status. Drawn as the rest
-// of the view is: keyed rows built once and updated in place, clicks carried by `data-action`
-// to teamctl.ts.
+// Teams in the default view (milestone 35): their own category in the rail, the Teams page, a
+// page for each team, and Waiting for you under Status. Drawn as the rest of the view is: keyed
+// rows built once and updated in place, clicks carried by `data-action` to teamctl.ts.
 //
-// Teams in the rail: each team folds like a folder, holding its own chat first, its other group
-// chats, and People and agents, which opens its page. + makes a team. A group that belongs to no
-// team stands under Groups, and no group moves with the sessions open now.
+// Teams in the rail: the heading, with one button that opens the Teams page, and each team folded
+// like a folder, holding its own chat first, any of its groups no folder holds, and People and
+// agents, which opens its page. Every other group stands in its workspace, as before teams.
+//
+// The Teams page: Make a team, Invite a teammate and Join with a code, the one picked open below
+// them; then the user's teams, and the teammates made with a code that are in no team.
 //
 // A team's page: who is in it with their roles and what each shares, the invites still open,
 // Add a person (a GitHub name, then the code to send them), the other people's agents with
@@ -16,7 +18,7 @@
 // team (Look opens the join page), and a workspace new in what they share, with Open or Keep
 // closed. It shows only while something waits.
 
-import type { Team, TeamOffer } from "@cophyla/protocol";
+import type { Group, Team, TeamOffer } from "@cophyla/protocol";
 import { closedPlaces, groupHeading, holdWords, railTeams, sessionLabel, teamPeople, teamShareWords, waitingItems } from "./model.ts";
 import type { RailTeam, TeamAgentsSeen, TeamPersonRow, ViewState, WaitingItem } from "./model.ts";
 import { actionButton, clock, el, reconcile, sectionHead, setData, setHidden, setText } from "./render.ts";
@@ -68,31 +70,29 @@ export function createTeamsSection(): HTMLElement {
   const head = el("div", "teams-head");
   const name = actionButton("tab-group-name", "Teams", "group-fold");
   name.dataset["group"] = TEAMS_GROUP;
-  name.title = "The people you work with: each team's chat, its groups, and its people and their agents";
-  const add = actionButton("teams-add", "+", "team-new");
-  add.title = "Make a team, or join one with a code";
-  add.setAttribute("aria-label", "New team");
-  head.append(name, add);
-  const empty = el("div", "teams-empty");
-  empty.append(el("p", "teams-empty-words", "Work with other people: a team links everyone in it, with one invite each."), actionButton("teams-empty-make", "Make a team", "team-new"), actionButton("teams-empty-join", "Join with a code", "team-join"));
-  node.append(head, el("div", "teams-list"), empty);
+  name.title = "The people you work with: each team's chat and its people and their agents";
+  const open = actionButton("teams-open", "", "team-open");
+  open.title = "Teams: make one, invite a teammate, join with a code";
+  open.setAttribute("aria-label", "Teams");
+  head.append(name, open);
+  node.append(head, el("div", "teams-list"));
   return node;
 }
 
-export function renderTeamsSection(node: HTMLElement, state: ViewState, ui: UiState): void {
+/** `byTeam` is where the rail placed each team's groups: its chat, and those no folder holds. */
+export function renderTeamsSection(node: HTMLElement, state: ViewState, ui: UiState, byTeam?: Map<string, Group[]>): void {
   const can = state.scopes.includes("controllers");
-  const teams = railTeams(state);
-  const signedIn = state.account?.subject !== undefined;
-  setHidden(node, !can || (!signedIn && teams.length === 0));
+  setHidden(node, !can);
   if (!can) return;
+  const teams = railTeams(state, byTeam);
   const folded = ui.folded.has(TEAMS_GROUP);
   const name = node.querySelector<HTMLElement>(".teams-head .tab-group-name")!;
   setText(name, groupHeading("Teams", teams.length, folded));
   name.setAttribute("aria-expanded", folded ? "false" : "true");
+  node.querySelector<HTMLElement>(".teams-open")!.setAttribute("aria-pressed", ui.team.page !== undefined ? "true" : "false");
   const list = node.querySelector<HTMLElement>(".teams-list")!;
-  setHidden(list, folded);
+  setHidden(list, folded || teams.length === 0);
   reconcile(list, folded ? [] : teams, (t) => t.id, createRailTeam, (n, t) => updateRailTeam(n, t, ui));
-  setHidden(node.querySelector<HTMLElement>(".teams-empty")!, folded || teams.length > 0 || !signedIn);
 }
 
 function createRailTeam(): HTMLElement {
@@ -173,11 +173,11 @@ function updateWaitingRow(row: HTMLElement, i: WaitingItem, state: ViewState, ui
   }
 }
 
-// --- over the panes: New team, a team's page, Join ----------------------------------------------------------
+// --- over the panes: Teams' Make a team and Join with a code, and a team's page --------------------------------
 
+/** Make a team, on the Teams page: the name, the purpose, and the share form below them. */
 export function createNewTeam(): HTMLElement {
-  const column = el("div", "devices-column team-new");
-  const section = el("section", "devices-section team-new-form");
+  const section = el("section", "devices-section team-new");
   const name = el("input", "team-new-name");
   name.maxLength = 80;
   name.autocomplete = "off";
@@ -192,18 +192,8 @@ export function createNewTeam(): HTMLElement {
   purposeLabel.append(el("span", "team-field-label", "Purpose"), purpose);
   const error = el("p", "group-form-error team-new-error");
   error.setAttribute("role", "alert");
-  section.append(
-    sectionHead("New team", "People who work together. You add people with one invite each; once in, everyone's Cophyla links to everyone else's, and the team has its own chat. Pick what of yours the team reaches."),
-    nameLabel,
-    purposeLabel,
-    el("p", "team-field-label", "What you share with the team"),
-    el("div", "team-share-slot"),
-    error,
-  );
-  const join = el("section", "devices-section team-new-join");
-  join.append(sectionHead("Joining one instead?", "Someone invited you with a code: paste it to see the team before you join."), actionButton("team-start", "Join with a code", "team-join"));
-  column.append(section, join);
-  return column;
+  section.append(nameLabel, purposeLabel, el("p", "team-field-label", "What you share with the team"), el("div", "team-share-slot"), error);
+  return section;
 }
 
 export function renderNewTeam(column: HTMLElement, state: ViewState, ui: UiState): void {
@@ -214,34 +204,42 @@ export function renderNewTeam(column: HTMLElement, state: ViewState, ui: UiState
   for (const input of Array.from(column.querySelectorAll<HTMLInputElement>("input"))) input.disabled = f.busy === true || !state.connected;
 }
 
+/**
+ * Join with a code, on the Teams page: a team's invite is looked at first, the team and who is in
+ * it shown before the share form; a teammate's code goes straight to the share form.
+ */
 export function createJoinTeam(): HTMLElement {
-  const column = el("div", "devices-column team-join");
+  const column = el("div", "team-join");
   const look = el("section", "devices-section team-join-look");
   const code = el("textarea", "team-join-code");
   code.rows = 3;
   code.spellcheck = false;
-  code.placeholder = "cophyla-join:…";
-  code.setAttribute("aria-label", "The invite");
+  code.placeholder = "Paste the invite or code they sent you";
+  code.setAttribute("aria-label", "The invite or code");
   const error = el("p", "group-form-error team-join-error");
   error.setAttribute("role", "alert");
   const buttons = el("div", "group-form-buttons");
-  buttons.append(actionButton("team-submit team-join-look-go", "Look", "team-join-look"), actionButton("team-cancel-button", "Cancel", "team-close"));
-  look.append(sectionHead("Join with a code", "Paste the invite someone sent you. You see the team and who is in it before you join, and pick what of yours it reaches."), code, error, buttons);
+  buttons.append(actionButton("team-submit team-join-look-go", "Look", "team-join-look"), actionButton("team-cancel-button", "Cancel", "team-hub-back"));
+  look.append(code, error, buttons);
+  const mate = el("section", "devices-section team-join-teammate");
+  mate.append(el("p", "team-field-label", "What you share with them"), el("div", "team-share-slot"));
   const offer = el("section", "devices-section team-join-offer");
   const people = el("ul", "team-join-people");
   offer.append(el("h3", "devices-heading team-join-name"), el("p", "devices-lede team-join-words"), people, el("p", "team-field-label", "What you share with the team"), el("div", "team-share-slot"));
   const decline = el("div", "group-form-buttons team-join-decline");
   decline.append(actionButton("team-cancel-button", "Decline", "team-join-decline"));
   offer.append(decline);
-  column.append(look, offer);
+  column.append(look, mate, offer);
   return column;
 }
 
 export function renderJoinTeam(column: HTMLElement, state: ViewState, ui: UiState): void {
   const j = ui.team.join ?? {};
   const offer: TeamOffer | undefined = j.offer !== undefined ? state.teamOffers.get(j.offer) : undefined;
+  const teammate = ui.team.share?.kind === "accept";
   const look = column.querySelector<HTMLElement>(".team-join-look")!;
-  setHidden(look, offer !== undefined);
+  setHidden(look, offer !== undefined || teammate);
+  setHidden(column.querySelector<HTMLElement>(".team-join-teammate")!, !teammate);
   const error = column.querySelector<HTMLElement>(".team-join-error")!;
   setText(error, j.error ?? "");
   setHidden(error, j.error === undefined || offer !== undefined);
@@ -484,7 +482,7 @@ export function renderTeamHome(column: HTMLElement, state: ViewState, ui: UiStat
   setHidden(code, shown === undefined);
   if (shown) {
     setText(code.querySelector(".invite-head")!, `An invite for ${shown.user}`);
-    setText(code.querySelector(".invite-hint")!, shown.offered ? `${shown.user} is your teammate already: their Cophyla has it too, waiting for them. You can still send them this.` : `Send it to ${shown.user} any way you like. They paste it in Cophyla under Teams → + → Join with a code.`);
+    setText(code.querySelector(".invite-hint")!, shown.offered ? `${shown.user} is your teammate already: their Cophyla has it too, waiting for them. You can still send them this.` : `Send it to ${shown.user} any way you like. They paste it in Cophyla: Teams → Join with a code.`);
     const text = code.querySelector<HTMLTextAreaElement>(".invite-text")!;
     if (text.value !== shown.code) text.value = shown.code;
     const left = holdWords(shown.expiresAt, Date.now());
@@ -587,10 +585,28 @@ export function renderTeamHome(column: HTMLElement, state: ViewState, ui: UiStat
   }
 }
 
-/** The overlay's title and meta for a team's page, New team and Join. */
+/** A team on the Teams page: its name, how many people, the user's role; it opens the team's page. */
+export function createHubTeamRow(): HTMLElement {
+  const row = actionButton("teams-hub-row", "", "team-page");
+  const mark = el("span", "group-mark");
+  mark.setAttribute("aria-hidden", "true");
+  row.append(mark, el("span", "teams-hub-name"), el("span", "teams-hub-words"));
+  return row;
+}
+
+export function updateHubTeamRow(row: HTMLElement, t: Team, state: ViewState): void {
+  setData(row, "team", t.id);
+  setText(row.querySelector(".teams-hub-name")!, t.name);
+  const people = `${t.members.length} ${t.members.length === 1 ? "person" : "people"}`;
+  const role = t.role === "owner" ? "you own it" : t.role === "admin" ? "you're an admin" : "";
+  const invited = t.invites.length > 0 ? `${t.invites.length} invited` : "";
+  setText(row.querySelector(".teams-hub-words")!, [people, invited, role, t.ended ? "ended" : ""].filter(Boolean).join(" · "));
+  row.title = t.purpose ? `${t.name}: ${t.purpose}` : t.name;
+  (row as HTMLButtonElement).disabled = !state.connected;
+}
+
+/** The overlay's title and meta for a team's page. */
 export function teamOverlayTitle(state: ViewState, ui: UiState): { title: string; meta: string } | undefined {
-  if (ui.team.newTeam) return { title: "New team", meta: "" };
-  if (ui.team.join) return { title: "Join a team", meta: "" };
   const page = ui.team.teamPage;
   const team = page ? state.teams.get(page.team) : undefined;
   if (!team) return undefined;

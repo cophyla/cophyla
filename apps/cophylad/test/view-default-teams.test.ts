@@ -65,7 +65,7 @@ describe("teams in the view", () => {
     expect(state.teams.size).toBe(0);
   });
 
-  test("the rail: each team with its chat first and its groups, counted unread", () => {
+  test("the rail: each team with its chat first and its groups no folder holds, counted unread", () => {
     const state = connected();
     apply(state, { type: "teams", teams: [team(), team({ id: TEAM2, name: "Design", chat: "grp_01ARZ3NDEKTSV4RRFFQ69G5GR9" })], offers: [] });
     apply(state, { type: "groups", groups: [chat({ id: "grp_01ARZ3NDEKTSV4RRFFQ69G5GR2", name: "release", teamChat: undefined, unread: 1, tagged: 0, createdAt: 0 }), chat()] });

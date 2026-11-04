@@ -11382,8 +11382,8 @@ button:disabled {
 
 /* --- teams (milestone 35): their own category in the rail, Waiting for you, and their pages ----- */
 
-/* Teams in the rail: the heading with + at its right, then each team folded like a folder: its
-   chat and groups, then People and agents. With none, a line and the two ways in. */
+/* Teams in the rail: the heading with the Teams page's button at its right, then each team folded
+   like a folder: its chat and the groups no folder holds, then People and agents. */
 .teams-group {
   margin-top: 8px;
 }
@@ -11398,7 +11398,7 @@ button:disabled {
   flex: 1 1 auto;
 }
 
-.teams-add {
+.teams-open {
   flex: 0 0 auto;
   width: 22px;
   height: 22px;
@@ -11407,13 +11407,28 @@ button:disabled {
   border-radius: 4px;
   background: transparent;
   color: var(--muted);
-  font-size: 16px;
-  line-height: 20px;
 }
 
-.teams-add:hover:not(:disabled) {
+.teams-open::before {
+  content: "";
+  display: block;
+  width: 14px;
+  height: 14px;
+  margin: auto;
+  background-color: currentColor;
+  -webkit-mask: var(--teams-glyph) center / contain no-repeat;
+  mask: var(--teams-glyph) center / contain no-repeat;
+}
+
+.teams-open:hover:not(:disabled),
+.teams-open[aria-pressed="true"] {
   background: var(--raised);
   color: var(--ink);
+}
+
+:root {
+  /* a gear: the Teams page, where teams and teammates are made and joined */
+  --teams-glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linejoin='round'%3E%3Cpath d='M6.9 1.5h2.2l.4 1.9 1.3.6 1.7-1 1.5 1.5-1 1.7.6 1.3 1.9.4v2.2l-1.9.4-.6 1.3 1 1.7-1.5 1.5-1.7-1-1.3.6-.4 1.9H6.9l-.4-1.9-1.3-.6-1.7 1-1.5-1.5 1-1.7-.6-1.3-1.9-.4V6.9l1.9-.4.6-1.3-1-1.7 1.5-1.5 1.7 1 1.3-.6z'/%3E%3Ccircle cx='8' cy='8' r='2.2'/%3E%3C/svg%3E");
 }
 
 .teams-list {
@@ -11449,36 +11464,81 @@ button:disabled {
   color: var(--ink);
 }
 
-.teams-empty {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 4px 8px 6px;
-}
-
-.teams-empty[hidden] {
+.teams-list[hidden] {
   display: none;
 }
 
-.teams-empty-words {
-  flex: 1 1 100%;
-  margin: 0;
-  color: var(--faint);
-  font-size: 12px;
+/* The Teams page: the three ways in as one row of buttons, the one open pressed; the user's teams
+   as rows that open each team's page. */
+.teams-hub-ways {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
-.teams-empty button {
-  padding: 2px 9px;
-  border: 1px solid var(--line-strong);
-  border-radius: 4px;
+.teams-hub-ways .team-start {
+  padding: 5px 12px;
+  font-size: 13px;
+}
+
+.teams-hub-way[aria-pressed="true"] {
+  border-color: var(--cophyla);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.team-join-look .team-join-code {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.teams-hub-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 6px;
+}
+
+.teams-hub-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.teams-hub-row:hover:not(:disabled) {
+  background: var(--raised);
+  border-color: var(--line);
+}
+
+.teams-hub-row .group-mark {
+  flex: 0 0 auto;
+}
+
+.teams-hub-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.teams-hub-words {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--muted);
   font-size: 12px;
-}
-
-.teams-empty button:hover:not(:disabled) {
-  color: var(--ink);
-  border-color: var(--muted);
 }
 
 /* Waiting for you, at the top of Status while something wants the user's answer. */
@@ -11794,6 +11854,3 @@ button:disabled {
   font-size: 12px;
 }
 
-.team-new-join .team-start {
-  margin-top: 6px;
-}
