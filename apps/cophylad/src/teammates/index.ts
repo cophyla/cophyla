@@ -357,15 +357,17 @@ export class Teammates {
     return { id: row.id, note: row.inboundRelay };
   }
 
-  /** The far side of a team-made link told how to reach it: what this side dials from now. */
-  teamReached(subject: string, relay: ConnectionRelay): void {
+  /** The far side of a team-made link told how to reach it: what this side dials from now. False while there is no such link here yet. */
+  teamReached(subject: string, relay: ConnectionRelay): boolean {
     const row = this.rows.bySubject(subject);
-    if (!row?.teamMade) return;
+    if (!row) return false;
+    // a link made with a code needs no note: it has its far side's peer already
+    if (!row.teamMade) return true;
     if (originOf(relay.url) !== originOf(this.deps.cloud.serverUrl())) {
       this.log.warn("a team member named another server to reach them by: left out", { id: row.id });
-      return;
+      return true;
     }
-    if (row.outbound && row.outbound.peer === relay.peer && row.outbound.token === relay.token) return;
+    if (row.outbound && row.outbound.peer === relay.peer && row.outbound.token === relay.token) return true;
     this.closeOut(row.id, "reached anew");
     row.outbound = relay;
     row.seenAt = this.now();
@@ -374,6 +376,7 @@ export class Teammates {
     this.log.info("a team member's link reaches them", { id: row.id, user: row.peer?.user });
     void this.flushOutbox(row.id);
     this.deps.groups()?.catchUpAll();
+    return true;
   }
 
   /**

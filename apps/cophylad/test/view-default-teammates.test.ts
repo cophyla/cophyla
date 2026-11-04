@@ -271,9 +271,9 @@ describe("teammates in the view", () => {
 
   test("with no teammate, a line says what teammates are; Someone else is folded while there is one", () => {
     const state = connected();
-    expect(connectNoTeam(state)).toBe("Teammates need a Cophyla account.");
+    expect(connectNoTeam(state)).toBe("Teams need a Cophyla account.");
     apply(state, { type: "account.state", params: { plan: "pro", limits: {}, subject: "usr_alice" } });
-    expect(connectNoTeam(state)).toBe("Teammates connect agents without a code.");
+    expect(connectNoTeam(state)).toBe("Everyone in a team with you connects agents without a code.");
     expect(connectElseFolded(state, {})).toBe(false);
     apply(state, { type: "teammates", teammates: [teammate(1), teammate(2, { state: "pending", user: undefined })] });
     expect(connectNoTeam(state)).toBeUndefined();
@@ -360,7 +360,7 @@ describe("teammates in the view", () => {
 
   test("teammates need the right to manage devices, and an account", () => {
     const state = connected();
-    expect(teamBlock(state)).toBe("Teammates need a Cophyla account: sign in under Devices → Account, then invite someone or enter their code.");
+    expect(teamBlock(state)).toBe("Teammates need a Cophyla account: sign in under Machines and account → Account, then invite someone or enter their code.");
     apply(state, { type: "account.state", params: { plan: "pro", limits: {}, subject: "usr_alice" } });
     expect(teamBlock(state)).toBeUndefined();
     expect(teamBlock({ ...state, scopes: ["sessions:read"] })).toBe("This device may not manage teammates.");

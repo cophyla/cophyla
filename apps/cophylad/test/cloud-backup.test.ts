@@ -16,6 +16,7 @@ import type { Daemon } from "../src/daemon.ts";
 import { FakeServer } from "./fakes/server.ts";
 import { brainFrames, isMethod, removeHome, sleep, tempHome, TestClient, tomlString, waitFor } from "./helpers.ts";
 import { FAKE_BRAIN } from "./nodes-helpers.ts";
+import { BACKUP_EXCLUDED_KV_NS, RESTORE_KEEP_KV_NS } from "../src/cloud/backup.ts";
 
 type AccountState = ClientNotificationParams<"account.state">;
 
@@ -509,4 +510,14 @@ describe("cloud backup", () => {
       removeHome(backupNode.home);
     }
   }, 40_000);
+});
+
+describe("what the backup carries of the daemon's own", () => {
+  test("the group chats, team chats among them, go sealed; the keys that let anyone in never do", () => {
+    for (const ns of ["groups", "groups.posts", "groups.log"]) expect(BACKUP_EXCLUDED_KV_NS).not.toContain(ns);
+    for (const ns of ["teams", "teammates", "connections", "grants", "leaders", "talk"]) expect(BACKUP_EXCLUDED_KV_NS).toContain(ns);
+    // a restore takes the chats back, and keeps this machine's own keys as they are
+    expect(RESTORE_KEEP_KV_NS).toContain("teams");
+    expect(RESTORE_KEEP_KV_NS).not.toContain("groups");
+  });
 });

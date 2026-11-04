@@ -49,8 +49,12 @@ export class Views {
   private deps: ViewsDeps;
   private dirs: ViewDir[];
   private log: Logger;
-  /** Types stripped and whitespace minified: a phone on the relay takes the whole view in one message. */
-  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser", minifyWhitespace: true });
+  /**
+   * Types stripped and the rest minified, local names shortened too (exported ones stay, so the
+   * files still import each other by name): a phone on the relay takes the whole view in one
+   * message, and teams took the default view past what one holds with whitespace alone.
+   */
+  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser", minify: { whitespace: true, syntax: true, identifiers: true } });
 
   constructor(deps: ViewsDeps) {
     this.deps = deps;

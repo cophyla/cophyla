@@ -29,7 +29,7 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare } from "@cophyla/protocol";
+import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, Team, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare, TeamOffer } from "@cophyla/protocol";
 import { applyTalk } from "./talkmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, DoorState, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
@@ -285,6 +285,12 @@ export interface ViewState {
   teammates: Map<string, Teammate>;
   /** A teammate's code just made, while its panel shows. */
   teammateCode?: IssuedCode;
+  /** This user's teams, from `teams.list` and `teams.state`. */
+  teams: Map<string, Team>;
+  /** The invites waiting for this user to take or turn down, by invite. */
+  teamOffers: Map<string, TeamOffer>;
+  /** An invite just made on a team's page, while its code shows. */
+  teamCode?: TeamCode;
   /** The node this client's socket is on, on its own network (`lan.info`); none from a node that does not say. */
   lan?: LanState;
   /** Every node of the user, from `node.list` and `node.state`. */
@@ -417,6 +423,13 @@ export type Action =
   | { type: "teammate.state"; params: Teammate }
   /** A teammate's code came back from `teammate.invite`, or its panel closed. */
   | { type: "teammate.code"; code?: IssuedCode }
+  | { type: "teams"; teams: Team[]; offers: TeamOffer[] }
+  /** A team was made, changed, or this user is no longer in it (`gone`). */
+  | { type: "teams.state"; params: Team & { gone?: boolean } }
+  /** An invite came for this user, or went (`gone`). */
+  | { type: "teams.offer"; params: TeamOffer & { gone?: boolean } }
+  /** An invite's code came back from `teams.invite`, or its panel closed. */
+  | { type: "team.code"; code?: TeamCode }
   | { type: "transfers"; transfers: Transfer[] }
   /** A transfer started, moved on, ended, or was dismissed (`dismissed`, which takes its row away). */
   | { type: "transfer.state"; params: Transfer }
@@ -494,6 +507,8 @@ export function initialState(): ViewState {
     focus: new Map(),
     leaders: new Map(),
     teammates: new Map(),
+    teams: new Map(),
+    teamOffers: new Map(),
     nodes: new Map(),
     metrics: new Map(),
     spend: new Map(),
@@ -1134,6 +1149,10 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "teammates":
     case "teammate.state":
     case "teammate.code":
+    case "teams":
+    case "teams.state":
+    case "teams.offer":
+    case "team.code":
       // folded by applyTeam, above
       return state;
     case "leaders":
@@ -1198,6 +1217,10 @@ export function chatDraw(action: Action): ChatDraw {
     case "teammates":
     case "teammate.state":
     case "teammate.code":
+    case "teams":
+    case "teams.state":
+    case "teams.offer":
+    case "team.code":
     case "talks":
     case "talk.state":
     case "talk.said":
@@ -6017,6 +6040,28 @@ function applyTeam(state: ViewState, action: Action): boolean {
       if (action.code) state.teammateCode = action.code;
       else delete state.teammateCode;
       return true;
+    case "teams":
+      state.teams = new Map(action.teams.map((t) => [t.id, t]));
+      state.teamOffers = new Map(action.offers.map((o) => [o.id, o]));
+      return true;
+    case "teams.state": {
+      const { gone, ...team } = action.params;
+      if (gone) state.teams.delete(team.id);
+      else state.teams.set(team.id, team);
+      // the invite on show was taken: its panel has done its job
+      if (state.teamCode && state.teamCode.team === team.id && !team.invites.some((i) => i.id === state.teamCode!.invite)) delete state.teamCode;
+      return true;
+    }
+    case "teams.offer": {
+      const { gone, ...offer } = action.params;
+      if (gone) state.teamOffers.delete(offer.id);
+      else state.teamOffers.set(offer.id, offer);
+      return true;
+    }
+    case "team.code":
+      if (action.code) state.teamCode = action.code;
+      else delete state.teamCode;
+      return true;
     default:
       return false;
   }
@@ -6061,24 +6106,23 @@ export function groupMemberWords(g: Group): string {
  * they were made, so nothing moves as they are posted in. `groups` is `selectGroups`' tree, whose
  * counts this adds to.
  */
-export function placeGroupChats(state: Pick<ViewState, "groups" | "nodes">, groups: SessionGroup[]): { placed: Map<string, Group[]>; loose: Group[] } {
+export function placeGroupChats(state: Pick<ViewState, "groups" | "nodes"> & Partial<Pick<ViewState, "teams">>, _groups: SessionGroup[]): { placed: Map<string, Group[]>; loose: Group[]; byTeam: Map<string, Group[]> } {
+  // A group stands where it belongs and stays there: under its team, the team's own chat first,
+  // or under Groups. It no longer follows the folder of a session open now.
   const placed = new Map<string, Group[]>();
   const loose: Group[] = [];
-  const chats = [...state.groups.values()].sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
+  const byTeam = new Map<string, Group[]>();
+  const chats = [...state.groups.values()].sort((a, b) => Number(b.teamChat === true) - Number(a.teamChat === true) || a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1));
   for (const chat of chats) {
-    const home = chat.home;
-    const path = home ? groupPathTo(groups, home.node, placeKey(home.path, state.nodes.get(home.node)?.platform)) : [];
-    const at = path.at(-1);
-    if (!at) {
-      loose.push(chat);
+    if (chat.team && state.teams?.has(chat.team)) {
+      const list = byTeam.get(chat.team) ?? [];
+      list.push(chat);
+      byTeam.set(chat.team, list);
       continue;
     }
-    const list = placed.get(at.key) ?? [];
-    list.push(chat);
-    placed.set(at.key, list);
-    for (const g of path) g.count += 1;
+    loose.push(chat);
   }
-  return { placed, loose };
+  return { placed, loose, byTeam };
 }
 
 /** The folder groups from the outermost to the innermost that hold folder `key` on `node`. */
@@ -6474,7 +6518,7 @@ export function teamworkFailure(code: string | undefined, message: string): stri
 /** Why this view makes no teammate, when it does not: one that may not manage devices, or a node signed out of its account. */
 export function teamBlock(state: Pick<ViewState, "scopes" | "account">): string | undefined {
   if (!state.scopes.includes("controllers")) return "This device may not manage teammates.";
-  if (state.account?.subject === undefined) return "Teammates need a Cophyla account: sign in under Devices → Account, then invite someone or enter their code.";
+  if (state.account?.subject === undefined) return "Teammates need a Cophyla account: sign in under Machines and account → Account, then invite someone or enter their code.";
   return undefined;
 }
 
@@ -6546,23 +6590,129 @@ export function selectTeammates(state: Pick<ViewState, "teammates" | "workspaces
   });
 }
 
-/** A workspace shared closed with a teammate: one that appeared after an exclude share, which their agents see none of until the user opens or excludes it. */
+/** A workspace shared closed with a teammate or a team: one that appeared after an exclude share, which their agents see none of until the user opens or excludes it. */
 export interface ClosedPlace {
   key: string;
   teammate: string;
+  /** The team whose share holds it, rather than a teammate's own. */
+  team?: string;
+  /** The teammate's login, or the team's name. */
   login: string;
   place: TeammatePlace;
   words: string;
 }
 
-export function closedPlaces(state: Pick<ViewState, "teammates" | "workspaces" | "nodes" | "node">): ClosedPlace[] {
+export function closedPlaces(state: Pick<ViewState, "teammates" | "workspaces" | "nodes" | "node"> & Partial<Pick<ViewState, "teams">>): ClosedPlace[] {
   const out: ClosedPlace[] = [];
+  for (const team of state.teams?.values() ?? []) {
+    for (const place of team.share.closed ?? []) out.push({ key: `team:${team.id}\n${place.node}\n${place.path}`, teammate: "", team: team.id, login: team.name, place, words: `${placeName(state, place)} is new in a folder you share with ${team.name}` });
+  }
   for (const t of state.teammates.values()) {
-    if (t.state !== "active") continue;
+    if (t.state !== "active" || (t.teams?.length ?? 0) > 0) continue;
     const login = t.user ?? "a teammate";
     for (const place of t.share.closed ?? []) out.push({ key: `${t.id}\n${place.node}\n${place.path}`, teammate: t.id, login, place, words: `${placeName(state, place)} is shared closed with ${login}` });
   }
   return out.sort((a, b) => a.words.localeCompare(b.words));
+}
+
+// --- teams ----------------------------------------------------------------------------------------
+
+/** An invite just made, while its panel shows on the team's page. */
+export interface TeamCode {
+  team: string;
+  invite: string;
+  user: string;
+  code: string;
+  expiresAt: number;
+  /** The person is a teammate already: their Cophyla was handed it too. */
+  offered?: boolean;
+}
+
+/** A team in the rail: its name, how many people, its own chat first and its other groups, and how much is unread across them. */
+export interface RailTeam {
+  id: string;
+  name: string;
+  people: number;
+  chats: Group[];
+  unread: number;
+  tagged: boolean;
+  ended: boolean;
+}
+
+export function railTeams(state: Pick<ViewState, "teams" | "groups" | "nodes">): RailTeam[] {
+  const { byTeam } = placeGroupChats(state, []);
+  return [...state.teams.values()]
+    .sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1))
+    .map((t) => {
+      const chats = byTeam.get(t.id) ?? [];
+      return { id: t.id, name: t.name, people: t.members.length, chats, unread: chats.reduce((n, g) => n + g.unread, 0), tagged: chats.some((g) => g.tagged > 0), ended: t.ended !== undefined };
+    });
+}
+
+/** The teams both this user and a teammate are in, by name. */
+export function teamsWith(state: Pick<ViewState, "teams">, t: Pick<Teammate, "teams">): Team[] {
+  return (t.teams ?? [])
+    .map((id) => state.teams.get(id))
+    .filter((x): x is Team => x !== undefined)
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/** What this side shares with a teammate: each team both are in, or the teammate's own share while there is none. */
+export function sharesWith(state: Pick<ViewState, "teams">, t: Pick<Teammate, "teams" | "share">): { team?: Team; share: TeammateShare }[] {
+  const teams = teamsWith(state, t);
+  return teams.length > 0 ? teams.map((team) => ({ team, share: team.share })) : [{ share: t.share }];
+}
+
+/** A person on a team's page: who, their role, what they share, and what this user may do about them. */
+export interface TeamPersonRow {
+  user: string;
+  role: Team["members"][number]["role"];
+  you: boolean;
+  /** "shares web, infra · every agent open", or how their link stands. */
+  words: string;
+  linked: boolean;
+  teammate?: string;
+  /** What this user may do: take them out, make or unmake an admin, hand the team to them. */
+  can: ("remove" | "admin" | "member" | "owner")[];
+}
+
+export function teamPeople(t: Team): TeamPersonRow[] {
+  const order = { owner: 0, admin: 1, member: 2 } as const;
+  const mine = t.role;
+  return [...t.members]
+    .sort((a, b) => order[a.role] - order[b.role] || a.user.localeCompare(b.user))
+    .map((m) => {
+      const theirs = m.theirs ? `${m.theirs.workspaces.length === 0 ? "shares nothing yet" : `shares ${m.theirs.workspaces.slice(0, 5).join(", ")}${m.theirs.workspaces.length > 5 ? ` +${m.theirs.workspaces.length - 5}` : ""}`} · ${m.theirs.open === "always" ? "every agent open" : "opens agents by hand"}` : "";
+      const link = m.you ? "you" : m.linked ? "" : "linking…";
+      const can: TeamPersonRow["can"] = [];
+      if (!m.you && m.role !== "owner") {
+        if (mine === "owner" || (mine === "admin" && m.role === "member")) can.push("remove");
+        if (mine === "owner") can.push(m.role === "admin" ? "member" : "admin", "owner");
+      }
+      return { user: m.user, role: m.role, you: m.you === true, words: [link, theirs].filter(Boolean).join(" · "), linked: m.linked === true, ...(m.teammate ? { teammate: m.teammate } : {}), can };
+    });
+}
+
+/** Something waiting for the user's answer, under Status: an invite into a team, or a workspace newly in a share. */
+export type WaitingItem =
+  | { kind: "offer"; key: string; offer: string; words: string; title: string }
+  | { kind: "closed"; key: string; words: string; open: string; keep: string };
+
+export function waitingItems(state: Pick<ViewState, "teamOffers" | "teams" | "teammates" | "workspaces" | "nodes" | "node" | "scopes">): WaitingItem[] {
+  if (!state.scopes.includes("controllers")) return [];
+  const out: WaitingItem[] = [];
+  for (const o of [...state.teamOffers.values()].sort((a, b) => b.at - a.at)) {
+    const others = o.people.filter((p) => p.user !== o.by).map((p) => p.user);
+    out.push({
+      kind: "offer",
+      key: `offer\n${o.id}`,
+      offer: o.id,
+      words: `${o.by} invited you to ${o.name}`,
+      title: [o.purpose ?? "", `In it: ${[o.by, ...others].join(", ")}`].filter(Boolean).join("\n"),
+    });
+  }
+  for (const r of closedPlaces(state)) out.push({ kind: "closed", key: r.key, words: r.words, open: r.team ? `Open to ${r.login}` : "Open", keep: r.team ? "Keep closed" : "Exclude" });
+  return out;
 }
 
 /** A share with `place` open: off the closed list. */
@@ -6614,19 +6764,31 @@ export interface ConnectStanding {
   label?: string;
   /** `shared-closed`: the Status line's key, which Open and Exclude act on. */
   placeKey?: string;
+  /** The team whose share the button changes, rather than the teammate's own. */
+  team?: string;
 }
 
-export function connectStanding(state: Pick<ViewState, "workspaces" | "nodes">, t: Teammate, s: Pick<Session, "id" | "node" | "cwd" | "workspace">): ConnectStanding {
+export function connectStanding(state: Pick<ViewState, "workspaces" | "nodes"> & Partial<Pick<ViewState, "teams">>, t: Teammate, s: Pick<Session, "id" | "node" | "cwd" | "workspace">): ConnectStanding {
   const login = t.user ?? "them";
   const { place, name } = sessionFolder(state, s);
   const platform = state.nodes.get(s.node)?.platform;
-  const opened = t.share.opened?.includes(s.id) === true;
-  if (!inShare(t.share, place, platform)) return { kind: "outside", lead: `Not shared with ${login}.`, rest: `This agent works in ${name}, which you don't share with them.`, label: `Share ${name} with ${login}…` };
-  if (opened) return { kind: "opened", lead: `Open to ${login}.`, rest: "All their agents can message this one.", label: "Close" };
-  const closedAt = (t.share.closed ?? []).find((p) => samePlaceOrUnder(place, p, platform));
-  if (closedAt) return { kind: "shared-closed", lead: `${name} is shared closed with ${login}.`, rest: "Their agents reach none of yours in it until you open it or exclude it.", placeKey: `${t.id}\n${closedAt.node}\n${closedAt.path}` };
-  if (t.share.open === "always") return { kind: "always", lead: `Open to ${login}.`, rest: `You share every agent in ${name} with them.` };
-  return { kind: "closed", lead: `Closed to ${login}.`, rest: "Only the agents you connect can message this one.", label: `Open to all of ${login}'s agents` };
+  const shares = sharesWith({ teams: state.teams ?? new Map() }, t);
+  // what this side shares with them: each team both are in, named in the words when there is one
+  const via = (team?: Team) => (team ? ` through ${team.name}` : "");
+  const holding = shares.filter((x) => inShare(x.share, place, platform));
+  const first = shares[0]!;
+  const target = (x: { team?: Team }) => (x.team ? { team: x.team.id } : {});
+  if (holding.length === 0) return { kind: "outside", lead: `Not shared with ${login}.`, rest: `This agent works in ${name}, which you don't share with them.`, label: first.team ? `Share ${name} with ${first.team.name}…` : `Share ${name} with ${login}…`, ...target(first) };
+  const opened = holding.find((x) => x.share.opened?.includes(s.id) === true);
+  if (opened) return { kind: "opened", lead: `Open to ${login}${via(opened.team)}.`, rest: "All their agents can message this one.", label: "Close", ...target(opened) };
+  const always = holding.find((x) => x.share.open === "always" && !(x.share.closed ?? []).some((p) => samePlaceOrUnder(place, p, platform)));
+  if (always) return { kind: "always", lead: `Open to ${login}${via(always.team)}.`, rest: `You share every agent in ${name} with ${always.team ? always.team.name : "them"}.`, ...target(always) };
+  for (const x of holding) {
+    const closedAt = (x.share.closed ?? []).find((p) => samePlaceOrUnder(place, p, platform));
+    if (closedAt) return { kind: "shared-closed", lead: `${name} is shared closed with ${x.team ? x.team.name : login}.`, rest: `Their agents reach none of yours in it until you open it or ${x.team ? "keep it closed" : "exclude it"}.`, placeKey: x.team ? `team:${x.team.id}\n${closedAt.node}\n${closedAt.path}` : `${t.id}\n${closedAt.node}\n${closedAt.path}`, ...target(x) };
+  }
+  const h = holding[0]!;
+  return { kind: "closed", lead: `Closed to ${login}.`, rest: "Only the agents you connect can message this one.", label: h.team ? `Open to everyone in ${h.team.name}` : `Open to all of ${login}'s agents`, ...target(h) };
 }
 
 /** One of a teammate's agents in the Connect panel: what it is, and what pressing its row does or how it stands with this agent. */
@@ -6779,7 +6941,7 @@ export interface ConnectTeamBlock {
 export const CONNECT_FILTER_AT = 8;
 
 /** The active teammates, by login, each as its block for session `s`. */
-export function connectTeamBlocks(state: Pick<ViewState, "teammates" | "workspaces" | "nodes">, s: Pick<Session, "id" | "node" | "cwd" | "workspace">, seen: ReadonlyMap<string, TeamAgentsSeen>, filters: ReadonlyMap<string, string> = new Map()): ConnectTeamBlock[] {
+export function connectTeamBlocks(state: Pick<ViewState, "teammates" | "workspaces" | "nodes"> & Partial<Pick<ViewState, "teams">>, s: Pick<Session, "id" | "node" | "cwd" | "workspace">, seen: ReadonlyMap<string, TeamAgentsSeen>, filters: ReadonlyMap<string, string> = new Map()): ConnectTeamBlock[] {
   const active = [...state.teammates.values()].filter((t) => t.state === "active" && t.user).sort((a, b) => a.user!.localeCompare(b.user!));
   return active.map((t) => {
     const login = t.user!;
@@ -6810,8 +6972,8 @@ export function connectTeamBlocks(state: Pick<ViewState, "teammates" | "workspac
 /** Why a Connect panel has no teammate to offer: none yet, or no account; undefined while there are. */
 export function connectNoTeam(state: Pick<ViewState, "teammates" | "account">): string | undefined {
   if ([...state.teammates.values()].some((t) => t.state === "active" && t.user)) return undefined;
-  if (state.account?.subject === undefined) return "Teammates need a Cophyla account.";
-  return "Teammates connect agents without a code.";
+  if (state.account?.subject === undefined) return "Teams need a Cophyla account.";
+  return "Everyone in a team with you connects agents without a code.";
 }
 
 /** Whether Someone else (a code) is folded to its heading: while the user has a teammate, unless they opened it or a code or its error shows. */

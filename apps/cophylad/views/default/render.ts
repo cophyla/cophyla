@@ -78,7 +78,8 @@ import type { HeadConnect } from "./model.ts";
 import { selectUpdateNote, waitingWords } from "./model.ts";
 import { placeGroupChats } from "./model.ts";
 import type { Group } from "@cophyla/protocol";
-import { createConnectConnected, createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, createStatusTeam, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderStatusTeam, renderTeamOverlay, updateConnectConnected, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
+import { createConnectConnected, createConnectTeam, createGroupsHeading, createMenuItems, createSessionFocus, groupStream, renderGroupChats, renderGroupPane, renderGroupsHeading, renderMenuItems, renderTeamOverlay, updateConnectConnected, updateConnectTeam, updateSessionFocus, updateTabFocus } from "./teamview.ts";
+import { createTeamsSection, createWaiting, renderTeamsSection, renderWaiting } from "./teamsview.ts";
 import type { TeamUi } from "./teamview.ts";
 import { createLeadControl, createLeaderChip, createLedChip, createTabLead, updateChatLeadChip, updateLeadChips, updateLeadControl, updateTabLead } from "./leadview.ts";
 import type { LeadPop } from "./leadview.ts";
@@ -1980,7 +1981,7 @@ function renderNodeTools(tools: HTMLElement, state: ViewState, ui: UiState): voi
   const add = tools.querySelector<HTMLButtonElement>(".node-add")!;
   setHidden(add, !canInvite || ui.grantForm === "node");
   add.disabled = !state.connected;
-  add.title = "Let another computer join this one, with an invite it redeems once";
+  add.title = "Signed in to your account on it, a computer joins by itself; this makes an invite for one that is not, which it redeems once";
   const join = tools.querySelector<HTMLButtonElement>(".node-join")!;
   setHidden(join, !joining || ui.grantForm === "join");
   join.disabled = !state.connected;
@@ -2110,7 +2111,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     transfersClear.title = "Take every transfer that ended off the list: the ones that landed, failed or were cancelled";
     transfersHead.append(transfersName, transfersClear);
     transfers.append(transfersHead, el("div", "transfer-list"));
-    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), createGroupsHeading(), terminals, transfers);
+    list.append(el("div", "tab-groups"), el("p", "tabs-empty", "Start Claude Code, Codex or Muse in a terminal and it appears here."), createTeamsSection(), createGroupsHeading(), terminals, transfers);
     // Under the sessions, a glance at the machines, the usage and the phones, and the way into Devices.
     const cards = createStatus();
     // While an agent's tab is selected they are the Status tab, beside its folder's files.
@@ -2167,6 +2168,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   const chats = placeGroupChats(state, groups);
   reconcile(root.querySelector<HTMLElement>(".tab-groups")!, groups, (g) => g.key, createGroup, (node, g) => updateGroup(node, g, state, ui, chats.placed));
   setHidden(root.querySelector<HTMLElement>(".tabs-empty")!, groups.length > 0 || chats.loose.length > 0);
+  renderTeamsSection(root.querySelector<HTMLElement>(".teams-group")!, state, ui);
   renderGroupsHeading(root.querySelector<HTMLElement>(".groups-group")!, chats.loose, ui, groupHeading);
   renderTerminals(root.querySelector<HTMLElement>(".terminals-group")!, canTerminal ? selectTerminalTabs(state, ui.terminal).filter((t) => !waitingAgent(state, t)) : [], state, ui);
   renderTransfers(root.querySelector<HTMLElement>(".transfers-group")!, canTerminal ? selectTransfers(state) : [], state, ui);
@@ -2262,8 +2264,9 @@ function createStatus(): HTMLElement {
   phones.append(el("h3", "status-heading", "Phones"), el("div", "status-phone-rows"));
   const devices = actionButton("status-devices", "", "devices-open");
   devices.title = "Every computer and phone, what each can do, and the account";
-  devices.append(el("span", "status-devices-label", "Devices and account"), el("span", "status-devices-count"), el("span", "chevron-mark"));
-  cards.append(machines, usage, phones, createStatusTeam(), devices);
+  devices.append(el("span", "status-devices-label", "Machines and account"), el("span", "status-devices-count"), el("span", "chevron-mark"));
+  cards.prepend(createWaiting());
+  cards.append(machines, usage, phones, devices);
   return cards;
 }
 
@@ -2280,7 +2283,7 @@ function renderStatus(cards: HTMLElement, state: ViewState, ui: UiState): void {
   const phoneSection = cards.querySelector<HTMLElement>(".status-phones")!;
   setHidden(phoneSection, phones.length === 0);
   reconcile(phoneSection.querySelector<HTMLElement>(".status-phone-rows")!, phones, (p) => p.id, createStatusPhone, updateStatusPhone);
-  renderStatusTeam(cards.querySelector<HTMLElement>(".status-team")!, state, ui);
+  renderWaiting(cards.querySelector<HTMLElement>(".status-waiting")!, state, ui);
   const devices = cards.querySelector<HTMLButtonElement>(".status-devices")!;
   setHidden(devices, !devicesShown(state));
   devices.setAttribute("aria-pressed", ui.devices ? "true" : "false");
@@ -2426,14 +2429,14 @@ function createDevices(root: HTMLElement): void {
   const close = actionButton("devices-close viewer-tool viewer-close", "", "devices-close");
   close.title = "Close (Esc)";
   close.setAttribute("aria-label", "Close Devices");
-  head.append(el("span", "devices-mark"), el("h2", "devices-title", "Devices"), el("span", "devices-meta"), close);
+  head.append(el("span", "devices-mark"), el("h2", "devices-title", "Machines and account"), el("span", "devices-meta"), close);
   const note = el("p", "devices-note");
   note.setAttribute("role", "alert");
   const body = el("div", "devices-body");
   body.tabIndex = -1;
   const column = el("div", "devices-column");
   const computers = el("section", "devices-section devices-computers");
-  computers.append(sectionHead("Computers", "This computer and the ones that joined it: which is the primary, what they run, and who can view their desktops."), el("div", "node-cards"), el("div", "node-tools"));
+  computers.append(sectionHead("Computers", "This computer and the ones that joined it: which is the primary, what they run, and who can view their desktops. To add one, sign in to your account in Cophyla on it: it joins by itself."), el("div", "node-cards"), el("div", "node-tools"));
   const phones = el("section", "devices-section devices-phones");
   const tools = el("div", "phone-tools");
   const buttons = el("div", "phone-tools-buttons");
@@ -2535,7 +2538,7 @@ function createConnections(): HTMLElement {
   const tools = el("div", "phone-tools connection-tools");
   tools.append(buttons, el("p", "devices-minter"), createConnectionInviteForm(), createConnectionAcceptForm(), el("div", "connection-code-slot"));
   section.append(
-    sectionHead("Connections", "Your agents connected to other people's: each joins one of your terminals to one of theirs, and the two agents may message each other until the terminal closes or either side ends it."),
+    sectionHead("Guests", "One of your terminals connected to someone's outside your teams, with a code: the two agents may message each other until the terminal closes or either side ends it. Your teams link their people without codes."),
     el("div", "connections"),
     el("p", "devices-empty", "None of your agents is connected to anyone else's."),
     tools,
@@ -3050,7 +3053,8 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
   const chat = ui.group !== undefined ? state.groups.get(ui.group) : undefined;
-  const over = ui.devices ? "Devices" : ui.team.newGroup ? "New group" : ui.team.page ? "Teammates" : undefined;
+  const teamOver = ui.team.newTeam ? "New team" : ui.team.join ? "Join a team" : ui.team.teamPage ? (state.teams.get(ui.team.teamPage.team)?.name ?? "Team") : undefined;
+  const over = ui.devices ? "Machines and account" : ui.team.newGroup ? "New group" : ui.team.page ? "Teammates by code" : teamOver;
   setText(root.querySelector(".railbar-title")!, over ?? (card ? sessionLabel(card.session) : bare ? terminalTabLabel(state, bare) : chat ? chat.name : "Cophyla Chat"));
 }
 

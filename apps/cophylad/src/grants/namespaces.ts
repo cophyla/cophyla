@@ -34,8 +34,9 @@ export const SESSION_SCOPE_NS = "sessions.scope";
 
 /**
  * The group chats (see `groups/`): each group's row, and its posts under `groups.posts`, one key
- * per post. Replicated to the backups; never the brain's, never in the cloud backup, since a
- * group holds other people's words once teammates are in it.
+ * per post. Replicated to the backups; never the brain's. In the cloud backup since milestone 35,
+ * sealed with the backup's key as all of it is: the server holds a copy it cannot read, the
+ * user's alone, and no key that lets anyone in goes with it.
  */
 export const GROUPS_KV_NS = "groups";
 export const GROUP_POSTS_KV_NS = "groups.posts";

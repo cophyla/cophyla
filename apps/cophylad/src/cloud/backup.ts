@@ -22,15 +22,22 @@ import { CLOSE_ROLE_CHANGED } from "../api/server.ts";
 import type { ClientRegistry } from "../api/clients.ts";
 import { snapshotTree } from "../editable/watcher.ts";
 import type { Logger } from "../log.ts";
-import { RESERVED_KV_NS } from "../grants/namespaces.ts";
+import { GROUP_LOG_KV_NS, GROUP_POSTS_KV_NS, GROUPS_KV_NS, RESERVED_KV_NS } from "../grants/namespaces.ts";
 import { EXCLUDED_KV_NS, editableFiles, fileRecord, safePath } from "../nodes/replication.ts";
 import type { KvRow, Store, StoreWrite } from "../store/index.ts";
 import { BackupKeyFile, MAX_PLAINTEXT_BYTES, deriveKeys, newKdf, objectKey, open, sameKeyId, seal } from "./backup-crypto.ts";
 import type { BackupKeys } from "./backup-crypto.ts";
 import type { LinkRequestOptions } from "./link.ts";
 
-/** The kv namespaces the backup leaves out: a node's own harness installs and staging, and every grant with its keys, and the cluster they make. */
-export const BACKUP_EXCLUDED_KV_NS: readonly string[] = [...EXCLUDED_KV_NS, ...RESERVED_KV_NS.filter((ns) => !EXCLUDED_KV_NS.includes(ns))];
+/**
+ * The daemon's own namespaces the backup carries all the same: the group chats, team chats among
+ * them, sealed with the backup's key as everything in it is, so a fresh install has them back. The
+ * keys that let other people in (teammates, teams, connections) never go; a restore keeps the
+ * chats to read, and links come back as each team adds the user again.
+ */
+export const BACKUP_CARRIED_RESERVED_NS: readonly string[] = [GROUPS_KV_NS, GROUP_POSTS_KV_NS, GROUP_LOG_KV_NS];
+/** The kv namespaces the backup leaves out: a node's own harness installs and staging, every grant with its keys, the cluster they make, and the daemon's own but its chats. */
+export const BACKUP_EXCLUDED_KV_NS: readonly string[] = [...EXCLUDED_KV_NS, ...RESERVED_KV_NS.filter((ns) => !EXCLUDED_KV_NS.includes(ns) && !BACKUP_CARRIED_RESERVED_NS.includes(ns))];
 /** The kv namespaces a restore keeps from the fresh install: the same ones, which are this machine's. */
 export const RESTORE_KEEP_KV_NS: readonly string[] = BACKUP_EXCLUDED_KV_NS;
 

@@ -70,14 +70,14 @@ describe("lists only the primary keeps, asked for again", () => {
     const r = rig();
     r.connect();
     await settle();
-    expect(r.asked.sort()).toEqual(["focus.list", "group.list", "lead.list", "talk.list", "teammate.list"]);
+    expect(r.asked.sort()).toEqual(["focus.list", "group.list", "lead.list", "talk.list", "teammate.list", "teams.list"]);
     expect(r.state.talkOn).toBe(false);
 
     r.node.primary = true;
     r.asked.length = 0;
     r.again();
     await settle();
-    expect(r.asked.sort()).toEqual(["focus.list", "group.list", "lead.list", "talk.list", "teammate.list"]);
+    expect(r.asked.sort()).toEqual(["focus.list", "group.list", "lead.list", "talk.list", "teammate.list", "teams.list"]);
     expect(r.state.talkOn).toBe(true);
 
     // answered now: a later change to the node's row asks for none of them

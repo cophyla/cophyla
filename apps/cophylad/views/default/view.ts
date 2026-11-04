@@ -654,6 +654,8 @@ rpc.onNotification((n) => {
     case "group.posted":
     case "focus.state":
     case "teammate.state":
+    case "teams.state":
+    case "teams.offer":
       team.notification(n.method, n.params);
       return;
     case "lead.state":

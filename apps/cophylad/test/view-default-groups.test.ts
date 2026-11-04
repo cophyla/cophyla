@@ -135,36 +135,33 @@ describe("group chats in the view", () => {
     }
   });
 
-  test("a group's tab stands under the innermost folder group its home names, counted there and around it; else under Groups", () => {
+  test("a group's tab stays put: under its team, the team's own chat first, else under Groups, whatever sessions are open", () => {
     const state = connected();
-    apply(state, { type: "workspace.state", params: workspace("ws_01ARZ3NDEKTSV4RRFFQ69G5FD1", "C:\\work", "work") });
     apply(state, { type: "workspace.state", params: workspace("ws_01ARZ3NDEKTSV4RRFFQ69G5FD2", "C:\\work\\web", "web") });
     apply(state, { type: "session.state", params: session(A, { workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FD2" }) });
-    apply(state, { type: "session.state", params: session(B, { workspace: "ws_01ARZ3NDEKTSV4RRFFQ69G5FD1", cwd: "C:\\work" }) });
+    const TEAM = "team_01ARZ3NDEKTSV4RRFFQ69G5TE1";
+    apply(state, {
+      type: "teams",
+      teams: [{ id: TEAM, name: "Studio", chat: G3, role: "owner", members: [{ user: "alice", role: "owner", joinedAt: 1, you: true }], invites: [], share: { mode: "include", folders: [], open: "always" }, createdAt: 1, updatedAt: 1 }],
+      offers: [],
+    });
     apply(state, {
       type: "groups",
       groups: [
-        group({ id: G2, name: "web-only", home: { node: DESK, path: "c:\\Work\\web\\src" }, createdAt: 20 }),
+        group({ id: G2, name: "web-only", home: { node: DESK, path: "c:\\Work\\web\\src" }, createdAt: 20, team: TEAM }),
         group({ home: { node: DESK, path: "C:\\work\\web" } }),
-        group({ id: G3, name: "elsewhere", home: { node: LAPTOP, path: "/home/me/api" } }),
+        group({ id: G3, name: "Studio", createdAt: 30, team: TEAM, teamChat: true }),
       ],
     });
-    const groups = selectGroups(state);
-    const { placed, loose } = placeGroupChats(state, groups);
-    const outer = groups[0]!;
-    const inner = outer.groups[0]!;
-    expect(outer.name).toBe("work");
-    expect(inner.name).toBe("web");
-    // under web, which holds the folder and the one below it, the older first
-    expect(placed.get(inner.key)!.map((g) => g.id)).toEqual([G1, G2]);
-    expect(placed.has(outer.key)).toBe(false);
-    expect(inner.count).toBe(1 + 2);
-    expect(outer.count).toBe(1 + 3);
-    // no session works on the laptop's folder: under Groups
-    expect(loose.map((g) => g.id)).toEqual([G3]);
-    // and one with no home at all
-    const lone = placeGroupChats({ groups: new Map([[G1, group()]]), nodes: state.nodes }, []);
-    expect(lone.loose.map((g) => g.id)).toEqual([G1]);
+    const { placed, loose, byTeam } = placeGroupChats(state, selectGroups(state));
+    expect(placed.size).toBe(0);
+    // the team's chat first, then its other groups as they were made
+    expect(byTeam.get(TEAM)!.map((g) => g.id)).toEqual([G3, G2]);
+    // one in no team: under Groups, though a session works in its folder
+    expect(loose.map((g) => g.id)).toEqual([G1]);
+    // a team this side is no longer in: its groups stand under Groups
+    const left = placeGroupChats({ groups: state.groups, nodes: state.nodes, teams: new Map() }, []);
+    expect(left.loose.map((g) => g.id).sort()).toEqual([G1, G2, G3].sort());
   });
 
   test("the tab's words: the purpose, the agents, unread, tagged, ended", () => {

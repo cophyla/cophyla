@@ -11379,3 +11379,421 @@ button:disabled {
 .dock-asks-foot[hidden] {
   display: none;
 }
+
+/* --- teams (milestone 35): their own category in the rail, Waiting for you, and their pages ----- */
+
+/* Teams in the rail: the heading with + at its right, then each team folded like a folder: its
+   chat and groups, then People and agents. With none, a line and the two ways in. */
+.teams-group {
+  margin-top: 8px;
+}
+
+.teams-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.teams-head .tab-group-name {
+  flex: 1 1 auto;
+}
+
+.teams-add {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 16px;
+  line-height: 20px;
+}
+
+.teams-add:hover:not(:disabled) {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.teams-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.team-group {
+  margin-top: 2px;
+}
+
+.team-group .tab {
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.team-people {
+  color: var(--muted);
+}
+
+.team-people-mark {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 14px;
+  border-radius: 7px;
+  background:
+    radial-gradient(circle at 6px 7px, var(--faint) 3px, transparent 3.5px),
+    radial-gradient(circle at 14px 7px, var(--faint) 3px, transparent 3.5px);
+}
+
+.team-people[aria-current="true"] {
+  color: var(--ink);
+}
+
+.teams-empty {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px 6px;
+}
+
+.teams-empty[hidden] {
+  display: none;
+}
+
+.teams-empty-words {
+  flex: 1 1 100%;
+  margin: 0;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.teams-empty button {
+  padding: 2px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.teams-empty button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+/* Waiting for you, at the top of Status while something wants the user's answer. */
+.status-waiting {
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--amber) 40%, var(--line-strong));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--amber) 6%, var(--card));
+}
+
+.status-waiting .status-heading {
+  color: var(--amber);
+}
+
+.waiting-rows,
+.team-closed-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.waiting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.waiting-row + .waiting-row {
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.waiting-words {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.waiting-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.waiting-buttons button {
+  padding: 1px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.waiting-buttons button:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.waiting-buttons .waiting-look,
+.waiting-buttons .waiting-open {
+  border-color: var(--cophyla);
+  background: var(--cophyla);
+  color: #fff;
+}
+
+/* A team's page: People with their roles, the invites open, Add a person and its code; the
+   others' agents; what the user shares; then Rename, Leave or End. */
+.team-section-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.team-section-head .devices-heading {
+  flex: 1 1 auto;
+}
+
+.team-warning {
+  margin: 0 0 10px;
+}
+
+.team-person-rows,
+.team-invite-rows,
+.team-agent-people,
+.team-agent-rows,
+.team-mine-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-person-rows {
+  margin-top: 10px;
+}
+
+.team-invite-rows:not(:empty) {
+  margin-top: 6px;
+}
+
+.team-person {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card);
+}
+
+.team-person .team-row-head {
+  flex: 1 1 260px;
+}
+
+.team-role {
+  flex: 0 0 auto;
+  padding: 0 7px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.team-role[data-role="owner"] {
+  border-color: color-mix(in srgb, var(--cophyla) 55%, var(--line-strong));
+  color: var(--cophyla-ink);
+}
+
+.team-invite-row .team-who {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.team-person-acts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.team-person-acts[hidden] {
+  display: none;
+}
+
+.team-person .team-end-ask {
+  flex: 1 1 100%;
+}
+
+.devices-view .team-person-btn {
+  padding: 2px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.devices-view .team-person-btn:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--muted);
+}
+
+.devices-view .team-person-remove:hover:not(:disabled) {
+  border-color: var(--rust-fill);
+  color: var(--rust);
+}
+
+.team-add-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.team-add-form[hidden] {
+  display: none;
+}
+
+.team-add-login {
+  max-width: 280px;
+}
+
+.team-invite-code {
+  margin-top: 10px;
+}
+
+.team-agent-person {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.team-agent-person + .team-agent-person {
+  margin-top: 8px;
+}
+
+.team-agent-who {
+  margin: 0;
+  font-weight: 600;
+}
+
+.team-agent {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+}
+
+.team-agent-name {
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.team-agent-doing {
+  flex: 1 1 160px;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.team-mine-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 40%, var(--line-strong));
+  border-radius: 8px;
+  background: var(--cophyla-wash);
+}
+
+.team-mine-picker[hidden] {
+  display: none;
+}
+
+.team-mine-rows {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.devices-view .team-mine {
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  background: var(--card);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.devices-view .team-mine:hover:not(:disabled) {
+  border-color: var(--cophyla);
+}
+
+.team-mine-picker .team-cancel-button {
+  align-self: flex-start;
+}
+
+.team-share-words {
+  margin: 6px 0 0;
+}
+
+.team-closed-rows:not(:empty) {
+  margin-top: 10px;
+}
+
+.team-rename {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.team-rename[hidden] {
+  display: none;
+}
+
+.team-footer .invite-buttons {
+  justify-content: flex-start;
+}
+
+.devices-view .team-leave:hover:not(:disabled),
+.devices-view .team-end-team:hover:not(:disabled) {
+  border-color: var(--rust-fill);
+  color: var(--rust);
+}
+
+/* Join: the invite pasted and Look; then the team, who is in it, and what to share. */
+.team-join-code {
+  width: 100%;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.team-join-people {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.team-join-person {
+  padding: 1px 9px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  font-size: 12px;
+}
+
+.team-new-join .team-start {
+  margin-top: 6px;
+}

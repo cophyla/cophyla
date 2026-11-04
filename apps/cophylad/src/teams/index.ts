@@ -61,6 +61,8 @@ const HEAD_MS = 10 * 60_000;
 const PAIR_RETRY_MS = 6 * 60 * 60_000;
 /** How often the teams are taken from the server again, whatever it said between. */
 const SYNC_MS = 10 * 60_000;
+/** How soon a note that came early is read again. */
+const NOTES_AGAIN_MS = 2_000;
 /** How often an append is tried again when the chain moved under it. */
 const APPEND_TRIES = 4;
 
@@ -124,6 +126,7 @@ export class Teams {
   private reconciling = new Map<string, Promise<void>>();
   /** When the teams last caught up with the server: never, while this node was not the primary. */
   private syncedAt = 0;
+  private notesAgain?: ReturnType<typeof setTimeout>;
   private again = new Set<string>();
 
   constructor(deps: TeamsDeps) {
@@ -140,6 +143,7 @@ export class Teams {
 
   stop(): void {
     if (this.timer) clearInterval(this.timer);
+    if (this.notesAgain) clearTimeout(this.notesAgain);
   }
 
   private routing(): void {
@@ -535,6 +539,8 @@ export class Teams {
     this.deps.bus.emit("teams.offer", { ...o.offer, gone: true });
     this.log.info("team joined", { team: row.id });
     await this.reconcile(row.id);
+    // the members' notes may have come while the join was on its way
+    await this.fetchNotes().catch(() => undefined);
     const done = this.rows.get(row.id)!;
     this.emit(done);
     return this.client(done)!;
@@ -960,7 +966,10 @@ export class Teams {
     if (this.syncing) return this.syncing;
     const run = (async () => {
       try {
-        if (!this.deps.routes() || !this.deps.cloud.linked() || this.deps.cloud.allowed()) return;
+        if (!this.deps.routes()) return;
+        // a node that took the primary role holds the chains its replica brought: folded before anything reads them
+        await this.load();
+        if (!this.deps.cloud.linked() || this.deps.cloud.allowed()) return;
         this.syncedAt = this.now();
         const r = (await this.deps.cloud.request("teams.mine", {})) as { teams?: { team: string; seq: number; gone?: boolean }[] };
         for (const t of r?.teams ?? []) {
@@ -973,11 +982,7 @@ export class Teams {
           }
           if ((this.rows.get(t.team)?.entries.length ?? 0) < t.seq) await this.pull(t.team);
         }
-        const notes = (await this.deps.cloud.request("teams.notes", {})) as { notes?: unknown[] };
-        await this.takeNotes((notes?.notes ?? []).flatMap((n) => {
-          const p = TeamNote.safeParse(n);
-          return p.success ? [p.data] : [];
-        }));
+        await this.fetchNotes();
         for (const row of this.rows.list()) await this.reconcile(row.id);
         await this.movePairs();
       } catch (e) {
@@ -991,6 +996,18 @@ export class Teams {
     } finally {
       if (this.syncing === run) this.syncing = undefined;
     }
+  }
+
+  /** The notes waiting on the server, read. */
+  private async fetchNotes(): Promise<void> {
+    if (!this.deps.cloud.linked()) return;
+    const notes = (await this.deps.cloud.request("teams.notes", {})) as { notes?: unknown[] };
+    await this.takeNotes(
+      (notes?.notes ?? []).flatMap((n) => {
+        const p = TeamNote.safeParse(n);
+        return p.success ? [p.data] : [];
+      }),
+    );
   }
 
   /** Notes other members left: what each says to dial, kept on their link; read ones are forgotten by the server. */
@@ -1017,7 +1034,9 @@ export class Teams {
         const key = await teamPairKey(kp.dhPriv, from.keys.dh, me, n.from);
         const body = (await openTeamNote(key, n.sealed)) as { relay?: ConnectionRelay };
         if (body?.relay && typeof body.relay.url === "string" && typeof body.relay.peer === "string" && typeof body.relay.token === "string") {
-          this.deps.teammates().teamReached(n.from, body.relay);
+          // the link it is about is made first: a note may come before this side made it
+          if (!this.deps.teammates().teamLink(n.from)) await this.reconcile(n.team);
+          if (!this.deps.teammates().teamReached(n.from, body.relay)) continue;
           reached.add(n.team);
         }
         done.push(n.id);
@@ -1027,6 +1046,14 @@ export class Teams {
       }
     }
     if (done.length > 0) await this.deps.cloud.request("teams.notes.ack", { ids: done }).catch(() => undefined);
+    // a note that came before this side took the change it rests on (its own join, say) waits on the server: read again shortly
+    if (done.length < notes.length && !this.notesAgain) {
+      this.notesAgain = setTimeout(() => {
+        this.notesAgain = undefined;
+        void this.fetchNotes().catch(() => undefined);
+      }, NOTES_AGAIN_MS);
+      if (typeof this.notesAgain === "object" && "unref" in this.notesAgain) this.notesAgain.unref();
+    }
     // a link that reaches its member now: the chat is handed over or asked for, heads compared
     for (const team of reached) void this.reconcile(team);
   }

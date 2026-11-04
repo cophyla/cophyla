@@ -6,7 +6,7 @@
 // or an app older than these refuses them (`unsupported`): the lists are then quietly empty,
 // and a request the user made says to update.
 
-import type { Focus, FolderPick, Group, GroupCandidate, GroupNotify, GroupPost, TeamAgent, TeamClosedAgent, Teammate, TeammatePlace, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { Focus, FolderPick, Group, GroupCandidate, GroupNotify, GroupPost, Team, TeamAgent, TeamClosedAgent, Teammate, TeammatePlace, TeammateShare, TeamOffer, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { broadShares, buildShare, candidateKey, closedPlaces, completeTag, connectElseFolded, enterSends, excludePlace, groupCreateParams, openPlace, readUpTo, samePlaceOrUnder, sessionFolder, tagCompletion, teamworkFailure } from "./model.ts";
 import type { Action, ViewState } from "./model.ts";
 import { fitField } from "./render.ts";
@@ -42,7 +42,7 @@ export class TeamControl {
   /** The user's own post just went: the group's posts scroll to their end once drawn. */
   private toEnd = false;
   /** Lists refused as kept by the primary: asked again once the node may be it. */
-  private refused = new Set<"groups" | "focus" | "teammates">();
+  private refused = new Set<"groups" | "focus" | "teammates" | "teams">();
 
   /** The composer's photos and files, and the posts'. */
   readonly media: MediaControl;
@@ -70,6 +70,7 @@ export class TeamControl {
     void this.loadGroups();
     void this.loadFocus();
     void this.loadTeammates();
+    void this.loadTeams();
   }
 
   /** The line went: what was told as read is told again, and the tags offered go. */
@@ -114,6 +115,17 @@ export class TeamControl {
     }
   }
 
+  async loadTeams(): Promise<void> {
+    if (!this.d.state.scopes.includes("controllers")) return;
+    try {
+      const r = await this.d.rpc.request<{ teams: Team[]; offers: TeamOffer[] }>("teams.list", {});
+      this.refused.delete("teams");
+      this.d.dispatch({ type: "teams", teams: r.teams, offers: r.offers });
+    } catch (e) {
+      this.quiet("teams", "teams", e);
+    }
+  }
+
   /** A notice for these parts, folded in; false for any other. */
   notification(method: string, params: unknown): boolean {
     switch (method) {
@@ -128,6 +140,18 @@ export class TeamControl {
         return true;
       case "focus.state":
         this.d.dispatch({ type: "focus.state", params: params as { session: string; focus?: Focus } });
+        return true;
+      case "teams.state": {
+        const team = params as Team & { gone?: boolean };
+        this.d.dispatch({ type: "teams.state", params: team });
+        // the page of a team the user is no longer in goes
+        if (team.gone && this.d.ui.team.teamPage?.team === team.id) this.d.ui.team.teamPage = undefined;
+        // the page shows: the people newly linked have their agents asked for
+        if (!team.gone && this.d.ui.team.teamPage?.team === team.id) this.loadTeamAgents(team, false);
+        return true;
+      }
+      case "teams.offer":
+        this.d.dispatch({ type: "teams.offer", params: params as TeamOffer & { gone?: boolean } });
         return true;
       case "teammate.state": {
         const t = params as Teammate;
@@ -152,7 +176,7 @@ export class TeamControl {
   }
 
   /** A list a node or an app too old for it refuses, or one whose part is off there: none, said nowhere. */
-  private quiet(part: "groups" | "focus" | "teammates", what: string, e: unknown): void {
+  private quiet(part: "groups" | "focus" | "teammates" | "teams", what: string, e: unknown): void {
     if (e instanceof ViewRpcError && (e.code === "unsupported" || e.code === "unavailable")) {
       if (e.code === "unavailable") this.refused.add(part);
       return;
@@ -165,6 +189,7 @@ export class TeamControl {
     if (this.refused.has("groups")) void this.loadGroups();
     if (this.refused.has("focus")) void this.loadFocus();
     if (this.refused.has("teammates")) void this.loadTeammates();
+    if (this.refused.has("teams")) void this.loadTeams();
   }
 
   /** A group this side no longer keeps: its tab, its draft and what was open on it go. */
@@ -312,10 +337,15 @@ export class TeamControl {
   }
 
   /** Share it…: the Teammates page, with that teammate's share open and the agent's folder added to it. */
-  private shareFolder(teammate: string, session: string): void {
+  private shareFolder(teammate: string, session: string, team?: string): void {
     const card = this.d.state.sessions.get(session);
     if (!card) return;
     const { place } = sessionFolder(this.d.state, card.session);
+    if (team) {
+      this.openTeamPage(team);
+      this.openShare("team", undefined, place, team);
+      return;
+    }
     this.openPage();
     this.openShare("edit", teammate, place);
   }
@@ -622,11 +652,254 @@ export class TeamControl {
     t.newGroup = undefined;
     t.share = undefined;
     t.ending = undefined;
+    t.newTeam = undefined;
+    t.teamPage = undefined;
+    t.join = undefined;
   }
 
-  /** Whether New group or Teammates lies over the panes. */
+  /** Whether New group, Teammates, New team, a team's page or Join lies over the panes. */
   overlayShown(): boolean {
-    return this.d.ui.team.page !== undefined || this.d.ui.team.newGroup !== undefined;
+    const t = this.d.ui.team;
+    return t.page !== undefined || t.newGroup !== undefined || t.newTeam !== undefined || t.teamPage !== undefined || t.join !== undefined;
+  }
+
+  // --- teams ---------------------------------------------------------------------------------------------
+
+  /** Opens one of the team columns over the panes, the others closed. */
+  private overTeams(): void {
+    const { ui, state } = this.d;
+    ui.railMenu = undefined;
+    ui.devices = undefined;
+    ui.contextOpen = false;
+    this.closeOverlay();
+    ui.team.teamErrorsAt = state.errorsSeen;
+    this.d.putRailAway();
+  }
+
+  openNewTeam(): void {
+    this.overTeams();
+    this.d.ui.team.newTeam = {};
+    this.openShare("create");
+    for (const input of Array.from(this.d.roots.team.querySelectorAll<HTMLInputElement>(".team-new input"))) input.value = "";
+    if (!this.d.phone()) this.d.roots.team.querySelector<HTMLInputElement>(".team-new-name")?.focus();
+    void this.loadWorkspaces();
+  }
+
+  openJoin(offer?: string): void {
+    this.overTeams();
+    this.d.ui.team.join = offer !== undefined ? { offer } : {};
+    if (offer !== undefined) this.openShare("join", undefined, undefined, undefined, offer);
+    else {
+      this.d.draw();
+      const box = this.d.roots.team.querySelector<HTMLTextAreaElement>(".team-join-code");
+      if (box) box.value = "";
+      if (!this.d.phone()) box?.focus();
+    }
+    void this.loadWorkspaces();
+  }
+
+  openTeamPage(team: string): void {
+    const t = this.d.state.teams.get(team);
+    if (!t) return;
+    this.overTeams();
+    this.d.ui.team.teamPage = { team, seen: new Map() };
+    this.d.draw();
+    this.d.roots.team.querySelector<HTMLElement>(".devices-body")?.focus({ preventScroll: true });
+    this.loadTeamAgents(t, true);
+    void this.loadWorkspaces();
+  }
+
+  /** The others' agents on a team's page: asked of each linked side, fresh when the page opens. */
+  private loadTeamAgents(team: Team, fresh: boolean): void {
+    const page = this.d.ui.team.teamPage;
+    if (!page || page.team !== team.id) return;
+    for (const m of team.members) {
+      if (m.you || !m.teammate || !m.linked) continue;
+      const kept = page.seen.get(m.teammate);
+      if (!fresh && kept?.at !== undefined && Date.now() - kept.at < AGENTS_AGAIN_MS) continue;
+      const teammate = m.teammate;
+      page.seen.set(teammate, { ...(kept ?? { agents: [], closed: [] }), loading: true });
+      void this.d.rpc
+        .request<{ agents: TeamAgent[]; closed: TeamClosedAgent[] }>("teammate.agents", { teammate, fresh })
+        .then((r) => page.seen.set(teammate, { at: Date.now(), agents: r.agents, closed: r.closed }))
+        .catch((e: unknown) => page.seen.set(teammate, { ...(page.seen.get(teammate) ?? { agents: [], closed: [] }), loading: false, error: this.words(e) }))
+        .finally(() => this.d.draw());
+    }
+    this.d.draw();
+  }
+
+  /** A request on a team's page: its buttons wait, and what fails is said in the page's note. */
+  private async onPage(what: string, run: () => Promise<void>): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (page?.busy) return;
+    if (page) page.busy = true;
+    this.d.draw();
+    try {
+      await run();
+    } catch (e) {
+      this.fail(what, e);
+    } finally {
+      if (page) page.busy = false;
+      this.d.draw();
+    }
+  }
+
+  private async lookCode(): Promise<void> {
+    const j = this.d.ui.team.join;
+    if (!j || j.busy) return;
+    const code = (this.d.roots.team.querySelector<HTMLTextAreaElement>(".team-join-code")?.value ?? "").trim();
+    if (!code) {
+      j.error = "Paste the invite they sent you.";
+      this.d.draw();
+      return;
+    }
+    j.busy = true;
+    j.error = undefined;
+    this.d.draw();
+    try {
+      const { offer } = await this.d.rpc.request<{ offer: TeamOffer }>("teams.look", { code });
+      this.d.dispatch({ type: "teams.offer", params: offer });
+      j.offer = offer.id;
+      j.busy = false;
+      this.openShare("join", undefined, undefined, undefined, offer.id);
+    } catch (e) {
+      j.error = this.words(e);
+    } finally {
+      j.busy = false;
+      this.d.draw();
+    }
+  }
+
+  private async declineOffer(offer: string): Promise<void> {
+    const j = this.d.ui.team.join;
+    if (j) j.busy = true;
+    this.d.draw();
+    try {
+      await this.d.rpc.request("teams.decline", { offer });
+      const o = this.d.state.teamOffers.get(offer);
+      if (o) this.d.dispatch({ type: "teams.offer", params: { ...o, gone: true } });
+      this.closeOverlay();
+    } catch (e) {
+      this.fail("the invite", e);
+    } finally {
+      if (j) j.busy = false;
+      this.d.draw();
+    }
+  }
+
+  private async addPerson(): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (!page?.adding || page.adding.busy) return;
+    const box = this.d.roots.team.querySelector<HTMLInputElement>(".team-add-login");
+    const user = (box?.value ?? "").trim().replace(/^@/, "");
+    if (!user) {
+      page.adding.error = "Type their GitHub name.";
+      this.d.draw();
+      box?.focus();
+      return;
+    }
+    page.adding.busy = true;
+    page.adding.error = undefined;
+    this.d.draw();
+    try {
+      const r = await this.d.rpc.request<{ team: Team; invite: { id: string; code: string; expiresAt: number }; offered?: boolean }>("teams.invite", { team: page.team, user });
+      this.d.dispatch({ type: "teams.state", params: r.team });
+      this.d.dispatch({ type: "team.code", code: { team: page.team, invite: r.invite.id, user, code: r.invite.code, expiresAt: r.invite.expiresAt, ...(r.offered ? { offered: true } : {}) } });
+      this.d.ui.team.copied = undefined;
+      page.adding = undefined;
+      if (box) box.value = "";
+    } catch (e) {
+      if (page.adding) page.adding.error = this.words(e);
+    } finally {
+      if (page.adding) page.adding.busy = false;
+      this.d.draw();
+    }
+  }
+
+  private async copyTeamCode(): Promise<void> {
+    const code = this.d.state.teamCode;
+    if (!code) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(code.code);
+      ok = true;
+    } catch {
+      const box = this.d.roots.team.querySelector<HTMLTextAreaElement>(".team-invite-code .invite-text");
+      if (box) {
+        box.focus();
+        box.select();
+        try {
+          ok = document.execCommand("copy");
+        } catch {
+          ok = false;
+        }
+      }
+    }
+    this.d.ui.team.copied = { id: code.invite, ok };
+    this.d.draw();
+  }
+
+  private async personAction(user: string, what: "remove" | "admin" | "member" | "owner"): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (!page) return;
+    page.asking = undefined;
+    await this.onPage("the team", async () => {
+      const r = what === "remove" ? await this.d.rpc.request<{ team: Team }>("teams.remove", { team: page.team, user }) : await this.d.rpc.request<{ team: Team }>("teams.role", { team: page.team, user, role: what });
+      this.d.dispatch({ type: "teams.state", params: r.team });
+    });
+  }
+
+  private async leaveTeam(how: "leave" | "end"): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (!page) return;
+    const team = page.team;
+    await this.onPage("the team", async () => {
+      await this.d.rpc.request(how === "leave" ? "teams.leave" : "teams.end", { team });
+      const t = this.d.state.teams.get(team);
+      if (t) this.d.dispatch({ type: "teams.state", params: { ...t, gone: true } });
+      page.leaving = undefined;
+      this.closeOverlay();
+    });
+  }
+
+  private async renameTeam(): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (!page) return;
+    const name = this.d.roots.team.querySelector<HTMLInputElement>(".team-rename-name")?.value.trim() ?? "";
+    const purpose = this.d.roots.team.querySelector<HTMLInputElement>(".team-rename-purpose")?.value.trim() ?? "";
+    if (!name) return;
+    await this.onPage("the team", async () => {
+      const r = await this.d.rpc.request<{ team: Team }>("teams.update", { team: page.team, name, purpose });
+      this.d.dispatch({ type: "teams.state", params: r.team });
+      page.renaming = undefined;
+    });
+  }
+
+  private async cancelInvite(invite: string): Promise<void> {
+    const page = this.d.ui.team.teamPage;
+    if (!page) return;
+    await this.onPage("the invite", async () => {
+      const r = await this.d.rpc.request<{ team: Team }>("teams.cancel", { team: page.team, invite });
+      this.d.dispatch({ type: "teams.state", params: r.team });
+      if (this.d.state.teamCode?.invite === invite) this.d.dispatch({ type: "team.code" });
+    });
+  }
+
+  /** A session opened to a team by hand, or closed to it again. */
+  private async openToTeam(team: string, session: string, on: boolean): Promise<void> {
+    const busy = `open:team:${team}\n${session}`;
+    if (this.d.ui.team.busy.has(busy)) return;
+    this.d.ui.team.busy.add(busy);
+    this.d.draw();
+    try {
+      const r = await this.d.rpc.request<{ team: Team }>("teams.open", { team, session, on });
+      this.d.dispatch({ type: "teams.state", params: r.team });
+    } catch (e) {
+      this.fail("the team", e);
+    } finally {
+      this.d.ui.team.busy.delete(busy);
+      this.d.draw();
+    }
   }
 
   private async loadWorkspaces(): Promise<void> {
@@ -666,18 +939,21 @@ export class TeamControl {
    * with one; `add`, a folder to share besides: ticked where folders are included, and the
    * folders that hold it unticked where they are excluded. The user saves it.
    */
-  private openShare(kind: ShareForm["kind"], teammate?: string, add?: TeammatePlace): void {
+  private openShare(kind: ShareForm["kind"], teammate?: string, add?: TeammatePlace, team?: string, offer?: string): void {
     const { state, ui } = this.d;
     const t = teammate !== undefined ? state.teammates.get(teammate) : undefined;
     if (kind === "edit" && !t) return;
+    const tm = team !== undefined ? state.teams.get(team) : undefined;
+    if (kind === "team" && !tm) return;
+    const base: TeammateShare | undefined = kind === "team" ? tm!.share : t?.share;
     const picked = new Map<string, TeammatePlace>();
-    for (const p of t?.share.folders ?? []) picked.set(folderKey(state, p), { node: p.node, path: p.path });
+    for (const p of base?.folders ?? []) picked.set(folderKey(state, p), { node: p.node, path: p.path });
     if (add) {
       const platform = state.nodes.get(add.node)?.platform;
-      if ((t?.share.mode ?? "include") === "include") picked.set(folderKey(state, add), { node: add.node, path: add.path });
+      if ((base?.mode ?? "include") === "include") picked.set(folderKey(state, add), { node: add.node, path: add.path });
       else for (const [k, p] of [...picked]) if (samePlaceOrUnder(add, p, platform)) picked.delete(k);
     }
-    ui.team.share = { kind, ...(teammate !== undefined ? { teammate } : {}), mode: t?.share.mode ?? "include", picked, open: t?.share.open ?? "always" };
+    ui.team.share = { kind, ...(teammate !== undefined ? { teammate } : {}), ...(team !== undefined ? { team } : {}), ...(offer !== undefined ? { offer } : {}), mode: base?.mode ?? "include", picked, open: base?.open ?? "always" };
     ui.team.ending = undefined;
     this.d.draw();
     const form = this.d.roots.team.querySelector<HTMLElement>(".team-share");
@@ -740,7 +1016,18 @@ export class TeamControl {
     const f = ui.team.share;
     if (!f || f.busy) return;
     const t = f.teammate !== undefined ? state.teammates.get(f.teammate) : undefined;
-    const share = buildShare(f.mode, [...f.picked.values()], f.open, t?.share);
+    const tm = f.team !== undefined ? state.teams.get(f.team) : undefined;
+    const share = buildShare(f.mode, [...f.picked.values()], f.open, f.kind === "team" ? tm?.share : t?.share);
+    let teamName = "";
+    if (f.kind === "create") {
+      teamName = this.d.roots.team.querySelector<HTMLInputElement>(".team-new-name")?.value.trim() ?? "";
+      if (!teamName) {
+        f.error = "Give the team a name.";
+        this.d.draw();
+        this.d.roots.team.querySelector<HTMLInputElement>(".team-new-name")?.focus();
+        return;
+      }
+    }
     if (share.mode === "include" && share.folders.length === 0) {
       f.error = "Tick the folders to share, or pick Exclude to share every workspace but some.";
       this.d.draw();
@@ -769,7 +1056,26 @@ export class TeamControl {
     ui.team.pageBusy = true;
     this.d.draw();
     try {
-      if (f.kind === "invite") {
+      if (f.kind === "create") {
+        const purpose = this.d.roots.team.querySelector<HTMLInputElement>(".team-new-purpose")?.value.trim() ?? "";
+        const r = await this.d.rpc.request<{ team: Team }>("teams.create", { name: teamName, ...(purpose ? { purpose } : {}), share });
+        this.d.dispatch({ type: "teams.state", params: r.team });
+        if (ui.team.share === f) ui.team.share = undefined;
+        this.openTeamPage(r.team.id);
+        if (ui.team.teamPage) ui.team.teamPage.adding = {};
+        return;
+      } else if (f.kind === "join") {
+        const r = await this.d.rpc.request<{ team: Team }>("teams.join", { offer: f.offer, share });
+        this.d.dispatch({ type: "teams.state", params: r.team });
+        const o = f.offer !== undefined ? state.teamOffers.get(f.offer) : undefined;
+        if (o) this.d.dispatch({ type: "teams.offer", params: { ...o, gone: true } });
+        if (ui.team.share === f) ui.team.share = undefined;
+        this.openTeamPage(r.team.id);
+        return;
+      } else if (f.kind === "team") {
+        const r = await this.d.rpc.request<{ team: Team }>("teams.share", { team: f.team, share });
+        this.d.dispatch({ type: "teams.state", params: r.team });
+      } else if (f.kind === "invite") {
         const r = await this.d.rpc.request<{ teammate: Teammate; invite: { code: string; expiresAt: number } }>("teammate.invite", { share });
         this.d.dispatch({ type: "teammate.state", params: r.teammate });
         this.d.dispatch({ type: "teammate.code", code: { id: r.teammate.id, code: r.invite.code, expiresAt: r.invite.expiresAt } });
@@ -839,6 +1145,25 @@ export class TeamControl {
   private async placeAction(key: string, how: "open" | "exclude"): Promise<void> {
     const { state, ui } = this.d;
     const row = closedPlaces(state).find((r) => r.key === key);
+    if (row?.team) {
+      const team = state.teams.get(row.team);
+      const busyKey = `place:${key}`;
+      if (!team || ui.team.busy.has(busyKey)) return;
+      const platform = state.nodes.get(row.place.node)?.platform;
+      const share = how === "open" ? openPlace(team.share, row.place, platform) : excludePlace(team.share, row.place, platform);
+      ui.team.busy.add(busyKey);
+      this.d.draw();
+      try {
+        const r = await this.d.rpc.request<{ team: Team }>("teams.share", { team: team.id, share });
+        this.d.dispatch({ type: "teams.state", params: r.team });
+      } catch (e) {
+        this.fail("the team", e);
+      } finally {
+        ui.team.busy.delete(busyKey);
+        this.d.draw();
+      }
+      return;
+    }
     const t = row ? state.teammates.get(row.teammate) : undefined;
     const busy = `place:${key}`;
     if (!row || !t || ui.team.busy.has(busy)) return;
@@ -960,6 +1285,8 @@ export class TeamControl {
         this.pick(Number(data["index"]));
         return true;
       case "group-fold":
+        // a rail heading names the group it folds: the view folds it
+        if (data["group"] !== undefined) return false;
         t.headOpen = !t.headOpen;
         this.d.draw();
         return true;
@@ -1014,7 +1341,111 @@ export class TeamControl {
         if (data["session"]) void this.endFocus(data["session"]);
         return true;
       case "teammate-open":
-        if (data["teammate"] && data["session"]) void this.openTo(data["teammate"], data["session"], data["on"] === "true");
+        if (data["team"] && data["session"]) void this.openToTeam(data["team"], data["session"], data["on"] === "true");
+        else if (data["teammate"] && data["session"]) void this.openTo(data["teammate"], data["session"], data["on"] === "true");
+        return true;
+      case "team-sharing":
+        if (data["team"]) this.openTeamPage(data["team"]);
+        else this.openPage();
+        return true;
+      case "team-new":
+        this.openNewTeam();
+        return true;
+      case "team-join":
+        this.openJoin();
+        return true;
+      case "team-join-look":
+        void this.lookCode();
+        return true;
+      case "team-join-decline":
+        if (data["offer"]) void this.declineOffer(data["offer"]);
+        return true;
+      case "team-offer-look":
+        if (data["offer"]) this.openJoin(data["offer"]);
+        return true;
+      case "team-page":
+        if (data["team"]) this.openTeamPage(data["team"]);
+        return true;
+      case "team-add":
+        if (t.teamPage) t.teamPage.adding = {};
+        this.d.draw();
+        if (!this.d.phone()) this.d.roots.team.querySelector<HTMLInputElement>(".team-add-login")?.focus();
+        return true;
+      case "team-add-go":
+        void this.addPerson();
+        return true;
+      case "team-add-cancel":
+        if (t.teamPage && !t.teamPage.adding?.busy) t.teamPage.adding = undefined;
+        this.d.draw();
+        return true;
+      case "team-invite-copy":
+        void this.copyTeamCode();
+        return true;
+      case "team-invite-done":
+        t.copied = undefined;
+        this.d.dispatch({ type: "team.code" });
+        return true;
+      case "team-invite-cancel":
+        if (data["invite"]) void this.cancelInvite(data["invite"]);
+        return true;
+      case "team-person-admin":
+      case "team-person-member":
+      case "team-person-owner":
+      case "team-person-remove":
+        if (t.teamPage && data["user"]) t.teamPage.asking = { user: data["user"], what: data["action"].slice("team-person-".length) as "admin" | "member" | "owner" | "remove" };
+        this.d.draw();
+        return true;
+      case "team-person-confirm":
+        if (t.teamPage?.asking) void this.personAction(t.teamPage.asking.user, t.teamPage.asking.what);
+        return true;
+      case "team-person-cancel":
+        if (t.teamPage) t.teamPage.asking = undefined;
+        this.d.draw();
+        return true;
+      case "team-share-edit":
+        if (t.teamPage) this.openShare("team", undefined, undefined, t.teamPage.team);
+        return true;
+      case "team-rename":
+        if (t.teamPage) t.teamPage.renaming = true;
+        this.d.draw();
+        this.d.roots.team.querySelector<HTMLInputElement>(".team-rename-name")?.focus();
+        return true;
+      case "team-rename-save":
+        void this.renameTeam();
+        return true;
+      case "team-rename-cancel":
+        if (t.teamPage) t.teamPage.renaming = undefined;
+        this.d.draw();
+        return true;
+      case "team-leave":
+      case "team-end-team":
+        if (t.teamPage) t.teamPage.leaving = data["action"] === "team-leave" ? "leave" : "end";
+        this.d.draw();
+        return true;
+      case "team-leave-confirm":
+        if (t.teamPage?.leaving) void this.leaveTeam(t.teamPage.leaving);
+        return true;
+      case "team-leave-cancel":
+        if (t.teamPage) t.teamPage.leaving = undefined;
+        this.d.draw();
+        return true;
+      case "team-agent-connect":
+        if (t.teamPage && data["teammate"] && data["agent"]) t.teamPage.connecting = { teammate: data["teammate"], agent: data["agent"], name: data["name"] ?? "their agent" };
+        this.d.draw();
+        return true;
+      case "team-agent-connect-cancel":
+        if (t.teamPage) t.teamPage.connecting = undefined;
+        this.d.draw();
+        return true;
+      case "team-agent-connect-go":
+        if (data["teammate"] && data["session"] && data["agent"]) {
+          const page = t.teamPage;
+          void this.connectAgents(data["teammate"], data["session"], data["agent"]).then(() => {
+            if (page) page.connecting = undefined;
+            const team = page ? this.d.state.teams.get(page.team) : undefined;
+            if (team) this.loadTeamAgents(team, true);
+          });
+        }
         return true;
       case "session-connect-show": {
         // the head's pill: the session's Connect panel, open
@@ -1031,7 +1462,7 @@ export class TeamControl {
         return true;
       }
       case "team-share-folder":
-        if (data["teammate"] && data["session"]) this.shareFolder(data["teammate"], data["session"]);
+        if (data["teammate"] && data["session"]) this.shareFolder(data["teammate"], data["session"], data["team"] || undefined);
         return true;
       case "tc-connect-agent":
       case "tc-connect":
@@ -1238,10 +1669,16 @@ export class TeamControl {
       return draw();
     }
     if (this.overlayShown()) {
+      const page = t.teamPage;
       if (t.share?.broad) t.share.broad = undefined;
       else if (t.share?.browse) t.share.browse = undefined;
       else if (t.ending !== undefined) t.ending = undefined;
-      else if (t.share && !t.share.busy) t.share = undefined;
+      else if (page?.asking) page.asking = undefined;
+      else if (page?.leaving) page.leaving = undefined;
+      else if (page?.connecting) page.connecting = undefined;
+      else if (page?.adding && !page.adding.busy) page.adding = undefined;
+      else if (page?.renaming) page.renaming = undefined;
+      else if (t.share && !t.share.busy && t.share.kind !== "create" && t.share.kind !== "join") t.share = undefined;
       else this.closeOverlay();
       return draw();
     }
