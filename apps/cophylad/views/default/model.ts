@@ -37,9 +37,11 @@ import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEnt
 /**
  * Why this view's last utterance came to less than was said: a press that came to nothing
  * (`unheard`), until the next utterance or `VOICE_NOTE_MS`; or one the node stopped hearing
- * while the user still spoke (`stopped`, at the `limit` it had), until this view's next one.
+ * while the user still spoke (`stopped`, at the `limit` it had), until this view's next one. Or
+ * where a dictation's words went when that was out of sight (`went`: the chat, a session or a
+ * group it began in, and whether they were sent), for as long as a press that came to nothing.
  */
-export type VoiceNote = { unheard: VoiceUnheard; at: number } | { stopped: VoiceStopped; limit?: number; at: number };
+export type VoiceNote = { unheard: VoiceUnheard; at: number } | { stopped: VoiceStopped; limit?: number; at: number } | { went: string; sent: boolean; at: number };
 
 /** How long the voice row says why a press came to nothing. */
 export const VOICE_NOTE_MS = 8000;
@@ -362,6 +364,7 @@ export type Action =
   | { type: "voice.partial"; params: VoicePartial }
   /** The note a press left has had its time. */
   | { type: "voice.note.expired"; at: number }
+  | { type: "voice.went"; to: string; sent: boolean }
   | { type: "host.mic"; params: { error?: string } }
   | { type: "voice.setup"; params: VoiceSetup }
   | { type: "voice.next"; params: VoiceNext }
@@ -951,7 +954,7 @@ export function apply(state: ViewState, action: Action): ViewState {
       const note = state.voiceNote;
       if (voice === "idle" && unheard !== undefined) state.voiceNote = { unheard, at: Date.now() };
       else if (voice === "transcribing" && stopped !== undefined) state.voiceNote = { stopped, ...(before?.limit !== undefined ? { limit: before.limit } : {}), at: Date.now() };
-      else if (voice === "listening" || (voice !== "idle" && note !== undefined && "unheard" in note)) delete state.voiceNote;
+      else if (voice === "listening" || (voice !== "idle" && note !== undefined && !("stopped" in note))) delete state.voiceNote;
       // A new utterance is heard afresh; one taken back or come to nothing leaves no words.
       if (voice === "listening" || voice === "idle") delete state.heard;
       return state;
@@ -972,7 +975,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       return state;
     }
     case "voice.note.expired":
-      if (state.voiceNote && "unheard" in state.voiceNote && state.voiceNote.at <= action.at) delete state.voiceNote;
+      if (state.voiceNote && !("stopped" in state.voiceNote) && state.voiceNote.at <= action.at) delete state.voiceNote;
+      return state;
+    case "voice.went":
+      // A cut the node made says more: it stays.
+      if (!(state.voiceNote && "stopped" in state.voiceNote)) state.voiceNote = { went: action.to, sent: action.sent, at: Date.now() };
       return state;
     case "host.mic":
       if (action.params.error !== undefined) state.hostMic = action.params.error;
@@ -3848,9 +3855,18 @@ export function voiceWords(state: ViewState, now = Date.now()): string {
     if (note && "stopped" in note) words.push(stoppedWords(note.stopped, note.limit));
     return words.filter((w) => w !== undefined).join(" · ");
   }
-  if (note) return "stopped" in note ? stoppedWords(note.stopped, note.limit) : unheardWords(note.unheard, micOff(state));
+  if (note) return "stopped" in note ? stoppedWords(note.stopped, note.limit) : "went" in note ? wentWords(note) : unheardWords(note.unheard, micOff(state));
   const off = micOff(state);
   return off !== undefined ? `The microphone is off: ${off}` : "";
+}
+
+/**
+ * Where a dictation's words went, said when the user had moved on from where it began: sent
+ * there by Stop and send (on their way: a send that fails says so in its own line), or typed
+ * into that box for them to send.
+ */
+export function wentWords(note: { went: string; sent: boolean }): string {
+  return note.sent ? `Sending what you said to ${note.went}` : `What you said went to ${note.went}, for you to send there`;
 }
 
 /** The voice row's dot: the voice state, an engine set up, or trouble when a press or the microphone went wrong, or a stop cut what was said. */
@@ -3858,7 +3874,7 @@ export function voiceDot(state: ViewState): string {
   if (state.setup) return "setup";
   if (state.voice) return state.voice.state;
   const note = state.voiceNote;
-  if (note) return "stopped" in note || note.unheard === "no-audio" || note.unheard === "silence" ? "trouble" : "idle";
+  if (note) return "stopped" in note || ("unheard" in note && (note.unheard === "no-audio" || note.unheard === "silence")) ? "trouble" : "idle";
   return micOff(state) !== undefined ? "trouble" : "idle";
 }
 

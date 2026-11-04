@@ -3130,6 +3130,23 @@ button:disabled {
   display: none;
 }
 
+/* A press begun in another session's, group's or the chat's field: where the words go, before
+   the buttons. */
+.talk-dest {
+  align-self: center;
+  min-width: 0;
+  max-width: 16em;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.85em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.talk-dest[hidden] {
+  display: none;
+}
+
 .talk-control {
   display: inline-flex;
   align-items: center;
@@ -3201,6 +3218,10 @@ button:disabled {
 
   .talk-control-label {
     display: none;
+  }
+
+  .talk-dest {
+    max-width: 8em;
   }
 }
 

@@ -85,6 +85,8 @@ import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
 import { chatScaleFrom } from "./model.ts";
+import { sessionLabel } from "./model.ts";
+import { fieldOwner } from "./render.ts";
 import { grown, spliceAt, spliced, tapped, terminalWords } from "./dictation.ts";
 import type { Splice } from "./dictation.ts";
 import { TeamControl } from "./teamctl.ts";
@@ -2050,14 +2052,15 @@ async function loadEarlier(session: string): Promise<void> {
  * The talk button, pressed and let go: `voice.ptt` on the host's own connection, dictating. The
  * host streams its microphone while the node listens to it, and what was said comes back as
  * words typed into the field beside the button pressed, for the user to send. Tapped rather
- * than held, it listens on until Stop, Stop and send or Cancel (`release`).
+ * than held, it listens on until Stop, Stop and send or Cancel (`release`). The words go to the
+ * session, group or chat whose field it was, wherever the user is by then (`Home`).
  */
 function talk(held: boolean, button?: HTMLButtonElement): void {
   if ((ui.talking === true) === held) return;
   ui.talking = held;
   if (held) {
     const field = button?.closest("form")?.querySelector<HTMLTextAreaElement>("textarea");
-    pressField = field ?? undefined;
+    pressHome = field ? homeOf(field) : undefined;
     pressAt = Date.now();
   } else ui.talkLatched = undefined;
   draw();
@@ -2077,16 +2080,17 @@ let pressAt = 0;
  */
 function release(): void {
   if (!ui.talking || ui.talkLatched !== undefined) return;
-  const kind = pressField ? (["composer-text", "send-text", "group-text"].find((c) => pressField!.classList.contains(c)) ?? undefined) : undefined;
-  if (!tapped(Date.now() - pressAt) || kind === undefined) {
+  const home = pressHome;
+  const latches = home !== undefined && ["composer-text", "send-text", "group-text"].some((c) => home.field.classList.contains(c));
+  if (!tapped(Date.now() - pressAt) || !latches) {
     talk(false);
     return;
   }
   // The key that tapped it leaves the focus on a button that goes: Stop takes it.
   const focused = (document.activeElement as Element | null)?.classList.contains("talk") === true;
-  ui.talkLatched = kind;
+  ui.talkLatched = { owner: home.owner, to: homeName(home) };
   draw();
-  if (focused) pressField?.closest("form")?.querySelector<HTMLButtonElement>(".talk-stop")?.focus();
+  if (focused) home.field.closest("form")?.querySelector<HTMLButtonElement>(".talk-stop")?.focus();
 }
 
 /** Stop and send: the listening ends, and once its words are typed in, the field's form is sent. */
@@ -2097,36 +2101,74 @@ function stopAndSend(): void {
 
 // --- dictation -------------------------------------------------------------------------------------
 
-/** A dictation under way: its words so far, and the field they are typed into (the terminal takes only the whole). */
+/**
+ * Where a dictation's words go: the field it began in and whose that field was then (`owner`).
+ * The shared send form and the group composer swap to another session's or group's draft with
+ * their tab, so a session's (`session`) or a group's (`group`) words go on into its draft while
+ * the field shows another's, and Stop and send sends them there.
+ */
+interface Home {
+  field: HTMLTextAreaElement | HTMLInputElement;
+  owner: string;
+  session?: string;
+  group?: string;
+}
+
+/** A dictation under way: its words so far, and where they are typed (the terminal takes only the whole). */
 interface Dictation {
   words: string;
-  field?: HTMLTextAreaElement | HTMLInputElement;
+  home?: Home;
   splice?: Splice;
-  /** Whose the field is: the shared send form swaps to another session's draft with its tab. */
-  owner?: string;
   terminal?: true;
 }
 
-/** The field whose talk button is held: what is said is typed there. */
-let pressField: HTMLTextAreaElement | undefined;
+/** Where the talk button pressed began: what is said goes there. */
+let pressHome: Home | undefined;
 let dictating: Dictation | undefined;
-/** Stop and send was pressed: the dictation's words, once typed in, are sent with the field's form. */
+/** Stop and send was pressed: the dictation's words, once typed in, are sent where it began. */
 let sendNext = false;
 
-const fieldOwner = (field: HTMLTextAreaElement | HTMLInputElement): string => field.form?.dataset["session"] ?? field.form?.dataset["group"] ?? field.className;
+function homeOf(field: HTMLTextAreaElement | HTMLInputElement): Home {
+  const session = field.classList.contains("send-text") ? field.form?.dataset["session"] : undefined;
+  const group = field.classList.contains("group-text") ? field.form?.dataset["group"] : undefined;
+  return { field, owner: fieldOwner(field), ...(session !== undefined ? { session } : {}), ...(group !== undefined ? { group } : {}) };
+}
+
+/** The field shows the draft the dictation began in (not another session's or group's). */
+const holds = (home: Home): boolean => fieldOwner(home.field) === home.owner;
+
+/** What is written where the dictation began: its field's, or the draft it shows no more. */
+function homeText(home: Home): string {
+  if (holds(home)) return home.field.value;
+  if (home.session !== undefined) return state.sessions.get(home.session)?.draft ?? "";
+  if (home.group !== undefined) return ui.team.drafts.get(home.group) ?? "";
+  return home.field.value;
+}
+
+/** Where the dictation began, as the user knows it: the chat, a session by its tab's name, a group by its name. */
+function homeName(home: Home): string {
+  if (home.session !== undefined) {
+    const card = state.sessions.get(home.session);
+    return card ? `“${sessionLabel(card.session)}”` : "its session";
+  }
+  if (home.group !== undefined) {
+    const group = state.groups.get(home.group);
+    return group ? `“${group.name}”` : "its group";
+  }
+  return home.field.classList.contains("composer-text") ? "the chat" : "the field you began in";
+}
 
 const typable = (field: Element | null): field is HTMLTextAreaElement | HTMLInputElement =>
   (field instanceof HTMLTextAreaElement || (field instanceof HTMLInputElement && field.type === "text")) && !field.disabled && !field.readOnly && field.offsetParent !== null;
 
 /**
- * Where a dictation's words go: the field of the talk button held; else, from a phone's bar,
- * the field the user was writing in, the terminal on show when it is typed into, a group's post,
- * or the chat's or the session's field. A session's Messages pane, or its terminal when it is
- * read only, gives way to its timeline and field; with nothing else, the chat's field, its tab
- * opened.
+ * Where a dictation that no talk button began (a phone's bar) puts its words, fixed as its first
+ * words come: the field the user was writing in, the terminal on show when it is typed into, a
+ * group's post, or the chat's or the session's field. A session's Messages pane, or its terminal
+ * when it is read only, gives way to its timeline and field; with nothing else, the chat's field,
+ * its tab opened.
  */
 function dictationPlace(): HTMLTextAreaElement | HTMLInputElement | "terminal" | undefined {
-  if (pressField?.isConnected && !pressField.disabled) return pressField;
   if (typable(document.activeElement)) return document.activeElement;
   if (terminal.shown !== undefined && terminal.droppable) return "terminal";
   if (ui.group !== undefined) {
@@ -2147,26 +2189,50 @@ function dictationPlace(): HTMLTextAreaElement | HTMLInputElement | "terminal" |
   return composerInput() ?? undefined;
 }
 
+/** A dictation's start: where the talk button pressed began (the user may have moved on since), else where its words fit now. */
 function startDictation(): Dictation {
+  if (pressHome?.field.isConnected) return dictationAt(pressHome);
   const place = dictationPlace();
   if (place === "terminal") return { words: "", terminal: true };
   if (!place) return { words: "" };
-  // at the caret when the field has the focus; at the end of what is there when it has not
-  const focused = document.activeElement === place;
-  const start = focused ? (place.selectionStart ?? place.value.length) : place.value.length;
-  const end = focused ? (place.selectionEnd ?? start) : start;
-  return { words: "", field: place, splice: spliceAt(place.value, start, end), owner: fieldOwner(place) };
+  return dictationAt(homeOf(place));
 }
 
-/** Puts `words` where the dictation types them, as if typed: the drafts keep them and the field grows to them. */
+function dictationAt(home: Home): Dictation {
+  const text = homeText(home);
+  // at the caret when the field has the focus; at the end of what is there when it has not
+  const focused = holds(home) && document.activeElement === home.field;
+  const start = focused ? (home.field.selectionStart ?? text.length) : text.length;
+  const end = focused ? (home.field.selectionEnd ?? start) : start;
+  return { words: "", home, splice: spliceAt(text, start, end) };
+}
+
+/**
+ * Puts `words` where the dictation types them, as if typed: the drafts keep them and the field
+ * grows to them. A field that shows another session's or group's draft now is left alone, and
+ * the words go into the draft of the one it began in, there when the user goes back.
+ */
 function showDictated(d: Dictation, words: string): void {
-  const field = d.field;
-  if (!field || !d.splice || fieldOwner(field) !== d.owner) return;
+  const home = d.home;
+  if (!home || !d.splice) return;
   const { value, caret } = spliced(d.splice, words);
+  if (!holds(home)) {
+    if (home.session !== undefined) apply(state, { type: "draft", session: home.session, text: value });
+    else if (home.group !== undefined) ui.team.drafts.set(home.group, value);
+    return;
+  }
+  const field = home.field;
   if (field.value === value) return;
   field.value = value;
   field.setSelectionRange(caret, caret);
   field.dispatchEvent(new Event("input", { bubbles: true }));
+}
+
+/** Stop and send: what is written where the dictation began is sent there, as its Send would send it, whatever shows now. */
+function sendHome(home: Home): void {
+  if (holds(home)) home.field.form?.requestSubmit();
+  else if (home.session !== undefined) void send(home.session, homeText(home));
+  else if (home.group !== undefined) void team.postText(home.group, homeText(home));
 }
 
 /** The words heard so far of this view's dictation: shown at the caret as they grow. */
@@ -2180,37 +2246,37 @@ function dictationHeard(p: VoicePartial): void {
 /** A dictation's words, whole: typed in, and the field left for the user to read over and send. */
 function dictationDone(p: { client: string; text: string }): void {
   if (p.client !== state.client?.id) return;
-  let d = dictating ?? startDictation();
+  const d = dictating ?? startDictation();
   dictating = undefined;
-  pressField = undefined;
-  const send = sendNext;
+  pressHome = undefined;
+  const said = p.text.trim() !== "";
+  const sending = sendNext && said;
   sendNext = false;
-  // the field went to another session's draft meanwhile: the words go where the user is now, unsent
-  const moved = d.field !== undefined && d.owner !== fieldOwner(d.field);
-  if (moved) d = startDictation();
   if (d.terminal) {
     terminal.paste(terminalWords(p.text));
     return;
   }
-  if (!d.field) {
+  const home = d.home;
+  if (!home) {
     fail("dictation", new Error("there is nothing here to type what was said into"));
     return;
   }
+  // The words go where the dictation began, though the user has moved to another session, group or the chat since.
   showDictated(d, p.text);
-  // Stop and send: the field's form goes with what was typed and said, as its Send would send it.
-  if (send && !moved && p.text.trim() !== "") {
-    d.field.form?.requestSubmit();
-    return;
-  }
+  const shown = holds(home) && home.field.offsetParent !== null;
+  // Stop and send: what was typed and said there is sent there, as its Send would send it.
+  if (sending) sendHome(home);
   // on a computer the user can read it over and press Enter; a phone's keyboard would cover the page
-  if (!phone.matches) d.field.focus();
+  else if (shown && !phone.matches) home.field.focus();
+  // out of sight, the voice row says where they went
+  if (!shown && said) dispatch({ type: "voice.went", to: homeName(home), sent: sending });
 }
 
 /** This view's utterance ended with no words (taken back, nothing heard), or the link went: the field as it was. */
 function dictationGone(): void {
   const d = dictating;
   dictating = undefined;
-  pressField = undefined;
+  pressHome = undefined;
   sendNext = false;
   if (d) showDictated(d, "");
 }
@@ -4701,11 +4767,12 @@ document.addEventListener("keyup", (ev) => {
 window.addEventListener("blur", () => {
   if (ui.talking && ui.talkLatched === undefined) talk(false);
 });
-// While a tapped press listens, Enter in its field is Stop and send (before a group's composer takes the key).
+// While a tapped press listens, Enter in the field it began in is Stop and send (before a group's composer takes the key).
 document.addEventListener(
   "keydown",
   (ev) => {
-    if (ui.talkLatched === undefined || !ui.talking || ev.target !== pressField || !enterSends(ev)) return;
+    // only in the field it began in, showing that draft still: in another session's, Enter sends that one's words
+    if (ui.talkLatched === undefined || !ui.talking || !pressHome || ev.target !== pressHome.field || !holds(pressHome) || !enterSends(ev)) return;
     ev.preventDefault();
     ev.stopImmediatePropagation();
     stopAndSend();

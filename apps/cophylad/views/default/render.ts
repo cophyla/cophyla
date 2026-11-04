@@ -227,10 +227,11 @@ export interface UiState {
   /** The talk button is pressed: Cophyla listens until it is let go, or, tapped, until Stop, Stop and send or Cancel. */
   talking?: boolean;
   /**
-   * The talk button was tapped, not held: it listens on, and by the field of this class (`composer-text`,
-   * `send-text`, `group-text`) Cancel, Stop and Stop and send take the talk and send buttons' place.
+   * The talk button was tapped, not held: it listens on, and by every message field Cancel, Stop
+   * and Stop and send take the talk and send buttons' place. What is said goes where the press
+   * began (`owner`, as `fieldOwner` says it), and a field that is another's says so (`to`).
    */
-  talkLatched?: string;
+  talkLatched?: { owner: string; to: string };
   /** A grant request on its way: the forms' buttons wait for its answer. */
   grantBusy?: boolean;
   /** A machine being removed from its card: asked in place, then on its way. */
@@ -4593,15 +4594,51 @@ export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiStat
   const row = talk.parentElement;
   if (!row) return;
   const field = row.querySelector("textarea");
-  const latched = ui.talking === true && ui.talkLatched !== undefined && field?.classList.contains(ui.talkLatched) === true;
-  setData(row, "talking", latched ? "latched" : "");
+  const latch = ui.talking === true && field !== null ? ui.talkLatched : undefined;
+  setData(row, "talking", latch !== undefined ? "latched" : "");
   let controls = row.querySelector<HTMLElement>(":scope > .talk-controls");
   if (!controls) {
     controls = createTalkControls();
     talk.after(controls);
   }
-  setHidden(controls, !latched);
+  setHidden(controls, latch === undefined);
   for (const b of Array.from(controls.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = !state.connected;
+  // Begun by another session's, group's or the chat's field: the words go there, and the buttons say so.
+  const away = latch !== undefined && field !== null && fieldOwner(field) !== latch.owner ? latch.to : undefined;
+  const to = controls.querySelector<HTMLElement>(".talk-dest")!;
+  setText(to, away !== undefined ? `To ${away}` : "");
+  setHidden(to, away === undefined);
+  for (const [kind, words] of Object.entries(talkControlWords(away))) {
+    const b = controls.querySelector<HTMLButtonElement>(`.talk-${kind}`)!;
+    if (b.title !== words) {
+      b.title = words;
+      b.setAttribute("aria-label", words);
+    }
+  }
+}
+
+/**
+ * Whose a message field is now: the session's or the group's whose draft the shared send form or
+ * group composer shows (each swaps to another's with its tab), else the field's own kind.
+ */
+export function fieldOwner(field: HTMLTextAreaElement | HTMLInputElement): string {
+  return field.form?.dataset["session"] ?? field.form?.dataset["group"] ?? field.classList.item(0) ?? "";
+}
+
+/** What Cancel, Stop and Stop and send do: here, or (`away`) in the field the press began in. */
+function talkControlWords(away: string | undefined): Record<"cancel" | "stop" | "send", string> {
+  if (away === undefined) {
+    return {
+      cancel: "Cancel: what was said is dropped, the field as it was",
+      stop: "Stop: what you said is typed here, for you to read over and send",
+      send: "Stop and send: what you said is typed here and sent",
+    };
+  }
+  return {
+    cancel: `Cancel: what was said is dropped, and nothing goes to ${away}`,
+    stop: `Stop: what you said goes to ${away}, where you began, for you to send there`,
+    send: `Stop and send: what you said is sent to ${away}, where you began`,
+  };
 }
 
 /**
@@ -4620,11 +4657,11 @@ function createTalkControls(): HTMLElement {
     b.append(kind === "stop" ? el("span", "talk-live") : controlIcon(kind), el("span", "talk-control-label", label));
     return b;
   };
-  box.append(
-    button("cancel", "Cancel", "Cancel: what was said is dropped, the field as it was"),
-    button("stop", "Stop", "Stop: what you said is typed here, for you to read over and send"),
-    button("send", "Stop & send", "Stop and send: what you said is typed here and sent"),
-  );
+  const words = talkControlWords(undefined);
+  // where the words go, when that is not this field (`renderTalk`)
+  const to = el("span", "talk-dest");
+  to.hidden = true;
+  box.append(to, button("cancel", "Cancel", words.cancel), button("stop", "Stop", words.stop), button("send", "Stop & send", words.send));
   return box;
 }
 

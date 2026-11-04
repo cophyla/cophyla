@@ -339,11 +339,20 @@ export class TeamControl {
   }
 
   private async post(form: HTMLFormElement): Promise<void> {
-    const { ui } = this.d;
     const group = form.dataset["group"];
     const input = form.querySelector<HTMLTextAreaElement>(".group-text");
-    if (!group || !input || input.disabled || ui.team.posting !== undefined) return;
-    const text = input.value;
+    if (!group || !input || input.disabled) return;
+    await this.postText(group, input.value);
+  }
+
+  /**
+   * Posts `text` to `group` as its composer's Send does, with what is attached to it and the post
+   * it replies to, whether or not the composer shows that group now: a dictation begun in it and
+   * sent from another's (Stop and send) goes where it began.
+   */
+  async postText(group: string, text: string): Promise<void> {
+    const { ui } = this.d;
+    if (ui.team.posting !== undefined) return;
     const attached = this.media.forPost(group);
     if ("wait" in attached) {
       ui.team.postError = { group, text: attached.wait };
@@ -367,7 +376,9 @@ export class TeamControl {
       });
       this.media.posted(group);
       this.d.dispatch({ type: "group.posted", params: { group, post } });
-      if (input.value === text) {
+      // the composer as the user left it when it shows another group's draft now
+      const input = this.d.roots.groups.querySelector<HTMLTextAreaElement>(`.group-composer[data-group="${CSS.escape(group)}"] .group-text`);
+      if (input && input.value === text) {
         input.value = "";
         fitField(input);
       }

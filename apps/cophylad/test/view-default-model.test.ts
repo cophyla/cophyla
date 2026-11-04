@@ -23,6 +23,7 @@ import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
 import { agentEndWords, agentKind, agentsAtWork, agentsGroupWords, agentWindow, compactTokens, contextWords, workingAgents } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
+import { wentWords } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
 import { atDoorWords, desktopWords, DOOR_REOPEN_MS, doorErrorWords, doorReopenStep, doorWords, selectDoor } from "../views/default/model.ts";
@@ -1683,6 +1684,35 @@ describe("default view: voice and the phones", () => {
     apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id, stopped: "quota" } });
     apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
     expect(voiceWords(state)).toBe("Stopped: this month's transcription allowance is used up — what came after wasn't recorded");
+  });
+
+  test("a dictation's words that went where it began, out of sight, say where for a while; a stop's note says more and stays", () => {
+    const state = paired();
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id } });
+    apply(state, { type: "voice.went", to: "\u201cFix the tests\u201d", sent: true });
+    // the utterance's idle after its words leaves the note
+    apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
+    expect(voiceWords(state)).toBe("Sending what you said to \u201cFix the tests\u201d");
+    expect(voiceDot(state)).toBe("idle");
+    apply(state, { type: "voice.note.expired", at: state.voiceNote!.at - 1 });
+    expect(state.voiceNote).toBeDefined();
+    apply(state, { type: "voice.note.expired", at: state.voiceNote!.at });
+    expect(state.voiceNote).toBeUndefined();
+    // typed in, not sent; the next utterance takes it away
+    apply(state, { type: "voice.went", to: "the chat", sent: false });
+    expect(voiceWords(state)).toBe("What you said went to the chat, for you to send there");
+    apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id } });
+    expect(state.voiceNote).toBeUndefined();
+    // the node cut the utterance at its limit: that is what the row goes on saying
+    apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id, stopped: "limit" } });
+    apply(state, { type: "voice.went", to: "the chat", sent: true });
+    expect(state.voiceNote).toMatchObject({ stopped: "limit" });
+  });
+
+  test("where a dictation's words went, sent or typed in", () => {
+    expect(wentWords({ went: "\u201cdesign\u201d", sent: true })).toBe("Sending what you said to \u201cdesign\u201d");
+    expect(wentWords({ went: "\u201cdesign\u201d", sent: false })).toBe("What you said went to \u201cdesign\u201d, for you to send there");
   });
 
   test("a stop's words give the limit it came at", () => {
