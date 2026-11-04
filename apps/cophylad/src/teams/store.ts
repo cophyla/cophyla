@@ -34,6 +34,12 @@ export interface TeamRow {
   pair?: string;
   /** When each member's side was last asked where the chain stands, by account. */
   heads?: Record<string, number>;
+  /**
+   * Each person gone from the team whose going this side has acted on, by account: when they
+   * went, as the chain says. A going ends the link once; a link the two make later, with a code
+   * or through another team, stands.
+   */
+  parted?: Record<string, number>;
 }
 
 /** An invite the user may take or turn down: the offer as the apps see it, and the code behind it. */

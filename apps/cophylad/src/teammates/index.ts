@@ -198,7 +198,12 @@ function originOf(url: string): string {
   }
 }
 
+/** A teammate's teams as one string, to tell whether they changed. */
+const teamsKey = (teams: string[] | undefined): string => [...(teams ?? [])].sort().join(",");
+
 export class Teammates {
+  /** The teams each teammate was last shown to the apps with, by teammate. */
+  private teamsShown = new Map<string, string>();
   private deps: TeammatesDeps;
   private log: Logger;
   private rows: TeammateStore;
@@ -260,7 +265,20 @@ export class Teammates {
   /** A row as the apps see it, with the teams both are in. */
   private client(row: TeammateRow): Teammate {
     const teams = row.peer ? this.deps.teamShares?.(row.peer.subject)?.map((t) => t.team) : undefined;
+    this.teamsShown.set(row.id, teamsKey(teams));
     return clientTeammate(row, teams);
+  }
+
+  /**
+   * A teammate's teams changed (a pair made with a code now in a team together, or one of their
+   * teams gone while another holds the two): the apps are told, as nothing else about the row
+   * changed. Told only when they differ from what the apps were last shown.
+   */
+  teamsChanged(subject: string): void {
+    const row = this.rows.bySubject(subject);
+    if (!row?.peer || row.state !== "active") return;
+    if (this.teamsShown.get(row.id) === teamsKey(this.deps.teamShares?.(row.peer.subject)?.map((t) => t.team))) return;
+    this.emit(row);
   }
 
   /** The active teammates, for the group chats' picker. */

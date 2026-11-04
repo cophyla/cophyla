@@ -750,6 +750,7 @@ export class Teams {
       this.rows.delete(id);
       this.states.delete(id);
       for (const m of state.members.values()) if (!this.sharesWith(m.subject)) tm.teamUnlinked(m.subject, why, false);
+      else tm.teamsChanged(m.subject);
       this.emitGone(id, name);
       this.log.info("out of a team", { team: id, how: gone?.how });
       return;
@@ -760,14 +761,20 @@ export class Teams {
       this.rows.delete(id);
       this.states.delete(id);
       for (const m of state.members.values()) if (m.subject !== me && !this.sharesWith(m.subject)) tm.teamUnlinked(m.subject, `${name} ended`, true);
+      else if (m.subject !== me) tm.teamsChanged(m.subject);
       this.emitGone(id, name);
       return;
     }
-    // whoever went: no link left unless another team holds the two, and out of this team's groups
+    // whoever went: out of this team's groups, and no link left unless another team holds the two.
+    // A going is acted on once: a link the two make after it, with a code, is theirs to keep.
     for (const g of state.gone.values()) {
       if (g.subject === me) continue;
       groups?.teamPersonGone(id, g.subject);
+      if (row.parted?.[g.subject] === g.at) continue;
       if (!this.sharesWith(g.subject) && tm.teamLink(g.subject)) tm.teamUnlinked(g.subject, g.how === "removed" ? `${g.login} was taken out of ${state.name}` : `${g.login} left ${state.name}`, true);
+      else tm.teamsChanged(g.subject);
+      row.parted = { ...(row.parted ?? {}), [g.subject]: g.at };
+      this.rows.put(row);
     }
     const kp = await this.keys().catch(() => undefined);
     const mine = state.members.get(me)!;
@@ -788,6 +795,8 @@ export class Teams {
         this.log.info("a team's link could not be made now", { team: id, error: message(e) });
         return undefined;
       });
+      // a pair made with a code, in this team with them now: the apps hear it
+      tm.teamsChanged(m.subject);
       if (!r?.note || row.told?.[m.subject] === r.note.peer || !this.deps.cloud.linked()) continue;
       try {
         const sealed = await sealTeamNote(key, { relay: r.note });

@@ -189,6 +189,16 @@ describe("teams between three people", () => {
     await until("line 180", async () => !(await groupsOf(alice)).find((g) => g.id === made.chat)!.members.some((m) => m.kind === "person" && m.user === "carol"), 10_000);
     // Alice and Bob are still linked
     expect((await teamsOf(alice))[0]!.members.map((m) => m.user).sort()).toEqual(["alice", "bob"]);
+
+    // Carol and Alice become teammates again with a code: the team's going ended the old link, never this one
+    const again = await carol.ui.request<{ teammate: Teammate; invite: { code: string } }>("teammate.invite", { share: homeShare(carol) });
+    const back = await alice.ui.request<{ teammate: Teammate }>("teammate.accept", { code: again.invite.code, share: homeShare(alice) });
+    expect(back.teammate.state).toBe("active");
+    await alice.d.teams.reconcile(made.id);
+    await bob.d.teams.reconcile(made.id);
+    await alice.d.teams.syncAll();
+    expect((await teammatesOf(alice)).find((x) => x.id === back.teammate.id)?.state).toBe("active");
+    expect((await teammatesOf(carol)).some((x) => x.user === "alice" && x.state === "active")).toBe(true);
   }, 120_000);
 
   test("a teammate pair made with a code becomes a team of two, keeping what each shares and their group", async () => {
@@ -218,6 +228,8 @@ describe("teams between three people", () => {
     expect(team.share).toMatchObject({ mode: "include", open: "always" });
     expect((await teamsOf(dave))[0]!.share.folders[0]!.path).toBe(dave.d.home);
     await until("line 210", async () => (await teammatesOf(dave))[0]?.teams?.includes(team.id) === true, 10_000);
+    // both apps are told, so the pair leaves the Teams page's Teammates
+    for (const side of [alice, dave]) await side.ui.next((n) => n.method === "teammate.state" && ((n.params as Teammate).teams ?? []).includes(team.id), 10_000);
     expect((await teammatesOf(alice)).map((x) => x.id)).toEqual([made.teammate.id]);
     // the pair's group goes under the team
     await until("line 213", async () => (await groupsOf(alice)).find((x) => x.id === g.id)?.team === team.id, 10_000);
