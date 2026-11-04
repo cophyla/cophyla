@@ -68,10 +68,16 @@ export interface TeammateRow {
   connections?: TeammateConnectionRow[];
   /** What the far side has yet to be told about a connection. */
   tells?: TeammateTell[];
+  /**
+   * Made by a team, with no code: keyed from both people's team keys, and this side's relay peer
+   * (`inbound`) told the far side in a note, with the token below, which the far side dials.
+   */
+  teamMade?: boolean;
+  inboundRelay?: ConnectionRelay;
 }
 
 /** The row a client sees: no key, no token, no secret, no queued text. */
-export function clientTeammate(row: TeammateRow): Teammate {
+export function clientTeammate(row: TeammateRow, teams?: string[]): Teammate {
   return {
     id: row.id,
     state: row.state,
@@ -87,6 +93,7 @@ export function clientTeammate(row: TeammateRow): Teammate {
     received: row.received,
     ...(row.outbox.length > 0 ? { queued: row.outbox.length } : {}),
     ...(row.connections && row.connections.length > 0 ? { connections: row.connections.map(clientConnection) } : {}),
+    ...(teams && teams.length > 0 ? { teams } : {}),
   };
 }
 

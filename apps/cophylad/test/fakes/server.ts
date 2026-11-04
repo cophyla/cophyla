@@ -22,8 +22,8 @@
 
 import { generateKeyPairSync, sign } from "node:crypto";
 import type { KeyObject } from "node:crypto";
-import { BackupKind, FREE_ENTITLEMENT, failure, protocolError } from "@cophyla/protocol";
-import type { Entitlement, LlmComplete, LlmResult, Node, Release, RpcId } from "@cophyla/protocol";
+import { applyTeamEntry, BackupKind, FREE_ENTITLEMENT, failure, inviteOpen, protocolError, TeamEntry } from "@cophyla/protocol";
+import type { Entitlement, LlmComplete, LlmResult, Node, Release, RpcId, TeamNote, TeamState } from "@cophyla/protocol";
 import type { ServerWebSocket } from "bun";
 import type { EntitlementKey } from "../../src/cloud/keys.ts";
 import { lastUserText } from "./gemini.ts";
@@ -751,6 +751,106 @@ export class FakeServer {
     throw fail("unsupported", `unsupported: ${method}`);
   }
 
+  // --- teams, as Server 0.11.0 keeps them: each change checked, the chain handed to its members ---
+
+  /** Answers as a server before 0.11.0 does: no `teams.*`. */
+  noTeams = false;
+  readonly teams = new Map<string, { entries: TeamEntry[]; state: TeamState; people: Map<string, { in: boolean; until?: number }> }>();
+  private teamNotes = new Map<string, TeamNote>();
+  /** Every team frame pushed: to whom, and what. */
+  readonly teamFrames: { to: string; method: string; params: unknown }[] = [];
+
+  private pushTo(subject: string, method: string, params: unknown): void {
+    this.teamFrames.push({ to: subject, method, params });
+    for (const s of this.sockets) if (s.data.kind === "link" && s.data.subject === subject) this.write(s, { jsonrpc: "2.0", method, params });
+  }
+
+  private async teamsServe(ws: ServerWebSocket<LinkData>, method: string, p: Record<string, unknown>, fail: (code: Parameters<typeof protocolError>[0], message: string, data?: unknown) => Error): Promise<unknown> {
+    const me = ws.data.subject ?? this.subject;
+    const login = this.logins.get(me) ?? "octocat";
+    const claims = (token: string, aud: string) => {
+      const c = JSON.parse(Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8")) as { sub: string; login: string; aud: string };
+      if (c.aud !== aud) throw new Error("made for another exchange");
+      return { subject: c.sub, login: c.login };
+    };
+    switch (method) {
+      case "teams.append": {
+        if (this.plan !== "pro") throw fail("denied", "the plan has no relay");
+        const parsed = TeamEntry.safeParse(p["entry"]);
+        if (!parsed.success) throw fail("invalid", "not a team change");
+        const e = parsed.data;
+        if (e.by !== me) throw fail("denied", "a change is made by its own account alone");
+        const t = this.teams.get(e.team);
+        if (e.seq === 1 && t) throw fail("conflict", "that team exists already", { seq: t.state.seq });
+        if (e.seq !== 1 && !t) throw fail("not_found", "no such team");
+        if (t && e.seq !== t.state.seq + 1) throw fail("conflict", `the team's chain is at ${t.state.seq}`, { seq: t.state.seq });
+        if (t && e.change.kind !== "join" && !t.state.members.has(me)) throw fail("denied", "you are not in that team");
+        let next: TeamState;
+        try {
+          next = await applyTeamEntry(t?.state, e, (token, aud) => {
+            const c = claims(token, aud);
+            if (c.subject !== me) throw new Error("the word of another account");
+            return c;
+          });
+        } catch (err) {
+          throw fail("invalid", `the change is refused: ${err instanceof Error ? err.message : String(err)}`);
+        }
+        const row = t ?? { entries: [] as TeamEntry[], state: next, people: new Map<string, { in: boolean; until?: number }>() };
+        row.entries.push(e);
+        row.state = next;
+        const c = e.change;
+        if (c.kind === "create" || c.kind === "join") row.people.set(me, { in: true });
+        if (c.kind === "remove") row.people.set(c.subject, { in: false, until: e.seq });
+        if (c.kind === "leave") row.people.set(me, { in: false, until: e.seq });
+        this.teams.set(e.team, row);
+        const told = new Set(next.members.keys());
+        if (c.kind === "remove") told.add(c.subject);
+        if (c.kind === "leave") told.add(me);
+        for (const who of told) this.pushTo(who, "teams.changed", { team: e.team, seq: e.seq });
+        return { seq: next.seq, head: next.head };
+      }
+      case "teams.log": {
+        const t = this.teams.get(String(p["team"] ?? ""));
+        if (!t) throw fail("not_found", "no such team");
+        const after = typeof p["after"] === "number" ? p["after"] : 0;
+        const person = t.people.get(me);
+        let upTo = Number.MAX_SAFE_INTEGER;
+        if (person && !person.in) upTo = person.until ?? 0;
+        else if (!person?.in) {
+          const inv = typeof p["invite"] === "string" ? t.state.invites.get(p["invite"]) : undefined;
+          if (!inv || !inviteOpen(inv, this.now()) || inv.login.toLowerCase() !== login.toLowerCase()) throw fail("denied", "you are not in that team, and hold no open invite to it");
+        }
+        return { entries: t.entries.filter((x) => x.seq > after && x.seq <= upTo) };
+      }
+      case "teams.mine":
+        return {
+          teams: [...this.teams.entries()].flatMap(([team, t]) => {
+            const person = t.people.get(me);
+            if (!person) return [];
+            return person.in ? [{ team, seq: t.state.seq }] : [{ team, seq: person.until ?? t.state.seq, gone: true }];
+          }),
+        };
+      case "teams.note": {
+        const to = String(p["to"] ?? "");
+        const team = String(p["team"] ?? "");
+        const t = this.teams.get(team);
+        if (!t?.people.get(me)?.in || !t.people.get(to)?.in) throw fail("denied", "both must be in the team");
+        const n: TeamNote = { id: `tnote_${Math.random().toString(36).slice(2)}`, from: me, team, sealed: String(p["sealed"] ?? ""), at: this.now() };
+        this.teamNotes.set(`${to}|${me}`, n);
+        this.pushTo(to, "teams.note", n);
+        return {};
+      }
+      case "teams.notes":
+        return { notes: [...this.teamNotes.entries()].filter(([k]) => k.startsWith(`${me}|`)).map(([, n]) => n) };
+      case "teams.notes.ack": {
+        const ids = new Set(Array.isArray(p["ids"]) ? (p["ids"] as string[]) : []);
+        for (const [k, n] of [...this.teamNotes]) if (k.startsWith(`${me}|`) && ids.has(n.id)) this.teamNotes.delete(k);
+        return {};
+      }
+    }
+    throw fail("unsupported", `unsupported: ${method}`);
+  }
+
   private async serve(ws: ServerWebSocket<LinkData>, id: RpcId, method: string, params: unknown): Promise<unknown> {
     const p = (params ?? {}) as Record<string, unknown>;
     const fail = (code: Parameters<typeof protocolError>[0], message: string, data?: unknown) => Object.assign(new Error(message), { error: protocolError(code, message, data) });
@@ -778,7 +878,7 @@ export class FakeServer {
         for (const [k, cap] of Object.entries(caps)) metrics[k] = { used: this.used[k] ?? 0, cap };
         if (this.plan === "pro") metrics["relayed_nodes"] = { used: this.relayedNodes, cap: PRO.limits.nodes };
         if (this.plan === "pro") metrics["backup_bytes"] = { used: this.backupBytes, cap: this.backupBytesCap };
-        return { token: this.entitlement(), usage: { period: new Date().toISOString().slice(0, 7), metrics } };
+        return { token: this.entitlement(ws.data.subject ? { subject: ws.data.subject } : {}), usage: { period: new Date().toISOString().slice(0, 7), metrics } };
       }
       case "relay.grant": {
         if (this.grantDelayMs > 0) await new Promise((r) => setTimeout(r, this.grantDelayMs));
@@ -808,6 +908,14 @@ export class FakeServer {
         const now = this.now();
         return { token: signJwt({ typ: "cophyla-identity", sub: subject, login: this.logins.get(subject) ?? "octocat", aud, iat: now, exp: now + 600_000 }, this.signer, this.kid) };
       }
+      case "teams.append":
+      case "teams.log":
+      case "teams.mine":
+      case "teams.note":
+      case "teams.notes":
+      case "teams.notes.ack":
+        if (this.noTeams) throw fail("unsupported", `unsupported: ${method}`);
+        return this.teamsServe(ws, method, p, fail);
       case "relay.revoke": {
         const peer = String(p["peer"] ?? "");
         const row = this.relayTokens.get(peer);

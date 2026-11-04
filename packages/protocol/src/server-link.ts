@@ -11,8 +11,9 @@
 import { z } from "zod";
 import { LlmComplete, LlmResult, capabilityNotices, capabilityRequests } from "./capability.ts";
 import { DirectReport, GrantRole, IceServer, Node, PushPlatform, Usage, VoiceStopped } from "./entities.ts";
-import { ClusterId, ConnectionId, ControllerId, GrantRef, NodeId, Timestamp } from "./ids.ts";
+import { ClusterId, ConnectionId, ControllerId, GrantRef, NodeId, TeamId, TeamInviteId, Timestamp } from "./ids.ts";
 import { RpcId } from "./rpc.ts";
+import { TeamEntry } from "./teamlog.ts";
 
 const Empty = z.object({});
 
@@ -86,6 +87,10 @@ export const PushMention = z.object({
 export type PushMention = z.infer<typeof PushMention>;
 
 /** Requests the daemon sends to the server. */
+/** A note one member left another, as the server hands it over: from whom, about which team, sealed. */
+export const TeamNote = z.object({ id: z.string().min(1).max(64), from: z.string().min(1).max(120), team: TeamId, sealed: z.string().min(1).max(8000), at: Timestamp });
+export type TeamNote = z.infer<typeof TeamNote>;
+
 export const serverLinkRequests = {
   auth: {
     params: z.object({ token: z.string(), node: NodeId }),
@@ -175,6 +180,46 @@ export const serverLinkRequests = {
    * `aud` and good for ten minutes. The far end verifies it against the keys it ships with.
    */
   "identity.attest": { params: z.object({ aud: z.string().min(1).max(300) }), result: z.object({ token: z.string() }) },
+  /**
+   * One more change to a team's chain (`teamlog.ts`), at the place it names: `create` makes the
+   * team, with this account its owner; a `join` comes from the account an open invite is for;
+   * any other from one of its members. The server checks the chain as every member does, but
+   * for the server's own word in a join, which it knows; refused, `conflict` names the chain's
+   * place now, for the change to be made again after it. Server 0.11.0.
+   */
+  "teams.append": {
+    params: z.object({ entry: TeamEntry }),
+    result: z.object({ seq: z.number().int().positive(), head: z.string() }),
+  },
+  /**
+   * A team's changes after `after`, a page at a time: for a member; for the account an open
+   * invite of it is for, named by `invite`; and for one taken out or gone, up to their going.
+   */
+  "teams.log": {
+    params: z.object({ team: TeamId, after: z.number().int().nonnegative().optional(), invite: TeamInviteId.optional() }),
+    result: z.object({ entries: z.array(TeamEntry).max(500), more: z.boolean().optional() }),
+  },
+  /** The teams this account is in, or was in and has not read its going from: each with where its chain is now. */
+  "teams.mine": {
+    params: Empty,
+    result: z.object({ teams: z.array(z.object({ team: TeamId, seq: z.number().int().positive(), gone: z.boolean().optional() })).max(500) }),
+  },
+  /**
+   * A note for another member of a team this account is in, sealed with the key the two share,
+   * which the server keeps until it is read: how to reach this side, for that side to link.
+   * One per pair: a newer note replaces the one before.
+   */
+  "teams.note": {
+    params: z.object({ to: z.string().min(1).max(120), team: TeamId, sealed: z.string().min(1).max(8000) }),
+    result: Empty,
+  },
+  /** The notes waiting for this account, oldest first. */
+  "teams.notes": {
+    params: Empty,
+    result: z.object({ notes: z.array(TeamNote).max(500) }),
+  },
+  /** Notes read: the server forgets them. */
+  "teams.notes.ack": { params: z.object({ ids: z.array(z.string().min(1).max(64)).min(1).max(500) }), result: Empty },
   /** The account's backup, if it has one: its header and what it holds. */
   "backup.status": {
     params: Empty,
@@ -293,6 +338,10 @@ export const serverLinkFrames = {
   /** Down: who holds the primary role now, and the account's cluster; also when the holder took it again after its lease ran out. */
   "registry.primary": z.object({ primary: NodeId, epoch: z.number().int().nonnegative().optional(), cluster: ClusterId.optional() }),
   "entitlement.updated": z.object({ token: z.string() }),
+  /** Down: a team this account is in, or was just taken out of, has a change past `seq - 1`. */
+  "teams.changed": z.object({ team: TeamId, seq: z.number().int().positive() }),
+  /** Down: a note from another member waits (`teams.notes`). */
+  "teams.note": TeamNote,
   /** A chunk of a hosted `llm.complete` in flight: the capability protocol's own notice. */
   "llm.delta": capabilityNotices["llm.delta"],
   /** A chunk of a hosted `tts.speak` in flight: int16 samples at 24 kHz, mono, base64. */

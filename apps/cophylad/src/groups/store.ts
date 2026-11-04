@@ -72,6 +72,9 @@ export interface GroupRow {
    */
   sides: Record<string, { teammate: string; user: string; taken: number; since?: number }>;
   lastAt?: number;
+  /** The team it belongs to, and whether it is that team's own chat, whose people are the team's. */
+  team?: string;
+  teamChat?: boolean;
 }
 
 /**

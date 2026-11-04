@@ -59,6 +59,9 @@ import {
   Task,
   Teammate,
   TeammateShare,
+  Team,
+  TeamOffer,
+  TeamMemberRole,
   Terminal,
   TerminalRef,
   Thread,
@@ -73,7 +76,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { DialogKey, DialogView } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
@@ -1377,6 +1380,48 @@ export const clientRequests = {
   /** Ends a teammate at both sides: their agents leave every group and nothing reaches either side any more. */
   "teammate.end": { params: z.object({ id: TeammateId }), result: Empty },
   /**
+   * This user's teams, and the invites waiting for them to take or turn down. Needs this account
+   * signed in, with the relay; the teams are kept by the primary.
+   */
+  "teams.list": { params: Empty, result: z.object({ teams: z.array(Team), offers: z.array(TeamOffer) }) },
+  /** A new team, with this user its owner and alone in it, sharing `share` with it, and its chat. */
+  "teams.create": {
+    params: z.object({ name: z.string().min(1).max(80), purpose: z.string().max(300).optional(), share: TeammateShare }),
+    result: z.object({ team: Team }),
+  },
+  /**
+   * An invite for the GitHub account `user`: the owner or an admin. The code is shown once, to
+   * be sent to them any way the user likes; it holds the secret their join must pass, which the
+   * server never sees, and is good for seven days or one use. When they are this user's
+   * teammate already, their Cophyla is handed it too (`offered`), and they take it from there.
+   */
+  "teams.invite": {
+    params: z.object({ team: TeamId, user: z.string().min(1).max(64) }),
+    result: z.object({ team: Team, invite: z.object({ id: TeamInviteId, code: z.string(), expiresAt: Timestamp }), offered: z.boolean().optional() }),
+  },
+  /** Cancels an open invite: the owner or an admin. */
+  "teams.cancel": { params: z.object({ team: TeamId, invite: TeamInviteId }), result: z.object({ team: Team }) },
+  /** What an invite's code leads to, its team's chain fetched and checked: kept as an offer to take or turn down. */
+  "teams.look": { params: z.object({ code: z.string().min(1).max(4096) }), result: z.object({ offer: TeamOffer }) },
+  /** Joins the team an offer is for, sharing `share` with it. */
+  "teams.join": { params: z.object({ offer: TeamInviteId, share: TeammateShare }), result: z.object({ team: Team }) },
+  /** Turns an offer down: it is forgotten here. */
+  "teams.decline": { params: z.object({ offer: TeamInviteId }), result: Empty },
+  /** Changes what this user shares with a team. */
+  "teams.share": { params: z.object({ team: TeamId, share: TeammateShare }), result: z.object({ team: Team }) },
+  /** Opens one agent to a team by hand, or closes it again. */
+  "teams.open": { params: z.object({ team: TeamId, session: SessionId, on: z.boolean() }), result: z.object({ team: Team }) },
+  /** Renames a team or changes what it is for: the owner or an admin. */
+  "teams.update": { params: z.object({ team: TeamId, name: z.string().min(1).max(80).optional(), purpose: z.string().max(300).optional() }), result: z.object({ team: Team }) },
+  /** Takes someone out of a team: the owner anyone, an admin a member. */
+  "teams.remove": { params: z.object({ team: TeamId, user: z.string().min(1).max(64) }), result: z.object({ team: Team }) },
+  /** Makes a member an admin or an admin a member (`role`), or hands the team to them (`owner`): the owner. */
+  "teams.role": { params: z.object({ team: TeamId, user: z.string().min(1).max(64), role: TeamMemberRole }), result: z.object({ team: Team }) },
+  /** Leaves a team: anyone but its owner. */
+  "teams.leave": { params: z.object({ team: TeamId }), result: Empty },
+  /** Ends a team for everyone in it: its owner. */
+  "teams.end": { params: z.object({ team: TeamId }), result: Empty },
+  /**
    * Sends a file or a folder from one of the user's machines (`from.path`, absolute there) to
    * a folder on another (`to.dir`, absolute there; its Downloads folder without it), or to
    * another folder on the same one. The receiving machine keeps the transfer and pulls it,
@@ -1703,6 +1748,10 @@ export const clientNotifications = {
   "lead.state": z.object({ leaders: z.array(Leader) }),
   /** A teammate's row when it is made, used, changes or ends (`state: ended`, the last word about it). */
   "teammate.state": Teammate,
+  /** A team's row when it is made, changes, or this side's user is no longer in it (`gone`, the last word about it). */
+  "teams.state": Team.extend({ gone: z.boolean().optional() }),
+  /** An invite waiting for this side's user, or one taken, turned down or run out (`gone`). */
+  "teams.offer": TeamOffer.extend({ gone: z.boolean().optional() }),
   /** A transfer's row, when it starts, ends or changes state, and about once a second while its bytes come. */
   "transfer.state": Transfer,
   "update.state": z.object({

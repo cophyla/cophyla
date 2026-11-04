@@ -20,6 +20,8 @@ import {
   SessionId,
   TaskId,
   TeammateConnectionId,
+  TeamId,
+  TeamInviteId,
   TeammateId,
   ThreadId,
   Timestamp,
@@ -735,6 +737,8 @@ export const Teammate = z.object({
   /** This side's agents joined to one of theirs, asked for, or declined lately. */
   connections: z.array(TeammateConnection).max(500).optional(),
   reason: z.string().optional(),
+  /** The teams both are in, which make what each shares with the other: none for one made with a code alone. */
+  teams: z.array(TeamId).max(200).optional(),
 });
 export type Teammate = z.infer<typeof Teammate>;
 
@@ -766,6 +770,75 @@ export const TeammateSender = z.object({
   harness: HarnessKind.optional(),
 });
 export type TeammateSender = z.infer<typeof TeammateSender>;
+
+// ---------------------------------------------------------------------------------------
+// Teams
+
+/** Someone's place in a team: the owner, an admin (adds and takes out people), or a member. */
+export const TeamMemberRole = z.enum(["owner", "admin", "member"]);
+export type TeamMemberRole = z.infer<typeof TeamMemberRole>;
+
+/**
+ * A person in a team as this side shows them: their login, their role, when they joined and
+ * who invited them; `you` for this side's user. `teammate` is the link this side holds with
+ * them, which every member holds with every other; `linked` while it reaches their Cophyla.
+ * `theirs`: what they share with this team, as their side said (their workspaces by name).
+ */
+export const TeamMember = z.object({
+  user: z.string().min(1).max(64),
+  role: TeamMemberRole,
+  joinedAt: Timestamp,
+  invitedBy: z.string().max(64).optional(),
+  you: z.boolean().optional(),
+  teammate: TeammateId.optional(),
+  linked: z.boolean().optional(),
+  theirs: TeammateTheirs.optional(),
+});
+export type TeamMember = z.infer<typeof TeamMember>;
+
+/** An invite into a team still open: for whom, who made it, and until when. */
+export const TeamInvite = z.object({ id: TeamInviteId, user: z.string().min(1).max(64), by: z.string().max(64), at: Timestamp, expiresAt: Timestamp });
+export type TeamInvite = z.infer<typeof TeamInvite>;
+
+/**
+ * A team: people who work together, each a teammate of every other, with a chat everyone in
+ * it is in (`chat`). `role` is this side's user's; `share` what this side shares with the team.
+ * Its member list is a chain of changes each signed by whoever made it, which this side checks
+ * whole; `warning` says when it could not, or when another member's copy disagrees.
+ */
+export const Team = z.object({
+  id: TeamId,
+  name: z.string().min(1).max(80),
+  purpose: z.string().max(300).optional(),
+  chat: GroupId,
+  role: TeamMemberRole,
+  members: z.array(TeamMember).max(50),
+  invites: z.array(TeamInvite).max(200),
+  share: TeammateShare,
+  ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
+  warning: z.string().max(300).optional(),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type Team = z.infer<typeof Team>;
+
+/**
+ * An invite waiting for this side's user to take or turn down: one a teammate's Cophyla handed
+ * over (`via: teammate`), or one pasted and looked at (`via: code`). `people` are who is in the
+ * team, as its checked chain says.
+ */
+export const TeamOffer = z.object({
+  id: TeamInviteId,
+  team: TeamId,
+  name: z.string().min(1).max(80),
+  purpose: z.string().max(300).optional(),
+  by: z.string().max(64),
+  people: z.array(z.object({ user: z.string().min(1).max(64), role: TeamMemberRole })).max(50),
+  via: z.enum(["teammate", "code"]),
+  at: Timestamp,
+  expiresAt: Timestamp,
+});
+export type TeamOffer = z.infer<typeof TeamOffer>;
 
 // ---------------------------------------------------------------------------------------
 // Group chats
@@ -834,6 +907,9 @@ export const Group = z.object({
   lastAt: Timestamp.optional(),
   ended: z.object({ at: Timestamp, by: z.string().max(64) }).optional(),
   createdAt: Timestamp,
+  /** The team it belongs to, which the rail puts it under; `teamChat` for the chat everyone in the team is in. */
+  team: TeamId.optional(),
+  teamChat: z.boolean().optional(),
 });
 export type Group = z.infer<typeof Group>;
 
@@ -2222,6 +2298,10 @@ export const entities = {
   LeaderSpeaker,
   Leader,
   Teammate,
+  Team,
+  TeamMember,
+  TeamInvite,
+  TeamOffer,
   TeammateConnection,
   TeammateShare,
   TeammatePlace,

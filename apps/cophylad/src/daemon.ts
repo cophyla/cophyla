@@ -120,6 +120,8 @@ import { Reports } from "./leaders/reports.ts";
 import { SelfLogin } from "./teammates/login.ts";
 import { Teammates } from "./teammates/index.ts";
 import { teammateMethods } from "./teammates/methods.ts";
+import { Teams } from "./teams/index.ts";
+import { teamMethods } from "./teams/methods.ts";
 import { Transfers } from "./transfers/index.ts";
 import { transferMethods } from "./transfers/methods.ts";
 import { openSource } from "./transfers/source.ts";
@@ -332,6 +334,7 @@ export interface Daemon {
   reports: Reports;
   /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
   teammates: Teammates;
+  teams: Teams;
   views: Views;
   chat: Chat;
   activity: Activity;
@@ -449,6 +452,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   let connections: Connections | undefined;
   /** The teammates, built with the groups; the relay reaches them through the cloud as it does connections. */
   let teammates: Teammates | undefined;
+  let teamsLive: Teams | undefined;
   let brain: BrainLink | undefined;
   let remote: Remote | undefined;
   /** The machine's sign-in door (Windows), built beside the remote module. */
@@ -1628,6 +1632,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     push: (m) => push.mention(m.group.id, m.group.name, m.from, m.text),
     media: groupMedia,
     selfId: () => identity.id,
+    teamOf: (team, group) => teamsLive?.teamOf(team, group),
     photoFrom: (n, path) => nodesLive.photo(n, path),
     peek: async (n, path) => {
       const page = await nodesLive.tree(n, path);
@@ -1680,11 +1685,52 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     linked: (n) => n === identity.id || forwardHost.linked(n),
     asks,
     self: () => ({ id: identity.id }),
+    teamShares: (subject) => teamsLive?.sharesWith(subject),
+    offered: async (from, code, carry) => {
+      if (!teamsLive) throw new RpcError("unavailable", "teams are not running here");
+      await teamsLive.offered(from, code, carry);
+    },
+    head: async (from, h) => {
+      if (!teamsLive) throw new RpcError("unavailable", "teams are not running here");
+      return teamsLive.head(from, h);
+    },
   });
   teammates = teammatesLive;
   groupsLive.teammateList = () => teammatesLive.active();
   teammatesLive.start();
   const offTeammatesUp = cloud.onUp(() => teammatesLive.linkUp());
+  // Teams: people who work together, each a teammate of every other, with a chat everyone is in;
+  // the member list a chain of signed changes the server keeps and this side checks. Kept by the primary.
+  teamsLive = new Teams({
+    store,
+    bus,
+    log: log.child("teams"),
+    routes: routesHere,
+    cloud: {
+      allowed: () => cloud.hostedAllowed("relay"),
+      subject: () => cloud.account,
+      serverUrl: () => config.cloud.url,
+      linked: () => cloud.linked,
+      request: (method, params) => cloud.teamsRequest(method, params),
+      attest: (aud) => cloud.attest(aud),
+      verifyBinding: (token, aud) => cloud.verifyIdentityBinding(token, aud),
+    },
+    me: () => ({ owner: selfLogin.identity() ?? cloud.account ?? "me", user: selfLogin.login() ?? "you" }),
+    teammates: () => teammatesLive,
+    groups: () => groupsLive,
+    sessions: knownSessions,
+    place: (s) => {
+      const w = s.workspace ? workspaces.getAny(s.workspace) : undefined;
+      return w ? { workspace: w.name, path: w.path } : { path: s.cwd };
+    },
+    places: () => workspaces.list().map((w) => ({ node: w.node, path: w.path, name: w.name })),
+    platformOf,
+  });
+  const teamsRun = teamsLive;
+  await teamsRun.load();
+  teamsRun.start();
+  const offTeamsUp = cloud.onUp(() => teamsRun.linkUp());
+  const offTeamsFrames = cloud.onTeams((method, params) => teamsRun.onFrame(method, params));
   // Connections to other users' terminals, kept by the primary: the agents in two terminals of
   // two users message each other through the relay, and reach nothing else.
   const connectionsLive = new Connections({
@@ -1895,6 +1941,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...leaderMethods({ leaders: () => (routesHere() ? leadersLive : undefined) }),
     ...talkMethods({ talk: () => talkHere() }),
     ...teammateMethods({ teammates: () => (routesHere() ? teammatesLive : undefined) }),
+    ...teamMethods({ teams: () => (routesHere() ? teamsRun : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
   }, forwardHost);
@@ -2222,6 +2269,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     leaders: leadersLive,
     reports: reportsLive,
     teammates: teammatesLive,
+    teams: teamsRun,
     views,
     chat,
     activity,
@@ -2275,6 +2323,9 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       peerFilesLive?.stop();
       offSelfLogin();
       offTeammatesUp();
+      offTeamsUp();
+      offTeamsFrames();
+      teamsRun.stop();
       teammatesLive.stop();
       groupsLive.stop();
       reportsLive.stop();

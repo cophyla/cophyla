@@ -144,6 +144,16 @@ export interface TeammatesDeps {
   dial?: Dial;
   now?: () => number;
   sweepMs?: number;
+  /**
+   * The teams this side's user and another account are both in, each with what this side shares
+   * with it: what that account's side reaches is all of these together. Undefined while the two
+   * are in no team, and the teammate's own share stands, as one made with a code alone.
+   */
+  teamShares?: (subject: string) => { team: string; share: TeammateShare }[] | undefined;
+  /** An invite into a team a teammate's side handed over (`team.offer`): kept for this side's user, or taken at once when `carry`. */
+  offered?: (from: { id: string; user: string; subject: string }, code: string, carry: boolean) => Promise<void>;
+  /** Where a teammate's side says a team's chain stands (`team.head`): this side's own, after it compared the two. */
+  head?: (from: { id: string; user: string; subject: string }, p: { team: string; seq: number; head: string }) => Promise<{ seq: number; head: string }>;
 }
 
 interface RedeemTunnel {
@@ -244,7 +254,13 @@ export class Teammates {
 
   list(): Teammate[] {
     if (!this.deps.routes()) return [];
-    return this.rows.list().map((r) => clientTeammate(this.refreshClosed(r)));
+    return this.rows.list().map((r) => this.client(this.refreshClosed(r)));
+  }
+
+  /** A row as the apps see it, with the teams both are in. */
+  private client(row: TeammateRow): Teammate {
+    const teams = row.peer ? this.deps.teamShares?.(row.peer.subject)?.map((t) => t.team) : undefined;
+    return clientTeammate(row, teams);
   }
 
   /** The active teammates, for the group chats' picker. */
@@ -257,11 +273,161 @@ export class Teammates {
   }
 
   private emit(row: TeammateRow): void {
-    this.deps.bus.emit("teammate.state", clientTeammate(row));
+    this.deps.bus.emit("teammate.state", this.client(row));
   }
 
   private emitEnded(row: TeammateRow, reason: string): void {
     this.deps.bus.emit("teammate.state", { ...clientTeammate(row), state: "ended", reason });
+  }
+
+  // --- teams ---------------------------------------------------------------------------------------------
+
+  /** The active teammate with an account: its id, their login, and whether its link reaches them. */
+  teamLink(subject: string): { id: string; user: string; linked: boolean; teamMade: boolean } | undefined {
+    const row = this.rows.bySubject(subject);
+    if (!row?.peer) return undefined;
+    return { id: row.id, user: row.peer.user, linked: row.outbound !== undefined && row.key !== undefined, teamMade: row.teamMade === true };
+  }
+
+  /**
+   * A link with another member of a team this side's user is in, made with no code: kept as it is
+   * when the two are teammates already (by a code, or by another team), else made keyed from both
+   * people's team keys (`key`). This side's relay peer is minted for them, and what the far side
+   * needs to dial it comes back, for a note to them: none while it cannot be minted now, or when
+   * the link stands on a code.
+   */
+  async linkForTeam(p: { subject: string; user: string; key: string }): Promise<{ id: string; note?: ConnectionRelay }> {
+    this.routing();
+    let row = this.rows.bySubject(p.subject);
+    const now = this.now();
+    if (!row) {
+      row = {
+        id: newId("teammate"),
+        state: "active",
+        createdAt: now,
+        acceptedAt: now,
+        // what a team-made link shares comes from the teams alone
+        share: { mode: "include", folders: [], open: "chosen" },
+        key: p.key,
+        peer: { user: p.user, subject: p.subject },
+        sent: 0,
+        received: 0,
+        outbox: [],
+        teamMade: true,
+      };
+      this.rows.put(row);
+      this.emit(row);
+      this.log.info("teammate made by a team", { id: row.id, user: p.user });
+    } else if (row.peer && row.peer.user !== p.user) {
+      // the login the team's chain names now: the server's word, as at the join
+      row.peer = { ...row.peer, user: p.user };
+      this.rows.put(row);
+      this.emit(row);
+    }
+    if (!row.teamMade) return { id: row.id };
+    if (row.key !== p.key) {
+      // the keys were made again (a person added anew): the old link is no more
+      this.closeOut(row.id, "rekeyed");
+      if (row.inbound) void this.deps.cloud.revokeRelay(row.inbound);
+      row.key = p.key;
+      delete row.inbound;
+      delete row.inboundRelay;
+      delete row.outbound;
+      this.rows.put(row);
+    }
+    if (!row.inboundRelay) {
+      if (this.deps.cloud.allowed()) return { id: row.id };
+      const inbound = newId("connection");
+      try {
+        const g = await this.deps.cloud.relayGrant(inbound, { kind: "connection", name: "teammate" });
+        const fresh = this.rows.get(row.id);
+        if (!fresh) {
+          void this.deps.cloud.revokeRelay(inbound);
+          return { id: row.id };
+        }
+        fresh.inbound = inbound;
+        fresh.inboundRelay = { url: g.url, peer: inbound, token: g.token };
+        this.rows.put(fresh);
+        row = fresh;
+      } catch (e) {
+        this.log.info("a team's link waits for the relay", { id: row.id, error: message(e) });
+        return { id: row.id };
+      }
+    }
+    return { id: row.id, note: row.inboundRelay };
+  }
+
+  /** The far side of a team-made link told how to reach it: what this side dials from now. */
+  teamReached(subject: string, relay: ConnectionRelay): void {
+    const row = this.rows.bySubject(subject);
+    if (!row?.teamMade) return;
+    if (originOf(relay.url) !== originOf(this.deps.cloud.serverUrl())) {
+      this.log.warn("a team member named another server to reach them by: left out", { id: row.id });
+      return;
+    }
+    if (row.outbound && row.outbound.peer === relay.peer && row.outbound.token === relay.token) return;
+    this.closeOut(row.id, "reached anew");
+    row.outbound = relay;
+    row.seenAt = this.now();
+    this.rows.put(row);
+    this.emit(row);
+    this.log.info("a team member's link reaches them", { id: row.id, user: row.peer?.user });
+    void this.flushOutbox(row.id);
+    this.deps.groups()?.catchUpAll();
+  }
+
+  /**
+   * Two people no longer in any team together: the link goes, at this side, with no word to the
+   * far side, whose own Cophyla reads the same change. `theyWent`: the far person left or was
+   * taken out, and leaves the groups the two share; else this side's user did, and goes.
+   */
+  teamUnlinked(subject: string, reason: string, theyWent: boolean): void {
+    const row = this.rows.bySubject(subject);
+    if (!row) return;
+    this.drop(row, reason, theyWent);
+  }
+
+  /** What this side shares with the teams changed: each teammate's side is told, and an agent no longer shared leaves what it was in there. */
+  shareChange<T>(change: () => T): T {
+    const active = this.rows.list().filter((r) => r.state === "active" && r.peer);
+    const before = new Map(active.map((r) => [r.id, this.sharedSessions(r)]));
+    const out = change();
+    for (const r of active) {
+      const row = this.rows.get(r.id);
+      if (!row?.peer) continue;
+      const after = new Set(this.sharedSessions(row));
+      for (const s of before.get(row.id) ?? []) if (!after.has(s)) this.deps.groups()?.unshared(row.peer.subject, s);
+      this.dirs.delete(row.id);
+      void this.request(row, "team.share", this.summary(row)).catch(() => undefined);
+      for (const c of row.connections ?? []) {
+        const mine = this.deps.sessions().find((x) => x.id === c.session);
+        if (mine && !this.sharedWith(row, mine)) void this.endConnection(row.id, c.id, "the folder its agent works in is no longer shared", "your user no longer shares the folder you work in");
+      }
+      this.emit(row);
+    }
+    return out;
+  }
+
+  /** Tells a teammate's side where a team's chain stands here, and hears where it stands there. */
+  async teamHead(id: string, p: { team: string; seq: number; head: string }): Promise<{ seq: number; head: string }> {
+    const row = this.rows.get(id);
+    if (!row || row.state !== "active") throw new RpcError("not_found", `no teammate ${id}`);
+    return teammateLinkRequests["team.head"].result.parse(await this.request(row, "team.head", p, 15_000));
+  }
+
+  /** Hands a teammate's side an invite into a team; throws when it cannot be reached, or is older than teams. */
+  async offerTeam(id: string, code: string, carry = false): Promise<void> {
+    const row = this.rows.get(id);
+    if (!row || row.state !== "active") throw new RpcError("not_found", `no teammate ${id}`);
+    await this.request(row, "team.offer", { code, ...(carry ? { carry: true } : {}) }, 15_000);
+  }
+
+  /** The teammates made with a code that no team took in yet, for a team to be made of each. */
+  teamlessRows(): { id: string; user: string; subject: string; share: TeammateShare; known?: string[] }[] {
+    return this.rows
+      .list()
+      .filter((r) => r.state === "active" && r.peer && !r.teamMade && this.teamless(r))
+      .map((r) => ({ id: r.id, user: r.peer!.user, subject: r.peer!.subject, share: r.share, ...(r.known ? { known: r.known } : {}) }));
   }
 
   private routing(): void {
@@ -295,7 +461,8 @@ export class Teammates {
 
   /** An exclude share's places that appeared since it was made: added to `closed`, told once. */
   private refreshClosed(row: TeammateRow): TeammateRow {
-    if (row.share.mode !== "exclude" || !row.known) return row;
+    // a team keeps its own share's closed places
+    if (row.share.mode !== "exclude" || !row.known || !this.teamless(row)) return row;
     const known = new Set(row.known);
     const closed = [...(row.share.closed ?? [])];
     const closedKeys = new Set(closed.map((c) => placeKey(c.node, c.path, this.deps.platformOf)));
@@ -322,35 +489,68 @@ export class Teammates {
     return row;
   }
 
+  /**
+   * What this side shares with `row`'s side: each team both are in, or the teammate's own share
+   * while there is none. A team's shares are its own to keep fresh (`teams/`).
+   */
+  private sharesOf(row: TeammateRow): { team?: string; share: TeammateShare }[] {
+    const t = row.peer ? this.deps.teamShares?.(row.peer.subject) : undefined;
+    return t ?? [{ share: row.share }];
+  }
+
+  /** Whether the teammate's own share stands for `row`: one made with a code that no team took in yet. */
+  teamless(row: TeammateRow): boolean {
+    return !row.peer || this.deps.teamShares?.(row.peer.subject) === undefined;
+  }
+
   /** Whether an agent of this side works in what it shares with `row`. */
   private sharedWith(row: TeammateRow, s: Session): boolean {
     const p = this.placeOf(s);
-    return shares(row.share, p.node, p.path, this.deps.platformOf);
+    return this.sharesOf(row).some((x) => shares(x.share, p.node, p.path, this.deps.platformOf));
+  }
+
+  /** Whether one share opens an agent of this side's: in it, and opened by hand, or open always outside a workspace shared closed. */
+  private opens(share: TeammateShare, s: Session): boolean {
+    const p = this.placeOf(s);
+    if (!shares(share, p.node, p.path, this.deps.platformOf)) return false;
+    if (share.opened?.includes(s.id)) return true;
+    if (share.open !== "always") return false;
+    return !within(share.closed ?? [], p.node, p.path, this.deps.platformOf);
   }
 
   /** Whether an agent of this side is open to `row`'s side now. */
   private openWith(row: TeammateRow, s: Session): boolean {
-    if (s.status === "ended" || s.role === "assistant" || !this.sharedWith(row, s)) return false;
-    if (row.share.opened?.includes(s.id)) return true;
-    if (row.share.open !== "always") return false;
+    if (s.status === "ended" || s.role === "assistant") return false;
+    return this.sharesOf(row).some((x) => this.opens(x.share, s));
+  }
+
+  /** The teams whose share holds an agent of this side's, open or not: what `row`'s side is told, to show it under each. */
+  private teamsHolding(row: TeammateRow, s: Session): string[] | undefined {
     const p = this.placeOf(s);
-    return !within(row.share.closed ?? [], p.node, p.path, this.deps.platformOf);
+    const t = this.sharesOf(row)
+      .filter((x) => x.team !== undefined && shares(x.share, p.node, p.path, this.deps.platformOf))
+      .map((x) => x.team!);
+    return t.length > 0 ? t : undefined;
   }
 
   /** What this side shares with `row`, as the other side is told it: how open, and the workspaces' names alone. */
   private summary(row: TeammateRow): TeammateTheirs {
     const names = new Set<string>();
-    if (row.share.mode === "include") {
-      for (const f of row.share.folders) names.add(lastPart(f.path));
-      for (const w of this.deps.places()) if (shares(row.share, w.node, w.path, this.deps.platformOf)) names.add(w.name);
-    } else {
-      for (const w of this.deps.places()) {
-        if (!shares(row.share, w.node, w.path, this.deps.platformOf)) continue;
-        if (within(row.share.closed ?? [], w.node, w.path, this.deps.platformOf)) continue;
-        names.add(w.name);
+    let open: TeammateTheirs["open"] = "chosen";
+    for (const { share } of this.sharesOf(row)) {
+      if (share.open === "always") open = "always";
+      if (share.mode === "include") {
+        for (const f of share.folders) names.add(lastPart(f.path));
+        for (const w of this.deps.places()) if (shares(share, w.node, w.path, this.deps.platformOf)) names.add(w.name);
+      } else {
+        for (const w of this.deps.places()) {
+          if (!shares(share, w.node, w.path, this.deps.platformOf)) continue;
+          if (within(share.closed ?? [], w.node, w.path, this.deps.platformOf)) continue;
+          names.add(w.name);
+        }
       }
     }
-    return { open: row.share.open, workspaces: [...names].filter(Boolean).slice(0, 500) };
+    return { open, workspaces: [...names].filter(Boolean).slice(0, 500) };
   }
 
   /**
@@ -371,26 +571,30 @@ export class Teammates {
       const workspace = p.workspace ?? lastPart(p.path);
       const focus = this.deps.focus.get(s.id);
       const how = { status: s.status, ...(s.intent ? { intent: cap(s.intent, 300) } : {}), ...(focus ? { focus } : {}) };
+      const teams = this.teamsHolding(row, s);
+      const tagged = teams ? { teams } : {};
       if (this.openWith(row, s)) {
-        agents.push({ session: s.id, name: alias, harness: s.harness, workspace, ...how });
+        agents.push({ session: s.id, name: alias, harness: s.harness, workspace, ...how, ...tagged });
         continue;
       }
       if (!closedToo) continue;
       if (joined.has(s.id)) {
-        closed.push({ session: s.id, name: alias, harness: s.harness, workspace, connected: true, ...how });
+        closed.push({ session: s.id, name: alias, harness: s.harness, workspace, connected: true, ...how, ...tagged });
         continue;
       }
       if (!this.askable(row, s)) continue;
-      closed.push({ session: s.id, name: alias, harness: s.harness, workspace });
+      closed.push({ session: s.id, name: alias, harness: s.harness, workspace, ...tagged });
     }
     return closedToo ? { agents, closed } : { agents };
   }
 
   /** Whether `row`'s side may ask for a closed agent of this side's: in what is shared, and not in a workspace shared closed, which its user has not seen yet. */
   private askable(row: TeammateRow, s: Session): boolean {
-    if (s.status === "ended" || s.role === "assistant" || !this.sharedWith(row, s)) return false;
+    if (s.status === "ended" || s.role === "assistant") return false;
     const p = this.placeOf(s);
-    return !within(row.share.closed ?? [], p.node, p.path, this.deps.platformOf) || row.share.opened?.includes(s.id) === true;
+    return this.sharesOf(row).some(
+      ({ share }) => shares(share, p.node, p.path, this.deps.platformOf) && (!within(share.closed ?? [], p.node, p.path, this.deps.platformOf) || share.opened?.includes(s.id) === true),
+    );
   }
 
   // --- making one -------------------------------------------------------------------------------------
@@ -481,6 +685,7 @@ export class Teammates {
     this.routing();
     const row = this.rows.get(id);
     if (!row) throw new RpcError("not_found", `no teammate ${id}`);
+    if (!this.teamless(row)) throw new RpcError("invalid", `what you share with ${row.peer?.user ?? "them"} is what you share with the teams you are both in: change it on the team's page`);
     const before = row.state === "active" ? this.sharedSessions(row) : [];
     const tidy = tidyShare(share);
     // an exclude share keeps the places it knew, and knows the ones opened or excluded now
@@ -523,6 +728,7 @@ export class Teammates {
     this.routing();
     const row = this.rows.get(id);
     if (!row) throw new RpcError("not_found", `no teammate ${id}`);
+    if (!this.teamless(row)) throw new RpcError("invalid", "open it to a team you are both in, on the team's page");
     const s = this.deps.sessions().find((x) => x.id === session);
     if (!s || s.status === "ended") throw new RpcError("not_found", `no live session ${session}`);
     if (on && !this.sharedWith(row, s)) throw new RpcError("invalid", `that agent works in a folder you do not share with ${row.peer?.user ?? "them"}: share it first`);
@@ -539,6 +745,7 @@ export class Teammates {
   async end(id: string, reason: string): Promise<void> {
     const row = this.rows.get(id);
     if (!row) throw new RpcError("not_found", `no teammate ${id}`);
+    if (row.state === "active" && !this.teamless(row)) throw new RpcError("invalid", `${row.peer?.user ?? "they"} and you are in a team together: leave it, or take them out of it`);
     if (row.state === "pending") {
       this.rows.delete(id);
       // a redemption under way had a relay peer minted for it: it goes too
@@ -701,6 +908,17 @@ export class Teammates {
       case "team.end": {
         const why = (parsed.data as { reason: string }).reason;
         this.drop(row, `${row.peer.user} ended it (${why})`);
+        return {};
+      }
+      case "team.head": {
+        const h = parsed.data as { team: string; seq: number; head: string };
+        if (!this.deps.head) throw new RpcError("unsupported", "teams are off here");
+        return this.deps.head({ id: row.id, user: row.peer.user, subject: row.peer.subject }, h);
+      }
+      case "team.offer": {
+        const o = parsed.data as { code: string; carry?: boolean };
+        if (!this.deps.offered) throw new RpcError("unsupported", "teams are off here");
+        await this.deps.offered({ id: row.id, user: row.peer.user, subject: row.peer.subject }, o.code, o.carry === true);
         return {};
       }
       case "team.connect":

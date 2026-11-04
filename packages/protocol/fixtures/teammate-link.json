@@ -17,6 +17,8 @@
     },
     "team.notice": { "params": [{ "about": "pmsg_01ARZ3NDEKTSV4RRFFQ69G5FD1", "why": "no agent called api-codex is open to you" }], "results": [{}] },
     "team.end": { "params": [{ "reason": "ended by the user" }], "results": [{}] },
+    "team.head": { "params": [{ "team": "team_01ARZ3NDEKTSV4RRFFQ69G5TE1", "seq": 3, "head": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" }], "results": [{ "seq": 4, "head": "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB" }, { "seq": 0, "head": "" }] },
+    "team.offer": { "params": [{"code": "cophyla-join:eyJ2IjoxfQ"}, {"code": "cophyla-join:eyJ2IjoxfQ", "carry": true}], "results": [{}] },
     "team.connect": {
       "params": [{ "id": "tc_01ARZ3NDEKTSV4RRFFQ69G5TC1", "from": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "name": "web", "harness": "claude", "workspace": "web", "intent": "the login page" }, "to": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }, { "id": "tc_01ARZ3NDEKTSV4RRFFQ69G5TC2", "from": { "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "name": "web" }, "to": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2" }],
       "results": [{ "state": "active" }, { "state": "asked" }, { "state": "active", "id": "tc_01ARZ3NDEKTSV4RRFFQ69G5TC2" }]

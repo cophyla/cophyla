@@ -27,6 +27,10 @@ export const ID_PREFIXES = {
   teammate: "tm",
   /** One agent of this user's joined to one of a teammate's, both ways. */
   teammateConnection: "tc",
+  /** A team: people who work together, each a teammate of every other, with a member list each signs its own changes to. */
+  team: "team",
+  /** An invite into a team, for one GitHub account, taken once. */
+  teamInvite: "tinv",
   /** A group chat: posts by agent sessions and the people in it. */
   group: "grp",
   /** One post in a group chat. */
@@ -128,6 +132,8 @@ export const ConnectionId = idSchema("connection");
 export const TransferId = idSchema("transfer");
 export const TeammateId = idSchema("teammate");
 export const TeammateConnectionId = idSchema("teammateConnection");
+export const TeamId = idSchema("team");
+export const TeamInviteId = idSchema("teamInvite");
 export const GroupId = idSchema("group");
 export const GroupPostId = idSchema("groupPost");
 export const GroupPhotoId = idSchema("groupPhoto");
@@ -154,6 +160,8 @@ export type ConnectionId = z.infer<typeof ConnectionId>;
 export type TransferId = z.infer<typeof TransferId>;
 export type TeammateId = z.infer<typeof TeammateId>;
 export type TeammateConnectionId = z.infer<typeof TeammateConnectionId>;
+export type TeamId = z.infer<typeof TeamId>;
+export type TeamInviteId = z.infer<typeof TeamInviteId>;
 export type GroupId = z.infer<typeof GroupId>;
 export type GroupPostId = z.infer<typeof GroupPostId>;
 export type GroupPhotoId = z.infer<typeof GroupPhotoId>;

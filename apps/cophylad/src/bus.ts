@@ -88,6 +88,8 @@ export interface BusEvents {
   "lead.state": ClientNotificationParams<"lead.state">;
   /** A teammate was made, used, changed or ended. */
   "teammate.state": ClientNotificationParams<"teammate.state">;
+  "teams.state": ClientNotificationParams<"teams.state">;
+  "teams.offer": ClientNotificationParams<"teams.offer">;
   /** A transfer this machine receives changed, or one a linked node receives, carried up; `dismissed` its last row. */
   "transfer.state": Transfer;
   "workspace.state": Workspace;

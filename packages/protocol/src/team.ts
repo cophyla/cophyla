@@ -16,7 +16,7 @@
 
 import { z } from "zod";
 import { Focus, GROUP_POST_FILES_MAX, GROUP_POST_PHOTOS_MAX, GroupFile, GroupMention, GroupNotify, GroupPhoto, HarnessKind, SessionStatus, TeammateConnectionAgent, TeammateTheirs } from "./entities.ts";
-import { AgentMessageId, GroupId, GroupPostId, SessionId, TeammateConnectionId, TeammateId, Timestamp } from "./ids.ts";
+import { AgentMessageId, GroupId, GroupPostId, SessionId, TeammateConnectionId, TeammateId, TeamId, Timestamp } from "./ids.ts";
 import { ConnectionRelay, Secret } from "./invite.ts";
 import { GroupPhotoRef, peerFileRequests, PhotoPiece } from "./peer-files.ts";
 
@@ -35,6 +35,8 @@ export const TeamAgent = z.object({
   status: SessionStatus.optional(),
   intent: z.string().max(300).optional(),
   focus: Focus.optional(),
+  /** The teams both sides are in whose share holds it: absent between two made teammates by a code alone. */
+  teams: z.array(TeamId).max(200).optional(),
 });
 export type TeamAgent = z.infer<typeof TeamAgent>;
 
@@ -53,6 +55,7 @@ export const TeamClosedAgent = z.object({
   status: SessionStatus.optional(),
   intent: z.string().max(300).optional(),
   focus: Focus.optional(),
+  teams: z.array(TeamId).max(200).optional(),
 });
 export type TeamClosedAgent = z.infer<typeof TeamClosedAgent>;
 
@@ -128,6 +131,9 @@ export const GroupSnapshot = z.object({
   members: z.array(GroupEntryMember).max(64),
   posts: z.array(GroupEntryPost).max(200),
   taken: z.record(z.string().max(120), z.number().int().nonnegative()).optional(),
+  /** The team it belongs to, and whether it is the team's own chat; a side takes these only for a team its user is in. */
+  team: TeamId.optional(),
+  teamChat: z.boolean().optional(),
 });
 export type GroupSnapshot = z.infer<typeof GroupSnapshot>;
 
@@ -201,6 +207,22 @@ export const teammateLinkRequests = {
   "team.notice": { params: z.object({ about: AgentMessageId, why: z.string().min(1).max(300) }), result: z.object({}) },
   /** The sending side ended the teammate. */
   "team.end": { params: z.object({ reason: z.string().min(1).max(200) }), result: z.object({}) },
+  /**
+   * An invite into a team, made for this side's user by the sending side, an admin of it: the
+   * code the receiving side takes as it would one pasted, kept for its user to take or turn
+   * down. `carry`: the two are teammates made by a code, and the team is that pair's, made of
+   * it: the receiving side joins at once with what it shares now (Platform 0.25.0).
+   */
+  "team.offer": { params: z.object({ code: z.string().min(1).max(4096), carry: z.boolean().optional() }), result: z.object({}) },
+  /**
+   * Where the sending side's copy of a team's chain both are in stands: its last change's place
+   * and hash. Answered with this side's own, so each checks the server shows both the same chain:
+   * a different hash at the same place is a chain the server forked, and each side says so.
+   */
+  "team.head": {
+    params: z.object({ team: TeamId, seq: z.number().int().positive(), head: z.string().max(43) }),
+    result: z.object({ seq: z.number().int().nonnegative(), head: z.string().max(43) }),
+  },
   /**
    * The sending side's user joins `from`, an agent of theirs in what they share, to `to`, an
    * agent of this side's. Open to the sending side: `active` at once, its being open being this

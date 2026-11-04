@@ -252,6 +252,21 @@ export const actions = {
   "teammate.end": { risk: "write" },
   "teammate.send": { risk: "network" },
   "teammate.deliver": { risk: "write" },
+  // Teams: the app's requests.
+  "teams.list": { risk: "read" },
+  "teams.create": { risk: "exec" },
+  "teams.invite": { risk: "exec" },
+  "teams.cancel": { risk: "write" },
+  "teams.look": { risk: "read" },
+  "teams.join": { risk: "exec" },
+  "teams.decline": { risk: "write" },
+  "teams.share": { risk: "exec" },
+  "teams.open": { risk: "exec" },
+  "teams.update": { risk: "write" },
+  "teams.remove": { risk: "write" },
+  "teams.role": { risk: "write" },
+  "teams.leave": { risk: "write" },
+  "teams.end": { risk: "write" },
   // Files and folders between the user's machines. Starting one writes on the receiving machine;
   // the sending one reads what the receiving one asks of it (the node link's `files.*`). An
   // agent's `send_file` is also `transfer.send`, which a built-in rule asks about unless the

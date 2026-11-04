@@ -48,6 +48,13 @@ export const FOCUS_KV_NS = "focus";
 /** The teammates (see `teammates/`): their keys, relay tokens, what each side shares, and messages waiting. */
 export const TEAMMATES_KV_NS = "teammates";
 
+/**
+ * The teams (see `teams/`): this account's team keys, each team's chain as this side checked it
+ * and what this side shares with it, and the invites waiting. Replicated to the backups; never
+ * the brain's, never in the cloud backup, since the keys are the account's alone.
+ */
+export const TEAMS_KV_NS = "teams";
+
 /** The leaders (see `leaders/`): who speaks to which of the user's sessions as the user. Replicated to the backups; never the brain's, never in the cloud backup. */
 export const LEADERS_KV_NS = "leaders";
 
@@ -83,6 +90,7 @@ export const RESERVED_KV_NS: readonly string[] = [
   GROUP_LOG_KV_NS,
   FOCUS_KV_NS,
   TEAMMATES_KV_NS,
+  TEAMS_KV_NS,
   LEADERS_KV_NS,
   PEER_FILES_NS,
   PEER_PULLS_NS,

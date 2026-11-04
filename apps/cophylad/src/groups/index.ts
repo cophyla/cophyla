@@ -189,6 +189,8 @@ export interface GroupsDeps {
   media?: GroupMedia;
   /** This node's id: where an app's upload is kept. */
   selfId?: () => string;
+  /** Whether this side's user is in a team, and whether a group is that team's own chat: what a group handed over may say it belongs to. */
+  teamOf?: (team: string, group: string) => { chat: boolean } | undefined;
   /** A photo made of an image on one of the user's machines, there. */
   photoFrom?: (node: string, path: string) => Promise<PreparedPhoto>;
   /** What a path on one of the user's machines holds, for a file attached by its path. */
@@ -399,6 +401,8 @@ export class Groups {
       ...(g.lastAt !== undefined ? { lastAt: g.lastAt } : {}),
       ...(g.ended ? { ended: g.ended } : {}),
       createdAt: g.createdAt,
+      ...(g.team ? { team: g.team } : {}),
+      ...(g.teamChat ? { teamChat: true } : {}),
     };
   }
 
@@ -590,13 +594,16 @@ export class Groups {
   // --- making and changing -----------------------------------------------------------------------------
 
   /** A new group made by this side's user, with these agents in it. */
-  async create(p: { name: string; purpose?: string; notify?: GroupNotify; members: GroupMemberRef[] }): Promise<Group> {
+  async create(p: { name: string; purpose?: string; notify?: GroupNotify; members: GroupMemberRef[]; team?: string; id?: string; teamChat?: boolean }): Promise<Group> {
     this.routing();
     const name = cleanName(p.name);
     const now = this.now();
     const me = this.deps.me();
+    if (p.id && this.get(p.id)) throw new RpcError("conflict", "that group is here already");
     const g: GroupRow = {
-      id: newId("group"),
+      id: p.id ?? newId("group"),
+      ...(p.team ? { team: p.team } : {}),
+      ...(p.teamChat ? { teamChat: true } : {}),
       name,
       ...(p.purpose?.trim() ? { purpose: cap(p.purpose.trim(), PURPOSE_CHARS) } : {}),
       by: me.user,
@@ -2263,6 +2270,8 @@ export class Groups {
         members: g.members.map((m) => this.entryMember(g, m)),
         posts: page.posts.map((p) => this.entryPost(g, p)),
         taken: Object.fromEntries(Object.entries(g.sides).map(([o, side]) => [o, side.taken])),
+        ...(g.team ? { team: g.team } : {}),
+        ...(g.teamChat ? { teamChat: true } : {}),
       },
     };
     // every side gets it: the new side takes the group in, the others take its new members
@@ -2416,10 +2425,14 @@ export class Groups {
     const teams = this.deps.teams?.();
     // its maker: the handing side, or another person in it this side is a teammate of, never this side
     const maker = s.byOwner !== undefined && s.byOwner !== me.owner && s.byOwner !== "me" && s.byOwner !== owner && s.members.some((m) => m.kind === "person" && m.owner === s.byOwner) && teams?.teammateOf(s.byOwner) ? s.byOwner : owner;
+    // the team it says it belongs to, only one this side's user is in
+    const inTeam = s.team ? this.deps.teamOf?.(s.team, s.id) : undefined;
     const g: GroupRow = {
       id: s.id,
       name: s.name,
       ...(s.purpose ? { purpose: s.purpose } : {}),
+      ...(t ? { team: s.team! } : {}),
+      ...(inTeam && s.teamChat && inTeam.chat ? { teamChat: true } : {}),
       by: s.by,
       byOwner: maker,
       notify: s.notify,
@@ -2792,6 +2805,129 @@ export class Groups {
       if (!side || !m || m.addedBy !== side.user) continue;
       this.drop(g, key);
       this.logEntry(g, { kind: "member.remove", member: key, why: `no longer shared with ${side.user}` }, this.now());
+      this.emit(g);
+    }
+  }
+
+  // --- teams ---------------------------------------------------------------------------------------------------
+
+  /** Whether this side holds a group, and whether a person is in it. */
+  hasPerson(id: string, owner: string): boolean | undefined {
+    const g = this.get(id);
+    if (!g) return undefined;
+    return g.members.some((m) => m.kind === "person" && m.owner === owner);
+  }
+
+  /** The groups of a team, as this side holds them. */
+  ofTeam(team: string): string[] {
+    return this.all()
+      .filter((g) => g.team === team)
+      .map((g) => g.id);
+  }
+
+  /** Puts a group in a team, or out of one: what the rail shows it under. */
+  setTeam(id: string, team: string | undefined, chat = false): void {
+    const g = this.get(id);
+    if (!g || (g.team === team && (g.teamChat === true) === chat)) return;
+    if (team) {
+      g.team = team;
+      if (chat) g.teamChat = true;
+      else delete g.teamChat;
+    } else {
+      delete g.team;
+      delete g.teamChat;
+    }
+    this.rows.put(g);
+    this.emit(g);
+  }
+
+  /** A team renamed: its own chat takes the name here, as every side does from the team's chain. */
+  renameTeamChat(id: string, name: string, purpose?: string): void {
+    const g = this.get(id);
+    if (!g?.teamChat) return;
+    const clean = cleanName(name);
+    const why = purpose?.trim() ? cap(purpose.trim(), PURPOSE_CHARS) : undefined;
+    if (g.name === clean && g.purpose === why) return;
+    g.name = clean;
+    if (why) g.purpose = why;
+    else delete g.purpose;
+    this.rows.put(g);
+    this.emit(g);
+  }
+
+  /**
+   * A person in a team is in its chat: put in on this side from the team's chain, as every side
+   * does, with their side reached through `teammate`. True when they were not in it here before.
+   */
+  ensureTeamPerson(id: string, owner: string, user: string, teammate: string): boolean {
+    const g = this.get(id);
+    if (!g?.teamChat || g.ended) return false;
+    const me = this.deps.me();
+    if (owner === me.owner) return false;
+    let changed = false;
+    if (!g.members.some((m) => m.kind === "person" && m.owner === owner)) {
+      const now = this.now();
+      g.members.push({ key: personKey(owner), kind: "person", owner, user, readTo: 0, addedBy: user, addedAt: now, at: now });
+      changed = true;
+    }
+    if (!g.sides[owner]) {
+      g.sides[owner] = { teammate, user, taken: 0, since: g.n };
+      changed = true;
+    } else if (g.sides[owner].teammate !== teammate) {
+      g.sides[owner] = { ...g.sides[owner], teammate };
+      changed = true;
+    }
+    if (!changed) return false;
+    this.rows.put(g);
+    this.emit(g);
+    return true;
+  }
+
+  /** Hands every other side the group as it is now: a newcomer takes it in from it. */
+  handOver(id: string): void {
+    this.sendSnapshot(id);
+  }
+
+  /** Asks a side for a group this side does not hold yet, from its first entry: a team's chat the newcomer waits for. */
+  async fetchGroup(owner: string, teammate: string, id: string): Promise<boolean> {
+    if (this.get(id)) return true;
+    await this.adopt(owner, teammate, id);
+    return this.get(id) !== undefined;
+  }
+
+  /** Someone left a team or was taken out of it: they and their agents go from the team's groups on this side, as every side does from the team's chain. */
+  teamPersonGone(team: string, owner: string): void {
+    for (const g of this.all()) {
+      if (g.team !== team || (!g.sides[owner] && !g.members.some((m) => m.owner === owner))) continue;
+      for (const m of g.members) if (m.owner === owner) this.cancelGather(g.id, m.key);
+      g.members = g.members.filter((m) => m.owner !== owner);
+      delete g.sides[owner];
+      this.rows.put(g);
+      this.emit(g);
+    }
+  }
+
+  /** This side's user left a team or was taken out of it: out of each of its groups, each kept read only. */
+  leaveTeam(team: string): void {
+    for (const g of this.all()) {
+      if (g.team !== team) continue;
+      if (Object.keys(g.sides).length > 0) this.outOf(g, true);
+      else {
+        for (const m of g.members) if (this.mine(m) && m.kind === "agent") this.cancelGather(g.id, m.key);
+        g.members = g.members.filter((m) => m.kind === "person" || !this.mine(m));
+      }
+      if (!g.ended) g.ended = { at: this.now(), by: this.deps.me().user };
+      this.rows.put(g);
+      this.emit(g);
+    }
+  }
+
+  /** A team ended: its groups end here too, read only, as on every side. */
+  teamEnded(team: string, by: string): void {
+    for (const g of this.all()) {
+      if (g.team !== team || g.ended) continue;
+      g.ended = { at: this.now(), by };
+      this.rows.put(g);
       this.emit(g);
     }
   }

@@ -203,6 +203,10 @@ export class Cloud {
       this.registry.emitPrimary(params);
       return;
     }
+    if (method === "teams.changed" || method === "teams.note") {
+      for (const fn of [...this.teamListeners]) fn(method, params);
+      return;
+    }
     const p = (params ?? {}) as { peer?: unknown; frame?: unknown; reason?: unknown };
     if (method === "relay" && typeof p.peer === "string" && typeof p.frame === "string") {
       this.tunnels.frame(p.peer, p.frame);
@@ -591,6 +595,35 @@ export class Cloud {
     })) as { token?: unknown };
     if (typeof r?.token !== "string") throw new RpcError("unavailable", "the server vouched for nobody", { provider: "server" });
     return r.token;
+  }
+
+  private teamListeners = new Set<(method: string, params: unknown) => void>();
+
+  /** The server's frames about teams: a team's chain moved (`teams.changed`), a note came (`teams.note`). */
+  onTeams(fn: (method: string, params: unknown) => void): () => void {
+    this.teamListeners.add(fn);
+    return () => this.teamListeners.delete(fn);
+  }
+
+  /** A request about teams on the link; `unavailable` while it is down, `unsupported` from a server older than teams. */
+  async teamsRequest(method: "teams.append" | "teams.log" | "teams.mine" | "teams.note" | "teams.notes" | "teams.notes.ack", params: unknown, timeoutMs = 20_000): Promise<unknown> {
+    if (!this.link.connected) throw new RpcError("unavailable", "the server cannot be reached now", { provider: "server" });
+    return this.link.request(method, params, { timeoutMs }).catch((e: unknown) => {
+      throw e instanceof RpcError && e.code === "unsupported" ? new RpcError("unsupported", "the server is older than teams: it needs Server 0.11.0", { provider: "server" }) : e;
+    });
+  }
+
+  /** Whether the link to the server is up now. */
+  get linked(): boolean {
+    return this.link.connected;
+  }
+
+  /**
+   * Another account's identity token, checked against the keys this node ships with, for `aud`,
+   * whenever it was made: what a team's join keeps, which says who joined, not when.
+   */
+  verifyIdentityBinding(token: string, aud: string): VerifiedIdentity {
+    return verifyIdentity(token, this.deps.keys, aud, 0);
   }
 
   /** Another account's identity token, checked against the keys this node ships with, for `aud`, now. */
