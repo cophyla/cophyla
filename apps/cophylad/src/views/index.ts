@@ -52,9 +52,10 @@ export class Views {
   /**
    * Types stripped and the rest minified, local names shortened too (exported ones stay, so the
    * files still import each other by name): a phone on the relay takes the whole view in one
-   * message, and teams took the default view past what one holds with whitespace alone.
+   * message, and teams took the default view past what one holds with whitespace alone. Bun's
+   * transpiler takes `minify` as `Bun.build` does, though its types name only `minifyWhitespace`.
    */
-  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser", minify: { whitespace: true, syntax: true, identifiers: true } });
+  private transpiler = new Bun.Transpiler({ loader: "ts", target: "browser", minify: { whitespace: true, syntax: true, identifiers: true } } as Bun.TranspilerOptions);
 
   constructor(deps: ViewsDeps) {
     this.deps = deps;
