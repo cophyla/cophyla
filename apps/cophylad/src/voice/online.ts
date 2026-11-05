@@ -17,7 +17,12 @@
 // most, the server's limit, so a longer utterance goes in pieces cut at its quietest moments
 // (`splitAtQuiet`), two at a time, and the pieces' words are joined. Either way an utterance
 // lasts as long as the user lets one (`MAX_SECONDS` at most, an hour): Gemini Live's session
-// is ten minutes of wall time, so a longer one goes on in the next (`live.ts`). Speech goes
+// is ten minutes of wall time, so a longer one goes on in the next (`live.ts`). Either way
+// the words come as said unless Settings has them cleaned up (`clean`): then Gemini's own
+// transcription models do it in smart mode, fillers, stutters and false starts out and
+// corrections said out loud resolved, live (`gemini-3.5-transcribe-live`) or whole
+// (`gemini-3.5-transcribe` over the Interactions API, about $0.005 a minute); the account's
+// server does the same when asked. Speech goes
 // a line at a time, as the server's does, and the WAV that streams back is played as it comes:
 // Kokoro-82M on DeepInfra is the cheapest voice there is online, $0.62 a million characters,
 // about $0.0006 a minute of speech.
@@ -233,6 +238,44 @@ export async function geminiTranscribe(pcm: Int16Array, language: string | undef
   }
 }
 
+/** Gemini's transcription model, which cleans the words up in smart mode. */
+export const CLEAN_MODEL = "gemini-3.5-transcribe";
+
+/**
+ * One utterance, cleaned up by Gemini's transcription model in smart mode with the user's own
+ * key: fillers, stutters and false starts out, corrections said out loud resolved, punctuated.
+ * It is asked over the Interactions API, the audio inline as a WAV.
+ */
+export async function geminiSmartTranscribe(pcm: Int16Array, language: string | undefined, opts: GeminiSttOptions, signal?: AbortSignal): Promise<string> {
+  const key = opts.apiKey();
+  if (!key) throw new RpcError("unavailable", "no Gemini API key: set [providers.gemini] api_key or GEMINI_API_KEY", { provider: "gemini" });
+  const body = {
+    model: `models/${opts.model}`,
+    input: [{ type: "audio", data: Buffer.from(wavOf(pcm, IN_RATE)).toString("base64"), mime_type: "audio/wav" }],
+    generation_config: { transcription_config: { mode: "smart", ...(language ? { language_codes: [language] } : {}) } },
+  };
+  const url = `${opts.baseUrl.replace(/\/$/, "")}/v1beta/interactions`;
+  const { res, done } = await call("gemini", opts.fetch ?? fetch, url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": key }, body: JSON.stringify(body) }, signal, opts.timeoutMs ?? TIMEOUT_MS);
+  try {
+    const text = await res.text();
+    if (!res.ok) throw vendorError("gemini", res.status, text);
+    return interactionText(JSON.parse(text));
+  } finally {
+    done();
+  }
+}
+
+/** The transcript in an interaction's answer: `output_text`, or the text of its steps. */
+export function interactionText(j: { output_text?: unknown; steps?: { content?: { type?: string; text?: unknown }[] }[] }): string {
+  if (typeof j.output_text === "string") return j.output_text.trim();
+  return (j.steps ?? [])
+    .flatMap((s) => s.content ?? [])
+    .filter((c) => c.type === "text" && typeof c.text === "string")
+    .map((c) => c.text as string)
+    .join("")
+    .trim();
+}
+
 export interface DeepInfraTtsOptions {
   apiKey: () => string | undefined;
   baseUrl: string;
@@ -282,32 +325,34 @@ export interface OnlineDeps {
   ttsRoutes: () => string[];
   /** The account's hosted transcription and speech: the `server` route. */
   server?: {
-    transcribe(pcm: Int16Array, language: string | undefined): Promise<string>;
+    transcribe(pcm: Int16Array, language: string | undefined, clean?: boolean): Promise<string>;
     speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array>;
     /** Live transcription through the server. */
     listen?: LiveOpener;
   };
-  /** Gemini with the user's own key; `liveModel` transcribes live. */
-  gemini: GeminiSttOptions & { liveModel: string; connect?: LiveConnect };
+  /** Gemini with the user's own key; `liveModel` transcribes live, `cleanModel` whole and cleaned up. */
+  gemini: GeminiSttOptions & { liveModel: string; cleanModel?: string; connect?: LiveConnect };
   deepinfra: DeepInfraTtsOptions;
   language?: string;
   /** Words the live recogniser should expect: the names of this node's things. */
   vocabulary?: () => string[];
+  /** Whether the words are cleaned up, read as each utterance begins; word for word without it. */
+  clean?: () => boolean;
   log: Logger;
 }
 
 const asRpc = (route: string, e: unknown) => (e instanceof RpcError ? e : new RpcError("unavailable", e instanceof Error ? e.message : String(e), { provider: route }));
 
-/** One piece of at most a minute over `[providers] stt`, and the route that took it; thrown when every route refused. */
-async function transcribeRouted(deps: OnlineDeps, pcm: Int16Array, language: string | undefined): Promise<{ text: string; route: string }> {
+/** One piece of at most a minute over `[providers] stt`, cleaned up or not, and the route that took it; thrown when every route refused. */
+async function transcribeRouted(deps: OnlineDeps, pcm: Int16Array, language: string | undefined, clean: boolean): Promise<{ text: string; route: string }> {
   const refusals: string[] = [];
   for (const route of deps.sttRoutes()) {
     try {
       if (route === "server") {
         if (!deps.server) throw new RpcError("unavailable", "no account on this node", { provider: "server" });
-        return { text: await deps.server.transcribe(pcm, language), route };
+        return { text: await deps.server.transcribe(pcm, language, clean), route };
       }
-      if (route === "byok:gemini") return { text: await geminiTranscribe(pcm, language, deps.gemini), route };
+      if (route === "byok:gemini") return { text: clean ? await geminiSmartTranscribe(pcm, language, { ...deps.gemini, model: deps.gemini.cleanModel ?? CLEAN_MODEL }) : await geminiTranscribe(pcm, language, deps.gemini), route };
       throw new RpcError("unavailable", `${route} does not transcribe`, { provider: route });
     } catch (e) {
       const err = asRpc(route, e);
@@ -318,9 +363,10 @@ async function transcribeRouted(deps: OnlineDeps, pcm: Int16Array, language: str
   throw new RpcError("unavailable", `no transcription route could take it: ${refusals.join("; ")}`, { routes: refusals });
 }
 
-/** An utterance of any length over `[providers] stt`, in pieces the routes take. */
+/** An utterance of any length over `[providers] stt`, in pieces the routes take, every piece cleaned up or none. */
 function transcribeWhole(deps: OnlineDeps, pcm: Int16Array, language: string | undefined): Promise<{ text: string; route?: string }> {
-  return transcribeLong(pcm, (piece) => transcribeRouted(deps, piece, language), deps.log);
+  const clean = deps.clean?.() ?? false;
+  return transcribeLong(pcm, (piece) => transcribeRouted(deps, piece, language, clean), deps.log);
 }
 
 /** Transcription over `[providers] stt`, of each utterance whole once it ends. */
@@ -379,6 +425,7 @@ export function onlineLiveStt(deps: OnlineDeps): SttEngine {
     maxSeconds: MAX_SECONDS,
     ...(deps.language ? { language: deps.language } : {}),
     ...(deps.vocabulary ? { vocabulary: deps.vocabulary } : {}),
+    ...(deps.clean ? { clean: deps.clean } : {}),
     log: deps.log,
   });
 }

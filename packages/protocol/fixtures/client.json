@@ -268,8 +268,8 @@
       ]
     },
     "voice.configure": {
-      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, { "stt": "gemini-live", "sttRoute": "own" }, { "sttRoute": null, "ttsRoute": "cloud" }, { "recordingLimit": 1800 }, { "recordingLimit": 3600 }, { "recordingLimit": null }, { "wake": ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] }, { "wake": [] }, { "wake": null }, {}],
-      "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "speed": 2, "stage": { "status": "loading", "engine": "kokoro" }, "stt": "nemotron", "sttSource": "config", "sttStage": { "status": "ready", "engine": "nemotron" }, "engines": [] }, { "enabled": true, "tts": "piper", "source": "config", "speed": 1, "stage": { "status": "ready", "engine": "piper" }, "stt": "whisper-base", "sttSource": "app", "sttStage": { "status": "ready", "engine": "whisper-base" }, "recordingLimit": 1800, "sttLimit": 30, "engines": [] }]
+      "params": [{ "tts": "kokoro" }, { "voice": 12 }, { "tts": null, "voice": null }, { "speed": 2 }, { "speed": 0.75 }, { "speed": null }, { "stt": "server" }, { "stt": null }, { "stt": "gemini-live", "sttRoute": "own" }, { "sttRoute": null, "ttsRoute": "cloud" }, { "recordingLimit": 1800 }, { "recordingLimit": 3600 }, { "recordingLimit": null }, { "sttClean": true }, { "sttClean": false }, { "sttClean": null }, { "wake": ["cophyla_v0.2.onnx", "hey_phyla_v0.2.onnx"] }, { "wake": [] }, { "wake": null }, {}],
+      "results": [{ "enabled": true, "tts": "kokoro", "source": "app", "speed": 2, "stage": { "status": "loading", "engine": "kokoro" }, "stt": "nemotron", "sttSource": "config", "sttStage": { "status": "ready", "engine": "nemotron" }, "engines": [] }, { "enabled": true, "tts": "piper", "source": "config", "speed": 1, "stage": { "status": "ready", "engine": "piper" }, "stt": "whisper-base", "sttSource": "app", "sttStage": { "status": "ready", "engine": "whisper-base" }, "recordingLimit": 1800, "sttLimit": 30, "sttClean": true, "engines": [] }]
     },
     "voice.install": {
       "params": [{ "engine": "piper" }],

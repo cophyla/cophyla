@@ -876,6 +876,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const online: OnlineDeps = {
     sttRoutes: () => routesFor(config.providers.stt, voicePrefs.read().sttRoute),
     ttsRoutes: () => routesFor(config.providers.tts, voicePrefs.read().ttsRoute),
+    // Settings' Clean up speech, read as each utterance begins.
+    clean: () => voicePrefs.read().sttClean === true,
     // One live session on the server is one of Gemini's: a longer utterance goes on in the next (`live.ts`).
     server: cloud.speechRoute({ maxSeconds: LIVE_MAX_SECONDS }),
     gemini: {
@@ -883,6 +885,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       baseUrl: config.providers.gemini.base_url,
       model: config.providers.gemini.stt_model,
       liveModel: config.providers.gemini.stt_live_model,
+      cleanModel: config.providers.gemini.stt_clean_model,
       ...(opts.voice?.liveConnect ? { connect: opts.voice.liveConnect } : {}),
     },
     deepinfra: { apiKey: () => keys.deepinfra(), baseUrl: config.providers.deepinfra.base_url, model: config.providers.deepinfra.tts_model },

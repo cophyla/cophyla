@@ -399,7 +399,8 @@ export type VoiceStageState = z.infer<typeof VoiceStageState>;
  * once the engine is loaded), the `speed` replies are read at, whichever engine reads them,
  * and the speech stage; the same for transcription (`stt`,
  * `sttSource`, `sttStage`); how long one recording may last (`recordingLimit`, in seconds),
- * and less when the engine that transcribes hears less (`sttLimit`); where the online engines go first (`sttRoute`, `ttsRoute`) and
+ * and less when the engine that transcribes hears less (`sttLimit`); whether the online engines
+ * clean the words up (`sttClean`); where the online engines go first (`sttRoute`, `ttsRoute`) and
  * the keys they would use; every engine there is for either; the install under way or the
  * last one that failed; and the wake words: every phrase the wake model has, each saying
  * whether it listens (`wake`), where that pick came from (`wakeSource`) and the wake stage,
@@ -420,6 +421,8 @@ export const VoiceSettings = z.object({
   recordingLimit: z.number().int().positive().optional(),
   /** The most seconds the engine that transcribes hears, when that is less than a recording may be set to last. */
   sttLimit: z.number().positive().optional(),
+  /** Whether the online engines clean the words up (Gemini's smart transcription) rather than give them word for word; none from a node that cannot. */
+  sttClean: z.boolean().optional(),
   /** Where online transcription and speech go first; `cloud` unless the app set another. */
   sttRoute: VoiceRoute.optional(),
   ttsRoute: VoiceRoute.optional(),
@@ -841,7 +844,9 @@ export const clientRequests = {
    * it. A voice belongs to the engine it was set for. The speed is every engine's, from the
    * next line on; `null` is the engines' own pace. A route says where the online engines go
    * first, from the next utterance or line on; `null` is `cloud`. `recordingLimit` is how many
-   * seconds one recording may last, from the next one on; `null` is `DEFAULT_RECORDING_SECONDS`. `wake` names the wake model's
+   * seconds one recording may last, from the next one on; `null` is `DEFAULT_RECORDING_SECONDS`.
+   * `sttClean` has the online engines clean the words up, from the next utterance on; `null`
+   * or `false` gives them word for word. `wake` names the wake model's
    * heads that listen, an empty list none (the talk key and the button still work), `null`
    * config.toml's; the clients that hear the word themselves are told to ask `voice.wakeword`
    * again once the heads are loaded (`voice.setup`, stage `wake`, step `ready`). Answered at
@@ -856,6 +861,7 @@ export const clientRequests = {
       sttRoute: VoiceRoute.nullable().optional(),
       ttsRoute: VoiceRoute.nullable().optional(),
       recordingLimit: RecordingLimit.nullable().optional(),
+      sttClean: z.boolean().nullable().optional(),
       wake: z.array(z.string().min(1).max(128)).max(8).nullable().optional(),
     }),
     result: VoiceSettings,

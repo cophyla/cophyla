@@ -131,10 +131,10 @@ export class FakeServer {
   readonly closes: { kind: string; node?: string; code: number; reason: string }[] = [];
   /** Every HTTP request: `METHOD /path`. */
   readonly http: { method: string; path: string; headers: Record<string, string> }[] = [];
-  /** Every `stt.transcribe`: the sample count and the language. */
-  readonly stt: { samples: number; language?: string }[] = [];
-  /** Every `stt.stream`: the samples it heard, its language, and how it ended. */
-  readonly sttStreams: { id: RpcId; samples: number; language?: string; ended?: "end" | "cancel" | "limit" | "quota" }[] = [];
+  /** Every `stt.transcribe`: the sample count, the language, and whether the words were to be cleaned up. */
+  readonly stt: { samples: number; language?: string; clean?: boolean }[] = [];
+  /** Every `stt.stream`: the samples it heard, its language, whether it cleans up, and how it ended. */
+  readonly sttStreams: { id: RpcId; samples: number; language?: string; clean?: boolean; ended?: "end" | "cancel" | "limit" | "quota" }[] = [];
   /** The most seconds an `stt.stream` hears; under 580 the account's allowance ends it there. */
   liveMaxSeconds = 580;
   /** The streams open now, by request id: their audio, their end, their cancel. */
@@ -1052,13 +1052,13 @@ export class FakeServer {
         if (this.plan !== "pro") throw fail("denied", "the plan has no hosted voice");
         const audio = typeof p["audio"] === "string" ? p["audio"] : "";
         const samples = Math.floor(Buffer.from(audio, "base64").length / 2);
-        this.stt.push({ samples, ...(typeof p["language"] === "string" ? { language: p["language"] } : {}) });
+        this.stt.push({ samples, ...(typeof p["language"] === "string" ? { language: p["language"] } : {}), ...(typeof p["clean"] === "boolean" ? { clean: p["clean"] } : {}) });
         this.used["stt_seconds"] = (this.used["stt_seconds"] ?? 0) + Math.ceil(samples / 16000);
         return { text: this.transcript };
       }
       case "stt.stream": {
         if (this.plan !== "pro") throw fail("denied", "the plan has no hosted voice");
-        const row: (typeof this.sttStreams)[number] = { id, samples: 0, ...(typeof p["language"] === "string" ? { language: p["language"] } : {}) };
+        const row: (typeof this.sttStreams)[number] = { id, samples: 0, ...(typeof p["language"] === "string" ? { language: p["language"] } : {}), ...(typeof p["clean"] === "boolean" ? { clean: p["clean"] } : {}) };
         this.sttStreams.push(row);
         const words = this.transcript.split(" ");
         const max = this.liveMaxSeconds;

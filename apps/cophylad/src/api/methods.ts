@@ -615,6 +615,7 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
           ...(p.sttRoute !== undefined ? { sttRoute: p.sttRoute } : {}),
           ...(p.ttsRoute !== undefined ? { ttsRoute: p.ttsRoute } : {}),
           ...(p.recordingLimit !== undefined ? { recordingLimit: p.recordingLimit } : {}),
+          ...(p.sttClean !== undefined ? { sttClean: p.sttClean } : {}),
           ...(p.wake !== undefined ? { wake: p.wake } : {}),
         }),
     },

@@ -1,7 +1,7 @@
 // The voice settings the app sets over config.toml (`voice.configure`): the engine that
 // speaks, a voice for each engine one was picked for, how fast replies are read, the engine
-// that transcribes, how long one recording may last, where the online engines go first, and
-// the wake words listened for. They are this node's own, like its
+// that transcribes, how long one recording may last, whether the online engines clean the
+// words up, where the online engines go first, and the wake words listened for. They are this node's own, like its
 // profiles: kept in the store's kv under `voice`, which replication leaves out, since each
 // machine speaks with its own models.
 
@@ -21,6 +21,8 @@ export interface VoicePrefs {
   stt?: SttEngineId;
   /** The most seconds one recording lasts; absent at `DEFAULT_RECORDING_SECONDS`. */
   recordingLimit?: number;
+  /** The online engines clean the words up; absent, they give them word for word. */
+  sttClean?: true;
   /** Where online transcription and speech go first; `[providers] stt` and `tts` as they are when absent. */
   sttRoute?: VoiceRoute;
   ttsRoute?: VoiceRoute;
@@ -56,6 +58,7 @@ export function storePrefs(store: Pick<Store, "kv">): VoicePrefsStore {
       if (Array.isArray(wake) && wake.length <= MAX_WAKE_HEADS && wake.every((h) => typeof h === "string" && h.length > 0 && h.length <= 128)) out.wake = [...new Set(wake as string[])];
       const limit = RecordingLimit.safeParse((raw as { recordingLimit?: unknown }).recordingLimit);
       if (limit.success) out.recordingLimit = limit.data;
+      if ((raw as { sttClean?: unknown }).sttClean === true) out.sttClean = true;
       const speed = SpeechSpeed.safeParse(raw.speed);
       if (speed.success && speed.data !== 1) out.speed = speed.data;
       if (raw.voices && typeof raw.voices === "object") {

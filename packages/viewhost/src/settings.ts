@@ -370,6 +370,8 @@ export interface SpeechRow {
   recording?: number;
   recordings?: Choice[];
   recordingHelp?: string;
+  /** Whether the words are cleaned up: an online transcription engine only, from a node that can. */
+  clean?: boolean;
   /** Hear it can be pressed: the engine is up. */
   canPreview: boolean;
   /** Where the choice came from, in words. */
@@ -513,6 +515,10 @@ function recordingChoices(limit: number): Choice[] {
   return limits.map((v) => ({ value: String(v), label: durationWords(v) }));
 }
 
+/** What Clean up speech does, the good and the bad: Gemini's smart transcription goes further than taking out the ums. */
+export const CLEAN_HELP =
+  "Gemini takes out ums, uhs, stutters and false starts, and tidies the punctuation. It also acts on corrections you say out loud (\u201cTuesday, no, Wednesday\u201d becomes \u201cWednesday\u201d) and can drop a word you said twice for emphasis. Off, you get what you said, word for word.";
+
 /** What the recording limit does, and that an engine which hears less ends a recording sooner. */
 function recordingHelp(label: string, limit: number, engineLimit: number | undefined): string {
   const help = "How long one recording can go on before it stops by itself. A sound tells you when it does.";
@@ -549,6 +555,8 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
   // A node from before a recording's length could be set says none.
   const limit = s.recordingLimit;
   const timed = stage === "stt" && s.enabled && engine !== "off" && limit !== undefined;
+  // Only the online engines clean up; a node from before the choice says nothing of it.
+  const cleans = stage === "stt" && s.enabled && engine !== "off" && info?.local === false && s.sttClean !== undefined;
   const source = stage === "tts" ? s.source : s.sttSource;
   const route = s.enabled && engine !== "off" ? routeRow(s, stage, engine) : undefined;
   let install: InstallRow | undefined;
@@ -571,6 +579,7 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
     ...(many ? { voice: (s.voice ?? 0) + 1, voices: s.voices } : {}),
     ...(paced ? { speed, speeds: speedChoices(speed) } : {}),
     ...(timed ? { recording: limit, recordings: recordingChoices(limit), recordingHelp: recordingHelp(label, limit, s.sttLimit) } : {}),
+    ...(cleans ? { clean: s.sttClean === true } : {}),
     canPreview: stage === "tts" && s.enabled && state.status === "ready" && engine !== "off",
     source: source === "app" ? "Picked here." : "From config.toml.",
     reset: source === "app",
@@ -1002,6 +1011,12 @@ export class SettingsModel {
     return this.configure({ speed });
   }
 
+  /** Whether the online engines clean the words up, from the next utterance on; off goes as the node's own. */
+  setClean(on: boolean): Promise<void> {
+    if (on === (this.speech?.sttClean === true)) return Promise.resolve();
+    return this.configure({ sttClean: on ? true : null }, "stt");
+  }
+
   /** How many seconds one recording may last, from the next one on; ten minutes goes as the node's own. */
   setRecordingLimit(seconds: number): Promise<void> {
     if (!Number.isFinite(seconds) || seconds === this.speech?.recordingLimit) return Promise.resolve();
@@ -1027,7 +1042,7 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute; recordingLimit?: number | null; wake?: string[] | null }, stage: "stt" | "tts" | "wake" = "tts"): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute; recordingLimit?: number | null; sttClean?: boolean | null; wake?: string[] | null }, stage: "stt" | "tts" | "wake" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
     this.setNote(stage, "");
@@ -1737,6 +1752,7 @@ export class SettingsPanel {
       rows.push(row({ label: "Voice", help: `One of ${r.voices}.`, for: voice.id, control: voice }));
     }
     if (r.speeds !== undefined) rows.push(row({ label: "Speed", help: "How fast replies are read, whichever engine reads them.", for: controlId("speech:speed"), control: select("speech:speed", "Speed", String(r.speed), r.speeds, (v) => void model.setSpeed(Number(v)), r.busy) }));
+    if (r.clean !== undefined) rows.push(row({ label: "Clean up speech", help: CLEAN_HELP, for: controlId("stt:clean"), control: switchInput("stt:clean", "Clean up speech", r.clean, (on) => void model.setClean(on), r.busy) }));
     if (r.recordings !== undefined) rows.push(row({ label: "Longest recording", help: r.recordingHelp ?? "", for: controlId("stt:recording"), control: select("stt:recording", "Longest recording", String(r.recording), r.recordings, (v) => void model.setRecordingLimit(Number(v)), r.busy) }));
     if (tts && !r.install) rows.push(row({ label: "Hear it", help: "A line in the voice set now.", control: button("speech:hear", "Play a sample", "secondary", () => void model.preview(), { disabled: !r.canPreview || r.busy }) }));
     if (r.route) {

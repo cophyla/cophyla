@@ -1,7 +1,8 @@
 // Gemini Live transcription with the user's own key: one WebSocket per utterance to the Live
 // API, the key in a header (never in the URL), set up to transcribe what it hears and answer
-// nothing (`gemini-3.5-transcribe-live` in SMART mode: fillers dropped, self-corrections
-// applied). Audio goes up as base64 PCM at 16 kHz; the words come back as they are heard.
+// nothing (`gemini-3.5-transcribe-live`): word for word (VERBATIM), or cleaned up (SMART:
+// fillers, stutters and false starts dropped, self-corrections applied) when Settings asks
+// (`clean`). Audio goes up as base64 PCM at 16 kHz; the words come back as they are heard.
 // The server's hosted transcription speaks to Gemini the same way (apps/server
 // `capabilities/stt-live.ts`); the two are kept in step by hand.
 //
@@ -140,7 +141,7 @@ function refusal(code: number, reason: string): RpcError {
 export function geminiLive(opts: GeminiLiveOptions): LiveOpener {
   const connect = opts.connect ?? bunConnect;
   const now = opts.now ?? Date.now;
-  return ({ language, vocabulary }): LiveSession => {
+  return ({ language, vocabulary, clean }): LiveSession => {
     const transcript = new LiveTranscript();
     let socket: LiveSocket | undefined;
     let ready = false;
@@ -247,7 +248,7 @@ export function geminiLive(opts: GeminiLiveOptions): LiveOpener {
     }
     const s = socket;
     s.onopen = () => {
-      const transcription: Record<string, unknown> = { mode: "SMART" };
+      const transcription: Record<string, unknown> = { mode: clean ? "SMART" : "VERBATIM" };
       if (language) transcription["languageCodes"] = [language];
       if (vocabulary && vocabulary.length > 0) transcription["customVocabulary"] = vocabulary.slice(0, 100);
       s.send(

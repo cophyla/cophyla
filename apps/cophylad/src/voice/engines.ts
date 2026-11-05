@@ -109,8 +109,8 @@ export interface LiveSession {
   abort(): void;
 }
 
-/** Opens a live session on one route. */
-export type LiveOpener = (opts: { language?: string; vocabulary?: string[] }) => LiveSession;
+/** Opens a live session on one route; `clean` has the words cleaned up (smart transcription), word for word otherwise. */
+export type LiveOpener = (opts: { language?: string; vocabulary?: string[]; clean?: boolean }) => LiveSession;
 
 export interface TtsEngine {
   readonly name: string;

@@ -18,10 +18,10 @@
         { "content": [], "stopReason": "cancelled", "usage": { "in": 900, "out": 0 }, "model": "gemini/gemini-3.8-flash" }
       ]
     },
-    "stt.transcribe": { "params": [{ "audio": "AAAAAAAAAAA=" }, { "audio": "AAAAAAAAAAA=", "language": "en" }], "results": [{ "text": "what is open" }, { "text": "" }] },
+    "stt.transcribe": { "params": [{ "audio": "AAAAAAAAAAA=" }, { "audio": "AAAAAAAAAAA=", "language": "en" }, { "audio": "AAAAAAAAAAA=", "language": "en", "clean": true }], "results": [{ "text": "what is open" }, { "text": "" }] },
     "tts.speak": { "params": [{ "text": "Nothing is open." }, { "text": "Nothing is open.", "voice": "af_heart" }], "results": [{}] },
     "stt.stream": {
-      "params": [{}, { "language": "en" }, { "language": "en-US", "vocabulary": ["Cophyla", "orchestrator"] }],
+      "params": [{}, { "language": "en" }, { "language": "en-US", "vocabulary": ["Cophyla", "orchestrator"] }, { "language": "en", "clean": false }, { "clean": true }],
       "results": [{ "text": "What is open?", "seconds": 4 }, { "text": "", "seconds": 0 }, { "text": "The first part of a long one", "seconds": 600, "stopped": "limit" }, { "text": "Then the allowance ran out", "seconds": 212, "stopped": "quota" }]
     },
     "cancel": { "params": [{ "id": 12 }, { "id": "req_7" }], "results": [{}] },

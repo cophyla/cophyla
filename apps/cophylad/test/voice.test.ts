@@ -1311,6 +1311,18 @@ describe("the speech engine picked in the app", () => {
     expect(await ui.call("voice.configure", { recordingLimit: 7200 })).toMatchObject({ error: { data: { code: "invalid" } } });
   }, 20_000);
 
+  test("Clean up speech is off unless the app turns it on, kept as none when off", async () => {
+    const { d, ui } = await start();
+    expect((await settings(ui)).sttClean).toBe(false);
+    expect(await configure(ui, { sttClean: true })).toMatchObject({ sttClean: true });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toEqual({ sttClean: true });
+    expect(await configure(ui, { sttClean: false })).toMatchObject({ sttClean: false });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+    await configure(ui, { sttClean: true });
+    expect(await configure(ui, { sttClean: null })).toMatchObject({ sttClean: false });
+    expect(await ui.call("voice.configure", { sttClean: "smart" })).toMatchObject({ error: { data: { code: "invalid" } } });
+  }, 20_000);
+
   test("a recogniser that hears less than a recording may last says so", async () => {
     const { ui } = await start({ engines: new FakeEngines({ transcript: TRANSCRIPT, maxSeconds: 30 }) });
     expect(await settings(ui)).toMatchObject({ recordingLimit: 600, sttLimit: 30 });
@@ -1328,6 +1340,10 @@ describe("the speech engine picked in the app", () => {
     expect(prefs.read()).toEqual({});
     store.kv.put(VOICE_KV_NS, "prefs", { recordingLimit: 2700 });
     expect(prefs.read()).toEqual({ recordingLimit: 2700 });
+    store.kv.put(VOICE_KV_NS, "prefs", { sttClean: "yes" });
+    expect(prefs.read()).toEqual({});
+    store.kv.put(VOICE_KV_NS, "prefs", { sttClean: true });
+    expect(prefs.read()).toEqual({ sttClean: true });
     prefs.write({});
     expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
   });

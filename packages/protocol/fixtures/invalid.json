@@ -57,6 +57,8 @@
   { "schema": "client.requests.voice.wake.params", "why": "a score above 1", "value": { "score": 1.5 } },
   { "schema": "client.requests.voice.configure.params", "why": "a speed past three times", "value": { "speed": 4 } },
   { "schema": "client.requests.voice.configure.params", "why": "no speed at all", "value": { "speed": 0 } },
+  { "schema": "client.requests.voice.configure.params", "why": "cleanup that is not on or off", "value": { "sttClean": "smart" } },
+  { "schema": "serverLink.requests.stt.stream.params", "why": "cleanup that is not on or off", "value": { "clean": "yes" } },
   { "schema": "client.requests.voice.configure.params", "why": "a recording shorter than a minute", "value": { "recordingLimit": 30 } },
   { "schema": "client.requests.voice.configure.params", "why": "a recording longer than an hour", "value": { "recordingLimit": 7200 } },
   { "schema": "client.requests.voice.configure.params", "why": "a recording limit that is not whole seconds", "value": { "recordingLimit": 600.5 } },

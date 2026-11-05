@@ -627,7 +627,12 @@ hour), or what its recogniser hears when that is less (30 s on Moonshine and Whi
 with `listening` (`limit`); at that limit, or where the account's allowance ends, it stops with
 the button still held and the `transcribing` after it says why (`stopped`). A Gemini Live
 session hears about ten minutes, so a longer utterance is handed to a new one at a quiet
-moment 80 s before its end, the words of both joined (`voice/live.ts`). The words so far go to the speaking client alone as `voice.partial`,
+moment 80 s before its end, the words of both joined (`voice/live.ts`). The words come as
+said unless Settings has them cleaned up (`voice.configure {sttClean}`, off by default): then
+Gemini's own transcription models do it in smart mode, fillers, stutters and false starts out
+and corrections said out loud resolved, live (SMART on `gemini-3.5-transcribe-live`) or whole
+(`gemini-3.5-transcribe` over the Interactions API, `[providers.gemini] stt_clean_model`), and
+the server is asked the same (`clean` on `stt.transcribe` and `stt.stream`). The words so far go to the speaking client alone as `voice.partial`,
 four times a second at most and only what changed, the last naming the chat message they
 became; the brain hears `voice.transcript` once a second while the user speaks. `onnxruntime-node` is imported before
 `sherpa-onnx-node` (`voice/runtime.ts`): both load a native ONNX Runtime and the first one in

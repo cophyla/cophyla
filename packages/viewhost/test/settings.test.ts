@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -285,6 +285,38 @@ describe("the node's speech", () => {
     expect(durationWords(60)).toBe("1 minute");
     expect(durationWords(7200)).toBe("2 hours");
     expect(durationWords(90)).toBe("1.5 minutes");
+  });
+
+  test("Clean up speech: a switch for an online engine, saying what it does, and none for one on this computer or from a node that cannot", () => {
+    const row = sttRow(speech({ sttClean: false }));
+    expect(row.clean).toBe(false);
+    expect(sttRow(speech({ sttClean: true })).clean).toBe(true);
+    expect(CLEAN_HELP).toContain("ums, uhs, stutters and false starts");
+    expect(CLEAN_HELP).toContain("word for word");
+    // local engines do no cleanup; nor transcription turned off, speech, or an older node
+    expect(sttRow(speech({ stt: "moonshine-tiny", sttStage: { status: "ready", engine: "moonshine-tiny" }, sttClean: false, engines: [...ENGINES, { id: "moonshine-tiny", stage: "stt", label: "Moonshine Tiny", detail: "", local: true, installed: true }] })).clean).toBeUndefined();
+    expect(sttRow(speech({ stt: "off", sttStage: { status: "off" }, sttClean: false })).clean).toBeUndefined();
+    expect(speechRow(speech({ sttClean: false })).clean).toBeUndefined();
+    expect(sttRow(speech()).clean).toBeUndefined();
+  });
+
+  test("Clean up speech on sends it, off hands it back, and the state it is in already sends nothing", async () => {
+    let now = speech({ sttClean: false });
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => (now = { ...now, sttClean: p["sttClean"] === true }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setClean(true);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { sttClean: true } });
+    expect(m.sttRow()?.clean).toBe(true);
+    await m.setClean(false);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { sttClean: null } });
+    const before = asked.length;
+    await m.setClean(false);
+    expect(asked.length).toBe(before);
+    m.dispose();
   });
 
   test("a recording's length goes out as it is, ten minutes as the node's own, and the one set already sends nothing", async () => {

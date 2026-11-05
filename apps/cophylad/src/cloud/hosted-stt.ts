@@ -1,5 +1,7 @@
 // The `server` transcription route, over the link: a piece of an utterance of at most a minute
-// sent whole (`stt.transcribe`), or an utterance transcribed as it is said (`stt.stream`). A
+// sent whole (`stt.transcribe`), or an utterance transcribed as it is said (`stt.stream`),
+// either one word for word or cleaned up as Settings says (`clean`, which a server from before
+// it leaves out: the whole word for word, live cleaned up, as they always were). A
 // live one is opened when the utterance has speech in it; the server says it hears with
 // `stt.ready`, naming the most seconds it will (less than the utterance may last when the
 // account's allowance is nearly used), the audio goes up as `stt.audio` frames naming the
@@ -33,20 +35,20 @@ export class ServerStt {
   }
 
   /** One piece over the link; a refusal (not signed in, no plan for it, the link down) or a failure is thrown, for a route to pass on. */
-  async transcribe(pcm: Int16Array, language?: string): Promise<string> {
+  async transcribe(pcm: Int16Array, language?: string, clean?: boolean): Promise<string> {
     const deps = this.deps;
     const refused = deps.allowed("voice");
     if (refused) throw refused;
     if (pcm.length > MAX_SECONDS * IN_RATE) throw new RpcError("invalid", `stt.transcribe: ${Math.ceil(pcm.length / IN_RATE)} s of audio; the most is ${MAX_SECONDS} s`);
     const seconds = Math.ceil(pcm.length / IN_RATE);
     const lang = language ?? this.language;
-    const r = (await deps.link.request("stt.transcribe", { audio: b64(pcm), ...(lang ? { language: lang } : {}) })) as { text?: unknown };
+    const r = (await deps.link.request("stt.transcribe", { audio: b64(pcm), ...(lang ? { language: lang } : {}), ...(clean !== undefined ? { clean } : {}) })) as { text?: unknown };
     deps.usage.add("stt_seconds", seconds);
     return typeof r?.text === "string" ? r.text : "";
   }
 
   /** One utterance transcribed as it is said. */
-  readonly listen: LiveOpener = ({ language, vocabulary }): LiveSession => {
+  readonly listen: LiveOpener = ({ language, vocabulary, clean }): LiveSession => {
     const deps = this.deps;
     const controller = new AbortController();
     let id: RpcId | undefined;
@@ -85,7 +87,7 @@ export class ServerStt {
     const result: Promise<LiveResult> = refused
       ? Promise.reject(refused)
       : deps.link
-          .requestCancellable("stt.stream", { ...(lang ? { language: lang } : {}), ...(vocabulary?.length ? { vocabulary } : {}) }, {
+          .requestCancellable("stt.stream", { ...(lang ? { language: lang } : {}), ...(vocabulary?.length ? { vocabulary } : {}), ...(clean !== undefined ? { clean } : {}) }, {
             signal: controller.signal,
             timeoutMs: this.maxSeconds * 1000 + STREAM_SLACK_MS,
             onSent: (sent) => (id = sent),

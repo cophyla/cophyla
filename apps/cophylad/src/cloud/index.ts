@@ -475,10 +475,10 @@ export class Cloud {
    * The `server` route of the online engines: a piece of an utterance, an utterance as it is
    * said (lasting `maxSeconds` at most), or one line, a refusal thrown so the next route can take it.
    */
-  speechRoute(opts: { maxSeconds: number }): { transcribe(pcm: Int16Array, language: string | undefined): Promise<string>; speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array>; listen: LiveOpener } {
+  speechRoute(opts: { maxSeconds: number }): { transcribe(pcm: Int16Array, language: string | undefined, clean?: boolean): Promise<string>; speak(text: string, voice: string, signal?: AbortSignal): AsyncIterable<Int16Array>; listen: LiveOpener } {
     const stt = new ServerStt(this.hosted, { maxSeconds: opts.maxSeconds });
     return {
-      transcribe: (pcm, language) => stt.transcribe(pcm, language),
+      transcribe: (pcm, language, clean) => stt.transcribe(pcm, language, clean),
       speak: (text, voice, signal) => new ServerTtsEngine(this.hosted, voice).synth(text, signal ? { signal } : {}),
       listen: stt.listen,
     };

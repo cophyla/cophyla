@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { RpcError } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import type { OnlineDeps } from "../src/voice/online.ts";
-import { deepinfraSpeak, geminiTranscribe, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
+import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
 
 type Call = { url: string; init: RequestInit };
 
@@ -84,6 +84,80 @@ describe("Gemini transcription", () => {
     await expect(geminiTranscribe(ramp(10), undefined, opts(429))).rejects.toMatchObject({ code: "quota_exceeded" });
     await expect(geminiTranscribe(ramp(10), undefined, opts(400))).rejects.toMatchObject({ code: "invalid" });
     await expect(geminiTranscribe(ramp(10), undefined, opts(503))).rejects.toMatchObject({ code: "unavailable" });
+  });
+});
+
+describe("Clean up speech", () => {
+  const answered = (text: string) => Response.json({ id: "interactions/1", status: "completed", steps: [{ type: "model_output", content: [{ type: "text", text }] }] });
+
+  test("Gemini's transcription model in smart mode, over the Interactions API, the WAV inline and the key in a header", async () => {
+    const f = fakeFetch(() => answered(" Move the meeting to Tuesday. "));
+    const text = await geminiSmartTranscribe(ramp(16000), "en", { apiKey: () => "g-key", baseUrl: "https://gemini.test/", model: CLEAN_MODEL, fetch: f.fetch });
+    expect(text).toBe("Move the meeting to Tuesday.");
+    expect(f.calls[0]!.url).toBe("https://gemini.test/v1beta/interactions");
+    expect(f.calls[0]!.url).not.toContain("g-key");
+    expect((f.calls[0]!.init.headers as Record<string, string>)["x-goog-api-key"]).toBe("g-key");
+    const body = JSON.parse(String(f.calls[0]!.init.body));
+    expect(body.model).toBe("models/gemini-3.5-transcribe");
+    expect(body.generation_config).toEqual({ transcription_config: { mode: "smart", language_codes: ["en"] } });
+    expect(body.input[0].type).toBe("audio");
+    expect(body.input[0].mime_type).toBe("audio/wav");
+    expect(Buffer.from(body.input[0].data, "base64").subarray(0, 4).toString()).toBe("RIFF");
+    // no language: Gemini hears which
+    await geminiSmartTranscribe(ramp(1600), undefined, { apiKey: () => "g-key", baseUrl: "https://gemini.test", model: CLEAN_MODEL, fetch: f.fetch });
+    expect(JSON.parse(String(f.calls[1]!.init.body)).generation_config).toEqual({ transcription_config: { mode: "smart" } });
+    await expect(geminiSmartTranscribe(ramp(1600), "en", { apiKey: () => undefined, baseUrl: "https://gemini.test", model: CLEAN_MODEL, fetch: f.fetch })).rejects.toMatchObject({ code: "unavailable" });
+    const throttled = fakeFetch(() => new Response("{}", { status: 429 }));
+    await expect(geminiSmartTranscribe(ramp(1600), "en", { apiKey: () => "g-key", baseUrl: "https://gemini.test", model: CLEAN_MODEL, fetch: throttled.fetch })).rejects.toBeInstanceOf(RpcError);
+  });
+
+  test("the transcript is the answer's output text, or its steps' text", () => {
+    expect(interactionText({ output_text: " Said. " })).toBe("Said.");
+    expect(interactionText({ steps: [{ content: [{ type: "text", text: "One. " }, { type: "thought", text: "no" }] }, { content: [{ type: "text", text: "Two." }] }] })).toBe("One. Two.");
+    expect(interactionText({})).toBe("");
+  });
+
+  test("on, the user's key goes to the cleanup model and the server is asked to clean up; off, both give the words as said", async () => {
+    let clean = false;
+    const asked: (boolean | undefined)[] = [];
+    const g = fakeFetch((call) => (call.url.endsWith("/interactions") ? answered("cleaned") : geminiSays("as said")));
+    const own = deps({ sttRoutes: () => ["byok:gemini"], gemini: { ...deps().gemini, cleanModel: "my-clean-model", fetch: g.fetch }, clean: () => clean });
+    expect(await transcribeWith(onlineStt(own), 8000)).toBe("as said");
+    clean = true;
+    expect(await transcribeWith(onlineStt(own), 8000)).toBe("cleaned");
+    expect(JSON.parse(String(g.calls[1]!.init.body)).model).toBe("models/my-clean-model");
+    const server = deps({
+      server: {
+        transcribe: async (_pcm, _language, c) => {
+          asked.push(c);
+          return "from the server";
+        },
+        speak: () => ({ async *[Symbol.asyncIterator]() {} }),
+      },
+      clean: () => clean,
+    });
+    expect(await transcribeWith(onlineStt(server), 8000)).toBe("from the server");
+    clean = false;
+    await transcribeWith(onlineStt(server), 8000);
+    expect(asked).toEqual([true, false]);
+  });
+
+  test("every piece of a long utterance is cleaned up or none is, as it was when the utterance ended", async () => {
+    let clean = true;
+    const asked: (boolean | undefined)[] = [];
+    const server = deps({
+      server: {
+        transcribe: async (_pcm, _language, c) => {
+          asked.push(c);
+          clean = false;
+          return "piece";
+        },
+        speak: () => ({ async *[Symbol.asyncIterator]() {} }),
+      },
+      clean: () => clean,
+    });
+    await transcribeWith(onlineStt(server), 150 * 16000);
+    expect(asked).toEqual([true, true, true]);
   });
 });
 

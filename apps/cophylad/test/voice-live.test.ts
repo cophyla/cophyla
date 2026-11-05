@@ -21,7 +21,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /** A session the test drives: its readiness, its end, what it was sent. */
 interface Scripted {
   route: string;
-  opts: { language?: string; vocabulary?: string[] };
+  opts: { language?: string; vocabulary?: string[]; clean?: boolean };
   sent: Int16Array[];
   aborted: boolean;
   ended: boolean;
@@ -306,8 +306,22 @@ describe("the live stream", () => {
     const s: SttStream = liveStt({ routes: () => ["byok:gemini"], opener: (r) => scripted(r, sessions), batch: async () => ({ text: "" }), maxSeconds: 570, language: "tr", vocabulary: () => ["Cophyla"], log: silentLogger }).stream();
     s.accept(frame());
     s.heard!();
-    expect(sessions[0]!.opts).toEqual({ language: "tr", vocabulary: ["Cophyla"] });
+    expect(sessions[0]!.opts).toEqual({ language: "tr", vocabulary: ["Cophyla"], clean: false });
     s.dispose();
+  });
+
+  test("cleanup is read as the utterance begins, and every session of it is asked the same", async () => {
+    let clean = true;
+    const { stream, sessions } = setup({ maxSeconds: 3600, clean: () => clean });
+    stream.accept(frame());
+    stream.heard!();
+    clean = false;
+    sessions[0]!.ready();
+    await sleep(0);
+    for (let i = 0; i < 9; i++) stream.accept(frame());
+    sessions[0]!.session.onEnded!({ text: "Before.", stopped: "limit" });
+    expect(sessions.map((s) => s.opts.clean)).toEqual([true, true]);
+    stream.dispose();
   });
 });
 
@@ -517,7 +531,7 @@ const interim = (text: string) => ({ serverContent: { interimInputTranscription:
 const final = (text: string) => ({ serverContent: { inputTranscription: { text } } });
 const activity = (type: "ACTIVITY_START" | "ACTIVITY_END") => ({ serverContent: {}, voiceActivity: { type, audioOffset: "1s" } });
 
-async function opened(opts: { language?: string; vocabulary?: string[] } = {}) {
+async function opened(opts: { language?: string; vocabulary?: string[]; clean?: boolean } = {}) {
   const g = gemini();
   const session = g.opener(opts);
   await sleep(0);
@@ -528,9 +542,19 @@ async function opened(opts: { language?: string; vocabulary?: string[] } = {}) {
 }
 
 describe("Gemini Live with the user's own key", () => {
-  test("the key goes in a header, never the URL, and the setup asks for SMART transcription and nothing said back", async () => {
+  test("the setup asks for the words as said unless cleanup is on, then SMART", async () => {
     const g = gemini();
-    const session = g.opener({ language: "en", vocabulary: ["Cophyla"] });
+    g.opener({ language: "en" }).abort();
+    g.opener({ language: "en", clean: false }).abort();
+    g.opener({ language: "en", clean: true }).abort();
+    await sleep(0);
+    const modes = g.sockets.map((s) => (s.sent[0] as { setup: { inputAudioTranscription: { mode: string } } } | undefined)?.setup.inputAudioTranscription.mode);
+    expect(modes).toEqual(["VERBATIM", "VERBATIM", "SMART"]);
+  });
+
+  test("the key goes in a header, never the URL, and the setup asks for SMART transcription when cleaning up, and nothing said back", async () => {
+    const g = gemini();
+    const session = g.opener({ language: "en", vocabulary: ["Cophyla"], clean: true });
     await sleep(0);
     const s = g.sockets[0]!;
     expect(s.url).toBe("wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent");

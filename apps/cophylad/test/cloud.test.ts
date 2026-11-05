@@ -293,6 +293,8 @@ describe("cloud", () => {
     for (let i = 0; i < frames; i++) phone.signal("voice.audio", { chunk: b64(speechChunk()) });
     for (let i = 0; i < 20; i++) phone.signal("voice.audio", { chunk: b64(silenceChunk()) });
     await waitFor(() => fake.sttStreams[0]?.ended === "end", 5000);
+    // Clean up speech is off unless Settings turns it on: the words come as said
+    expect(fake.sttStreams[0]!.clean).toBe(false);
     // the speech frames and the closing silence are what the VAD handed over, none sent twice
     expect(fake.sttStreams[0]!.samples).toBeGreaterThanOrEqual(frames * 640);
     expect(fake.sttStreams[0]!.samples % 640).toBe(0);
@@ -331,8 +333,32 @@ describe("cloud", () => {
     for (let i = 0; i < 20; i++) phone.signal("voice.audio", { chunk: b64(silenceChunk()) });
     await waitFor(() => fake.stt.length === 1, 5000);
     expect(fake.stt[0]!.samples).toBeGreaterThanOrEqual(8 * 640);
+    expect(fake.stt[0]!.clean).toBe(false);
     expect(fake.sttStreams).toEqual([]);
     phone.close();
+  });
+
+  test.each(["gemini", "gemini-live"])("with Clean up speech on in Settings, the server is asked for the words cleaned up (%s)", async (stt) => {
+    {
+      const { d, fake } = await start({ signedIn: true, voice: true, stt });
+      await d.voice.ready();
+      expect(d.voice.configure({ sttClean: true })).toMatchObject({ sttClean: true });
+      await waitFor(() => d.cloud.hostedAllowed("voice") === undefined);
+      const phone = await TestClient.connect(d.api.url);
+      await phone.hello(d.token, { kind: "controller", name: "Pixel", audio: { in: true, out: true } });
+      phone.signal("voice.audio", { chunk: b64(wakeChunk()) });
+      await sleep(30);
+      for (let i = 0; i < 8; i++) phone.signal("voice.audio", { chunk: b64(speechChunk()) });
+      for (let i = 0; i < 20; i++) phone.signal("voice.audio", { chunk: b64(silenceChunk()) });
+      if (stt === "gemini") {
+        await waitFor(() => fake.stt.length === 1, 5000);
+        expect(fake.stt[0]!.clean).toBe(true);
+      } else {
+        await waitFor(() => fake.sttStreams[0]?.ended === "end", 5000);
+        expect(fake.sttStreams[0]!.clean).toBe(true);
+      }
+      phone.close();
+    }
   });
 
   test("the allowance running out mid-utterance ends it there, with the words heard and the reason told", async () => {

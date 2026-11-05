@@ -78,6 +78,8 @@ export interface LiveSttDeps {
   language?: string;
   /** Words the recogniser should expect: names of this node's things. */
   vocabulary?: () => string[];
+  /** Whether the words are cleaned up (smart transcription), read as each utterance begins; word for word without it. */
+  clean?: () => boolean;
   log: Logger;
   /** For the tests: `OPEN_WAIT_MS` and `END_WAIT_MS` unless given. */
   openWaitMs?: number;
@@ -105,6 +107,8 @@ class LiveStream implements SttStream {
   how?: { route?: string; live?: boolean };
   private deps: LiveSttDeps;
   private language: string | undefined;
+  /** Every session of the utterance cleans the words up, or none does. */
+  private clean: boolean;
   /** The audio kept, from sample `base` of the utterance on. */
   private chunks: Int16Array[] = [];
   private base = 0;
@@ -143,6 +147,7 @@ class LiveStream implements SttStream {
   constructor(deps: LiveSttDeps, language: string | undefined) {
     this.deps = deps;
     this.language = language;
+    this.clean = deps.clean?.() ?? false;
     this.dropped = new Promise((resolve) => (this.drop = resolve));
   }
 
@@ -186,7 +191,7 @@ class LiveStream implements SttStream {
         refusals.push(`${route}: does not transcribe live`);
         continue;
       }
-      const session = opener({ ...(this.language ? { language: this.language } : {}), ...(vocabulary?.length ? { vocabulary } : {}) });
+      const session = opener({ ...(this.language ? { language: this.language } : {}), ...(vocabulary?.length ? { vocabulary } : {}), clean: this.clean });
       this.session = session;
       this.route = route;
       session.onText = (text, final) => this.onText(session, text, final);

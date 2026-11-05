@@ -263,6 +263,8 @@ export const ProvidersConfig = z.object({
       stt_model: z.string().min(1).default("gemini-3.5-flash-lite"),
       /** The model that transcribes as the user speaks on the `byok:gemini` route (`[voice] stt = "gemini-live"`), over the Live API. */
       stt_live_model: z.string().min(1).default("gemini-3.5-transcribe-live"),
+      /** The model that transcribes each utterance whole on the `byok:gemini` route when Settings has the words cleaned up: Gemini's transcription model, in smart mode. */
+      stt_clean_model: z.string().min(1).default("gemini-3.5-transcribe"),
     })
     .prefault({}),
   deepinfra: z
@@ -923,6 +925,7 @@ timeout_ms = 120000
 base_url = "https://generativelanguage.googleapis.com"
 stt_model = "gemini-3.5-flash-lite"   # [voice] stt = "gemini": each utterance whole; 2.5 Flash-Lite is closed to new keys
 stt_live_model = "gemini-3.5-transcribe-live"   # [voice] stt = "gemini-live": the words as they are said
+stt_clean_model = "gemini-3.5-transcribe"   # [voice] stt = "gemini" with Clean up speech on in Settings: smart mode
 
 [providers.deepinfra]
 # api_key = "..."            # a key typed in Settings comes first; DEEPINFRA_API_KEY in the environment when neither is set

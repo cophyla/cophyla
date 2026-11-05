@@ -100,9 +100,13 @@ export const serverLinkRequests = {
   "entitlement.refresh": { params: Empty, result: z.object({ token: z.string(), usage: Usage.optional() }) },
   /** The hosted model: the same request the brain makes of the daemon, tier resolved by the server. Chunks arrive as `llm.delta` frames. */
   "llm.complete": { params: LlmComplete, result: LlmResult },
-  /** Hosted transcription of one utterance: int16 samples at 16 kHz, mono, base64. */
+  /**
+   * Hosted transcription of one utterance: int16 samples at 16 kHz, mono, base64. With `clean`,
+   * the words come cleaned up (Gemini's smart transcription: fillers, stutters and false starts
+   * out, corrections said out loud resolved); word for word without it.
+   */
   "stt.transcribe": {
-    params: z.object({ audio: z.string().describe("int16 16 kHz mono, base64"), language: z.string().optional() }),
+    params: z.object({ audio: z.string().describe("int16 16 kHz mono, base64"), language: z.string().optional(), clean: z.boolean().optional() }),
     result: z.object({ text: z.string() }),
   },
   /**
@@ -112,10 +116,11 @@ export const serverLinkRequests = {
    * The words come back as `stt.partial` frames as they are heard. The result is the whole
    * transcript and the seconds metered; `stopped` when the server stopped hearing before
    * `stt.end`, at its limit or the account's allowance. `cancel` drops it, metered as far as
-   * it was heard.
+   * it was heard. `clean: false` asks for the words as said; cleaned up otherwise, as a node
+   * from before the choice expects.
    */
   "stt.stream": {
-    params: z.object({ language: z.string().optional(), vocabulary: z.array(z.string().min(1).max(64)).max(100).optional() }),
+    params: z.object({ language: z.string().optional(), vocabulary: z.array(z.string().min(1).max(64)).max(100).optional(), clean: z.boolean().optional() }),
     result: z.object({ text: z.string(), seconds: z.number().int().nonnegative(), stopped: VoiceStopped.optional() }),
   },
   /** Hosted speech: the audio arrives as `tts.delta` frames carrying this request's id; the result closes the stream. */
