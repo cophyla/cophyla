@@ -15,7 +15,8 @@
 // a few hundred milliseconds later. Audio sent faster than it is spoken (the backlog of an
 // utterance that began before the stream was open) is taken, and heard at about four times
 // real time. A session ends at ten minutes of wall time less a margin: `goAway` fifty seconds
-// before, then the socket closes; an utterance never lasts that long (`online.ts`).
+// before, then the socket closes; an utterance that goes on longer is handed to a new session
+// before then (`live.ts`).
 
 import { RpcError } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";

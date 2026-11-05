@@ -181,7 +181,8 @@ import { AUDIO_CODECS, Voice } from "./voice/index.ts";
 import { Presence } from "./voice/presence.ts";
 import { localEngines } from "./voice/local.ts";
 import { modelResolver } from "./voice/models.ts";
-import { MAX_SECONDS as ONLINE_MAX_SECONDS, onlineLiveStt, onlineStt, onlineTts, routesFor } from "./voice/online.ts";
+import { onlineLiveStt, onlineStt, onlineTts, routesFor } from "./voice/online.ts";
+import { LIVE_MAX_SECONDS } from "./voice/gemini-live.ts";
 import type { OnlineDeps } from "./voice/online.ts";
 import type { LiveConnect } from "./voice/gemini-live.ts";
 import { storePrefs } from "./voice/prefs.ts";
@@ -875,7 +876,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   const online: OnlineDeps = {
     sttRoutes: () => routesFor(config.providers.stt, voicePrefs.read().sttRoute),
     ttsRoutes: () => routesFor(config.providers.tts, voicePrefs.read().ttsRoute),
-    server: cloud.speechRoute({ maxSeconds: ONLINE_MAX_SECONDS }),
+    // One live session on the server is one of Gemini's: a longer utterance goes on in the next (`live.ts`).
+    server: cloud.speechRoute({ maxSeconds: LIVE_MAX_SECONDS }),
     gemini: {
       apiKey: () => keys.gemini(),
       baseUrl: config.providers.gemini.base_url,

@@ -621,10 +621,13 @@ brings speech back in 24 kHz chunks. The app's Settings says where they go first
 (`voice.configure {sttRoute, ttsRoute}`: `cloud`, the server and then the key, or `own`, the
 key alone). A live session opens only once the VAD has heard speech, so a tap costs nothing,
 and one that fails under an utterance leaves it to the whole-utterance route at its end. The
-wake word and the VAD stay local. An utterance lasts what its recogniser hears — 570 s online,
-30 s on Moonshine and Whisper — told with `listening` (`limit`); at that limit, or where the
-account's allowance ends, it stops with the button still held and the `transcribing` after it
-says why (`stopped`). The words so far go to the speaking client alone as `voice.partial`,
+wake word and the VAD stay local. An utterance lasts as long as the user lets one, ten
+minutes unless Settings says otherwise (`voice.configure {recordingLimit}`, a minute to an
+hour), or what its recogniser hears when that is less (30 s on Moonshine and Whisper), told
+with `listening` (`limit`); at that limit, or where the account's allowance ends, it stops with
+the button still held and the `transcribing` after it says why (`stopped`). A Gemini Live
+session hears about ten minutes, so a longer utterance is handed to a new one at a quiet
+moment 80 s before its end, the words of both joined (`voice/live.ts`). The words so far go to the speaking client alone as `voice.partial`,
 four times a second at most and only what changed, the last naming the chat message they
 became; the brain hears `voice.transcript` once a second while the user speaks. `onnxruntime-node` is imported before
 `sherpa-onnx-node` (`voice/runtime.ts`): both load a native ONNX Runtime and the first one in

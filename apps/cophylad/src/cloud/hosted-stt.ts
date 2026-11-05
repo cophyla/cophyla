@@ -23,7 +23,7 @@ const b64 = (pcm: Int16Array) => Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byt
 export class ServerStt {
   private deps: HostedDeps;
   private language: string | undefined;
-  /** The most seconds an utterance lasts on this node: the request's deadline follows it. */
+  /** The most seconds one live session lasts, as one of Gemini's does: the request's deadline follows it. */
   private maxSeconds: number;
 
   constructor(deps: HostedDeps, opts: { language?: string; maxSeconds: number }) {

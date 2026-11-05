@@ -16,13 +16,13 @@
 // transcript, and an utterance comes back in about a second. A request carries a minute at
 // most, the server's limit, so a longer utterance goes in pieces cut at its quietest moments
 // (`splitAtQuiet`), two at a time, and the pieces' words are joined. Either way an utterance
-// lasts `MAX_SECONDS` at most: Gemini Live's session is ten minutes of wall time, less the
-// margin its setup and its last words need. Speech goes
+// lasts as long as the user lets one (`MAX_SECONDS` at most, an hour): Gemini Live's session
+// is ten minutes of wall time, so a longer one goes on in the next (`live.ts`). Speech goes
 // a line at a time, as the server's does, and the WAV that streams back is played as it comes:
 // Kokoro-82M on DeepInfra is the cheapest voice there is online, $0.62 a million characters,
 // about $0.0006 a minute of speech.
 
-import { RpcError } from "@cophyla/protocol";
+import { MAX_RECORDING_SECONDS, RpcError } from "@cophyla/protocol";
 import type { VoiceRoute } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import type { LiveOpener, SttEngine, SttStream, TtsEngine } from "./engines.ts";
@@ -32,8 +32,8 @@ import type { LiveConnect } from "./gemini-live.ts";
 import { liveStt } from "./live.ts";
 import { WavStream } from "./wav-stream.ts";
 
-/** The most audio one utterance may carry online: Gemini Live's ten minutes, less its setup and its last words. */
-export const MAX_SECONDS = 570;
+/** The most audio one utterance may carry online: the longest a recording may be set to last. */
+export const MAX_SECONDS = MAX_RECORDING_SECONDS;
 /** The most audio one transcription request carries, as the server allows: a longer utterance goes in pieces. */
 export const PIECE_SECONDS = 60;
 /** Where before a piece's end it may be cut: the quietest `QUIET_STEP_MS` in its last `QUIET_SEARCH_SECONDS`. */

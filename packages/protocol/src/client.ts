@@ -342,6 +342,13 @@ export type ProviderKeys = z.infer<typeof ProviderKeys>;
 /** How fast replies are read, the engine's own pace being 1: from half as fast to three times as fast. */
 export const SpeechSpeed = z.number().min(0.5).max(3);
 
+/** The most seconds one recording lasts unless the user sets another: ten minutes. */
+export const DEFAULT_RECORDING_SECONDS = 600;
+/** The longest a recording may be set to last: an hour. */
+export const MAX_RECORDING_SECONDS = 3600;
+/** The most seconds one recording lasts, as the user sets it: from a minute to an hour. */
+export const RecordingLimit = z.number().int().min(60).max(MAX_RECORDING_SECONDS);
+
 /** A licence a local engine comes under: what it covers, its name, where to read it. */
 export const SpeechLicence = z.object({ covers: z.string(), name: z.string().min(1), url: z.string().url() });
 export type SpeechLicence = z.infer<typeof SpeechLicence>;
@@ -391,7 +398,8 @@ export type VoiceStageState = z.infer<typeof VoiceStageState>;
  * voice among the engine's `voices` (the model's own default when absent; `voices` is known
  * once the engine is loaded), the `speed` replies are read at, whichever engine reads them,
  * and the speech stage; the same for transcription (`stt`,
- * `sttSource`, `sttStage`); where the online engines go first (`sttRoute`, `ttsRoute`) and
+ * `sttSource`, `sttStage`); how long one recording may last (`recordingLimit`, in seconds),
+ * and less when the engine that transcribes hears less (`sttLimit`); where the online engines go first (`sttRoute`, `ttsRoute`) and
  * the keys they would use; every engine there is for either; the install under way or the
  * last one that failed; and the wake words: every phrase the wake model has, each saying
  * whether it listens (`wake`), where that pick came from (`wakeSource`) and the wake stage,
@@ -408,6 +416,10 @@ export const VoiceSettings = z.object({
   stt: SttEngineId,
   sttSource: z.enum(["app", "config"]),
   sttStage: VoiceStageState,
+  /** The most seconds one recording lasts, as set in the app or `DEFAULT_RECORDING_SECONDS`; none from a node that cannot set it. */
+  recordingLimit: z.number().int().positive().optional(),
+  /** The most seconds the engine that transcribes hears, when that is less than a recording may be set to last. */
+  sttLimit: z.number().positive().optional(),
   /** Where online transcription and speech go first; `cloud` unless the app set another. */
   sttRoute: VoiceRoute.optional(),
   ttsRoute: VoiceRoute.optional(),
@@ -828,7 +840,8 @@ export const clientRequests = {
    * The engine or the voice, set from the app over config.toml; `null` hands either back to
    * it. A voice belongs to the engine it was set for. The speed is every engine's, from the
    * next line on; `null` is the engines' own pace. A route says where the online engines go
-   * first, from the next utterance or line on; `null` is `cloud`. `wake` names the wake model's
+   * first, from the next utterance or line on; `null` is `cloud`. `recordingLimit` is how many
+   * seconds one recording may last, from the next one on; `null` is `DEFAULT_RECORDING_SECONDS`. `wake` names the wake model's
    * heads that listen, an empty list none (the talk key and the button still work), `null`
    * config.toml's; the clients that hear the word themselves are told to ask `voice.wakeword`
    * again once the heads are loaded (`voice.setup`, stage `wake`, step `ready`). Answered at
@@ -842,6 +855,7 @@ export const clientRequests = {
       stt: SttEngineId.nullable().optional(),
       sttRoute: VoiceRoute.nullable().optional(),
       ttsRoute: VoiceRoute.nullable().optional(),
+      recordingLimit: RecordingLimit.nullable().optional(),
       wake: z.array(z.string().min(1).max(128)).max(8).nullable().optional(),
     }),
     result: VoiceSettings,

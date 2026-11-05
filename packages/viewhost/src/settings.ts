@@ -44,6 +44,7 @@
 // which each host page links.
 
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
+import { DEFAULT_RECORDING_SECONDS } from "@cophyla/protocol";
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
 import type { FolderDrafts } from "./scope.ts";
 import { checkWords, outcomeOf } from "./updates.ts";
@@ -365,6 +366,10 @@ export interface SpeechRow {
   /** How fast replies are read, among `speeds`; neither for transcription, with speech off, or from a node that cannot say. */
   speed?: number;
   speeds?: Choice[];
+  /** How many seconds one recording may last, among `recordings`, and what that means here; transcription only, from a node that can set it. */
+  recording?: number;
+  recordings?: Choice[];
+  recordingHelp?: string;
   /** Hear it can be pressed: the engine is up. */
   canPreview: boolean;
   /** Where the choice came from, in words. */
@@ -491,6 +496,29 @@ function speedChoices(speed: number): Choice[] {
   return speeds.map((v) => ({ value: String(v), label: speedLabel(v) }));
 }
 
+/** How long one recording may last, in seconds, as the transcription row offers it: ten minutes to an hour. */
+export const RECORDING_LIMITS = [600, 900, 1200, 1800, 2700, 3600];
+
+/** "10 minutes", "1 hour", "30 seconds" */
+export function durationWords(seconds: number): string {
+  if (seconds % 3600 === 0) return seconds === 3600 ? "1 hour" : `${seconds / 3600} hours`;
+  if (seconds % 60 === 0) return seconds === 60 ? "1 minute" : `${seconds / 60} minutes`;
+  if (seconds > 60) return `${Math.round((seconds / 60) * 10) / 10} minutes`;
+  return `${Math.round(seconds)} seconds`;
+}
+
+/** The lengths offered, with one set some other way among them. */
+function recordingChoices(limit: number): Choice[] {
+  const limits = RECORDING_LIMITS.includes(limit) ? RECORDING_LIMITS : [...RECORDING_LIMITS, limit].sort((a, b) => a - b);
+  return limits.map((v) => ({ value: String(v), label: durationWords(v) }));
+}
+
+/** What the recording limit does, and that an engine which hears less ends a recording sooner. */
+function recordingHelp(label: string, limit: number, engineLimit: number | undefined): string {
+  const help = "How long one recording can go on before it stops by itself. A sound tells you when it does.";
+  return engineLimit !== undefined && engineLimit < limit ? `${help} ${label} hears ${durationWords(engineLimit)} at most, so a recording stops there.` : help;
+}
+
 /** One stage's part of the Voice section, from the node's `voice.settings`: speech (`tts`) or transcription (`stt`). */
 function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note: string | undefined): SpeechRow {
   const engine = stage === "tts" ? s.tts : s.stt;
@@ -518,6 +546,9 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
   // A node from before the speed could be set says none.
   const speed = (s as { speed?: number }).speed;
   const paced = stage === "tts" && s.enabled && engine !== "off" && speed !== undefined;
+  // A node from before a recording's length could be set says none.
+  const limit = s.recordingLimit;
+  const timed = stage === "stt" && s.enabled && engine !== "off" && limit !== undefined;
   const source = stage === "tts" ? s.source : s.sttSource;
   const route = s.enabled && engine !== "off" ? routeRow(s, stage, engine) : undefined;
   let install: InstallRow | undefined;
@@ -539,6 +570,7 @@ function engineRow(s: SpeechSettings, stage: "stt" | "tts", busy: boolean, note:
     trouble,
     ...(many ? { voice: (s.voice ?? 0) + 1, voices: s.voices } : {}),
     ...(paced ? { speed, speeds: speedChoices(speed) } : {}),
+    ...(timed ? { recording: limit, recordings: recordingChoices(limit), recordingHelp: recordingHelp(label, limit, s.sttLimit) } : {}),
     canPreview: stage === "tts" && s.enabled && state.status === "ready" && engine !== "off",
     source: source === "app" ? "Picked here." : "From config.toml.",
     reset: source === "app",
@@ -970,6 +1002,12 @@ export class SettingsModel {
     return this.configure({ speed });
   }
 
+  /** How many seconds one recording may last, from the next one on; ten minutes goes as the node's own. */
+  setRecordingLimit(seconds: number): Promise<void> {
+    if (!Number.isFinite(seconds) || seconds === this.speech?.recordingLimit) return Promise.resolve();
+    return this.configure({ recordingLimit: seconds === DEFAULT_RECORDING_SECONDS ? null : seconds }, "stt");
+  }
+
   /** A line in the voice set now, spoken to this host. */
   async preview(): Promise<void> {
     this.speechNote = "";
@@ -989,7 +1027,7 @@ export class SettingsModel {
     this.speechTimer = undefined;
   }
 
-  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute; wake?: string[] | null }, stage: "stt" | "tts" | "wake" = "tts"): Promise<void> {
+  private async configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number; stt?: SttEngineId | null; sttRoute?: VoiceRoute; ttsRoute?: VoiceRoute; recordingLimit?: number | null; wake?: string[] | null }, stage: "stt" | "tts" | "wake" = "tts"): Promise<void> {
     if (this.speechBusy) return;
     this.speechBusy = true;
     this.setNote(stage, "");
@@ -1699,6 +1737,7 @@ export class SettingsPanel {
       rows.push(row({ label: "Voice", help: `One of ${r.voices}.`, for: voice.id, control: voice }));
     }
     if (r.speeds !== undefined) rows.push(row({ label: "Speed", help: "How fast replies are read, whichever engine reads them.", for: controlId("speech:speed"), control: select("speech:speed", "Speed", String(r.speed), r.speeds, (v) => void model.setSpeed(Number(v)), r.busy) }));
+    if (r.recordings !== undefined) rows.push(row({ label: "Longest recording", help: r.recordingHelp ?? "", for: controlId("stt:recording"), control: select("stt:recording", "Longest recording", String(r.recording), r.recordings, (v) => void model.setRecordingLimit(Number(v)), r.busy) }));
     if (tts && !r.install) rows.push(row({ label: "Hear it", help: "A line in the voice set now.", control: button("speech:hear", "Play a sample", "secondary", () => void model.preview(), { disabled: !r.canPreview || r.busy }) }));
     if (r.route) {
       const route = r.route;

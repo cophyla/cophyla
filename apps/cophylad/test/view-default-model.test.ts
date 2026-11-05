@@ -1701,13 +1701,13 @@ describe("default view: voice and the phones", () => {
     apply(state, { type: "voice.state", params: { state: "listening", client: CLIENT.id, limit: 570 } });
     apply(state, { type: "voice.state", params: { state: "transcribing", client: CLIENT.id, stopped: "limit" } });
     expect(state.voiceNote).toMatchObject({ stopped: "limit", limit: 570 });
-    expect(voiceWords(state)).toBe("transcribing · Stopped at the 9½-minute limit — what came after wasn't recorded");
+    expect(voiceWords(state)).toBe("transcribing · Stopped at the 9½-minute limit — what came after wasn't recorded. Settings → Voice can make it longer");
     apply(state, { type: "voice.state", params: { state: "thinking", client: CLIENT.id } });
     apply(state, { type: "voice.state", params: { state: "speaking", client: CLIENT.id } });
     apply(state, { type: "voice.state", params: { state: "idle", client: CLIENT.id } });
     // A press's time running out is not a stop's.
     apply(state, { type: "voice.note.expired", at: Date.now() + 1e6 });
-    expect(voiceWords(state)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded");
+    expect(voiceWords(state)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded. Settings → Voice can make it longer");
     expect(voiceDot(state)).toBe("trouble");
     // Another client's utterance leaves it; this view's next takes it away.
     apply(state, { type: "voice.state", params: { state: "listening", client: "cli_phone" } });
@@ -1750,9 +1750,12 @@ describe("default view: voice and the phones", () => {
   });
 
   test("a stop's words give the limit it came at", () => {
-    expect(stoppedWords("limit", 570)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded");
+    expect(stoppedWords("limit", 570)).toBe("Stopped at the 9½-minute limit — what came after wasn't recorded. Settings → Voice can make it longer");
+    // An engine's own limit cannot be made longer, nor the longest there is.
     expect(stoppedWords("limit", 30)).toBe("Stopped at the 30-second limit — what came after wasn't recorded");
-    expect(stoppedWords("limit", 600)).toBe("Stopped at the 10-minute limit — what came after wasn't recorded");
+    expect(stoppedWords("limit", 600)).toBe("Stopped at the 10-minute limit — what came after wasn't recorded. Settings → Voice can make it longer");
+    expect(stoppedWords("limit", 2700)).toBe("Stopped at the 45-minute limit — what came after wasn't recorded. Settings → Voice can make it longer");
+    expect(stoppedWords("limit", 3600)).toBe("Stopped at the 60-minute limit — what came after wasn't recorded");
     expect(stoppedWords("limit")).toBe("Stopped at the limit — what came after wasn't recorded");
     expect(stoppedWords("quota", 570)).toBe("Stopped: this month's transcription allowance is used up — what came after wasn't recorded");
   });

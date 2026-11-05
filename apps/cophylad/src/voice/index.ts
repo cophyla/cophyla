@@ -38,7 +38,9 @@
 // read at is set there too, one for every engine: each line is made at the engine's own pace
 // and sped up or slowed down on its way out (`tempo.ts`), from the next line on; so is where
 // the online engines go first, the account's server or the user's own key, from the next
-// utterance or line on.
+// utterance or line on, and how long one recording may last (`DEFAULT_RECORDING_SECONDS`
+// unless the user set another), from the next one on: an engine that hears less than that
+// (Whisper, Moonshine) ends it sooner.
 //
 // A local speech or transcription engine is installed on this machine only when the user
 // asks (`voice.install`), after the app has shown its licences: until then its stage is
@@ -49,7 +51,7 @@
 // installed, and is loaded to check it only when the user picks or installs it; an engine
 // that fails to load in a turn makes its stage `unavailable`, and the next turn tries again.
 
-import { RpcError } from "@cophyla/protocol";
+import { DEFAULT_RECORDING_SECONDS, MAX_RECORDING_SECONDS, RpcError } from "@cophyla/protocol";
 import type { AudioCodec, Client, ClientSignalName, clientSignals, ContentBlock, MessageId, ProviderKeys, SpeechEngineInfo, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings, VoiceStageState, VoiceState, WakewordMode } from "@cophyla/protocol";
 import type { z } from "zod";
 import type { Bus } from "../bus.ts";
@@ -321,6 +323,11 @@ export class Voice {
     return this.prefs().speed ?? 1;
   }
 
+  /** The most seconds one recording lasts, whichever engine transcribes it. */
+  private recordingLimit(): number {
+    return this.prefs().recordingLimit ?? DEFAULT_RECORDING_SECONDS;
+  }
+
   /** config.toml with the app's picks over it: the engines, the speech engine's voice when one was set for it, and the wake words. */
   private effective(): VoiceConfig {
     const prefs = this.prefs();
@@ -578,6 +585,8 @@ export class Voice {
       stt: config.stt,
       sttSource: prefs.stt !== undefined ? "app" : "config",
       sttStage: stage(this.stages.stt),
+      recordingLimit: this.recordingLimit(),
+      ...(this.sttEngine?.maxSeconds !== undefined && this.sttEngine.maxSeconds < MAX_RECORDING_SECONDS ? { sttLimit: this.sttEngine.maxSeconds } : {}),
       sttRoute: prefs.sttRoute ?? (this.deps.routes?.stt[0] === "server" || !this.deps.routes ? "cloud" : "own"),
       ttsRoute: prefs.ttsRoute ?? (this.deps.routes?.tts[0] === "server" || !this.deps.routes ? "cloud" : "own"),
       ...(this.deps.keys ? { keys: this.deps.keys() } : {}),
@@ -597,9 +606,9 @@ export class Voice {
   /**
    * `voice.configure`: the engine or its voice, set over config.toml, `null` handing either
    * back. A new engine loads behind the answer; a new voice for the one loaded, and a new
-   * speed for any, is used from its next line.
+   * speed for any, is used from its next line; a recording limit from the next recording.
    */
-  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null; sttRoute?: VoiceRoute | null; ttsRoute?: VoiceRoute | null; wake?: string[] | null }): VoiceSettings {
+  configure(patch: { tts?: TtsEngineId | null; voice?: number | null; speed?: number | null; stt?: SttEngineId | null; sttRoute?: VoiceRoute | null; ttsRoute?: VoiceRoute | null; recordingLimit?: number | null; wake?: string[] | null }): VoiceSettings {
     if (!this.deps.prefs) throw new RpcError("unavailable", "this node keeps no voice settings");
     const before = this.effective();
     const prefs: VoicePrefs = { ...this.prefs() };
@@ -624,6 +633,9 @@ export class Voice {
     // The engines' own pace is kept as none.
     if (patch.speed === null || patch.speed === 1) delete prefs.speed;
     else if (patch.speed !== undefined) prefs.speed = patch.speed;
+    // Read as each recording begins; the default is kept as none.
+    if (patch.recordingLimit === null || patch.recordingLimit === DEFAULT_RECORDING_SECONDS) delete prefs.recordingLimit;
+    else if (patch.recordingLimit !== undefined) prefs.recordingLimit = patch.recordingLimit;
     if (patch.voice !== undefined) {
       const engine = prefs.tts ?? this.config.tts;
       const voices = { ...prefs.voices };
@@ -634,7 +646,7 @@ export class Voice {
     }
     this.deps.prefs.write(prefs);
     const after = this.effective();
-    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt, sttRoute: prefs.sttRoute, ttsRoute: prefs.ttsRoute, wake: after.wake_model });
+    this.log.info("voice settings", { tts: after.tts, voice: after.tts_voice, speed: prefs.speed ?? 1, stt: after.stt, recordingLimit: this.recordingLimit(), sttRoute: prefs.sttRoute, ttsRoute: prefs.ttsRoute, wake: after.wake_model });
     if (this.config.enabled && !this.stopped) {
       if (after.wake_model.join(",") !== before.wake_model.join(",")) this.reloadWake();
       if (after.stt !== before.stt) void this.loadStt();
@@ -732,6 +744,7 @@ export class Voice {
       ...(this.wakeModel && !this.phoneWake.has(client.id) ? { wake: this.wakeModel.stream() } : {}),
       vad: () => this.makeVad?.(),
       stt: () => this.sttEngine,
+      maxSeconds: () => this.recordingLimit(),
       // Read at the speed set when the line begins.
       tts: () => this.ttsEngine && atSpeed(this.ttsEngine, this.speed()),
       acksPlayed: client.audio.played === true,

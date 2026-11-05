@@ -261,7 +261,8 @@ the shell with `cophylad_attach`, which says it in every hello from then on.
   button (`host.mic`), until a device arrives.
 - **Recording, heard and seen**: whenever the microphone records an utterance, however it
   began (the wake word, the talk key, the view's talk button), a short tone rises as it starts
-  and falls as it stops, played past the replies' mute, and the view draws the microphone's
+  and falls as it stops, played past the replies' mute (one the node stopped at its limit or
+  the allowance ends on a louder run of four notes falling, twice), and the view draws the microphone's
   wave just over its input meanwhile (`host.recording`, `host.levels`). The phone does the same.
 - **Audio from launch**: WebView2 is started with `--autoplay-policy=no-user-gesture-required`
   (with wry's own flags repeated, since the argument replaces them). Where there is no such

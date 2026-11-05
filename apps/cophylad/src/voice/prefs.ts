@@ -1,11 +1,12 @@
 // The voice settings the app sets over config.toml (`voice.configure`): the engine that
 // speaks, a voice for each engine one was picked for, how fast replies are read, the engine
-// that transcribes, where the online engines go first, and the wake words listened for. They are this node's own, like its
+// that transcribes, how long one recording may last, where the online engines go first, and
+// the wake words listened for. They are this node's own, like its
 // profiles: kept in the store's kv under `voice`, which replication leaves out, since each
 // machine speaks with its own models.
 
 import type { SttEngineId, TtsEngineId, VoiceRoute } from "@cophyla/protocol";
-import { SpeechSpeed, SttEngineId as SttEngineIdSchema, TtsEngineId as TtsEngineIdSchema, VoiceRoute as VoiceRouteSchema } from "@cophyla/protocol";
+import { RecordingLimit, SpeechSpeed, SttEngineId as SttEngineIdSchema, TtsEngineId as TtsEngineIdSchema, VoiceRoute as VoiceRouteSchema } from "@cophyla/protocol";
 import type { Store } from "../store/index.ts";
 
 export const VOICE_KV_NS = "voice";
@@ -18,6 +19,8 @@ export interface VoicePrefs {
   /** How fast every engine's replies are read; absent at the engines' own pace. */
   speed?: number;
   stt?: SttEngineId;
+  /** The most seconds one recording lasts; absent at `DEFAULT_RECORDING_SECONDS`. */
+  recordingLimit?: number;
   /** Where online transcription and speech go first; `[providers] stt` and `tts` as they are when absent. */
   sttRoute?: VoiceRoute;
   ttsRoute?: VoiceRoute;
@@ -51,6 +54,8 @@ export function storePrefs(store: Pick<Store, "kv">): VoicePrefsStore {
       if (ttsRoute.success) out.ttsRoute = ttsRoute.data;
       const wake = (raw as { wake?: unknown }).wake;
       if (Array.isArray(wake) && wake.length <= MAX_WAKE_HEADS && wake.every((h) => typeof h === "string" && h.length > 0 && h.length <= 128)) out.wake = [...new Set(wake as string[])];
+      const limit = RecordingLimit.safeParse((raw as { recordingLimit?: unknown }).recordingLimit);
+      if (limit.success) out.recordingLimit = limit.data;
       const speed = SpeechSpeed.safeParse(raw.speed);
       if (speed.success && speed.data !== 1) out.speed = speed.data;
       if (raw.voices && typeof raw.voices === "object") {

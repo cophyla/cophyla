@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, deviceEnds, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -264,6 +264,47 @@ describe("the node's speech", () => {
     expect(sttRow(speech()).speeds).toBeUndefined();
     const { speed: _, ...old } = speech();
     expect(speechRow(old as VoiceSettings).speeds).toBeUndefined();
+  });
+
+  test("the longest recording: ten minutes to an hour, one set some other way among them, the engine's own limit said, and none where nothing is transcribed", () => {
+    const row = sttRow(speech({ recordingLimit: 600 }));
+    expect(row.recording).toBe(600);
+    expect(row.recordings!.map((o) => o.label)).toEqual(["10 minutes", "15 minutes", "20 minutes", "30 minutes", "45 minutes", "1 hour"]);
+    expect(row.recordings!.map((o) => Number(o.value))).toEqual(RECORDING_LIMITS);
+    expect(row.recordingHelp).toBe("How long one recording can go on before it stops by itself. A sound tells you when it does.");
+    expect(sttRow(speech({ recordingLimit: 120 })).recordings!.map((o) => o.label).slice(0, 2)).toEqual(["2 minutes", "10 minutes"]);
+    // An engine that hears less says so.
+    const whisper = sttRow(speech({ stt: "whisper-base", sttStage: { status: "ready", engine: "whisper-base" }, recordingLimit: 1800, sttLimit: 30 }));
+    expect(whisper.recordingHelp).toContain("hears 30 seconds at most, so a recording stops there.");
+    expect(sttRow(speech({ recordingLimit: 1800, sttLimit: 3000 })).recordingHelp).not.toContain("at most");
+    // Speech has none; nor transcription turned off, voice off, or a node that cannot set it.
+    expect(speechRow(speech({ recordingLimit: 600 })).recordings).toBeUndefined();
+    expect(sttRow(speech({ stt: "off", sttStage: { status: "off" }, recordingLimit: 600 })).recordings).toBeUndefined();
+    expect(sttRow(speech({ enabled: false, recordingLimit: 600 })).recordings).toBeUndefined();
+    expect(sttRow(speech()).recordings).toBeUndefined();
+    expect(durationWords(60)).toBe("1 minute");
+    expect(durationWords(7200)).toBe("2 hours");
+    expect(durationWords(90)).toBe("1.5 minutes");
+  });
+
+  test("a recording's length goes out as it is, ten minutes as the node's own, and the one set already sends nothing", async () => {
+    let now = speech({ recordingLimit: 600 });
+    const { request, asked } = fakeConnection({
+      "voice.settings": () => now,
+      "voice.configure": (p) => (now = { ...now, recordingLimit: (p["recordingLimit"] as number | null) ?? 600 }),
+    });
+    const m = new SettingsModel(request, () => {});
+    await m.loadSpeech();
+    await m.setRecordingLimit(1800);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { recordingLimit: 1800 } });
+    expect(m.sttRow()?.recording).toBe(1800);
+    await m.setRecordingLimit(600);
+    expect(asked.at(-1)).toEqual({ method: "voice.configure", params: { recordingLimit: null } });
+    const before = asked.length;
+    await m.setRecordingLimit(600);
+    await m.setRecordingLimit(Number.NaN);
+    expect(asked.length).toBe(before);
+    m.dispose();
   });
 
   test("a speed goes out as it is, and the one set already, or none, sends nothing", async () => {

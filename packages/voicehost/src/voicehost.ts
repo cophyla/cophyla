@@ -29,7 +29,9 @@
 // is handed how loud each 20 ms is meanwhile (`onLevels`), for a view to draw. The node may
 // end a press the button still holds (its limit reached, the allowance used up, the utterance
 // taken back): once this client's `listening` is over, recording stops and nothing more goes
-// up until the button is let go and pressed again.
+// up until the button is let go and pressed again. One the node stopped on its own (the
+// `stopped` of its `transcribing`: the limit, the allowance) ends on the louder `ended`
+// sound rather than the stop's, since the user, still speaking, would not know.
 
 import type { AudioCodec, VoiceState, WakeHeadMode, WakewordMode } from "@cophyla/protocol";
 import { Audio } from "./audio.ts";
@@ -183,6 +185,8 @@ export class VoiceHost {
   private voice?: VoiceState;
   private talking = false;
   private released = false;
+  /** The state being handled says the node stopped the recording on its own. */
+  private endedByNode = false;
   private talkRefused = false;
   private recording = false;
   private listening: boolean;
@@ -355,7 +359,7 @@ export class VoiceHost {
       return false;
     }
     if (frame.method === "voice.state") {
-      const params = frame.params as { state: VoiceState; client?: string };
+      const params = frame.params as { state: VoiceState; client?: string; stopped?: unknown };
       const mine = params.client === undefined || params.client === this.opts.link.state.hello?.client.id;
       if (mine) {
         // The node ended the utterance the button still holds (its limit, the allowance, a
@@ -366,8 +370,11 @@ export class VoiceHost {
         if (params.state !== "listening") this.released = false;
         // The node stopped speaking, whatever it had queued: drop what is scheduled here too.
         if (params.state !== "speaking") this.audio.flush();
-        // `listening` settles a word the host heard; every state moves where frames go.
+        // `listening` settles a word the host heard; every state moves where frames go. A
+        // recording that stops here because the node stopped it sounds as such.
+        this.endedByNode = params.state === "transcribing" && (params.stopped === "limit" || params.stopped === "quota");
         this.dispatch({ type: "voice", state: params.state });
+        this.endedByNode = false;
       }
     }
     return false;
@@ -619,7 +626,7 @@ export class VoiceHost {
     const recording = recordingOf({ ...input, released: this.released, talkRefused: this.talkRefused });
     if (recording !== this.recording) {
       this.recording = recording;
-      this.audio.cue(recording ? "start" : "stop");
+      this.audio.cue(recording ? "start" : this.endedByNode ? "ended" : "stop");
       this.opts.onRecording?.(recording);
     }
     this.changed();

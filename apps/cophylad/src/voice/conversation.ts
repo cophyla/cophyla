@@ -11,7 +11,8 @@
 // grow, and the end of the utterance (silence, or the button released) closes it. A
 // recogniser that bills while it is open (a live one online) is told once the VAD hears
 // speech (`heard`), so a tap or a false accept opens nothing. An utterance lasts at most what
-// the recogniser hears (`maxSeconds`, told to the clients with `listening`): at that limit,
+// the user lets one last (`maxSeconds`, set in the app) or what the recogniser hears, when
+// that is less (both told to the clients as one `limit` with `listening`): at that limit,
 // or when the recogniser stops hearing on its own (the account's allowance ran out), the
 // utterance ends there with the button still held, and the `transcribing` that follows says
 // why (`stopped`), since what came after was not recorded. A word
@@ -125,6 +126,8 @@ export interface ConversationDeps {
   vad?: () => VadEngine | undefined;
   /** The recogniser, looked up per utterance for the same reason. */
   stt?: () => SttEngine | undefined;
+  /** The most seconds the user lets one utterance last, read as each begins; the recogniser's own limit when it hears less. */
+  maxSeconds?: () => number | undefined;
   /** The engine that speaks, looked up per utterance so a stage can come up later. */
   tts?: () => TtsEngine | undefined;
   /** The controller answers each reply's end with `voice.played`, so `speaking` waits for it. */
@@ -392,7 +395,8 @@ export class Conversation {
     this.fed = 0;
     this.toldHeard = false;
     const stt = this.deps.stt?.();
-    this.maxSamples = stt?.maxSeconds ? Math.round(stt.maxSeconds * IN_RATE) : Infinity;
+    const limit = stt ? Math.min(stt.maxSeconds || Infinity, this.deps.maxSeconds?.() || Infinity) : Infinity;
+    this.maxSamples = Number.isFinite(limit) ? Math.round(limit * IN_RATE) : Infinity;
     if (stt) {
       const stream = stt.stream();
       // The words go on to the clients while the last of them come in; a later utterance's stream is theirs.
@@ -414,7 +418,7 @@ export class Conversation {
     }
     // Dictating, the user writes; they are not speaking to anyone yet.
     if (!this.dictating) this.setSpeaking(true);
-    this.setState("listening", stt?.maxSeconds ? { limit: stt.maxSeconds } : undefined);
+    this.setState("listening", Number.isFinite(limit) ? { limit } : undefined);
     if (this.abandonable()) this.armStall();
     this.deps.log?.debug("utterance begins", { client: this.client, why });
   }

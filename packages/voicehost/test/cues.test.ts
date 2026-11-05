@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { VoiceState } from "@cophyla/protocol";
-import { CUE_S, cueNotes, levelsOf, playCue } from "../src/cues.ts";
+import { CUE_S, cueNotes, ENDED_NOTES, ENDED_S, levelsOf, playCue } from "../src/cues.ts";
 import type { CueContext, CueKind } from "../src/cues.ts";
 import { recordingOf, VoiceHost } from "../src/voicehost.ts";
 import type { RecordingInput } from "../src/voicehost.ts";
@@ -43,6 +43,20 @@ describe("the tones", () => {
     expect(started.map((s) => s.hz)).toEqual([low, low * 2, high, high * 2]);
     expect(started[0]!.at).toBe(5);
     expect(started[2]!.at).toBeGreaterThan(5);
+  });
+
+  test("a recording the node ended on its own sounds its own way: further down, twice, and longer than a stop", () => {
+    const { ctx, started } = fakeContext(2);
+    const end = playCue(ctx, "ended");
+    expect(end).toBeCloseTo(2 + ENDED_S);
+    expect(ENDED_S).toBeGreaterThan(2 * CUE_S);
+    const run = ENDED_NOTES.flatMap((hz) => [hz, hz * 2]);
+    expect(started.map((s) => s.hz)).toEqual([...run, ...run]);
+    // Each run falls, and ends below where a stop ends.
+    expect([...ENDED_NOTES].sort((a, b) => b - a)).toEqual(ENDED_NOTES);
+    expect(ENDED_NOTES.at(-1)!).toBeLessThan(cueNotes("stop")[1]);
+    expect(started[0]!.at).toBe(2);
+    expect(started[ENDED_NOTES.length * 2]!.at).toBeGreaterThan(started[ENDED_NOTES.length * 2 - 1]!.at);
   });
 
   test("a tone asked for while the last still sounds waits for it", () => {
@@ -205,6 +219,39 @@ describe("the host says recording started and stopped", () => {
     host.ptt(true);
     expect(said).toEqual([true, false, true]);
     expect(host.routed.streaming).toBe(true);
+  });
+
+  test("a recording the node stopped on its own (its limit, the allowance) ends on the `ended` sound, held or not", async () => {
+    const stopped = (host: VoiceHost, why: string) => host.handleFrame({ method: "voice.state", params: { state: "transcribing", client: "cli_me", stopped: why } });
+    const held = fixture();
+    held.host.ptt(true);
+    held.state("listening");
+    held.answers[0]!.answer();
+    await Bun.sleep(0);
+    stopped(held.host, "limit");
+    expect(held.said).toEqual([true, false]);
+    expect(held.cues).toEqual(["start", "ended"]);
+    // The next recording's stop is a plain one again.
+    held.host.ptt(false);
+    held.state("thinking");
+    held.host.ptt(true);
+    held.state("listening");
+    held.host.ptt(false);
+    held.state("transcribing");
+    expect(held.cues).toEqual(["start", "ended", "start", "stop"]);
+
+    // One the node heard a word for, or a view's own button, the same; and the allowance too.
+    const word = fixture();
+    word.state("listening");
+    stopped(word.host, "quota");
+    expect(word.cues).toEqual(["start", "ended"]);
+
+    // A stop the user made first stays a stop, whatever the node says after.
+    const let_go = fixture();
+    let_go.state("listening");
+    let_go.state("transcribing");
+    stopped(let_go.host, "limit");
+    expect(let_go.cues).toEqual(["start", "stop"]);
   });
 
   test("a press let go before the node moved on ends as it always did", async () => {

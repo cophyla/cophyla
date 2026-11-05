@@ -10,7 +10,7 @@ import { silentLogger } from "../src/log.ts";
 import type { LiveOpener, LiveResult, LiveSession, SttStream } from "../src/voice/engines.ts";
 import { geminiLive, LIVE_MAX_SECONDS, LiveTranscript } from "../src/voice/gemini-live.ts";
 import type { LiveSocket } from "../src/voice/gemini-live.ts";
-import { LEAD_IN_SECONDS, liveStt, PIECE_MAX, SEND_MIN } from "../src/voice/live.ts";
+import { LEAD_IN_SECONDS, liveStt, PIECE_MAX, ROLL_LEAD_SECONDS, ROLL_SEARCH_SECONDS, SEND_MIN } from "../src/voice/live.ts";
 import type { LiveSttDeps } from "../src/voice/live.ts";
 import { waitFor } from "./helpers.ts";
 
@@ -308,6 +308,154 @@ describe("the live stream", () => {
     s.heard!();
     expect(sessions[0]!.opts).toEqual({ language: "tr", vocabulary: ["Cophyla"] });
     s.dispose();
+  });
+});
+
+describe("an utterance longer than a session hears", () => {
+  /** A stream of an hour at most whose first session hears `max` seconds, fed until it holds its audio back. */
+  async function nearItsEnd(max = 120) {
+    const t = setup({ maxSeconds: 3600 });
+    let samples = 0;
+    const feed = (n: number, level = 1000) => {
+      for (let i = 0; i < n; i++) {
+        t.stream.accept(frame(level));
+        samples += FRAME;
+      }
+    };
+    feed(1);
+    t.stream.heard!();
+    t.sessions[0]!.ready(max);
+    await sleep(0);
+    const lead = (max - ROLL_LEAD_SECONDS) * 16000;
+    while (total(t.sessions[0]!.sent) < lead) feed(1);
+    return { ...t, feed, samples: () => samples, heldAt: total(t.sessions[0]!.sent) };
+  }
+
+  test("a session near the most it hears holds the audio back, hands on at its quietest moment, and the words are joined", async () => {
+    const { stream, sessions, shown, batches, feed, samples, heldAt } = await nearItsEnd();
+    // Held: nothing more goes while the moment to hand on at is found.
+    feed(60);
+    expect(total(sessions[0]!.sent)).toBe(heldAt);
+    // A pause 2.4 s into the search, then speech until it is over.
+    feed(10, 0);
+    feed((ROLL_SEARCH_SECONDS * 16000) / FRAME - 70 - 1);
+    expect(sessions[0]!.ended).toBe(false);
+    feed(1);
+    // The session heard up to the middle of the pause's first 100 ms, and is ended.
+    const cut = heldAt + 60 * FRAME + 800;
+    expect(sessions[0]!.ended).toBe(true);
+    expect(total(sessions[0]!.sent)).toBe(cut);
+    expect(sessions).toHaveLength(1);
+    // Its last words still show while they come.
+    sessions[0]!.session.onText!("The first part.", true);
+    expect(shown.at(-1)).toBe("The first part.");
+    sessions[0]!.finish({ text: "The first part." });
+    await sleep(0);
+    // The next opens over the routes in order, and hears from the cut on, what was held first.
+    expect(sessions).toHaveLength(2);
+    expect(sessions[1]!.route).toBe("server");
+    feed(20);
+    sessions[1]!.ready();
+    await sleep(0);
+    const unsent = samples() - cut - total(sessions[1]!.sent);
+    expect(unsent).toBeGreaterThanOrEqual(0);
+    expect(unsent).toBeLessThan(SEND_MIN);
+    expect(Math.max(...sessions[1]!.sent.map((p) => p.length))).toBeLessThanOrEqual(PIECE_MAX);
+    // Its words come after the first's; the first session's are no longer its own to change.
+    sessions[0]!.session.onText!("ghost", false);
+    sessions[1]!.session.onText!("And the rest", false);
+    expect(shown.at(-1)).toBe("The first part. And the rest");
+    const done = stream.final();
+    await waitFor(() => sessions[1]!.ended);
+    expect(total(sessions[1]!.sent)).toBe(samples() - cut);
+    sessions[1]!.finish({ text: "And the rest." });
+    expect(await done).toBe("The first part. And the rest.");
+    expect(batches).toEqual([]);
+    expect(stream.how).toEqual({ route: "server", live: true });
+  });
+
+  test("the utterance ending while the audio is held back sends all of it to the session that has it", async () => {
+    const { stream, sessions, feed, samples } = await nearItsEnd();
+    feed(10);
+    const done = stream.final();
+    await waitFor(() => sessions[0]!.ended);
+    expect(total(sessions[0]!.sent)).toBe(samples());
+    sessions[0]!.finish({ text: "all of it" });
+    expect(await done).toBe("all of it");
+    expect(sessions).toHaveLength(1);
+  });
+
+  test("a session whose last words do not come in time hands on with the words it showed", async () => {
+    const { stream, sessions, feed } = await nearItsEnd();
+    sessions[0]!.session.onText!("shown so far", true);
+    feed((ROLL_SEARCH_SECONDS * 16000) / FRAME);
+    expect(sessions[0]!.ended).toBe(true);
+    await waitFor(() => sessions.length === 2);
+    expect(sessions[0]!.aborted).toBe(true);
+    sessions[1]!.ready();
+    await sleep(0);
+    const done = stream.final();
+    await waitFor(() => sessions[1]!.ended);
+    sessions[1]!.finish({ text: "then more" });
+    expect(await done).toBe("shown so far then more");
+  });
+
+  test("a session that ends at its time before handing on hands on from what it was sent", async () => {
+    const { stream, sessions, stops, batches } = setup({ maxSeconds: 3600 });
+    stream.accept(frame());
+    stream.heard!();
+    sessions[0]!.ready();
+    await sleep(0);
+    for (let i = 0; i < 30; i++) stream.accept(frame());
+    const sent = total(sessions[0]!.sent);
+    sessions[0]!.session.onEnded!({ text: "So far.", stopped: "limit" });
+    expect(stops).toEqual([]);
+    expect(sessions).toHaveLength(2);
+    for (let i = 0; i < 5; i++) stream.accept(frame());
+    sessions[1]!.ready();
+    await sleep(0);
+    const done = stream.final();
+    await waitFor(() => sessions[1]!.ended);
+    expect(sent + total(sessions[1]!.sent)).toBe(36 * FRAME);
+    sessions[1]!.finish({ text: "Then more." });
+    expect(await done).toBe("So far. Then more.");
+    expect(batches).toEqual([]);
+  });
+
+  test("when no route opens the next session the rest goes whole after the words before it; a refusal for the allowance ends the utterance", async () => {
+    const quota = setup({ maxSeconds: 3600 });
+    quota.stream.accept(frame());
+    quota.stream.heard!();
+    quota.sessions[0]!.ready();
+    await sleep(0);
+    for (let i = 0; i < 9; i++) quota.stream.accept(frame());
+    const sent = total(quota.sessions[0]!.sent);
+    quota.sessions[0]!.session.onEnded!({ text: "Before.", stopped: "limit" });
+    quota.sessions[1]!.refuse(new RpcError("quota_exceeded", "the allowance is used up"));
+    await waitFor(() => quota.sessions.length === 3);
+    quota.sessions[2]!.refuse(new RpcError("unavailable", "no key"));
+    await waitFor(() => quota.stops.length > 0);
+    expect(quota.stops).toEqual(["quota"]);
+    quota.answerBatch(async () => ({ text: "After.", route: "byok:gemini" }));
+    expect(await quota.stream.final()).toBe("Before. After.");
+    // Only what the first session never heard goes whole.
+    expect(quota.batches).toEqual([10 * FRAME - sent]);
+
+    const down = setup({ maxSeconds: 3600 });
+    down.stream.accept(frame());
+    down.stream.heard!();
+    down.sessions[0]!.ready();
+    await sleep(0);
+    for (let i = 0; i < 9; i++) down.stream.accept(frame());
+    down.sessions[0]!.session.onEnded!({ text: "Before.", stopped: "limit" });
+    down.sessions[1]!.refuse(new RpcError("unavailable", "down"));
+    await waitFor(() => down.sessions.length === 3);
+    down.sessions[2]!.refuse(new RpcError("unavailable", "no key"));
+    await sleep(10);
+    expect(down.stops).toEqual([]);
+    // The words before stand when the rest cannot be transcribed either.
+    down.answerBatch(async () => Promise.reject(new RpcError("unavailable", "down")));
+    expect(await down.stream.final()).toBe("Before.");
   });
 });
 

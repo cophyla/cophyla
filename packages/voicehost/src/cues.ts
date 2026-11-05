@@ -3,10 +3,13 @@
 // falling as it stops, and how loud each 20 ms of the microphone is while it records, for a
 // view to draw as a wave. The tones are made here, two soft sine notes a fifth apart, so
 // there is no file to ship; each is a fifth of a second and quiet, since the microphone is
-// open while it plays.
+// open while it plays. A recording the node ended itself, while the user may still be
+// speaking (it reached its limit, or the month's allowance ran out), ends on a sound of its
+// own instead (`ended`): four notes falling down the chord, twice, and louder, since nothing
+// the user did stopped it and they may not be looking.
 
-/** Start rises, stop falls. */
-export type CueKind = "start" | "stop";
+/** Start rises, stop falls, and `ended` falls further, twice: the node stopped recording on its own. */
+export type CueKind = "start" | "stop" | "ended";
 
 /** The two notes, D5 and A5: a fifth, bright without being shrill. */
 const LOW_HZ = 587.33;
@@ -23,6 +26,18 @@ const OVERTONE = 0.18;
 /** How long a cue sounds, from its first note to its second's end. */
 export const CUE_S = STEP_S + RING_S;
 
+/** `ended`'s notes: down the D major chord from A5 to A4. */
+export const ENDED_NOTES = [880, 739.99, 587.33, 440];
+/** Its notes come this far apart, each ringing this long, and the run is played twice, this far apart. */
+const ENDED_STEP_S = 0.09;
+const ENDED_RING_S = 0.2;
+const ENDED_AGAIN_S = 0.6;
+/** Louder than the other tones: the microphone no longer records, and the user should hear it over their own voice. */
+const ENDED_PEAK = 0.3;
+
+/** How long `ended` sounds, from its first note to its last's end. */
+export const ENDED_S = ENDED_AGAIN_S + (ENDED_NOTES.length - 1) * ENDED_STEP_S + ENDED_RING_S;
+
 /** The part of an `AudioContext` a cue plays through. */
 export interface CueContext {
   readonly currentTime: number;
@@ -31,23 +46,27 @@ export interface CueContext {
   createGain(): GainNode;
 }
 
-/** The notes a cue plays, in order: low then high to start, high then low to stop. */
-export function cueNotes(kind: CueKind): [number, number] {
+/** The notes a start or a stop plays, in order: low then high to start, high then low to stop. */
+export function cueNotes(kind: "start" | "stop"): [number, number] {
   return kind === "start" ? [LOW_HZ, HIGH_HZ] : [HIGH_HZ, LOW_HZ];
 }
 
 /** Plays a cue from `at` (now when earlier) and says when it ends, so the next can wait for it. */
 export function playCue(ctx: CueContext, kind: CueKind, at = 0): number {
   const start = Math.max(ctx.currentTime, at);
+  if (kind === "ended") {
+    for (const again of [0, ENDED_AGAIN_S]) ENDED_NOTES.forEach((hz, i) => note(ctx, hz, start + again + i * ENDED_STEP_S, ENDED_RING_S, ENDED_PEAK));
+    return start + ENDED_S;
+  }
   cueNotes(kind).forEach((hz, i) => note(ctx, hz, start + i * STEP_S));
   return start + CUE_S;
 }
 
-function note(ctx: CueContext, hz: number, at: number): void {
+function note(ctx: CueContext, hz: number, at: number, ring = RING_S, peak = PEAK): void {
   const env = ctx.createGain();
   env.gain.setValueAtTime(0, at);
-  env.gain.linearRampToValueAtTime(PEAK, at + ATTACK_S);
-  env.gain.exponentialRampToValueAtTime(0.0001, at + RING_S);
+  env.gain.linearRampToValueAtTime(peak, at + ATTACK_S);
+  env.gain.exponentialRampToValueAtTime(0.0001, at + ring);
   env.connect(ctx.destination);
   const tones: [number, number][] = [
     [hz, 1],
@@ -66,7 +85,7 @@ function note(ctx: CueContext, hz: number, at: number): void {
     }
     out.connect(env);
     osc.start(at);
-    osc.stop(at + RING_S + 0.02);
+    osc.stop(at + ring + 0.02);
   }
 }
 

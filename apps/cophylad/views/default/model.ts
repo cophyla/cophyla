@@ -3931,12 +3931,20 @@ export function timeLeft(row: VoiceRow, now: number): string | undefined {
   return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
 }
 
-/** That the node stopped hearing an utterance while the user still spoke: at its limit, or with the month's allowance used up. */
+/** The longest a recording may be set to last, the protocol's `MAX_RECORDING_SECONDS`: a limit short of it can be raised in Settings. */
+export const LONGEST_RECORDING = 3600;
+
+/**
+ * That the node stopped hearing an utterance while the user still spoke: at its limit, or with
+ * the month's allowance used up. A limit of a minute or more is the one Settings sets, and can
+ * be made longer there; a shorter one is the engine's own.
+ */
 export function stoppedWords(stopped: VoiceStopped, limit?: number): string {
   if (stopped === "quota") return "Stopped: this month's transcription allowance is used up — what came after wasn't recorded";
   const minutes = limit === undefined ? 0 : limit % 60 === 30 ? `${Math.floor(limit / 60)}½` : String(Math.round(limit / 60));
   const at = limit === undefined ? "the limit" : limit >= 60 ? `the ${minutes}-minute limit` : `the ${Math.round(limit)}-second limit`;
-  return `Stopped at ${at} — what came after wasn't recorded`;
+  const longer = limit !== undefined && limit >= 60 && limit < LONGEST_RECORDING ? ". Settings → Voice can make it longer" : "";
+  return `Stopped at ${at} — what came after wasn't recorded${longer}`;
 }
 
 /** Why the host's microphone is off, where the host draws no talk button of its own and so says. */

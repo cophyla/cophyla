@@ -537,7 +537,7 @@ const idByName = (d: Daemon, name: string): string => d.clients.list().find((c) 
 const userMessages = (c: TestClient) => c.notifications.filter(isMethod("chat.message", (p) => (p as { message: Message }).message.role === "user"));
 
 /** A conversation on its own, over the fake engines, for the timers a daemon test would wait seconds on. */
-async function bare(opts: { stt?: SttEngine; vad?: (() => VadEngine) | null; stallMs?: number; now?: () => number } = {}) {
+async function bare(opts: { stt?: SttEngine; vad?: (() => VadEngine) | null; stallMs?: number; now?: () => number; maxSeconds?: () => number } = {}) {
   const engines = new FakeEngines({ transcript: TRANSCRIPT });
   const makeVad = opts.vad === null ? undefined : (opts.vad ?? (await engines.vad()));
   const stt = opts.stt ?? (await engines.stt());
@@ -550,6 +550,7 @@ async function bare(opts: { stt?: SttEngine; vad?: (() => VadEngine) | null; sta
     client: "cli_bare",
     ...(makeVad ? { vad: makeVad } : {}),
     stt: () => stt,
+    ...(opts.maxSeconds ? { maxSeconds: opts.maxSeconds } : {}),
     thinkingTimeoutMs: 60_000,
     stallMs: opts.stallMs ?? 150,
     ...(opts.now ? { now: opts.now } : {}),
@@ -1287,6 +1288,34 @@ describe("the speech engine picked in the app", () => {
     expect(await heard()).toBe(own);
   }, 20_000);
 
+  test("how long a recording lasts is the app's to set, ten minutes unless it says, and the next recording is told it", async () => {
+    const { d, ui, phone } = await start();
+    const first = await settings(ui);
+    expect(first.recordingLimit).toBe(600);
+    // The fake recogniser hears as long as it is sent: no limit of its own to tell.
+    expect(first.sttLimit).toBeUndefined();
+    expect(await configure(ui, { recordingLimit: 1800 })).toMatchObject({ recordingLimit: 1800, stt: first.stt, sttSource: first.sttSource });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toEqual({ recordingLimit: 1800 });
+    await phone.request("voice.ptt", { active: true });
+    speak(phone, 3);
+    await waitFor(() => states(ui).includes("listening"));
+    const listening = ui.notifications.filter(isMethod("voice.state")).map((n) => n.params as { state: string; limit?: number }).find((v) => v.state === "listening");
+    expect(listening?.limit).toBe(1800);
+    await phone.request("voice.ptt", { active: false });
+    // Ten minutes is kept as none.
+    expect(await configure(ui, { recordingLimit: 600 })).toMatchObject({ recordingLimit: 600 });
+    expect(d.store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
+    await configure(ui, { recordingLimit: 3600 });
+    expect(await configure(ui, { recordingLimit: null })).toMatchObject({ recordingLimit: 600 });
+    expect(await ui.call("voice.configure", { recordingLimit: 30 })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await ui.call("voice.configure", { recordingLimit: 7200 })).toMatchObject({ error: { data: { code: "invalid" } } });
+  }, 20_000);
+
+  test("a recogniser that hears less than a recording may last says so", async () => {
+    const { ui } = await start({ engines: new FakeEngines({ transcript: TRANSCRIPT, maxSeconds: 30 }) });
+    expect(await settings(ui)).toMatchObject({ recordingLimit: 600, sttLimit: 30 });
+  }, 20_000);
+
   test("a stored pick that no longer parses reads as none", () => {
     const store = new Store(":memory:");
     store.migrate();
@@ -1295,6 +1324,10 @@ describe("the speech engine picked in the app", () => {
     expect(prefs.read()).toEqual({ voices: { piper: 7 } });
     store.kv.put(VOICE_KV_NS, "prefs", { speed: 1.5 });
     expect(prefs.read()).toEqual({ speed: 1.5 });
+    store.kv.put(VOICE_KV_NS, "prefs", { recordingLimit: 30 });
+    expect(prefs.read()).toEqual({});
+    store.kv.put(VOICE_KV_NS, "prefs", { recordingLimit: 2700 });
+    expect(prefs.read()).toEqual({ recordingLimit: 2700 });
     prefs.write({});
     expect(store.kv.get(VOICE_KV_NS, "prefs")).toBeUndefined();
   });
@@ -1516,6 +1549,26 @@ describe("an utterance's limit, and a recogniser that stops hearing", () => {
     expect(seen.samples).toBe(PRIME + 10 * 640);
     expect(details.map((d) => d.state)).toEqual(["listening", "transcribing", "thinking"]);
     c.dispose();
+  });
+
+  test("the user's limit ends an utterance the recogniser would hear on, and the lower of the two holds", async () => {
+    const { engine, seen } = counting();
+    const { c, details } = await bare({ stt: engine, maxSeconds: () => 0.4 });
+    c.ptt(true);
+    for (let i = 0; i < 15; i++) c.push(speechChunk());
+    await waitFor(() => details.at(-1)?.state === "thinking");
+    expect(details).toEqual([{ state: "listening", limit: 0.4 }, { state: "transcribing", stopped: "limit" }, { state: "thinking" }]);
+    expect(seen.samples).toBe(PRIME + 10 * 640);
+    c.dispose();
+
+    const short = counting({ maxSeconds: 0.2 });
+    const lower = await bare({ stt: short.engine, maxSeconds: () => 0.4 });
+    lower.c.ptt(true);
+    for (let i = 0; i < 15; i++) lower.c.push(speechChunk());
+    await waitFor(() => lower.details.at(-1)?.state === "thinking");
+    expect(lower.details[0]).toEqual({ state: "listening", limit: 0.2 });
+    expect(short.seen.samples).toBe(PRIME + 5 * 640);
+    lower.c.dispose();
   });
 
   test("a press while the last utterance is still transcribed begins the next, which that transcript leaves alone", async () => {
