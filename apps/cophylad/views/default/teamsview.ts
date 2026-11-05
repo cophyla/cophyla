@@ -289,10 +289,10 @@ export function createTeamHome(): HTMLElement {
   login.maxLength = 40;
   login.setAttribute("aria-label", "Their GitHub name");
   const addButtons = el("div", "group-form-buttons");
-  addButtons.append(actionButton("team-submit team-add-go", "Make an invite", "team-add-go"), actionButton("team-cancel-button", "Cancel", "team-add-cancel"));
+  addButtons.append(actionButton("team-submit team-add-go", "Invite", "team-add-go"), actionButton("team-cancel-button", "Cancel", "team-add-cancel"));
   const addError = el("p", "group-form-error team-add-error");
   addError.setAttribute("role", "alert");
-  add.append(el("p", "devices-lede", "Only that GitHub account can use the invite, once, within seven days. You send it to them yourself: the secret in it never reaches the server."), login, addError, addButtons);
+  add.append(el("p", "devices-lede", "Only that GitHub account can take the invite, once, within seven days."), login, addError, addButtons);
   const code = el("div", "invite-panel team-invite-code");
   const text = el("textarea", "invite-text");
   text.readOnly = true;
@@ -476,13 +476,17 @@ export function renderTeamHome(column: HTMLElement, state: ViewState, ui: UiStat
   setText(addError, page.adding?.error ?? "");
   setHidden(addError, page.adding?.error === undefined);
   for (const b of Array.from(add.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = busy || page.adding?.busy === true;
-  setText(add.querySelector(".team-add-go")!, page.adding?.busy ? "Making…" : "Make an invite");
+  setText(add.querySelector(".team-add-go")!, page.adding?.busy ? "Inviting…" : "Invite");
   const code = column.querySelector<HTMLElement>(".team-invite-code")!;
   const shown = state.teamCode && state.teamCode.team === team.id ? state.teamCode : undefined;
   setHidden(code, shown === undefined);
-  if (shown) {
+  // a teammate's Cophyla was handed the invite: it was sent, and there is no code to pass on
+  const sent = shown?.offered === true;
+  for (const part of Array.from(code.querySelectorAll<HTMLElement>(".invite-hint, .invite-text, .invite-left, .invite-copy"))) setHidden(part, sent);
+  if (shown && sent) setText(code.querySelector(".invite-head")!, `Invitation sent to ${shown.user}.`);
+  if (shown && !sent) {
     setText(code.querySelector(".invite-head")!, `An invite for ${shown.user}`);
-    setText(code.querySelector(".invite-hint")!, shown.offered ? `${shown.user} is your teammate already: their Cophyla has it too, waiting for them. You can still send them this.` : `Send it to ${shown.user} any way you like. They paste it in Cophyla: Teams → Join with a code.`);
+    setText(code.querySelector(".invite-hint")!, `Send it to ${shown.user} yourself: the secret in it never reaches the server. They paste it in Cophyla: Teams → Join with a code.`);
     const text = code.querySelector<HTMLTextAreaElement>(".invite-text")!;
     if (text.value !== shown.code) text.value = shown.code;
     const left = holdWords(shown.expiresAt, Date.now());
