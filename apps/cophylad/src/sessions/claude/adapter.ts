@@ -69,6 +69,11 @@ interface SubagentTails {
   info: Map<string, SubagentInfo & { mark: number; trigger: string }>;
   /** How far each has got, by its file: the session's `subagents` once its call is known. */
   runs: Map<string, { call?: string; agent?: string; type?: string; description?: string; steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number; finished?: boolean }>;
+  /**
+   * A change read that the session's `subagents` has not had yet. A cost record makes a read in
+   * the middle of a pass; what it found goes out at the pass's end, as any other read's does.
+   */
+  unsent?: boolean;
 }
 
 /**
@@ -582,7 +587,12 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     state.onUsage = undefined;
     // Its sub-agents after its own lines: the launches those name are known by then.
-    if (this.tailSubagents(state, path, now)) patch.subagents = this.subagentRuns(state);
+    this.tailSubagents(state, path, now);
+    const subs = this.subagents.get(state);
+    if (subs?.unsent) {
+      subs.unsent = false;
+      patch.subagents = this.subagentRuns(state);
+    }
     if (state.statsChanged) {
       state.statsChanged = false;
       patch.stats = countOn(rec.statsBase, statsFor(state, this.price, this.statsOptions(rec)));
@@ -647,9 +657,9 @@ export class ClaudeAdapter implements HarnessAdapter {
   /**
    * Reads the session's sub-agents' transcripts into its usage: at once for a parser that has
    * not read them, then every `SUBAGENT_READ_MS`, the folders looked in again each time for a
-   * sub-agent started since.
+   * sub-agent started since. A change to what `subagents` lists marks it `unsent`.
    */
-  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): boolean {
+  private tailSubagents(state: ClaudeTranscriptState, path: string, now: number, force = false): void {
     let subs = this.subagents.get(state);
     if (!subs) {
       subs = { tails: new Map(), readAt: -Infinity, info: new Map(), runs: new Map() };
@@ -657,7 +667,7 @@ export class ClaudeAdapter implements HarnessAdapter {
     }
     // One working shows on a card: one that has not finished, but did something in the last while.
     const working = [...subs.runs.values()].some((r) => r.call !== undefined && !r.finished && now - r.lastAt < SUBAGENT_LIVE_FOR_MS);
-    if (!force && now - subs.readAt < (working ? SUBAGENT_LIVE_MS : SUBAGENT_READ_MS)) return false;
+    if (!force && now - subs.readAt < (working ? SUBAGENT_LIVE_MS : SUBAGENT_READ_MS)) return;
     subs.readAt = now;
     let changed = false;
     const feed = this.feeds.get(state);
@@ -715,7 +725,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       }
     }
     state.onUsage = keep;
-    return changed;
+    if (changed) subs.unsent = true;
   }
 
   /** The session's sub-agents as its `subagents` lists them: those whose call is known, the newest last, as many as the protocol takes. */

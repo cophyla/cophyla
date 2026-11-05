@@ -598,6 +598,30 @@ describe("claude adapter prices a session with its sub-agents", () => {
     expect(runs().find((r) => r.agent === "a4")).toMatchObject({ call: "toolu_scan", description: "Scan the readme", steps: 1, last: "Read README.md" });
   });
 
+  /** A sub-agent's rows: its tool call, its answer that ends its turn, a message from its session (`SendMessage`), as Claude writes them. */
+  const subRow = {
+    tool: (id: string, name: string, input: Record<string, unknown>) =>
+      JSON.stringify({ type: "assistant", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { id, model: "claude-haiku-5-5", role: "assistant", content: [{ type: "tool_use", id: `tu_${id}`, name, input }], stop_reason: "tool_use", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    answer: (id: string, text: string) =>
+      JSON.stringify({ type: "assistant", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { id, model: "claude-haiku-5-5", role: "assistant", content: [{ type: "text", text }], stop_reason: "end_turn", usage: { input_tokens: 1, output_tokens: 1 } } }),
+    message: (text: string) => JSON.stringify({ type: "user", isSidechain: true, isMeta: true, timestamp: new Date(clock).toISOString(), origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${text}` } }),
+  };
+
+  test("a session read from the start whose transcript has Claude's cost record lists its sub-agents at once", async () => {
+    alive.add(511);
+    writeRegistry(registry, { pid: 511, sessionId: "sess-costrow", cwd, status: "busy" });
+    const path = transcriptPathFor(profileDir, cwd, "sess-costrow");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    mkdirSync(subs, { recursive: true });
+    clock += 1000;
+    writeFileSync(join(subs, "agent-u.meta.json"), JSON.stringify({ agentType: "Explore", description: "Find the tests", toolUseId: "toolu_tests" }));
+    writeFileSync(join(subs, "agent-u.jsonl"), subRow.tool("u1", "Glob", { pattern: "**/*.test.ts" }) + "\n");
+    // Closed and resumed once: the record Claude wrote as it closed is in the transcript, before the turns since.
+    writeFileSync(path, [row("msg_u1", "claude-opus-5-5", { input_tokens: 1, output_tokens: 1 }), costRecord("sess-costrow", 0.01), row("msg_u2", "claude-opus-5-5", { input_tokens: 1, output_tokens: 1 })].join("\n") + "\n");
+    await mini.sessions.tick();
+    expect(mini.sessions.list().find((x) => x.native.id === "sess-costrow")!.subagents).toEqual([{ call: "toolu_tests", agent: "u", type: "Explore", description: "Find the tests", steps: 1, last: "Glob **/*.test.ts", model: "claude-haiku-5-5", tokens: 2, startedAt: clock, lastAt: clock }]);
+  });
+
   const costRecord = (sessionId: string, total: number, usage: Record<string, { in: number; out: number; read?: number }> = {}) =>
     JSON.stringify({
       type: "cost-state",
