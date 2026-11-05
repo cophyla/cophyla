@@ -3778,7 +3778,8 @@ function updateAgentCard(node: HTMLElement, step: TimelineStep, cardKey: string,
   setHidden(factsNode, facts === "");
   const word = node.querySelector<HTMLElement>(".tl-agent-status")!;
   setText(word, AGENT_WORD[status]);
-  word.title = step.run?.summary ?? "";
+  // The notice's words, while it stands as they say: resumed since, a sub-agent's old "finished" says nothing.
+  word.title = step.run?.state === status ? (step.run.summary ?? "") : "";
   const doingNode = node.querySelector<HTMLElement>(".tl-agent-doing")!;
   setText(doingNode.querySelector(".tl-agent-doing-text")!, doing ?? "");
   setHidden(doingNode, doing === undefined);

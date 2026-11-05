@@ -607,6 +607,72 @@ describe("claude adapter prices a session with its sub-agents", () => {
     message: (text: string) => JSON.stringify({ type: "user", isSidechain: true, isMeta: true, timestamp: new Date(clock).toISOString(), origin: { kind: "coordinator" }, message: { role: "user", content: `The coordinator sent a message while you were working:\n${text}` } }),
   };
 
+  test("a sub-agent sent more work after it finished is at work again, from when it was resumed, until it finishes again", async () => {
+    const path = transcriptPathFor(profileDir, cwd, "sess-p");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    const runs = () => mini.sessions.list().find((x) => x.native.id === "sess-p")!.subagents ?? [];
+    const meta = (finished: boolean) => writeFileSync(join(subs, "agent-a5.meta.json"), JSON.stringify({ agentType: "general-purpose", description: "Render the minis", toolUseId: "toolu_minis", ...(finished ? { finished: true } : {}) }));
+    const file = join(subs, "agent-a5.jsonl");
+    clock += 1000;
+    const startedAt = clock;
+    meta(false);
+    writeFileSync(file, [JSON.stringify({ type: "user", isSidechain: true, timestamp: new Date(clock).toISOString(), message: { role: "user", content: "render the minis" } }), subRow.tool("m1", "Bash", { command: "blender", description: "Render v1" }), subRow.answer("m2", "v1 is done")].join("\n") + "\n");
+    meta(true);
+    clock += 10_000;
+    await mini.sessions.tick();
+    expect(runs().find((r) => r.agent === "a5")).toMatchObject({ call: "toolu_minis", steps: 1, finished: true });
+    expect(runs().find((r) => r.agent === "a5")!.resumedAt).toBeUndefined();
+    // Sent more work: Claude rewrites its meta without `finished`, and it goes on in the same transcript.
+    clock += 60_000;
+    const resumedAt = clock;
+    meta(false);
+    appendFileSync(file, [subRow.message("Now v2"), subRow.tool("m3", "Bash", { command: "blender", description: "Render v2" })].join("\n") + "\n");
+    clock += 10_000;
+    await mini.sessions.tick();
+    let run = runs().find((r) => r.agent === "a5")!;
+    expect(run).toMatchObject({ call: "toolu_minis", steps: 2, last: "Bash Render v2", startedAt, resumedAt });
+    expect(run.finished).toBeUndefined();
+    // A message that reaches it while it works (at its next tool round) resumes nothing.
+    clock += 3000;
+    appendFileSync(file, [subRow.message("Use 6 threads"), subRow.tool("m4", "Bash", { command: "blender -t 6", description: "Render v2 again" })].join("\n") + "\n");
+    await mini.sessions.tick();
+    expect(runs().find((r) => r.agent === "a5")).toMatchObject({ steps: 3, resumedAt });
+    // It stops again: finished, its last stretch's start kept.
+    clock += 3000;
+    appendFileSync(file, subRow.answer("m5", "v2 is done") + "\n");
+    meta(true);
+    await mini.sessions.tick();
+    run = runs().find((r) => r.agent === "a5")!;
+    expect(run).toMatchObject({ steps: 3, resumedAt, finished: true });
+    // A meta caught half rewritten as it writes again says nothing: it stays finished until the meta reads whole.
+    clock += 10_000;
+    writeFileSync(join(subs, "agent-a5.meta.json"), '{"agentType":"gen');
+    appendFileSync(file, subRow.message("And v3") + "\n");
+    await mini.sessions.tick();
+    expect(runs().find((r) => r.agent === "a5")!.finished).toBe(true);
+  });
+
+  test("a sub-agent read from the start (a restart) that was resumed and works on says so: at work, from when it was resumed", async () => {
+    alive.add(510);
+    writeRegistry(registry, { pid: 510, sessionId: "sess-resumed", cwd, status: "busy" });
+    const path = transcriptPathFor(profileDir, cwd, "sess-resumed");
+    const subs = join(path.replace(/\.jsonl$/, ""), "subagents");
+    mkdirSync(subs, { recursive: true });
+    writeFileSync(path, row("msg_t1", "claude-opus-5-5", { input_tokens: 1, output_tokens: 1 }) + "\n");
+    clock += 1000;
+    const startedAt = clock;
+    const lines = [subRow.tool("t1", "Read", { file_path: "C:\\w\\a.md" }), subRow.answer("t2", "read it")];
+    clock += 60_000;
+    const resumedAt = clock;
+    lines.push(subRow.message("read b.md too"), subRow.tool("t3", "Read", { file_path: "C:\\w\\b.md" }));
+    writeFileSync(join(subs, "agent-t.jsonl"), lines.join("\n") + "\n");
+    writeFileSync(join(subs, "agent-t.meta.json"), JSON.stringify({ agentType: "Explore", description: "Read the notes", toolUseId: "toolu_notes" }));
+    await mini.sessions.tick();
+    const run = mini.sessions.list().find((x) => x.native.id === "sess-resumed")!.subagents![0]!;
+    expect(run).toMatchObject({ call: "toolu_notes", steps: 2, startedAt, resumedAt, lastAt: resumedAt });
+    expect(run.finished).toBeUndefined();
+  });
+
   test("a session read from the start whose transcript has Claude's cost record lists its sub-agents at once", async () => {
     alive.add(511);
     writeRegistry(registry, { pid: 511, sessionId: "sess-costrow", cwd, status: "busy" });

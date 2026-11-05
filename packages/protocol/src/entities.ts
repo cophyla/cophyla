@@ -391,6 +391,11 @@ export const SubagentRun = z.object({
   window: z.number().int().positive().optional(),
   startedAt: Timestamp,
   lastAt: Timestamp,
+  /**
+   * When it was last sent more work after it had stopped (Claude's `SendMessage` to it resumes
+   * it, on in the same transcript): its present stretch of work starts here, not at `startedAt`.
+   */
+  resumedAt: Timestamp.optional(),
   finished: z.boolean().optional(),
 });
 export type SubagentRun = z.infer<typeof SubagentRun>;

@@ -70,9 +70,14 @@ export function subagentMeta(file: string): SubagentMeta {
 
 /**
  * One row of a sub-agent's transcript counted into its run: its tools called, the last in a few
- * words, its model, the tokens its context held at its latest model call, its times. Whether it changed the run.
+ * words, its model, the tokens its context held at its latest model call, its times, and when it
+ * was last resumed. Whether it changed the run.
+ *
+ * `ended` is whether its latest answer ended its turn. A message from the session that started
+ * it (`origin.kind` `coordinator`, which `SendMessage` writes) that comes after such an answer
+ * has resumed it. One that comes while it works reaches it at its next tool round and does not.
  */
-export function countSubagentRow(run: { steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number }, row: unknown): boolean {
+export function countSubagentRow(run: { steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number; resumedAt?: number; ended?: boolean }, row: unknown): boolean {
   if (row === null || typeof row !== "object") return false;
   const r = row as Record<string, unknown>;
   const at = typeof r["timestamp"] === "string" ? Date.parse(r["timestamp"]) : NaN;
@@ -81,8 +86,21 @@ export function countSubagentRow(run: { steps: number; last?: string; model?: st
     if (run.startedAt === 0 || at < run.startedAt) run.startedAt = at;
     if (at > run.lastAt) run.lastAt = at;
   }
+  if (r["type"] === "user") {
+    const origin = r["origin"] as Record<string, unknown> | undefined;
+    if (origin !== null && typeof origin === "object") {
+      if (origin["kind"] === "coordinator" && run.ended && Number.isFinite(at) && at !== run.resumedAt) {
+        run.resumedAt = at;
+        changed = true;
+      }
+      run.ended = false;
+    }
+    return changed;
+  }
   if (r["type"] !== "assistant") return changed;
   const message = r["message"] as Record<string, unknown> | undefined;
+  const stop = message?.["stop_reason"];
+  if (typeof stop === "string") run.ended = stop !== "tool_use" && stop !== "pause_turn";
   const model = typeof message?.["model"] === "string" && message["model"] !== "<synthetic>" ? message["model"] : undefined;
   if (model !== undefined && model !== run.model) {
     run.model = model;

@@ -68,7 +68,7 @@ interface SubagentTails {
   /** What each is, how far the spend ledger has it, and what started the turn it was first seen in. */
   info: Map<string, SubagentInfo & { mark: number; trigger: string }>;
   /** How far each has got, by its file: the session's `subagents` once its call is known. */
-  runs: Map<string, { call?: string; agent?: string; type?: string; description?: string; steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number; finished?: boolean }>;
+  runs: Map<string, { call?: string; agent?: string; type?: string; description?: string; steps: number; last?: string; model?: string; tokens?: number; startedAt: number; lastAt: number; resumedAt?: number; ended?: boolean; finished?: boolean }>;
   /**
    * A change read that the session's `subagents` has not had yet. A cost record makes a read in
    * the middle of a pass; what it found goes out at the pass's end, as any other read's does.
@@ -689,8 +689,12 @@ export class ClaudeAdapter implements HarnessAdapter {
       const info = subs.info.get(file)!;
       let run = subs.runs.get(file);
       if (!run) subs.runs.set(file, (run = { agent: info.id, steps: 0, startedAt: 0, lastAt: 0 }));
-      // Its meta names the call that started it as it starts, what it is and was asked, and says when it has finished.
-      if (run.call === undefined || !run.finished) {
+      const lines = tail.read();
+      // Its meta names the call that started it as it starts, what it is and was asked, and says
+      // when it has finished. One that has finished is asked again when it writes again: sent more
+      // work (`SendMessage` to it), it goes on in the same transcript, and Claude rewrites its meta
+      // without `finished` until it stops again.
+      if (run.call === undefined || !run.finished || lines.length > 0) {
         const meta = subagentMeta(file);
         if (meta.call !== undefined && meta.call !== run.call) {
           run.call = meta.call;
@@ -707,9 +711,13 @@ export class ClaudeAdapter implements HarnessAdapter {
         if (meta.finished === true && !run.finished) {
           run.finished = true;
           changed = true;
+        } else if (run.finished && meta.finished !== true && meta.call !== undefined) {
+          // A meta read whole that no longer says so: resumed. One not read (being rewritten) names no call, and says nothing.
+          delete run.finished;
+          changed = true;
         }
       }
-      for (const line of tail.read()) {
+      for (const line of lines) {
         state.onUsage = feed && line.offset >= info.mark ? (u) => feed.calls.push(u) : undefined;
         try {
           const row = JSON.parse(line.text) as unknown;
@@ -743,6 +751,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       ...(r.tokens !== undefined ? { tokens: r.tokens } : {}),
       startedAt: r.startedAt || r.lastAt,
       lastAt: r.lastAt || r.startedAt,
+      ...(r.resumedAt !== undefined ? { resumedAt: r.resumedAt } : {}),
       ...(r.finished ? { finished: true } : {}),
     }));
   }

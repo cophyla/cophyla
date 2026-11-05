@@ -2214,6 +2214,8 @@ export interface AgentRun {
   state: "running" | "done" | "failed" | "stopped" | "waiting";
   summary?: string;
   report?: string;
+  /** When the notice it stands by came: a sub-agent resumed since is at work again. */
+  at?: number;
 }
 
 /**
@@ -2365,12 +2367,13 @@ function noticeKey(n: TaskNotice): string {
  * How a notice leaves its call: done, unless it failed or was stopped, or it waits on work of its own
  * and reports so far. A monitor's notice of a line it saw leaves it running, that line its summary.
  */
-function runOf(n: TaskNotice): AgentRun {
+function runOf(n: TaskNotice & { at?: number }): AgentRun {
   const status = (n.status ?? "completed").toLowerCase();
   const summary = n.summary ?? (n.event ? firstWords(n.event) : undefined);
-  if (n.event && !n.status) return { state: "running", ...(summary ? { summary } : {}) };
+  const at = n.at !== undefined ? { at: n.at } : {};
+  if (n.event && !n.status) return { state: "running", ...(summary ? { summary } : {}), ...at };
   const state: AgentRun["state"] = /fail|error/.test(status) ? "failed" : /kill|stop|cancel/.test(status) ? "stopped" : /waiting on its own background work/.test(n.summary ?? "") ? "waiting" : "done";
-  return { state, ...(summary ? { summary } : {}), ...(n.result ? { report: n.result } : {}) };
+  return { state, ...(summary ? { summary } : {}), ...(n.result ? { report: n.result } : {}), ...at };
 }
 
 function firstWords(text: string, max = 120): string {
@@ -2410,10 +2413,14 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
   // Every background task's notice, read first: one can land before the call it ends (a sub-agent
   // done in a moment), and where hooks run each comes twice (the prompt hook's turn, the queue's row).
   // A Codex sub-agent's start (which names the spawning call) and its end, by its path, likewise.
-  const notices = new Map<string, TaskNotice>();
+  const notices = new Map<string, TaskNotice & { at: number }>();
   const calls = new Set<string>();
+  // Messages sent to a sub-agent (Claude's `SendMessage`), by their call: to whom, and when. One
+  // sent to an agent that had stopped resumes it, and its next notice comes under this call.
+  const sends = new Map<string, { to: string; at: number }>();
   // The sub-agents' calls: what each is and was asked to do, and when, for the line its end puts at the bottom.
-  const agentCalls = new Map<string, { description: string; type: string; model?: string; name?: string; at: number }>();
+  // A message sent to one carries its launch's, and `card`, the call that started it: the card its end line shows.
+  const agentCalls = new Map<string, { description: string; type: string; model?: string; name?: string; at: number; card?: string }>();
   /** A sub-agent's kind as its end line names it: the model it ran, as the node read it, else as its call asked. */
   const kindOf = (call: string, a: { type: string; model?: string; name?: string }) => agentKind({ ...a, model: opts.subagents?.find((r) => r.call === call)?.model ?? a.model });
   const spawned = new Map<string, string>();
@@ -2427,13 +2434,34 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
       const sub = subagentOf({ tool: String(p["tool"] ?? ""), args: p["args"] });
       if (sub) agentCalls.set(p["id"], { description: sub.description, type: sub.type, ...(sub.model ? { model: sub.model } : {}), ...(sub.name ? { name: sub.name } : {}), at: row.event.at });
       if (p["tool"] === "spawn_agent") spawnNames.set(p["id"], `/root/${String(callArgs(p["args"])["task_name"] ?? "")}`);
+      if (p["tool"] === "SendMessage") {
+        const to = callArgs(p["args"])["to"];
+        if (typeof to === "string" && to.trim() !== "") sends.set(p["id"], { to: to.trim(), at: row.event.at });
+      }
     }
     if (row.event.kind === "notification" && p["type"] === "subagent" && typeof p["path"] === "string") {
       if (p["activity"] === "started" && typeof p["call"] === "string") spawned.set(p["call"], p["path"]);
       if (p["activity"] === "completed") finished.set(p["path"], typeof p["report"] === "string" ? { report: p["report"] } : {});
     }
     const n = noticeOf(row.event);
-    if (n) notices.set(noticeKey(n), n);
+    if (n) notices.set(noticeKey(n), { ...n, at: row.event.at });
+  }
+  // A sub-agent sent messages: its latest notice under one of them, by the call that started it,
+  // and the line each such notice puts at the bottom, named as its launch is and timed from its message.
+  const later = <T extends { at: number }>(a: T | undefined, b: T | undefined): T | undefined => (a === undefined ? b : b === undefined || a.at >= b.at ? a : b);
+  const lastNotice = new Map<string, TaskNotice & { at: number }>();
+  if (sends.size > 0) {
+    const named = new Map([...agentCalls].flatMap(([call, a]) => (a.name ? [[a.name, call] as const] : [])));
+    for (const [call, send] of sends) {
+      // `to` is the agent's id, as its launch's receipt gives it, or the name it was started with.
+      const run = opts.subagents?.find((r) => r.agent === send.to) ?? opts.subagents?.find((r) => r.call === named.get(send.to));
+      const launch = run?.call ?? named.get(send.to);
+      if (launch === undefined) continue;
+      const n = notices.get(call);
+      if (n) lastNotice.set(launch, later(lastNotice.get(launch), n)!);
+      const a = agentCalls.get(launch) ?? (run?.description !== undefined ? { description: run.description, type: run.type ?? "general-purpose" } : undefined);
+      if (a) agentCalls.set(call, { ...a, ...(run?.model ? { model: run.model } : {}), at: send.at, card: launch });
+    }
   }
   // A sub-agent's own tools' results, by the sub-agent: its card's steps, wherever they fall among the session's own.
   const known = new Set((opts.subagents ?? []).flatMap((r) => (r.agent !== undefined ? [r.agent] : [])));
@@ -2466,7 +2494,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
       // A notice before its call (a sub-agent done in a moment, its hook's copy) leaves the line to the copy after.
       if (agent === undefined || !passed.has(n.toolUseId) || run.state === "running" || run.state === "waiting") return;
       noted.add(k);
-      add({ kind: "note", key, at, text: agentEndWords(agent.description, run.state, at - agent.at, kindOf(n.toolUseId, agent)), call: n.toolUseId });
+      add({ kind: "note", key, at, text: agentEndWords(agent.description, run.state, at - agent.at, kindOf(n.toolUseId, agent)), call: agent.card ?? n.toolUseId });
       return;
     }
     noted.add(k);
@@ -2539,8 +2567,9 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         if (progress) step.progress = progress;
         const own = progress?.agent !== undefined ? subSteps.get(progress.agent) : undefined;
         if (own) step.steps = own;
-        // A call whose notice is in: it ran in the background, and stands as the notice says.
-        const n = notices.get(id);
+        // A call whose notice is in: it ran in the background, and stands as the notice says; a
+        // sub-agent sent more work since, as its latest notice says.
+        const n = later(notices.get(id), agent ? lastNotice.get(id) : undefined);
         if (n) step.run = runOf(n);
         // A Codex sub-agent that has ended, with what its own thread said last.
         const path = step.tool === "spawn_agent" ? pathOf(id) : undefined;
@@ -2753,11 +2782,15 @@ function editLines(before: string, after: string): DiffFile["lines"] {
 
 /**
  * Where a sub-agent stands: as its notice left it (a background one), else by its call's result; one
- * still said to run whose own transcript says it has finished is done.
+ * still said to run whose own transcript says it has finished is done. One the node reads was
+ * resumed after its notice (sent more work) is at work again, until its transcript says it has
+ * finished again.
  */
 export function agentState(step: Pick<TimelineStep, "run" | "result" | "progress">): AgentRun["state"] {
+  const p = step.progress;
   const state = step.run?.state ?? (step.result === undefined ? "running" : step.result.error ? "failed" : "done");
-  return state === "running" && step.progress?.finished === true ? "done" : state;
+  if (state !== "running" && p?.finished !== true && p?.resumedAt !== undefined && step.run?.at !== undefined && p.resumedAt > step.run.at) return "running";
+  return state === "running" && p?.finished === true ? "done" : state;
 }
 
 /**
@@ -2771,8 +2804,10 @@ export function agentFacts(step: Pick<TimelineStep, "run" | "result" | "progress
   // Its steps' hooks can be ahead of its transcript's next read: the count is the larger.
   const n = Math.max(p.steps, step.steps?.length ?? 0);
   const parts = [n === 1 ? "1 step" : `${n} steps`];
-  const ms = (running ? now : p.lastAt) - p.startedAt;
-  if (p.startedAt > 0 && ms >= 0) parts.push(elapsedWords(ms));
+  // How long its latest stretch of work has taken: since it was last resumed, if it was.
+  const from = p.resumedAt ?? p.startedAt;
+  const ms = (running ? now : p.lastAt) - from;
+  if (from > 0 && ms >= 0) parts.push(elapsedWords(ms));
   // How full its context is, against its window; its model is in its kind, at the card's head.
   if (p.tokens !== undefined && p.tokens > 0) parts.push(`${contextWords(p.tokens, agentWindow(p, session))} context`);
   return { facts: parts.join(" · "), ...(running && p.last ? { doing: p.last } : {}) };
@@ -2852,7 +2887,7 @@ export function workingAgents(posts: readonly TimelinePost[], session: Pick<Sess
           description: sub.description,
           ...(doing !== undefined && state === "running" ? { doing } : {}),
           steps: Math.max(p?.steps ?? 0, step.steps?.length ?? 0),
-          since: p && p.startedAt > 0 ? p.startedAt : post.at,
+          since: p && p.startedAt > 0 ? (p.resumedAt ?? p.startedAt) : post.at,
           ...(p?.tokens !== undefined ? { tokens: p.tokens } : {}),
           ...(window !== undefined ? { window } : {}),
           ...(p?.model !== undefined ? { model: p.model } : {}),
@@ -2871,7 +2906,7 @@ export function workingAgents(posts: readonly TimelinePost[], session: Pick<Sess
       description: run.description ?? "a sub-agent",
       ...(run.last !== undefined ? { doing: run.last } : {}),
       steps: run.steps,
-      since: run.startedAt,
+      since: run.resumedAt ?? run.startedAt,
       ...(run.tokens !== undefined ? { tokens: run.tokens } : {}),
       ...(window !== undefined ? { window } : {}),
       ...(run.model !== undefined ? { model: run.model } : {}),

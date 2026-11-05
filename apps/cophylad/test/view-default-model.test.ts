@@ -501,8 +501,8 @@ describe("default view model", () => {
     ];
     const posts = timelinePosts(later);
     expect(agents(posts)).toEqual([
-      { state: "done", summary: 'Agent "Find the stylesheet" finished', report: "It is in src/app.css, line 4." },
-      { state: "waiting", summary: 'Agent "Run the suite" is waiting on its own background work', report: "Started the run; 40 of 2571 so fa…" },
+      { state: "done", summary: 'Agent "Find the stylesheet" finished', report: "It is in src/app.css, line 4.", at: 1007 },
+      { state: "waiting", summary: 'Agent "Run the suite" is waiting on its own background work', report: "Started the run; 40 of 2571 so fa…", at: 1009 },
     ]);
     expect(posts.slice(1).map((p) => (p.kind === "note" ? p.text : p.kind))).toEqual(['Explore agent "Find the stylesheet" finished', 'Background command "Run the build" completed (exit code 0)', "queued: check the logs too"]);
     expect((posts[1] as Extract<TimelinePost, { kind: "note" }>).call).toBe("a1");
@@ -510,7 +510,7 @@ describe("default view model", () => {
     expect(taskNotice(notice("a3", "killed", 'Agent "x" was stopped'))).toEqual({ toolUseId: "a3", taskId: "xa3", status: "killed", summary: 'Agent "x" was stopped' });
     expect(taskNotice("<cophyla-message>hi</cophyla-message>")).toBeUndefined();
     const stopped = timelinePosts([...rows.slice(0, 3), ev(4, "notification", { type: "queued", text: notice("a1", "killed", 'Agent "Find the stylesheet" was stopped') })]);
-    expect(agents(stopped)).toEqual([{ state: "stopped", summary: 'Agent "Find the stylesheet" was stopped' }]);
+    expect(agents(stopped)).toEqual([{ state: "stopped", summary: 'Agent "Find the stylesheet" was stopped', at: 1004 }]);
     // One that ran in its call (no background) stands by its result, as before.
     expect(agents(timelinePosts([ev(1, "tool_call", { tool: "Task", id: "s1", args: {} }), ev(2, "tool_result", { tool: "Task", id: "s1", result: "completed: x\nfound" })]))).toEqual([undefined]);
   });
@@ -532,7 +532,8 @@ describe("default view model", () => {
     // The agent's end line comes after its card (the copy the transcript queued), once.
     expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "note", "note"]);
     const card = (posts[1] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>;
-    expect(card.step.run).toEqual({ state: "done", summary: 'Agent "Find it" finished', report: "REPORT: src/app.css" });
+    // The run keeps when its notice came: the later copy's time.
+    expect(card.step.run).toEqual({ state: "done", summary: 'Agent "Find it" finished', report: "REPORT: src/app.css", at: 1005 });
     expect(posts[2]).toMatchObject({ kind: "note", text: 'Agent "Find it" finished', call: "t1" });
     expect((posts[3] as Extract<TimelinePost, { kind: "note" }>).text).toBe('Background command "Build" completed (exit code 0)');
   });
@@ -641,6 +642,51 @@ describe("default view model", () => {
     expect(tabTone(s.sessions.get("sess_a")!, now + 3_600_000)).toBe("quiet");
   });
 
+  test("a sub-agent sent more work after its notice (SendMessage) is at work again on its card and the panel, timed from then; its next notice ends it again", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 9_000_000 + seq * 1000, kind, payload } as unknown as SessionEvent });
+    const notice = (call: string, summary: string, result: string) => `<task-notification>\n<task-id>x1</task-id>\n<tool-use-id>${call}</tool-use-id>\n<status>completed</status>\n<summary>${summary}</summary>\n<result>${result}</result>\n</task-notification>`;
+    const rows = [
+      ev(1, "tool_call", { tool: "Agent", id: "a1", args: { description: "Render the minis", prompt: "render", name: "renderer" } }),
+      ev(2, "tool_result", { tool: "Agent", id: "a1", result: "async_launched: Render the minis" }),
+      ev(3, "status", { status: "idle" }),
+      ev(4, "notification", { type: "queued", text: notice("a1", 'Agent "Render the minis" finished', "v1 is in minis/") }),
+      // Its args cut at their cap come as text; `to` is read from it all the same.
+      ev(5, "tool_call", { tool: "SendMessage", id: "s1", args: '{"to":"x1","summary":"v2","message":"Now v2, with the roofs lighter and' }),
+      ev(6, "tool_result", { tool: "SendMessage", id: "s1", result: "Resuming agent x1" }),
+      ev(7, "status", { status: "idle" }),
+    ];
+    const run = { call: "a1", agent: "x1", type: "general-purpose", description: "Render the minis", steps: 9, last: "Bash Render v2", model: "claude-opus-5-5", startedAt: 9_000_500, lastAt: 9_008_000, resumedAt: 9_006_100 };
+    const card = (posts: TimelinePost[]) => ((posts[0] as Extract<TimelinePost, { kind: "turn" }>).parts[0] as Extract<TurnPart, { kind: "agent" }>).step;
+    const now = 9_010_000;
+    let posts = timelinePosts(rows, { subagents: [run] });
+    // Its notice says it finished; the node read it resumed after that: at work, its time from the resume.
+    expect(card(posts).run).toMatchObject({ state: "done", at: 9_004_000 });
+    expect(agentState(card(posts))).toBe("running");
+    expect(agentFacts(card(posts), now)).toEqual({ facts: "9 steps · 4s", doing: "Bash Render v2" });
+    const idle = { status: "idle" as const, subagents: [run] };
+    expect(workingAgents(posts, idle, now).map((a) => [a.call, a.since, a.doing])).toEqual([["a1", 9_006_100, "Bash Render v2"]]);
+    expect(agentsAtWork(idle, now)).toBe(1);
+    // Its launch not on the page: the node's word alone, timed from the resume too.
+    expect(workingAgents([], idle, now).map((a) => [a.call, a.since])).toEqual([["a1", 9_006_100]]);
+    // The node read that it finished again: done, though its next notice is not in yet.
+    expect(agentState(card(timelinePosts(rows, { subagents: [{ ...run, finished: true }] })))).toBe("done");
+    // A node that does not say when it was resumed leaves it as its notice says.
+    const { resumedAt: _, ...older } = run;
+    expect(agentState(card(timelinePosts(rows, { subagents: [older] })))).toBe("done");
+    // Its next notice comes under the message's call: the card takes its report, and its end line, timed from the message, shows the card.
+    const done = [...rows, ev(9, "notification", { type: "queued", text: notice("s1", 'Agent "Render the minis" finished', "v2 is in minis/") })];
+    posts = timelinePosts(done, { subagents: [{ ...run, lastAt: 9_008_500, finished: true }] });
+    expect(card(posts).run).toMatchObject({ state: "done", report: "v2 is in minis/", at: 9_009_000 });
+    expect(agentState(card(posts))).toBe("done");
+    expect(posts.filter((p) => p.kind === "note").map((p) => [(p as Extract<TimelinePost, { kind: "note" }>).text, (p as Extract<TimelinePost, { kind: "note" }>).call])).toEqual([
+      ['renderer · Opus 5.5 agent "Render the minis" finished · 3s', "a1"],
+      ['renderer · Opus 5.5 agent "Render the minis" finished · 4s', "a1"],
+    ]);
+    // Sent to by the name it was started with, it is the same agent.
+    const byName = timelinePosts(done.map((r) => (r.kind === "event" && r.event.seq === 5 ? ev(5, "tool_call", { tool: "SendMessage", id: "s1", args: { to: "renderer", message: "Now v2" } }) : r)), { subagents: [{ ...run, finished: true }] });
+    expect(card(byName).run).toMatchObject({ report: "v2 is in minis/" });
+  });
+
   test("a sub-agent's own tools are its card's steps, wherever their results fall; an unknown sub-agent's stay the session's", () => {
     const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at: 1000 + seq, kind, payload } as unknown as SessionEvent });
     const rows = [
@@ -687,9 +733,9 @@ describe("default view model", () => {
     ]);
     expect(later.map((p) => p.kind)).toEqual(["turn"]);
     const [bash, monitor] = steps(later);
-    expect(bash!.run).toEqual({ state: "done", summary: 'Background command "Run the suite" completed (exit code 0)' });
+    expect(bash!.run).toEqual({ state: "done", summary: 'Background command "Run the suite" completed (exit code 0)', at: 1007 });
     expect(backgroundWords(bash!.run!)).toBe("completed (exit code 0)");
-    expect(monitor!.run).toEqual({ state: "running", summary: "ERROR cophylad crashed" });
+    expect(monitor!.run).toEqual({ state: "running", summary: "ERROR cophylad crashed", at: 1006 });
     expect(backgroundWords(monitor!.run!)).toBe("in the background · ERROR cophylad crashed");
     expect(backgroundWords({ state: "running" })).toBe("in the background");
   });
