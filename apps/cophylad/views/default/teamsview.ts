@@ -3,14 +3,16 @@
 // rows built once and updated in place, clicks carried by `data-action` to teamctl.ts.
 //
 // Teams in the rail: the heading, with one button that opens the Teams page, and each team folded
-// like a folder, holding its own chat first, any of its groups no folder holds, and People and
-// agents, which opens its page. Every other group stands in its workspace, as before teams.
+// like a folder, holding its chats only: its own first, then any of its groups no folder holds;
+// a team with its own chat alone is just that chat's row. Its settings, the team's page, open
+// from its own chat's head. Every other group stands in its workspace, as before teams.
 //
 // The Teams page: Make a team, Invite a teammate and Join with a code, the one picked open below
 // them; then the user's teams, and the teammates made with a code that are in no team.
 //
 // A team's page: who is in it with their roles and what each shares, the invites still open,
-// Add a person (a GitHub name, then the code to send them), the other people's agents with
+// Add a person (one of the user's teammates with a click, or a GitHub name, then the code to send
+// them), the other people's agents with
 // Connect one of mine, what this user shares with the team with Change, and the workspaces new in
 // it waiting closed; Rename, Leave and End asked in place.
 //
@@ -19,7 +21,7 @@
 // closed. It shows only while something waits.
 
 import type { Group, Team, TeamOffer } from "@cophyla/protocol";
-import { closedPlaces, groupHeading, holdWords, railTeams, sessionLabel, teamPeople, teamShareWords, waitingItems } from "./model.ts";
+import { closedPlaces, groupHeading, holdWords, railTeams, sessionLabel, teamInviteMates, teamPeople, teamShareWords, waitingItems } from "./model.ts";
 import type { RailTeam, TeamAgentsSeen, TeamPersonRow, ViewState, WaitingItem } from "./model.ts";
 import { actionButton, clock, el, reconcile, sectionHead, setData, setHidden, setText } from "./render.ts";
 import type { UiState } from "./render.ts";
@@ -34,8 +36,8 @@ export const teamFoldKey = (id: string) => `team:${id}`;
 /** A team's page, as open: the team, and what is being asked or typed on it. */
 export interface TeamPageUi {
   team: string;
-  /** Add a person: the GitHub name typed, on its way, or why it failed. */
-  adding?: { busy?: boolean; error?: string };
+  /** Add a person: the GitHub name typed or the teammate clicked (`user`), on its way, or why it failed. */
+  adding?: { busy?: boolean; user?: string; error?: string };
   /** Asked in place about one person: take out, make admin or member, hand over. */
   asking?: { user: string; what: "remove" | "admin" | "member" | "owner" };
   /** Leave or End, asked in place. */
@@ -70,7 +72,7 @@ export function createTeamsSection(): HTMLElement {
   const head = el("div", "teams-head");
   const name = actionButton("tab-group-name", "Teams", "group-fold");
   name.dataset["group"] = TEAMS_GROUP;
-  name.title = "The people you work with: each team's chat and its people and their agents";
+  name.title = "The people you work with: each team's chats";
   const open = actionButton("teams-open", "", "team-open");
   open.title = "Teams: make one, invite a teammate, join with a code";
   open.setAttribute("aria-label", "Teams");
@@ -97,19 +99,19 @@ export function renderTeamsSection(node: HTMLElement, state: ViewState, ui: UiSt
 
 function createRailTeam(): HTMLElement {
   const node = el("div", "tab-group team-group");
-  const name = actionButton("tab-group-name", "", "group-fold");
-  const chats = el("div", "tab-group-chats");
-  const people = actionButton("tab team-people", "", "team-page");
-  people.append(el("span", "team-people-mark"), el("span", "tab-title", "People and agents"));
-  node.append(name, chats, people);
+  node.append(actionButton("tab-group-name", "", "group-fold"), el("div", "tab-group-chats"));
   return node;
 }
 
 function updateRailTeam(node: HTMLElement, t: RailTeam, ui: UiState): void {
   setData(node, "team", t.id);
   const key = teamFoldKey(t.id);
-  const folded = ui.folded.has(key);
+  // a team with its own chat alone is that chat's row, with no heading over it naming the same
+  const alone = t.chats.length === 1 && t.chats[0]!.teamChat === true;
+  setData(node, "alone", String(alone));
+  const folded = !alone && ui.folded.has(key);
   const name = node.querySelector<HTMLElement>(":scope > .tab-group-name")!;
+  setHidden(name, alone);
   setData(name, "group", key);
   setText(name, groupHeading(t.name, t.unread, folded));
   name.title = `${t.name} · ${t.people} ${t.people === 1 ? "person" : "people"}${t.ended ? " · ended" : ""}`;
@@ -117,11 +119,6 @@ function updateRailTeam(node: HTMLElement, t: RailTeam, ui: UiState): void {
   const chats = node.querySelector<HTMLElement>(".tab-group-chats")!;
   setHidden(chats, folded || t.chats.length === 0);
   reconcile(chats, folded ? [] : t.chats, (g) => g.id, createGroupTab, (tab, g) => updateGroupTab(tab, g, ui));
-  const people = node.querySelector<HTMLButtonElement>(".team-people")!;
-  setHidden(people, folded);
-  setData(people, "team", t.id);
-  people.title = `${t.name}: its people, their agents, and what you share with it`;
-  people.setAttribute("aria-current", ui.team.teamPage?.team === t.id ? "true" : "false");
 }
 
 // --- Waiting for you, under Status ------------------------------------------------------------------------
@@ -282,6 +279,9 @@ export function createTeamHome(): HTMLElement {
   const peopleHead = el("div", "team-section-head");
   peopleHead.append(el("h3", "devices-heading", "People"), actionButton("team-start team-add-start", "Add a person", "team-add"));
   const add = el("div", "team-add-form");
+  // the user's teammates not in it: a click invites one
+  const mates = el("div", "team-add-mates");
+  mates.append(el("p", "team-field-label", "Your teammates"), el("div", "team-add-mate-rows"));
   const login = el("input", "team-add-login");
   login.placeholder = "their GitHub name";
   login.autocomplete = "off";
@@ -292,7 +292,7 @@ export function createTeamHome(): HTMLElement {
   addButtons.append(actionButton("team-submit team-add-go", "Invite", "team-add-go"), actionButton("team-cancel-button", "Cancel", "team-add-cancel"));
   const addError = el("p", "group-form-error team-add-error");
   addError.setAttribute("role", "alert");
-  add.append(el("p", "devices-lede", "Only that GitHub account can take the invite, once, within seven days."), login, addError, addButtons);
+  add.append(mates, el("p", "team-field-label team-add-other", "Someone else"), login, el("p", "devices-lede", "Only that GitHub account can take the invite, once, within seven days."), addError, addButtons);
   const code = el("div", "invite-panel team-invite-code");
   const text = el("textarea", "invite-text");
   text.readOnly = true;
@@ -475,8 +475,17 @@ export function renderTeamHome(column: HTMLElement, state: ViewState, ui: UiStat
   const addError = add.querySelector<HTMLElement>(".team-add-error")!;
   setText(addError, page.adding?.error ?? "");
   setHidden(addError, page.adding?.error === undefined);
-  for (const b of Array.from(add.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = busy || page.adding?.busy === true;
-  setText(add.querySelector(".team-add-go")!, page.adding?.busy ? "Inviting…" : "Invite");
+  for (const b of Array.from(add.querySelectorAll<HTMLButtonElement>(".group-form-buttons button"))) b.disabled = busy || page.adding?.busy === true;
+  setText(add.querySelector(".team-add-go")!, page.adding?.busy && page.adding.user === undefined ? "Inviting…" : "Invite");
+  const mates = page.adding !== undefined ? teamInviteMates(state, team) : [];
+  setHidden(add.querySelector<HTMLElement>(".team-add-mates")!, mates.length === 0);
+  setHidden(add.querySelector<HTMLElement>(".team-add-other")!, mates.length === 0);
+  reconcile(add.querySelector<HTMLElement>(".team-add-mate-rows")!, mates, (u) => u, () => actionButton("team-mine team-add-mate", "", "team-add-mate"), (b, u) => {
+    setText(b, page.adding?.busy && page.adding.user === u ? `Inviting ${u}…` : u);
+    setData(b, "user", u);
+    b.title = `Invite ${u} to ${team.name}: their Cophyla shows it, to take or turn down`;
+    (b as HTMLButtonElement).disabled = busy || page.adding?.busy === true;
+  });
   const code = column.querySelector<HTMLElement>(".team-invite-code")!;
   const shown = state.teamCode && state.teamCode.team === team.id ? state.teamCode : undefined;
   setHidden(code, shown === undefined);

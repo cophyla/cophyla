@@ -11,6 +11,12 @@
 // mark while it waits for a reply, its thumbs up, Reply, and the agents it tags that have not
 // read it; and a composer that completes tags. An ended group is read only.
 //
+// A team's own chat is the team: its head has the team's gear, which opens the team's page (its
+// settings), in place of Edit and an empty ⋮; its members end with the people invited into the
+// team; and its Add offers the agents of the people in the team, and, to the team's owner or an
+// admin, each teammate not in it by themselves, whom picking invites into the team, with
+// Someone else, by GitHub name… for anyone who is no teammate yet.
+//
 // ⋮ → New group lays a form over the panes: name, purpose, how agents added are told, and the
 // agents to put in, the user's own by machine and folder and teammates' under their login.
 // ⋮ → Teammates lays a page over them, as Devices does: each teammate with what each side
@@ -29,6 +35,7 @@ import { createAttach, createPostMedia, newMediaUi, renderAttach, renderPostMedi
 import type { MediaUi } from "./groupmedia.ts";
 import { renderText } from "./markdown.ts";
 import {
+  addWords,
   broadWords,
   canEndGroup,
   candidateGroups,
@@ -46,6 +53,7 @@ import {
   selectTeammates,
   sessionFocus,
   teamBlock,
+  teamChatPick,
   teamConnectionRows,
   teamEndWords,
   connectNoTeam,
@@ -532,6 +540,9 @@ function createGroupPane(root: HTMLElement): void {
   titles.append(el("h2", "group-name"), el("span", "group-summary"), el("p", "group-purpose"));
   const edit = actionButton("group-tool group-edit", "Edit", "group-edit");
   edit.title = "Change the name and the purpose";
+  // a team's own chat: the team's page, its people, invites and what the user shares, is behind this
+  const settings = actionButton("group-tool group-team-settings", "", "team-page");
+  settings.append(el("span", "group-team-settings-mark"));
   const more = actionButton("group-tool group-more", "", "group-menu");
   more.setAttribute("aria-haspopup", "menu");
   more.setAttribute("aria-label", "More");
@@ -548,7 +559,7 @@ function createGroupPane(root: HTMLElement): void {
   menu.append(del, end);
   const mark = el("span", "group-mark group-head-mark");
   mark.setAttribute("aria-hidden", "true");
-  top.append(fold, mark, titles, edit, more, menu);
+  top.append(fold, mark, titles, edit, settings, more, menu);
   // Delete or End, asked in place under the line.
   const ask = el("div", "group-ask");
   ask.setAttribute("role", "alert");
@@ -582,7 +593,9 @@ function createGroupPane(root: HTMLElement): void {
   addButtons.append(actionButton("group-add-confirm", "Add", "group-add-confirm"), actionButton("group-add-cancel", "Cancel", "group-add-cancel"));
   const addError = el("p", "group-form-error");
   addError.setAttribute("role", "alert");
-  add2.append(createAgentPick("add"), addButtons, addError);
+  // a team's own chat: someone who is no teammate yet is invited by their GitHub name on the team's page
+  const byName = actionButton("connect-link group-add-by-name", "Someone else, by GitHub name…", "team-add-by-name");
+  add2.append(createAgentPick("add"), byName, addButtons, addError);
   const ended = el("p", "group-ended");
   head.append(top, ask, form, el("div", "group-member-row"), add2, ended);
   head.querySelector(".group-member-row")!.append(members, add);
@@ -705,9 +718,20 @@ function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiSt
   const purpose = head.querySelector<HTMLElement>(".group-purpose")!;
   setText(purpose, g.purpose ?? "");
   setHidden(purpose, !g.purpose);
+  // a team's own chat is named for the team: its page renames it, and holds the rest of the team's settings
+  const team = g.teamChat && g.team !== undefined ? state.teams.get(g.team) : undefined;
+  const settings = head.querySelector<HTMLButtonElement>(".group-team-settings")!;
+  setHidden(settings, team === undefined || !state.scopes.includes("controllers"));
+  if (team) {
+    setData(settings, "team", team.id);
+    settings.title = `${team.name}'s settings: its people, invites, and what you share with it`;
+    settings.setAttribute("aria-label", `${team.name}'s settings`);
+    settings.setAttribute("aria-pressed", String(ui.team.teamPage?.team === team.id));
+    settings.disabled = !state.connected;
+  }
   const editing = ui.team.editGroup?.group === g.id ? ui.team.editGroup : undefined;
   const edit = head.querySelector<HTMLButtonElement>(".group-edit")!;
-  setHidden(edit, ended || groupMe(g) === undefined || !state.scopes.includes("sessions:write") || editing !== undefined);
+  setHidden(edit, ended || team !== undefined || groupMe(g) === undefined || !state.scopes.includes("sessions:write") || editing !== undefined);
   edit.disabled = !canWrite;
   const form = head.querySelector<HTMLFormElement>(".group-edit-form")!;
   setHidden(form, editing === undefined);
@@ -725,7 +749,8 @@ function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiSt
   } else delete form.dataset["for"];
   const menuOpen = ui.team.groupMenu?.group === g.id ? ui.team.groupMenu : undefined;
   const more = head.querySelector<HTMLButtonElement>(".group-more")!;
-  setHidden(more, !state.scopes.includes("sessions:write"));
+  // a running team's chat is neither left nor ended by itself, but with the team: its ⋮ would be empty
+  setHidden(more, !state.scopes.includes("sessions:write") || (g.teamChat === true && !ended));
   more.disabled = !canWrite;
   more.setAttribute("aria-expanded", String(menuOpen !== undefined && menuOpen.asking === undefined));
   const menu = head.querySelector<HTMLElement>(".group-menu")!;
@@ -764,10 +789,19 @@ function renderGroupHead(head: HTMLElement, g: Group, state: ViewState, ui: UiSt
   const panel = head.querySelector<HTMLElement>(".group-add")!;
   setHidden(panel, adding === undefined);
   if (adding) {
-    renderAgentPick(panel.querySelector<HTMLElement>(".agent-pick")!, adding, candidateGroups(adding.candidates ?? [], g, adding.picked), "No other agent of yours, teammate or teammate's agent is there to add now.");
+    const pick = teamChatPick(state, g);
+    const groups = candidateGroups(adding.candidates ?? [], g, adding.picked, pick);
+    renderAgentPick(panel.querySelector<HTMLElement>(".agent-pick")!, adding, groups, pick ? `No other agent of yours or ${pick.name}'s${pick.canInvite ? ", and no teammate to invite," : ""} is there to add now.` : "No other agent of yours, teammate or teammate's agent is there to add now.");
+    const byName = panel.querySelector<HTMLButtonElement>(".group-add-by-name")!;
+    setHidden(byName, !pick?.canInvite || !state.scopes.includes("controllers"));
+    if (team) setData(byName, "team", team.id);
+    byName.disabled = !state.connected || adding.busy === true;
+    const items = groups.flatMap((x) => x.items).filter((i) => adding.picked.has(i.key));
+    const invites = items.filter((i) => i.invite);
+    const agents = items.length - invites.length;
     const confirm = panel.querySelector<HTMLButtonElement>(".group-add-confirm")!;
-    setText(confirm, adding.busy ? "Adding…" : adding.picked.size > 0 ? `Add ${adding.picked.size}` : "Add");
-    confirm.disabled = !canWrite || adding.busy === true || adding.picked.size === 0;
+    setText(confirm, addWords(agents, invites.map((i) => i.handle), adding.busy === true));
+    confirm.disabled = !canWrite || adding.busy === true || items.length === 0;
     const error = panel.querySelector<HTMLElement>(".group-form-error")!;
     setText(error, adding.error ?? "");
     setHidden(error, adding.error === undefined);
@@ -810,7 +844,7 @@ function updateMemberChip(chip: HTMLElement, c: MemberChip, g: Group, state: Vie
   setHidden(icon, c.kind !== "agent");
   setData(icon, "harness", c.harness ?? "terminal");
   setData(icon, "tone", c.status === "busy" ? "active" : "quiet");
-  setText(chip.querySelector(".group-member-name")!, c.me ? `${c.name} (you)` : c.name);
+  setText(chip.querySelector(".group-member-name")!, c.me ? `${c.name} (you)` : c.status === "invited" ? `${c.name} · invited` : c.name);
   const focus = chip.querySelector<HTMLElement>(".group-member-focus")!;
   setText(focus, c.focus ? c.focus.replace(/^Focus until /, "focus until ").replace(/ — .*$/, "") : "");
   focus.title = c.focus ?? "";

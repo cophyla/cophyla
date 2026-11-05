@@ -6386,8 +6386,8 @@ export interface MemberChip {
   kind: "agent" | "person";
   name: string;
   harness?: string;
-  /** An agent's: working, idle, its session ended, or not known here (a teammate's); a person's own. */
-  status: "busy" | "idle" | "gone" | "unknown" | "person";
+  /** An agent's: working, idle, its session ended, or not known here (a teammate's); a person's own; a person invited into the chat's team, not in it yet. */
+  status: "busy" | "idle" | "gone" | "unknown" | "person" | "invited";
   focus?: string;
   held: boolean;
   unread: number;
@@ -6401,7 +6401,26 @@ export interface MemberChip {
   title: string;
 }
 
-export function memberChips(state: Pick<ViewState, "sessions" | "focus">, g: Group, now: number): MemberChip[] {
+/**
+ * A group's members as chips. A team's own chat has everyone in the team; the people invited
+ * into the team and not in it yet come after them, marked invited.
+ */
+export function memberChips(state: Pick<ViewState, "sessions" | "focus"> & Partial<Pick<ViewState, "teams">>, g: Group, now: number): MemberChip[] {
+  const chips = groupChips(state, g, now);
+  const team = g.teamChat && g.team !== undefined && g.ended === undefined ? state.teams?.get(g.team) : undefined;
+  for (const i of team?.invites ?? []) {
+    if (chips.some((c) => c.kind === "person" && sameLogin(c.name, i.user))) continue;
+    chips.push({ key: `invite:${i.id}`, kind: "person", name: i.user, status: "invited", held: false, unread: 0, mine: false, me: false, removable: false, title: `${i.user}, invited to ${team!.name} by ${i.by}: in this chat once they join` });
+  }
+  return chips;
+}
+
+/** GitHub names match whatever their case. */
+function sameLogin(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase();
+}
+
+function groupChips(state: Pick<ViewState, "sessions" | "focus">, g: Group, now: number): MemberChip[] {
   const maker = groupMaker(g);
   const open = g.ended === undefined;
   return g.members.map((m): MemberChip => {
@@ -6473,13 +6492,14 @@ export function candidateKey(ref: GroupMemberRef): string {
   return "session" in ref ? `s:${ref.session}` : "name" in ref ? `t:${ref.teammate}:${ref.name}` : `p:${ref.teammate}`;
 }
 
-/** An agent in the picker, or a teammate by themselves (`person`), and its heading: the user's own by machine and folder, a teammate's under their login. */
+/** An agent in the picker, or a teammate by themselves (`person`), and its heading: the user's own by machine and folder, a teammate's under their login. `invite`: a teammate not in a team's chat's team, whom picking invites into it. */
 export interface CandidateItem {
   key: string;
   ref: GroupMemberRef;
   handle: string;
   harness?: string;
   person?: boolean;
+  invite?: boolean;
   words: string;
 }
 
@@ -6489,7 +6509,24 @@ export interface CandidateGroup {
   own: boolean;
   /** Why a teammate's heading cannot be picked from now: they are not a teammate of someone in the group or picked. */
   blocked?: string;
+  /** A teammate not in the team, offered to invite into it. */
+  invite?: boolean;
   items: CandidateItem[];
+}
+
+/** A team's own chat, for its picker: the team's name, who is in it and who is invited, and whether this user may invite. */
+export interface TeamChatPick {
+  name: string;
+  members: string[];
+  invited: string[];
+  canInvite: boolean;
+}
+
+/** What a team's own chat's picker goes by, when `g` is one and its team is here. */
+export function teamChatPick(state: Pick<ViewState, "teams">, g: Pick<Group, "team" | "teamChat">): TeamChatPick | undefined {
+  const team = g.teamChat && g.team !== undefined ? state.teams.get(g.team) : undefined;
+  if (!team) return undefined;
+  return { name: team.name, members: team.members.map((m) => m.user), invited: team.invites.map((i) => i.user), canInvite: (team.role === "owner" || team.role === "admin") && team.ended === undefined };
 }
 
 /**
@@ -6499,8 +6536,12 @@ export interface CandidateGroup {
  * matched by handle. Everyone in a group is a teammate of everyone else, so a teammate who is
  * not a teammate of someone in `g`, or of a teammate with something `picked`, is blocked, saying
  * who; one whose side could not say (no `peers`) only joins a group of the user's and theirs.
+ *
+ * A team's own chat (`team`) is the team: the agents of the people in it, and each teammate not
+ * in it by themselves, to invite into the team, for its owner or an admin; never an outsider's
+ * agent, which would bring them into the chat and not the team.
  */
-export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">, picked: Iterable<string> = []): CandidateGroup[] {
+export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "members">, picked: Iterable<string> = [], team?: TeamChatPick): CandidateGroup[] {
   const sessions = new Set<string>();
   const handles = new Set<string>();
   const people = new Set<string>();
@@ -6513,31 +6554,59 @@ export function candidateGroups(cands: GroupCandidate[], g?: Pick<Group, "member
     if (!m.gone) handles.add(m.handle);
   }
   const inGroup = new Set(people);
+  const inTeam = (user?: string) => team === undefined || (user !== undefined && team.members.some((u) => sameLogin(u, user)));
   const chosen = new Set(picked);
-  for (const c of cands) if (!("session" in c.ref) && c.user && chosen.has(candidateKey(c.ref))) people.add(c.user);
+  for (const c of cands) if (!("session" in c.ref) && c.user && inTeam(c.user) && chosen.has(candidateKey(c.ref))) people.add(c.user);
   const groups = new Map<string, CandidateGroup>();
   for (const c of cands) {
     const own = "session" in c.ref;
     const session = "session" in c.ref ? c.ref.session : c.session;
     if (c.person ? c.user !== undefined && inGroup.has(c.user) : session !== undefined ? sessions.has(session) : handles.has(c.handle)) continue;
+    const invite = team !== undefined && !own && !inTeam(c.user);
+    if (invite && (!c.person || !team.canInvite || c.user === undefined || team.invited.some((u) => sameLogin(u, c.user!)))) continue;
+    if (team !== undefined && c.person && !invite) continue;
     const folder = c.folder ?? c.workspace;
     const key = own ? `own:${c.node ?? ""}\n${folder ?? ""}` : `user:${c.user ?? ""}`;
     let group = groups.get(key);
     if (!group) {
-      group = { key, own, title: own ? `${folder ?? "No folder"}${c.machine ? ` · ${c.machine}` : ""}` : `${c.user ?? "A teammate"} and their agents`, items: [] };
-      if (!own) {
+      group = { key, own, title: own ? `${folder ?? "No folder"}${c.machine ? ` · ${c.machine}` : ""}` : invite ? (c.user ?? "A teammate") : `${c.user ?? "A teammate"} and their agents`, ...(invite ? { invite: true } : {}), items: [] };
+      if (!own && !invite) {
         const missing = [...people].filter((u) => u !== c.user && !(c.peers ?? []).includes(u));
         if (missing.length > 0) group.blocked = c.peers === undefined ? `${c.user ?? "They"} can join a group with ${wordList(missing)} once their Cophyla is updated.` : `${c.user ?? "They"} is not a teammate of ${wordList(missing)}, and everyone in a group is a teammate of everyone else.`;
       }
       groups.set(key, group);
     }
     const harness = c.harness ? (HARNESS_NAMES[c.harness as keyof typeof HARNESS_NAMES] ?? c.harness) : undefined;
-    const words = c.person ? "Just them, without an agent" : [harness, c.status, own ? undefined : c.workspace, c.intent].filter((w): w is string => w !== undefined && w !== "").join(" · ");
-    const item: CandidateItem = { key: candidateKey(c.ref), ref: c.ref, handle: c.handle, ...(c.harness ? { harness: c.harness } : {}), ...(c.person ? { person: true } : {}), words };
+    const words = invite ? `Invite them to ${team!.name}` : c.person ? "Just them, without an agent" : [harness, c.status, own ? undefined : c.workspace, c.intent].filter((w): w is string => w !== undefined && w !== "").join(" · ");
+    const item: CandidateItem = { key: candidateKey(c.ref), ref: c.ref, handle: c.handle, ...(c.harness ? { harness: c.harness } : {}), ...(c.person ? { person: true } : {}), ...(invite ? { invite: true } : {}), words };
     if (c.person) group.items.unshift(item);
     else group.items.push(item);
   }
-  return [...groups.values()].sort((a, b) => Number(b.own) - Number(a.own) || a.title.localeCompare(b.title));
+  return [...groups.values()].sort((a, b) => Number(b.own) - Number(a.own) || Number(a.invite === true) - Number(b.invite === true) || a.title.localeCompare(b.title));
+}
+
+/** The add panel's button: the agents picked to add, and the teammates picked to invite into a team's chat's team. */
+export function addWords(agents: number, invites: string[], busy: boolean): string {
+  if (busy) return invites.length > 0 && agents === 0 ? "Inviting…" : "Adding…";
+  const invite = invites.length === 1 ? `invite ${invites[0]}` : invites.length > 1 ? `invite ${invites.length}` : "";
+  if (agents > 0 && invite) return `Add ${agents}, ${invite}`;
+  if (invite) return invite[0]!.toUpperCase() + invite.slice(1);
+  return agents > 0 ? `Add ${agents}` : "Add";
+}
+
+/**
+ * The teammates a team's owner or an admin may invite into it with one click: those active,
+ * named, and neither in it nor invited already, by name.
+ */
+export function teamInviteMates(state: Pick<ViewState, "teammates">, team: Pick<Team, "members" | "invites">): string[] {
+  const out = new Map<string, string>();
+  for (const t of state.teammates.values()) {
+    if (t.state !== "active" || !t.user) continue;
+    const user = t.user;
+    if (team.members.some((m) => sameLogin(m.user, user)) || team.invites.some((i) => sameLogin(i.user, user))) continue;
+    out.set(user.toLowerCase(), user);
+  }
+  return [...out.values()].sort((a, b) => a.localeCompare(b));
 }
 
 /**

@@ -7,7 +7,7 @@
 // and a request the user made says to update.
 
 import type { Focus, FolderPick, Group, GroupCandidate, GroupNotify, GroupPost, Team, TeamAgent, TeamClosedAgent, Teammate, TeammatePlace, TeammateShare, TeamOffer, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { broadShares, buildShare, candidateKey, closedPlaces, completeTag, connectElseFolded, enterSends, excludePlace, groupCreateParams, openPlace, readUpTo, samePlaceOrUnder, sessionFolder, tagCompletion, teamworkFailure } from "./model.ts";
+import { broadShares, buildShare, candidateGroups, closedPlaces, completeTag, connectElseFolded, enterSends, excludePlace, groupCreateParams, openPlace, readUpTo, samePlaceOrUnder, sessionFolder, tagCompletion, teamChatPick, teamworkFailure } from "./model.ts";
 import type { Action, ViewState } from "./model.ts";
 import { fitField } from "./render.ts";
 import type { Roots, UiState } from "./render.ts";
@@ -564,16 +564,35 @@ export class TeamControl {
     this.d.draw();
   }
 
+  /**
+   * Add, under a group's members: the agents and people picked go in. In a team's own chat a
+   * teammate not in the team is invited into it instead, and comes into the chat as they join;
+   * one whose Cophyla could not be handed it gets a code, on the team's page.
+   */
   private async addMembers(): Promise<void> {
     const f = this.d.ui.team.addMembers;
     if (!f || f.busy || f.picked.size === 0) return;
-    const members = (f.candidates ?? []).filter((c) => f.picked.has(candidateKey(c.ref))).map((c) => c.ref);
+    const g = this.d.state.groups.get(f.group);
+    const pick = g ? teamChatPick(this.d.state, g) : undefined;
+    const items = candidateGroups(f.candidates ?? [], g, f.picked, pick)
+      .flatMap((x) => x.items)
+      .filter((i) => f.picked.has(i.key));
+    const members = items.filter((i) => !i.invite).map((i) => i.ref);
+    const invites = items.filter((i) => i.invite).map((i) => i.handle);
+    if (members.length === 0 && invites.length === 0) return;
     f.busy = true;
     f.error = undefined;
     this.d.draw();
+    let coded: string | undefined;
     try {
-      const r = await this.d.rpc.request<{ group: Group }>("group.member.add", { group: f.group, members });
-      this.d.dispatch({ type: "group.state", params: r.group });
+      if (members.length > 0) {
+        const r = await this.d.rpc.request<{ group: Group }>("group.member.add", { group: f.group, members });
+        this.d.dispatch({ type: "group.state", params: r.group });
+      }
+      for (const user of invites) {
+        const { offered } = await this.invite(g!.team!, user);
+        if (!offered) coded = g!.team;
+      }
       if (this.d.ui.team.addMembers === f) this.d.ui.team.addMembers = undefined;
     } catch (e) {
       f.error = this.words(e);
@@ -581,6 +600,8 @@ export class TeamControl {
       f.busy = false;
       this.d.draw();
     }
+    // a code to pass on is on show on the team's page
+    if (coded !== undefined) this.openTeamPage(coded);
   }
 
   // --- New group --------------------------------------------------------------------------------------
@@ -816,11 +837,12 @@ export class TeamControl {
     }
   }
 
-  private async addPerson(): Promise<void> {
+  /** Add a person on a team's page: one of the user's teammates clicked (`mate`), or the GitHub name typed. */
+  private async addPerson(mate?: string): Promise<void> {
     const page = this.d.ui.team.teamPage;
     if (!page?.adding || page.adding.busy) return;
     const box = this.d.roots.team.querySelector<HTMLInputElement>(".team-add-login");
-    const user = (box?.value ?? "").trim().replace(/^@/, "");
+    const user = mate ?? (box?.value ?? "").trim().replace(/^@/, "");
     if (!user) {
       page.adding.error = "Type their GitHub name.";
       this.d.draw();
@@ -828,21 +850,34 @@ export class TeamControl {
       return;
     }
     page.adding.busy = true;
+    page.adding.user = mate;
     page.adding.error = undefined;
     this.d.draw();
     try {
-      const r = await this.d.rpc.request<{ team: Team; invite: { id: string; code: string; expiresAt: number }; offered?: boolean }>("teams.invite", { team: page.team, user });
-      this.d.dispatch({ type: "teams.state", params: r.team });
-      this.d.dispatch({ type: "team.code", code: { team: page.team, invite: r.invite.id, user, code: r.invite.code, expiresAt: r.invite.expiresAt, ...(r.offered ? { offered: true } : {}) } });
-      this.d.ui.team.copied = undefined;
+      await this.invite(page.team, user);
       page.adding = undefined;
-      if (box) box.value = "";
+      if (box && mate === undefined) box.value = "";
     } catch (e) {
       if (page.adding) page.adding.error = this.words(e);
     } finally {
-      if (page.adding) page.adding.busy = false;
+      if (page.adding) {
+        page.adding.busy = false;
+        page.adding.user = undefined;
+      }
       this.d.draw();
     }
+  }
+
+  /**
+   * An invite into a team for a GitHub name: a teammate's Cophyla is handed it, and the team's
+   * page says it was sent; anyone else's code is on show there, to pass on.
+   */
+  private async invite(team: string, user: string): Promise<{ offered: boolean }> {
+    const r = await this.d.rpc.request<{ team: Team; invite: { id: string; code: string; expiresAt: number }; offered?: boolean }>("teams.invite", { team, user });
+    this.d.dispatch({ type: "teams.state", params: r.team });
+    this.d.dispatch({ type: "team.code", code: { team, invite: r.invite.id, user, code: r.invite.code, expiresAt: r.invite.expiresAt, ...(r.offered ? { offered: true } : {}) } });
+    this.d.ui.team.copied = undefined;
+    return { offered: r.offered === true };
   }
 
   private async copyTeamCode(): Promise<void> {
@@ -1408,6 +1443,18 @@ export class TeamControl {
         return true;
       case "team-add-go":
         void this.addPerson();
+        return true;
+      case "team-add-mate":
+        if (data["user"]) void this.addPerson(data["user"]);
+        return true;
+      case "team-add-by-name":
+        // from a team's chat: its page, with Add a person open at the GitHub name
+        if (!data["team"]) return true;
+        if (!t.addMembers?.busy) t.addMembers = undefined;
+        this.openTeamPage(data["team"]);
+        if (t.teamPage) t.teamPage.adding = {};
+        this.d.draw();
+        if (!this.d.phone()) this.d.roots.team.querySelector<HTMLInputElement>(".team-add-login")?.focus();
         return true;
       case "team-add-cancel":
         if (t.teamPage && !t.teamPage.adding?.busy) t.teamPage.adding = undefined;

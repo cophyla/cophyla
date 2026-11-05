@@ -1,12 +1,13 @@
 // The default view's teams, pure: a team's row coming and going, the invite on show until it is
 // taken, the rail's teams with their chats, the people on a team's page and what the user may do
-// about each, Waiting for you (invites and workspaces new in a team's share), and the Connect
-// panel standing on what is shared with the teams two people are both in.
+// about each, Waiting for you (invites and workspaces new in a team's share), the Connect panel
+// standing on what is shared with the teams two people are both in, and a team's own chat: its
+// invited people among its members, and Add offering teammates to invite into the team.
 
 import { describe, expect, test } from "bun:test";
 import { ACCESS_PRESETS } from "@cophyla/protocol";
-import type { Client, Group, Node, ClientSession as Session, Team, Teammate, TeamOffer, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { apply, connectStanding, initialState, railTeams, teamPeople, waitingItems } from "../views/default/model.ts";
+import type { Client, Group, GroupCandidate, Node, ClientSession as Session, Team, Teammate, TeamOffer, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import { addWords, apply, candidateGroups, connectStanding, initialState, memberChips, railTeams, teamChatPick, teamInviteMates, teamPeople, waitingItems } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
@@ -119,5 +120,78 @@ describe("teams in the view", () => {
     expect(connectStanding(state, bob, s)).toMatchObject({ kind: "closed", label: "Open to everyone in Studio", team: TEAM });
     apply(state, { type: "teams.state", params: team({ share: { mode: "include", folders: [{ node: DESK, path: "C:\\other" }], open: "always" } }) });
     expect(connectStanding(state, bob, s)).toMatchObject({ kind: "outside", label: "Share web with Studio…", team: TEAM });
+  });
+
+  test("a team's own chat: everyone in the team, then the people invited and not in it yet; no other chat shows invites", () => {
+    const state = connected();
+    apply(state, { type: "teams", teams: [team()], offers: [] });
+    const members: Group["members"] = [
+      { kind: "person", key: "person:usr_alice", user: "alice", me: true, readTo: 0 },
+      { kind: "person", key: "person:usr_bob", user: "bob", readTo: 0 },
+    ];
+    const chips = memberChips(state, chat({ members }), 0);
+    expect(chips.map((c) => [c.name, c.status])).toEqual([
+      ["alice", "person"],
+      ["bob", "person"],
+      ["dave", "invited"],
+    ]);
+    expect(chips[2]).toMatchObject({ key: `invite:${INV}`, removable: false, title: "dave, invited to Studio by alice: in this chat once they join" });
+    // an invite for someone in the chat already is not said twice, whatever the case of the name
+    apply(state, { type: "teams.state", params: team({ invites: [{ id: INV, user: "Bob", by: "alice", at: 4, expiresAt: Date.now() + 86400_000 }] }) });
+    expect(memberChips(state, chat({ members }), 0).map((c) => c.name)).toEqual(["alice", "bob"]);
+    // another group of the team's, and an ended team chat: members only
+    apply(state, { type: "teams.state", params: team() });
+    expect(memberChips(state, chat({ members, teamChat: undefined }), 0).map((c) => c.name)).toEqual(["alice", "bob"]);
+    expect(memberChips(state, chat({ members, ended: { at: 5, by: "bob" } }), 0).map((c) => c.name)).toEqual(["alice", "bob"]);
+  });
+
+  test("Add in a team's own chat: the team's agents, and a teammate not in it to invite into the team, for its owner or an admin", () => {
+    const state = connected();
+    apply(state, { type: "teams", teams: [team()], offers: [] });
+    const ERIN = "tm_01ARZ3NDEKTSV4RRFFQ69G5FE5";
+    const cands: GroupCandidate[] = [
+      { ref: { session: A }, handle: "web", harness: "claude", folder: "web", node: DESK, machine: "Desk", status: "idle" },
+      { ref: { teammate: TM }, handle: "bob", person: true, user: "bob", peers: ["carol", "erin"] },
+      { ref: { teammate: TM, name: "api" }, handle: "bob/api", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB9", harness: "claude", user: "bob", workspace: "api", status: "idle", peers: ["carol", "erin"] },
+      { ref: { teammate: ERIN }, handle: "erin", person: true, user: "erin", peers: ["bob"] },
+      { ref: { teammate: ERIN, name: "ops" }, handle: "erin/ops", session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB8", harness: "codex", user: "erin", status: "busy", peers: ["bob"] },
+      // invited already: not offered again
+      { ref: { teammate: "tm_01ARZ3NDEKTSV4RRFFQ69G5FE6" }, handle: "dave", person: true, user: "dave", peers: [] },
+    ];
+    const g = chat({ members: [{ kind: "person", key: "person:usr_alice", user: "alice", me: true, readTo: 0 }] });
+    const pick = teamChatPick(state, g)!;
+    expect(pick).toEqual({ name: "Studio", members: ["bob", "alice", "carol"], invited: ["dave"], canInvite: true });
+    const groups = candidateGroups(cands, g, [], pick);
+    // bob is in the team (his chip comes from the team, not from here); erin's agent would bring her into the chat and not the team
+    expect(groups.map((x) => [x.title, x.items.map((i) => [i.handle, i.words]), x.blocked])).toEqual([
+      ["web · Desk", [["web", "Claude · idle"]], undefined],
+      ["bob and their agents", [["bob/api", "Claude · idle · api"]], undefined],
+      ["erin", [["erin", "Invite them to Studio"]], undefined],
+    ]);
+    expect(groups[2]!.items[0]).toMatchObject({ invite: true, person: true });
+    // erin picked to invite holds no one else back
+    expect(candidateGroups(cands, g, [`p:${ERIN}`], pick).every((x) => x.blocked === undefined)).toBe(true);
+    // a member of the team invites no one; elsewhere the picker is as it was
+    apply(state, { type: "teams.state", params: team({ role: "member" }) });
+    expect(candidateGroups(cands, g, [], teamChatPick(state, g)).map((x) => x.title)).toEqual(["web · Desk", "bob and their agents"]);
+    expect(teamChatPick(state, chat({ teamChat: undefined }))).toBeUndefined();
+    expect(candidateGroups(cands, g).map((x) => x.title)).toEqual(["web · Desk", "bob and their agents", "dave and their agents", "erin and their agents"]);
+  });
+
+  test("Add a person on a team's page offers the user's teammates neither in it nor invited, and the add button says what it does", () => {
+    const state = connected();
+    const mate = (id: string, user: string | undefined, st: Teammate["state"] = "active"): Teammate => ({ id, state: st, ...(user ? { user } : {}), share: { mode: "include", folders: [], open: "chosen" }, createdAt: 1, sent: 0, received: 0 });
+    apply(state, {
+      type: "teammates",
+      teammates: [mate(TM, "bob"), mate("tm_01ARZ3NDEKTSV4RRFFQ69G5FE6", "Dave"), mate("tm_01ARZ3NDEKTSV4RRFFQ69G5FE7", "frank"), mate("tm_01ARZ3NDEKTSV4RRFFQ69G5FE8", "erin"), mate("tm_01ARZ3NDEKTSV4RRFFQ69G5FE9", undefined, "pending"), mate("tm_01ARZ3NDEKTSV4RRFFQ69G5FEA", "gail", "ended")],
+    });
+    expect(teamInviteMates(state, team())).toEqual(["erin", "frank"]);
+    expect(addWords(0, [], false)).toBe("Add");
+    expect(addWords(2, [], false)).toBe("Add 2");
+    expect(addWords(0, ["erin"], false)).toBe("Invite erin");
+    expect(addWords(0, ["erin", "frank"], false)).toBe("Invite 2");
+    expect(addWords(1, ["erin"], false)).toBe("Add 1, invite erin");
+    expect(addWords(0, ["erin"], true)).toBe("Inviting…");
+    expect(addWords(1, ["erin"], true)).toBe("Adding…");
   });
 });

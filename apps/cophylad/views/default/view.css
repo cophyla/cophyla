@@ -9282,6 +9282,26 @@ button:disabled {
   padding: 0;
 }
 
+/* A team's own chat: the gear that opens the team's page, its settings. */
+.group-team-settings {
+  padding: 0;
+}
+
+.group-team-settings[aria-pressed="true"] {
+  border-color: var(--line-strong);
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.group-team-settings-mark {
+  display: block;
+  width: 14px;
+  height: 14px;
+  background-color: currentColor;
+  -webkit-mask: var(--teams-glyph) center / contain no-repeat;
+  mask: var(--teams-glyph) center / contain no-repeat;
+}
+
 /* The group's ⋮ drops under its button, as the rail's does. */
 .group-menu {
   top: calc(100% + 4px);
@@ -9436,6 +9456,13 @@ button:disabled {
   color: var(--cophyla-ink);
 }
 
+/* Invited into the chat's team, not in it yet. */
+.group-member[data-status="invited"] {
+  border-style: dashed;
+  background: transparent;
+  color: var(--muted);
+}
+
 .group-member[data-status="gone"] {
   opacity: 0.6;
 }
@@ -9533,6 +9560,22 @@ button:disabled {
 .group-add .agent-pick {
   max-height: 40vh;
   overflow: auto;
+}
+
+.group-add button.group-add-by-name {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: underline;
+  text-decoration-color: var(--line-strong);
+  text-underline-offset: 2px;
+}
+
+.group-add button.group-add-by-name:hover:not(:disabled) {
+  color: var(--ink);
 }
 
 .group-ended {
@@ -11383,7 +11426,8 @@ button:disabled {
 /* --- teams (milestone 35): their own category in the rail, Waiting for you, and their pages ----- */
 
 /* Teams in the rail: the heading with the Teams page's button at its right, then each team folded
-   like a folder: its chat and the groups no folder holds, then People and agents. */
+   like a folder, holding chats only: its own and the groups no folder holds; with its own chat
+   alone, just that chat's row. */
 .teams-group {
   margin-top: 8px;
 }
@@ -11444,24 +11488,6 @@ button:disabled {
 .team-group .tab {
   padding-top: 5px;
   padding-bottom: 5px;
-}
-
-.team-people {
-  color: var(--muted);
-}
-
-.team-people-mark {
-  flex: 0 0 auto;
-  width: 20px;
-  height: 14px;
-  border-radius: 7px;
-  background:
-    radial-gradient(circle at 6px 7px, var(--faint) 3px, transparent 3.5px),
-    radial-gradient(circle at 14px 7px, var(--faint) 3px, transparent 3.5px);
-}
-
-.team-people[aria-current="true"] {
-  color: var(--ink);
 }
 
 .teams-list[hidden] {
@@ -11719,6 +11745,19 @@ button:disabled {
 
 .team-add-login {
   max-width: 280px;
+}
+
+/* Add a person: the user's teammates not in the team, a click each, above Someone else's name. */
+.team-add-mates {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-add-mate-rows {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }
 
 .team-invite-code {
