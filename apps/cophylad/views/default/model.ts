@@ -1270,7 +1270,7 @@ function countSpend(state: ViewState, node: NodeId, samples: SpendDelta[]): void
 // --- what streams, and what loads ------------------------------------------------------------
 
 /**
- * How many events a tab's newest page holds when it opens or Show earlier is pressed. A phone
+ * How many events a tab's page holds, the newest as it opens and each one before it. A phone
  * and the web app (a controller) take a smaller page: it crosses the relay, where a page of
  * long tool output is what the frame cap is about. The desktop page in a desktop browser (`desk`)
  * is the desktop's own.
@@ -1291,11 +1291,28 @@ export interface HistoryButton {
   disabled: boolean;
 }
 
-/** The button above a tab's timeline: Load history while nothing is loaded, Show earlier after; none once the start is reached. */
+/**
+ * The button above a tab's timeline, while it shows nothing: Load history, for when the newest
+ * page the tab loads as it opens did not come. Once something shows there is none: the
+ * timeline pages back by itself as the user scrolls up (`wantsEarlier`). None at the start.
+ */
 export function earlierButton(state: ViewState, card: SessionCard): HistoryButton | undefined {
-  if (card.exhausted) return undefined;
-  const label = card.loading ? "Loading…" : card.events.size === 0 ? "Load history" : "Show earlier";
-  return { label, disabled: card.loading || !state.connected };
+  if (card.exhausted || card.events.size > 0) return undefined;
+  return { label: card.loading ? "Loading…" : "Load history", disabled: card.loading || !state.connected };
+}
+
+/** How close to the top of a timeline the user scrolls before the page before it loads: about a screen, and never less than this. */
+export const EARLIER_EDGE_PX = 300;
+
+/**
+ * Whether a tab's timeline wants the page before its oldest event, loaded unasked: it shows
+ * something, more is left, no page is on its way, the line is up, and the pane, showing, has
+ * less than about a screen above what it shows. A timeline that does not fill its pane is at
+ * its top, so it pages back until it does.
+ */
+export function wantsEarlier(state: ViewState, card: SessionCard, pane: { scrollTop: number; clientHeight: number }): boolean {
+  if (!state.connected || !card.open || card.loading || card.exhausted || card.events.size === 0) return false;
+  return pane.clientHeight > 0 && pane.scrollTop < Math.max(EARLIER_EDGE_PX, pane.clientHeight);
 }
 
 /**

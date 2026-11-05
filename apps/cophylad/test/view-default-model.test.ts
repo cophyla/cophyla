@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
+import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
@@ -1250,7 +1250,7 @@ describe("default view: what streams and what loads", () => {
     expect(modes.size).toBe(4);
   });
 
-  test("the button above a timeline: Load history while nothing is loaded, Show earlier once something is, none at the start", () => {
+  test("the button above a timeline: Load history while nothing is loaded, none once something is (scrolling pages back), none at the start", () => {
     const s = ready({ kind: "controller" });
     apply(s, { type: "session.state", params: session("sess_a", 100) });
     const opened = open(s, "sess_a");
@@ -1259,15 +1259,49 @@ describe("default view: what streams and what loads", () => {
     apply(s, { type: "history.loading", session: "sess_a" });
     expect(earlierButton(s, card)).toEqual({ label: "Loading…", disabled: true });
     apply(s, { type: "history", session: "sess_a", opened, events: [event("sess_a", 60, "status", { status: "idle" })], limit: 1 });
-    expect(earlierButton(s, card)).toEqual({ label: "Show earlier", disabled: false });
+    expect(earlierButton(s, card)).toBeUndefined();
     apply(s, { type: "history", session: "sess_a", opened, events: [], limit: 1 });
     expect(earlierButton(s, card)).toBeUndefined();
-    // A live event alone is something to page back from; offline the button waits.
+    // Opened again and nothing in: the button is back, and waits while offline.
     open(s, "sess_a");
-    apply(s, { type: "session.event", params: event("sess_a", 61, "status", { status: "busy" }) });
-    expect(earlierButton(s, card)).toEqual({ label: "Show earlier", disabled: false });
+    expect(earlierButton(s, card)).toEqual({ label: "Load history", disabled: false });
     apply(s, { type: "host.state", params: { connected: false } });
     expect(earlierButton(s, card)?.disabled).toBe(true);
+  });
+
+  test("a timeline pages back by itself within about a screen of its top, while something shows, more is left and no page is on its way", () => {
+    const s = ready({ kind: "controller" });
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    const opened = open(s, "sess_a");
+    const card = s.sessions.get("sess_a")!;
+    const near = { scrollTop: 0, clientHeight: 600 };
+    // Nothing shows yet: the first page is the tab's own load (or the button's), not the scroll's.
+    expect(wantsEarlier(s, card, near)).toBe(false);
+    apply(s, { type: "history.loading", session: "sess_a" });
+    apply(s, { type: "history", session: "sess_a", opened, events: [event("sess_a", 60, "status", { status: "idle" })], limit: 1 });
+    expect(wantsEarlier(s, card, near)).toBe(true);
+    // A screen's height from the top, or the edge on a short pane, is where it starts.
+    expect(wantsEarlier(s, card, { scrollTop: 599, clientHeight: 600 })).toBe(true);
+    expect(wantsEarlier(s, card, { scrollTop: 600, clientHeight: 600 })).toBe(false);
+    expect(wantsEarlier(s, card, { scrollTop: EARLIER_EDGE_PX - 1, clientHeight: 100 })).toBe(true);
+    expect(wantsEarlier(s, card, { scrollTop: EARLIER_EDGE_PX, clientHeight: 100 })).toBe(false);
+    // A hidden pane has no height: it loads nothing.
+    expect(wantsEarlier(s, card, { scrollTop: 0, clientHeight: 0 })).toBe(false);
+    // One page at a time.
+    apply(s, { type: "history.loading", session: "sess_a" });
+    expect(wantsEarlier(s, card, near)).toBe(false);
+    // A failed page leaves it free to ask again.
+    apply(s, { type: "history", session: "sess_a", opened, events: [], limit: 0 });
+    expect(wantsEarlier(s, card, near)).toBe(true);
+    // Offline it waits.
+    apply(s, { type: "host.state", params: { connected: false } });
+    expect(wantsEarlier(s, card, near)).toBe(false);
+    apply(s, { type: "host.state", params: { connected: true } });
+    expect(wantsEarlier(s, card, near)).toBe(true);
+    // The start reached: nothing more to ask for.
+    apply(s, { type: "history.loading", session: "sess_a" });
+    apply(s, { type: "history", session: "sess_a", opened, events: [], limit: 1 });
+    expect(wantsEarlier(s, card, near)).toBe(false);
   });
 
   test("the chat's top button: Load history until the first page is in, on every client; then Earlier while older messages remain, none once the start is loaded", () => {

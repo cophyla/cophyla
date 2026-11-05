@@ -68,7 +68,7 @@ import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams,
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
-import { keptChoices } from "./model.ts";
+import { keptChoices, wantsEarlier } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks, tickAgentClocks } from "./render.ts";
@@ -220,6 +220,7 @@ function draw(opts: RenderOptions = {}): void {
   revealListed();
   team.afterDraw();
   talks.afterDraw();
+  pageBack();
 }
 
 /** Whether the rail shows: as the user left it, else beside the pane on a desk and away on a phone. */
@@ -2043,11 +2044,32 @@ async function loadEarlier(session: string): Promise<void> {
     const params: { id: string; limit: number; before?: number } = { id: session, limit };
     if (card.oldestSeq !== undefined) params.before = card.oldestSeq;
     const { events } = await rpc.request<{ events: SessionEvent[] }>("session.history", params);
+    earlierFailed.delete(session);
     dispatch({ type: "history", session, opened, events, limit }, { anchor: true });
   } catch (e) {
+    earlierFailed.set(session, Date.now());
     dispatch({ type: "history", session, opened, events: [], limit: 0 });
     fail("earlier", e);
   }
+}
+
+/** When a tab's last page failed to load: the timeline waits a moment before it asks again unasked, so a line that refuses is not asked on every scroll. */
+const earlierFailed = new Map<string, number>();
+const EARLIER_RETRY_MS = 3000;
+
+/**
+ * Pages back the timeline shown while the user is within about a screen of its top, after every
+ * draw and on every scroll: a page that lands short of that, or a tab that opens on a short one,
+ * brings the page before it in turn, so the user scrolling up seldom reaches the top before
+ * what is above it is there. A pane showing a terminal or Messages loads nothing this way.
+ */
+function pageBack(): void {
+  const pane = activePane(roots);
+  const id = pane?.dataset["session"];
+  if (!pane || id === undefined || !pane.classList.contains("session") || pane.dataset["mode"] !== "timeline") return;
+  const card = state.sessions.get(id);
+  if (!card || Date.now() - (earlierFailed.get(id) ?? 0) < EARLIER_RETRY_MS) return;
+  if (wantsEarlier(state, card, pane)) void loadEarlier(id);
 }
 
 /**
@@ -4791,6 +4813,14 @@ document.addEventListener("focusout", (ev) => {
 roots.stream.addEventListener("scroll", () => {
   if (state.chatLoaded && roots.stream.scrollTop < Math.max(CHAT_EDGE_PX, roots.stream.clientHeight)) void loadChat(state.oldestMessage);
 });
+// A session's timeline pages back the same way (`pageBack`); its pane is the one that scrolls.
+document.addEventListener(
+  "scroll",
+  (ev) => {
+    if (ev.target instanceof HTMLElement && ev.target.classList.contains("session")) pageBack();
+  },
+  true,
+);
 
 // A pane showing its newest keeps showing it when its box changes size: the frame shown after
 // the phone's Start (a render into a hidden frame cannot scroll), the keyboard opening. Each

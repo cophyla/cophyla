@@ -23,9 +23,10 @@
 // the desktop app there can do. Which of the two shows is the same for every agent;
 // the chat stream and every session pane stay in the DOM and only the selected one shows,
 // so the chat keeps its place when the user comes back, and a session's pane holds its
-// timeline only while its tab is open, drawn as the chat is, a card per message and per turn. Above a timeline, and at the top of the chat, a button loads
-// history a page earlier per press, and reads Load history while none is loaded, as on a
-// phone or the web app, which load nothing unasked. Under the sessions, a tab per bare
+// timeline only while its tab is open, drawn as the chat is, a card per message and per turn. A
+// timeline, like the chat, pages back by itself as the user scrolls up toward its top; a button
+// above it reads Load history only while it shows nothing, for when its first page did not come,
+// and the chat's top button pages back by hand too. Under the sessions, a tab per bare
 // terminal (a shell started here). New terminal, in the chat's row, starts one with its + in the
 // folder of the tab shown, or where the last one started, and its ⌄ drops a menu of each
 // machine's recent workspaces, its home folder and a folder picker, filtered by what is typed
@@ -3313,7 +3314,7 @@ function createPane(): HTMLElement {
   // Beside them, what it leads while it leads, and the leaders that speak to it.
   head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
   const body = el("div", "session-body");
-  const earlier = el("button", "earlier", "Show earlier");
+  const earlier = el("button", "earlier", "Load history");
   earlier.type = "button";
   earlier.dataset["action"] = "earlier";
   body.append(earlier, el("ol", "timeline"), createWorking());
