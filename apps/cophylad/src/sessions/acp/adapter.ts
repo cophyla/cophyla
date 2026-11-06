@@ -21,7 +21,7 @@ import type { Wrapped } from "../../agentmsg/envelope.ts";
 import { leadTurn } from "../lead.ts";
 import type { LeadInfo } from "../lead.ts";
 import { claudeEnv } from "../claude/start.ts";
-import { askShown, capText, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { askShown, capText, rawIfSmall, RESPONSE_CAP, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { AttachedHarness, SessionHost, SessionRecord } from "../model.ts";
 import { permissionDetail } from "../permissions.ts";
 import { askInputFromQuestion, contentForElicitation, questionsFromElicitation } from "../questions.ts";
@@ -347,7 +347,7 @@ export class AcpAdapter {
     if (child.text.length === 0) return;
     const text = child.text.join("");
     child.text = [];
-    if (text.trim()) this.deps.host.event(child.rec, "assistant_text", { text: capText(text) }, undefined, now);
+    if (text.trim()) this.deps.host.event(child.rec, "assistant_text", { text: capText(text, RESPONSE_CAP) }, undefined, now);
   }
 
   // --- mode ------------------------------------------------------------------------------

@@ -24,7 +24,7 @@ import type { HookMeta } from "../../api/hooks.ts";
 import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import type { ProcessArgs, ProcessInfo, ProcessTree } from "../focus.ts";
-import { capText, oneLine, rawIfSmall, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { capText, oneLine, rawIfSmall, RESPONSE_CAP, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin } from "../paths.ts";
 import type { ProfileChange } from "../profiles.ts";
@@ -444,7 +444,7 @@ export class CodexAdapter implements HarnessAdapter {
             break;
           }
           case "assistant_text":
-            if (record) this.host.event(rec, "assistant_text", { text: capText(item.text) }, rawIfSmall(row), item.at);
+            if (record) this.host.event(rec, "assistant_text", { text: capText(item.text, RESPONSE_CAP) }, rawIfSmall(row), item.at);
             break;
           case "subagent": {
             // Its start and end, history included: the thread's sub-agents are known again after a restart.

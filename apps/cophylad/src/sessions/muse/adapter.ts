@@ -23,7 +23,7 @@ import type { Asks } from "../../gate/asks.ts";
 import type { Logger } from "../../log.ts";
 import { scrub } from "../env.ts";
 import type { ProcessTree } from "../focus.ts";
-import { askShown, capText, oneLine, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { askShown, capText, oneLine, RESPONSE_CAP, summariseValue, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HeadlessRunner, HeadlessSpawn, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord, TerminalExpectation } from "../model.ts";
 import { plainPath } from "../paths.ts";
 import { permissionAsk } from "../permissions.ts";
@@ -472,7 +472,7 @@ export class MuseAdapter implements HarnessAdapter {
         return undefined;
       }
       case "assistant_text":
-        this.host.event(rec, "assistant_text", { text: capText(item.text) }, undefined, item.at);
+        this.host.event(rec, "assistant_text", { text: capText(item.text, RESPONSE_CAP) }, undefined, item.at);
         return undefined;
       case "tool_call": {
         const args = summariseValue(item.args, TOOL_CALL_CAP);

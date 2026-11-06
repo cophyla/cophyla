@@ -411,6 +411,13 @@ export interface SessionHost {
 export const TOOL_CALL_CAP = 1024;
 export const TOOL_RESULT_CAP = 4096;
 export const TEXT_CAP = 8192;
+/**
+ * An agent's response is recorded whole: it is what the user reads in the session's chat.
+ * This is only a guard, past anything a model writes in one message (about 250k tokens), so
+ * one event stays far under the relay's frame (about 3 MB once sealed). What the brain and a
+ * leader's report read of a response is still cut at `TEXT_CAP`.
+ */
+export const RESPONSE_CAP = 1_000_000;
 export const RAW_CAP = 16384;
 export const INTENT_CAP = 200;
 export const ASK_DETAIL_CAP = 1024;

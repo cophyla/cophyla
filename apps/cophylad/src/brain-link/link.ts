@@ -15,10 +15,11 @@
 // protocol's `brainRequests`) go through `request`, and only while it is up.
 
 import { CapabilityHello, capabilityRequests, capabilitySignals, PROTOCOL_VERSION, RpcError, ulid } from "@cophyla/protocol";
-import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId, TurnProgress } from "@cophyla/protocol";
+import type { Ask, AuditEntry, CapabilityRequestName, LlmDelta, LlmResult, NodeRole, RpcId, SessionEvent, TurnProgress } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Chat } from "../chat/index.ts";
 import type { BrainConfig } from "../config/schema.ts";
+import { briefResponse } from "../events/stream.ts";
 import type { EventStream } from "../events/stream.ts";
 import type { Gate } from "../gate/index.ts";
 import type { Policy } from "../gate/policy.ts";
@@ -477,6 +478,12 @@ export class BrainLink {
       if (reply) {
         const r = result as LlmResult;
         ended = { ok: r.stopReason !== "cancelled", toolUse: r.stopReason === "tool_use" || r.content.some((b) => b.type === "tool_use") };
+      }
+      // Responses are recorded whole for the user's chat; the brain reads them cut, as it always
+      // has, whether this node answered or the session's own node did.
+      if (name === "session.history") {
+        const r = result as { events?: SessionEvent[] };
+        if (Array.isArray(r?.events)) return { ...r, events: r.events.map(briefResponse) };
       }
       return result;
     } catch (e) {

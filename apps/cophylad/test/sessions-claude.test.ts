@@ -549,6 +549,20 @@ describe("claude adapter prices a session with its sub-agents", () => {
     expect(texts).toEqual(["msg_p says hi"]);
   });
 
+  test("a long response is recorded whole, past the 8,192 characters it was once cut at", async () => {
+    alive.add(590);
+    writeRegistry(registry, { pid: 590, sessionId: "sess-long", cwd, status: "busy" });
+    const path = transcriptPathFor(profileDir, cwd, "sess-long");
+    mkdirSync(join(path, ".."), { recursive: true });
+    const text = "A long answer, line after line.\n".repeat(1000);
+    writeFileSync(path, JSON.stringify({ type: "assistant", timestamp: new Date(clock).toISOString(), message: { id: "msg_long", model: "claude-opus-5-5", role: "assistant", content: [{ type: "text", text }], usage: { input_tokens: 1, output_tokens: 1 } } }) + "\n");
+    await mini.sessions.tick();
+    const s = mini.sessions.list().find((x) => x.native.id === "sess-long")!;
+    const said = mini.store.sessionEvents.history(s.id, { limit: 50 }).filter((e) => e.kind === "assistant_text").map((e) => (e.payload as { text: string }).text);
+    expect(text.length).toBeGreaterThan(30_000);
+    expect(said).toEqual([text]);
+  });
+
   test("a sub-agent that works while its session's transcript is still is read again after a while", async () => {
     const path = transcriptPathFor(profileDir, cwd, "sess-p");
     const subs = join(path.replace(/\.jsonl$/, ""), "subagents");

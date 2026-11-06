@@ -24,7 +24,7 @@ import { SUBAGENTS_MAX } from "@cophyla/protocol";
 import type { HookMeta } from "../../api/hooks.ts";
 import type { Logger } from "../../log.ts";
 import type { ProcessTree } from "../focus.ts";
-import { capText, oneLine, rawIfSmall, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
+import { capText, oneLine, rawIfSmall, RESPONSE_CAP, summariseValue, toolKey, TOOL_CALL_CAP, TOOL_RESULT_CAP } from "../model.ts";
 import type { HarnessAdapter, HookInstallSpec, NormalisedHook, SendOutcome, SessionHost, SessionRecord } from "../model.ts";
 import { isWithin, pathKey } from "../paths.ts";
 import { toolResultText } from "../results.ts";
@@ -545,7 +545,7 @@ export class ClaudeAdapter implements HarnessAdapter {
             if (record) this.host.event(rec, "user_turn", { text: capText(item.text), source: "peer", from: item.from }, rawIfSmall(row), item.at);
             break;
           case "assistant_text":
-            if (record) this.host.event(rec, "assistant_text", { text: capText(item.text) }, rawIfSmall(row), item.at);
+            if (record) this.host.event(rec, "assistant_text", { text: capText(item.text, RESPONSE_CAP) }, rawIfSmall(row), item.at);
             break;
           case "tool_call": {
             if (!record) break;

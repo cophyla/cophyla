@@ -12,9 +12,10 @@
 // own, and the emit depth so a ping-pong between hooks ends. Nothing is announced at a brain
 // handshake: `prime` marks the live sessions known.
 
-import type { CapabilityEventName, CapabilityEventParams, Session, Terminal } from "@cophyla/protocol";
+import type { CapabilityEventName, CapabilityEventParams, Session, SessionEvent, Terminal } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import type { Logger } from "../log.ts";
+import { capText, TEXT_CAP } from "../sessions/model.ts";
 
 export type StreamEvent = { [N in CapabilityEventName]: { name: N; params: CapabilityEventParams<N>; origin?: string; depth?: number } }[CapabilityEventName];
 
@@ -29,6 +30,17 @@ export interface EventStreamDeps {
 
 /** Bytes of JSON a custom payload may take; a bigger one is dropped with a warning. */
 export const CUSTOM_PAYLOAD_CAP = 64 * 1024;
+
+/**
+ * An agent's response as the stream carries it: cut at `TEXT_CAP`, as it was recorded before
+ * responses were kept whole for the user's chat, so the brain, the listeners, the hooks and
+ * the recorder hear what they always did.
+ */
+export function briefResponse(event: SessionEvent): SessionEvent {
+  if (event.kind !== "assistant_text") return event;
+  const text = (event.payload as { text?: unknown } | undefined)?.text;
+  return typeof text === "string" && text.length > TEXT_CAP ? { ...event, payload: { ...(event.payload as object), text: capText(text) } } : event;
+}
 
 /** The fields a `session.state` alone can change that the brain shows: the ones `annotate` writes, the title, the mode and the task. */
 const annotation = (s: Session): string => JSON.stringify([s.intent ?? null, s.summary ?? null, s.tags, s.title ?? null, s.mode ?? null, s.task ?? null]);
@@ -73,7 +85,7 @@ export class EventStream {
           this.emit({ name: "session.discovered", params: { at: event.at, session } });
         }
         this.annotations.set(session.id, annotation(session));
-        this.emit({ name: "session.updated", params: { at: event.at, session, event } });
+        this.emit({ name: "session.updated", params: { at: event.at, session, event: briefResponse(event) } });
       }),
       bus.on("session.state", (session) => {
         if (session.status === "ended") {

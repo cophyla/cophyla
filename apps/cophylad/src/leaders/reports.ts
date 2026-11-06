@@ -21,6 +21,7 @@ import type { Ask, Session, SessionEvent } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
 import { carryLastWords } from "../listeners/index.ts";
 import type { Logger } from "../log.ts";
+import { capText } from "../sessions/model.ts";
 
 /** How long a watch stays open with nothing heard. */
 const STALE_MS = 24 * 60 * 60_000;
@@ -198,7 +199,7 @@ export class Reports {
       }
       return;
     }
-    if (e.kind === "assistant_text" && typeof p["text"] === "string" && [...w.sent.values()].some((m) => m.landed)) w.said = p["text"];
+    if (e.kind === "assistant_text" && typeof p["text"] === "string" && [...w.sent.values()].some((m) => m.landed)) w.said = capText(p["text"]);
     if (e.kind === "status") this.onStatus(w, e);
   }
 

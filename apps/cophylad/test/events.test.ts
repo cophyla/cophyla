@@ -13,7 +13,8 @@ import { Bus } from "../src/bus.ts";
 import type { ChangedEvent } from "../src/bus.ts";
 import { builtinEvents, EventCatalogue } from "../src/events/catalogue.ts";
 import { recordCustomEvents } from "../src/events/recorder.ts";
-import { CUSTOM_PAYLOAD_CAP, eventKey, EventStream } from "../src/events/stream.ts";
+import { briefResponse, CUSTOM_PAYLOAD_CAP, eventKey, EventStream } from "../src/events/stream.ts";
+import { TEXT_CAP } from "../src/sessions/model.ts";
 import type { StreamEvent } from "../src/events/stream.ts";
 import { createLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
@@ -74,6 +75,27 @@ describe("event stream: the mapping", () => {
     // An event for a session the module cannot see is dropped.
     bus.emit("session.event", sessionEvent("sess_01ARZ3NDEKTSV4RRFFQ69G5FB9", 1));
     expect(names()).toHaveLength(5);
+  });
+
+  test("a response recorded whole reaches the stream cut at TEXT_CAP, as the brain always heard it; the event itself is left whole", () => {
+    const a = session("sess_01ARZ3NDEKTSV4RRFFQ69G5FB1");
+    const { bus, events } = setup([a]);
+    const long = "word ".repeat(4000);
+    const said: SessionEvent = { session: a.id, seq: 1, at: 5, kind: "assistant_text", payload: { text: long } };
+    const short: SessionEvent = { session: a.id, seq: 2, at: 6, kind: "assistant_text", payload: { text: "done" } };
+    const typed: SessionEvent = { session: a.id, seq: 3, at: 7, kind: "user_turn", payload: { text: long, source: "typed" } };
+    bus.emit("session.event", said);
+    bus.emit("session.event", short);
+    bus.emit("session.event", typed);
+    const heard = events.map((e) => ((e.params as { event: SessionEvent }).event.payload as { text: string }).text);
+    expect(heard[0]).toHaveLength(TEXT_CAP);
+    expect(heard[0]!.endsWith("…")).toBe(true);
+    expect(long.startsWith(heard[0]!.slice(0, -1))).toBe(true);
+    expect(heard[1]).toBe("done");
+    // Only a response is cut here: what else a session says keeps the caps it is recorded under.
+    expect(heard[2]).toBe(long);
+    expect((said.payload as { text: string }).text).toBe(long);
+    expect(briefResponse(short)).toBe(short);
   });
 
   test("a session.state that changes only the annotation is one session.updated without an event; the same again is nothing", () => {
