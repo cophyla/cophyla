@@ -53,6 +53,7 @@ pub fn show_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+    crate::memory::sync(app);
 }
 
 /// What launch at login starts: the launcher with `--hidden` when installed (the entry

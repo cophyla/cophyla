@@ -121,6 +121,7 @@ fn activated<R: Runtime>(app: &AppHandle<R>, action: Option<&str>) {
                 let _ = w.unminimize();
                 let _ = w.set_focus();
             }
+            crate::memory::sync(app);
         }
     }
 }

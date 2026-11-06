@@ -17,6 +17,7 @@ mod dropped;
 mod idle;
 mod install;
 mod links;
+mod memory;
 mod notify;
 mod cophylad;
 mod stream;
@@ -70,6 +71,7 @@ fn hide_window<R: Runtime>(app: &AppHandle<R>) {
         let _ = w.hide();
     }
     dock(app, false);
+    memory::sync(app);
 }
 
 /// The macOS menu bar: the system's usual menus (Edit is what gives the web view copy and
@@ -203,7 +205,12 @@ fn main() {
                     hide_window(&handle);
                 }
                 // The user is at the app: its asks are in front of them, and the notifications go.
-                WindowEvent::Focused(true) => notify::clear(),
+                WindowEvent::Focused(true) => {
+                    notify::clear();
+                    memory::sync(&handle);
+                }
+                // Minimised or brought back: the web view's memory target follows.
+                WindowEvent::Focused(false) | WindowEvent::Resized(_) => memory::sync(&handle),
                 _ => {}
             });
             if hidden {
@@ -213,6 +220,7 @@ fn main() {
                 // started by the launcher, which is gone by then: in front, not behind the Finder
                 let _ = window.set_focus();
             }
+            memory::sync(app.handle());
             tauri::async_runtime::spawn(cophylad::run_link(app.handle().clone()));
             Ok(())
         })
