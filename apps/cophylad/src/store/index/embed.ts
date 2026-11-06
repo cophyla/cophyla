@@ -2,6 +2,10 @@
 // `model.onnx` on the CPU with one thread each way (the daemon shares the machine), pools
 // as the manifest says (bge: the [CLS] token) and L2-normalises, as the model was trained.
 // `onnxruntime-node` is imported lazily, so a daemon with no model never loads the addon.
+// Its CPU arena is off: the arena keeps the largest run's buffers for good, about 60 MB
+// resident and 175 MB committed for bge-small on a 512-token chunk, and a daemon that
+// embeds a few chunks a minute gains no speed from it (measured 131 ms a chunk without, 146
+// with).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -65,7 +69,7 @@ export class OnnxEmbedder implements Embedder {
 
   static async load(dir: string, manifest: ModelManifest, opts: { maxTokens?: number } = {}): Promise<OnnxEmbedder> {
     const ort = await import("onnxruntime-node");
-    const session = await ort.InferenceSession.create(join(dir, "model.onnx"), { intraOpNumThreads: 1, interOpNumThreads: 1, executionProviders: ["cpu"] });
+    const session = await ort.InferenceSession.create(join(dir, "model.onnx"), { intraOpNumThreads: 1, interOpNumThreads: 1, executionProviders: ["cpu"], enableCpuMemArena: false });
     return new OnnxEmbedder(ort, session, loadTokenizer(dir), manifest, opts.maxTokens ?? DEFAULT_MAX_TOKENS);
   }
 

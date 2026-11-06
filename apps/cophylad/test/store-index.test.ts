@@ -338,6 +338,42 @@ describe("store index: vectors", () => {
     s.close();
   });
 
+  test("load sizes the index for the rows on disk, ranks as one built row by row, and grows past them", () => {
+    const s = open();
+    s.threads.insert(thread(THREAD));
+    for (let i = 0; i < 200; i++) s.messages.insert(message(THREAD, `vector ${i}`, i));
+    const ids = (s.db.query("SELECT id FROM chunks ORDER BY id").all() as { id: number }[]).map((r) => r.id);
+    const built = new JsVectorIndex(8, 1000);
+    for (const id of ids) {
+      // ties on purpose: chunks share a vector in fours, so the order rows went in decides between them
+      const v = fakeVector(`vector ${Math.floor(id / 4)}`).slice(0, 8);
+      const { scale, q } = quantise(v);
+      s.db.query("INSERT INTO chunk_vectors (chunk, model, dim, scale, q) VALUES ($chunk, 'm', 8, $scale, $q)").run({ chunk: id, scale, q: new Uint8Array(q.buffer) });
+      built.put(id, v);
+    }
+    const loaded = new JsVectorIndex(8, 1000);
+    expect(loaded.load(s.db, "m")).toBe(ids.length);
+    expect(loaded.capacity).toBeGreaterThanOrEqual(ids.length);
+    expect(loaded.capacity).toBeLessThanOrEqual(Math.ceil(ids.length * 1.1));
+    for (const probe of ["vector 1", "vector 5", "vector 9"]) {
+      const query = fakeVector(probe).slice(0, 8);
+      expect(loaded.search(query, 6)).toEqual(built.search(query, 6));
+    }
+    for (let i = 0; i < 20; i++) loaded.put(100_000 + i, fakeVector(`more ${i}`).slice(0, 8));
+    expect(loaded.size).toBe(ids.length + 20);
+    expect(loaded.has(100_019)).toBe(true);
+    expect(loaded.has(ids[0]!)).toBe(true);
+    s.close();
+  });
+
+  test("a big index grows by a quarter, not by doubling", () => {
+    const ix = new JsVectorIndex(2, 1_000_000);
+    for (let i = 0; i < 70_000; i++) ix.put(i + 1, new Float32Array([1, i % 7]));
+    expect(ix.size).toBe(70_000);
+    // 64 doubled to 65536, then a quarter more: 81920, where doubling would have taken 131072
+    expect(ix.capacity).toBe(81_920);
+  });
+
   test("with an embedder, both legs fuse by reciprocal rank, deterministically, and a write is searchable within a second", async () => {
     const s = open();
     const embedder = new FakeEmbedder();

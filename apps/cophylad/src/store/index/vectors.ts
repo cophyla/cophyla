@@ -56,7 +56,7 @@ export class JsVectorIndex implements VectorIndex {
   constructor(dim: number, maxRows: number) {
     this.dim = dim;
     this.maxRows = maxRows;
-    this.cap = Math.min(maxRows, 1024);
+    this.cap = Math.min(maxRows, 64);
     this.data = new Int8Array(this.cap * dim);
     this.scales = new Float32Array(this.cap);
     this.ids = new Int32Array(this.cap);
@@ -66,17 +66,43 @@ export class JsVectorIndex implements VectorIndex {
     return this.n;
   }
 
+  /** The rows the arrays have room for. */
+  get capacity(): number {
+    return this.cap;
+  }
+
   load(db: Database, model: string): number {
+    const params = { model, dim: this.dim };
+    const { count } = db.query("SELECT COUNT(*) AS count FROM chunk_vectors WHERE model = $model AND dim = $dim").get(params) as { count: number };
+    const take = Math.min(count, this.maxRows);
+    // Sized for what is on disk and a tenth more, not doubled up to it: 80k rows of 384 dims
+    // took a 131k-row array, 50 MB where 31 MB was used.
+    this.reserve(Math.min(this.maxRows, this.n + Math.ceil(take * 1.1)));
+    // The newest `take`, oldest first, so the newest are the last in and survive any later
+    // eviction longest; a row at a time, never the whole table's rows in memory at once.
     const rows = db
-      .query("SELECT chunk, scale, q FROM chunk_vectors WHERE model = $model AND dim = $dim ORDER BY chunk DESC LIMIT $limit")
-      .all({ model, dim: this.dim, limit: this.maxRows }) as { chunk: number; scale: number; q: Uint8Array }[];
-    // Oldest first, so the newest are the last in and survive any later eviction longest.
-    for (let i = rows.length - 1; i >= 0; i--) {
-      const r = rows[i]!;
+      .query("SELECT chunk, scale, q FROM chunk_vectors WHERE model = $model AND dim = $dim ORDER BY chunk ASC LIMIT $limit OFFSET $skip")
+      .iterate({ ...params, limit: take, skip: count - take }) as IterableIterator<{ chunk: number; scale: number; q: Uint8Array }>;
+    for (const r of rows) {
       if (r.q.byteLength !== this.dim) continue;
       this.putQuantised(r.chunk, r.scale, new Int8Array(r.q.buffer, r.q.byteOffset, this.dim));
     }
     return this.n;
+  }
+
+  /** Makes room for `cap` rows, keeping those held. */
+  private reserve(cap: number): void {
+    if (cap <= this.cap) return;
+    const data = new Int8Array(cap * this.dim);
+    data.set(this.data.subarray(0, this.n * this.dim));
+    const scales = new Float32Array(cap);
+    scales.set(this.scales.subarray(0, this.n));
+    const ids = new Int32Array(cap);
+    ids.set(this.ids.subarray(0, this.n));
+    this.data = data;
+    this.scales = scales;
+    this.ids = ids;
+    this.cap = cap;
   }
 
   put(chunk: number, vector: Float32Array): void {
@@ -97,20 +123,13 @@ export class JsVectorIndex implements VectorIndex {
     this.scales[row] = scale;
   }
 
-  /** Doubles the arrays, or, at `maxRows`, drops the oldest tenth by chunk id. */
+  /**
+   * Doubles the arrays while they are small and adds a quarter once they hold 64k rows, so a
+   * big index is never twice what it uses; at `maxRows`, drops the oldest tenth by chunk id.
+   */
   private grow(): void {
     if (this.cap < this.maxRows) {
-      const cap = Math.min(this.maxRows, this.cap * 2);
-      const data = new Int8Array(cap * this.dim);
-      data.set(this.data);
-      const scales = new Float32Array(cap);
-      scales.set(this.scales);
-      const ids = new Int32Array(cap);
-      ids.set(this.ids);
-      this.data = data;
-      this.scales = scales;
-      this.ids = ids;
-      this.cap = cap;
+      this.reserve(Math.min(this.maxRows, this.cap < 65536 ? this.cap * 2 : Math.ceil(this.cap * 1.25)));
       return;
     }
     const drop = Math.max(1, Math.floor(this.n / 10));
