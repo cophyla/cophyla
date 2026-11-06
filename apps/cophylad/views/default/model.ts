@@ -343,6 +343,8 @@ export type Action =
   | { type: "history.loading"; session: string }
   /** A page of a tab's history, asked for under its opening `opened`. */
   | { type: "history"; session: string; opened: number; events: SessionEvent[]; limit: number }
+  /** The open tab, shown at its newest, lets go of its oldest events past `TIMELINE_KEEP`. */
+  | { type: "timeline.trim"; session: string }
   | { type: "draft"; session: string; text: string }
   /** Folders of an explorer were asked for. */
   | { type: "files.loading"; place: string; dirs: string[] }
@@ -461,6 +463,15 @@ export const HISTORY_PAGE = 50;
 export const PHONE_HISTORY_PAGE = 20;
 /** The messages a chat page holds: a screen or two, and the view asks for the next page as the user scrolls up to it. */
 export const CHAT_PAGE = 60;
+/**
+ * The events an open tab holds while the user follows its newest. Every event held is drawn,
+ * and a tab left on a busy agent all day took in thousands of them, each about 40 KB of the
+ * page's memory once drawn. Past `TIMELINE_KEEP` and `TIMELINE_SLACK` more (so a trim comes
+ * now and then, not with every event), the oldest go as if they had never loaded, and the
+ * user scrolling up to them pages them back in as any history is.
+ */
+export const TIMELINE_KEEP = 600;
+export const TIMELINE_SLACK = 200;
 
 /** Where the spend starts: the last local midnight, so Today is the calendar day's. */
 export function spendFrom(now: number): number {
@@ -715,6 +726,21 @@ function addEvent(c: SessionCard, e: SessionEvent): void {
   }
 }
 
+/**
+ * Lets go of an open tab's oldest events past `keep`, once it holds `slack` more: its history
+ * pages back from the oldest it keeps, and nothing earlier is marked as the start. Never while
+ * a page is on its way, which would land below a gap. How many it let go.
+ */
+export function trimTimeline(c: SessionCard, keep = TIMELINE_KEEP, slack = TIMELINE_SLACK): number {
+  if (!c.open || c.loading || c.events.size <= keep + slack) return 0;
+  const seqs = [...c.events.keys()].sort((a, b) => a - b);
+  const drop = seqs.length - keep;
+  for (let i = 0; i < drop; i++) c.events.delete(seqs[i]!);
+  c.oldestSeq = seqs[drop]!;
+  c.exhausted = false;
+  return drop;
+}
+
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
   if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action)) return state;
@@ -853,6 +879,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       c.loading = false;
       for (const e of action.events) addEvent(c, e);
       if (action.events.length < action.limit) c.exhausted = true;
+      return state;
+    }
+    case "timeline.trim": {
+      const c = state.sessions.get(action.session);
+      if (c) trimTimeline(c);
       return state;
     }
     case "draft": {

@@ -638,6 +638,10 @@ rpc.onNotification((n) => {
     case "session.event": {
       const e = n.params as SessionEvent;
       dispatch({ type: "session.event", params: e });
+      // Shown at its newest (or not drawn at all, its terminal in front), the tab lets go of
+      // what is far above: scrolled up into, it pages back in.
+      const pane = activePane(roots);
+      if (pane?.dataset["session"] === e.session && (pane.dataset["mode"] !== "timeline" || (atEnd.get(pane) ?? true))) dispatch({ type: "timeline.trim", session: e.session });
       // A tool the agent ran may have written, moved or committed something: its folder, and
       // the file open in its tab, are read again once it settles.
       if (e.kind === "tool_result") {
@@ -4836,7 +4840,10 @@ document.addEventListener(
     if (pane instanceof HTMLElement && (pane === roots.stream || pane.classList.contains("session"))) {
       if (keptAt.get(pane) === pane.scrollTop) return;
       keptAt.delete(pane);
-      atEnd.set(pane, pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8);
+      const end = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
+      // Back at the newest after paging far up: what was paged in is let go again.
+      if (end && !atEnd.get(pane) && pane.dataset["session"] !== undefined) dispatch({ type: "timeline.trim", session: pane.dataset["session"] });
+      atEnd.set(pane, end);
     }
   },
   true,

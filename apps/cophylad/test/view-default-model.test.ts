@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
+import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, TIMELINE_KEEP, TIMELINE_SLACK, trimTimeline, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
@@ -1236,6 +1236,43 @@ describe("default view: what streams and what loads", () => {
     apply(s, { type: "tab.open" });
     expect([...s.sessions.values()].map((c) => c.open)).toEqual([false, false]);
     expect(a.events.size).toBe(0);
+  });
+
+  test("an open tab followed at its newest lets go of its oldest events, which page back in as history", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    const a = s.sessions.get("sess_a")!;
+    const opened = open(s, "sess_a");
+    apply(s, { type: "history.loading", session: "sess_a" });
+    apply(s, { type: "history", session: "sess_a", opened, events: [event("sess_a", 1, "user_turn", { text: "start" })], limit: 50 });
+    expect(a.exhausted).toBe(true);
+    for (let seq = 2; seq <= TIMELINE_KEEP + TIMELINE_SLACK; seq++) apply(s, { type: "session.event", params: event("sess_a", seq, "assistant_text", { text: `line ${seq}` }) });
+    // At the slack, nothing goes yet.
+    apply(s, { type: "timeline.trim", session: "sess_a" });
+    expect(a.events.size).toBe(TIMELINE_KEEP + TIMELINE_SLACK);
+    apply(s, { type: "session.event", params: event("sess_a", TIMELINE_KEEP + TIMELINE_SLACK + 1, "assistant_text", { text: "one more" }) });
+    // A page on its way holds the trim off: it would land below a gap.
+    apply(s, { type: "history.loading", session: "sess_a" });
+    apply(s, { type: "timeline.trim", session: "sess_a" });
+    expect(a.events.size).toBe(TIMELINE_KEEP + TIMELINE_SLACK + 1);
+    apply(s, { type: "history", session: "sess_a", opened, events: [], limit: 50 });
+    apply(s, { type: "timeline.trim", session: "sess_a" });
+    expect(a.events.size).toBe(TIMELINE_KEEP);
+    const last = TIMELINE_KEEP + TIMELINE_SLACK + 1;
+    const first = last - TIMELINE_KEEP + 1;
+    expect(a.oldestSeq).toBe(first);
+    expect(Math.min(...a.events.keys())).toBe(first);
+    expect(a.events.has(last)).toBe(true);
+    // Not the start any more: scrolling up pages back from the oldest kept, as any history.
+    expect(a.exhausted).toBe(false);
+    expect(wantsEarlier(s, a, { scrollTop: 0, clientHeight: 800 })).toBe(true);
+    apply(s, { type: "history.loading", session: "sess_a" });
+    apply(s, { type: "history", session: "sess_a", opened, events: [event("sess_a", first - 2, "assistant_text", { text: "back" }), event("sess_a", first - 1, "assistant_text", { text: "again" })], limit: 2 });
+    expect(a.oldestSeq).toBe(first - 2);
+    expect(selectTimeline(s, a).length).toBeGreaterThan(0);
+    // A closed tab holds nothing to let go of.
+    apply(s, { type: "tab.open" });
+    expect(trimTimeline(a)).toBe(0);
   });
 
   test("the tab shown is watched, none for the chat, and nothing is said offline or without sessions:read", () => {
