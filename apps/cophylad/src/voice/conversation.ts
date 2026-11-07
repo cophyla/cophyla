@@ -46,7 +46,7 @@
 import type { VoiceState, VoiceStopped, VoiceUnheard } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import { sayNames } from "./compose.ts";
-import type { SttEngine, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
+import type { SttEngine, SttFailed, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 
 /** Samples in one `voice.audio` frame of speech: 200 ms at 24 kHz. */
@@ -527,7 +527,7 @@ export class Conversation {
     if (!text) {
       // A tap, a cough, a false accept: nothing was said, so nothing wakes the brain. One the
       // button held says why, so a dead microphone is not mistaken for a deaf node.
-      const unheard = this.unheard(heard, heldMs);
+      const unheard = this.unheard(heard, heldMs, stream?.how?.failed);
       this.deps.log?.info("utterance was empty", { client: this.client, why, began, unheard, frames: this.heardFrames, peak: this.peak, heldMs });
       if (!latest) return;
       this.setSpeaking(false);
@@ -551,10 +551,12 @@ export class Conversation {
   }
 
   /** What an utterance that came to nothing heard: no frames, frames of nothing, sound with no speech, or speech with no words. */
-  private unheard(heard: boolean, heldMs: number): VoiceUnheard {
+  private unheard(heard: boolean, heldMs: number, failed?: SttFailed): VoiceUnheard {
     if (this.heardFrames === 0) return heldMs >= NO_AUDIO_MS ? "no-audio" : "no-speech";
     if (this.peak === 0) return "silence";
-    return heard ? "no-words" : "no-speech";
+    if (!heard) return "no-speech";
+    // Speech was sent and no transcription came back: the routes' rate limits, or a route down.
+    return failed ?? "no-words";
   }
 
   private setSpeaking(active: boolean): void {

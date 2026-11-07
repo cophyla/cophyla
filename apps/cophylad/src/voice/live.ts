@@ -34,8 +34,8 @@
 
 import { RpcError } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
-import type { LiveOpener, LiveResult, LiveSession, SttEngine, SttStream } from "./engines.ts";
-import { FRAME, IN_RATE } from "./engines.ts";
+import type { LiveOpener, LiveResult, LiveSession, SttEngine, SttFailed, SttStream } from "./engines.ts";
+import { FRAME, IN_RATE, sttFailed } from "./engines.ts";
 
 /** At the end, how much longer a session still opening is waited for. */
 export const OPEN_WAIT_MS = 3000;
@@ -104,7 +104,7 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 class LiveStream implements SttStream {
   onPartial?: (text: string) => void;
   onStop?: (why: "limit" | "quota") => void;
-  how?: { route?: string; live?: boolean };
+  how?: { route?: string; live?: boolean; failed?: SttFailed };
   private deps: LiveSttDeps;
   private language: string | undefined;
   /** Every session of the utterance cleans the words up, or none does. */
@@ -479,7 +479,7 @@ class LiveStream implements SttStream {
       return r.text ? this.withClosed(r.text) : this.display();
     } catch (e) {
       this.deps.log.warn("the utterance was not transcribed whole; the words shown stand", { error: e instanceof Error ? e.message : String(e) });
-      this.how = { route: "none", live: false };
+      this.how = { route: "none", live: false, failed: sttFailed(e) };
       return this.display();
     }
   }

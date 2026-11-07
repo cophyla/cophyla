@@ -54,6 +54,14 @@ export interface VadEngine {
   close(): void | Promise<void>;
 }
 
+/** Why an utterance came back with no words though speech was sent: a rate limit on every route, or a route that failed otherwise. */
+export type SttFailed = "limited" | "unavailable";
+
+/** The kind of a transcription that failed: `quota_exceeded` is a rate limit or an allowance, anything else is unavailable. */
+export function sttFailed(e: unknown): SttFailed {
+  return typeof e === "object" && e !== null && (e as { code?: unknown }).code === "quota_exceeded" ? "limited" : "unavailable";
+}
+
 export interface SttStream {
   accept(pcm: Int16Array): void;
   /** Called as the text grows, never with the same text twice. */
@@ -67,7 +75,7 @@ export interface SttStream {
    */
   heard?(): void;
   /** How the utterance was transcribed, for the turn's log line, once `final` settled. */
-  readonly how?: { route?: string; live?: boolean };
+  readonly how?: { route?: string; live?: boolean; failed?: SttFailed };
   /** Drains what is left and returns the whole utterance, empty when there was no speech. */
   final(): Promise<string>;
   reset(): void;

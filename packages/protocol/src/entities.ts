@@ -2244,10 +2244,11 @@ export type VoiceState = z.infer<typeof VoiceState>;
 /**
  * Why an utterance the button held came to nothing, sent with the `idle` that ends it: no audio
  * reached the node from the microphone (`no-audio`), only digital silence did, as from a
- * microphone unplugged or muted (`silence`), sound with no speech in it did (`no-speech`), or
- * speech did and the recogniser made no words of it (`no-words`).
+ * microphone unplugged or muted (`silence`), sound with no speech in it did (`no-speech`),
+ * speech did and the recogniser made no words of it (`no-words`), or speech did and no
+ * transcription came back: every route rate-limited (`limited`), or none answering (`unavailable`).
  */
-export const VoiceUnheard = z.enum(["no-audio", "silence", "no-speech", "no-words"]);
+export const VoiceUnheard = z.enum(["no-audio", "silence", "no-speech", "no-words", "limited", "unavailable"]);
 export type VoiceUnheard = z.infer<typeof VoiceUnheard>;
 
 /**

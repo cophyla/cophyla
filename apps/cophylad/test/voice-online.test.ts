@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import { RpcError } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import type { OnlineDeps } from "../src/voice/online.ts";
-import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
+import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, RATE_RETRY_MAX_S, rateLimited, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
 
 type Call = { url: string; init: RequestInit };
 
@@ -361,5 +361,97 @@ describe("Kokoro online", () => {
         }
       })(),
     ).rejects.toThrow("no DeepInfra API key");
+  });
+});
+
+describe("transcription under a rate limit", () => {
+  const limit = (what: string, retryS?: number) => new RpcError("quota_exceeded", `gemini: Rate limit exceeded for model ${what} (limit: 100 requests per day on Tier 1).${retryS !== undefined ? ` Please retry in ${retryS}s or upgrade your tier at https://ai.dev/rate-limit.` : ""}`, { provider: "gemini", status: 429 });
+  const silent = () => ({ async *[Symbol.asyncIterator]() {} });
+
+  test("a rate limit is told apart from other refusals, with the wait it names", () => {
+    expect(rateLimited(limit("gemini-3.5-transcribe", 13))).toEqual({ retryS: 13 });
+    expect(rateLimited(limit("gemini-3.5-transcribe"))).toEqual({});
+    expect(rateLimited(new RpcError("unavailable", "server: gemini: Rate limit exceeded for model x. Please retry in 2.5s"))).toEqual({ retryS: 2.5 });
+    expect(rateLimited(new RpcError("quota_exceeded", "the account's transcription allowance is spent"))).toBeUndefined();
+    expect(rateLimited(new RpcError("unavailable", "not signed in"))).toBeUndefined();
+  });
+
+  test("the clean-up model rate-limited, the same route transcribes the words as said, before any other route", async () => {
+    const asked: string[] = [];
+    const g = fakeFetch(() => geminiSays("from my key"));
+    const d = deps({
+      server: {
+        transcribe: async (_pcm, _language, clean) => {
+          asked.push(clean ? "server clean" : "server as said");
+          if (clean) throw limit("gemini-3.5-transcribe", 13);
+          return "as said by the server";
+        },
+        speak: silent,
+      },
+      gemini: { ...deps().gemini, fetch: g.fetch },
+      clean: () => true,
+    });
+    const stream = onlineStt(d).stream();
+    stream.accept(ramp(8000));
+    expect(await stream.final()).toBe("as said by the server");
+    expect(asked).toEqual(["server clean", "server as said"]);
+    expect(g.calls).toHaveLength(0);
+    expect(stream.how).toEqual({ route: "server", live: false });
+  });
+
+  test("every route rate-limited with a short wait: tried again once after it, and taken then", async () => {
+    let calls = 0;
+    const waited: number[] = [];
+    const g = fakeFetch(() => new Response(JSON.stringify({ error: { message: "Rate limit exceeded for model gemini-3.5-transcribe. Please retry in 12s." } }), { status: 429 }));
+    const d = deps({
+      server: {
+        transcribe: async () => {
+          if (++calls <= 1) throw limit("gemini-2.5-flash-lite", 13);
+          return "after the wait";
+        },
+        speak: silent,
+      },
+      gemini: { ...deps().gemini, fetch: g.fetch },
+      sleep: async (ms) => {
+        waited.push(ms);
+      },
+    });
+    expect(await transcribeWith(onlineStt(d), 8000)).toBe("after the wait");
+    // the shortest wait named, and a little more
+    expect(waited).toEqual([12_250]);
+  });
+
+  test("still limited after the wait, or a wait too long to sit out: no words, and the stream says it was the limit", async () => {
+    const waited: number[] = [];
+    const always = (retryS: number) =>
+      deps({
+        sttRoutes: () => ["server"],
+        server: { transcribe: async () => Promise.reject(limit("gemini-2.5-flash-lite", retryS)), speak: silent },
+        sleep: async (ms) => {
+          waited.push(ms);
+        },
+      });
+    const stream = onlineStt(always(5)).stream();
+    stream.accept(ramp(8000));
+    expect(await stream.final()).toBe("");
+    expect(stream.how).toEqual({ route: "none", live: false, failed: "limited" });
+    expect(waited).toEqual([5_250]);
+    const long = onlineStt(always(RATE_RETRY_MAX_S + 1)).stream();
+    long.accept(ramp(8000));
+    expect(await long.final()).toBe("");
+    expect(long.how?.failed).toBe("limited");
+    expect(waited).toHaveLength(1);
+    // a route down is not a limit, and nothing is waited for
+    const down = onlineStt(deps({ sttRoutes: () => ["server"], server: { transcribe: async () => Promise.reject(new RpcError("unavailable", "the server is down")), speak: silent } })).stream();
+    down.accept(ramp(8000));
+    expect(await down.final()).toBe("");
+    expect(down.how?.failed).toBe("unavailable");
+  });
+
+  test("a long utterance whose every piece was rate-limited fails as limited; one piece down makes it unavailable", async () => {
+    const pcm = ramp(150 * 16000);
+    await expect(transcribeLong(pcm, async () => Promise.reject(limit("x")))).rejects.toMatchObject({ code: "quota_exceeded" });
+    let n = 0;
+    await expect(transcribeLong(pcm, async () => Promise.reject(n++ === 0 ? new RpcError("unavailable", "down") : limit("x")))).rejects.toMatchObject({ code: "unavailable" });
   });
 });

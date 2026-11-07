@@ -250,7 +250,7 @@ describe("the live stream", () => {
     answerBatch(async () => Promise.reject(new RpcError("unavailable", "down")));
     expect(await stream.final()).toBe("half a sentence");
     expect(sessions).toHaveLength(1);
-    expect(stream.how).toEqual({ route: "none", live: false });
+    expect(stream.how).toEqual({ route: "none", live: false, failed: "unavailable" });
 
     const dropped = setup();
     dropped.stream.accept(frame());

@@ -4032,6 +4032,10 @@ export function unheardWords(unheard: VoiceUnheard, off?: string): string {
       return "No speech was heard";
     case "no-words":
       return "Nothing could be made out of what was said";
+    case "limited":
+      return "Not transcribed: the transcription limit is reached for now. Try again in a minute";
+    case "unavailable":
+      return "Not transcribed: the transcription service did not answer";
   }
 }
 

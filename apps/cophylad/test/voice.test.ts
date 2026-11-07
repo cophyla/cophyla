@@ -882,6 +882,20 @@ describe("the wake word on the phone", () => {
     mumbled.c.dispose();
   });
 
+  test("speech no transcription came back for says why: every route rate-limited, or none answering", async () => {
+    for (const failed of ["limited", "unavailable"] as const) {
+      const stt: SttEngine = { stream: () => ({ accept: () => {}, final: async () => "", how: { route: "none", live: false, failed }, reset: () => {}, dispose: () => {} }), close: () => {} };
+      const lost = await bare({ stt });
+      lost.c.ptt(true);
+      for (let i = 0; i < 5; i++) lost.c.push(speechChunk());
+      await sleep(20);
+      lost.c.ptt(false);
+      await waitFor(() => lost.seen.at(-1) === "idle");
+      expect(lost.unheard).toEqual([failed]);
+      lost.c.dispose();
+    }
+  });
+
   test("a wake that comes to nothing gives no reason: a false accept is not the user's to hear about", async () => {
     const { c, seen, unheard } = await bare();
     c.wakeHeard();

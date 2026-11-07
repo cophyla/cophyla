@@ -31,7 +31,7 @@ import { MAX_RECORDING_SECONDS, RpcError } from "@cophyla/protocol";
 import type { VoiceRoute } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import type { LiveOpener, SttEngine, SttStream, TtsEngine } from "./engines.ts";
-import { IN_RATE, OUT_RATE } from "./engines.ts";
+import { IN_RATE, OUT_RATE, sttFailed } from "./engines.ts";
 import { geminiLive } from "./gemini-live.ts";
 import type { LiveConnect } from "./gemini-live.ts";
 import { liveStt } from "./live.ts";
@@ -123,6 +123,8 @@ export async function transcribeLong(pcm: Int16Array, transcribe: (piece: Int16A
   const out: ({ text: string; route?: string } | undefined)[] = new Array(pieces.length);
   let next = 0;
   let failed = 0;
+  // every piece that failed failed for a rate limit
+  let limitedAll = true;
   const worker = async () => {
     while (next < pieces.length) {
       const i = next++;
@@ -130,13 +132,14 @@ export async function transcribeLong(pcm: Int16Array, transcribe: (piece: Int16A
         out[i] = await transcribe(pieces[i]!);
       } catch (e) {
         failed++;
+        if (!(e instanceof RpcError && e.code === "quota_exceeded")) limitedAll = false;
         if (pieces.length === 1) throw e;
         log?.warn("a piece of the utterance was not transcribed", { piece: i, of: pieces.length, error: e instanceof Error ? e.message : String(e) });
       }
     }
   };
   await Promise.all(Array.from({ length: Math.min(PIECES_IN_FLIGHT, pieces.length) }, worker));
-  if (failed === pieces.length) throw new RpcError("unavailable", "no piece of the utterance was transcribed");
+  if (failed === pieces.length) throw new RpcError(limitedAll ? "quota_exceeded" : "unavailable", "no piece of the utterance was transcribed");
   const done = out.filter((r): r is { text: string; route?: string } => r !== undefined);
   return { text: done.map((r) => r.text.trim()).filter(Boolean).join(" "), ...(done[0]?.route ? { route: done[0].route } : {}) };
 }
@@ -339,28 +342,85 @@ export interface OnlineDeps {
   /** Whether the words are cleaned up, read as each utterance begins; word for word without it. */
   clean?: () => boolean;
   log: Logger;
+  /** Waits before a rate-limited transcription is tried again; a timer, unless a test gives its own. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 const asRpc = (route: string, e: unknown) => (e instanceof RpcError ? e : new RpcError("unavailable", e instanceof Error ? e.message : String(e), { provider: route }));
 
-/** One piece of at most a minute over `[providers] stt`, cleaned up or not, and the route that took it; thrown when every route refused. */
+/** The longest wait a rate limit may ask for and still be waited out: past it, the utterance fails and says why. */
+export const RATE_RETRY_MAX_S = 60;
+
+/**
+ * Whether a refusal is the vendor's rate limit on the model (Gemini's requests a day, or input
+ * tokens a minute), and how many seconds it says to wait when it says. A limit is per model, so
+ * the plain transcription model is not held by the clean-up model's.
+ */
+export function rateLimited(err: RpcError): { retryS?: number } | undefined {
+  const status = (err.error.data as { status?: unknown } | undefined)?.status;
+  if (status !== 429 && !/rate limit|resource.?exhausted|retry in \d/i.test(err.message)) return undefined;
+  const wait = /retry in (\d+(?:\.\d+)?)\s*s/i.exec(err.message);
+  return wait ? { retryS: Number(wait[1]) } : {};
+}
+
+/** One piece over one route, cleaned up or as said. */
+async function viaRoute(deps: OnlineDeps, route: string, pcm: Int16Array, language: string | undefined, clean: boolean): Promise<string> {
+  if (route === "server") {
+    if (!deps.server) throw new RpcError("unavailable", "no account on this node", { provider: "server" });
+    return deps.server.transcribe(pcm, language, clean);
+  }
+  if (route === "byok:gemini") return clean ? geminiSmartTranscribe(pcm, language, { ...deps.gemini, model: deps.gemini.cleanModel ?? CLEAN_MODEL }) : geminiTranscribe(pcm, language, deps.gemini);
+  throw new RpcError("unavailable", `${route} does not transcribe`, { provider: route });
+}
+
+/**
+ * One pass over the routes: the words and the route that took them, or how every route refused.
+ * A route whose clean-up model is rate-limited transcribes the piece as said on the same route
+ * before the next is tried, since that model has a limit of its own, far above.
+ */
+async function routesOnce(deps: OnlineDeps, pcm: Int16Array, language: string | undefined, clean: boolean, refusals: string[]): Promise<{ text: string; route: string } | { limited: boolean; waitS?: number }> {
+  let limited = true;
+  let tried = false;
+  let waitS: number | undefined;
+  for (const route of deps.sttRoutes()) {
+    tried = true;
+    let err: RpcError | undefined;
+    for (const tidy of clean ? [true, false] : [false]) {
+      try {
+        const text = await viaRoute(deps, route, pcm, language, tidy);
+        if (clean && !tidy) deps.log.info("transcribed as said: the clean-up model is rate-limited", { route });
+        return { text, route };
+      } catch (e) {
+        err = asRpc(route, e);
+        refusals.push(`${route}${clean && !tidy ? " as said" : ""}: ${err.message}`);
+        const limit = rateLimited(err);
+        if (limit?.retryS !== undefined) waitS = Math.min(waitS ?? Infinity, limit.retryS);
+        if (!limit) break;
+      }
+    }
+    if (err && !rateLimited(err)) limited = false;
+    if (err && !passesOn(route, err)) return { limited: false };
+  }
+  return { limited: tried && limited, ...(waitS !== undefined ? { waitS } : {}) };
+}
+
+/**
+ * One piece of at most a minute over `[providers] stt`, cleaned up or not, and the route that
+ * took it; thrown when every route refused. When each refused for a rate limit that names a
+ * short wait, the routes are tried once more after it. What is thrown says whether it was a rate
+ * limit (`quota_exceeded`) or anything else (`unavailable`).
+ */
 async function transcribeRouted(deps: OnlineDeps, pcm: Int16Array, language: string | undefined, clean: boolean): Promise<{ text: string; route: string }> {
   const refusals: string[] = [];
-  for (const route of deps.sttRoutes()) {
-    try {
-      if (route === "server") {
-        if (!deps.server) throw new RpcError("unavailable", "no account on this node", { provider: "server" });
-        return { text: await deps.server.transcribe(pcm, language, clean), route };
-      }
-      if (route === "byok:gemini") return { text: clean ? await geminiSmartTranscribe(pcm, language, { ...deps.gemini, model: deps.gemini.cleanModel ?? CLEAN_MODEL }) : await geminiTranscribe(pcm, language, deps.gemini), route };
-      throw new RpcError("unavailable", `${route} does not transcribe`, { provider: route });
-    } catch (e) {
-      const err = asRpc(route, e);
-      refusals.push(`${route}: ${err.message}`);
-      if (!passesOn(route, err)) break;
-    }
+  let pass = await routesOnce(deps, pcm, language, clean, refusals);
+  if ("text" in pass) return pass;
+  if (pass.limited && pass.waitS !== undefined && pass.waitS <= RATE_RETRY_MAX_S) {
+    deps.log.info("transcription rate-limited: trying again", { afterS: pass.waitS });
+    await (deps.sleep ?? ((ms) => new Promise<void>((r) => setTimeout(r, ms))))(Math.ceil(pass.waitS * 1000) + 250);
+    pass = await routesOnce(deps, pcm, language, clean, refusals);
+    if ("text" in pass) return pass;
   }
-  throw new RpcError("unavailable", `no transcription route could take it: ${refusals.join("; ")}`, { routes: refusals });
+  throw new RpcError(pass.limited ? "quota_exceeded" : "unavailable", `no transcription route could take it: ${refusals.join("; ")}`, { routes: refusals });
 }
 
 /** An utterance of any length over `[providers] stt`, in pieces the routes take, every piece cleaned up or none. */
@@ -402,7 +462,7 @@ export function onlineStt(deps: OnlineDeps): SttEngine {
             return r.text;
           } catch (e) {
             deps.log.warn("the utterance was not transcribed", { error: e instanceof Error ? e.message : String(e) });
-            stream.how = { route: "none", live: false };
+            stream.how = { route: "none", live: false, failed: sttFailed(e) };
             return "";
           }
         },
