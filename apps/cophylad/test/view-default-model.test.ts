@@ -23,6 +23,7 @@ import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
 import { agentEndWords, agentKind, agentsAtWork, agentsGroupWords, agentWindow, compactTokens, contextWords, workingAgents } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
+import { profilesStale } from "../views/default/model.ts";
 import { wentWords } from "../views/default/model.ts";
 import type { PaneMode } from "../views/default/model.ts";
 import type { TimelinePost, TurnPart } from "../views/default/model.ts";
@@ -2135,6 +2136,45 @@ describe("default view: nodes and metrics", () => {
     apply(state, { type: "metrics.sample", params: sample(3000, { limits: { [PROFILE]: { at: 2900, session: { percent: 5 } } } }) });
     rows = selectSpend(state);
     expect(rows.map((r) => [r.name, limitWords(r.limits?.session), limitWords(r.limits?.weekly)])).toEqual([["main", "5%", "—"]]);
+  });
+
+  test("a machine back after this node restarted has its profiles asked for again, so its logins' rows are named and merged by account", () => {
+    // This node restarted: the view was back on it at once and asked for the profiles before the
+    // other machine linked again, so the list holds this node's alone.
+    const state = withNodes();
+    const away = node(OTHER, "laptop", { status: "offline" });
+    apply(state, { type: "node.state", params: away });
+    apply(state, { type: "profiles", profiles: [{ id: PROFILE, harness: "claude", name: "gmail", node: NODE, status: "ok", account: "acct1", email: "someone@example.com" } as never] });
+    apply(state, { type: "metrics.sample", params: sample(1500) });
+    // The laptop links: its samples come, and its login of the same account reads its limits.
+    const back = node(OTHER, "laptop");
+    expect(profilesStale(away, back)).toBe(true);
+    apply(state, { type: "node.state", params: back });
+    apply(state, { type: "metrics.sample", params: sample(2000, { node: OTHER, profiles: {}, limits: { [PROFILE_B]: { at: 2000, weekly: { percent: 88 } } } }) });
+    // Until the profiles are asked for again, its row goes by the profile's id, apart from the account's.
+    expect(selectSpend(state).map((r) => [r.label, r.email])).toEqual([
+      ["gmail", "someone@example.com"],
+      ["01ARZ3", undefined],
+    ]);
+    // Asked again, the list holds the laptop's profile: one row for the account, named, its limits the laptop's reading.
+    apply(state, { type: "profiles", profiles: [{ id: PROFILE_B, harness: "claude", name: "gmail", node: OTHER, status: "ok", account: "acct1", email: "someone@example.com" } as never] });
+    expect(selectSpend(state).map((r) => [r.label, r.email, limitWords(r.limits?.weekly), r.where])).toEqual([["gmail", "someone@example.com", "88%", "Signed in on desk and laptop"]]);
+  });
+
+  test("profiles are asked for again when a machine starts to answer, or a harness signed in or out there; not for the same row again", () => {
+    const online = node(OTHER, "laptop");
+    // back from offline, or seen first online
+    expect(profilesStale(node(OTHER, "laptop", { status: "offline" }), online)).toBe(true);
+    expect(profilesStale(undefined, online)).toBe(true);
+    // its own self again after its sign-in screen, which answers no list
+    expect(profilesStale(node(OTHER, "laptop", { door: "signin" }), online)).toBe(true);
+    expect(profilesStale(online, node(OTHER, "laptop", { door: "signin" }))).toBe(false);
+    // a harness signed in or out there
+    expect(profilesStale(online, node(OTHER, "laptop", { capabilities: { ...online.capabilities, harnesses: ["claude", "codex"] } }))).toBe(true);
+    // nothing new: online again, gone offline, or seen first offline
+    expect(profilesStale(online, node(OTHER, "laptop", { lastSeen: 2000 }))).toBe(false);
+    expect(profilesStale(online, node(OTHER, "laptop", { status: "offline" }))).toBe(false);
+    expect(profilesStale(undefined, node(OTHER, "laptop", { status: "offline" }))).toBe(false);
   });
 
   test("Today is the calendar day: the spend counts from the last local midnight and starts over at the next", () => {

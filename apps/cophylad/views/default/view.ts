@@ -65,7 +65,7 @@
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
-import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords } from "./model.ts";
+import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profilesStale } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices, wantsEarlier } from "./model.ts";
@@ -516,7 +516,7 @@ rpc.onNotification((n) => {
       return;
     case "node.state": {
       const node = n.params as CophylaNode;
-      const harnesses = state.nodes.get(node.id)?.capabilities.harnesses.join(",");
+      const before = state.nodes.get(node.id);
       dispatch({ type: "node.state", params: node });
       // The node this view talks to took the primary role, a moment after it started, say: what
       // only the primary keeps, refused while it claimed the role, is asked for again.
@@ -525,8 +525,10 @@ rpc.onNotification((n) => {
         lead.again();
         talks.again();
       }
-      // A harness signed in or out there: its profiles, and the usage rows they give, again.
-      if (harnesses !== undefined && harnesses !== node.capabilities.harnesses.join(",")) void loadProfiles();
+      // A machine back since the profiles were asked for (as every other one is a moment after
+      // this node restarted), or a harness signed in or out there: its profiles, and the usage
+      // rows they name and merge by account, again.
+      if (profilesStale(before, node)) profilesSoon();
       // A node that went away takes its subscription with it; it is watched again when it is back.
       // One at its sign-in screen has nothing to watch but its desktop: it is watched once it is itself again.
       if (node.status === "online" && !node.door) void watchNode(node);
@@ -1874,6 +1876,18 @@ async function loadProfiles(): Promise<void> {
   } catch (e) {
     fail("profiles", e);
   }
+}
+
+let profilesTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** The profiles asked for again in a moment: machines that come back together are asked about once. */
+function profilesSoon(): void {
+  if (profilesTimer !== undefined || !state.scopes.includes("nodes")) return;
+  profilesTimer = setTimeout(() => {
+    profilesTimer = undefined;
+    // The line went meanwhile: the next connect asks anyway.
+    if (state.connected) void loadProfiles();
+  }, 500);
 }
 
 /** How close to the top of the chat the user scrolls before the page before it is loaded: about a screen. */

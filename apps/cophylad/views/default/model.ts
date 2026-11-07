@@ -5125,6 +5125,20 @@ function whereWords(state: ViewState, profiles: HarnessProfile[]): string {
   return `Signed in on ${parts.length > 1 ? `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}` : parts[0]}`;
 }
 
+/**
+ * Whether a machine's new row calls for `profile.list` again. It answers now and did not before:
+ * the list the view holds was asked for while that machine was away or at its sign-in screen,
+ * which is every other machine's case when the node this view talks to has just restarted (the
+ * view is back on it in a moment, the machines link again over the next seconds or minutes).
+ * Without its profiles, the usage rows its logins give go by their ids, each apart from its
+ * account's row. Or a harness signed in or out there.
+ */
+export function profilesStale(before: Node | undefined, after: Node): boolean {
+  const answers = (n: Node | undefined) => n?.status === "online" && !n.door;
+  if (answers(after) && !answers(before)) return true;
+  return before !== undefined && before.capabilities.harnesses.join(",") !== after.capabilities.harnesses.join(",");
+}
+
 /** Each harness as the user knows it. */
 export const HARNESS_NAMES: Record<HarnessProfile["harness"], string> = { claude: "Claude", codex: "Codex", acp: "ACP", muse: "Muse" };
 
