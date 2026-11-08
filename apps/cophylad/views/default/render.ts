@@ -62,6 +62,8 @@
 
 import type { Ask, AuditEntry, Controller, FolderPick, GrantKind, Message, NodeId, ClientSession as Session, SessionEvent, Task, Terminal, ClientThread as Thread, TurnProgress, TurnStep, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { renderBlocks } from "./blocks.ts";
+import { busyWords, talkLook } from "./dictation.ts";
+import type { TalkBusy } from "./dictation.ts";
 import { renderText, setLinkedText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
 import { accessWords, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
@@ -234,6 +236,8 @@ export interface UiState {
    * began (`owner`, as `fieldOwner` says it), and a field that is another's says so (`to`).
    */
   talkLatched?: { owner: string; to: string };
+  /** A press let go whose words are still on their way: the field it began in says they are being transcribed until they are in (`talkLook`). */
+  talkBusy?: TalkBusy;
   /** A grant request on its way: the forms' buttons wait for its answer. */
   grantBusy?: boolean;
   /** A machine being removed from its card: asked in place, then on its way. */
@@ -4584,7 +4588,8 @@ export function talkButton(): HTMLButtonElement {
 /**
  * A talk button as things stand: shown where the host has a microphone and no button of its own,
  * live while the field beside it is. Tapped rather than held, it listens on, and it and the send
- * button beside it give way to Cancel, Stop and Stop and send until one of them is pressed.
+ * button beside it give way to Cancel, Stop and Stop and send until one of them is pressed. Once
+ * a press is let go, the field it began in says its words are being transcribed until they are in.
  */
 export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiState, fieldLive: boolean): void {
   const canTalk = state.hostTalk && state.connected && state.scopes.includes("voice") && fieldLive;
@@ -4601,14 +4606,24 @@ export function renderTalk(talk: HTMLButtonElement, state: ViewState, ui: UiStat
   const row = talk.parentElement;
   if (!row) return;
   const field = row.querySelector("textarea");
-  const latch = ui.talking === true && field !== null ? ui.talkLatched : undefined;
-  setData(row, "talking", latch !== undefined ? "latched" : "");
+  const look = field !== null ? talkLook(ui, fieldOwner(field)) : "";
+  const latch = look === "latched" ? ui.talkLatched : undefined;
+  setData(row, "talking", look);
   let controls = row.querySelector<HTMLElement>(":scope > .talk-controls");
   if (!controls) {
     controls = createTalkControls();
     talk.after(controls);
   }
-  setHidden(controls, latch === undefined);
+  setHidden(controls, look === "");
+  // From the stop until the words are in: that they are being transcribed, in place of the three.
+  setData(controls, "mode", look === "busy" ? "busy" : "");
+  controls.setAttribute("aria-label", look === "busy" ? "Transcribing" : "Listening");
+  const busy = controls.querySelector<HTMLElement>(".talk-busy")!;
+  const words = busyWords(ui.talkBusy?.send === true);
+  if (busy.title !== words.title) {
+    busy.title = words.title;
+    setText(busy.querySelector(".talk-busy-label")!, words.label);
+  }
   for (const b of Array.from(controls.querySelectorAll<HTMLButtonElement>("button"))) b.disabled = !state.connected;
   // Begun by another session's, group's or the chat's field: the words go there, and the buttons say so.
   const away = latch !== undefined && field !== null && fieldOwner(field) !== latch.owner ? latch.to : undefined;
@@ -4668,7 +4683,11 @@ function createTalkControls(): HTMLElement {
   // where the words go, when that is not this field (`renderTalk`)
   const to = el("span", "talk-dest");
   to.hidden = true;
-  box.append(to, button("cancel", "Cancel", words.cancel), button("stop", "Stop", words.stop), button("send", "Stop & send", words.send));
+  // in their place once the press is let go, until its words are in
+  const busy = el("span", "talk-busy");
+  busy.setAttribute("role", "status");
+  busy.append(el("span", "talk-busy-mark"), el("span", "talk-busy-label", busyWords(false).label));
+  box.append(to, button("cancel", "Cancel", words.cancel), button("stop", "Stop", words.stop), button("send", "Stop & send", words.send), busy);
   return box;
 }
 

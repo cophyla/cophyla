@@ -15,7 +15,9 @@
 // nothing else; on Flash-Lite a second of audio is 32 tokens, about $0.0007 a minute with the
 // transcript, and an utterance comes back in about a second. A request carries a minute at
 // most, the server's limit, so a longer utterance goes in pieces cut at its quietest moments
-// (`splitAtQuiet`), two at a time, and the pieces' words are joined. Either way an utterance
+// (`splitAtQuiet`), two at a time, and the pieces' words are joined; once speech is heard in
+// it each minute goes as soon as it is said, so the end of a long one waits on its last
+// minute alone (`onlineStt`). Either way an utterance
 // lasts as long as the user lets one (`MAX_SECONDS` at most, an hour): Gemini Live's session
 // is ten minutes of wall time, so a longer one goes on in the next (`live.ts`). Either way
 // the words come as said unless Settings has them cleaned up (`clean`): then Gemini's own
@@ -113,35 +115,70 @@ export function splitAtQuiet(pcm: Int16Array, pieceSamples = PIECE_SECONDS * IN_
   return pieces;
 }
 
+type Transcribed = { text: string; route?: string };
+
+/**
+ * The pieces of one utterance, each transcribed through `transcribe` as it is added, with
+ * `PIECES_IN_FLIGHT` at once, and their words joined in order once `done`. A piece that fails
+ * is left out; the route is the first piece's. An utterance of one piece throws what it failed
+ * with, and one whose every piece failed throws whether each was a rate limit.
+ */
+export class Pieces {
+  private readonly results: Promise<{ ok: Transcribed } | { error: unknown }>[] = [];
+  private running = 0;
+  private readonly waiting: (() => void)[] = [];
+  private readonly transcribe: (piece: Int16Array) => Promise<Transcribed>;
+  private readonly log: Logger | undefined;
+
+  constructor(transcribe: (piece: Int16Array) => Promise<Transcribed>, log?: Logger) {
+    this.transcribe = transcribe;
+    this.log = log;
+  }
+
+  add(piece: Int16Array): void {
+    this.results.push(this.run(piece));
+  }
+
+  async done(): Promise<Transcribed> {
+    const outs = await Promise.all(this.results);
+    const of = outs.length;
+    const failures = outs.flatMap((o) => ("error" in o ? [o.error] : []));
+    if (of === 1 && failures.length === 1) throw failures[0];
+    outs.forEach((o, piece) => {
+      if ("error" in o) this.log?.warn("a piece of the utterance was not transcribed", { piece, of, error: o.error instanceof Error ? o.error.message : String(o.error) });
+    });
+    if (of > 0 && failures.length === of) {
+      const limitedAll = failures.every((e) => e instanceof RpcError && e.code === "quota_exceeded");
+      throw new RpcError(limitedAll ? "quota_exceeded" : "unavailable", "no piece of the utterance was transcribed");
+    }
+    const done = outs.flatMap((o) => ("ok" in o ? [o.ok] : []));
+    return { text: done.map((r) => r.text.trim()).filter(Boolean).join(" "), ...(done[0]?.route ? { route: done[0].route } : {}) };
+  }
+
+  private async run(piece: Int16Array): Promise<{ ok: Transcribed } | { error: unknown }> {
+    // A piece that finishes hands its place to the next one waiting, so no more than the limit ever run.
+    if (this.running < PIECES_IN_FLIGHT) this.running++;
+    else await new Promise<void>((go) => this.waiting.push(go));
+    try {
+      return { ok: await this.transcribe(piece) };
+    } catch (error) {
+      return { error };
+    } finally {
+      const next = this.waiting.shift();
+      if (next) next();
+      else this.running--;
+    }
+  }
+}
+
 /**
  * An utterance of any length through `transcribe`, a piece at a time with `PIECES_IN_FLIGHT`
- * in flight, the words joined in order. A piece that fails is left out; the route is the
- * first piece's.
+ * in flight, the words joined in order (`Pieces`).
  */
-export async function transcribeLong(pcm: Int16Array, transcribe: (piece: Int16Array) => Promise<{ text: string; route?: string }>, log?: Logger): Promise<{ text: string; route?: string }> {
-  const pieces = splitAtQuiet(pcm);
-  const out: ({ text: string; route?: string } | undefined)[] = new Array(pieces.length);
-  let next = 0;
-  let failed = 0;
-  // every piece that failed failed for a rate limit
-  let limitedAll = true;
-  const worker = async () => {
-    while (next < pieces.length) {
-      const i = next++;
-      try {
-        out[i] = await transcribe(pieces[i]!);
-      } catch (e) {
-        failed++;
-        if (!(e instanceof RpcError && e.code === "quota_exceeded")) limitedAll = false;
-        if (pieces.length === 1) throw e;
-        log?.warn("a piece of the utterance was not transcribed", { piece: i, of: pieces.length, error: e instanceof Error ? e.message : String(e) });
-      }
-    }
-  };
-  await Promise.all(Array.from({ length: Math.min(PIECES_IN_FLIGHT, pieces.length) }, worker));
-  if (failed === pieces.length) throw new RpcError(limitedAll ? "quota_exceeded" : "unavailable", "no piece of the utterance was transcribed");
-  const done = out.filter((r): r is { text: string; route?: string } => r !== undefined);
-  return { text: done.map((r) => r.text.trim()).filter(Boolean).join(" "), ...(done[0]?.route ? { route: done[0].route } : {}) };
+export function transcribeLong(pcm: Int16Array, transcribe: (piece: Int16Array) => Promise<Transcribed>, log?: Logger): Promise<Transcribed> {
+  const pieces = new Pieces(transcribe, log);
+  for (const piece of splitAtQuiet(pcm)) pieces.add(piece);
+  return pieces.done();
 }
 
 /** A WAV container around int16 mono PCM. */
@@ -429,35 +466,81 @@ function transcribeWhole(deps: OnlineDeps, pcm: Int16Array, language: string | u
   return transcribeLong(pcm, (piece) => transcribeRouted(deps, piece, language, clean), deps.log);
 }
 
-/** Transcription over `[providers] stt`, of each utterance whole once it ends. */
+/** Int16 chunks as one run of samples. */
+function joined(chunks: Int16Array[], samples: number): Int16Array {
+  const all = new Int16Array(samples);
+  let o = 0;
+  for (const c of chunks) {
+    all.set(c, o);
+    o += c.length;
+  }
+  return all;
+}
+
+/**
+ * Transcription over `[providers] stt`, of each utterance whole once it ends. A long one is
+ * not left to its end: once the VAD has heard speech in it, each minute is cut off (at its
+ * quietest, as `splitAtQuiet` cuts) and transcribed while the user goes on talking, so when
+ * they stop only the last minute is left to wait for, however long they spoke. Before speech
+ * is heard nothing is sent, so a recording of silence costs nothing.
+ */
 export function onlineStt(deps: OnlineDeps): SttEngine {
   return {
     maxSeconds: MAX_SECONDS,
     stream: (opts = {}): SttStream => {
       const language = opts.language ?? deps.language;
+      /** What is not yet cut into a piece, and how much of the utterance was taken at all. */
       let chunks: Int16Array[] = [];
       let samples = 0;
+      let total = 0;
+      let speech = false;
+      // Every piece of one utterance is cleaned up, or none: the choice as its first piece went.
+      let clean: boolean | undefined;
+      let pieces: Pieces | undefined;
+      const piecesNow = (): Pieces => {
+        clean ??= deps.clean?.() ?? false;
+        const tidy = clean;
+        return (pieces ??= new Pieces((piece) => transcribeRouted(deps, piece, language, tidy), deps.log));
+      };
+      // The minutes heard so far go off now; the last, still growing, stays.
+      const cutDone = (): void => {
+        if (!speech || samples <= PIECE_SECONDS * IN_RATE) return;
+        const parts = splitAtQuiet(joined(chunks, samples));
+        const rest = parts.pop()!;
+        const run = piecesNow();
+        for (const part of parts) run.add(part);
+        chunks = [rest];
+        samples = rest.length;
+      };
       const clear = () => {
         chunks = [];
         samples = 0;
+        total = 0;
+        speech = false;
+        clean = undefined;
+        // pieces on their way are let go: their words come back to nothing
+        pieces = undefined;
       };
       const stream: SttStream & { how?: { route?: string; live?: boolean } } = {
         accept(pcm: Int16Array): void {
-          if (samples + pcm.length > (MAX_SECONDS + 1) * IN_RATE) return;
+          if (total + pcm.length > (MAX_SECONDS + 1) * IN_RATE) return;
           chunks.push(pcm);
           samples += pcm.length;
+          total += pcm.length;
+          cutDone();
+        },
+        heard(): void {
+          speech = true;
+          cutDone();
         },
         async final(): Promise<string> {
-          const all = new Int16Array(samples);
-          let o = 0;
-          for (const c of chunks) {
-            all.set(c, o);
-            o += c.length;
-          }
+          const rest = joined(chunks, samples);
+          const run = pieces ?? (rest.length > 0 ? piecesNow() : undefined);
           clear();
-          if (all.length === 0) return "";
+          if (!run) return "";
+          for (const part of rest.length > 0 ? splitAtQuiet(rest) : []) run.add(part);
           try {
-            const r = await transcribeWhole(deps, all, language);
+            const r = await run.done();
             stream.how = { ...(r.route ? { route: r.route } : {}), live: false };
             return r.text;
           } catch (e) {

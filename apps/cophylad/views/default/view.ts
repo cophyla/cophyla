@@ -570,6 +570,7 @@ rpc.onNotification((n) => {
       if (ui.talkLatched !== undefined && ui.talking && p.state !== "listening" && (p.client === state.client?.id || (p.state === "idle" && p.client === undefined))) {
         ui.talking = false;
         ui.talkLatched = undefined;
+        if (p.state === "transcribing") transcribing();
       }
       dispatch({ type: "voice.state", params: p });
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
@@ -2104,12 +2105,23 @@ function talk(held: boolean, button?: HTMLButtonElement): void {
     const field = button?.closest("form")?.querySelector<HTMLTextAreaElement>("textarea");
     pressHome = field ? homeOf(field) : undefined;
     pressAt = Date.now();
-  } else ui.talkLatched = undefined;
+    ui.talkBusy = undefined;
+  } else {
+    ui.talkLatched = undefined;
+    // Let go: the field it began in says the words are being transcribed until they are in.
+    transcribing();
+  }
   draw();
   rpc.request("voice.ptt", held ? { active: true, dictate: true } : { active: false }).catch((e: unknown) => {
     if (held) ui.talking = false;
+    else ui.talkBusy = undefined;
     fail("talk", e);
   });
+}
+
+/** The press is over and its words are on their way: where it began, and whether Stop and send sends them. */
+function transcribing(): void {
+  ui.talkBusy = pressHome ? { owner: pressHome.owner, send: sendNext } : undefined;
 }
 
 /** When the talk button was pressed: let go within `TAP_MS`, it was a tap. */
@@ -2291,6 +2303,10 @@ function dictationDone(p: { client: string; text: string }): void {
   const d = dictating ?? startDictation();
   dictating = undefined;
   pressHome = undefined;
+  if (ui.talkBusy !== undefined) {
+    ui.talkBusy = undefined;
+    draw();
+  }
   const said = p.text.trim() !== "";
   const sending = sendNext && said;
   sendNext = false;
@@ -2320,6 +2336,7 @@ function dictationGone(): void {
   dictating = undefined;
   pressHome = undefined;
   sendNext = false;
+  ui.talkBusy = undefined;
   if (d) showDictated(d, "");
 }
 
@@ -2330,9 +2347,10 @@ function dictationGone(): void {
  */
 function cancelVoice(): void {
   sendNext = false;
-  if (ui.talking) {
+  if (ui.talking || ui.talkBusy !== undefined) {
     ui.talking = false;
     ui.talkLatched = undefined;
+    ui.talkBusy = undefined;
     draw();
   }
   rpc.request("voice.ptt", { active: false, cancel: true }).catch((e: unknown) => fail("cancel", e));

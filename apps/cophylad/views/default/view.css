@@ -3210,6 +3210,41 @@ button:disabled {
   border-color: var(--cophyla-ink);
 }
 
+/* The press let go, its words on their way: the row says they are being transcribed, which a
+   long recording can take a while to, in place of Cancel, Stop and Stop and send. */
+.talk-controls[data-mode="busy"] > .talk-control,
+.talk-controls[data-mode="busy"] > .talk-dest,
+.talk-controls:not([data-mode="busy"]) > .talk-busy {
+  display: none;
+}
+
+.talk-busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 37px;
+  padding: 6px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.talk-busy-mark {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--cophyla-ink);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .talk-busy-mark,
+  .dot[data-status="transcribing"] {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+}
+
 /* On a phone the three are their marks alone, so the field keeps its room. */
 @media (max-width: 640px) {
   .talk-control {

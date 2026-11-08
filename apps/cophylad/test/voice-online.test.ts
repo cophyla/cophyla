@@ -2,11 +2,13 @@
 // WAV and is asked for the words alone; DeepInfra's WAV plays as it streams, at 24 kHz; each
 // engine tries its routes in order, a route that cannot serve passes the call on, and one that
 // fails for another reason, or after it has spoken, is the answer. An utterance longer than a
-// request carries goes in pieces cut at its quietest moments.
+// request carries goes in pieces cut at its quietest moments, each minute sent while the user
+// still talks once speech was heard, and none before.
 
 import { describe, expect, test } from "bun:test";
 import { RpcError } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
+import type { SttStream } from "../src/voice/engines.ts";
 import type { OnlineDeps } from "../src/voice/online.ts";
 import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, RATE_RETRY_MAX_S, rateLimited, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
 
@@ -142,7 +144,7 @@ describe("Clean up speech", () => {
     expect(asked).toEqual([true, false]);
   });
 
-  test("every piece of a long utterance is cleaned up or none is, as it was when the utterance ended", async () => {
+  test("every piece of a long utterance is cleaned up or none is, as it was when its first piece went", async () => {
     let clean = true;
     const asked: (boolean | undefined)[] = [];
     const server = deps({
@@ -265,6 +267,91 @@ describe("long utterances", () => {
     expect(heard.reduce((a, b) => a + b, 0)).toBe(pcm.length);
     for (const n of heard) expect(n).toBeLessThanOrEqual(60 * 16000);
     expect(stream.how).toEqual({ route: "server", live: false });
+  });
+
+  /** An engine whose server keeps each piece it was sent, and answers once `answer` is called. */
+  const holding = (clean?: () => boolean) => {
+    const sent: { samples: number; clean: boolean | undefined }[] = [];
+    const answers: (() => void)[] = [];
+    const engine = onlineStt(
+      deps({
+        server: {
+          transcribe: async (pcm, _language, c) => {
+            const n = sent.push({ samples: pcm.length, clean: c });
+            await new Promise<void>((go) => answers.push(go));
+            return `part ${n}`;
+          },
+          speak: () => ({ async *[Symbol.asyncIterator]() {} }),
+        },
+        ...(clean ? { clean } : {}),
+      }),
+    );
+    const answerAll = async () => {
+      // pieces waiting for a slot are sent as the ones before them are answered
+      for (let i = 0; i < 20 && answers.length > 0; i++) {
+        answers.splice(0).forEach((go) => go());
+        await Bun.sleep(1);
+      }
+    };
+    return { engine, sent, answerAll };
+  };
+  const say = (stream: SttStream, pcm: Int16Array) => {
+    for (let o = 0; o < pcm.length; o += 640) stream.accept(pcm.subarray(o, o + 640));
+  };
+
+  test("once speech is heard, each minute goes while the user still talks, so the stop waits on the last alone", async () => {
+    const { engine, sent, answerAll } = holding();
+    const stream = engine.stream();
+    const pcm = speechWithGaps(200, [55, 110, 170]);
+    say(stream, pcm.subarray(0, 5 * 16000));
+    stream.heard?.();
+    say(stream, pcm.subarray(5 * 16000, 130 * 16000));
+    await Bun.sleep(1);
+    // two minutes said: both are on their way before the user stops
+    expect(sent.map((s) => Math.round(s.samples / 16000))).toEqual([55, 55]);
+    say(stream, pcm.subarray(130 * 16000));
+    await Bun.sleep(1);
+    // the third minute is cut too, and waits for one of the two on their way
+    expect(sent).toHaveLength(2);
+    const text = stream.final();
+    await answerAll();
+    expect(await text).toBe("part 1 part 2 part 3 part 4");
+    // cut where the whole utterance would have been cut, and nothing dropped
+    expect(sent.map((s) => s.samples)).toEqual(splitAtQuiet(pcm).map((p) => p.length));
+    expect(stream.how).toEqual({ route: "server", live: false });
+  });
+
+  test("before speech is heard nothing is sent, and a recording taken back lets its pieces go", async () => {
+    const { engine, sent, answerAll } = holding();
+    const quiet = engine.stream();
+    say(quiet, speechWithGaps(130, [55, 110]));
+    await Bun.sleep(1);
+    expect(sent).toHaveLength(0);
+    quiet.dispose();
+    const dropped = engine.stream();
+    dropped.heard?.();
+    say(dropped, speechWithGaps(70, [55]));
+    await Bun.sleep(1);
+    expect(sent).toHaveLength(1);
+    dropped.dispose();
+    await answerAll();
+    // what was on its way comes back to nothing, and nothing more goes
+    expect(await dropped.final()).toBe("");
+    expect(sent).toHaveLength(1);
+  });
+
+  test("every piece of an utterance is cleaned up as its first was, though the setting changed while it was said", async () => {
+    let clean = true;
+    const { engine, sent, answerAll } = holding(() => clean);
+    const stream = engine.stream();
+    stream.heard?.();
+    say(stream, speechWithGaps(70, [55]));
+    clean = false;
+    say(stream, speechWithGaps(60, [50]));
+    const text = stream.final();
+    await answerAll();
+    await text;
+    expect(sent.map((s) => s.clean)).toEqual([true, true, true]);
   });
 
   test("the server refusing a plan the node thought it had passes on; any other route's refusal is the answer", async () => {

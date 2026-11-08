@@ -1,11 +1,12 @@
-// Dictation in the default view, DOM-free: where the words go in a field (at the caret, over a
-// selection, kept apart from the words around them by a space), the words as they grow, what a
+// Dictation in the default view, DOM-free: what the row beside a field shows while a press
+// listens and once it is let go until its words are in; where the words go in a field (at the
+// caret, over a selection, kept apart from the words around them by a space), the words as they grow, what a
 // terminal is given (one line, no Enter), and dictated words kept out of the chat's ghost of a
 // voice message on its way.
 
 import { describe, expect, test } from "bun:test";
 import type { Client } from "@cophyla/protocol";
-import { grown, spliceAt, spliced, TAP_MS, tapped, terminalWords } from "../views/default/dictation.ts";
+import { busyWords, grown, spliceAt, spliced, talkLook, TAP_MS, tapped, terminalWords } from "../views/default/dictation.ts";
 import { apply, heardText, initialState } from "../views/default/model.ts";
 import type { HostReady } from "../views/default/model.ts";
 
@@ -15,6 +16,28 @@ describe("the talk button pressed", () => {
     expect([tapped(TAP_MS), tapped(1800)]).toEqual([false, false]);
     // a clock that went back says nothing of a tap
     expect(tapped(-5)).toBe(false);
+  });
+});
+
+describe("what the row beside a field shows", () => {
+  test("while a tapped press listens, Cancel, Stop and Stop and send, by every field; held, the button alone", () => {
+    expect(talkLook({ talking: true, talkLatched: { owner: "send-text" } }, "send-text")).toBe("latched");
+    expect(talkLook({ talking: true, talkLatched: { owner: "send-text" } }, "composer-text")).toBe("latched");
+    expect(talkLook({ talking: true }, "send-text")).toBe("");
+  });
+
+  test("let go, the field it began in says the words are being transcribed until they are in; another field does not", () => {
+    const busy = { talkBusy: { owner: "sess_a", send: true } };
+    expect(talkLook(busy, "sess_a")).toBe("busy");
+    expect(talkLook(busy, "sess_b")).toBe("");
+    expect(talkLook({}, "sess_a")).toBe("");
+    // a new press is the button's again
+    expect(talkLook({ ...busy, talking: true }, "sess_a")).toBe("");
+  });
+
+  test("its words say whether what was said is sent once it is in, or typed in to send", () => {
+    expect(busyWords(true)).toEqual({ label: "Transcribing…", title: "Transcribing what you said, then sending it. Escape takes it back" });
+    expect(busyWords(false).title).toBe("Transcribing what you said, to type it here for you to send. Escape takes it back");
   });
 });
 
