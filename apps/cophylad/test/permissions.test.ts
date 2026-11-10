@@ -1,14 +1,15 @@
 // A held permission as an ask, with no host: the plan an `ExitPlanMode` carries, what a
 // Claude session was started with and so which "Yes, and …" row its plan offers, the ask a
-// tool call opens either way and its input in words, the decision an answer releases, and
-// the first message of a session a plan goes on in.
+// tool call opens either way and its input in words, the decision an answer releases, a
+// Codex command allowed for the rest of its session, and the first message of a session a
+// plan goes on in.
 
 import { describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AskAnswer } from "@cophyla/protocol";
 import { launchFlags, launchOf, permissionModeOf, permissionSettings, readLaunch } from "../src/sessions/claude/launch.ts";
-import { freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, inputText, permissionAsk, permissionDecision, permissionDetail, planCallInput, planOf, planOptions } from "../src/sessions/permissions.ts";
+import { freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, inputText, permissionAsk, permissionDecision, permissionDetail, planCallInput, planOf, planOptions, sessionAllowKey } from "../src/sessions/permissions.ts";
 import { tempHome } from "./helpers.ts";
 
 const by = { kind: "user", client: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7" } as const;
@@ -141,6 +142,18 @@ describe("permissions: the ask", () => {
     expect(permissionDetail("Write", { content: "x".repeat(3000) }, 200)).toHaveLength(200);
   });
 
+  test("a call that can be allowed for its session offers it between Allow and Deny, in Codex's own words", () => {
+    const shape = permissionAsk("Bash", { command: "cargo build" }, "repo", 2000, undefined, true);
+    expect(shape.options.map((o) => [o.id, o.label])).toEqual([
+      ["allow", "Allow"],
+      ["allow_session", "Allow for this session"],
+      ["deny", "Deny"],
+    ]);
+    expect(shape.options[1]!.description).toBe("Yes, and don't ask again for this command in this session");
+    // a plan's rows stay a plan's
+    expect(permissionAsk("ExitPlanMode", { plan: PLAN }, "repo", 2000, undefined, true).options.some((o) => o.id === "allow_session")).toBe(false);
+  });
+
   test("a long plan gets the room prose needs, and is capped in the end", () => {
     const long = "step. ".repeat(3000);
     expect(permissionDetail("ExitPlanMode", { plan: long }, 200)).toHaveLength(8000);
@@ -174,6 +187,30 @@ describe("permissions: a tool's input in words", () => {
     expect(inputText({})).toBe("");
     expect(inputText(undefined)).toBe("");
     expect(inputText("raw")).toBe("raw");
+  });
+});
+
+describe("permissions: a Codex command allowed for its session", () => {
+  test("is known by its command and folder, whatever reason the model gave for it this time", () => {
+    const key = sessionAllowKey("codex", "Bash", { command: "rm -rf build", description: "Clean the build" }, "C:/repo");
+    expect(key).toBeDefined();
+    expect(sessionAllowKey("codex", "Bash", { command: "rm -rf build", description: "Start over" }, "C:/repo")).toBe(key);
+    expect(sessionAllowKey("codex", "Bash", { command: "rm -rf build" }, "C:/other")).not.toBe(key);
+    expect(sessionAllowKey("codex", "Bash", { command: "rm -rf dist" }, "C:/repo")).not.toBe(key);
+    // a command as its argv is the same command
+    expect(sessionAllowKey("codex", "Bash", { command: ["rm", "-rf", "build"] }, "C:/repo")).toBe(key);
+  });
+
+  test("only a Codex command offers it: a patch, an MCP call, an empty command, or Claude's own calls do not", () => {
+    expect(sessionAllowKey("codex", "apply_patch", { command: "*** Begin Patch" }, "C:/repo")).toBeUndefined();
+    expect(sessionAllowKey("codex", "mcp__docs__search", { query: "x" }, "C:/repo")).toBeUndefined();
+    expect(sessionAllowKey("codex", "Bash", { command: "  " }, "C:/repo")).toBeUndefined();
+    expect(sessionAllowKey("codex", "Bash", undefined, "C:/repo")).toBeUndefined();
+    expect(sessionAllowKey("claude", "Bash", { command: "ls" }, "C:/repo")).toBeUndefined();
+  });
+
+  test("its answer is an allow, as Allow is", () => {
+    expect(permissionDecision(answer({ option: "allow_session" }))).toEqual({ behavior: "allow" });
   });
 });
 

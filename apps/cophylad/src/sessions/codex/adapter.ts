@@ -16,6 +16,9 @@
 //
 // Its questions to the user (`request_user_input`, `request_user_input_async`) are asks while
 // the rollout holds them as waiting (asking.ts); a dialog waiting is the session's status.
+//
+// An approval request whose turn Codex's own reviewer judges (`auto_review`) is the reviewer's:
+// Codex runs the PermissionRequest hook first and shows nothing while it is held.
 
 import { basename, dirname, join } from "node:path";
 import { AGENT_MCP_SERVER, RpcError, ulid } from "@cophyla/protocol";
@@ -38,7 +41,7 @@ import { steerTurn } from "./control.ts";
 import { codexAgentEntry, HOOKS_FILENAME, installCodexHooks, trustCodexHooks } from "./hooks.ts";
 import type { TrustResult } from "./hooks.ts";
 import { readableReplies } from "./questions.ts";
-import { applyCodexRow, findRollout, lastAgentMessage, newCodexState, readSessionIndex, statsFor } from "./rollout.ts";
+import { applyCodexRow, findRollout, lastAgentMessage, lastTurnContext, newCodexState, readSessionIndex, reviewedByCodex, statsFor } from "./rollout.ts";
 import type { CodexRolloutState } from "./rollout.ts";
 
 const LIST_LIMIT = 50;
@@ -408,6 +411,7 @@ export class CodexAdapter implements HarnessAdapter {
           case "turn_context":
             if (item.approvalPolicy) rec.permissionMode = item.approvalPolicy;
             if (item.sandbox) rec.sandbox = item.sandbox;
+            if (item.reviewer) rec.reviewer = item.reviewer;
             break;
           case "task_started":
             status = "busy";
@@ -648,6 +652,18 @@ export class CodexAdapter implements HarnessAdapter {
       this.classify(target, meta.ppid, this.opts.raiser).catch((e: unknown) => this.log.warn("a codex hook's process was not told apart", { session: target.session.id, error: e instanceof Error ? e.message : String(e) }));
     }
     return rec;
+  }
+
+  /**
+   * Whether Codex's own reviewer judges this approval request. The thread that asks says so in
+   * its rollout's last `turn_context` (a sub-agent's is its own rollout, which its hook names),
+   * read from the file so that a turn begun since the last tail counts; what the record last
+   * read stands in when the file says nothing.
+   */
+  reviewsItself(rec: SessionRecord, hook: NormalisedHook): boolean {
+    const raw = hook.raw as { transcript_path?: unknown } | undefined;
+    const path = typeof raw?.transcript_path === "string" && raw.transcript_path ? raw.transcript_path : rec.session.transcript?.path;
+    return reviewedByCodex((path ? lastTurnContext(path)?.reviewer : undefined) ?? rec.reviewer);
   }
 
   /**

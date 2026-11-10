@@ -78,6 +78,8 @@ export interface SessionRecord {
   originator?: string;
   /** Codex: the sandbox its last turn ran in (`danger-full-access` with approval `never` is no prompts at all). */
   sandbox?: string;
+  /** Codex: who its last turn's approval requests went to (`approvals_reviewer`): `user`, or Codex's own `auto_review`. */
+  reviewer?: string;
 }
 
 /** A conversation a Claude record left by a clear, as it stood then. */
@@ -293,6 +295,13 @@ export interface HarnessAdapter {
   afterStop?(rec: SessionRecord): SessionWaiting | undefined | Promise<SessionWaiting | undefined>;
   /** Claude: whether the session's settings let any session's message in at once, which one in bypass otherwise holds. */
   acceptsInbound?(rec: SessionRecord): boolean;
+  /**
+   * Codex: whether the harness decides this PermissionRequest itself, with no person: its own
+   * reviewer. Codex runs the hook before its reviewer and shows no prompt while the hook is
+   * held, so a request held here would take the decision from the reviewer; it is answered
+   * with no decision at once instead.
+   */
+  reviewsItself?(rec: SessionRecord, hook: NormalisedHook): boolean;
 }
 
 /** A session starting in a tether terminal, before its harness has named it. */

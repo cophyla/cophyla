@@ -83,7 +83,7 @@ import { terminalCommand as museCommand } from "./muse/locate.ts";
 import { promptInput as musePromptInput, waitingOn as museWaitingOn } from "./muse/screen.ts";
 import { isWithin, pathKey, sameFile } from "./paths.ts";
 import { NotSettled } from "./protected.ts";
-import { CLEAR, freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, permissionAsk, permissionDecision, planOf } from "./permissions.ts";
+import { ALLOW_SESSION, CLEAR, freshPlanPrompt, goOnLabel, goOnMode, goOnOption, handedOffDecision, permissionAsk, permissionDecision, planOf, sessionAllowKey } from "./permissions.ts";
 import type { GoOnMode, PlanOffer } from "./permissions.ts";
 import type { ProfileChange, Profiles } from "./profiles.ts";
 import { answersForHook, askInputFromQuestion, hookDecision, questionsFromAskUserQuestion } from "./questions.ts";
@@ -292,6 +292,8 @@ interface Held {
   questions?: HeldQuestions;
   /** An `ExitPlanMode`: its answer also says which mode the session leaves plan mode in. */
   plan?: HeldPlan;
+  /** What an "Allow for this session" answer remembers the call by. */
+  allowKey?: string;
 }
 
 /** A plan held for approval: in full, for a fresh session to start from, and the mode its "Yes, and …" row goes on in. */
@@ -308,6 +310,8 @@ type HeldStatus = "needs_permission" | "needs_input";
 
 interface LiveRecord extends SessionRecord {
   held?: Held;
+  /** Calls allowed for the rest of the session (`sessionAllowKey`): the same call again is allowed unasked until it ends. */
+  allowed?: Set<string>;
   /** An Elicitation prompt, answerable only in the terminal; closed on the next event. */
   inputAsk?: Ask;
   /** Claude: what the process was started with, read once per pid. */
@@ -2159,6 +2163,8 @@ export class Sessions implements SessionHost {
     }
     if (live.held) this.closeHeld(live, "stopped", "ended");
     if (live.inputAsk) this.closeInput(live, "stopped");
+    // What was allowed for the session goes with it, as the harness's own memory of it does.
+    delete live.allowed;
     rec.session.status = "ended";
     rec.session.endedAt = at;
     rec.session.lastActivity = Math.max(rec.session.lastActivity, at);
@@ -4193,9 +4199,16 @@ export class Sessions implements SessionHost {
         this.setStatus(rec, "busy", now);
         return own ? this.assistantHook(hook, sent ? { ref: sent.ref } : {}) : this.promptHook(rec);
       }
-      // A session outside the scope asks in its own window: no answer here.
       case "PermissionRequest":
-        return this.admitted(rec.session) ? this.holdPermission(rec, hook, meta, raw, now) : {};
+        // A session outside the scope asks in its own window: no answer here.
+        if (!this.admitted(rec.session)) return {};
+        // One its harness's own reviewer judges is the reviewer's: Codex asks the hook first,
+        // and a request held here would never reach it.
+        if (adapter.reviewsItself?.(rec, hook)) {
+          this.log.debug("permission request left to the harness's reviewer", { session: rec.session.id, tool: hook.toolName });
+          return {};
+        }
+        return this.holdPermission(rec, hook, meta, raw, now);
       case "Elicitation":
         return this.admitted(rec.session) ? this.openInput(rec, hook, raw, now) : {};
       case "PostToolUse":
@@ -4316,7 +4329,8 @@ export class Sessions implements SessionHost {
   /**
    * A PermissionRequest is held until an ask settles it: a permission ask for a tool, or, for
    * an `AskUserQuestion`, one choice ask per question opened in turn, the answers released
-   * together in the tool's input.
+   * together in the tool's input. A call the user allowed for the rest of the session is
+   * allowed at once, and leaves any ask open as it was.
    */
   private holdPermission(rec: LiveRecord, hook: NormalisedHook, meta: HookMeta, raw: unknown, now: number): Promise<unknown> {
     const key = this.foldKey(hook);
@@ -4324,6 +4338,11 @@ export class Sessions implements SessionHost {
     if (held && !held.settled && held.key === key && now - held.openedAt <= FOLD_MS) {
       this.log.debug("duplicate PermissionRequest joined the open ask", { session: rec.session.id, ask: held.ask.id });
       return this.waitHeld(rec, held, meta);
+    }
+    const allowKey = sessionAllowKey(rec.session.harness, hook.toolName, hook.toolInput, hook.cwd ?? rec.session.cwd);
+    if (allowKey !== undefined && rec.allowed?.has(allowKey)) {
+      this.log.debug("permission request allowed for the session already", { session: rec.session.id, tool: hook.toolName });
+      return Promise.resolve(this.hookOutput({ behavior: "allow" }, rec.session.harness));
     }
     if (held && !held.settled) this.closeHeld(rec, "stopped");
     const list = hook.toolName === "AskUserQuestion" ? questionsFromAskUserQuestion(hook.toolInput) : undefined;
@@ -4341,8 +4360,9 @@ export class Sessions implements SessionHost {
     }
     const plan = planOf(hook.toolName, hook.toolInput);
     if (plan !== undefined) return this.holdPlan(rec, hook, meta, raw, key, plan);
-    const shape = permissionAsk(hook.toolName, hook.toolInput, this.where(rec), DETAIL_CHARS);
+    const shape = permissionAsk(hook.toolName, hook.toolInput, this.where(rec), DETAIL_CHARS, undefined, allowKey !== undefined);
     held = this.openHeldAsk(rec, key, this.permissionInput(rec, shape, now), "needs_permission", { tool: hook.toolName }, raw, now);
+    if (allowKey !== undefined) held.allowKey = allowKey;
     return this.waitHeld(rec, held, meta);
   }
 
@@ -4648,6 +4668,7 @@ export class Sessions implements SessionHost {
       void this.buildInFreshSession(rec, plan, answer).then((d) => this.release(rec, held, this.hookOutput(d), d["behavior"] === "allow" ? "busy" : "idle"));
       return;
     } else {
+      if (ask.answer?.option === ALLOW_SESSION && held.allowKey !== undefined) (rec.allowed ??= new Set()).add(held.allowKey);
       decision = this.hookOutput(permissionDecision(ask.answer, held.plan), rec.session.harness);
     }
     held.settled = true;

@@ -13,6 +13,9 @@
 // context" is offered whenever the plan can go on that way: a hook cannot clear a context, so
 // the caller either presses the CLI's own row in the session's terminal (a session in tether
 // whose dialog shows it), or builds the plan in a fresh session and ends the old one's turn.
+// A Codex command may also be allowed for the rest of its session, as Codex's own "don't ask
+// again for this command in this session" does: Codex runs the hook before it looks at what the
+// user allowed for the session, and never remembers a hook's allow, so the caller remembers it.
 // Pure: no host, no store.
 
 import type { AskAnswer, AskOption } from "@cophyla/protocol";
@@ -23,6 +26,8 @@ import type { ClaudeLaunch } from "./claude/launch.ts";
 export const EXIT_PLAN_TOOL = "ExitPlanMode";
 
 export const ALLOW = "allow";
+/** Allow, and the same command again in the same session without asking. Codex only. */
+export const ALLOW_SESSION = "allow_session";
 export const DENY = "deny";
 /** Build the plan with a clear context: in the same terminal, or in a fresh session. */
 export const CLEAR = "clear";
@@ -38,6 +43,25 @@ const TOOL_OPTIONS: AskOption[] = [
   { id: ALLOW, label: "Allow", style: "primary" },
   { id: DENY, label: "Deny", style: "danger" },
 ];
+
+const SESSION_OPTIONS: AskOption[] = [
+  { id: ALLOW, label: "Allow", style: "primary" },
+  { id: ALLOW_SESSION, label: "Allow for this session", description: "Yes, and don't ask again for this command in this session", style: "primary" },
+  { id: DENY, label: "Deny", style: "danger" },
+];
+
+/**
+ * What a request is remembered by once allowed for its session: a Codex command, by the
+ * command and the folder it runs in, as Codex keys its own. The model's reason for the call
+ * (`description`) changes from call to call and is left out. `undefined`: the request offers
+ * no such answer.
+ */
+export function sessionAllowKey(harness: string, toolName: string | undefined, toolInput: unknown, cwd: string | undefined): string | undefined {
+  if (harness !== "codex" || toolName !== "Bash" || toolInput === null || typeof toolInput !== "object") return undefined;
+  const command = (toolInput as Record<string, unknown>)["command"];
+  const text = typeof command === "string" ? command : Array.isArray(command) && command.every((a) => typeof a === "string") ? command.join(" ") : undefined;
+  return text?.trim() ? `${cwd ?? ""}\u0000${text}` : undefined;
+}
 
 /** The modes a session can leave plan mode in beyond asking before each edit. */
 export type GoOnMode = "bypassPermissions" | "auto" | "acceptEdits";
@@ -203,11 +227,14 @@ export function permissionDetail(toolName: string | undefined, toolInput: unknow
   return plan !== undefined ? cap(plan, PLAN_CHARS) : cap(inputText(toolInput), chars);
 }
 
-/** The ask a held tool call opens; `where` names the session, as the title of a tool's ask does. */
-export function permissionAsk(toolName: string | undefined, toolInput: unknown, where: string, chars: number, offer: PlanOffer = { goOn: "acceptEdits", clear: false }): PermissionAsk {
+/**
+ * The ask a held tool call opens; `where` names the session, as the title of a tool's ask does.
+ * `forSession`: it also offers to allow the call for the rest of the session.
+ */
+export function permissionAsk(toolName: string | undefined, toolInput: unknown, where: string, chars: number, offer: PlanOffer = { goOn: "acceptEdits", clear: false }, forSession = false): PermissionAsk {
   const plan = planOf(toolName, toolInput);
   if (plan !== undefined) return { title: `Ready to code in ${where}?`, detail: cap(plan, PLAN_CHARS), options: planOptions(offer), plan: true };
-  return { title: `${toolLabel(toolName)} in ${where}`, detail: cap(inputText(toolInput), chars), options: TOOL_OPTIONS, plan: false };
+  return { title: `${toolLabel(toolName)} in ${where}`, detail: cap(inputText(toolInput), chars), options: forSession ? SESSION_OPTIONS : TOOL_OPTIONS, plan: false };
 }
 
 /** The allowing option that goes on in `mode`: what a clear-context answer falls back to. */
@@ -244,7 +271,7 @@ export function planCallInput(toolInput: unknown): Record<string, unknown> {
 export function permissionDecision(answer: AskAnswer | undefined, plan?: { input: unknown }): Record<string, unknown> {
   const option = answer?.option;
   const mode = plan && option !== undefined ? MODE_OF[option] : undefined;
-  if (option !== ALLOW && mode === undefined) {
+  if (option !== ALLOW && option !== ALLOW_SESSION && mode === undefined) {
     return { behavior: "deny", message: answer?.text ?? (plan ? "Keep planning" : "Denied through cophylad") };
   }
   // Leaving plan mode is the mode change, not the tool call: the harness makes it for us.

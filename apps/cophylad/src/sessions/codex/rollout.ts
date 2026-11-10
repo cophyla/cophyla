@@ -17,7 +17,7 @@ import type { CodexQuestionCall, QuestionReply } from "./questions.ts";
 
 export type CodexItem =
   | { kind: "meta"; sessionId: string; cwd: string; originator?: string; cliVersion?: string; at: number }
-  | { kind: "turn_context"; model?: string; approvalPolicy?: string; sandbox?: string; cwd?: string }
+  | { kind: "turn_context"; model?: string; approvalPolicy?: string; reviewer?: string; sandbox?: string; cwd?: string }
   | { kind: "task_started"; turnId: string; at: number }
   | { kind: "task_complete"; turnId: string; lastMessage?: string; at: number }
   | { kind: "turn_aborted"; turnId: string; at: number }
@@ -110,6 +110,7 @@ export function applyCodexRow(state: CodexRolloutState, row: unknown): CodexItem
         state.model = payload["model"];
       }
       if (typeof payload["approval_policy"] === "string") item.approvalPolicy = payload["approval_policy"];
+      if (typeof payload["approvals_reviewer"] === "string") item.reviewer = payload["approvals_reviewer"];
       const sandbox = payload["sandbox_policy"];
       if (sandbox && typeof sandbox === "object" && typeof (sandbox as Row)["type"] === "string") item.sandbox = (sandbox as Row)["type"] as string;
       if (typeof payload["cwd"] === "string") item.cwd = payload["cwd"];
@@ -255,6 +256,14 @@ type TurnContext = Extract<CodexItem, { kind: "turn_context" }>;
 export function lastTurnContext(path: string): TurnContext | undefined {
   const line = lastLineWhere(path, (text) => turnContextOf(text) !== undefined);
   return line !== undefined ? turnContextOf(line) : undefined;
+}
+
+/**
+ * Whether a turn's approval requests go to Codex's own reviewer (`approvals_reviewer` set to
+ * `auto_review`, once called `guardian_subagent`) rather than to a person (`user`, the default).
+ */
+export function reviewedByCodex(reviewer: string | undefined): boolean {
+  return reviewer === "auto_review" || reviewer === "guardian_subagent";
 }
 
 function turnContextOf(text: string): TurnContext | undefined {
