@@ -1465,3 +1465,32 @@ describe("claude sessions under an account no profile has", () => {
     expect(logged("moved to the profile whose registry lists it", from)).toHaveLength(1);
   });
 });
+
+describe("claude runs in cophylad's own folders", () => {
+  test("a print run in a private folder, the tracker's judge, is never a session, so nothing of it is listed, recorded or mirrored", async () => {
+    const scratch = tempHome();
+    const profileDir = join(scratch, "claude-profile");
+    const registry = join(profileDir, "sessions");
+    const own = join(scratch, "data", "tracker");
+    const judgeCwd = join(own, "work");
+    const userCwd = join(scratch, "work");
+    for (const d of [registry, judgeCwd, userCwd]) mkdirSync(d, { recursive: true });
+    const alive = new Set<number>([300, 301]);
+    const mini = await miniSessions(
+      `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n\n[[profiles]]\nharness = "claude"\nname = "fake"\nconfig_dir = ${tomlString(profileDir)}\n`,
+      (host, log) => [new ClaudeAdapter({ host, log, isAlive: (pid) => alive.has(pid), inject: async () => {}, sharedSettings: join(profileDir, "no-such-shared-settings.json") })],
+      { deps: { privateDirs: [own] } },
+    );
+    try {
+      writeRegistry(registry, { pid: 300, sessionId: "judge-1", cwd: judgeCwd, status: "busy" });
+      writeRegistry(registry, { pid: 301, sessionId: "user-1", cwd: userCwd, status: "busy" });
+      await mini.sessions.tick();
+      expect(mini.sessions.list().map((s) => s.native.id)).toEqual(["user-1"]);
+      expect(mini.store.sessions.list().map((s) => s.native.id)).toEqual(["user-1"]);
+      expect(mini.sessions.privateRun(join(judgeCwd, "deeper"))).toBe(true);
+      expect(mini.sessions.privateRun(userCwd)).toBe(false);
+    } finally {
+      mini.stop();
+    }
+  });
+});

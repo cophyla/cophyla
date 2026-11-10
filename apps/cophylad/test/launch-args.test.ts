@@ -19,7 +19,6 @@ describe("mirroring the user's launch", () => {
       "--effort=high",
       "--add-dir", "/a", "/b",
       "--name", "x",
-      "-p", "do it",
       "--mcp-config", "/m.json",
       "--strict-mcp-config",
       "--verbose",
@@ -28,6 +27,7 @@ describe("mirroring the user's launch", () => {
       "--setting-sources", "user,project",
       "--plugin-dir", "/plugins",
       "--allow-dangerously-skip-permissions",
+      "do it",
     ];
     expect(mirrorArgs(argv, "/work")).toEqual({
       mode: "auto",
@@ -58,6 +58,16 @@ describe("mirroring the user's launch", () => {
     const data = resolve("/data/claude");
     expect(mirrorArgs(["claude", "--effort", "low", "--settings", join(data, "cophylad-settings.json")], "/work", data)).toBeUndefined();
     expect(mirrorArgs(["claude", "--effort", "low", "--settings", "/elsewhere/s.json"], "/work", data)).toEqual({ args: ["--effort", "low", "--settings", resolve("/elsewhere/s.json")] });
+  });
+
+  test("a print run is not mirrored: its model and setup were picked for one question, not how the user works", () => {
+    // what the tracker's judge, or any script's `claude -p`, runs with
+    const judge = ["claude", "-p", "--model", "haiku", "--effort", "low", "--setting-sources", "project,local", "--strict-mcp-config", "--tools", "", "--no-session-persistence", "--output-format", "json", "--system-prompt", "Judge.", "the asks"];
+    expect(mirrorArgs(judge, "/work")).toBeUndefined();
+    expect(mirrorArgs(["claude", "--model", "opus", "--print", "hello"], "/work")).toBeUndefined();
+    expect(mirrorArgs(["claude", "--model", "haiku", "--print=true"], "/work")).toBeUndefined();
+    // a window's launch still is
+    expect(mirrorArgs(["claude", "--model", "opus"], "/work")).toEqual({ args: ["--model", "opus"] });
   });
 });
 

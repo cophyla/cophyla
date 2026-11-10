@@ -355,6 +355,12 @@ export interface SessionHost {
   find(harness: AttachedHarness, nativeId: string): SessionRecord | undefined;
   /** Whether the record is a session this node connects to (`SessionScope`): one outside it asks nothing here. */
   connected(rec: SessionRecord): boolean;
+  /**
+   * Whether a folder is one of cophylad's own, where it runs a harness for its own ends (the
+   * tracker's judge, a `claude -p`): a process met there is no session of the user's, and is
+   * never listed, recorded or mirrored.
+   */
+  privateRun(cwd: string): boolean;
   /** Live records of a harness that the attached adapter owns: never the ACP-spawned ones. */
   records(harness: AttachedHarness): SessionRecord[];
   /** A second native id for a record, when a harness names a spawned session differently in its hooks. */

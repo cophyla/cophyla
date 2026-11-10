@@ -303,6 +303,8 @@ export class ClaudeAdapter implements HarnessAdapter {
         windows.push({ pid: w.pid });
       }
       for (const live of entries.sessions) {
+        // cophylad's own run, its tracker's judge: no session of the user's
+        if (this.host.privateRun(live.cwd)) continue;
         const rec = this.meet(live, profile, running, now);
         if (rec && rec.session.status !== "ended") seen.add(rec.session.id);
       }
@@ -955,6 +957,7 @@ export class ClaudeAdapter implements HarnessAdapter {
       const entries = classify(readRegistry(join(profile.configDir, "sessions"), this.isAlive));
       if ([...entries.spares, ...entries.parked].some((l) => l.sessionId === sessionId)) return "none";
       const live = entries.sessions.find((l) => l.sessionId === sessionId);
+      if (live && this.host.privateRun(live.cwd)) return "none";
       if (live) return { live, profile, running: new Set(entries.sessions.map((e) => e.sessionId)) };
     }
     return undefined;

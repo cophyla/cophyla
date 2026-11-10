@@ -42,6 +42,9 @@ const PATH_FLAGS = new Set(["--settings", "--add-dir", "--mcp-config", "--plugin
  */
 export const REFUSED = new Set(["--session-id", "--name", "-n", "--resume", "-r", "--continue", "-c", "--fork-session", "--print", "-p", "--output-format", "--input-format", "--from-pr"]);
 
+/** The flags of a print run: one question asked and answered, with no window. */
+const PRINT_FLAGS = new Set(["--print", "-p"]);
+
 /** The other flags that take a value, so a value is never read as a flag of its own. */
 const VALUED: Readonly<Record<string, Arity>> = {
   ...MIRRORED,
@@ -153,11 +156,15 @@ export function modeFlags(mode: LaunchMode | undefined): string[] {
  * What a mirror keeps of a session's command line (the program first): the allow-listed
  * flags, paths made absolute against its directory, the mode apart. `undefined` for a command
  * line cophylad built — one whose `--settings` is cophylad's own file, as its Windows Terminal
- * entry's is — which holds the user's launch folded away, not as they typed it.
+ * entry's is — which holds the user's launch folded away, not as they typed it — and for a
+ * print run (`-p`): a tool's or a script's one question, with the model and setup it picked
+ * for that, never how the user works.
  */
 export function mirrorArgs(argv: readonly string[], cwd: string, cophyladDir?: string): Launch | undefined {
   const kept: string[] = [];
-  for (const group of flagGroups(argv.slice(1))) {
+  const groups = flagGroups(argv.slice(1));
+  if (groups.some((g) => PRINT_FLAGS.has(flagName(g)))) return undefined;
+  for (const group of groups) {
     const name = flagName(group);
     if (!(name in MIRRORED)) continue;
     let values = flagValues(group);

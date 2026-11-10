@@ -117,6 +117,8 @@ export interface SessionsDeps {
   workspaces: Workspaces;
   /** Built against the host that owns them. */
   adapters: (host: SessionHost) => HarnessAdapter[];
+  /** cophylad's own folders, where it runs a harness for its own ends (the tracker's judge): nothing met there is a session. */
+  privateDirs?: readonly string[];
   raiser: WindowRaiser;
   hookToken: string;
   dataDir: string;
@@ -1167,6 +1169,10 @@ export class Sessions implements SessionHost {
   /** Whether the session is one this node connects to (`SessionScope`): the chat's own and those Cophyla started always are. */
   connected(rec: SessionRecord): boolean {
     return this.admitted(rec.session);
+  }
+
+  privateRun(cwd: string): boolean {
+    return (this.deps.privateDirs ?? []).some((dir) => isWithin(cwd, dir));
   }
 
   private admitted(s: Session): boolean {
