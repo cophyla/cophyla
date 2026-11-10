@@ -75,6 +75,15 @@ export const PEER_PULLS_NS = "peer-pulls";
 export const TALK_KV_NS = "talk";
 export const TALK_SESSIONS_NS = "talk.sessions";
 
+/**
+ * The tracker (see `tracker/`): the asks it follows, one key each under their session
+ * (`<session>/<id>`), with how far each session's events were read (`~seen/<session>`), and
+ * its settings under `tracker.settings`. Replicated to the backups; never the brain's, never
+ * in the cloud backup, since they hold what the user asked their agents.
+ */
+export const TRACKER_KV_NS = "tracker";
+export const TRACKER_SETTINGS_NS = "tracker.settings";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -97,4 +106,6 @@ export const RESERVED_KV_NS: readonly string[] = [
   PEER_PULLS_NS,
   TALK_KV_NS,
   TALK_SESSIONS_NS,
+  TRACKER_KV_NS,
+  TRACKER_SETTINGS_NS,
 ];

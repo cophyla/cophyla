@@ -221,6 +221,23 @@ export const AssistantConfig = z.object({
 });
 export type AssistantConfig = z.infer<typeof AssistantConfig>;
 
+/**
+ * The tracker: what the user asked each agent, followed until an agent's message answers it.
+ * Whether it runs, and for which sessions, is the user's to say in the app; this is how it
+ * judges: the Claude model and effort of its short `claude -p` runs, how long one may take, and
+ * how often a long turn's messages are judged while it goes on.
+ */
+export const TrackerConfig = z.object({
+  claude_model: z.string().regex(/^[A-Za-z0-9._\-[\]]+$/).default("haiku"),
+  claude_effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("low"),
+  timeout_ms: z.number().int().min(5000).max(600000).default(120000),
+  /** While a turn goes on, its new messages are judged at most this often; a turn's end, or a question to the user, judges them at once. */
+  busy_every_ms: z.number().int().min(10000).max(3600000).default(120000),
+  /** A program run in place of `claude` (its path, then its arguments before the judge's), for a test or a kit; never in a user's config. */
+  command: z.array(z.string().min(1)).min(1).optional(),
+});
+export type TrackerConfig = z.infer<typeof TrackerConfig>;
+
 const MODEL_NAME = /^[^/]+\/.+$/;
 
 export const TierConfig = z.object({
@@ -749,6 +766,7 @@ export const Config = z.object({
   profiles: z.array(ProfileConfig).default([]),
   brain: BrainConfig.prefault({}),
   assistant: AssistantConfig.prefault({}),
+  tracker: TrackerConfig.prefault({}),
   providers: ProvidersConfig.prefault({}),
   acp: AcpConfig.prefault({}),
   tools: ToolsConfig.prefault({}),

@@ -124,6 +124,9 @@ import { Teams } from "./teams/index.ts";
 import { teamMethods } from "./teams/methods.ts";
 import { Transfers } from "./transfers/index.ts";
 import { transferMethods } from "./transfers/methods.ts";
+import { Tracker } from "./tracker/index.ts";
+import { ClaudeJudge } from "./tracker/judge.ts";
+import { trackerMethods } from "./tracker/methods.ts";
 import { openSource } from "./transfers/source.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
@@ -331,6 +334,7 @@ export interface Daemon {
   groups: Groups;
   /** The leaders: the sessions, and the chat, that speak to a group of the user's sessions as the user. */
   leaders: Leaders;
+  tracker: Tracker;
   /** What a session a leader messaged does next, told to the leader. */
   reports: Reports;
   /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
@@ -647,6 +651,8 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     raiser,
     hookToken,
     dataDir: p.data,
+    // the tracker's judge runs its `claude -p` there: no session of the user's
+    privateDirs: [join(p.data, "tracker")],
     acp: { config: config.acp, env },
     // Where a session cophylad starts is shown: the editor's panel first, a terminal of the
     // platform's otherwise, and on a node with neither the session is headless. A test run
@@ -1608,6 +1614,34 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     settleMs: opts.listeners?.settleMs ?? LISTENER_SETTLE_MS,
   });
   reportsLive.start();
+  // The tracker: what the user asked each agent, followed until the agent's messages answer it; kept by the primary.
+  const trackerJudgeProfile = () => {
+    const chosen = trackerLive.profile();
+    const named = chosen !== undefined ? profiles.get(chosen) : undefined;
+    const p = named?.harness === "claude" ? named : profiles.defaultFor("claude");
+    // a kit's stand-in judge needs no login; the real one does
+    return p && (p.status === "ok" || config.tracker.command !== undefined) ? p : undefined;
+  };
+  const trackerLive: Tracker = new Tracker({
+    store,
+    bus,
+    log: log.child("tracker"),
+    routes: routesHere,
+    session: (id) => sessions.get(id) ?? forwardHost.mirrorSessions().find((s) => s.id === id) ?? store.sessions.get(id),
+    history: (id, o) => sessions.history(id, o),
+    judge: new ClaudeJudge({
+      profile: trackerJudgeProfile,
+      cwd: join(p.data, "tracker", "work"),
+      model: config.tracker.claude_model,
+      effort: config.tracker.claude_effort,
+      timeoutMs: config.tracker.timeout_ms,
+      ...(config.tracker.command ? { command: config.tracker.command } : {}),
+      env,
+      log: log.child("tracker"),
+    }),
+    busyEveryMs: config.tracker.busy_every_ms,
+  });
+  trackerLive.start();
   // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
   const groupMedia = new GroupMedia(p.data, log.child("groups"));
   const groupsLive: Groups = new Groups({
@@ -1949,6 +1983,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...teamMethods({ teams: () => (routesHere() ? teamsRun : undefined) }),
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
+    ...trackerMethods({ tracker: () => (routesHere() ? trackerLive : undefined) }),
   }, forwardHost);
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;
@@ -2272,6 +2307,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     focus: focusLive,
     groups: groupsLive,
     leaders: leadersLive,
+    tracker: trackerLive,
     reports: reportsLive,
     teammates: teammatesLive,
     teams: teamsRun,
@@ -2335,6 +2371,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       groupsLive.stop();
       reportsLive.stop();
       leadersLive.stop();
+      trackerLive.stop();
       focusLive.stop();
       await cloud.stop();
       metrics.dispose();

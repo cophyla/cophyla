@@ -10,7 +10,8 @@
 // `node.pressure`; `nodes` raises `node.state`, `node.joined` and `node.left`; `remote` raises
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
 // raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`;
-// `leaders` raises `lead.state`; the agents' conversations raise `talk.said` and `talk.state`. The
+// `leaders` raises `lead.state`; the agents' conversations raise `talk.said` and `talk.state`; the
+// tracker raises `tracked.state` and `tracker.state`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
@@ -92,6 +93,10 @@ export interface BusEvents {
   "teams.offer": ClientNotificationParams<"teams.offer">;
   /** A transfer this machine receives changed, or one a linked node receives, carried up; `dismissed` its last row. */
   "transfer.state": Transfer;
+  /** An ask the tracker follows changed; `dismissed` its last row. */
+  "tracked.state": ClientNotificationParams<"tracked.state">;
+  /** The tracker's settings or health changed. */
+  "tracker.state": ClientNotificationParams<"tracker.state">;
   "workspace.state": Workspace;
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;
