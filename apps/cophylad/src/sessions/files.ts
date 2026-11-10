@@ -53,6 +53,8 @@ export const IMAGE_MAX = 5 * 1024 * 1024;
 export const WHOLE_CHUNK = 1.5 * 1024 * 1024;
 /** Bytes of a file sent whole at most; a bigger one comes as binary, with nothing to show. */
 export const WHOLE_MAX = 64 * 1024 * 1024;
+/** Bytes of a video sent whole at most, for a viewer that plays it: clips run bigger than pictures. */
+export const VIDEO_MAX = 256 * 1024 * 1024;
 /** Converted images kept, so a PNG sent a piece at a time is made once. */
 const CONVERTED_KEEP = 3;
 
@@ -67,6 +69,21 @@ const IMAGE_TYPES: Readonly<Record<string, string>> = {
   ico: "image/x-icon",
   avif: "image/avif",
 };
+
+/** The videos a viewer plays, by extension: read whole, up to VIDEO_MAX. */
+const VIDEO_TYPES: Readonly<Record<string, string>> = {
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  mkv: "video/x-matroska",
+  ogv: "video/ogg",
+};
+
+/** Whether a path names a video a viewer plays, by its extension. */
+export function isVideo(path: string): boolean {
+  return Object.hasOwn(VIDEO_TYPES, extension(path));
+}
 
 /** What else a viewer reads whole, by extension: a PDF it draws, the page it runs, and what a page loads beside it. */
 const WHOLE_TYPES: Readonly<Record<string, string>> = {
@@ -89,8 +106,7 @@ const WHOLE_TYPES: Readonly<Record<string, string>> = {
   mp3: "audio/mpeg",
   wav: "audio/wav",
   ogg: "audio/ogg",
-  mp4: "video/mp4",
-  webm: "video/webm",
+  ...VIDEO_TYPES,
 };
 
 function extension(path: string): string {
@@ -141,6 +157,8 @@ export interface SessionFilesDeps {
   /** Bytes per piece of a whole read, and the most sent whole; WHOLE_CHUNK and WHOLE_MAX unless a test says. */
   wholeChunk?: number;
   wholeMax?: number;
+  /** The most of a video sent whole; VIDEO_MAX unless a test says. */
+  videoMax?: number;
 }
 
 /** Where a path under a folder leads: the path as the folder spells it, the real one past any link, what is there, and its stat. */
@@ -498,7 +516,8 @@ export class SessionFiles {
       const piece = png.subarray(at, at + chunk);
       return { ...base, mime: "image/png", base64: Buffer.from(piece.buffer, piece.byteOffset, piece.length).toString("base64"), at, total: png.length };
     }
-    if (info.size > (this.deps.wholeMax ?? WHOLE_MAX)) return { ...base, binary: true };
+    const max = isVideo(path) ? (this.deps.videoMax ?? VIDEO_MAX) : (this.deps.wholeMax ?? WHOLE_MAX);
+    if (info.size > max) return { ...base, binary: true };
     if (at > info.size) throw new RpcError("invalid", `${path}: ${at} is past its end`);
     try {
       const file = await open(target, "r");

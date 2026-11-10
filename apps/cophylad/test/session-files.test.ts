@@ -17,7 +17,7 @@ import { RpcError } from "@cophyla/protocol";
 import type { GitState } from "@cophyla/protocol";
 import { ConvertError, convertKind, systemConverter } from "../src/sessions/convert.ts";
 import type { ImageConverter } from "../src/sessions/convert.ts";
-import { decodeText, fileSummary, findGit, folderParts, imageMime, parseGitLog, parseGitStatus, SessionFiles, WHOLE_CHUNK, wholeMime } from "../src/sessions/files.ts";
+import { decodeText, fileSummary, findGit, folderParts, imageMime, isVideo, parseGitLog, parseGitStatus, SessionFiles, VIDEO_MAX, WHOLE_CHUNK, WHOLE_MAX, wholeMime } from "../src/sessions/files.ts";
 import type { GitRunner } from "../src/sessions/files.ts";
 import { systemRevealer } from "../src/sessions/reveal.ts";
 import type { Revealer } from "../src/sessions/reveal.ts";
@@ -40,7 +40,7 @@ function linkDir(target: string, at: string): void {
   symlinkSync(target, at, process.platform === "win32" ? "junction" : "dir");
 }
 
-function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner; revealer?: Revealer; converter?: ImageConverter; wholeChunk?: number; wholeMax?: number } = {}): SessionFiles {
+function filesFor(cwd: string, opts: { max?: number; textMax?: number; imageMax?: number; git?: GitRunner; revealer?: Revealer; converter?: ImageConverter; wholeChunk?: number; wholeMax?: number; videoMax?: number } = {}): SessionFiles {
   return new SessionFiles({ session: (id) => (id === "s1" ? { cwd } : undefined), ...opts });
 }
 
@@ -305,6 +305,23 @@ describe("a file read whole", () => {
     expect(WHOLE_CHUNK % 3).toBe(0);
     expect(fileSummary({ path: "guide.pdf", size: 20, modified: 1, mime: "application/pdf", base64: "AAAA", at: 9, total: 20 })).toEqual({ path: "guide.pdf", size: 20, mime: "application/pdf", base64: 4, at: 9, total: 20 });
     expect([wholeMime("a/b.PDF"), wholeMime("x.html"), wholeMime("s.css"), wholeMime("i.svg"), wholeMime("p.tiff"), wholeMime("README")]).toEqual(["application/pdf", "text/html", "text/css", "image/svg+xml", "application/octet-stream", "application/octet-stream"]);
+  });
+
+  test("a video comes whole past the most sent of anything else, up to the most sent of a video, with its type", async () => {
+    const root = temp();
+    writeFileSync(join(root, "clip.mp4"), Buffer.alloc(30, 1));
+    writeFileSync(join(root, "clip.MOV"), Buffer.alloc(30, 2));
+    writeFileSync(join(root, "huge.webm"), Buffer.alloc(41));
+    writeFileSync(join(root, "doc.pdf"), Buffer.alloc(30));
+    const files = filesFor(root, { wholeChunk: 9, wholeMax: 20, videoMax: 40 });
+    expect(await files.read("s1", "clip.mp4", { whole: true })).toMatchObject({ mime: "video/mp4", total: 30, at: 0 });
+    expect(await files.read("s1", "clip.MOV", { whole: true })).toMatchObject({ mime: "video/quicktime", total: 30 });
+    expect(await files.read("s1", "huge.webm", { whole: true })).toEqual({ path: "huge.webm", size: 41, modified: expect.any(Number), binary: true });
+    // anything else past its own most is still too big
+    expect(await files.read("s1", "doc.pdf", { whole: true })).toMatchObject({ binary: true });
+    expect([wholeMime("a.m4v"), wholeMime("a.mkv"), wholeMime("a.ogv"), wholeMime("a.webm")]).toEqual(["video/mp4", "video/x-matroska", "video/ogg", "video/webm"]);
+    expect([isVideo("x/clip.MP4"), isVideo("clip.mp4.txt"), isVideo("song.mp3")]).toEqual([true, false, false]);
+    expect(VIDEO_MAX).toBeGreaterThan(WHOLE_MAX);
   });
 
   test("a TIFF or a HEIC comes as the PNG its codecs make, made once for all its pieces; one no codec reads says why", async () => {

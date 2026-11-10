@@ -7899,6 +7899,11 @@ button:disabled {
   background: #fff;
 }
 
+/* A video's player is dark from the first frame, before its page is written. */
+.viewer-video iframe {
+  background: #000;
+}
+
 /* A PDF: its pages down the middle on white paper, each as wide as the viewer or at its own size
    (pdfview.ts sizes them, with 16px round them), a click switching; drawn as they come near. */
 .viewer-pdf {

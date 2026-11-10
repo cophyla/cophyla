@@ -3369,10 +3369,46 @@ const IMAGE_KINDS: Readonly<Record<string, string>> = {
 
 /** What kind of image a path names, or undefined for one that names none. */
 export function imageKind(path: string): string | undefined {
+  const ext = extensionOf(path);
+  return Object.hasOwn(IMAGE_KINDS, ext) ? IMAGE_KINDS[ext] : undefined;
+}
+
+function extensionOf(path: string): string {
   const name = path.slice(path.lastIndexOf("/") + 1);
   const dot = name.lastIndexOf(".");
-  const ext = dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
-  return Object.hasOwn(IMAGE_KINDS, ext) ? IMAGE_KINDS[ext] : undefined;
+  return dot > 0 ? name.slice(dot + 1).toLowerCase() : "";
+}
+
+/**
+ * The videos the viewer plays, by extension: what each is called, and the type the player hands
+ * the browser, which plays what is inside rather than what the name says (a QuickTime file of
+ * H.264 as an MP4 does, a Matroska file of VP9 as a WebM does).
+ */
+const VIDEO_KINDS: Readonly<Record<string, { kind: string; type: string }>> = {
+  mp4: { kind: "MP4", type: "video/mp4" },
+  m4v: { kind: "MP4", type: "video/mp4" },
+  mov: { kind: "QuickTime", type: "video/mp4" },
+  webm: { kind: "WebM", type: "video/webm" },
+  mkv: { kind: "Matroska", type: "video/webm" },
+  ogv: { kind: "Ogg", type: "video/ogg" },
+};
+
+/** What kind of video a path names, and the type it is played as; undefined for one that names none. */
+export function videoKind(path: string): { kind: string; type: string } | undefined {
+  const ext = extensionOf(path);
+  return Object.hasOwn(VIDEO_KINDS, ext) ? VIDEO_KINDS[ext] : undefined;
+}
+
+/** The most of a video its node sends whole (the daemon's VIDEO_MAX): past it, there is nothing to play. */
+export const VIDEO_SENT_MAX = 256 * 1024 * 1024;
+
+/** A length of time as a player shows it: `m:ss`, or `h:mm:ss` past an hour. */
+export function clockWords(seconds: number): string {
+  const s = Math.max(0, Math.floor(Number.isFinite(seconds) ? seconds : 0));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const ss = String(s % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
 }
 
 /**
@@ -3618,24 +3654,25 @@ export function bytesOf(base64: string): Uint8Array {
   return out;
 }
 
-/** Whether the viewer reads a file whole to draw it, a piece at a time: an image but SVG (which comes as text), or a PDF. */
+/** Whether the viewer reads a file whole to draw it, a piece at a time: an image but SVG (which comes as text), a PDF, or a video. */
 export function readsWhole(path: string): boolean {
   const image = imageKind(path);
-  return (image !== undefined && image !== "SVG") || isPdf(path);
+  return (image !== undefined && image !== "SVG") || isPdf(path) || videoKind(path) !== undefined;
 }
 
 /**
- * What the viewer's head says of a file: its language or its kind of image, an image's size in
- * pixels once drawn (as its node's codecs drew it, for a TIFF or a HEIC), how many lines, or a
- * PDF's pages once it is open, and how big.
+ * What the viewer's head says of a file: its language or its kind of image or video, an image's
+ * or a video's size in pixels once drawn (as its node's codecs drew it, for a TIFF or a HEIC),
+ * how many lines, a PDF's pages once it is open, or how long a video runs, and how big.
  */
-export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }, pages?: number): string {
+export function viewerMeta(file: FileText, lines: number | undefined, pixels?: { width: number; height: number }, pages?: number, seconds?: number): string {
   const language = fileLanguage(file.path);
   const image = imageKind(file.path);
-  const kind = image ?? (isPdf(file.path) ? "PDF" : file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
+  const video = videoKind(file.path);
+  const kind = image ?? (video ? `${video.kind} video` : isPdf(file.path) ? "PDF" : file.binary ? "Binary" : language !== undefined && language !== "todo" ? GRAMMARS[language] : "Text");
   const converted = image !== undefined && image !== "PNG" && file.mime === "image/png";
   const drawn = pixels ? `${converted ? "shown at " : ""}${pixels.width} × ${pixels.height}` : undefined;
-  const counted = lines !== undefined && !file.binary && file.text !== undefined ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : pages !== undefined ? `${pages.toLocaleString()} page${pages === 1 ? "" : "s"}` : undefined;
+  const counted = lines !== undefined && !file.binary && file.text !== undefined ? `${lines.toLocaleString()} line${lines === 1 ? "" : "s"}${file.truncated ? " shown" : ""}` : pages !== undefined ? `${pages.toLocaleString()} page${pages === 1 ? "" : "s"}` : seconds !== undefined ? clockWords(seconds) : undefined;
   return [kind, drawn, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
 }
 
@@ -3656,8 +3693,11 @@ export function viewerNote(file: FileText): string {
   if (file.base64 !== undefined) return "";
   if (file.note !== undefined) return file.note;
   if (readsWhole(file.path) && (file.binary || file.text !== undefined)) {
-    const what = isPdf(file.path) ? "PDF" : "image";
-    return file.size > WHOLE_SENT_MAX ? `This ${what} is too big to show here: ${fileSizeWords(file.size)}, past ${fileSizeWords(WHOLE_SENT_MAX)}.` : `That computer's Cophyla is too old to show this ${what}: update it there.`;
+    const video = videoKind(file.path) !== undefined;
+    const what = isPdf(file.path) ? "PDF" : video ? "video" : "image";
+    const show = video ? "play" : "show";
+    const max = video ? VIDEO_SENT_MAX : WHOLE_SENT_MAX;
+    return file.size > max ? `This ${what} is too big to ${show} here: ${fileSizeWords(file.size)}, past ${fileSizeWords(max)}.` : `That computer's Cophyla is too old to ${show} this ${what}: update it there.`;
   }
   if (file.binary) return "This file is not text, so there is nothing to show.";
   if (file.truncated) return `Only the first ${fileSizeWords(new TextEncoder().encode(file.text ?? "").length)} of ${fileSizeWords(file.size)} shows.`;

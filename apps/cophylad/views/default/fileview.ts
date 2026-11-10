@@ -32,6 +32,11 @@
 // the next, any case unless Aa is on. The view reads the file again as the agent works and when
 // the window comes back, and the viewer keeps its place and its search.
 //
+// A video comes whole the same way, a piece at a time, and plays in the document frame
+// (videoplayer.ts), since the view's own policy lets no media in: its bytes go to the player as
+// they came, never as one string of base64, and the browser's controls are beside buttons and
+// keys for play, pause, back and forward. A host with no document frame plays none, and says so.
+//
 // A file no agent's or terminal's folder holds is read from its computer by its full path
 // (`terminal.file` with no terminal), and a folder of those shows as what it holds
 // (`terminal.folders` with its files): the folder above, its folders, then its files, each
@@ -39,9 +44,10 @@
 
 import type { FileText, FolderPick } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { bytesOf, fileErrorWords, fileLanguage, fileLines, fileSizeWords, findInLines, findPattern, findWords, FIND_MAX, folderMeta, fullRel, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
+import { bytesOf, fileErrorWords, fileLanguage, fileLines, fileSizeWords, findInLines, findPattern, findWords, FIND_MAX, folderMeta, fullRel, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, videoKind, viewerMeta, viewerNote } from "./model.ts";
 import type { ViewerDock, ViewerSource } from "./model.ts";
 import { inlineDocument } from "./htmldoc.ts";
+import { PLAYER_KEYS, playerPage } from "./videoplayer.ts";
 import type { Asset } from "./htmldoc.ts";
 import { PdfError, PdfView } from "./pdfview.ts";
 import { ViewRpcError } from "./rpc.ts";
@@ -104,6 +110,14 @@ interface DocFrame {
   frame: HTMLIFrameElement;
   page: Promise<DrawnPage>;
   sent: boolean;
+}
+
+/** A video playing in the document frame: the frame, the player page, and the video's bytes for the player once it is ready. */
+interface MediaFrame {
+  frame: HTMLIFrameElement;
+  html: string;
+  parts: Uint8Array[];
+  type: string;
 }
 
 /** The CSS Custom Highlight API, where the engine has it: search marks without touching the page. */
@@ -261,6 +275,10 @@ export class FileViewer {
   private pendingLine?: number;
   /** An image's size in pixels, once drawn. */
   private pixels?: { width: number; height: number };
+  /** A video read whole, by the file's key, its bytes as they came; the frame it plays in; how long it runs, once the player knows. */
+  private clip?: { key: string; parts: Uint8Array[] };
+  private media?: MediaFrame;
+  private seconds?: number;
   /** A PDF drawn, and how many pages it has; a click on it waiting to see whether a second follows. */
   private pdf?: PdfView;
   private pages?: number;
@@ -286,6 +304,8 @@ export class FileViewer {
     this.open = open;
     // The document frame's words, from that frame alone: that it is ready for the page, and a link clicked in it.
     window.addEventListener("message", (ev) => {
+      const media = this.media;
+      if (media?.frame.contentWindow && ev.source === media.frame.contentWindow) return this.fromPlayer(media, ev.data);
       const doc = this.doc;
       if (!doc?.frame.contentWindow || ev.source !== doc.frame.contentWindow) return;
       const data = ev.data as { cophylaDocReady?: unknown; cophylaLink?: unknown } | null;
@@ -391,6 +411,13 @@ export class FileViewer {
     this.body.tabIndex = 0;
     this.el.append(split, head, this.findBar, this.note, this.body);
     this.body.addEventListener("copy", (ev) => this.copy(ev));
+    // A video's keys, pressed while the viewer has the focus, go on to its player.
+    this.body.addEventListener("keydown", (ev) => {
+      const media = this.media;
+      if (!media || ev.ctrlKey || ev.metaKey || ev.altKey || !(PLAYER_KEYS as readonly string[]).includes(ev.key)) return;
+      ev.preventDefault();
+      media.frame.contentWindow?.postMessage({ cophylaMediaKey: ev.key }, "*");
+    });
     this.body.addEventListener("keydown", (ev) => {
       if ((ev.ctrlKey || ev.metaKey) && !ev.altKey && ev.key.toLowerCase() === "a") {
         ev.preventDefault();
@@ -473,6 +500,8 @@ export class FileViewer {
       this.drawn = undefined;
       this.pixels = undefined;
       this.pages = undefined;
+      this.clip = undefined;
+      this.seconds = undefined;
       this.clearMatches();
       this.setBody();
       this.body.scrollTop = 0;
@@ -511,6 +540,8 @@ export class FileViewer {
     this.drawn = undefined;
     this.pixels = undefined;
     this.pages = undefined;
+    this.clip = undefined;
+    this.seconds = undefined;
     clearTimeout(this.fitTimer);
     this.closeFind(false);
     this.setBody();
@@ -546,6 +577,24 @@ export class FileViewer {
     try {
       // A computer's folder, asked for as one or found to be one, shows as what it holds.
       if ("node" in target.from && (target.folder || this.folders.has(keyOf(target)))) return await this.loadFolder(target, target.from.node, generation);
+      // A video comes whole as its bytes, for its player; read again, only when it changed.
+      if (videoKind(target.rel) !== undefined) {
+        const read = await this.readVideo(target, again, (p) => {
+          if (generation !== this.generation) return;
+          this.progress = p;
+          this.update();
+        });
+        if (generation !== this.generation) return;
+        this.error = undefined;
+        this.file = read.file;
+        this.lines = [];
+        if (read.parts) this.clip = { key: keyOf(target), parts: read.parts };
+        this.loading = false;
+        this.progress = undefined;
+        this.update();
+        await this.paint();
+        return;
+      }
       // An image comes whole, a piece at a time, to be drawn; an SVG comes as the text it is either way.
       const file = readsWhole(target.rel)
         ? await this.readWhole(target.from, target.rel, (p) => {
@@ -639,26 +688,51 @@ export class FileViewer {
    * again from the start should the file change between pieces.
    */
   async readWhole(from: ViewerSource, rel: string, progress?: (share: number) => void): Promise<FileText> {
+    const read = await this.readPieces(from, rel, (b64) => b64, progress);
+    return read.pieces ? { ...read.first, base64: read.pieces.join(""), at: 0 } : read.first;
+  }
+
+  /**
+   * A file's pieces, each as `keep` makes it as it comes, after its first answer: none when that
+   * answer is the file (an older node, one too big to send). Read again from the start should
+   * the file change between pieces.
+   */
+  private async readPieces<T>(from: ViewerSource, rel: string, keep: (base64: string) => T, progress?: (share: number) => void, first?: FileText): Promise<{ first: FileText; pieces?: T[] }> {
     for (let attempt = 0; ; attempt++) {
-      const first = await this.request(from, { path: rel, whole: true, image: true });
-      if (first.base64 === undefined || first.total === undefined) return first;
-      const pieces = [first.base64];
-      let at = (first.at ?? 0) + pieceBytes(first.base64);
+      const head = attempt === 0 && first ? first : await this.request(from, { path: rel, whole: true, image: true });
+      if (head.base64 === undefined || head.total === undefined) return { first: head };
+      const pieces = [keep(head.base64)];
+      let at = (head.at ?? 0) + pieceBytes(head.base64);
       let changed = false;
-      while (at < first.total) {
-        progress?.(at / first.total);
+      while (at < head.total) {
+        progress?.(at / head.total);
         const next = await this.request(from, { path: rel, whole: true, image: true, at });
         const got = next.base64 !== undefined ? pieceBytes(next.base64) : 0;
-        if (got === 0 || next.modified !== first.modified || next.size !== first.size || next.total !== first.total) {
+        if (got === 0 || next.modified !== head.modified || next.size !== head.size || next.total !== head.total) {
           changed = true;
           break;
         }
-        pieces.push(next.base64!);
+        pieces.push(keep(next.base64!));
         at += got;
       }
-      if (!changed) return { ...first, base64: pieces.join(""), at: 0 };
+      if (!changed) return { first: { ...head, base64: undefined, at: 0 }, pieces };
       if (attempt >= WHOLE_RETRIES) throw new Error(`${rel} kept changing while it was read`);
     }
+  }
+
+  /**
+   * A video's bytes, each piece decoded as it comes, so no string of all its base64 is ever made;
+   * read again (`again`), a video that has not changed since keeps the bytes it had. The file it
+   * gives says it came whole (`base64` empty) when it did; `parts` is none when nothing changed,
+   * or when it did not come whole (too big, an older node).
+   */
+  private async readVideo(target: ViewerTarget, again: boolean, progress: (share: number) => void): Promise<{ file: FileText; parts?: Uint8Array[] }> {
+    const first = await this.request(target.from, { path: target.rel, whole: true, image: true });
+    const had = this.file;
+    if (again && had && this.clip?.key === keyOf(target) && first.modified === had.modified && first.size === had.size) return { file: had };
+    const read = await this.readPieces(target.from, target.rel, (b64) => bytesOf(b64), progress, first);
+    if (!read.pieces) return { file: read.first };
+    return { file: { ...read.first, base64: "" }, parts: read.pieces };
   }
 
   /** The head and the note, from what is known: cheap, so every draw calls it. */
@@ -679,7 +753,7 @@ export class FileViewer {
     this.el.querySelector<HTMLElement>(".viewer-title")!.title = joinPath(target.root, target.rel);
     // A file drawn whole has no text to show, whatever an older node sent of it.
     const text = this.file?.text !== undefined && !readsWhole(target.rel);
-    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, text ? this.lines.length : undefined, this.pixels, this.pages) : this.listing ? folderMeta(this.listing) : "");
+    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, text ? this.lines.length : undefined, this.pixels, this.pages, this.seconds) : this.listing ? folderMeta(this.listing) : "");
     const drawable = previewable(target.rel) && text;
     const source = this.source();
     const modes = this.el.querySelector<HTMLElement>(".viewer-modes")!;
@@ -728,6 +802,15 @@ export class FileViewer {
     const paint = ++this.paints;
     if (file.text === undefined || readsWhole(target.rel)) {
       if (isPdf(target.rel) && file.base64 !== undefined) return this.paintPdf(want, paint, file.base64);
+      const video = videoKind(target.rel);
+      if (video !== undefined) {
+        this.painting = undefined;
+        this.drawn = want;
+        this.clearMatches();
+        const clip = this.clip?.key === want.key ? this.clip : undefined;
+        this.setBody(...(clip ? [this.player(target, clip.parts, video.type)] : []));
+        return;
+      }
       this.painting = undefined;
       this.drawn = want;
       this.clearMatches();
@@ -826,6 +909,11 @@ export class FileViewer {
       this.doc = undefined;
       this.drawNote = undefined;
     }
+    const media = this.media;
+    if (media && !nodes.some((n) => n.contains(media.frame))) {
+      this.media = undefined;
+      this.drawNote = undefined;
+    }
     this.body.replaceChildren(...nodes);
   }
 
@@ -859,6 +947,47 @@ export class FileViewer {
       });
     }
     return box;
+  }
+
+  /**
+   * A video's player, in the document frame the host serves: the frame is given the player page
+   * each time it says it is ready (a frame moved to another place loads again), and the player
+   * the video's bytes once it asks. A host that serves no frame plays none, and says so.
+   */
+  private player(target: ViewerTarget, parts: Uint8Array[], type: string): HTMLElement {
+    const box = el("div", "viewer-html viewer-video");
+    const docFrame = this.opts?.docFrame;
+    if (!docFrame) {
+      this.drawNote = "This app plays no videos: update it to play them here.";
+      this.update();
+      return box;
+    }
+    const frame = el("iframe");
+    const name = target.rel.slice(target.rel.lastIndexOf("/") + 1);
+    frame.title = name;
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("allow", "fullscreen; autoplay");
+    frame.allowFullscreen = true;
+    box.append(frame);
+    this.media = { frame, html: playerPage(name), parts, type };
+    frame.src = docFrame;
+    return box;
+  }
+
+  /** What the player says: that it is ready for its page or for the video, how big and how long the video is, or that it cannot play it; Escape pressed in it closes the viewer. */
+  private fromPlayer(media: MediaFrame, data: unknown): void {
+    const d = data as { cophylaDocReady?: unknown; cophylaMediaReady?: unknown; cophylaMediaInfo?: { width?: unknown; height?: unknown; duration?: unknown; error?: unknown }; cophylaMediaKey?: unknown } | null;
+    const win = media.frame.contentWindow;
+    if (!d || !win) return;
+    if (d.cophylaDocReady === true) win.postMessage({ cophylaDoc: media.html }, "*");
+    else if (d.cophylaMediaReady === true) win.postMessage({ cophylaMedia: { parts: media.parts, type: media.type } }, "*");
+    else if (d.cophylaMediaInfo) {
+      const info = d.cophylaMediaInfo;
+      if (typeof info.error === "string") this.drawNote = info.error.slice(0, 300);
+      if (typeof info.width === "number" && typeof info.height === "number" && info.width > 0) this.pixels = { width: info.width, height: info.height };
+      if (typeof info.duration === "number" && Number.isFinite(info.duration)) this.seconds = info.duration;
+      this.update();
+    } else if (d.cophylaMediaKey === "Escape") this.el.querySelector<HTMLButtonElement>('[data-action="viewer-close"]')?.click();
   }
 
   /** The page made whole, into the document frame that said it is ready, once. */
