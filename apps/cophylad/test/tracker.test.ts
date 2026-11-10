@@ -264,6 +264,76 @@ describe("what answers an ask", () => {
     k.tracker.stop();
   });
 
+  test("a turn another agent, a leader or the brain started is never judged; the user's own turns are, and a job's notice goes on with the turn before's", async () => {
+    const k = kit();
+    k.judge.onExtract = () => ({ asks: [{ title: "Why is the build slow?" }], amend: [] });
+    k.emit(S, "user_turn", { text: "why is the build slow?", source: "typed" });
+    await k.tracker.settled();
+    k.emit(S, "assistant_text", { text: "Looking into it." });
+    k.emit(S, "status", { status: "idle" });
+    await k.tracker.settled();
+    const graded = () => k.judge.grades.flatMap((g) => g.messages.map((m) => m.text));
+    expect(graded()).toEqual(["Looking into it."]);
+    // another agent's message starts a turn: what the agent says in it is not judged
+    k.emit(S, "user_turn", { text: "Faces is LIVE: deploy-20261110", source: "agent", from: { name: "one" } });
+    k.emit(S, "assistant_text", { text: "Thanks, noted the deploy." });
+    k.emit(S, "status", { status: "idle" });
+    // a leader's words, as the user, are another agent's too; so are the brain's
+    k.emit(S, "user_turn", { text: "check the lane board", source: "lead", by: "sess_x", ref: "cophylad-lead-9" });
+    k.emit(S, "assistant_text", { text: "Board checked." });
+    k.emit(S, "status", { status: "idle" });
+    k.emit(S, "user_turn", { text: "the brain's task", source: "orchestrator" });
+    k.emit(S, "assistant_text", { text: "On the brain's task." });
+    k.emit(S, "status", { status: "idle" });
+    await k.tracker.settled();
+    expect(graded()).toEqual(["Looking into it."]);
+    // the user's own turn, and another agent's message in the middle of it: all of it is judged
+    k.emit(S, "user_turn", { text: "any news?", source: "typed" });
+    k.emit(S, "assistant_text", { text: "Still measuring." });
+    k.emit(S, "user_turn", { text: "a note mid-turn", source: "agent" });
+    k.emit(S, "assistant_text", { text: "The build is slow because the cache is cold." });
+    k.emit(S, "status", { status: "idle" });
+    // a background job's notice starts a turn that goes on with the user's
+    k.emit(S, "user_turn", { text: "<task-notification><task-id>b7</task-id><status>completed</status></task-notification>", source: "typed" });
+    k.emit(S, "assistant_text", { text: "The job finished: warm builds take 40 s." });
+    k.emit(S, "status", { status: "idle" });
+    // the user's words in the middle of another agent's turn make it the user's
+    k.emit(S, "user_turn", { text: "ping from three", source: "agent" });
+    k.emit(S, "assistant_text", { text: "Replying to three." });
+    k.emit(S, "user_turn", { text: "and the cold start?", source: "typed" });
+    k.emit(S, "assistant_text", { text: "A cold start takes 4 min." });
+    k.emit(S, "status", { status: "idle" });
+    await k.tracker.settled();
+    expect(graded()).toEqual(["Looking into it.", "Still measuring.", "The build is slow because the cache is cold.", "The job finished: warm builds take 40 s.", "A cold start takes 4 min."]);
+    k.tracker.stop();
+  });
+
+  test("a turn a script started through cophylad is let go with its messages; one the user's app started is judged once its send is told", async () => {
+    const k = kit();
+    k.judge.onExtract = () => ({ asks: [{ title: "What is the port?" }], amend: [] });
+    k.emit(S, "user_turn", { text: "what is the port?", source: "typed" });
+    await k.tracker.settled();
+    k.emit(S, "status", { status: "idle" });
+    // a script's note, never told: its turn's messages go once the wait is over
+    k.emit(S, "user_turn", { text: "[BOARDWATCH] idle 30 min", source: "typed", ref: "cophylad-script-2" });
+    k.emit(S, "assistant_text", { text: "Ack, board." });
+    k.emit(S, "status", { status: "idle" });
+    await sleep(150);
+    await k.tracker.settled();
+    const graded = () => k.judge.grades.flatMap((g) => g.messages.map((m) => m.text));
+    expect(graded()).not.toContain("Ack, board.");
+    // the user's app, told a moment after its turn was read
+    k.emit(S, "user_turn", { text: "and the host?", source: "typed", ref: "cophylad-app-9" });
+    k.emit(S, "assistant_text", { text: "Port 4817 on 127.0.0.1." });
+    await sleep(20);
+    k.tracker.noteSent(S, "cophylad-app-9");
+    k.emit(S, "status", { status: "idle" });
+    await sleep(150);
+    await k.tracker.settled();
+    expect(graded()).toContain("Port 4817 on 127.0.0.1.");
+    k.tracker.stop();
+  });
+
   test("nothing open, nothing judged; a message from before the ask answers none of it", async () => {
     const k = kit();
     k.emit(S, "assistant_text", { text: "Earlier work." });

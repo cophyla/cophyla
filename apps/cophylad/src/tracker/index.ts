@@ -9,8 +9,10 @@
 // leader's, the brain's, or what a script or tool sent through cophylad) is put to the
 // judge (`judge.ts`) at once, which says what in it is worth following: each such thing
 // becomes an open ask, in a line. The agent's messages (what it writes for the user to read,
-// not its tool calls) are gathered and put to the judge in one question with the asks still
-// open: at its turn's end, when it stops to ask the user something, and at most every
+// not its tool calls) in a turn the user started are gathered and put to the judge in one
+// question with the asks still open (a turn another agent's message, a leader's, the brain's
+// or a script's started is not the user's, and is never judged; one the agent starts itself to
+// go on, a background job's notice, is the turn before's): at its turn's end, when it stops to ask the user something, and at most every
 // `busyEveryMs` while a long turn goes on. Each answer it finds is kept with the ask, by the
 // message's seq, and the ask goes partial or answered; it never goes back on its own. The user
 // can set where an ask stands by hand, which the judging then leaves, and dismiss it.
@@ -51,6 +53,8 @@ const SENT_KEEP_MS = 3 * 60 * 60_000;
 const SENT_MAX = 2000;
 /** A user turn that is no request: a slash command, or a notice the harness wrote in the user's place. */
 const NOT_ASKED = /^\s*(\/|<task-notification|<command-|<local-command|<bash-|<user-prompt-submit-hook|\[Request interrupted)/;
+/** A user turn the harness wrote to go on with the turn before: a background job's or a sub-agent's notice. */
+const NOTICE = /^\s*(<task-notification|<local-command|<user-prompt-submit-hook)/;
 /** The same words met twice this soon (a hook and the transcript) are one message. */
 const SAME_PROMPT_MS = 60_000;
 
@@ -136,6 +140,14 @@ interface Track {
   caughtUp: boolean;
   /** Its missed events are being taken in: the judging waits for the last of them. */
   catching?: boolean;
+  /** A turn is under way: a turn's first message was met since it last came to rest. */
+  inTurn: boolean;
+  /** Who started the turn under way: the user, or anyone else (whose turn is never judged); unknown after a start. */
+  owner?: "user" | "other";
+  /** Who started the turn before, which a turn the agent starts itself to go on (a job's notice) is. */
+  lastOwner?: "user" | "other";
+  /** The turn under way was started by a message cophylad typed whose send is not told yet as the user's. */
+  pendingStart?: { ref: string; seq: number };
 }
 
 export interface TrackerDeps {
@@ -340,7 +352,7 @@ export class Tracker {
   private trackOf(id: string): Track {
     let t = this.tracks.get(id);
     if (!t) {
-      t = { prompts: [], said: [], queued: false, lastGradeAt: 0, gradeTries: 0, prompted: -1, caughtUp: false };
+      t = { prompts: [], said: [], queued: false, lastGradeAt: 0, gradeTries: 0, prompted: -1, caughtUp: false, inTurn: false };
       this.tracks.set(id, t);
     }
     return t;
@@ -358,19 +370,24 @@ export class Tracker {
     const p = (e.payload ?? {}) as { text?: unknown; source?: unknown; status?: unknown };
     switch (e.kind) {
       case "user_turn": {
-        if (typeof p.text !== "string" || typeof p.source !== "string" || !USERS.has(p.source)) return;
-        const text = plainPrompt(p.text);
-        if (text === "" || NOT_ASKED.test(text)) return;
+        const text = typeof p.text === "string" ? plainPrompt(p.text) : "";
+        const ref = typeof (p as { ref?: unknown }).ref === "string" ? ((p as { ref: string }).ref) : undefined;
+        const users = typeof p.source === "string" && USERS.has(p.source);
+        // whose the turn is: the user's own words, anyone else's, or the harness going on with the turn before
+        const by = !users ? "other" : NOTICE.test(text) ? "continue" : ref !== undefined && !this.sent.has(ref) ? "pending" : "user";
+        this.ownTurn(t, by, ref, e.seq);
+        if (!users || text === "" || NOT_ASKED.test(text)) return;
         const prompt: Prompt = { seq: e.seq, at: e.at, text, ...(t.lastText !== undefined ? { before: t.lastText } : {}), tries: 0 };
-        const ref = (p as { ref?: unknown }).ref;
         // sent through cophylad: the user's only when one of their apps sent it, which may be told a moment after
-        if (typeof ref === "string" && !this.sent.has(ref)) this.hold(id, ref, prompt);
+        if (by === "pending") this.hold(id, ref!, prompt);
         else this.ask(id, t, prompt);
         return;
       }
       case "assistant_text": {
         if (typeof p.text !== "string" || p.text.trim() === "") return;
         t.lastText = p.text;
+        // a turn someone else started answers nothing of the user's, and costs no judging
+        if (t.owner === "other") return;
         t.said.push({ seq: e.seq, at: e.at, text: p.text });
         if (t.said.length > PENDING_MAX) t.said.splice(0, t.said.length - PENDING_MAX);
         if (t.queued) return;
@@ -388,6 +405,11 @@ export class Tracker {
         return;
       }
       case "status":
+        // at rest: the turn is over, and the next message starts the next one
+        if (p.status === "idle" || p.status === "ended") {
+          t.inTurn = false;
+          if (t.owner !== undefined) t.lastOwner = t.owner;
+        }
         // the turn is over, or the session waits on the user: what it said is judged now
         if (p.status !== "busy" && t.said.length > 0) this.due(id);
         return;
@@ -407,10 +429,43 @@ export class Tracker {
     this.due(id);
   }
 
+  /**
+   * Whose the turn is, as each of its user turns comes: the first after the session came to rest
+   * starts it (anyone else's message makes it theirs, a notice the harness wrote goes on with
+   * the turn before's owner), and the user's own words make it the user's wherever they come.
+   * A message cophylad typed whose send is not told yet starts a turn as the user's, until it
+   * is let go.
+   */
+  private ownTurn(t: Track, by: "user" | "other" | "continue" | "pending", ref: string | undefined, seq: number): void {
+    const starts = !t.inTurn;
+    t.inTurn = true;
+    if (by === "user") {
+      t.owner = "user";
+      return;
+    }
+    if (!starts) return;
+    if (by === "other") t.owner = "other";
+    else if (by === "continue") t.owner = t.lastOwner ?? t.owner;
+    else {
+      t.owner = "user";
+      t.pendingStart = { ref: ref!, seq };
+    }
+  }
+
   /** A turn cophylad typed, kept until its send is told as one of the user's apps', and let go after `SENT_WAIT_MS`. */
   private hold(id: string, ref: string, p: Prompt): void {
     if (this.waiting.has(ref)) return;
-    const timer = setTimeout(() => this.waiting.delete(ref), this.d.sentWaitMs ?? SENT_WAIT_MS);
+    const timer = setTimeout(() => {
+      this.waiting.delete(ref);
+      // never told: a script's or a tool's message, so a turn it started is none of the user's
+      const t = this.tracks.get(id);
+      if (t?.pendingStart?.ref !== ref) return;
+      const from = t.pendingStart.seq;
+      delete t.pendingStart;
+      if (t.inTurn) t.owner = "other";
+      else t.lastOwner = "other";
+      t.said = t.said.filter((m) => m.seq < from);
+    }, this.d.sentWaitMs ?? SENT_WAIT_MS);
     (timer as { unref?: () => void }).unref?.();
     this.waiting.set(ref, { session: id, prompt: p, timer });
   }
@@ -429,7 +484,12 @@ export class Tracker {
     clearTimeout(w.timer);
     this.waiting.delete(ref);
     if (this.stopped || !this.follows(session)) return;
-    this.ask(session, this.trackOf(session), w.prompt);
+    const t = this.trackOf(session);
+    // the user's own words: the turn they are in is the user's, and what it said waited for this
+    if (t.pendingStart?.ref === ref) delete t.pendingStart;
+    if (t.inTurn) t.owner = "user";
+    this.ask(session, t, w.prompt);
+    if (t.said.length > 0) this.due(session);
   }
 
   private due(id: string): void {
@@ -527,8 +587,10 @@ export class Tracker {
     // a message before every open ask was asked answers none of them
     const first = Math.min(...open.map((r) => r.seq));
     t.said = t.said.filter((m) => m.seq > first);
-    while (t.said.length > 0) {
-      const batch = takeBatch(t.said);
+    // what came since a message cophylad typed whose send is not told yet waits for it
+    const ready = (): Said[] => (t.pendingStart ? t.said.filter((m) => m.seq < t.pendingStart!.seq) : t.said);
+    while (ready().length > 0) {
+      const batch = takeBatch(ready());
       open = this.openRows(id);
       if (open.length === 0) {
         t.said = [];
