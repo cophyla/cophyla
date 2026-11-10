@@ -3724,6 +3724,46 @@ export interface PathInText {
   folder?: true;
   /** Its last name has no extension and no separator follows it: a folder, a file such as `Makefile`, or no path at all (`and/or`, `1/2`). */
   plain?: true;
+  /**
+   * The words after a full path that may go on with it, a name of it having a space in it
+   * (`C:\Program` before ` Files\nodejs\node.exe`): which of them do is the path's computer's to
+   * say (spaced.ts), and the link grows over those.
+   */
+  more?: string;
+}
+
+/** The quotes a path may be written between, each with the one that closes it: between them, spaces and all, it is the path. */
+const QUOTES: Readonly<Record<string, string>> = { '"': '"', "'": "'", "`": "`", "\u201C": "\u201D", "\u2018": "\u2019", "<": ">" };
+/** Where the words after a path can no longer go on with it: a line's end, a tab, two spaces, or what no file's name holds. */
+const RUN_STOP = /[\n\r\t"<>|*?`]| {2}/;
+/** The most of the words after a path that may go on with it. */
+export const RUN_MAX = 240;
+/** An extension, somewhere in words, and one that ends a name. */
+const EXTENSION = /\.[A-Za-z][A-Za-z0-9]{0,11}\b/;
+const EXTENSION_END = /\.[A-Za-z][A-Za-z0-9]{0,11}$/;
+/** A line after a path: `:12`, or `:12:5`. */
+const LINE_END = /:(\d+)(?::\d+)?$/;
+
+/**
+ * Where a full path that a space stops at may go on: the whole of what quotes around it hold,
+ * or all of a code span's words (`whole`) when the path begins them; else the words after it,
+ * when they could hold more of it (a separator, or an extension after a last name with none),
+ * for the view to check. None when a space does not follow it.
+ */
+function spacedRun(text: string, start: number, end: number, whole: boolean): { to: number } | { more: string } | undefined {
+  if (text[end] !== " " || end + 1 >= text.length || /\s/.test(text[end + 1]!)) return undefined;
+  const close = start > 0 ? QUOTES[text[start - 1]!] : undefined;
+  if (close !== undefined) {
+    const at = text.indexOf(close, end);
+    if (at > end && at - end <= RUN_MAX && !/[\n\r\t]/.test(text.slice(end, at))) return { to: at };
+  }
+  if (whole && start === 0 && text.length - end <= RUN_MAX && !/[\n\r\t]/.test(text) && text.trimEnd() === text) return { to: text.length };
+  const rest = text.slice(end, end + RUN_MAX);
+  const stop = rest.search(RUN_STOP);
+  const run = stop >= 0 ? rest.slice(0, stop) : rest;
+  const tail = text.slice(start, end).replace(/^.*[\\/]/, "");
+  const goesOn = /[\\/]/.test(run) || (!EXTENSION_END.test(tail) && EXTENSION.test(run));
+  return goesOn && run.trim() !== "" ? { more: run } : undefined;
 }
 
 const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*(?:(?<file>[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})|[\w@+-](?:[\w.@+-]*[\w@+-])?)?)(?::(?<line>\d+)(?::\d+)?)?/g;
@@ -3734,20 +3774,38 @@ const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\
  * folders or not, with the line after it when there is one; or names with a separator among
  * them and no extension, a folder's as often as not, marked `folder` when a separator ends
  * them and `plain` otherwise. A bare name counts only when its extension is a language's, so
- * `e.g.` and `v1.2` are none; one inside a URL or a longer word is left alone.
+ * `e.g.` and `v1.2` are none; one inside a URL or a longer word is left alone. A full path
+ * with a space in a name (`C:\Program Files\x.exe`) is whole between quotes or backticks, and as
+ * all of a code span's words (`whole`); elsewhere it is found as far as the space, with the words
+ * after it that may go on with it (`more`), for the view to check.
  */
-export function pathsIn(text: string): PathInText[] {
+export function pathsIn(text: string, opts: { whole?: boolean } = {}): PathInText[] {
   const out: PathInText[] = [];
+  let past = 0;
   for (const m of text.matchAll(PATH_IN_TEXT)) {
+    if (m.index < past) continue;
     const path = m.groups!["path"]!;
     if (m.index > 0 && /[\w.@+\\/:-]/.test(text[m.index - 1]!)) continue;
     // A root alone (`/`, `C:\`, `./`) names nothing.
     if (path.replace(/^(?:[A-Za-z]:|~|\.{1,2})?[\\/]/, "") === "") continue;
     const named = m.groups!["file"] !== undefined;
     if (!/[\\/]/.test(path) && (!named || fileLanguage(path) === undefined)) continue;
-    const folder = /[\\/]$/.test(path);
     const line = m.groups!["line"] !== undefined ? Number(m.groups!["line"]) : undefined;
-    out.push({ start: m.index, end: m.index + m[0].length, path, ...(line !== undefined && line > 0 ? { line } : {}), ...(folder ? { folder: true as const } : !named ? { plain: true as const } : {}) });
+    const end = m.index + m[0].length;
+    const spaced = line === undefined && isFullPath(path) ? spacedRun(text, m.index, end, opts.whole === true) : undefined;
+    if (spaced && "to" in spaced) {
+      // Between quotes, spaces and all: its line, when one ends it, is its line still.
+      const words = text.slice(m.index, spaced.to);
+      const at = LINE_END.exec(words);
+      const whole = at ? words.slice(0, at.index) : words;
+      const last = whole.replace(/[\\/]+$/, "").replace(/^.*[\\/]/, "");
+      const folder = /[\\/]$/.test(whole);
+      out.push({ start: m.index, end: spaced.to, path: whole, ...(at && Number(at[1]) > 0 ? { line: Number(at[1]) } : {}), ...(folder ? { folder: true as const } : !EXTENSION_END.test(last) ? { plain: true as const } : {}) });
+      past = spaced.to;
+      continue;
+    }
+    const folder = /[\\/]$/.test(path);
+    out.push({ start: m.index, end, path, ...(line !== undefined && line > 0 ? { line } : {}), ...(folder ? { folder: true as const } : !named ? { plain: true as const } : {}), ...(spaced ? { more: spaced.more } : {}) });
   }
   return out;
 }
@@ -3776,14 +3834,14 @@ function webEnd(url: string): string {
  * punctuation of the sentence it ends left off), and each path `pathsIn` finds outside them.
  * Which of the paths the view can open is the view's to say, when one is pointed at.
  */
-export function linksIn(text: string): LinkInText[] {
+export function linksIn(text: string, opts: { whole?: boolean } = {}): LinkInText[] {
   const out: LinkInText[] = [];
   for (const m of text.matchAll(WEB_IN_TEXT)) {
     const url = webEnd(m[0]);
     if (/^https?:\/\/[^/]/i.test(url)) out.push({ kind: "web", start: m.index, end: m.index + url.length, url });
   }
   const webs = out.length;
-  for (const p of pathsIn(text)) {
+  for (const p of pathsIn(text, opts)) {
     if (out.slice(0, webs).some((w) => p.start < w.end && w.start < p.end)) continue;
     out.push({ kind: "path", start: p.start, end: p.end, path: p });
   }

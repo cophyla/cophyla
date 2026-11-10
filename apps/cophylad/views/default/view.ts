@@ -70,6 +70,8 @@ import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices, wantsEarlier } from "./model.ts";
 import { fullRel, isFullPath, pathNode } from "./model.ts";
+import { spelledPath } from "./spaced.ts";
+import type { Names, Spelled } from "./spaced.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks, tickAgentClocks } from "./render.ts";
@@ -195,9 +197,9 @@ const track = new TrackControl({
   draw: () => draw(),
   showInChat: (session, seq) => showInChat(session, seq),
 });
-const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)) });
+const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(terminalWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
-const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(dialogWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(dialogWritten(), (at) => openPath(path, at)) });
+const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(dialogWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(dialogWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(dialogWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 const viewer = new FileViewer(
   rpc,
   (t) => folderAsked(t),
@@ -233,6 +235,7 @@ function draw(opts: RenderOptions = {}): void {
   team.afterDraw();
   talks.afterDraw();
   pageBack();
+  spellSoon();
 }
 
 /** Whether the rail shows: as the user left it, else beside the pane on a desk and away on a phone. */
@@ -3067,6 +3070,106 @@ function pathAnywhere(path: string, at: WrittenIn): { from: ViewerSource; rel: s
 /** Where a path is and what reads it: in a folder the view reads (`inFolder`), else on its computer (`pathAnywhere`). None past both. */
 function pathHome(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
   return inFolder(path, at) ?? pathAnywhere(path, at);
+}
+
+// --- paths with spaces in their names ------------------------------------------------------------
+
+/** How long a folder's names are kept for the paths spelled with them. */
+const NAMES_KEEP_MS = 30_000;
+/** Folders' names by computer and folder, as read; the oldest go past this many. */
+const NAMES_MAX = 200;
+const namesRead = new Map<string, { at: number; names: Promise<Names | undefined> }>();
+/** How far each path with spaces went, by computer, path and the words after it. */
+const spelled = new Map<string, Promise<Spelled | undefined>>();
+
+/** A folder's names on a computer, its files too: read once a while, none when it cannot be. */
+function namesIn(node: string, dir: string): Promise<Names | undefined> {
+  const key = `${node}\n${dir}`;
+  const had = namesRead.get(key);
+  if (had && Date.now() - had.at < NAMES_KEEP_MS) return had.names;
+  const names = rpc.request<FolderPick>("terminal.folders", { ...(node !== state.node ? { node } : {}), path: dir, files: true }).then(
+    (r) => ({ folders: r.folders.map((f) => f.name), files: (r.files ?? []).map((f) => f.name) }),
+    () => undefined,
+  );
+  namesRead.delete(key);
+  namesRead.set(key, { at: Date.now(), names });
+  if (namesRead.size > NAMES_MAX) namesRead.delete(namesRead.keys().next().value!);
+  return names;
+}
+
+/**
+ * How far a path with spaces goes (`more` the words after it), on the computer it was written
+ * on, as that computer's names say: a full path read as a shell there would, so with `terminal`.
+ */
+function spellPath(p: PathInText, at: WrittenIn): Promise<Spelled | undefined> {
+  if (p.more === undefined || !state.scopes.includes("terminal") || !isFullPath(p.path)) return Promise.resolve(undefined);
+  const node = at === "chat" ? pathNode(state, p.path) : "session" in at ? at.session.node : at.terminal.node;
+  if (node === undefined) return Promise.resolve(undefined);
+  const key = `${node}\n${p.path}\n${p.more}`;
+  let done = spelled.get(key);
+  if (!done) {
+    const platform = state.nodes.get(node)?.platform;
+    const fold = platform === "windows" || platform === "macos" || (platform === undefined && /^[A-Za-z]:/.test(p.path));
+    done = spelledPath(p.path, p.more, (dir) => namesIn(node, dir), fold);
+    spelled.set(key, done);
+    if (spelled.size > NAMES_MAX * 4) spelled.delete(spelled.keys().next().value!);
+  }
+  return done;
+}
+
+let spelling = false;
+
+/** Once a draw has settled, the links to paths with spaces it drew are checked (`spellLinks`). */
+function spellSoon(): void {
+  if (spelling || !state.scopes.includes("terminal")) return;
+  spelling = true;
+  setTimeout(() => {
+    spelling = false;
+    spellLinks();
+  }, 0);
+}
+
+/**
+ * Each path link drawn as far as a space, with words after it that may go on with it, is checked
+ * once against its computer's names, and grows over the words that do: a link to
+ * `C:\Program` becomes one to `C:\Program Files\nodejs\node.exe`.
+ */
+function spellLinks(): void {
+  for (const link of Array.from(document.querySelectorAll<HTMLElement>(".md-path[data-more]:not([data-spelling])"))) {
+    link.dataset["spelling"] = "1";
+    const at = linkWritten(link);
+    const strict = link.dataset["path"] ?? "";
+    const more = link.dataset["more"] ?? "";
+    if (at === undefined || link.textContent !== strict) continue;
+    void spellPath({ start: 0, end: strict.length, path: strict, more }, at).then((s) => {
+      if (s && link.isConnected && link.dataset["path"] === strict) growLink(link, s.length - strict.length, more, s.folder);
+    });
+  }
+}
+
+/** A link grown over the `extra` characters of the words after it, when those still are the words it was checked with. */
+function growLink(link: HTMLElement, extra: number, more: string, folder: boolean): void {
+  const taken: { node: ChildNode; chars: number }[] = [];
+  let words = "";
+  for (let next = link.nextSibling; next && words.length < extra; next = next.nextSibling) {
+    const text = next.textContent ?? "";
+    const chars = Math.min(text.length, extra - words.length);
+    taken.push({ node: next, chars });
+    words += text.slice(0, chars);
+  }
+  if (words !== more.slice(0, extra)) return;
+  for (const { node, chars } of taken) {
+    const text = node.textContent ?? "";
+    if (chars >= text.length) node.remove();
+    else if (node.nodeType === Node.TEXT_NODE) (node as Text).data = text.slice(chars);
+    else node.replaceWith(document.createTextNode(text.slice(chars)));
+  }
+  link.append(words);
+  link.dataset["path"] = link.textContent ?? "";
+  delete link.dataset["more"];
+  delete link.dataset["plain"];
+  if (folder) link.dataset["folder"] = "1";
+  else delete link.dataset["folder"];
 }
 
 /**

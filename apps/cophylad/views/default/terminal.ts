@@ -36,6 +36,7 @@
 import type { Terminal as TerminalRow } from "@cophyla/protocol";
 import { clipboardWrite, dragAxis, dragScroll, dragSteps, flingSpeed, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, pathsIn, repeatsTracking, scaleFont, SHIFT_ENTER, stepScale } from "./model.ts";
 import type { PathInText, TerminalOutput } from "./model.ts";
+import type { Spelled } from "./spaced.ts";
 import type { FitAddon } from "./vendor/addon-fit.mjs";
 import type { Unicode11Addon } from "./vendor/addon-unicode11.mjs";
 import type { WebLinksAddon } from "./vendor/addon-web-links.mjs";
@@ -87,6 +88,8 @@ interface Finger {
 export interface FileLinks {
   canOpen(path: PathInText): boolean;
   open(path: PathInText): void;
+  /** How far a path with a space in a name goes (`more` the words after it), as its computer's names say. */
+  spell?(path: PathInText): Promise<Spelled | undefined>;
 }
 
 export interface ShowOptions {
@@ -309,7 +312,7 @@ export class TerminalView {
     term.loadAddon(new x.Unicode11Addon());
     term.unicode.activeVersion = "11";
     term.loadAddon(new x.WebLinksAddon((ev, url) => this.openLink(ev, url), { hover: () => this.hoverLink(true), leave: () => this.hoverLink(false) }));
-    if (this.files) term.registerLinkProvider({ provideLinks: (y, callback) => callback(this.fileLinks(term, y)) });
+    if (this.files) term.registerLinkProvider({ provideLinks: (y, callback) => void this.fileLinks(term, y).then(callback, () => callback(undefined)) });
     term.parser.registerCsiHandler({ prefix: "?", final: "h" }, (params) => repeatsTracking(params, term.modes.mouseTrackingMode));
     term.parser.registerOscHandler(52, (data) => {
       const text = clipboardWrite(data);
@@ -530,9 +533,9 @@ export class TerminalView {
    * The paths a row names that the view can open, as links: each at the cells its characters
    * are drawn in (a wide character takes two), opened at Ctrl or ⌘+click, or a tap where there
    * is no mouse, a file in the viewer and a folder in Files. A path a wrapped row splits in two
-   * is not found.
+   * is not found. One with a space in a name goes as far as its computer's names say it does.
    */
-  private fileLinks(term: XTerm, y: number): ILink[] | undefined {
+  private async fileLinks(term: XTerm, y: number): Promise<ILink[] | undefined> {
     const files = this.files;
     const row = term.buffer.active.getLine(y - 1);
     if (!files || !row) return undefined;
@@ -546,7 +549,10 @@ export class TerminalView {
       text += chars;
     }
     const links: ILink[] = [];
-    for (const p of pathsIn(text)) {
+    for (const found of pathsIn(text)) {
+      const s = found.more !== undefined && files.spell ? await files.spell(found).catch(() => undefined) : undefined;
+      const end = s ? Math.min(found.start + s.length, text.length) : found.end;
+      const p: PathInText = s ? { start: found.start, end, path: text.slice(found.start, end), ...(s.folder ? { folder: true as const } : {}) } : found;
       if (!files.canOpen(p)) continue;
       links.push({
         range: { start: { x: cols[p.start]! + 1, y }, end: { x: cols[p.end - 1]! + 1, y } },

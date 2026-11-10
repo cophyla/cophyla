@@ -10,7 +10,10 @@
 // address anywhere in the words, a code span's and a code block's too (`data-action` "link"),
 // in the browser; a path, written in the words (`src/app.ts:12`, `C:\repo\x.ts`) or as where a
 // link goes (`[app.ts](src/app.ts#L12)`), is a `.md-path` (`data-action` "path") the view opens
-// in its file viewer, or in Files for a folder, when it can place it in an agent's folder.
+// in its file viewer, or in Files for a folder, when it can place it in an agent's folder. A
+// path with a space in a name is one whole between quotes and as all of a code span's words;
+// elsewhere it is a link as far as the space, with the words after it (`data-more`), which the
+// view checks against the names on the path's computer (spaced.ts) and grows the link over.
 // Text shown as typed gets the same links (`setLinkedText` for the view's other text). An image
 // is its alt text, its title and address in its tooltip:
 // the frame has no network. A file's markdown may be given a hook that draws an image itself
@@ -48,8 +51,8 @@ let fileLinks = false;
 let inLink = false;
 
 
-/** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill, and its links made links. */
-function withSlots(parent: HTMLElement, text: string): void {
+/** A string as text, with each slot marker in it an empty `span.slot` for the caller to fill, and its links made links; `whole`: a code span's words, which a path with spaces may be all of. */
+function withSlots(parent: HTMLElement, text: string, whole = false): void {
   let at = 0;
   for (const m of text.matchAll(SLOT)) {
     if (m.index > at) withLinks(parent, text.slice(at, m.index));
@@ -58,20 +61,20 @@ function withSlots(parent: HTMLElement, text: string): void {
     parent.append(span);
     at = m.index + m[0].length;
   }
-  if (at < text.length) withLinks(parent, at === 0 ? text : text.slice(at));
+  if (at < text.length) withLinks(parent, at === 0 ? text : text.slice(at), at === 0 && whole);
 }
 
 /** Past this many characters a text is shown with no links found in it: an output that long is read, not clicked through. */
 const LINKED_MAX = 200_000;
 
 /** A string as text, each web address in it a link and each path a `.md-path`; a file's text as it is, its own links being the viewer's to follow. */
-function withLinks(parent: HTMLElement, text: string): void {
+function withLinks(parent: HTMLElement, text: string, whole = false): void {
   if (fileLinks || inLink || text.length > LINKED_MAX) {
     parent.append(text);
     return;
   }
   let at = 0;
-  for (const l of linksIn(text)) {
+  for (const l of linksIn(text, { whole })) {
     if (l.start > at) parent.append(text.slice(at, l.start));
     const words = text.slice(l.start, l.end);
     parent.append(l.kind === "web" ? webLink(el("a", "md-link", words), l.url) : pathLink(el("span", undefined, words), l.path));
@@ -100,6 +103,8 @@ function pathLink(node: HTMLElement, p: PathInText, linked = false): HTMLElement
   if (p.folder) node.dataset["folder"] = "1";
   if (p.plain) node.dataset["plain"] = "1";
   if (linked) node.dataset["linked"] = "1";
+  // The words after it that may go on with it, a name of it having a space: the view checks them.
+  if (p.more !== undefined) node.dataset["more"] = p.more;
   return node;
 }
 
@@ -147,7 +152,7 @@ function inline(parent: HTMLElement, tokens: Token[]): HTMLElement {
         break;
       case "codespan": {
         const code = el("code");
-        withSlots(code, t.text);
+        withSlots(code, t.text, true);
         parent.append(code);
         break;
       }
