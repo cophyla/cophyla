@@ -347,6 +347,12 @@ export const requestFilters = {
   "talk.list": { names: "global" },
   "talk.messages": { names: "global" },
   "talk.read": { names: "global" },
+  // an ask is about its session: limited access lists the ones of the sessions it reaches, and changes none
+  "tracked.list": { names: "open", result: (r, keep) => ({ ...r, tracked: r.tracked.filter((t) => keep({ session: t.session })) }) },
+  "tracked.dismiss": { names: "global" },
+  "tracked.mark": { names: "global" },
+  "tracker.get": { names: "global" },
+  "tracker.set": { names: "global" },
   "focus.list": { names: "global" },
   "focus.end": { names: "global" },
   // a leader speaks as the user to sessions anywhere: the whole account's
@@ -440,6 +446,8 @@ export const notificationFilters = {
   "group.posted": "global",
   "talk.said": "global",
   "talk.state": "global",
+  "tracked.state": (p) => ({ session: p.session }),
+  "tracker.state": "global",
   "focus.state": "global",
   "lead.state": "global",
   "teammate.state": "global",

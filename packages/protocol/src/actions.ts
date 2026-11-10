@@ -226,6 +226,11 @@ export const actions = {
   "talk.list": { risk: "read" },
   "talk.messages": { risk: "read" },
   "talk.read": { risk: "read" },
+  "tracked.list": { risk: "read" },
+  "tracked.dismiss": { risk: "write" },
+  "tracked.mark": { risk: "write" },
+  "tracker.get": { risk: "read" },
+  "tracker.set": { risk: "write" },
   // An agent's focus: taken or ended by the agent (`agent.focus`), ended by the user (`focus.end`).
   "focus.list": { risk: "read" },
   "focus.end": { risk: "write" },

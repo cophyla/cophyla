@@ -56,6 +56,9 @@ import {
   UsageReport,
   TalkMessage,
   TalkSummary,
+  Tracked,
+  TrackedStatus,
+  TrackerState,
   Task,
   Teammate,
   TeammateShare,
@@ -76,7 +79,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { DialogKey, DialogView } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TrackedId, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
@@ -1349,6 +1352,27 @@ export const clientRequests = {
   },
   /** The user has read a session's conversation up to message number `upTo`. */
   "talk.read": { params: z.object({ session: SessionId, upTo: z.number().int().nonnegative() }), result: Empty },
+  /** The asks the tracker follows that are not dismissed: one session's, or every session's without `session`, oldest first. */
+  "tracked.list": { params: z.object({ session: SessionId.optional() }), result: z.object({ tracked: z.array(Tracked) }) },
+  /** Dismisses asks: each goes from every list, told once more as `dismissed`. An id already gone is passed over. */
+  "tracked.dismiss": { params: z.object({ ids: z.array(TrackedId).min(1).max(200) }), result: Empty },
+  /** Sets where an ask stands by hand: the judging leaves it there from then on. */
+  "tracked.mark": { params: z.object({ id: TrackedId, status: TrackedStatus }), result: z.object({ tracked: Tracked }) },
+  /** The tracker's settings and how its judging goes. */
+  "tracker.get": { params: Empty, result: TrackerState },
+  /**
+   * Changes the tracker's settings: on for every session or none (`on`), one session's own
+   * switch (`session`, `on: null` to follow `on` again), the account it judges with (`profile`,
+   * `null` for the usual one). Answers the settings as they are now.
+   */
+  "tracker.set": {
+    params: z.object({
+      on: z.boolean().optional(),
+      session: z.object({ id: SessionId, on: z.boolean().nullable() }).optional(),
+      profile: ProfileId.nullable().optional(),
+    }),
+    result: TrackerState,
+  },
   /** The agents in focus now, on every machine, with until when and why. */
   "focus.list": { params: Empty, result: z.object({ focus: z.array(z.object({ session: SessionId, focus: Focus })) }) },
   /** Ends an agent's focus: what was held for it reaches it now. */
@@ -1762,6 +1786,10 @@ export const clientNotifications = {
   "talk.said": z.object({ message: TalkMessage }),
   /** A session's conversation at a glance, whenever a message comes or the user reads it. */
   "talk.state": TalkSummary,
+  /** An ask the tracker follows, when it is made, answered, marked or renamed, and once more when it is dismissed (`dismissed`, the last word about it). */
+  "tracked.state": Tracked,
+  /** The tracker's settings and health, whenever either changes. */
+  "tracker.state": TrackerState,
   /** An agent took focus, or came out of it (no `focus`). */
   "focus.state": z.object({ session: SessionId, focus: Focus.optional() }),
   /** The leaders, every one, whenever one is made, changes or goes. */

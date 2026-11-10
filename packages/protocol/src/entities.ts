@@ -25,6 +25,7 @@ import {
   TeammateId,
   ThreadId,
   Timestamp,
+  TrackedId,
   TransferId,
   WorkspaceId,
 } from "./ids.ts";
@@ -1065,6 +1066,74 @@ export const TalkSummary = z.object({
   lastAt: Timestamp.optional(),
 });
 export type TalkSummary = z.infer<typeof TalkSummary>;
+
+// ---------------------------------------------------------------------------------------
+// Tracker
+
+/**
+ * Where something the user asked an agent stands: `open` while nothing the agent said answers
+ * it, `partial` once something answers part of it, `answered` once it is answered whole.
+ */
+export const TrackedStatus = z.enum(["open", "partial", "answered"]);
+export type TrackedStatus = z.infer<typeof TrackedStatus>;
+
+/** A message of the agent's that answers a tracked ask, in part or whole: its event in the session, by seq. */
+export const TrackedAnswer = z.object({
+  seq: z.number().int().nonnegative(),
+  at: Timestamp,
+  status: z.enum(["partial", "answered"]),
+});
+export type TrackedAnswer = z.infer<typeof TrackedAnswer>;
+
+/** The most answers a tracked ask lists: the first that answered it, as they came. */
+export const TRACKED_ANSWERS_MAX = 12;
+/** The longest a tracked ask's line may be. */
+export const TRACKED_TITLE_MAX = 160;
+
+/**
+ * Something the user asked an agent, as the tracker follows it (the app calls it an ask): the
+ * session and the user's turn it was asked in (`seq`), what was asked in a line, where it
+ * stands, and the agent's messages that answer it. `marked` when the user set where it stands
+ * by hand, which the judging then leaves; `dismissed` is the last word about it.
+ */
+export const Tracked = z.object({
+  id: TrackedId,
+  session: SessionId,
+  seq: z.number().int().nonnegative(),
+  title: z.string().min(1).max(TRACKED_TITLE_MAX),
+  status: TrackedStatus,
+  marked: z.boolean().optional(),
+  answers: z.array(TrackedAnswer).max(TRACKED_ANSWERS_MAX),
+  dismissed: z.boolean().optional(),
+  createdAt: Timestamp,
+  updatedAt: Timestamp,
+});
+export type Tracked = z.infer<typeof Tracked>;
+
+/**
+ * Whether the tracker can judge now: `ok`, `limited` while the account it judges with is at a
+ * usage limit, `unavailable` when no judge runs (no signed-in Claude account, or it fails), with
+ * a line for the user.
+ */
+export const TrackerHealth = z.object({
+  state: z.enum(["ok", "limited", "unavailable"]),
+  detail: z.string().max(300).optional(),
+  at: Timestamp,
+});
+export type TrackerHealth = z.infer<typeof TrackerHealth>;
+
+/**
+ * The tracker as the user set it: on for every session or for none (`on`), each session's own
+ * switch over that (`sessions`, by id: true on, false off), and the Claude account it judges
+ * with (`profile`; the usual one when absent). `health` says how the judging goes.
+ */
+export const TrackerState = z.object({
+  on: z.boolean(),
+  sessions: z.record(z.string(), z.boolean()),
+  profile: ProfileId.optional(),
+  health: TrackerHealth.optional(),
+});
+export type TrackerState = z.infer<typeof TrackerState>;
 
 // ---------------------------------------------------------------------------------------
 // Transfer

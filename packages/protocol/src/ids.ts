@@ -43,6 +43,8 @@ export const ID_PREFIXES = {
   peerFile: "pfile",
   /** Bytes an app hands its node a piece at a time, for a photo or a file it posts. */
   upload: "upl",
+  /** Something the user asked an agent, which the tracker follows until it is answered. */
+  tracked: "trk",
 } as const;
 
 export type IdKind = keyof typeof ID_PREFIXES;
@@ -140,6 +142,7 @@ export const GroupPhotoId = idSchema("groupPhoto");
 export const GroupFileId = idSchema("groupFile");
 export const PeerFileId = idSchema("peerFile");
 export const UploadId = idSchema("upload");
+export const TrackedId = idSchema("tracked");
 
 export type NodeId = z.infer<typeof NodeId>;
 export type WorkspaceId = z.infer<typeof WorkspaceId>;
@@ -168,6 +171,7 @@ export type GroupPhotoId = z.infer<typeof GroupPhotoId>;
 export type GroupFileId = z.infer<typeof GroupFileId>;
 export type PeerFileId = z.infer<typeof PeerFileId>;
 export type UploadId = z.infer<typeof UploadId>;
+export type TrackedId = z.infer<typeof TrackedId>;
 
 /** Epoch milliseconds. Every time in every protocol is one of these. */
 export const Timestamp = z.number().int().nonnegative().describe("epoch milliseconds");
