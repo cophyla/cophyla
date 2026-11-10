@@ -127,7 +127,12 @@
     },
     "session.reveal": { "params": [{ "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "apps/cophylad/src/main.ts" }, { "id": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "path": "" }], "results": [{}] },
     "terminal.file": {
-      "params": [{ "terminal": "0c9e41b27a53", "path": "notes/todo.md" }, { "terminal": "0c9e41b27a53", "path": "shot.png", "image": true }],
+      "params": [
+        { "terminal": "0c9e41b27a53", "path": "notes/todo.md" },
+        { "terminal": "0c9e41b27a53", "path": "shot.png", "image": true },
+        { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "C:/Users/me/Downloads/shot.png", "whole": true },
+        { "path": "~/notes.md" }
+      ],
       "results": [{ "path": "notes/todo.md", "size": 12, "modified": 1758196000000, "text": "- ship it\n" }]
     },
     "terminal.list": { "params": [{}], "results": [{ "terminals": [] }, { "terminals": [{ "id": "5f2a9c01d4e7", "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAV", "host": "a1b2c3d4e5f60718", "argv0": "claude.exe", "cwd": "C:\\D\\orchestrator", "pid": 41232, "cols": 120, "rows": 32, "title": "\u2733 Fix the gate tests", "status": "running", "session": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3", "windows": 1, "startedAt": 1758196000000 }] }] },
@@ -141,9 +146,10 @@
     },
     "terminal.close": { "params": [{ "terminal": "5f2a9c01d4e7" }, { "terminal": "0c9e41b27a53", "end": true }], "results": [{}] },
     "terminal.folders": {
-      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "D:\\" }],
+      "params": [{}, { "node": "node_01ARZ3NDEKTSV4RRFFQ69G5FAW", "path": "D:\\" }, { "path": "C:\\Users\\me\\Pictures", "files": true }],
       "results": [
         { "path": "C:\\Users\\me", "parent": "C:\\Users", "folders": [{ "name": "Documents", "path": "C:\\Users\\me\\Documents" }, { "name": "src", "path": "C:\\Users\\me\\src" }], "home": "C:\\Users\\me", "roots": ["C:\\", "D:\\"] },
+        { "path": "C:\\Users\\me\\Pictures", "parent": "C:\\Users\\me", "folders": [], "files": [{ "name": "shot.png", "path": "C:\\Users\\me\\Pictures\\shot.png", "size": 48213 }], "home": "C:\\Users\\me", "roots": ["C:\\"] },
         { "path": "/", "folders": [{ "name": "home", "path": "/home" }], "truncated": true, "home": "/home/me", "roots": ["/"] }
       ]
     },

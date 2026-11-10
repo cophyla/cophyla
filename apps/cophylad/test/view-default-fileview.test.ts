@@ -85,6 +85,12 @@ describe("view default file viewer", () => {
     expect(found("https://github.com/cophyla/cophyla/blob/master/README.md")).toEqual([]);
     expect(found("http://localhost:4931/x/y and git@github.com:cophyla/cophyla")).toEqual([]);
     expect(found("/etc/nginx/nginx.conf")).toEqual([["/etc/nginx/nginx.conf", "/etc/nginx/nginx.conf", undefined]]);
+    // Under the user's home, the `~` and all: never a path from the root.
+    expect(found("saved to ~/Downloads/shot.png and ~\\Desktop\\notes.md")).toEqual([
+      ["~/Downloads/shot.png", "~/Downloads/shot.png", undefined],
+      ["~\\Desktop\\notes.md", "~\\Desktop\\notes.md", undefined],
+    ]);
+    expect(found("~/")).toEqual([]);
   });
 
   test("a path with no extension counts once a separator is in it: a folder where one ends it, plain otherwise", () => {
@@ -177,6 +183,8 @@ describe("view default file viewer", () => {
     expect(relativeFile("src/../../x.ts")).toBeUndefined();
     expect(relativeFile("C:\\repo\\x.ts")).toBeUndefined();
     expect(relativeFile("/etc/hosts")).toBeUndefined();
+    expect(relativeFile("~/Downloads/x.png")).toBeUndefined();
+    expect(relativeFile("~")).toBeUndefined();
     expect(relativeFile("src//x.ts")).toBeUndefined();
   });
 

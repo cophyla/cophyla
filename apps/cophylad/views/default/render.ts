@@ -573,7 +573,10 @@ function updateAsk(node: HTMLElement, ask: Ask, state: ViewState): void {
   setData(node, "status", ask.status);
   setData(node, "type", ask.type);
   setData(node, "multiple", ask.multiple ? "1" : "0");
-  setText(node.querySelector(".ask-title")!, ask.title);
+  // An agent's ask: the paths in its words are that agent's, wherever the ask shows.
+  if (ask.source.kind === "harness") setData(node, "asker", ask.source.session);
+  else delete node.dataset["asker"];
+  setLinkedText(node.querySelector<HTMLElement>(".ask-title")!, ask.title);
   const source = node.querySelector<HTMLElement>(".ask-source")!;
   setText(source, askSource(ask, state));
   // The session that asks, a press away; one only its terminal answers opens on the terminal, where the view can show it.
@@ -583,8 +586,9 @@ function updateAsk(node: HTMLElement, ask: Ask, state: ViewState): void {
   updateSessionChip(chip, source, card, inTerminal ? "Answer it in its terminal" : "Open its tab");
   if (inTerminal) setData(chip, "mode", "terminal");
   else delete chip.dataset["mode"];
+  // The tool's input or the question's words, its paths links as in a message.
   const detail = node.querySelector<HTMLElement>(".ask-detail")!;
-  setText(detail, ask.detail ?? "");
+  setLinkedText(detail, ask.detail ?? "");
   setHidden(detail, !ask.detail);
 
   const answerable = ask.status === "open" && ask.answerableBy.includes("user") && state.connected;
@@ -3671,7 +3675,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       }
       setData(li, "status", ask.status);
       setData(li, "type", ask.type);
-      setText(title, ask.title);
+      setLinkedText(title, ask.title);
       setLinkedText(detail, ask.detail ?? "");
       setHidden(detail, !ask.detail);
       // Open, its options are the card's to press, above the send box; settled, they are what was picked.

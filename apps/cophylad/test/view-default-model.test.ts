@@ -20,6 +20,7 @@ import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as
 import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, TIMELINE_KEEP, TIMELINE_SLACK, trimTimeline, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
+import { folderMeta, fullRel, isFullPath, pathNode } from "../views/default/model.ts";
 import { agentFacts, agentState, backgroundWords, callArgs, dockAsks, elapsedWords, shortModel, stepDiff, stepInput, stepWords, subagentOf, taskNotice, timelinePosts } from "../views/default/model.ts";
 import { agentEndWords, agentKind, agentsAtWork, agentsGroupWords, agentWindow, compactTokens, contextWords, workingAgents } from "../views/default/model.ts";
 import { keptChoices } from "../views/default/model.ts";
@@ -3371,6 +3372,56 @@ describe("default view: the explorer", () => {
     blind.scopes = ["chat"];
     apply(blind, { type: "session.state", params: session("sess_repo", 1, { cwd: "C:\\D\\site" }) });
     expect(sourceRoot(blind, { session: "sess_repo" })).toBeUndefined();
+  });
+
+  test("a file no folder the view reads holds is read through its computer by its full path, with the terminal's scope alone", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_repo", 1, { cwd: "C:\\D\\site" }) });
+    expect(sourceRoot(s, { node: NODE })).toBeUndefined();
+    s.scopes = [...s.scopes, "terminal"];
+    expect(sourceRoot(s, { node: NODE })).toBe("");
+    expect(viewedPath(s, { node: NODE }, "C:/Users/me/Downloads/shot.png")).toEqual({ node: NODE, path: "C:\\Users\\me\\Downloads\\shot.png" });
+    expect(viewedPath(s, { node: NODE }, "/home/me/shot.png")).toEqual({ node: NODE, path: "/home/me/shot.png" });
+    // One that is in an agent's folder after all shows in its Files as such.
+    const repo = s.sessions.get("sess_repo")!.session;
+    expect(viewingKey(s, repo, { from: { node: NODE }, rel: "C:/D/site/src/a.ts", opened: 1 })).toBe(placeKey("C:\\D\\site\\src\\a.ts", "windows"));
+    expect(joinPath("", "C:/Users/me")).toBe("C:\\Users\\me");
+    expect(joinPath("", "~/Downloads")).toBe("~/Downloads");
+  });
+
+  test("a full path, as the viewer keeps one, and the computer it is on when the words do not say", () => {
+    for (const full of ["C:\\Users\\me\\x.png", "c:/x", "/home/me/x", "/", "~/Downloads/x.png", "~"]) expect(isFullPath(full)).toBe(true);
+    for (const relative of ["src/x.ts", "./x", "../x", "x.png", "~user/x", "C:x"]) expect(isFullPath(relative)).toBe(false);
+    expect(fullRel("C:\\Users\\me\\Pictures\\")).toBe("C:/Users/me/Pictures");
+    expect(fullRel("C:\\")).toBe("C:/");
+    expect(fullRel("/")).toBe("/");
+    expect(fullRel("/home/me/")).toBe("/home/me");
+    const s = ready();
+    const MAC = "node_01ARZ3NDEKTSV4RRFFQ69G5FAM";
+    const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAL";
+    const machine = (id: string, name: string, platform: "windows" | "macos") => ({ id, name, role: "secondary" as const, status: "online" as const, via: "direct" as const, platform, scope: { kind: "machine" as const }, capabilities: { brain: false, harnesses: ["claude" as const], voice: { wake: false, stt: false, tts: false }, remote: false }, versions: { platform: "0.3.0", protocol: 1 }, lastSeen: 1 });
+    apply(s, { type: "nodes", nodes: [machine(NODE, "desk", "windows"), machine(MAC, "mac", "macos"), machine(LAPTOP, "laptop", "windows")] });
+    // This view's own computer when its paths are spelled that way, else the first that spells them so.
+    expect(pathNode(s, "C:\\Users\\me\\x.png")).toBe(NODE);
+    expect(pathNode(s, "/Users/me/x.png")).toBe(MAC);
+    // The computer the words came from first, when it fits; under `~`, and Git Bash's drive, anyone's.
+    expect(pathNode(s, "C:\\x.png", LAPTOP)).toBe(LAPTOP);
+    expect(pathNode(s, "C:\\x.png", MAC)).toBe(NODE);
+    expect(pathNode(s, "~/x.png", MAC)).toBe(MAC);
+    expect(pathNode(s, "/c/Users/me/x.png")).toBe(NODE);
+    // None spells it so: no computer.
+    const windowsOnly = ready();
+    apply(windowsOnly, { type: "nodes", nodes: [machine(NODE, "desk", "windows")] });
+    expect(pathNode(windowsOnly, "/Users/me/x.png")).toBeUndefined();
+  });
+
+  test("what the viewer's head says of a computer's folder it shows", () => {
+    const listing = { path: "C:\\x", folders: [{ name: "a", path: "C:\\x\\a" }], files: [{ name: "b.txt", path: "C:\\x\\b.txt", size: 3 }, { name: "c.txt", path: "C:\\x\\c.txt", size: 4 }], home: "C:\\Users\\me", roots: ["C:\\"] };
+    expect(folderMeta(listing)).toBe("Folder · 1 folder · 2 files");
+    expect(folderMeta({ ...listing, folders: [], truncated: true })).toBe("Folder · 0 folders · 2 files · the first shown");
+    // A computer too old to list files says so.
+    const { files: _files, ...old } = listing;
+    expect(folderMeta(old)).toBe("Folder · 1 folder · files not listed: update Cophyla there");
   });
 
   test("the Files menu names the computer's file manager, and only the desktop app on the session's computer may use it", () => {

@@ -2456,7 +2456,7 @@ button:disabled {
   text-decoration-color: currentColor;
 }
 
-/* A link to a path no agent's folder holds names it only. */
+/* A link to a path the view cannot open names it only. */
 .md-link[data-open="0"] {
   cursor: auto;
 }
@@ -7648,6 +7648,11 @@ button:disabled {
   --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M3.5 1.5h6l3 3v10h-9z'/%3E%3Cpath d='M9.5 1.5v3h3'/%3E%3C/svg%3E");
 }
 
+/* A folder shown as what it holds is marked as the Files panel marks one. */
+.viewer[data-kind="folder"] .viewer-mark {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M1.5 3.5h4.2l1.5 1.5h7.3v8.5h-13z'/%3E%3C/svg%3E");
+}
+
 .viewer-title {
   display: flex;
   flex: 0 1 auto;
@@ -8076,6 +8081,85 @@ button:disabled {
 
 .viewer-body:focus-visible {
   box-shadow: inset 0 0 0 1px var(--cophyla);
+}
+
+/* A computer's folder no agent works in, as what it holds: the folder above, its folders, its
+   files with their sizes, a row each, marked as the Files panel marks them. */
+.viewer-list {
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+}
+
+.viewer-entry {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 3px;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.viewer-entry:hover {
+  background: var(--raised);
+}
+
+.viewer-entry:focus-visible {
+  outline: 0;
+  border-color: var(--cophyla);
+}
+
+.viewer-entry-mark {
+  flex: 0 0 16px;
+  width: 16px;
+  height: 16px;
+  background-color: var(--faint);
+  -webkit-mask: var(--glyph) center / 14px no-repeat;
+  mask: var(--glyph) center / 14px no-repeat;
+}
+
+.viewer-entry[data-kind="file"] .viewer-entry-mark {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M3.5 1.5h6l3 3v10h-9z'/%3E%3Cpath d='M9.5 1.5v3h3'/%3E%3C/svg%3E");
+}
+
+.viewer-entry[data-kind="dir"] .viewer-entry-mark,
+.viewer-entry[data-kind="up"] .viewer-entry-mark {
+  --glyph: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.2' stroke-linejoin='round'%3E%3Cpath d='M1.5 3.5h4.2l1.5 1.5h7.3v8.5h-13z'/%3E%3C/svg%3E");
+  background-color: var(--cophyla-ink);
+  opacity: 0.75;
+}
+
+.viewer-entry[data-kind="up"] {
+  color: var(--muted);
+}
+
+.viewer-entry-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.viewer-entry-size {
+  flex: 0 0 auto;
+  color: var(--faint);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.viewer-list-empty {
+  margin: 8px;
+  color: var(--faint);
+  font-size: 12.5px;
+  font-style: italic;
 }
 
 /* A line's height is fixed, so a chunk laid out later takes its room before it is: the scroll

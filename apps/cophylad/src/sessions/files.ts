@@ -13,6 +13,8 @@
 // page loads): a TIFF or a HEIC image as the PNG the computer's own codecs make of it
 // (convert.ts), kept a while so every piece is of the same PNG. A folder, a pipe or a device is
 // refused before anything opens it, so a read never waits on a writer. The folder a bare terminal started in is read the same way.
+// So is a file anywhere on the computer, by its full path (`readAt`), for a path an agent named
+// outside every agent's folder: never a network share's or a device's, so it reaches no other computer.
 // A file or a folder under the directory is shown in the computer's own file manager by the
 // same rule (`reveal`, reveal.ts).
 // On a Mac without the developer tools `/usr/bin/git` is Apple's stub, which opens the tools'
@@ -23,12 +25,13 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { Stats } from "node:fs";
 import { open, readdir, realpath, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { join, posix, win32 } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { ClientResult, FileEntry, FileText, FolderListing, GitCommit, GitState, Session } from "@cophyla/protocol";
 import { ConvertError, convertKind, systemConverter } from "./convert.ts";
 import type { ImageConverter } from "./convert.ts";
-import { isWithin } from "./paths.ts";
+import { drivePath, isWithin } from "./paths.ts";
 import type { Revealer } from "./reveal.ts";
 
 /** Entries listed per folder; the rest are left out, and the listing says so. */
@@ -129,6 +132,8 @@ export interface SessionFilesDeps {
   /** Bytes of an image sent whole; IMAGE_MAX unless a test says. */
   imageMax?: number;
   platform?: string;
+  /** The user's home, which `~` names; the daemon's own unless a test says. */
+  home?: string;
   /** Shows a path in this computer's file manager; none where the daemon may open no window (a test). */
   revealer?: Revealer;
   /** Makes a TIFF or a HEIC a PNG; the computer's own codecs unless a test says. */
@@ -411,6 +416,43 @@ export class SessionFiles {
     if (!parts || parts.length === 0) throw new RpcError("invalid", `${path}: not a file under the folder`);
     const { real: target, kind, info } = await this.resolveUnder(root, path);
     if (kind === "dir") throw new RpcError("invalid", `${path}: a folder`);
+    return this.readTarget(path, target, info, opts);
+  }
+
+  /**
+   * A file anywhere on this computer, by its full path as this computer spells one, or under
+   * the user's home with `~`, read as `readUnder` reads one: for a path an agent named outside
+   * every agent's folder. A network share's path (`\\server\share`) and a device's are refused,
+   * so opening one never reaches another computer; a link may lead anywhere on this one.
+   */
+  async readAt(path: string, opts: ReadOptions = {}): Promise<FileText> {
+    const asked = this.fullPath(path);
+    let target: string;
+    let info: Stats;
+    try {
+      target = await realpath(asked);
+      info = await stat(target);
+    } catch (e) {
+      throw readError(path, e);
+    }
+    if (info.isDirectory()) throw new RpcError("invalid", `${path}: a folder`);
+    if (!info.isFile()) throw new RpcError("invalid", `${path}: not a file`);
+    return this.readTarget(path, target, info, opts);
+  }
+
+  /** A path as this computer spells a full one, `~` the user's home and `..` taken out; anything else, a share's or a device's path among them, is refused. */
+  private fullPath(path: string): string {
+    const platform = this.deps.platform ?? process.platform;
+    const p = platform === "win32" ? win32 : posix;
+    const home = this.deps.home ?? homedir();
+    const asked = path === "~" ? home : /^~[\\/]/.test(path) ? p.join(home, path.slice(2)) : drivePath(path, platform);
+    const full = platform === "win32" ? /^[A-Za-z]:[\\/]/.test(asked) : asked.startsWith("/");
+    if (!full || asked.includes("\0")) throw new RpcError("invalid", `${path}: not a full path on this computer`);
+    return p.normalize(asked);
+  }
+
+  /** A file found, by its real path and stat, as a viewer gets it: `path` is how it was asked for. */
+  private async readTarget(path: string, target: string, info: Stats, opts: ReadOptions): Promise<FileText> {
     if (opts.whole) return this.readWhole(path, target, info, opts.at ?? 0);
     try {
       const mime = opts.image ? imageMime(path) : undefined;

@@ -510,12 +510,15 @@ export type FolderListing = z.infer<typeof FolderListing>;
  * A folder of a node as `terminal.folders` lists it, for picking where a terminal starts: its
  * path as the node resolved it, its parent's (none at a root), the folders in it by name and
  * path (a link to one too, hidden ones left out), cut short where `truncated` says, the user's
- * home, and the roots to start from: a Windows computer's drives, `/` anywhere else.
+ * home, and the roots to start from: a Windows computer's drives, `/` anywhere else. Asked for
+ * them (`files`), its files too, the same way, with their sizes: for a viewer showing a folder
+ * no agent works in.
  */
 export const FolderPick = z.object({
   path: z.string(),
   parent: z.string().optional(),
   folders: z.array(z.object({ name: z.string().min(1), path: z.string() })),
+  files: z.array(z.object({ name: z.string().min(1), path: z.string(), size: z.number().int().nonnegative() })).optional(),
   truncated: z.literal(true).optional(),
   home: z.string(),
   roots: z.array(z.string()),
@@ -779,10 +782,10 @@ export const clientRequests = {
   },
   /**
    * The folders in one folder of `node` (this node without it), for picking where a terminal
-   * starts: `path` (the user's home without it) as that computer resolves it. The terminal's
-   * scope, since a shell started there reaches as far.
+   * starts: `path` (the user's home without it) as that computer resolves it; its files too
+   * with `files`. The terminal's scope, since a shell started there reaches as far.
    */
-  "terminal.folders": { params: z.object({ node: NodeId.optional(), path: z.string().min(1).max(4096).optional() }), result: FolderPick },
+  "terminal.folders": { params: z.object({ node: NodeId.optional(), path: z.string().min(1).max(4096).optional(), files: z.literal(true).optional() }), result: FolderPick },
   /**
    * Opens a terminal's screen for this client: the repaint (`data`, with the scrollback) and
    * the output position it stands at. Its output follows as `terminal.output`, to this client
@@ -799,9 +802,12 @@ export const clientRequests = {
   /**
    * A file under the folder a terminal started in, as `session.file` reads one under a
    * session's: for the viewer of a bare terminal's tab. The terminal's scope, since that folder
-   * is often the user's home, where a session's reader has no business.
+   * is often the user's home, where a session's reader has no business. With no terminal, a
+   * file anywhere on `node` (this node without it), by its full path as that computer spells
+   * one, or under the user's home with `~`: one an agent named outside any agent's folder. The
+   * same scope covers it, since a shell there reads as far.
    */
-  "terminal.file": { params: z.object({ terminal: z.string(), ...FileAsk }), result: FileText },
+  "terminal.file": { params: z.object({ terminal: z.string().optional(), node: NodeId.optional(), ...FileAsk }), result: FileText },
   "ask.answer": {
     params: z.object({
       id: AskId,

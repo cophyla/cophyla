@@ -57,3 +57,10 @@ export function isWithin(path: string, dir: string, platform?: string): boolean 
 export function plainPath(p: string): string {
   return p.replace(/^\\\\\?\\/, "");
 }
+
+/** A drive's path as Git Bash writes it on Windows (`/c/Users/x`) as Windows spells it (`C:\Users\x`); any other path, and any on another platform, as it is. */
+export function drivePath(p: string, platform: string = process.platform): string {
+  if (platform !== "win32") return p;
+  const m = /^\/([A-Za-z])(?:\/(.*))?$/.exec(p);
+  return m ? `${m[1]!.toUpperCase()}:\\${(m[2] ?? "").replace(/\//g, "\\")}` : p;
+}

@@ -209,13 +209,13 @@ export interface ServeDeps {
   /** Agent messaging's switch here, for `agents.accept`. */
   agents?: () => Pick<AgentMessages, "setAccept"> | undefined;
   /** This node's sessions' folders, repositories and files, for `session.files`, `session.git` and `session.file`. */
-  files?: Pick<SessionFiles, "list" | "git" | "read">;
+  files?: Pick<SessionFiles, "list" | "git" | "read"> & Partial<Pick<SessionFiles, "readAt">>;
   /** This node's terminals, once built; none on a workspace node. */
   terminals?: () => NodeTerminals | undefined;
   /** The transfers this node receives, once built. */
   transfers?: () => Transfers | undefined;
-  /** This computer's folders, for a picker on the primary's clients: Send to…'s needs no terminal here. */
-  folders?: (path: string | undefined) => Promise<FolderPick>;
+  /** This computer's folders, for a picker on the primary's clients: Send to…'s needs no terminal here; with their files for a viewer. */
+  folders?: (path: string | undefined, opts?: { files?: boolean }) => Promise<FolderPick>;
   /** The folders this node shares with its primary, when its owner named some. */
   confine?: () => Confinement | undefined;
   /** This node answers the asks raised on it itself: the primary answers none. */
@@ -625,16 +625,21 @@ export class NodeServer {
    * This node's terminals, for the primary's clients, gated here as their own requests are:
    * starting one is `exec`, and so is opening one to type into it or ending it. A terminal
    * is opened and closed for the client the primary names, whose viewer is `link:<client>`.
+   * A file read with no terminal is one anywhere on this computer, which, like a folder listed
+   * for a picker, needs no terminal here, only a machine that shares more than some folders.
    */
   private async serveTerminals(method: (typeof NODE_SERVED_TERMINALS)[number], params: unknown): Promise<unknown> {
     const t = this.deps.terminals?.();
-    // a folder listed for a picker needs no terminal here, only a machine that shares more than some folders
-    const folders = method === "terminal.folders" && !t && this.deps.folders && this.confined() === undefined ? this.deps.folders : undefined;
-    const refused = folders ? undefined : terminalsRefused(t, this.confined() !== undefined);
+    const unconfined = this.confined() === undefined;
+    const folders = method === "terminal.folders" && !t && this.deps.folders && unconfined ? this.deps.folders : undefined;
+    const anywhere = method === "terminal.file" && (params as { terminal?: unknown } | undefined)?.terminal === undefined;
+    const own = t?.files ?? this.deps.files;
+    const reader = anywhere && unconfined && own?.readAt ? (path: string, opts: Parameters<SessionFiles["readAt"]>[1]) => own.readAt!(path, opts) : undefined;
+    const refused = folders || reader ? undefined : anywhere && unconfined ? new RpcError("unsupported", "this node reads no files") : terminalsRefused(t, !unconfined);
     if (refused) throw refused;
     const parsed = clientRequests[method].params.safeParse(params ?? {});
     if (!parsed.success) throw new RpcError("invalid", `bad params for ${method}`, parsed.error.issues);
-    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number };
+    const p = parsed.data as { terminal?: string; input?: boolean; drive?: { cols: number; rows: number }; end?: boolean; argv?: string[]; path?: string; image?: true; whole?: true; at?: number; files?: true };
     let viewer = "";
     if (method === "terminal.open" || method === "terminal.close") {
       const client = ClientId.safeParse((params as { client?: unknown } | undefined)?.client);
@@ -642,7 +647,7 @@ export class NodeServer {
       viewer = linkViewer(client.data);
     }
     const risk = method === "terminal.spawn" || (method === "terminal.open" && (p.input === true || p.drive !== undefined)) || (method === "terminal.close" && p.end === true) ? "exec" : "read";
-    const target = p.terminal ?? (method === "terminal.spawn" ? p.argv?.[0] : method === "terminal.folders" ? p.path : undefined);
+    const target = p.terminal ?? (method === "terminal.spawn" ? p.argv?.[0] : method === "terminal.folders" || method === "terminal.file" ? p.path : undefined);
     const ask = method === "terminal.spawn" ? terminalSpawnAsk(parsed.data as { argv?: string[] }) : undefined;
     const redactResult = method === "terminal.file" ? (r: unknown) => fileSummary(r as FileText) : method === "terminal.folders" ? (r: unknown) => folderSummary(r as FolderPick) : undefined;
     return this.gated(
@@ -659,13 +664,15 @@ export class NodeServer {
             await t!.streams.close(viewer, p.terminal!, p.end === true);
             return {};
           case "terminal.file": {
+            const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) };
+            if (reader) return reader(p.path ?? "", opts);
             const row = t!.rows.list().find((r) => r.id === p.terminal);
             if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
             if (!t!.files) throw new RpcError("unsupported", "this node reads no files");
-            return t!.files.readUnder(row.cwd, p.path ?? "", { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
+            return t!.files.readUnder(row.cwd, p.path ?? "", opts);
           }
           case "terminal.folders":
-            return (t?.folders ?? folders!)(p.path);
+            return (t?.folders ?? folders!)(p.path, p.files ? { files: true } : {});
         }
       },
     );

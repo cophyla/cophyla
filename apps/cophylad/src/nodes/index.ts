@@ -156,8 +156,8 @@ export interface NodesDeps {
   profiles?: Pick<Profiles, "update">;
   /** This node's scope, which the primary's clients may read and set over the link. */
   scope?: ScopeHost;
-  /** This node's sessions' folders, repositories and files, which the primary's clients' explorer lists and viewer reads over the link. */
-  files?: Pick<SessionFiles, "list" | "git" | "read">;
+  /** This node's sessions' folders, repositories and files, which the primary's clients' explorer lists and viewer reads over the link; and a file anywhere on it, for a viewer. */
+  files?: Pick<SessionFiles, "list" | "git" | "read"> & Partial<Pick<SessionFiles, "readAt">>;
   /** This node's terminals, once built: their rows go up a link, and the primary's clients open them. */
   terminals?: () => NodeTerminals | undefined;
   /** The direct connections, once built: switched from the primary's clients, their state carried up on link. */
@@ -166,8 +166,8 @@ export interface NodesDeps {
   pipes?: () => PipeHub | undefined;
   /** The transfers this node receives, once built: their rows go up with the join, and the primary's clients start them here. */
   transfers?: () => Transfers | undefined;
-  /** This computer's folders, for a picker on the primary's clients (Send to…'s), terminals here or not. */
-  folders?: (path: string | undefined) => Promise<FolderPick>;
+  /** This computer's folders, for a picker on the primary's clients (Send to…'s), terminals here or not; with their files for a viewer. */
+  folders?: (path: string | undefined, opts?: { files?: boolean }) => Promise<FolderPick>;
   /** How soon a relayed link tries its data channel, and again; shorter in the tests. */
   directTiming?: LinkDirectTiming;
   log: Logger;

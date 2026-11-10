@@ -31,8 +31,8 @@ export function linkViewer(client: string): string {
 export interface NodeTerminals {
   rows: Pick<TerminalRows, "list" | "spawn">;
   streams: Pick<TerminalStreams, "open" | "close" | "input" | "resize" | "dropClient" | "dropViewers">;
-  files?: Pick<SessionFiles, "readUnder">;
-  folders: (path: string | undefined) => Promise<FolderPick>;
+  files?: Pick<SessionFiles, "readUnder" | "readAt">;
+  folders: (path: string | undefined, opts?: { files?: boolean }) => Promise<FolderPick>;
 }
 
 type Output = ClientNotificationParams<"terminal.output">;

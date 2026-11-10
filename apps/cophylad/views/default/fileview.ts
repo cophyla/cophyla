@@ -31,10 +31,15 @@
 // Custom Highlight API, so nothing in the page changes), Enter and Shift+Enter going from one to
 // the next, any case unless Aa is on. The view reads the file again as the agent works and when
 // the window comes back, and the viewer keeps its place and its search.
+//
+// A file no agent's or terminal's folder holds is read from its computer by its full path
+// (`terminal.file` with no terminal), and a folder of those shows as what it holds
+// (`terminal.folders` with its files): the folder above, its folders, then its files, each
+// opening in the same viewer.
 
-import type { FileText } from "@cophyla/protocol";
+import type { FileText, FolderPick } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
-import { bytesOf, fileErrorWords, fileLanguage, fileLines, findInLines, findPattern, findWords, FIND_MAX, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
+import { bytesOf, fileErrorWords, fileLanguage, fileLines, fileSizeWords, findInLines, findPattern, findWords, FIND_MAX, folderMeta, fullRel, grammarName, headingAnchors, imageKind, isHtml, isPdf, joinPath, linesBetween, readsWhole, resolveRel, viewerMeta, viewerNote } from "./model.ts";
 import type { ViewerDock, ViewerSource } from "./model.ts";
 import { inlineDocument } from "./htmldoc.ts";
 import type { Asset } from "./htmldoc.ts";
@@ -72,6 +77,8 @@ export interface ViewerTarget {
   /** A line to show, and each opening's own number: one opened again goes back to its line, read afresh. */
   line?: number;
   opened: number;
+  /** A computer's folder, to show as what it holds. */
+  folder?: true;
 }
 
 export interface ViewerOptions {
@@ -228,7 +235,10 @@ export class FileViewer {
   private body: HTMLElement;
   private rpc: HostRpc;
   private folder: (target: ViewerTarget) => boolean;
-  private open: (target: ViewerTarget, rel: string) => void;
+  private open: (target: ViewerTarget, rel: string, folder?: boolean) => void;
+  /** A computer's folder shown, as what it holds; and the paths read through a computer found to be folders. */
+  private listing?: FolderPick;
+  private folders = new Set<string>();
   /** An HTML file drawn, and what the viewer says of how it is drawn. */
   private doc?: DocFrame;
   private drawNote?: string;
@@ -266,10 +276,11 @@ export class FileViewer {
 
   /**
    * `folder` is told when a path it was asked to show turns out to be a folder, and says whether
-   * it showed it elsewhere; if not, the viewer says it is one. `open` opens a file of the folder
-   * a drawn page links to.
+   * it showed it elsewhere; if not, the viewer lists one read through a computer, and says any
+   * other is one. `open` opens a file of the folder a drawn page links to, and a file or a folder
+   * (`folder`) a folder shown holds.
    */
-  constructor(rpc: HostRpc, folder: (target: ViewerTarget) => boolean, open: (target: ViewerTarget, rel: string) => void) {
+  constructor(rpc: HostRpc, folder: (target: ViewerTarget) => boolean, open: (target: ViewerTarget, rel: string, folder?: boolean) => void) {
     this.rpc = rpc;
     this.folder = folder;
     this.open = open;
@@ -456,6 +467,7 @@ export class FileViewer {
     const key = keyOf(target);
     if (!was || keyOf(was) !== key) {
       this.file = undefined;
+      this.listing = undefined;
       this.lines = [];
       this.error = undefined;
       this.drawn = undefined;
@@ -494,6 +506,7 @@ export class FileViewer {
     this.painting = undefined;
     this.target = undefined;
     this.file = undefined;
+    this.listing = undefined;
     this.lines = [];
     this.drawn = undefined;
     this.pixels = undefined;
@@ -531,6 +544,8 @@ export class FileViewer {
     this.loading = true;
     if (!again) this.update();
     try {
+      // A computer's folder, asked for as one or found to be one, shows as what it holds.
+      if ("node" in target.from && (target.folder || this.folders.has(keyOf(target)))) return await this.loadFolder(target, target.from.node, generation);
       // An image comes whole, a piece at a time, to be drawn; an SVG comes as the text it is either way.
       const file = readsWhole(target.rel)
         ? await this.readWhole(target.from, target.rel, (p) => {
@@ -551,6 +566,10 @@ export class FileViewer {
         this.loading = false;
         return;
       }
+      if (code === "invalid" && / a folder$/.test(message) && "node" in target.from && !this.folders.has(keyOf(target))) {
+        this.folders.add(keyOf(target));
+        return this.load(again);
+      }
       // Read again, a file that went away says so; one read before stays as it was otherwise.
       if (!again || code === "not_found") {
         this.file = undefined;
@@ -567,9 +586,50 @@ export class FileViewer {
     await this.paint();
   }
 
-  /** One ask of a file, through what the viewer reads it through: an agent's session, or a bare terminal. */
+  /** One ask of a file, through what the viewer reads it through: an agent's session, a bare terminal, or a computer, by the file's full path. */
   private request(from: ViewerSource, ask: Record<string, unknown>): Promise<FileText> {
-    return "session" in from ? this.rpc.request<FileText>("session.file", { id: from.session, ...ask }) : this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
+    if ("session" in from) return this.rpc.request<FileText>("session.file", { id: from.session, ...ask });
+    if ("terminal" in from) return this.rpc.request<FileText>("terminal.file", { terminal: from.terminal, ...ask });
+    return this.rpc.request<FileText>("terminal.file", { node: from.node, ...ask });
+  }
+
+  /** A computer's folder read and shown as what it holds, unless another file was asked for meanwhile; what goes wrong is the load's to say. */
+  private async loadFolder(target: ViewerTarget, node: string, generation: number): Promise<void> {
+    const listing = await this.rpc.request<FolderPick>("terminal.folders", { node, path: target.rel, files: true });
+    if (generation !== this.generation) return;
+    this.error = undefined;
+    this.file = undefined;
+    this.lines = [];
+    this.drawn = undefined;
+    this.clearMatches();
+    this.listing = listing;
+    this.drawFolder(target, listing);
+    this.loading = false;
+    this.progress = undefined;
+    this.update();
+  }
+
+  /** What a folder holds: the folder above, its folders, then its files with their sizes; a press opens one in this viewer. */
+  private drawFolder(target: ViewerTarget, listing: FolderPick): void {
+    const list = el("nav", "viewer-list");
+    list.setAttribute("aria-label", "What the folder holds");
+    const row = (kind: "up" | "dir" | "file", name: string, path: string, size?: number) => {
+      const b = el("button", "viewer-entry");
+      b.type = "button";
+      b.dataset["kind"] = kind;
+      b.append(el("span", "viewer-entry-mark"), el("span", "viewer-entry-name", name));
+      if (size !== undefined) b.append(el("span", "viewer-entry-size", fileSizeWords(size)));
+      b.title = kind === "up" ? `Up to ${path}` : path;
+      b.addEventListener("click", () => this.open(target, fullRel(path), kind !== "file"));
+      list.append(b);
+    };
+    if (listing.parent !== undefined) row("up", "..", listing.parent);
+    for (const f of listing.folders) row("dir", f.name, f.path);
+    for (const f of listing.files ?? []) row("file", f.name, f.path, f.size);
+    if (listing.folders.length === 0 && (listing.files ?? []).length === 0) list.append(el("p", "viewer-list-empty", listing.files ? "Nothing in this folder." : "No folders in this folder."));
+    const top = this.body.scrollTop;
+    this.setBody(list);
+    this.body.scrollTop = top;
   }
 
   /**
@@ -607,15 +667,19 @@ export class FileViewer {
     const opts = this.opts;
     if (!target || !opts) return;
     const slash = target.rel.lastIndexOf("/");
-    const name = target.rel.slice(slash + 1);
+    // A drive's root, `C:/` or `/`, is its own name.
+    const name = target.rel.slice(slash + 1) || target.rel;
+    const dir = slash > 0 && slash < target.rel.length - 1 ? target.rel.slice(0, slash) : "";
     this.el.dataset["dock"] = opts.dock;
-    this.el.setAttribute("aria-label", `File ${name}`);
+    const folder = this.listing !== undefined || target.folder === true;
+    if (this.el.dataset["kind"] !== (folder ? "folder" : "file")) this.el.dataset["kind"] = folder ? "folder" : "file";
+    this.el.setAttribute("aria-label", `${folder ? "Folder" : "File"} ${name}`);
     setText(this.el.querySelector(".viewer-name")!, name);
-    setText(this.el.querySelector(".viewer-dir")!, slash > 0 ? target.rel.slice(0, slash) : "");
+    setText(this.el.querySelector(".viewer-dir")!, dir);
     this.el.querySelector<HTMLElement>(".viewer-title")!.title = joinPath(target.root, target.rel);
     // A file drawn whole has no text to show, whatever an older node sent of it.
     const text = this.file?.text !== undefined && !readsWhole(target.rel);
-    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, text ? this.lines.length : undefined, this.pixels, this.pages) : "");
+    setText(this.el.querySelector(".viewer-meta")!, this.file ? viewerMeta(this.file, text ? this.lines.length : undefined, this.pixels, this.pages) : this.listing ? folderMeta(this.listing) : "");
     const drawable = previewable(target.rel) && text;
     const source = this.source();
     const modes = this.el.querySelector<HTMLElement>(".viewer-modes")!;
@@ -1085,7 +1149,7 @@ function pieceBytes(base64: string): number {
 }
 
 function keyOf(t: ViewerTarget): string {
-  return `${"session" in t.from ? t.from.session : `terminal:${t.from.terminal}`}\n${t.rel}`;
+  return `${"session" in t.from ? t.from.session : "terminal" in t.from ? `terminal:${t.from.terminal}` : `node:${t.from.node}`}\n${t.rel}`;
 }
 
 /** Markdown, SVG and HTML can be drawn, or shown as written. */

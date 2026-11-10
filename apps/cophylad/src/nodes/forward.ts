@@ -106,9 +106,11 @@ export function routeOf(name: string, params: unknown, host: ForwardHost): Route
       return node(host.ownerOfAsk(p["id"] as string));
     case "terminal.open":
     case "terminal.close":
-    case "terminal.file":
     case "terminal.prompt":
       return node(host.ownerOfTerminal(p["terminal"] as string));
+    // A terminal's folder is where the terminal is; a file named by its full path is on the node named.
+    case "terminal.file":
+      return node(p["terminal"] !== undefined ? host.ownerOfTerminal(p["terminal"] as string) : (p["node"] as string | undefined));
     case "terminal.spawn": {
       // A shell in a workspace starts where the workspace is; else on the node named.
       const workspace = p["workspace"] as string | undefined;

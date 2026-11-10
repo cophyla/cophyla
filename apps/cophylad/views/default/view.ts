@@ -69,6 +69,7 @@ import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profi
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices, wantsEarlier } from "./model.ts";
+import { fullRel, isFullPath, pathNode } from "./model.ts";
 import type { DoorStream } from "./model.ts";
 import type { AccountState, Action, BrowserEnd, ChatDraw, DirectState, UpdateState, GrantEnd, HostReady, LastPlace, ViewerDock, LoginOffer, PairingOffer, PathInText, PhonePreset, RemoteInvite, TerminalOutput, ViewerSource, ViewState, VoiceNext, VoicePartial, VoiceSetup } from "./model.ts";
 import { activePane, chatTerminal, dialogSession, draftOf, explorerSession, fitField, RAIL_SPLIT, railSplit, refreshAskForm, render, renderDockAsks, tickAgentClocks } from "./render.ts";
@@ -200,10 +201,9 @@ const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWrit
 const viewer = new FileViewer(
   rpc,
   (t) => folderAsked(t),
-  (t, rel) => {
-    // A file a drawn page links to, in the same tab's viewer, read the way the page was.
-    const tab = viewerTab(ui.selected, ui.terminal);
-    if (tab !== undefined) openFile(tab, t.from, rel, { focus: true });
+  (t, rel, folder) => {
+    // A file a drawn page links to, or one a folder shown holds, in the same tab's viewer, read the way that one was.
+    openFile(viewerKey(), t.from, rel, { focus: true, ...(folder ? { folder: true } : {}) });
   },
 );
 /** What the chat's session is told, and how full its context is, over the conversation while the user has it open. */
@@ -2546,11 +2546,16 @@ function goto(kind: string, id: string, message?: string): void {
  * its viewer, at `line` when the chip names one, and the Files panel shows it too, with Files
  * picked and the rail out (on a desk), the folders down to it open, and the file picked and
  * scrolled to once it is listed. A folder the chip names, known as one or found to be one by the
- * viewer, shows in Files alone.
+ * viewer, shows in Files alone. One no agent's folder holds opens in the viewer of the tab that
+ * shows, read from its computer.
  */
 function revealFile(node: string, path: string, line?: number): void {
   const home = fileHome(state, node, path);
-  if (!home) return;
+  // No agent's folder holds it: the viewer of the tab that shows reads it from its computer, a folder as what it holds.
+  if (!home) {
+    if (state.scopes.includes("terminal") && isFullPath(path)) openFile(viewerKey(), { node }, fullRel(path), { focus: true, ...(line !== undefined ? { line } : {}), ...(/[\\/]$/.test(path) ? { folder: true } : {}) });
+    return;
+  }
   const place = explorerKey(state, home.session);
   if (home.rel === "" || /[\\/]$/.test(path) || listedKind(state.explorers.get(place), home.rel) === "dir") return showFolder(home.session, home.rel);
   openDown(place, home.rel, false);
@@ -2915,15 +2920,24 @@ function pickFile(row: HTMLElement, focus = false): void {
 /** How many files were opened: each opening's number, so one opened again is read afresh and goes back to its line. */
 let opens = 0;
 
-/** The file open in the tab that shows, an agent's or a bare terminal's, over its pane or beside it; none under the chat. */
+/**
+ * The tab whose viewer shows, by key: an agent's by its session id, a bare terminal's as
+ * `terminal:<id>`, a group's as `group:<id>`, and the chat's as `chat`, where a file no agent's
+ * folder holds opens.
+ */
+function viewerKey(): string {
+  return viewerTab(ui.selected, ui.terminal) ?? (ui.group !== undefined ? `group:${ui.group}` : "chat");
+}
+
+/** The file open in the tab that shows, an agent's, a bare terminal's, the chat's or a group's, over its pane or beside it. */
 function syncViewer(): void {
-  // A tab gone, or what its file was read through, takes the file with it.
+  // A tab gone, or what its file was read through, takes the file with it; a computer's file stays while the computer is away.
   for (const [tab, v] of ui.viewers) {
-    const gone = tab.startsWith("terminal:") ? !state.terminals.has(tab.slice("terminal:".length)) : !state.sessions.has(tab);
-    if (gone || ("session" in v.from ? !state.sessions.has(v.from.session) : !state.terminals.has(v.from.terminal))) ui.viewers.delete(tab);
+    const gone = tab === "chat" ? false : tab.startsWith("group:") ? !state.groups.has(tab.slice("group:".length)) : tab.startsWith("terminal:") ? !state.terminals.has(tab.slice("terminal:".length)) : !state.sessions.has(tab);
+    const away = "session" in v.from ? !state.sessions.has(v.from.session) : "terminal" in v.from ? !state.terminals.has(v.from.terminal) : false;
+    if (gone || away) ui.viewers.delete(tab);
   }
-  const tab = viewerTab(ui.selected, ui.terminal);
-  const open = tab !== undefined ? ui.viewers.get(tab) : undefined;
+  const open = ui.viewers.get(viewerKey());
   const root = open ? sourceRoot(state, open.from) : undefined;
   if (!open || root === undefined) {
     viewer.hide();
@@ -2932,15 +2946,18 @@ function syncViewer(): void {
   // While a desktop sits beside the pane, a file lies over the pane: two columns beside it would leave it none.
   const crowded = narrow.matches || (remoteShown() && remoteDock() === "beside");
   const dock = crowded ? "over" : ui.viewerDock;
-  const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}) };
+  const target: ViewerTarget = { from: open.from, rel: open.rel, root, opened: open.opened, ...(open.line !== undefined ? { line: open.line } : {}), ...(open.folder ? { folder: true as const } : {}) };
   // Over the pane it lies in the pane's column; beside it, it takes a column of its own.
   const parent = document.getElementById(dock === "over" ? "panes" : "body")!;
   viewer.show(target, parent, { dock, width: ui.viewerWidth, wrap: ui.viewerWrap, source: ui.viewerSource, dockable: !crowded, connected: state.connected, ...(state.hostDocFrame ? { docFrame: state.hostDocFrame } : {}) });
 }
 
-/** Opens a file in the viewer of a tab, read through `from`, at a line when one is given, and shows it in Files; on a phone the rail goes, so it shows. */
-function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: number; focus?: boolean } = {}): void {
-  ui.viewers.set(tab, { from, rel, opened: ++opens, ...(opts.line !== undefined ? { line: opts.line } : {}) });
+/**
+ * Opens a file in the viewer of a tab, read through `from`, at a line when one is given, and shows
+ * it in Files; on a phone the rail goes, so it shows. A computer's folder (`folder`) shows as what it holds.
+ */
+function openFile(tab: string, from: ViewerSource, rel: string, opts: { line?: number; focus?: boolean; folder?: boolean } = {}): void {
+  ui.viewers.set(tab, { from, rel, opened: ++opens, ...(opts.line !== undefined ? { line: opts.line } : {}), ...(opts.folder ? { folder: true as const } : {}) });
   revealOpened(tab, from, rel);
   putRailAway();
   draw();
@@ -2975,8 +2992,14 @@ function dialogWritten(): WrittenIn | undefined {
   return card ? { session: card.session } : undefined;
 }
 
-/** Where a link in the view's words was written: in an agent's tab, that agent's timeline; elsewhere, the chat's or a group's. */
+/**
+ * Where a link in the view's words was written: in an agent's ask, wherever it shows, that
+ * agent's words; in an agent's tab, that agent's timeline; elsewhere, the chat's or a group's.
+ */
 function linkWritten(node: Element): WrittenIn | undefined {
+  const asker = node.closest<HTMLElement>("[data-asker]")?.dataset["asker"];
+  const asking = asker !== undefined ? state.sessions.get(asker) : undefined;
+  if (asking) return { session: asking.session };
   const pane = node.closest<HTMLElement>(".session[data-session]");
   if (!pane) return "chat";
   const card = state.sessions.get(pane.dataset["session"]!);
@@ -2999,13 +3022,13 @@ function homeAnywhere(path: string): { session: Session; rel: string } | undefin
 }
 
 /**
- * Where a path is, and what reads it. Written by an agent: a relative one under that agent's
- * folder, an absolute one in whichever live agent's folder holds it, that agent's first. In a
- * bare terminal: one under the folder it started in (a shell that moved elsewhere since writes
- * paths that are not), else an absolute one in a live agent's folder. In the chat or a group: an
- * absolute one in a live agent's folder, on any computer. None past all of those.
+ * Where a path is in a folder the view reads, and what reads it. Written by an agent: a relative
+ * one under that agent's folder, an absolute one in whichever live agent's folder holds it, that
+ * agent's first. In a bare terminal: one under the folder it started in (a shell that moved
+ * elsewhere since writes paths that are not), else an absolute one in a live agent's folder. In
+ * the chat or a group: an absolute one in a live agent's folder, on any computer.
  */
-function pathHome(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
+function inFolder(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
   if (at === "chat") {
     if (!state.scopes.includes("sessions:read")) return undefined;
     const home = homeAnywhere(path);
@@ -3030,6 +3053,23 @@ function pathHome(path: string, at: WrittenIn): { from: ViewerSource; rel: strin
 }
 
 /**
+ * A full path no folder the view reads holds, read from its computer itself, as a shell there
+ * would read it: so with `terminal` alone. Written by an agent or in a terminal, it is on that
+ * one's computer; in the chat or a group, on the computer whose paths are spelled that way, this
+ * view's own first.
+ */
+function pathAnywhere(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
+  if (!state.scopes.includes("terminal") || !isFullPath(path)) return undefined;
+  const node = at === "chat" ? pathNode(state, path) : "session" in at ? at.session.node : at.terminal.node;
+  return node !== undefined ? { from: { node }, rel: fullRel(path) } : undefined;
+}
+
+/** Where a path is and what reads it: in a folder the view reads (`inFolder`), else on its computer (`pathAnywhere`). None past both. */
+function pathHome(path: string, at: WrittenIn): { from: ViewerSource; rel: string } | undefined {
+  return inFolder(path, at) ?? pathAnywhere(path, at);
+}
+
+/**
  * Which agent's Files panel can show a path, and where under its folder: written by an agent, a
  * relative path is under that agent's folder, and an absolute one in whichever live agent's
  * folder holds it, that agent's first; in a bare terminal, a relative one is under the folder the
@@ -3045,12 +3085,12 @@ function folderHome(path: string, at: WrittenIn): { session: Session; rel: strin
 }
 
 /**
- * Whether a path is a link: a folder's when Files can show it, anything else when the viewer can
- * read it. A relative path with no extension and no separator after it is a folder, a file such
- * as `Makefile`, or no path at all (`and/or`, `1/2`): it counts only where an agent wrote it,
- * when its first name is a folder the agent's Files listed at the top. In a message (`words`),
- * where `console.log` is no file, a name with no folder before it counts only when Files listed
- * it there too; a path a link goes to (`linked`) is taken as it is written.
+ * Whether a path is a link: a folder's when Files can show it, or the viewer can list it, anything
+ * else when the viewer can read it. A relative path with no extension and no separator after it
+ * is a folder, a file such as `Makefile`, or no path at all (`and/or`, `1/2`): it counts only
+ * where an agent wrote it, when its first name is a folder the agent's Files listed at the top. In
+ * a message (`words`), where `console.log` is no file, a name with no folder before it counts only
+ * when Files listed it there too; a path a link goes to (`linked`) is taken as it is written.
  */
 function canOpenPath(p: PathInText, at: WrittenIn, how: { words?: boolean; linked?: boolean } = {}): boolean {
   const rel = relativeFile(p.path);
@@ -3059,7 +3099,7 @@ function canOpenPath(p: PathInText, at: WrittenIn, how: { words?: boolean; linke
     const ex = state.explorers.get(explorerKey(state, at.session));
     if (p.plain ? !underListedFolder(ex, p.path) : !(ex?.dirs.get("")?.entries?.some((e) => e.name === rel) ?? false)) return false;
   }
-  return p.folder ? folderHome(p.path, at) !== undefined : pathHome(p.path, at) !== undefined;
+  return p.folder ? folderHome(p.path, at) !== undefined || pathAnywhere(p.path, at) !== undefined : pathHome(p.path, at) !== undefined;
 }
 
 /**
@@ -3067,20 +3107,30 @@ function canOpenPath(p: PathInText, at: WrittenIn, how: { words?: boolean; linke
  * separator after it or by its listing in Files, shows in Files; anything else opens at its line
  * in the viewer of the tab it was written in, over or beside it, with the focus, and goes to Files
  * after all when the node says it is a folder (`folderAsked`). One written in the chat or a group
- * opens as a chip naming it does, in the tab of the agent whose folder holds it.
+ * opens as a chip naming it does, in the tab of the agent whose folder holds it. One no folder the
+ * view reads holds opens in the viewer of the tab it was written in, read from its computer; a
+ * folder of those shows there as what it holds.
  */
 function openPath(p: PathInText, at: WrittenIn): void {
   const folder = folderHome(p.path, at);
   if (folder && (p.folder || listedKind(state.explorers.get(explorerKey(state, folder.session)), folder.rel) === "dir")) return showFolder(folder.session, folder.rel);
+  const line = p.line !== undefined ? { line: p.line } : {};
+  // An agent's words shown outside its tab (its ask over the chat): its tab opens with the file.
+  const shown = (tab: string) => {
+    if (at !== "chat" && "session" in at && ui.selected !== at.session.id) select(at.session.id);
+    return tab;
+  };
   if (at === "chat") {
     const home = homeAnywhere(p.path);
-    if (home) revealFile(home.session.node, p.path, p.line);
-    return;
+    if (home) return revealFile(home.session.node, p.path, p.line);
+  } else {
+    const home = inFolder(p.path, at);
+    const tab = "session" in at ? at.session.id : viewerTab(undefined, at.terminal.id)!;
+    if (home && !p.folder) return openFile(shown(tab), home.from, home.rel, { focus: true, ...line });
   }
-  const home = pathHome(p.path, at);
-  const tab = "session" in at ? at.session.id : viewerTab(undefined, at.terminal.id);
-  if (!home || tab === undefined) return;
-  openFile(tab, home.from, home.rel, { focus: true, ...(p.line !== undefined ? { line: p.line } : {}) });
+  const away = pathAnywhere(p.path, at);
+  const tab = at === "chat" ? viewerKey() : "session" in at ? at.session.id : viewerTab(undefined, at.terminal.id)!;
+  if (away) openFile(shown(tab), away.from, away.rel, { focus: true, ...line, ...(p.folder ? { folder: true } : {}) });
 }
 
 /** The path a link in a message names, from what it carries. */
@@ -3096,7 +3146,8 @@ function pathLinkOpens(node: HTMLElement): boolean {
   const opens = at !== undefined && p.path !== "" && canOpenPath(p, at, { words: true, linked: node.dataset["linked"] === "1" });
   const open = opens ? "1" : "0";
   if (node.dataset["open"] !== open) node.dataset["open"] = open;
-  const title = !opens ? (node.dataset["linked"] === "1" ? p.path : "") : p.folder ? `Show the folder in Files: ${p.path}` : `Open the file: ${p.path}${p.line !== undefined ? `, at line ${p.line}` : ""}`;
+  const inFiles = opens && p.folder && folderHome(p.path, at!) !== undefined;
+  const title = !opens ? (node.dataset["linked"] === "1" ? p.path : "") : p.folder ? `Show the folder${inFiles ? " in Files" : ""}: ${p.path}` : `Open the file: ${p.path}${p.line !== undefined ? `, at line ${p.line}` : ""}`;
   if (title !== "") node.title = title;
   else node.removeAttribute("title");
   return opens;
@@ -3122,9 +3173,9 @@ document.addEventListener("pointerover", (ev) => {
 
 /** Closes the file open in the tab that shows; the focus, when it was in the viewer, goes back to the terminal or to the file's row. */
 function closeViewer(): void {
-  const tab = viewerTab(ui.selected, ui.terminal);
-  const open = tab !== undefined ? ui.viewers.get(tab) : undefined;
-  if (tab === undefined || !open) return;
+  const tab = viewerKey();
+  const open = ui.viewers.get(tab);
+  if (!open) return;
   const focused = viewer.focused;
   ui.viewers.delete(tab);
   draw();
@@ -3136,12 +3187,19 @@ function closeViewer(): void {
 /**
  * A path the viewer was asked for is a folder (a chip or a terminal's link names folders too):
  * the viewer closes and the Files panel of the agent whose folder holds it shows it, that tab's
- * agent first. With no agent's folder holding it, the viewer stays, saying it is a folder.
+ * agent first. With no agent's folder holding it, the viewer shows what it holds, read from its
+ * computer, which may read it with `terminal`; else it stays, saying it is a folder.
  */
 function folderAsked(t: ViewerTarget): boolean {
   const at = viewedPath(state, t.from, t.rel);
   const home = at ? fileHome(state, at.node, at.path, ui.selected) : undefined;
-  if (!home) return false;
+  if (!home) {
+    // A computer's own is the viewer's to list; a bare terminal's is read from its computer and listed so.
+    if ("node" in t.from || !at || !state.scopes.includes("terminal")) return false;
+    for (const [tab, v] of ui.viewers) if (v.opened === t.opened) ui.viewers.set(tab, { from: { node: at.node }, rel: fullRel(at.path), opened: ++opens, folder: true });
+    draw();
+    return true;
+  }
   for (const [tab, v] of ui.viewers) if (v.opened === t.opened) ui.viewers.delete(tab);
   showFolder(home.session, home.rel);
   return true;

@@ -4,10 +4,12 @@
 // and its keys reach the secondary's host; a shell starts on the node named, or where the
 // workspace is, in a folder the picker listed there; a client that goes takes its views with
 // it; a terminal of a node that left is exited for every client. A node that shares some
-// folders alone sends no terminal up and serves none.
+// folders alone sends no terminal up and serves none. A file anywhere on the secondary is read by
+// its full path, with no terminal, and a folder there listed with its files; by none that shares
+// some folders alone.
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ClientNotificationParams, FolderPick, Terminal } from "@cophyla/protocol";
 import { TetherClient } from "@tether-pty/client";
@@ -144,6 +146,18 @@ describe("terminals across nodes", () => {
     expect(inWs.terminal).toMatchObject({ node: secondary.identity.id, cwd: dir });
   });
 
+  test("a file anywhere on the node named is read by its full path with no terminal, and a folder there listed with its files", async () => {
+    const dir = join(scratch, "elsewhere");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "shot.txt"), "taken on the secondary");
+    const file = await c.request<{ path: string; text: string }>("terminal.file", { node: secondary.identity.id, path: join(dir, "shot.txt").replace(/\\/g, "/") });
+    expect(file.text).toBe("taken on the secondary");
+    const pick = await c.request<FolderPick>("terminal.folders", { node: secondary.identity.id, path: dir, files: true });
+    expect(pick.files).toEqual([{ name: "shot.txt", path: join(dir, "shot.txt"), size: 22 }]);
+    const relative = await c.call("terminal.file", { node: secondary.identity.id, path: "shot.txt" });
+    expect("error" in relative && relative.error.data?.code).toBe("invalid");
+  });
+
   test("a terminal of a node that left is exited for the primary's clients", async () => {
     await stopAll(secondary);
     const gone = await c.next(isMethod("terminal.state", (p) => (p as Terminal).id === ts.id && (p as Terminal).status === "exited"), 10_000);
@@ -191,5 +205,13 @@ describe("a node that shares some folders alone", () => {
     const pick = await c.call("terminal.folders", { node: secondary.identity.id, path: scratch });
     expect("error" in pick && pick.error.data?.code).toBe("denied");
     expect(fakeS.requests.some((q) => q.op === "spawn")).toBe(false);
+  });
+
+  test("reads no file by its full path, not even one in the folders it shares, and lists no folder's files", async () => {
+    writeFileSync(join(scratch, "shared.txt"), "in a shared folder");
+    const read = await c.call("terminal.file", { node: secondary.identity.id, path: join(scratch, "shared.txt") });
+    expect("error" in read && read.error.data?.code).toBe("denied");
+    const pick = await c.call("terminal.folders", { node: secondary.identity.id, path: scratch, files: true });
+    expect("error" in pick && pick.error.data?.code).toBe("denied");
   });
 });

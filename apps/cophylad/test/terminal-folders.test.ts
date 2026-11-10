@@ -48,6 +48,23 @@ describe("the folders a terminal may start in", () => {
     await expect(listFolders(join(home, "gone"), { home })).rejects.toMatchObject({ code: "not_found" });
     await expect(listFolders(join(home, "notes.txt"), { home })).rejects.toMatchObject({ code: "invalid" });
   });
+
+  test("asked for them, its files too, by name with their sizes, by the same rule: no dot files, nothing hidden", async () => {
+    const dir = join(home, "Docs");
+    writeFileSync(join(dir, "b10.txt"), "12345");
+    writeFileSync(join(dir, "b9.md"), "");
+    writeFileSync(join(dir, ".env"), "SECRET=1");
+    writeFileSync(join(dir, "hidden.txt"), "x");
+    mkdirSync(join(dir, "inner"));
+    const r = await listFolders(dir, { home, hidden: (p) => p.endsWith("hidden.txt") }, { files: true });
+    expect(r.folders.map((f) => f.name)).toEqual(["inner"]);
+    expect(r.files).toEqual([
+      { name: "b9.md", path: join(dir, "b9.md"), size: 0 },
+      { name: "b10.txt", path: join(dir, "b10.txt"), size: 5 },
+    ]);
+    // without asking, the picker's folders alone
+    expect((await listFolders(dir, { home })).files).toBeUndefined();
+  });
 });
 
 describe("terminal.folders through the daemon", () => {
@@ -77,5 +94,22 @@ describe("terminal.folders through the daemon", () => {
     // and nothing to start a shell with
     const spawn = await c.call("terminal.spawn", { cwd: dir });
     expect("error" in spawn && spawn.error.data?.code).toBe("unsupported");
+  });
+
+  test("with its files for a viewer, and a file anywhere read by its full path with no terminal; audited without the names or the text", async () => {
+    const project = join(dir, "private-project");
+    writeFileSync(join(project, "shot-notes.txt"), "pixels");
+    const listed = await c.request<{ folders: unknown[]; files: { name: string; size: number }[] }>("terminal.folders", { path: project, files: true });
+    expect(listed.files).toEqual([{ name: "shot-notes.txt", path: join(project, "shot-notes.txt"), size: 6 }] as never);
+    const row = d.store.audit.list({ limit: 50 }).find((e) => e.action === "terminal.folders" && e.target === project && e.outcome === "ok")!;
+    expect(JSON.stringify(row)).not.toContain("shot-notes");
+    const file = await c.request<{ text: string }>("terminal.file", { path: join(project, "shot-notes.txt") });
+    expect(file.text).toBe("pixels");
+    const read = d.store.audit.list({ limit: 50 }).find((e) => e.action === "terminal.file" && e.outcome === "ok")!;
+    expect(read.target).toBe(join(project, "shot-notes.txt"));
+    expect(JSON.stringify(read)).not.toContain("pixels");
+    // a relative path names nowhere without a terminal
+    const relative = await c.call("terminal.file", { path: "shot-notes.txt" });
+    expect("error" in relative && relative.error.data?.code).toBe("invalid");
   });
 });

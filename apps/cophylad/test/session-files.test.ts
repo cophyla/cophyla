@@ -225,6 +225,56 @@ describe("a session's file", () => {
   });
 });
 
+describe("a file anywhere on the computer, by its full path", () => {
+  const anywhere = (home: string, opts: { imageMax?: number } = {}) => new SessionFiles({ session: () => undefined, home, ...opts });
+
+  test("read as a session's is, by its path as asked: `/` or the computer's own separators, `..` taken out, `~` the user's home", async () => {
+    const dir = temp();
+    const home = temp();
+    mkdirSync(join(dir, "shots"));
+    writeFileSync(join(dir, "shots", "notes.md"), "# Notes\n");
+    mkdirSync(join(home, "Downloads"));
+    writeFileSync(join(home, "Downloads", "list.txt"), "milk");
+    const files = anywhere(home);
+    const full = join(dir, "shots", "notes.md");
+    expect(await files.readAt(full)).toMatchObject({ path: full, size: 8, text: "# Notes\n" });
+    const slashed = full.replace(/\\/g, "/");
+    expect(await files.readAt(slashed)).toMatchObject({ path: slashed, text: "# Notes\n" });
+    expect(await files.readAt(join(dir, "shots", "..", "shots", "notes.md"))).toMatchObject({ text: "# Notes\n" });
+    expect(await files.readAt("~/Downloads/list.txt")).toMatchObject({ path: "~/Downloads/list.txt", text: "milk" });
+    // A link may lead anywhere on this computer.
+    linkDir(join(dir, "shots"), join(home, "linked"));
+    expect(await files.readAt("~/linked/notes.md")).toMatchObject({ text: "# Notes\n" });
+  });
+
+  test("an image whole as base64, and a file a piece at a time, as a session's", async () => {
+    const dir = temp();
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    writeFileSync(join(dir, "shot.png"), png);
+    const files = anywhere(temp());
+    expect(await files.readAt(join(dir, "shot.png"), { image: true })).toMatchObject({ mime: "image/png", base64: png.toString("base64") });
+    expect(await files.readAt(join(dir, "shot.png"), { whole: true })).toMatchObject({ base64: png.toString("base64"), at: 0, total: 10 });
+  });
+
+  test("only a full path of this computer's: a relative one, a share's, a device's refused; a folder, a missing file say so", async () => {
+    const dir = temp();
+    mkdirSync(join(dir, "src"));
+    const files = anywhere(temp());
+    for (const bad of ["src/a.ts", "./a.ts", "a.ts", "~user/a.ts", ...(WIN ? ["\\\\server\\share\\a.ts", "//server/share/a.ts", "\\\\?\\C:\\a.ts", "\\\\.\\pipe\\x", "\\Windows\\win.ini"] : [])]) {
+      expect((await refusal(files.readAt(bad)))[0]).toBe("invalid");
+    }
+    expect(await refusal(files.readAt(join(dir, "src")))).toEqual(["invalid", `${join(dir, "src")}: a folder`]);
+    expect((await refusal(files.readAt(join(dir, "gone.txt"))))[0]).toBe("not_found");
+  });
+
+  test.if(WIN)("a drive's path as Git Bash writes it is the drive's", async () => {
+    const dir = temp();
+    writeFileSync(join(dir, "bash.txt"), "from git bash");
+    const bash = `/${dir[0]!.toLowerCase()}/${dir.slice(3).replace(/\\/g, "/")}/bash.txt`;
+    expect(await anywhere(temp()).readAt(bash)).toMatchObject({ path: bash, text: "from git bash" });
+  });
+});
+
 describe("a file read whole", () => {
   test("its bytes a piece at a time, whatever it is, the pieces' base64 joining as it is; past the most, nothing", async () => {
     const root = temp();

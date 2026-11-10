@@ -884,10 +884,10 @@ export interface TerminalDeps {
   /** The rows and screens of this node's tether; none without tether, where only another node's terminals open. */
   rows?: TerminalRows;
   streams?: TerminalStreams;
-  /** Reads a file under the folder a terminal started in, for `terminal.file`. */
-  files?: Pick<SessionFiles, "readUnder">;
-  /** Lists a folder of this computer for New terminal's picker. */
-  folders: (path: string | undefined) => Promise<FolderPick>;
+  /** Reads a file under the folder a terminal started in, or anywhere on this computer with no terminal, for `terminal.file`. */
+  files?: Pick<SessionFiles, "readUnder" | "readAt">;
+  /** Lists a folder of this computer for New terminal's picker, and with its files for the viewer. */
+  folders: (path: string | undefined, opts?: { files?: boolean }) => Promise<FolderPick>;
 }
 
 /** What starting a program in a terminal asks the user, here and on a node the request was forwarded to. */
@@ -928,22 +928,25 @@ export function terminalMethods(deps: TerminalDeps): MethodTable {
         return {};
       },
     },
-    // A file under the folder the terminal started in, for the viewer of its tab; audited as a session's file is, without the text.
+    // A file under the folder the terminal started in, for the viewer of its tab, or with no
+    // terminal one anywhere on this computer; audited as a session's file is, without the text.
     "terminal.file": {
-      target: (p) => p.terminal,
+      target: (p) => p.terminal ?? p.path,
       redactResult: (r) => fileSummary(r),
       handler: (p) => {
+        if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
+        const opts = { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) };
+        if (p.terminal === undefined) return deps.files.readAt(p.path, opts);
         const row = deps.rows?.list().find((t) => t.id === p.terminal);
         if (!row) throw new RpcError("not_found", `no terminal ${p.terminal}`);
-        if (!deps.files) throw new RpcError("unsupported", "this node reads no files");
-        return deps.files.readUnder(row.cwd, p.path, { image: p.image === true, whole: p.whole === true, ...(p.at !== undefined ? { at: p.at } : {}) });
+        return deps.files.readUnder(row.cwd, p.path, opts);
       },
     },
-    // The folder and how many folders it holds are audited, not their names.
+    // The folder and how many folders (and files) it holds are audited, not their names.
     "terminal.folders": {
       target: (p) => p.path,
       redactResult: (r) => folderSummary(r),
-      handler: (p) => deps.folders(p.path),
+      handler: (p) => deps.folders(p.path, p.files ? { files: true } : {}),
     },
   };
 }

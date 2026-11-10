@@ -3099,9 +3099,10 @@ export function fileHome(state: ViewState, node: string, path: string, prefer?: 
   return { session: best.session, rel: relUnder(best.session.cwd, path, platform) ?? "" };
 }
 
-/** A path under a folder, spelled as its node spells paths: a Windows folder's with backslashes. */
+/** A path under a folder, spelled as its node spells paths: a Windows folder's with backslashes; under none (`""`), a full path spelled so. */
 export function joinPath(root: string, rel: string): string {
   if (rel === "") return root;
+  if (root === "") return /^[A-Za-z]:/.test(rel) ? rel.split("/").join("\\") : rel;
   const windows = /^[A-Za-z]:/.test(root) || root.startsWith("\\\\");
   const sep = windows ? "\\" : "/";
   return `${root.replace(/[\\/]+$/, "")}${sep}${rel.split("/").join(sep)}`;
@@ -3206,19 +3207,25 @@ function commits(n: number): string {
 
 // --- the file viewer ---------------------------------------------------------------------------
 
-/** What the viewer reads a file through: an agent's session (its folder), or a bare terminal (the folder it started in). */
-export type ViewerSource = { session: string } | { terminal: string };
+/**
+ * What the viewer reads a file through: an agent's session (its folder), a bare terminal (the
+ * folder it started in), or a computer itself, for a file or a folder no agent works in: its
+ * path is then its full one, `/` between the names, or one under the user's home with `~`.
+ */
+export type ViewerSource = { session: string } | { terminal: string } | { node: NodeId };
 
 /**
- * A file open in the viewer of a tab, an agent's or a bare terminal's: what it is read through,
- * its path under that one's folder, `/` between the names, a line to show first, and which
- * opening this is, so one opened again is read afresh and goes back to its line.
+ * A file open in the viewer of a tab, an agent's or a bare terminal's, the chat's or a group's:
+ * what it is read through, its path under that one's folder, `/` between the names, a line to
+ * show first, and which opening this is, so one opened again is read afresh and goes back to
+ * its line. A folder of a computer's (`folder`) shows as what it holds.
  */
 export interface ViewerFile {
   from: ViewerSource;
   rel: string;
   line?: number;
   opened: number;
+  folder?: true;
 }
 
 /** The tab a viewer belongs to, by key: an agent's by its session id, a bare terminal's by its own; none for the chat. */
@@ -3226,17 +3233,52 @@ export function viewerTab(selected: string | undefined, terminal: string | undef
   return terminal !== undefined ? `terminal:${terminal}` : selected;
 }
 
-/** The folder a viewer's file is read under, while the view may read it: an agent's with `sessions:read`, a bare terminal's with `terminal`. */
+/**
+ * The folder a viewer's file is read under, while the view may read it: an agent's with
+ * `sessions:read`, a bare terminal's with `terminal`, and none at all (`""`, the path being a
+ * full one) for a computer's own, with `terminal` too, since a shell there reads as far.
+ */
 export function sourceRoot(state: ViewState, from: ViewerSource): string | undefined {
   if ("session" in from) return state.scopes.includes("sessions:read") ? state.sessions.get(from.session)?.session.cwd : undefined;
-  return state.scopes.includes("terminal") ? state.terminals.get(from.terminal)?.cwd : undefined;
+  if ("terminal" in from) return state.scopes.includes("terminal") ? state.terminals.get(from.terminal)?.cwd : undefined;
+  return state.scopes.includes("terminal") ? "" : undefined;
 }
 
 /** Where a file read through `from` is: its node, and its full path as that node spells it; none while the view may not read it. */
 export function viewedPath(state: ViewState, from: ViewerSource, rel: string): { node: NodeId; path: string } | undefined {
   const root = sourceRoot(state, from);
-  const node = "session" in from ? state.sessions.get(from.session)?.session.node : state.terminals.get(from.terminal)?.node;
+  const node = "session" in from ? state.sessions.get(from.session)?.session.node : "terminal" in from ? state.terminals.get(from.terminal)?.node : from.node;
   return root !== undefined && node !== undefined ? { node, path: joinPath(root, rel) } : undefined;
+}
+
+/** Whether a path names where it is on its own: a full path (`C:\x`, `/x`) or one under the user's home (`~/x`). */
+export function isFullPath(path: string): boolean {
+  return /^(?:[A-Za-z]:[\\/]|\/|~(?:[\\/]|$))/.test(path);
+}
+
+/** A full path as the viewer keeps one read through a computer: `/` between the names, none after the last. */
+export function fullRel(path: string): string {
+  const rel = path.replace(/\\/g, "/");
+  return /^(?:[A-Za-z]:)?\/$/.test(rel) ? rel : rel.replace(/\/+$/, "");
+}
+
+/**
+ * The computer a full path is on, written where nothing else says: `prefer` (the computer the
+ * words came from), else this view's own, else any other, the first whose paths are spelled that
+ * way (a drive's on Windows, `/` elsewhere; one under `~` is anyone's, and so is one Git Bash
+ * writes for a drive, `/c/…`). None when no computer is.
+ */
+export function pathNode(state: ViewState, path: string, prefer?: NodeId): NodeId | undefined {
+  const drive = /^[A-Za-z]:[\\/]/.test(path);
+  const anyone = path.startsWith("~") || /^\/[A-Za-z]\//.test(path);
+  const fits = (id: NodeId | undefined): id is NodeId => {
+    if (id === undefined) return false;
+    const known = state.nodes.get(id);
+    if (!known && id !== state.node) return false;
+    const platform = known?.platform;
+    return anyone || platform === undefined || drive === (platform === "windows");
+  };
+  return [prefer, state.node, ...state.nodes.keys()].find(fits);
 }
 
 /**
@@ -3538,7 +3580,7 @@ export function fileLines(text: string): string[] {
 }
 
 /** A file's size as the viewer says it: to a tenth under ten, so a file a little over what shows reads as more. */
-function fileSizeWords(n: number): string {
+export function fileSizeWords(n: number): string {
   for (const [unit, size] of [
     ["GB", 1024 ** 3],
     ["MB", 1024 ** 2],
@@ -3597,6 +3639,18 @@ export function viewerMeta(file: FileText, lines: number | undefined, pixels?: {
   return [kind, drawn, counted, fileSizeWords(file.size)].filter(Boolean).join(" · ");
 }
 
+/**
+ * What the viewer's head says of a computer's folder it shows: how many folders and files it
+ * holds, those it lists when there were too many; a computer too old to list files says so.
+ */
+export function folderMeta(listing: FolderPick): string {
+  const count = (n: number, one: string) => `${n.toLocaleString()} ${one}${n === 1 ? "" : "s"}`;
+  const parts = ["Folder", count(listing.folders.length, "folder")];
+  parts.push(listing.files ? count(listing.files.length, "file") : "files not listed: update Cophyla there");
+  if (listing.truncated) parts.push("the first shown");
+  return parts.join(" · ");
+}
+
 /** What the viewer says over a file it shows only part of, or none of; nothing for one shown whole. */
 export function viewerNote(file: FileText): string {
   if (file.base64 !== undefined) return "";
@@ -3632,11 +3686,11 @@ export interface PathInText {
   plain?: true;
 }
 
-const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*(?:(?<file>[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})|[\w@+-](?:[\w.@+-]*[\w@+-])?)?)(?::(?<line>\d+)(?::\d+)?)?/g;
+const PATH_IN_TEXT = /(?<path>(?:[A-Za-z]:[\\/]|~[\\/]|\.{1,2}[\\/]|[\\/])?(?:[\w.@+-]+[\\/])*(?:(?<file>[\w@+-][\w.@+-]*\.[A-Za-z][A-Za-z0-9]{0,11})|[\w@+-](?:[\w.@+-]*[\w@+-])?)?)(?::(?<line>\d+)(?::\d+)?)?/g;
 
 /**
  * The paths a terminal's row names that the view could open, as Claude Code and a compiler
- * write them (`src/app.py`, `C:\repo\x.ts:12`, `apps/web/`): a name with an extension, in
+ * write them (`src/app.py`, `C:\repo\x.ts:12`, `~/Downloads/shot.png`, `apps/web/`): a name with an extension, in
  * folders or not, with the line after it when there is one; or names with a separator among
  * them and no extension, a folder's as often as not, marked `folder` when a separator ends
  * them and `plain` otherwise. A bare name counts only when its extension is a language's, so
@@ -3648,7 +3702,7 @@ export function pathsIn(text: string): PathInText[] {
     const path = m.groups!["path"]!;
     if (m.index > 0 && /[\w.@+\\/:-]/.test(text[m.index - 1]!)) continue;
     // A root alone (`/`, `C:\`, `./`) names nothing.
-    if (path.replace(/^(?:[A-Za-z]:|\.{1,2})?[\\/]/, "") === "") continue;
+    if (path.replace(/^(?:[A-Za-z]:|~|\.{1,2})?[\\/]/, "") === "") continue;
     const named = m.groups!["file"] !== undefined;
     if (!/[\\/]/.test(path) && (!named || fileLanguage(path) === undefined)) continue;
     const folder = /[\\/]$/.test(path);
@@ -3726,13 +3780,13 @@ export function hrefPath(href: string): PathInText | undefined {
     h = at[1]!;
     line ??= Number(at[2]);
   }
-  if (h.replace(/^(?:[A-Za-z]:|\.{1,2})?[\\/]/, "") === "" || /[\0\n]/.test(h)) return undefined;
+  if (h.replace(/^(?:[A-Za-z]:|~|\.{1,2})?[\\/]/, "") === "" || /[\0\n]/.test(h)) return undefined;
   return { start: 0, end: 0, path: h, ...(line !== undefined && line > 0 ? { line } : {}), ...(/[\\/]$/.test(h) ? { folder: true as const } : {}) };
 }
 
 /** A relative path as the explorer keys it, `/` between the names and no `./` before; undefined for one that climbs out, or is absolute. */
 export function relativeFile(path: string): string | undefined {
-  if (/^([A-Za-z]:)?[\\/]/.test(path)) return undefined;
+  if (/^([A-Za-z]:)?[\\/]|^~([\\/]|$)/.test(path)) return undefined;
   const parts = path.split(/[\\/]/).filter((p) => p !== ".");
   if (parts.length === 0 || parts.some((p) => p === "" || p === "..")) return undefined;
   return parts.join("/");

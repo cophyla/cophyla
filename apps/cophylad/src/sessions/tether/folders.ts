@@ -3,7 +3,8 @@
 // one (`~` is the user's home, a relative path is under it); its folders are the entries that
 // are folders, or links to one, by name, up to 2000, without the hidden ones: a name starting
 // with a dot, and on Windows what File Explorer hides (the hidden attribute). With them, its
-// parent, the home, and the roots to start from: the drives on Windows, `/` elsewhere.
+// parent, the home, and the roots to start from: the drives on Windows, `/` elsewhere. Asked for
+// them, its files too, by the same rule and with their sizes: a viewer shows a folder that way.
 
 import type { Dirent } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
@@ -12,6 +13,7 @@ import { posix, win32 } from "node:path";
 import { RpcError } from "@cophyla/protocol";
 import type { FolderPick } from "@cophyla/protocol";
 import type { Logger } from "../../log.ts";
+import { drivePath } from "../paths.ts";
 
 /** The most folders one answer lists. */
 export const FOLDERS_MAX = 2000;
@@ -27,12 +29,17 @@ export interface FolderDeps {
 
 const byName = (a: { name: string }, b: { name: string }) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }) || (a.name < b.name ? -1 : 1);
 
-/** The folders in `path` (the user's home without it), as the picker shows them. */
-export async function listFolders(path: string | undefined, deps: FolderDeps = {}): Promise<FolderPick> {
+/** What a listing holds beyond the folders: the files, with `files`. */
+export interface ListOptions {
+  files?: boolean;
+}
+
+/** The folders in `path` (the user's home without it), as the picker shows them; its files too when asked. */
+export async function listFolders(path: string | undefined, deps: FolderDeps = {}, opts: ListOptions = {}): Promise<FolderPick> {
   const platform = deps.platform ?? process.platform;
   const p = platform === "win32" ? win32 : posix;
   const home = deps.home ?? homedir();
-  const asked = path === undefined || path === "~" ? home : /^~[\\/]/.test(path) ? p.join(home, path.slice(2)) : path;
+  const asked = path === undefined || path === "~" ? home : /^~[\\/]/.test(path) ? p.join(home, path.slice(2)) : drivePath(path, platform);
   const abs = p.resolve(home, asked);
   let isDir: boolean;
   try {
@@ -48,30 +55,42 @@ export async function listFolders(path: string | undefined, deps: FolderDeps = {
     throw refusal(e, abs);
   }
   const folders: { name: string; path: string }[] = [];
+  const files: { name: string; path: string; size: number }[] = [];
   for (const e of entries) {
     if (e.name.startsWith(".")) continue;
     const full = p.join(abs, e.name);
     let dir = e.isDirectory();
-    // a link, or a junction, to a folder is one; a broken one is nothing
-    if (!dir && e.isSymbolicLink()) dir = await stat(full).then((s) => s.isDirectory(), () => false);
-    if (!dir || deps.hidden?.(full)) continue;
-    folders.push({ name: e.name, path: full });
+    let file = e.isFile();
+    // a link, or a junction, to a folder is one, and a link to a file one of those; a broken one is nothing
+    if (!dir && e.isSymbolicLink()) {
+      const kind = await stat(full).then((s) => (s.isDirectory() ? "dir" : s.isFile() ? "file" : undefined), () => undefined);
+      dir = kind === "dir";
+      file = kind === "file";
+    }
+    if (dir ? deps.hidden?.(full) : !(opts.files && file) || deps.hidden?.(full)) continue;
+    if (dir) folders.push({ name: e.name, path: full });
+    else files.push({ name: e.name, path: full, size: 0 });
   }
   folders.sort(byName);
+  files.sort(byName);
+  const shown = files.slice(0, FOLDERS_MAX);
+  // Sizes for the files shown alone; one that went meanwhile shows as empty.
+  await Promise.all(shown.map(async (f) => (f.size = await stat(f.path).then((s) => s.size, () => 0))));
   const parent = p.dirname(abs);
   return {
     path: abs,
     ...(parent !== abs ? { parent } : {}),
     folders: folders.slice(0, FOLDERS_MAX),
-    ...(folders.length > FOLDERS_MAX ? { truncated: true as const } : {}),
+    ...(opts.files ? { files: shown } : {}),
+    ...(folders.length > FOLDERS_MAX || files.length > FOLDERS_MAX ? { truncated: true as const } : {}),
     home,
     roots: deps.roots?.() ?? [p.parse(abs).root || "/"],
   };
 }
 
-/** A listing as its audit row keeps it: the folder and how many folders it holds, not their names. */
-export function folderSummary(r: FolderPick): { path: string; folders: number; truncated?: true } {
-  return { path: r.path, folders: r.folders.length, ...(r.truncated ? { truncated: true as const } : {}) };
+/** A listing as its audit row keeps it: the folder and how many folders (and files) it holds, not their names. */
+export function folderSummary(r: FolderPick): { path: string; folders: number; files?: number; truncated?: true } {
+  return { path: r.path, folders: r.folders.length, ...(r.files ? { files: r.files.length } : {}), ...(r.truncated ? { truncated: true as const } : {}) };
 }
 
 function refusal(e: unknown, path: string): RpcError {

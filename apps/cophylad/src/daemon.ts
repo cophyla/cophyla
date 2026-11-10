@@ -1222,7 +1222,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     direct: () => direct,
     pipes: () => pipes,
     transfers: () => transfers,
-    folders: (path) => folders(path),
+    folders: (path, opts) => folders(path, opts),
     ...(opts.direct?.link ? { directTiming: opts.direct.link } : {}),
     log: log.child("nodes"),
     platformVersion: PLATFORM_VERSION,
@@ -1828,7 +1828,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   peerFilesLive.start();
   // New terminal's picker: a folder of this computer at a time.
   const folderDeps = systemFolderDeps(sessionsLog.child("terminals"));
-  const folders = (path: string | undefined) => listFolders(path, folderDeps);
+  const folders = (path: string | undefined, opts?: { files?: boolean }) => listFolders(path, folderDeps, opts);
   nodeTerminals = terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams, files, folders } : undefined;
   servesTerminals = () => tether?.available === true && !(nodes?.confinement()?.active ?? false);
 
