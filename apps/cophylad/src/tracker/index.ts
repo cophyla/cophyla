@@ -18,9 +18,10 @@
 // judging until it lifts and keeps what waits; the app is told (`tracker.state`'s health).
 //
 // The primary keeps it in kv: one row per ask under `tracker` (`<session>/<id>`), how far each
-// followed session's events were read (`~seen/<session>`), and the settings under
-// `tracker.settings`. A restart catches up on a session of this machine's from its own events
-// after what was read. An ask goes a week after its session ended, or when dismissed.
+// followed session's events were read (`~seen/<session>`: up to its oldest message or request
+// not yet judged, and the last request read), and the settings under `tracker.settings`. A
+// restart catches up on a session of this machine's from its own events after that, a request
+// already read passed over. An ask goes a week after its session ended, or when dismissed.
 
 import { newId, TRACKED_ANSWERS_MAX, TRACKED_TITLE_MAX } from "@cophyla/protocol";
 import type { Session, SessionEvent, Tracked, TrackedAnswer, TrackedStatus, TrackerHealth, TrackerState } from "@cophyla/protocol";
@@ -63,6 +64,8 @@ const TRIES = 2;
 /** Failed questions in a row after which the judge is told as unavailable. */
 const FAILURES_UNWELL = 4;
 export const BUSY_EVERY_MS = 120_000;
+/** A message that comes once its turn is over is judged this soon, with what else comes now. */
+const SOON_MS = 1500;
 /** The least a stop of the judging lasts. */
 const MIN_PAUSE_MS = 30_000;
 /** How long the judging stops when no account can judge. */
@@ -80,6 +83,12 @@ interface Settings {
   on: boolean;
   sessions: Record<string, boolean>;
   profile?: string;
+}
+
+/** How far a session was read, as kv keeps it: every event to `seq` judged or let go, and the last request read. */
+interface Mark {
+  seq: number;
+  prompts: number;
 }
 
 interface Prompt {
@@ -107,8 +116,12 @@ interface Track {
   queued: boolean;
   lastGradeAt: number;
   gradeTries: number;
+  /** The last request of the user's put to the judge, or let go: a catch-up reads none again. */
+  prompted: number;
   /** Its events since the last start were checked against how far it was read before. */
   caughtUp: boolean;
+  /** Its missed events are being taken in: the judging waits for the last of them. */
+  catching?: boolean;
 }
 
 export interface TrackerDeps {
@@ -127,6 +140,8 @@ export interface TrackerDeps {
   catchUpDelayMs?: number;
   /** The least a stop of the judging lasts (`MIN_PAUSE_MS`); a test shortens it. */
   minPauseMs?: number;
+  /** How soon a message after its turn's end is judged (`SOON_MS`); a test shortens it. */
+  soonMs?: number;
 }
 
 const RANK: Record<TrackedStatus, number> = { open: 0, partial: 1, answered: 2 };
@@ -149,8 +164,11 @@ export class Tracker {
   private working = false;
   private pausedUntil = 0;
   private resume?: ReturnType<typeof setTimeout>;
+  /** The latest event heard of each followed session. */
   private seen = new Map<string, number>();
   private dirtySeen = new Set<string>();
+  /** The marks last written, so an unchanged one is not written again. */
+  private written = new Map<string, string>();
   private offs: (() => void)[] = [];
   private timers: ReturnType<typeof setInterval | typeof setTimeout>[] = [];
   private idleWaiters: (() => void)[] = [];
@@ -244,7 +262,10 @@ export class Tracker {
     this.settings = next;
     this.d.store.kv.put(TRACKER_SETTINGS_NS, SETTINGS_KEY, next, this.now());
     // a session followed afresh starts from now: what it said while it was not followed is not caught up on
-    if (flipped) for (const key of this.d.store.kv.list(TRACKER_KV_NS, SEEN)) this.d.store.kv.delete(TRACKER_KV_NS, key);
+    if (flipped) {
+      for (const key of this.d.store.kv.list(TRACKER_KV_NS, SEEN)) this.d.store.kv.delete(TRACKER_KV_NS, key);
+      this.written.clear();
+    }
     for (const id of known) {
       const now = this.follows(id);
       if (now === before.get(id)) continue;
@@ -253,6 +274,7 @@ export class Tracker {
         this.d.store.kv.delete(TRACKER_KV_NS, SEEN + id);
         this.seen.delete(id);
         this.dirtySeen.delete(id);
+        this.written.delete(id);
       }
     }
     if (patch.profile !== undefined && this.health?.state === "unavailable") {
@@ -296,7 +318,7 @@ export class Tracker {
   private trackOf(id: string): Track {
     let t = this.tracks.get(id);
     if (!t) {
-      t = { prompts: [], said: [], queued: false, lastGradeAt: 0, gradeTries: 0, caughtUp: false };
+      t = { prompts: [], said: [], queued: false, lastGradeAt: 0, gradeTries: 0, prompted: -1, caughtUp: false };
       this.tracks.set(id, t);
     }
     return t;
@@ -328,14 +350,18 @@ export class Tracker {
         t.lastText = p.text;
         t.said.push({ seq: e.seq, at: e.at, text: p.text });
         if (t.said.length > PENDING_MAX) t.said.splice(0, t.said.length - PENDING_MAX);
-        if (!t.queued && !t.timer) {
-          const wait = Math.max(0, t.lastGradeAt + this.busyEveryMs - this.now());
-          t.timer = setTimeout(() => {
-            t.timer = undefined;
-            this.due(id);
-          }, wait || this.busyEveryMs);
-          (t.timer as { unref?: () => void }).unref?.();
-        }
+        if (t.queued) return;
+        // the turn is over (its end can be told before its last words are read): judged in a
+        // moment, with whatever else of it comes now; while it goes on, every busyEveryMs
+        const over = this.d.session(id)?.status !== "busy";
+        if (over && t.timer) clearTimeout(t.timer);
+        else if (t.timer) return;
+        const wait = over ? (this.d.soonMs ?? SOON_MS) : Math.max(0, t.lastGradeAt + this.busyEveryMs - this.now()) || this.busyEveryMs;
+        t.timer = setTimeout(() => {
+          t.timer = undefined;
+          this.due(id);
+        }, wait);
+        (t.timer as { unref?: () => void }).unref?.();
         return;
       }
       case "status":
@@ -352,7 +378,7 @@ export class Tracker {
 
   private due(id: string): void {
     const t = this.tracks.get(id);
-    if (!t) return;
+    if (!t || t.catching) return;
     if (t.timer) {
       clearTimeout(t.timer);
       t.timer = undefined;
@@ -415,6 +441,7 @@ export class Tracker {
         const r = await this.d.judge.extract({ text: p.text, ...(p.before !== undefined ? { before: p.before } : {}), asks: asks.map((a, i) => ({ n: i + 1, title: a.title })) });
         this.judged();
         t.prompts.shift();
+        t.prompted = Math.max(t.prompted, p.seq);
         for (const a of r.amend) {
           const row = asks[a.ask - 1];
           if (row && row.title !== a.title) this.save({ ...row, title: a.title.slice(0, TRACKED_TITLE_MAX), updatedAt: this.now() });
@@ -424,6 +451,7 @@ export class Tracker {
         if (this.stoppedBy(e)) return true;
         if (++p.tries >= TRIES) {
           t.prompts.shift();
+          t.prompted = Math.max(t.prompted, p.seq);
           // what the judge could not read is still followed, under its first words
           if (p.text.split(/\s+/).length >= 4) this.add(id, p, firstLine(p.text));
         }
@@ -595,27 +623,52 @@ export class Tracker {
     this.dirtySeen.add(id);
   }
 
+  /**
+   * Writes down how far each followed session was read: up to its oldest message or request
+   * still waiting for the judge, so a stop loses none of them, with the last request read.
+   */
   private flushSeen(): void {
-    for (const id of this.dirtySeen) {
-      const seq = this.seen.get(id);
-      if (seq !== undefined && this.follows(id)) this.d.store.kv.put(TRACKER_KV_NS, SEEN + id, seq, this.now());
+    for (const id of new Set([...this.dirtySeen, ...this.tracks.keys()])) {
+      const latest = this.seen.get(id);
+      if (latest === undefined || !this.follows(id)) continue;
+      const t = this.tracks.get(id);
+      const waiting = Math.min(t?.said[0]?.seq ?? Infinity, t?.prompts[0]?.seq ?? Infinity);
+      const mark: Mark = { seq: Math.min(latest, waiting - 1), prompts: t?.prompted ?? -1 };
+      const json = JSON.stringify(mark);
+      if (this.written.get(id) === json) continue;
+      this.written.set(id, json);
+      this.d.store.kv.put(TRACKER_KV_NS, SEEN + id, mark, this.now());
     }
     this.dirtySeen.clear();
   }
 
-  /** A session's events between what was read before the start and `upTo`, taken as if they had just come: only a session of this node's has them. */
+  /** A session's mark as written; none for one not followed since it was last switched on. */
+  private markOf(id: string): Mark | undefined {
+    const v = this.d.store.kv.get(TRACKER_KV_NS, SEEN + id) as Partial<Mark> | undefined;
+    if (!v || typeof v.seq !== "number") return undefined;
+    return { seq: v.seq, prompts: typeof v.prompts === "number" ? v.prompts : -1 };
+  }
+
+  /** A session's events between where it was read to before the start and `upTo`, taken as if they had just come, a request read already passed over: only a session of this node's has them. */
   private catchUp(id: string, t: Track, upTo: number): void {
-    const was = this.d.store.kv.get(TRACKER_KV_NS, SEEN + id);
-    if (typeof was !== "number" || upTo <= was + 1 || !this.d.history) return;
+    const mark = this.markOf(id);
+    if (!mark) return;
+    t.prompted = Math.max(t.prompted, mark.prompts);
+    if (upTo <= mark.seq + 1 || !this.d.history) return;
     let missed: SessionEvent[];
     try {
-      missed = this.d.history(id, { before: upTo, limit: CATCH_UP_EVENTS }).filter((e) => e.seq > was && e.seq < upTo);
+      missed = this.d.history(id, { before: upTo, limit: CATCH_UP_EVENTS }).filter((e) => e.seq > mark.seq && e.seq < upTo && !(e.kind === "user_turn" && e.seq <= mark.prompts));
     } catch {
       return;
     }
     if (missed.length === 0) return;
-    this.d.log.info("the tracker caught up on a session", { session: id, from: was + 1, to: upTo - 1, events: missed.length });
-    for (const e of missed.sort((a, b) => a.seq - b.seq)) this.take(id, t, e);
+    this.d.log.info("the tracker caught up on a session", { session: id, from: mark.seq + 1, to: upTo - 1, events: missed.length });
+    t.catching = true;
+    try {
+      for (const e of missed.sort((a, b) => a.seq - b.seq)) this.take(id, t, e);
+    } finally {
+      t.catching = false;
+    }
     // what came while it was away is judged now, not at the next turn's end
     if (t.said.length > 0 || t.prompts.length > 0) this.due(id);
   }

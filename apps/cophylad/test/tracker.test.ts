@@ -93,6 +93,7 @@ function kit(opts: { on?: boolean; busyEveryMs?: number; routes?: boolean; store
     busyEveryMs: opts.busyEveryMs ?? 60_000,
     catchUpDelayMs: 20,
     minPauseMs: 50,
+    soonMs: 30,
   });
   tracker.start();
   if (opts.on !== false) tracker.set({ on: true });
@@ -276,6 +277,21 @@ describe("what answers an ask", () => {
     k.tracker.stop();
   });
 
+  test("a message read after its turn's end (the end can be told first) is judged a moment later, not at the next turn", async () => {
+    const k = kit({ busyEveryMs: 60_000 });
+    k.emit(S, "user_turn", { text: "what is the port?", source: "typed" });
+    await k.tracker.settled();
+    k.emit(S, "status", { status: "idle" });
+    k.sessions.set(S, session(S, { status: "idle" }));
+    k.judge.onGrade = () => ({ results: [{ ask: 1, status: "answered", messages: [1] }] });
+    k.emit(S, "assistant_text", { text: "It is 4817." });
+    await sleep(120);
+    await k.tracker.settled();
+    expect(k.judge.grades).toHaveLength(1);
+    expect(k.tracker.list(S)[0]!.status).toBe("answered");
+    k.tracker.stop();
+  });
+
   test("an ask never goes back on its own, and the user's mark is left alone", async () => {
     const k = kit();
     k.emit(S, "user_turn", { text: "fix the tests", source: "typed" });
@@ -401,7 +417,7 @@ describe("after a restart", () => {
     first.emit(S, "user_turn", { text: "find the leak", source: "typed" });
     await first.tracker.settled();
     first.tracker.stop();
-    expect(store.kv.get(TRACKER_KV_NS, `~seen/${S}`)).toBe(0);
+    expect(store.kv.get(TRACKER_KV_NS, `~seen/${S}`)).toEqual({ seq: 0, prompts: 0 });
 
     // the daemon was down while the agent answered and finished its turn
     const judge = new FakeJudge();
@@ -412,13 +428,41 @@ describe("after a restart", () => {
     const log = second.events.get(S)!;
     const missed = (kind: SessionEvent["kind"], payload: unknown) => log.push({ session: S, seq: log.length, at: 5000 + log.length, kind, payload });
     missed("assistant_text", { text: "Looking." });
+    // a turn's end in the middle of what is caught up on: still one question, with all of it
+    missed("status", { status: "idle" });
     missed("assistant_text", { text: "The leak is the unclosed tail in recorder.ts." });
     missed("status", { status: "idle" });
     await sleep(60);
     await second.tracker.settled();
     expect(judge.grades.map((g) => g.messages.map((m) => m.text))).toEqual([["Looking.", "The leak is the unclosed tail in recorder.ts."]]);
     const t = second.tracker.list(S)[0]!;
-    expect([t.status, t.answers.map((a) => a.seq)]).toEqual(["answered", [2]]);
+    expect([t.status, t.answers.map((a) => a.seq)]).toEqual(["answered", [3]]);
+    second.tracker.stop();
+  });
+
+  test("a stop loses no message still waiting for the judge, and reads no request twice", async () => {
+    const store = new Store(":memory:");
+    store.migrate();
+    const first = kit({ store, busyEveryMs: 60_000 });
+    first.judge.onExtract = () => ({ asks: [{ title: "Find the leak" }], amend: [] });
+    first.emit(S, "user_turn", { text: "find the leak", source: "typed" });
+    await first.tracker.settled();
+    // the answer came, but the turn goes on: it waits for the judge, and the daemon stops
+    const answer = first.emit(S, "assistant_text", { text: "The leak is the unclosed tail." });
+    first.emit(S, "tool_call", { tool: "Bash" });
+    first.tracker.stop();
+    expect(store.kv.get(TRACKER_KV_NS, `~seen/${S}`)).toEqual({ seq: answer.seq - 1, prompts: 0 });
+
+    const judge = new FakeJudge();
+    judge.onGrade = () => ({ results: [{ ask: 1, status: "answered", messages: [1] }] });
+    const second = kit({ store, judge });
+    second.events.set(S, [...first.events.get(S)!]);
+    second.sessions.set(S, session(S, { status: "idle" }));
+    await sleep(60);
+    await second.tracker.settled();
+    expect(judge.extracts).toHaveLength(0);
+    expect(judge.grades.map((g) => g.messages.map((m) => m.text))).toEqual([["The leak is the unclosed tail."]]);
+    expect(second.tracker.list(S).map((t) => [t.status, t.answers.map((a) => a.seq)])).toEqual([["answered", [answer.seq]]]);
     second.tracker.stop();
   });
 
@@ -429,7 +473,7 @@ describe("after a restart", () => {
     k.emit(S, "user_turn", { text: "first ask", source: "typed" });
     await k.tracker.settled();
     k.tracker.stop();
-    expect(store.kv.get(TRACKER_KV_NS, `~seen/${S}`)).toBe(0);
+    expect(store.kv.get(TRACKER_KV_NS, `~seen/${S}`)).toEqual({ seq: 0, prompts: 0 });
     const again = kit({ store });
     again.tracker.set({ session: { id: S, on: false } });
     again.tracker.set({ session: { id: S, on: true } });
