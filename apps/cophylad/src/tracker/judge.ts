@@ -1,9 +1,10 @@
 // The tracker's judge: two short questions put to a small model through the user's own Claude
 // Code, signed in as they are (`claude -p`), so judging costs their subscription and no key.
-// `extract` reads a message the user gave an agent and says what in it is worth following: new
-// asks, each in a line, or a change to one already followed, or nothing (a "yes", a go-ahead
-// to go on). `grade` reads the agent's new messages against the asks still open and says which
-// of them answer which, in part or whole.
+// `extract` reads a message the user gave an agent and says what in it is worth following:
+// what the user expects an answer to or asked to be told (a question, something to look into
+// and report, "let me know when"), each in a line, or a change to one already followed, or
+// nothing (work to do, a "yes", a go-ahead to go on). `grade` reads the agent's new
+// messages against the asks still open and says which of them answer which, in part or whole.
 //
 // A run is as bare as Claude Code allows while it is still the user's login: no user settings
 // (so none of the user's hooks, which would report it as a session), no MCP servers, no tools,
@@ -89,16 +90,22 @@ export const GRADE_CHARS = 24000;
 /** The longest line the judge may give an ask. */
 export const TITLE_CHARS = 80;
 
-export const EXTRACT_SYSTEM = `You keep a list of what a user asked an AI coding agent, so that later they can see whether each thing was answered.
+export const EXTRACT_SYSTEM = `You keep a list of what a user is waiting to hear back from an AI coding agent, so that later they can see whether the agent told them.
 
 You are given the user's new message to the agent, the agent's message just before it, and the asks already on the list, numbered.
 
-Decide what the new message asks the agent to do or to answer:
-- A new request or question: add an ask. Its title is one line of at most ${TITLE_CHARS} characters, in the user's own terms, a question or an instruction, with no full stop at the end.
-- Several separate requests: one ask each, at most three. Do not split one request into its steps.
-- A go-ahead to do something the agent proposed: an ask naming what was proposed, when the agent's message makes it clear.
-- A change to an ask already listed (a correction, an addition, a narrower scope): amend that ask with a title that covers both.
-- Nothing to follow: no ask. This is a reply to the agent's question, a "yes" or "continue" to go on with what it was doing, thanks, an acknowledgement, or a slash command.
+An ask is something the user expects an answer to, or a clear thing they asked to be told:
+- A question: why, what, how, which, whether, how much, should we.
+- A request to find something out and report it: look into, check, investigate, find out, compare, explain, review and tell me.
+- A request to be told of something: let me know when or if, tell me what you find, report back.
+
+Work the user wants done is not an ask: fix, build, add, rename, change, refactor, deploy, write, run, commit, make it so. Do not add one for it, even a large or important one. Work is still work when it is put as a question or a wish: "can you add ...", "could you fix ...", "I want the page to show ...", "we need ..." are work, not questions. When a message asks for work and also asks a question about it ("fix it and tell me what broke it"), add an ask for the question alone ("What broke it?").
+
+Decide what the new message adds:
+- A new ask: its title is one line of at most ${TITLE_CHARS} characters, put as the question the user wants answered (or "Tell me when ..." for a thing to be told), in the user's own terms, with no full stop at the end.
+- Several separate questions: one ask each, at most three. Do not split one question into its parts.
+- A change to an ask already listed (a correction, an addition, a narrower question): amend that ask with a title that covers both.
+- Nothing to follow: no ask. This is work to do, a reply to the agent's question, a "yes" or "continue", thanks, an acknowledgement, or a slash command.
 
 Reply with JSON only, nothing before or after it:
 {"asks": [{"title": "..."}], "amend": [{"ask": 1, "title": "..."}]}
@@ -109,8 +116,8 @@ export const GRADE_SYSTEM = `You check whether an AI coding agent's messages ans
 You are given the user's open asks, numbered, each with its title and the start of the user's own words, and the agent's new messages, numbered.
 
 For each ask, decide from these messages alone:
-- "answered": the messages give the user what the ask wanted: the answer to the question, or a report that the work asked for is done, or a definite statement that it cannot be done and why.
-- "partial": the messages answer part of it: part of the question, some of the work reported done, or a finding that settles only some of it.
+- "answered": the messages tell the user what the ask wanted to know: the answer to the question, the finding of what they asked to be looked into, the thing they asked to be told of. A clear report that the agent cannot answer it, with what stands in the way (a missing key, no access, it does not exist), is "answered" too, not "partial": that is what the user needs to know.
+- "partial": the messages answer part of it: part of the question, or a finding that settles only some of it.
 - "open": nothing in these messages answers it. A plan, a promise, "let me check", a question back to the user, or progress notes without a result are not answers.
 
 For "partial" and "answered", list the numbers of the messages that carry the answer.
