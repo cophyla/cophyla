@@ -4,8 +4,9 @@
 //
 // It hears every session's events on the primary, which carries its linked nodes' too, and
 // follows the sessions the user switched it on for: every one while it is on, less those
-// switched off, or only those switched on while it is off. A message of the user's (typed,
-// sent from the app, said, or a leader's, never another agent's or the brain's) is put to the
+// switched off, or only those switched on while it is off. A message of the user's own (typed
+// into its terminal, or sent or said from one of their apps; never another agent's, a
+// leader's, the brain's, or what a script or tool sent through cophylad) is put to the
 // judge (`judge.ts`) at once, which says what in it is worth following: each such thing
 // becomes an open ask, in a line. The agent's messages (what it writes for the user to read,
 // not its tool calls) are gathered and put to the judge in one question with the asks still
@@ -33,8 +34,21 @@ import type { Store } from "../store/index.ts";
 import { cut, GRADE_CHARS, JudgeLimited, JudgeUnavailable, MESSAGE_CHARS, plainPrompt, WORDS_CHARS } from "./judge.ts";
 import type { Judge, JudgeAsk } from "./judge.ts";
 
-/** The sources of a user turn that are the user's own words: typed, sent from an app, given to a busy Codex, met by its hook, or a leader's. */
-const USERS = new Set(["typed", "sent", "queued", "hook", "lead"]);
+/**
+ * The sources of a user turn that can be the user's own words: typed, sent from an app, given
+ * to a busy Codex, met by its hook. Never another agent's (`agent`, `peer`), a leader's (an
+ * agent speaking as the user), or the brain's.
+ */
+const USERS = new Set(["typed", "sent", "queued", "hook"]);
+/**
+ * A user turn cophylad typed or gave (it carries the send's `ref`) is the user's own only when
+ * the send came from one of their apps (`noteSent`): a script or a tool sends the same way. Its
+ * turn can be read before the send's answer is back: it waits this long for it.
+ */
+const SENT_WAIT_MS = 15_000;
+/** How long a send of the user's is remembered: a held one (focus) is typed up to two hours later. */
+const SENT_KEEP_MS = 3 * 60 * 60_000;
+const SENT_MAX = 2000;
 /** A user turn that is no request: a slash command, or a notice the harness wrote in the user's place. */
 const NOT_ASKED = /^\s*(\/|<task-notification|<command-|<local-command|<bash-|<user-prompt-submit-hook|\[Request interrupted)/;
 /** The same words met twice this soon (a hook and the transcript) are one message. */
@@ -142,6 +156,8 @@ export interface TrackerDeps {
   minPauseMs?: number;
   /** How soon a message after its turn's end is judged (`SOON_MS`); a test shortens it. */
   soonMs?: number;
+  /** How long a turn cophylad typed waits to be told as the user's (`SENT_WAIT_MS`); a test shortens it. */
+  sentWaitMs?: number;
 }
 
 const RANK: Record<TrackedStatus, number> = { open: 0, partial: 1, answered: 2 };
@@ -169,6 +185,10 @@ export class Tracker {
   private dirtySeen = new Set<string>();
   /** The marks last written, so an unchanged one is not written again. */
   private written = new Map<string, string>();
+  /** The sends of the user's apps, by ref, with when each was told. */
+  private sent = new Map<string, number>();
+  /** Turns cophylad typed whose send is not told yet, by ref. */
+  private waiting = new Map<string, { session: string; prompt: Prompt; timer: ReturnType<typeof setTimeout> }>();
   private offs: (() => void)[] = [];
   private timers: ReturnType<typeof setInterval | typeof setTimeout>[] = [];
   private idleWaiters: (() => void)[] = [];
@@ -206,6 +226,8 @@ export class Tracker {
     this.timers = [];
     if (this.resume) clearTimeout(this.resume);
     for (const t of this.tracks.values()) if (t.timer) clearTimeout(t.timer);
+    for (const w of this.waiting.values()) clearTimeout(w.timer);
+    this.waiting.clear();
     this.flushSeen();
   }
 
@@ -339,10 +361,11 @@ export class Tracker {
         if (typeof p.text !== "string" || typeof p.source !== "string" || !USERS.has(p.source)) return;
         const text = plainPrompt(p.text);
         if (text === "" || NOT_ASKED.test(text)) return;
-        if (t.lastPrompt && t.lastPrompt.text === text && e.at - t.lastPrompt.at < SAME_PROMPT_MS) return;
-        t.lastPrompt = { text, at: e.at };
-        t.prompts.push({ seq: e.seq, at: e.at, text, ...(t.lastText !== undefined ? { before: t.lastText } : {}), tries: 0 });
-        this.due(id);
+        const prompt: Prompt = { seq: e.seq, at: e.at, text, ...(t.lastText !== undefined ? { before: t.lastText } : {}), tries: 0 };
+        const ref = (p as { ref?: unknown }).ref;
+        // sent through cophylad: the user's only when one of their apps sent it, which may be told a moment after
+        if (typeof ref === "string" && !this.sent.has(ref)) this.hold(id, ref, prompt);
+        else this.ask(id, t, prompt);
         return;
       }
       case "assistant_text": {
@@ -374,6 +397,39 @@ export class Tracker {
       default:
         return;
     }
+  }
+
+  /** A request of the user's, to be read for what it asks. */
+  private ask(id: string, t: Track, p: Prompt): void {
+    if (t.lastPrompt && t.lastPrompt.text === p.text && p.at - t.lastPrompt.at < SAME_PROMPT_MS) return;
+    t.lastPrompt = { text: p.text, at: p.at };
+    t.prompts.push(p);
+    this.due(id);
+  }
+
+  /** A turn cophylad typed, kept until its send is told as one of the user's apps', and let go after `SENT_WAIT_MS`. */
+  private hold(id: string, ref: string, p: Prompt): void {
+    if (this.waiting.has(ref)) return;
+    const timer = setTimeout(() => this.waiting.delete(ref), this.d.sentWaitMs ?? SENT_WAIT_MS);
+    (timer as { unref?: () => void }).unref?.();
+    this.waiting.set(ref, { session: id, prompt: p, timer });
+  }
+
+  /**
+   * A message one of the user's apps sent a session (the desktop app, the phone, a browser),
+   * by the `ref` its send answered: the turn that carries it is the user's own. One a script or
+   * a tool sent through cophylad is never told, and its turn is no ask.
+   */
+  noteSent(session: string, ref: string): void {
+    const now = this.now();
+    this.sent.set(ref, now);
+    if (this.sent.size > SENT_MAX) for (const [r, at] of this.sent) if (now - at > SENT_KEEP_MS || this.sent.size > SENT_MAX) this.sent.delete(r);
+    const w = this.waiting.get(ref);
+    if (!w || w.session !== session) return;
+    clearTimeout(w.timer);
+    this.waiting.delete(ref);
+    if (this.stopped || !this.follows(session)) return;
+    this.ask(session, this.trackOf(session), w.prompt);
   }
 
   private due(id: string): void {

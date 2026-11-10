@@ -17,6 +17,7 @@ import { BACKUP_EXCLUDED_KV_NS } from "../src/cloud/backup.ts";
 import { RESERVED_KV_NS, TRACKER_KV_NS, TRACKER_SETTINGS_NS } from "../src/grants/namespaces.ts";
 import { EXCLUDED_KV_NS } from "../src/nodes/replication.ts";
 import { trackerMethods } from "../src/tracker/methods.ts";
+import { usersApp } from "../src/tracker/apps.ts";
 import { silentLogger } from "../src/log.ts";
 import { Store } from "../src/store/index.ts";
 import { Tracker } from "../src/tracker/index.ts";
@@ -94,6 +95,7 @@ function kit(opts: { on?: boolean; busyEveryMs?: number; routes?: boolean; store
     catchUpDelayMs: 20,
     minPauseMs: 50,
     soonMs: 30,
+    sentWaitMs: 80,
   });
   tracker.start();
   if (opts.on !== false) tracker.set({ on: true });
@@ -159,7 +161,7 @@ describe("what becomes an ask", () => {
     k.tracker.stop();
   });
 
-  test("only the user's own words count: never another agent's, the brain's, a slash command, a harness notice or the same words twice", async () => {
+  test("only the user's own words count: never another agent's, a leader's, the brain's, a slash command, a harness notice or the same words twice", async () => {
     const k = kit();
     k.emit(S, "user_turn", { text: "from another agent", source: "agent" });
     k.emit(S, "user_turn", { text: "from a peer", source: "peer" });
@@ -167,11 +169,33 @@ describe("what becomes an ask", () => {
     k.emit(S, "user_turn", { text: "/clear", source: "typed" });
     k.emit(S, "user_turn", { text: "<task-notification><task-id>b1</task-id></task-notification>", source: "typed" });
     k.emit(S, "user_turn", { text: "   ", source: "typed" });
-    k.emit(S, "user_turn", { text: "a leader's words", source: "lead" });
+    k.emit(S, "user_turn", { text: "a leader's words, as the user", source: "lead", by: "chat", ref: "cophylad-lead-1" });
     k.emit(S, "user_turn", { text: "check the logs", source: "typed" });
     k.emit(S, "user_turn", { text: "check the logs", source: "hook" });
     await k.tracker.settled();
-    expect(k.judge.extracts.map((e) => e.text)).toEqual(["a leader's words", "check the logs"]);
+    expect(k.judge.extracts.map((e) => e.text)).toEqual(["check the logs"]);
+    k.tracker.stop();
+  });
+
+  test("a message cophylad typed is the user's only when one of their apps sent it, told before or a moment after its turn", async () => {
+    const k = kit();
+    // the app's send answered first, then its turn
+    k.tracker.noteSent(S, "cophylad-app-1");
+    k.emit(S, "user_turn", { text: "from the app", source: "typed", ref: "cophylad-app-1" });
+    // its turn read before the send's answer came back
+    k.emit(S, "user_turn", { text: "from the phone", source: "sent", ref: "cophylad-app-2" });
+    await sleep(20);
+    k.tracker.noteSent(S, "cophylad-app-2");
+    // a script's send through cophylad: never told, let go
+    k.emit(S, "user_turn", { text: "[BOARDWATCH] Automatic note from board_watch.py: raspberry has been idle 27 min", source: "typed", ref: "cophylad-script-1" });
+    await sleep(150);
+    k.tracker.noteSent(S, "cophylad-script-1");
+    await k.tracker.settled();
+    expect(k.judge.extracts.map((e) => e.text)).toEqual(["from the app", "from the phone"]);
+    // typed by hand into its terminal: no ref, the user's
+    k.emit(S, "user_turn", { text: "typed in the terminal", source: "typed", promptId: "p-1" });
+    await k.tracker.settled();
+    expect(k.judge.extracts.map((e) => e.text)).toEqual(["from the app", "from the phone", "typed in the terminal"]);
     k.tracker.stop();
   });
 
@@ -555,6 +579,14 @@ describe("the judge's run", () => {
 });
 
 describe("the tracker's place", () => {
+  test("the user's apps are the desktop app, here or relayed, the phone and a browser; a script, the CLI or a kit is none", () => {
+    const client = (kind: "ui" | "controller", name?: string) => ({ id: "cli_01ARZ3NDEKTSV4RRFFQ69G5FB7", kind, ...(name ? { name } : {}), scopes: [], via: "direct", audio: { in: false, out: false }, connectedAt: 1 }) as never;
+    expect(usersApp({ client: client("ui", "desktop") })).toBe(true);
+    expect(usersApp({ client: client("controller", "Samsung") })).toBe(true);
+    expect(usersApp({ client: client("ui", "web"), browser: true })).toBe(true);
+    for (const name of ["cophylad cli", "board_watch", "kit setup", undefined]) expect(usersApp({ client: client("ui", name) })).toBe(false);
+  });
+
   test("its kv is the daemon's own: never the brain's, replicated to the backups, never in the cloud backup", () => {
     for (const ns of [TRACKER_KV_NS, TRACKER_SETTINGS_NS]) {
       expect(RESERVED_KV_NS).toContain(ns);

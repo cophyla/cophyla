@@ -127,6 +127,7 @@ import { transferMethods } from "./transfers/methods.ts";
 import { Tracker } from "./tracker/index.ts";
 import { ClaudeJudge } from "./tracker/judge.ts";
 import { trackerMethods } from "./tracker/methods.ts";
+import { usersApp } from "./tracker/apps.ts";
 import { openSource } from "./transfers/source.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
@@ -1985,6 +1986,18 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
     ...trackerMethods({ tracker: () => (routesHere() ? trackerLive : undefined) }),
   }, forwardHost);
+  // What one of the user's own apps sent a session (the desktop app, the phone, a browser), by
+  // its ref, to the tracker: a script's or a tool's send through cophylad is typed the same way,
+  // and only the user's own words are asks. Here, past the forwarding, so it is every machine's.
+  const sendMethod = methods["session.send"]!;
+  methods["session.send"] = {
+    ...sendMethod,
+    handler: async (p, ctx) => {
+      const r = await sendMethod.handler(p, ctx);
+      if (r.ref !== undefined && usersApp(ctx)) trackerLive.noteSent(p.id, r.ref);
+      return r;
+    },
+  };
   const signals = { ...chatSignals({ activity }), ...voiceSignals({ voice, speech: deliver }), ...terminalSignals({ ...(terminalStreams ? { streams: terminalStreams } : {}), remote: nodes.remoteTerminals }), ...directSignals({ clients: directClients }), ...pipeSignals({ pipes }) };
   const remoteModule = remote;
   const initial = () => {
