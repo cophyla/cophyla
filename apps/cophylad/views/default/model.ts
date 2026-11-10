@@ -29,8 +29,10 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
+import type { Tracked, TrackerState } from "@cophyla/protocol";
 import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, Team, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare, TeamOffer } from "@cophyla/protocol";
 import { applyTalk } from "./talkmodel.ts";
+import { applyTrack } from "./trackmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
 import type { Access, Ask, AskAnswer, AssistantHarness, AssistantState, AuditEntry, BackupState, BrainContext, Client, ClientNotificationParams, Connection, ContentBlock, ConversationSpend, Controller, DisplaySize, DoorState, FileText, FolderListing, FolderPick, GitState, Grant, GrantKind, GrantRole, HarnessProfile, LanState, LimitWindow, Message, MetricsSample, Node, NodeId, Platform, ProcessOwner, ProfileLimits, RemoteHost, RemoteState, RemoteViewer, Scope, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TurnProgress, TurnStep, ViewManifest, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 
@@ -277,6 +279,12 @@ export interface ViewState {
   talkOn?: boolean;
   /** The agents in focus now, by session, from `focus.list` and `focus.state`, while connected. */
   focus: Map<string, Focus>;
+  /** The asks the tracker follows, by id, from `tracked.list` and `tracked.state`: kept through a disconnect, until the next list replaces them. */
+  tracked: Map<string, Tracked>;
+  /** The node keeps a tracker: `tracked.list` answered. Refused by an older node or app (false), or not asked yet, no strip or switch shows. */
+  trackOn?: boolean;
+  /** The tracker's settings and health, from `tracker.get` and `tracker.state`. */
+  tracker?: TrackerState;
   /** The leaders, by speaker (`chat` or a session's id), from `lead.list` and `lead.state`, while connected. */
   leaders: Map<string, Leader>;
   /** The node keeps leaders: `lead.list` answered. Refused by an older node or app (false), or not asked yet, no lead control shows. */
@@ -412,6 +420,14 @@ export type Action =
   | { type: "focus"; focus: { session: string; focus: Focus }[] }
   /** An agent took focus, or its focus ended (`focus` absent). */
   | { type: "focus.state"; params: { session: string; focus?: Focus } }
+  /** `tracked.list`'s answer; none when the node or the app refused it, being older than the tracker. */
+  | { type: "tracked"; tracked?: Tracked[] }
+  /** An ask the tracker follows, new or changed, or dismissed (its last word). */
+  | { type: "tracked.state"; params: Tracked }
+  /** `tracker.get`'s answer; none when it was refused. */
+  | { type: "tracker"; tracker?: TrackerState }
+  /** The tracker's settings or health changed. */
+  | { type: "tracker.state"; params: TrackerState }
   /** `lead.list`'s answer; none when the node or the app refused it, being older than leaders. */
   | { type: "leaders"; leaders?: Leader[] }
   /** The leaders, every one, as one was made, changed or went. */
@@ -515,6 +531,7 @@ export function initialState(): ViewState {
     groupPosts: new Map(),
     talks: new Map(),
     talkPages: new Map(),
+    tracked: new Map(),
     focus: new Map(),
     leaders: new Map(),
     teammates: new Map(),
@@ -743,7 +760,7 @@ export function trimTimeline(c: SessionCard, keep = TIMELINE_KEEP, slack = TIMEL
 
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
-  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action)) return state;
+  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action) || applyTrack(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -1200,6 +1217,12 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "talk.page":
       // folded by applyTalk, above
       return state;
+    case "tracked":
+    case "tracked.state":
+    case "tracker":
+    case "tracker.state":
+      // folded by applyTrack, above
+      return state;
     case "error":
       state.errors.push(action.message);
       state.errorsSeen++;
@@ -1258,6 +1281,10 @@ export function chatDraw(action: Action): ChatDraw {
     case "talk.page.loading":
     case "talk.page.failed":
     case "talk.page":
+    case "tracked":
+    case "tracked.state":
+    case "tracker":
+    case "tracker.state":
       return "none";
     case "chat.delta":
     case "chat.retract":

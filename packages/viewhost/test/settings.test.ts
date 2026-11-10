@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -842,5 +842,44 @@ describe("the host as a paired device", () => {
     const words = deviceEnds({ ...at, name: "Library PC", session: true, expiresAt: now + 12 * 3_600_000 }, now, "en-GB");
     expect(words).toMatch(/^This is a shared computer: nothing is kept here, and its access ends when this tab closes, and by \d\d:\d\d at the latest\.$/);
     expect(deviceEnds({ ...at, name: "Library PC", session: true }, now)).toBe("This is a shared computer: nothing is kept here, and its access ends when this tab closes.");
+  });
+});
+
+describe("the Sessions page's Asks", () => {
+  test("the switch says what on and off follow, counts the agents set on their own, and says when the checking stops", () => {
+    const on = trackerRow({ on: true, sessions: {} });
+    expect(on.on).toBe(true);
+    expect(on.help).toContain("Turn one agent off with Track in its header.");
+    expect(on.note).toBeUndefined();
+    const off = trackerRow({ on: false, sessions: { a: true, b: false } });
+    expect(off.help).toContain("Only the agents you turn on with Track in their header are followed. 2 agents have their own switch set.");
+    expect(trackerRow({ on: false, sessions: { a: true } }).help).toContain("One agent has its own switch set.");
+    expect(trackerRow({ on: true, sessions: {}, health: { state: "limited", at: 1 } }).note).toContain("usage limit");
+    expect(trackerRow({ on: true, sessions: {}, health: { state: "unavailable", detail: "no Claude account is signed in on this machine to judge with", at: 1 } }).note).toBe("Not checking: no Claude account is signed in on this machine to judge with.");
+    // what failed to change it says so over the health
+    expect(trackerRow({ on: true, sessions: {}, health: { state: "limited", at: 1 } }, { note: "It could not be changed: offline", busy: true })).toMatchObject({ note: "It could not be changed: offline", busy: true });
+  });
+
+  test("the model reads the settings, changes them, and has none from a node without a tracker", async () => {
+    const calls: [string, unknown][] = [];
+    let refuse = false;
+    const request = async <T,>(method: string, params: unknown): Promise<T> => {
+      calls.push([method, params]);
+      if (refuse) throw new Error("unknown method tracker.get");
+      if (method === "tracker.get") return { on: false, sessions: {} } as T;
+      if (method === "tracker.set") return { on: (params as { on: boolean }).on, sessions: {} } as T;
+      throw new Error(`unexpected ${method}`);
+    };
+    const m = new SettingsModel(request as never, () => {});
+    await m.loadTracker();
+    expect(m.tracker).toEqual({ on: false, sessions: {} });
+    await m.setTracker(true);
+    expect(m.tracker?.on).toBe(true);
+    expect(calls.at(-1)).toEqual(["tracker.set", { on: true }]);
+    await m.setTracker(true);
+    expect(calls).toHaveLength(2);
+    refuse = true;
+    await m.loadTracker();
+    expect(m.tracker).toBeNull();
   });
 });

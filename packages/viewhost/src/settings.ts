@@ -6,7 +6,9 @@
 // flags) is folded away. The pages:
 // - Sessions: which of the user's own sessions each machine connects to (`session.scope`, set
 //   with `session.setScope` as each change is made): its accounts, each ticked unless left off,
-//   "Tether (Cophyla) started sessions only", and the allowed and hidden folders (`scope.ts`).
+//   "Tether (Cophyla) started sessions only", and the allowed and hidden folders (`scope.ts`);
+//   and under Asks, whether the tracker follows what the user asks every agent (`tracker.get`,
+//   set with `tracker.set`), each agent's own Track switch in its header over it.
 // - Accounts: per machine and harness, the usual account (Automatic, naming the profile
 //   cophylad picks and why, or one the user picks), and for each profile its name, sign-in
 //   state and how much of its limits it has used (`profile.limits`), and for a Claude profile
@@ -43,6 +45,7 @@
 // `SettingsModel` are DOM-free; the panel draws them with `ui.ts`. Its look is `settings.css`,
 // which each host page links.
 
+import type { TrackerState } from "@cophyla/protocol";
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 import { DEFAULT_RECORDING_SECONDS } from "@cophyla/protocol";
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
@@ -767,6 +770,10 @@ export class SettingsModel {
   chat?: AssistantState;
   chatBusy = false;
   chatNote = "";
+  /** The tracker's settings, once read; `null` from a node or a primary that has none to say. */
+  tracker?: TrackerState | null;
+  trackerBusy = false;
+  trackerNote = "";
   readonly removing = new Set<string>();
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
@@ -803,6 +810,31 @@ export class SettingsModel {
       this.limits = {};
     }
     this.changed();
+  }
+
+  async loadTracker(): Promise<void> {
+    try {
+      this.tracker = await this.request<TrackerState>("tracker.get", {});
+    } catch {
+      this.tracker = null;
+    }
+    this.changed();
+  }
+
+  /** The tracker on for every agent, or off but for those switched on in their headers. */
+  async setTracker(on: boolean): Promise<void> {
+    if (!this.tracker || this.tracker.on === on) return;
+    this.trackerBusy = true;
+    this.changed();
+    try {
+      this.tracker = await this.request<TrackerState>("tracker.set", { on });
+      this.trackerNote = "";
+    } catch (e) {
+      this.trackerNote = `It could not be changed: ${message(e)}`;
+    } finally {
+      this.trackerBusy = false;
+      this.changed();
+    }
   }
 
   /** The chat's row; none until the node has said where its session stands. */
@@ -1287,6 +1319,34 @@ export function settingsPages(o: { device: boolean; microphone: boolean; updates
 
 const STATUS_TONE: Record<HarnessProfile["status"], "ok" | "warn"> = { ok: "ok", unauthenticated: "warn", missing: "warn" };
 
+/** What the tracker's row says, DOM-free: its switch, what it does, and how the checking goes. */
+export function trackerRow(t: TrackerState, opts: { busy?: boolean; note?: string } = {}): { on: boolean; help: string; note?: string; busy: boolean } {
+  const own = Object.values(t.sessions);
+  const set = own.length === 0 ? "" : own.length === 1 ? " One agent has its own switch set." : ` ${own.length} agents have their own switch set.`;
+  const help = t.on
+    ? `Each thing you ask an agent shows over its chat, and is marked once the agent answers it. Turn one agent off with Track in its header.${set}`
+    : `Only the agents you turn on with Track in their header are followed.${set} On, each thing you ask any agent shows over its chat, and is marked once the agent answers it.`;
+  const h = t.health;
+  const health = h?.state === "limited" ? "On hold: the Claude account the asks are checked with is at its usage limit." : h?.state === "unavailable" ? `Not checking: ${h.detail ?? "no Claude account is signed in to check with"}.` : undefined;
+  const note = opts.note || health;
+  return { on: t.on, help: `${help} Each check is a short run on your own Claude account, after an agent's turn.`, ...(note ? { note } : {}), busy: opts.busy === true };
+}
+
+function trackerGroup(model: SettingsModel): HTMLElement | undefined {
+  const t = model.tracker;
+  if (!t) return undefined;
+  const r = trackerRow(t, { busy: model.trackerBusy, note: model.trackerNote });
+  return group("Asks", [
+    row({
+      label: "Track what you ask every agent",
+      help: r.help,
+      for: controlId("tracker-on"),
+      control: switchInput("tracker-on", "Track what you ask every agent", r.on, (on) => void model.setTracker(on), r.busy),
+      ...(r.note ? { note: r.note } : {}),
+    }),
+  ]);
+}
+
 /** The layer itself: opened by `host.settings`, a side list of pages and the page picked, drawn from a `SettingsModel` and a `ScopeModel`. */
 export class SettingsPanel {
   private deps: SettingsPanelDeps;
@@ -1395,6 +1455,7 @@ export class SettingsPanel {
     void model.loadSpeech();
     void model.loadListeners();
     void model.loadChat();
+    void model.loadTracker();
     void scope.load();
     if (this.page === "usage") void usage.load();
   }
@@ -1485,7 +1546,7 @@ export class SettingsPanel {
   private pageBody(page: SettingsPage, model: SettingsModel): HTMLElement[] {
     switch (page) {
       case "sessions":
-        return this.sessionsPage();
+        return this.sessionsPage(model);
       case "accounts":
         return this.accountsPage(model);
       case "usage":
@@ -1529,17 +1590,19 @@ export class SettingsPanel {
 
   // --- Sessions -------------------------------------------------------------------------
 
-  private sessionsPage(): HTMLElement[] {
+  private sessionsPage(model: SettingsModel): HTMLElement[] {
     const scope = this.scope;
     if (!scope) return [];
-    if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note)];
+    const asks = trackerGroup(model);
+    if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note), ...(asks ? [asks] : [])];
     const machines = scope.machines();
     const m = machines.find((x) => x.node === this.machine) ?? machines[0];
-    if (!m) return [];
+    if (!m) return asks ? [asks] : [];
     return [
       ...[this.machinePicker(machines, m.node)].filter((x): x is HTMLElement => x !== undefined),
       ...scopeControls(m, { model: scope, drafts: this.folderDrafts, redraw: () => this.render() }),
       el("p", "host-settings-page-foot", m.busy ? "Saving…" : "Sessions Cophyla starts itself are always connected. Changes apply at once."),
+      ...(asks ? [asks] : []),
     ];
   }
 

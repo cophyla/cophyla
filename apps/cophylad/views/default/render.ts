@@ -88,6 +88,8 @@ import { createLeadControl, createLeaderChip, createLedChip, createTabLead, upda
 import type { LeadPop } from "./leadview.ts";
 import { createModeCount, createTalkPane, renderTalkPane, updateModeCount } from "./talkview.ts";
 import type { TalkUi } from "./talkview.ts";
+import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
+import type { TrackUi } from "./trackview.ts";
 import type { PaneMode } from "./model.ts";
 import { canLead } from "./model.ts";
 import type { StatusMachine, StatusMeter, StatusPhone, ViewerRow } from "./model.ts";
@@ -125,6 +127,8 @@ export interface UiState {
   dialogModes: Map<string, DialogMode>;
   /** Messages panes: the party each one shows alone, and the read point as each opened, which marks the first new message (talkview.ts). */
   talk: TalkUi;
+  /** The tracker's strips: which are folded, and the answer open in one. */
+  track: TrackUi;
   /**
    * The view the user last chose, the chat or a terminal: each session's pane and the chat's pane
    * open on it until they choose again (`tabChoice`, `chatMode`). Unset until they first choose:
@@ -3312,11 +3316,12 @@ function createPane(): HTMLElement {
   const actions = el("div", "session-actions");
   // Folded, the terminal's own controls (− scale +, Fit) come onto the line here (`TerminalView.dock`).
   // Lead, before Kill: this session a leader of the user's others, speaking to them as the user.
-  actions.append(modes, chatScaleControl(), el("span", "session-term-slot"), connect, createLeadControl(), kill);
+  // Track: the tracker follows what the user asks this session, its asks in a strip under the header.
+  actions.append(modes, chatScaleControl(), el("span", "session-term-slot"), createTrackToggle(), connect, createLeadControl(), kill);
   // The other people's agents this session is joined to, when it is: a press opens its Connect panel.
   const links = actionButton("session-links", "", "session-connect-show");
   // Beside them, what it leads while it leads, and the leaders that speak to it.
-  head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect());
+  head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect(), createTrackStrip());
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Load history");
   earlier.type = "button";
@@ -3370,6 +3375,8 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   links.title = linked.length === 0 ? "" : `Connected to ${linked.join(", ")}: their agents and this one may message each other. Open Connect`;
   updateLeadChips(head, s, state);
   updateLeadControl(node.querySelector<HTMLElement>(".session-actions > .lead-control")!, s.id, state, ui);
+  updateTrackToggle(node.querySelector<HTMLButtonElement>(".tracked-toggle")!, s.id, state);
+  updateTrackStrip(node.querySelector<HTMLElement>(".tracked")!, s.id, state, ui, (seq) => card.open && card.events.has(seq));
   const chip = node.querySelector<HTMLElement>(".chip")!;
   setData(chip, "session", s.id);
   // The window the session runs in, raised; a session in tether that no window shows, or a

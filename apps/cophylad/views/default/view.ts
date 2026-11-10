@@ -94,6 +94,8 @@ import { newTeamUi } from "./teamview.ts";
 import { LeadControl } from "./leadctl.ts";
 import { TalkControl } from "./talkctl.ts";
 import { newTalkUi } from "./talkview.ts";
+import { TrackControl } from "./trackctl.ts";
+import { newTrackUi } from "./trackview.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -127,6 +129,7 @@ const ui: UiState = {
   viewerSource: false,
   team: newTeamUi(),
   talk: newTalkUi(),
+  track: newTrackUi(),
 };
 // A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
 // over them, beside Devices: index.html has neither, so they are made here.
@@ -181,6 +184,15 @@ const talks = new TalkControl({
   roots,
   dispatch: (action, opts) => dispatch(action, opts),
   draw: () => draw(),
+});
+const track = new TrackControl({
+  rpc,
+  state,
+  ui,
+  roots,
+  dispatch: (action) => dispatch(action),
+  draw: () => draw(),
+  showInChat: (session, seq) => showInChat(session, seq),
 });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
@@ -474,6 +486,7 @@ rpc.onNotification((n) => {
         team.connected();
         lead.connected();
         talks.connected();
+        track.connected();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -524,6 +537,7 @@ rpc.onNotification((n) => {
         team.again();
         lead.again();
         talks.again();
+        track.again();
       }
       // A machine back since the profiles were asked for (as every other one is a moment after
       // this node restarted), or a harness signed in or out there: its profiles, and the usage
@@ -672,6 +686,10 @@ rpc.onNotification((n) => {
     case "talk.state":
     case "talk.said":
       talks.notification(n.method, n.params);
+      return;
+    case "tracked.state":
+    case "tracker.state":
+      track.notification(n.method, n.params);
       return;
     default:
       return;
@@ -2443,6 +2461,38 @@ const FLASH_MS = 1500;
  * A sub-agent's card in the selected session's timeline, opened, brought into view and outlined a
  * moment: from its row in the agents panel, or from the line its end left at the bottom.
  */
+/**
+ * A tracked ask's answer, brought into view in its session's chat: the chat shown if its
+ * terminal or Messages showed, and the message (or, where a turn's texts are drawn as one, the
+ * text it is part of) scrolled to and outlined a moment.
+ */
+function showInChat(session: string, seq: number): void {
+  if (ui.selected !== session) return;
+  const pane = (): HTMLElement | null => roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(session)}"]`);
+  if (pane()?.dataset["mode"] !== "timeline") {
+    // as pressing Timeline does
+    chooseView("chat", session);
+    draw();
+  }
+  requestAnimationFrame(() => {
+    const timeline = pane()?.querySelector<HTMLElement>(".timeline");
+    if (!timeline) return;
+    let best: HTMLElement | undefined;
+    let bestSeq = -1;
+    for (const node of Array.from(timeline.querySelectorAll<HTMLElement>('[data-key^="e"]'))) {
+      const k = Number(node.dataset["key"]!.slice(1));
+      if (Number.isInteger(k) && k <= seq && k > bestSeq) {
+        best = node;
+        bestSeq = k;
+      }
+    }
+    if (!best) return;
+    best.scrollIntoView({ block: "center" });
+    best.dataset["flash"] = "1";
+    setTimeout(() => delete best!.dataset["flash"], FLASH_MS);
+  });
+}
+
 function showAgentCard(call: string): void {
   if (ui.selected === undefined) return;
   const pane = roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(ui.selected)}"]`);
@@ -3876,7 +3926,7 @@ document.addEventListener("click", (ev) => {
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
   // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list; then a Messages pane's.
-  if (team.click(target) || lead.click(target) || talks.click(target)) return;
+  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target)) return;
   switch (target.dataset["action"]) {
     case "answer": {
       const form = target.closest<HTMLFormElement>("form.ask-form");
