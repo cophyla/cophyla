@@ -35,10 +35,12 @@ export interface TrackUi {
   /** Sessions whose strip is folded to its line. */
   folded: Set<string>;
   reader?: TrackReader;
+  /** The newest answer this device showed, per session, by seq: one past it is still to read, and its tab has the green dot. */
+  seen: Map<string, number>;
 }
 
 export function newTrackUi(): TrackUi {
-  return { folded: new Set() };
+  return { folded: new Set(), seen: new Map() };
 }
 
 /** Track, among the header's controls: pressed while the tracker follows the session. */
@@ -86,6 +88,8 @@ export function updateTrackStrip(strip: HTMLElement, session: string, state: Vie
   const list = on ? trackedOf(state, session) : [];
   const trouble = on ? trackerTrouble(state) : undefined;
   setHidden(strip, list.length === 0 && trouble === undefined);
+  // nothing to show: no rows left behind either, and no answer open
+  if (list.length === 0) strip.querySelector<HTMLElement>(".tracked-list")!.replaceChildren();
   if (list.length === 0 && trouble === undefined) return;
   const folded = ui.track.folded.has(session);
   setData(strip, "folded", String(folded));

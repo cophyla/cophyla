@@ -12319,3 +12319,43 @@ button:disabled {
 .tracked-reader-text[data-state="failed"] {
   color: var(--rust);
 }
+
+/* A followed session's asks on its tab: answered of all, at the line's end, green once all are
+   answered, on a green wash while one has an answer not read here. */
+.tab-asks {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 9px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  line-height: 17px;
+}
+
+.tab-focus:not([hidden]) ~ .tab-asks {
+  margin-left: 0;
+}
+
+.tab-asks[data-done="true"] {
+  color: var(--green);
+}
+
+.tab-asks[data-unread="1"] {
+  background: color-mix(in srgb, var(--green) 20%, transparent);
+  color: var(--ink);
+}
+
+/* An answer not read here: the green dot on the mark, which keeps its colours while the session
+   works; the yellow dot, waiting on the user, stays over it. */
+.agent-icon[data-unread="1"]:not([data-tone="ask"])::after {
+  content: "";
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  width: 9px;
+  height: 9px;
+  border: 1.5px solid var(--card);
+  border-radius: 50%;
+  background: var(--green);
+}

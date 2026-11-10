@@ -196,6 +196,10 @@ const track = new TrackControl({
   dispatch: (action) => dispatch(action),
   draw: () => draw(),
   showInChat: (session, seq) => showInChat(session, seq),
+  savePrefs: (key, value) => {
+    prefs = { ...prefs, [key]: value };
+    void rpc.request("host.savePrefs", { prefs }).catch(() => {});
+  },
 });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(terminalWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
@@ -234,6 +238,7 @@ function draw(opts: RenderOptions = {}): void {
   revealListed();
   team.afterDraw();
   talks.afterDraw();
+  track.afterDraw();
   pageBack();
   spellSoon();
 }
@@ -436,6 +441,7 @@ rpc.onNotification((n) => {
         restoreRemotePrefs(prefs["remoteView"]);
         restoreViewChoice(prefs["view"]);
         ui.chatScale = chatScaleFrom(prefs["chatScale"]);
+        track.restore(prefs);
       }
       dispatch({ type: "host.ready", params: ready });
       return;
@@ -4876,6 +4882,7 @@ document.addEventListener(
 document.addEventListener("visibilitychange", () => {
   team.syncRead();
   talks.syncRead();
+  track.afterDraw();
 });
 
 // The focus follows a sequence of asks only while the user stays in the pinned prompts.

@@ -93,3 +93,41 @@ export function trackerTrouble(state: Pick<ViewState, "tracker">): string | unde
 export function answerWords(n: number, of: number, status: "partial" | "answered"): string {
   return `Answer ${n} of ${of}${status === "partial" ? ", in part" : ""}`;
 }
+
+// --- the rail: a count on each followed session's tab, and a green dot for an answer not read
+
+/** The newest answer of a session's asks, by its seq; -1 for none. */
+export function latestAnswer(list: readonly Tracked[]): number {
+  let latest = -1;
+  for (const t of list) for (const a of t.answers) if (a.seq > latest) latest = a.seq;
+  return latest;
+}
+
+/**
+ * A followed session's asks on its tab: how many are answered of how many, and whether one has
+ * an answer this device has not shown yet (past `seen`, the newest answer it showed there).
+ */
+export function tabAsks(state: Pick<ViewState, "tracked" | "tracker" | "trackOn">, session: string, seen: number | undefined): { answered: number; total: number; unread: boolean } | undefined {
+  if (state.trackOn !== true || !follows(state, session)) return undefined;
+  const list = trackedOf(state, session);
+  if (list.length === 0) return undefined;
+  return { answered: list.filter((t) => t.status === "answered").length, total: list.length, unread: latestAnswer(list) > (seen ?? -1) };
+}
+
+/** The most sessions whose read answers a device keeps: the view's prefs are small. */
+export const SEEN_KEPT = 40;
+
+/** The read answers as the view's prefs keep them (`trackSeen`), read back. */
+export function seenFrom(v: unknown): Map<string, number> {
+  const out = new Map<string, number>();
+  if (!v || typeof v !== "object") return out;
+  for (const [k, n] of Object.entries(v as Record<string, unknown>)) if (typeof n === "number" && Number.isInteger(n)) out.set(k, n);
+  return out;
+}
+
+/** The read answers to keep: only of sessions with asks now, the most recently read first, at most `SEEN_KEPT`. */
+export function seenPrefs(seen: ReadonlyMap<string, number>, state: Pick<ViewState, "tracked">): Record<string, number> {
+  const asked = new Set([...state.tracked.values()].map((t) => t.session));
+  const kept = [...seen.entries()].filter(([s]) => asked.has(s)).slice(-SEEN_KEPT);
+  return Object.fromEntries(kept);
+}

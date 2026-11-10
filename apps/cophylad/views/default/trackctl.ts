@@ -5,13 +5,17 @@
 // holds it. A node or an app older than the tracker refuses `tracked.list` (`unsupported`): no
 // strip and no switch show then; a node that is not the primary yet (`unavailable`) is asked
 // again once it may be.
+//
+// What this device has read: once a session's pane shows in a window in sight, its newest
+// answer is read, kept per session in the view's own prefs (`trackSeen`) so a restart keeps it;
+// a tab with an answer past it has the green dot.
 
 import type { SessionEvent, Tracked, TrackedStatus, TrackerState } from "@cophyla/protocol";
 import type { Action, ViewState } from "./model.ts";
 import type { Roots, UiState } from "./render.ts";
 import type { HostRpc } from "./rpc.ts";
 import { ViewRpcError } from "./rpc.ts";
-import { follows } from "./trackmodel.ts";
+import { follows, latestAnswer, seenFrom, seenPrefs, trackedOf } from "./trackmodel.ts";
 
 export interface TrackDeps {
   rpc: HostRpc;
@@ -22,7 +26,12 @@ export interface TrackDeps {
   draw: () => void;
   /** Brings a session's message into view in its chat, where the timeline holds it. */
   showInChat: (session: string, seq: number) => void;
+  /** Keeps a value in the view's own prefs on this device. */
+  savePrefs: (key: string, value: unknown) => void;
 }
+
+/** The read answers are saved at most this often. */
+const SEEN_SAVE_MS = 2000;
 
 /** How many answers' words are kept once read, so a second press shows them at once. */
 const TEXTS_KEPT = 30;
@@ -31,9 +40,36 @@ export class TrackControl {
   private d: TrackDeps;
   private refused = false;
   private texts = new Map<string, string>();
+  private saveTimer?: ReturnType<typeof setTimeout>;
 
   constructor(deps: TrackDeps) {
     this.d = deps;
+  }
+
+  /** The view's prefs, as the host handed them back: what this device read before. */
+  restore(prefs: Record<string, unknown>): void {
+    this.d.ui.track.seen = seenFrom(prefs["trackSeen"]);
+  }
+
+  /**
+   * After a draw: the session whose pane shows, in a window in sight, has its answers read, and
+   * its tab loses the green dot. Saved a moment later, with what else was read meanwhile.
+   */
+  afterDraw(): void {
+    const { ui, state } = this.d;
+    const session = ui.selected;
+    if (session === undefined || document.visibilityState !== "visible" || !state.sessions.has(session)) return;
+    const latest = latestAnswer(trackedOf(state, session));
+    if (latest <= (ui.track.seen.get(session) ?? -1)) return;
+    // the newest last, so the ones kept when there are too many are the latest read
+    ui.track.seen.delete(session);
+    ui.track.seen.set(session, latest);
+    queueMicrotask(() => this.d.draw());
+    if (this.saveTimer) return;
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = undefined;
+      this.d.savePrefs("trackSeen", seenPrefs(this.d.ui.track.seen, this.d.state));
+    }, SEEN_SAVE_MS);
   }
 
   /** The line is up: the asks and the settings, asked for afresh. */

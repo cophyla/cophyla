@@ -88,6 +88,7 @@ import { createLeadControl, createLeaderChip, createLedChip, createTabLead, upda
 import type { LeadPop } from "./leadview.ts";
 import { createModeCount, createTalkPane, renderTalkPane, updateModeCount } from "./talkview.ts";
 import type { TalkUi } from "./talkview.ts";
+import { tabAsks } from "./trackmodel.ts";
 import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
 import type { TrackUi } from "./trackview.ts";
 import type { PaneMode } from "./model.ts";
@@ -714,7 +715,9 @@ const TONE_WORD: Record<ReturnType<typeof tabTone>, string> = { ask: "waiting fo
  * A tab is one line: the agent's mark and the name. The mark is in colour or grey, with a
  * dot or none, by what the session is doing (`tabTone`), and sits in a black terminal window
  * when the session runs in a terminal tether holds; a bare terminal is that window with a
- * prompt in it.
+ * prompt in it. A session the tracker follows has its asks at the end of the line, answered of
+ * all ("1/3"), and the green dot on its mark while one has an answer not read here, at work or
+ * not: only the yellow dot, waiting on the user, is over it.
  */
 function createTab(): HTMLElement {
   const tab = el("button", "tab");
@@ -728,7 +731,9 @@ function createTab(): HTMLElement {
   focus.setAttribute("role", "img");
   focus.setAttribute("aria-label", "in focus");
   focus.hidden = true;
-  tab.append(icon, el("span", "tab-title"), createTabLead(), focus);
+  const asks = el("span", "tab-asks");
+  asks.hidden = true;
+  tab.append(icon, el("span", "tab-title"), createTabLead(), focus, asks);
   return tab;
 }
 
@@ -750,13 +755,25 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
       : tone === "shell" && s.waiting?.on !== "shell" && agents > 0
         ? `waiting on ${agents === 1 ? "a sub-agent" : `${agents} sub-agents`}`
         : TONE_WORD[tone];
-  const words = `${s.harness}${where}, ${toneWord}`;
+  const asks = tabAsks(state, s.id, ui.track.seen.get(s.id));
+  setData(icon, "unread", asks?.unread ? "1" : "");
+  const count = tab.querySelector<HTMLElement>(".tab-asks")!;
+  setHidden(count, asks === undefined);
+  let askWords = "";
+  if (asks) {
+    setText(count, `${asks.answered}/${asks.total}`);
+    setData(count, "done", String(asks.answered === asks.total));
+    setData(count, "unread", asks.unread ? "1" : "");
+    askWords = `${asks.answered} of ${asks.total} ask${asks.total === 1 ? "" : "s"} answered${asks.unread ? ", an answer not read yet" : ""}`;
+    count.setAttribute("aria-label", askWords);
+  }
+  const words = `${s.harness}${where}, ${toneWord}${asks?.unread ? ", an answer to read" : ""}`;
   icon.setAttribute("aria-label", words);
   setText(tab.querySelector(".tab-title")!, sessionLabel(s));
   const ws = workspaceName(state, s);
   const focus = updateTabFocus(tab, state, s.id);
   const leads = updateTabLead(tab, state, s.id);
-  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}${leads ? `\n${leads}` : ""}${focus ? `\n${focus}` : ""}`;
+  tab.title = `${words}\n${ws ? `${ws}: ` : ""}${s.cwd}${leads ? `\n${leads}` : ""}${focus ? `\n${focus}` : ""}${askWords ? `\n${askWords}` : ""}`;
 }
 
 /**

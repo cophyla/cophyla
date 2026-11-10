@@ -8,7 +8,7 @@ import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Tracked, TrackerState } from "@cophyla/protocol";
 import { apply, chatDraw, initialState } from "../views/default/model.ts";
 import type { HostReady, ViewState } from "../views/default/model.ts";
-import { answerWords, follows, nextMark, statusWords, trackedCounts, trackedOf, trackedSummary, trackerTrouble } from "../views/default/trackmodel.ts";
+import { answerWords, follows, latestAnswer, nextMark, SEEN_KEPT, seenFrom, seenPrefs, statusWords, tabAsks, trackedCounts, trackedOf, trackedSummary, trackerTrouble } from "../views/default/trackmodel.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const A = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3";
@@ -93,5 +93,52 @@ describe("the tracker as the node says it", () => {
     expect(trackerTrouble(s)).toContain("usage limit");
     apply(s, { type: "tracker.state", params: { on: true, sessions: {}, health: { state: "unavailable", detail: "no Claude account is signed in on this machine to judge with", at: 1 } } });
     expect(trackerTrouble(s)).toBe("Asks are not being checked: no Claude account is signed in on this machine to judge with.");
+  });
+});
+
+describe("the tab of a followed session", () => {
+  test("its asks answered of all, and whether one has an answer this device has not shown", () => {
+    const s = connected();
+    const a = ask({ status: "answered", answers: [{ seq: 15, at: 2, status: "answered" }] });
+    const b = ask({ status: "partial", answers: [{ seq: 25, at: 3, status: "partial" }] });
+    const c = ask();
+    apply(s, { type: "tracked", tracked: [a, b, c] });
+    // not before the settings say it is followed
+    expect(tabAsks(s, A, undefined)).toBeUndefined();
+    apply(s, { type: "tracker", tracker: { on: true, sessions: {} } });
+    expect(latestAnswer(trackedOf(s, A))).toBe(25);
+    expect(tabAsks(s, A, undefined)).toEqual({ answered: 1, total: 3, unread: true });
+    expect(tabAsks(s, A, 15)?.unread).toBe(true);
+    expect(tabAsks(s, A, 25)?.unread).toBe(false);
+    // a new answer is to read again; one dismissed goes from the count
+    apply(s, { type: "tracked.state", params: { ...c, status: "answered", answers: [{ seq: 40, at: 4, status: "answered" }] } });
+    expect(tabAsks(s, A, 25)).toEqual({ answered: 2, total: 3, unread: true });
+    apply(s, { type: "tracked.state", params: { ...b, dismissed: true } });
+    expect(tabAsks(s, A, 40)).toEqual({ answered: 2, total: 2, unread: false });
+    // switched off, or with no asks: no count
+    apply(s, { type: "tracker.state", params: { on: true, sessions: { [A]: false } } });
+    expect(tabAsks(s, A, 40)).toBeUndefined();
+    expect(tabAsks(s, B, undefined)).toBeUndefined();
+  });
+
+  test("what this device read is kept in its prefs: back as it was, only for sessions with asks, the latest read kept", () => {
+    expect(seenFrom({ [A]: 12, [B]: "x", c: 1.5 })).toEqual(new Map([[A, 12]]));
+    expect(seenFrom(undefined).size).toBe(0);
+    const s = connected();
+    apply(s, { type: "tracked", tracked: [ask({ session: A }), ask({ session: B })] });
+    const seen = new Map<string, number>([["gone", 3], [A, 7], [B, 9]]);
+    expect(seenPrefs(seen, s)).toEqual({ [A]: 7, [B]: 9 });
+    const many = new Map<string, number>();
+    const asks: Tracked[] = [];
+    for (let i = 0; i < SEEN_KEPT + 5; i++) {
+      const id = `sess_${String(i).padStart(26, "0")}`;
+      many.set(id, i);
+      asks.push(ask({ session: id }));
+    }
+    apply(s, { type: "tracked", tracked: asks });
+    const kept = seenPrefs(many, s);
+    expect(Object.keys(kept)).toHaveLength(SEEN_KEPT);
+    expect(kept[`sess_${String(SEEN_KEPT + 4).padStart(26, "0")}`]).toBe(SEEN_KEPT + 4);
+    expect(JSON.stringify(kept).length).toBeLessThan(2500);
   });
 });
