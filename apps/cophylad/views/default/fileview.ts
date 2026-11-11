@@ -73,6 +73,10 @@ const HEADING_GAP = 12;
 /** Times a whole read starts again because the file changed under it, before it gives up. */
 const WHOLE_RETRIES = 2;
 /** How long a click on a PDF waits for a second one before it switches the fit. */
+/** How far a press on an image at its own size moves before it is a drag, not a click. */
+const PAN_SLOP_PX = 4;
+const IMAGE_FIT_TITLE = "Click for its own size, where you click";
+const IMAGE_OWN_TITLE = "Drag to look around; click to fit it again";
 const PDF_CLICK_MS = 250;
 
 /** The file to show: what it is read through, its path under that one's folder, and the folder, for its full path. */
@@ -283,6 +287,8 @@ export class FileViewer {
   private pdf?: PdfView;
   private pages?: number;
   private fitTimer?: ReturnType<typeof setTimeout>;
+  /** An image at its own size was just dragged: the click that ends the drag does not fit it again. */
+  private dragged = false;
   /** The search bar, its field and its count; the matches of what shows, and the one gone to. */
   private findBar: HTMLElement;
   private findInput: HTMLInputElement;
@@ -435,6 +441,9 @@ export class FileViewer {
         this.step(ev.shiftKey ? -1 : 1);
       }
     });
+    // An image at its own size is dragged to look around it, as a map is: with the mouse or a pen
+    // (a finger scrolls it already). A drag is no click, so it never fits the image again.
+    this.body.addEventListener("pointerdown", (ev) => this.panStart(ev));
     // An image or a PDF fits the viewer; a click shows it at its own size, and back. On a PDF a
     // click on its words, or one that ends a selection, is for selecting; a click elsewhere on it
     // switches once no second click follows, since two select a word.
@@ -448,7 +457,11 @@ export class FileViewer {
       }
       const box = target?.closest<HTMLElement>(".viewer-image");
       if (box) {
-        box.dataset["fit"] = box.dataset["fit"] === "1" ? "0" : "1";
+        if (this.dragged) {
+          this.dragged = false;
+          return;
+        }
+        this.toggleImage(box, ev);
         return;
       }
       clearTimeout(this.fitTimer);
@@ -1077,10 +1090,12 @@ export class FileViewer {
   private image(src: string, rel: string): HTMLElement {
     const box = el("div", "viewer-image");
     box.dataset["fit"] = "1";
-    box.title = "Click for its own size, and again to fit";
+    box.title = IMAGE_FIT_TITLE;
     const img = el("img");
     img.alt = rel.slice(rel.lastIndexOf("/") + 1);
     img.decoding = "async";
+    // dragged to look around, never picked up as a file
+    img.draggable = false;
     img.addEventListener("load", () => {
       this.pixels = { width: img.naturalWidth, height: img.naturalHeight };
       this.update();
@@ -1092,6 +1107,73 @@ export class FileViewer {
     img.src = src;
     box.append(img);
     return box;
+  }
+
+  /**
+   * An image between fitted and its own size. Going to its own size keeps the point clicked
+   * under the pointer, so a click on a corner shows that corner, and a click beside the image
+   * shows its middle in the viewer's; back to fitted, from the top.
+   */
+  private toggleImage(box: HTMLElement, ev: MouseEvent): void {
+    const img = box.querySelector("img");
+    if (box.dataset["fit"] === "0" || !img) {
+      box.dataset["fit"] = "1";
+      box.title = IMAGE_FIT_TITLE;
+      this.body.scrollTo(0, 0);
+      return;
+    }
+    const was = img.getBoundingClientRect();
+    const view = this.body.getBoundingClientRect();
+    // on each axis: the share of the image clicked, and where it is to stay
+    const axis = (p: number, start: number, size: number, viewStart: number, viewSize: number): { share: number; at: number } =>
+      size > 0 && p >= start && p <= start + size ? { share: (p - start) / size, at: p } : { share: 0.5, at: viewStart + viewSize / 2 };
+    const x = axis(ev.clientX, was.left, was.width, view.left, view.width);
+    const y = axis(ev.clientY, was.top, was.height, view.top, view.height);
+    box.dataset["fit"] = "0";
+    box.title = IMAGE_OWN_TITLE;
+    const now = img.getBoundingClientRect();
+    this.body.scrollLeft += now.left + x.share * now.width - x.at;
+    this.body.scrollTop += now.top + y.share * now.height - y.at;
+  }
+
+  /** A press on an image at its own size: dragging it scrolls the viewer, once it has moved past a slip of the hand. */
+  private panStart(ev: PointerEvent): void {
+    const box = (ev.target as Element | null)?.closest<HTMLElement>(".viewer-image");
+    this.dragged = false;
+    if (!box || box.dataset["fit"] !== "0" || ev.pointerType === "touch" || ev.button !== 0) return;
+    ev.preventDefault();
+    const body = this.body;
+    const from = { x: ev.clientX, y: ev.clientY, left: body.scrollLeft, top: body.scrollTop };
+    let moving = false;
+    box.setPointerCapture(ev.pointerId);
+    const move = (e: PointerEvent): void => {
+      // a release never told (let go outside the window): the drag is over
+      if (e.buttons === 0) {
+        end();
+        return;
+      }
+      const dx = e.clientX - from.x;
+      const dy = e.clientY - from.y;
+      if (!moving) {
+        if (Math.hypot(dx, dy) < PAN_SLOP_PX) return;
+        moving = true;
+        box.dataset["dragging"] = "1";
+      }
+      body.scrollLeft = from.left - dx;
+      body.scrollTop = from.top - dy;
+    };
+    const end = (): void => {
+      box.removeEventListener("pointermove", move);
+      box.removeEventListener("pointerup", end);
+      box.removeEventListener("pointercancel", end);
+      box.removeEventListener("lostpointercapture", end);
+      delete box.dataset["dragging"];
+      if (moving) this.dragged = true;
+    };
+    box.addEventListener("pointermove", move);
+    box.addEventListener("pointerup", end);
+    box.addEventListener("pointercancel", end);
+    box.addEventListener("lostpointercapture", end);
   }
 
   // --- search ------------------------------------------------------------------------------------

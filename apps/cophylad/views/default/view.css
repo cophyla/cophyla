@@ -7868,7 +7868,12 @@ button:disabled {
   min-width: 100%;
   height: auto;
   min-height: 100%;
-  cursor: zoom-out;
+  cursor: grab;
+}
+
+/* at its own size it is dragged to look around: the hand closes while it moves */
+.viewer-image[data-fit="0"][data-dragging="1"] {
+  cursor: grabbing;
 }
 
 .viewer-image img {
@@ -7878,6 +7883,8 @@ button:disabled {
   max-height: 100%;
   background: repeating-conic-gradient(#2a2733 0% 25%, #1f1d27 0% 50%) 50% / 16px 16px;
   box-shadow: 0 0 0 1px var(--line);
+  user-select: none;
+  -webkit-user-drag: none;
 }
 
 .viewer-image[data-fit="0"] img {
