@@ -3617,6 +3617,9 @@ function sendWord(state: PendingSend["state"]): string {
  * head, who and when, the agent's mark on the session's turns and another agent's messages;
  * then a turn's parts, or the words; under the user's, where the message stands.
  */
+/** On a question of Claude's whose call is not in its log yet. */
+export const ASK_UNWRITTEN = "Claude's message before this question may only be in its terminal until you answer.";
+
 function createTimelinePost(post: TimelinePost): HTMLElement {
   if (post.kind === "note") return el("li", "tl-note");
   const li = el("li", "message tl-post");
@@ -3630,7 +3633,7 @@ function createTimelinePost(post: TimelinePost): HTMLElement {
   head.append(el("span", "message-who"), el("time", "message-time"));
   // An ask is drawn as the terminal draws its dialog: its title, its detail, its options with the one chosen marked, and where it stands.
   if (post.kind === "ask") {
-    li.append(head, el("div", "tl-ask-title"), el("pre", "tl-ask-detail"), el("ol", "tl-ask-options"), el("p", "tl-receipt"));
+    li.append(head, el("p", "tl-ask-unwritten", ASK_UNWRITTEN), el("div", "tl-ask-title"), el("pre", "tl-ask-detail"), el("ol", "tl-ask-options"), el("p", "tl-receipt"));
     return li;
   }
   li.append(head, el("div", post.kind === "turn" ? "tl-parts" : "tl-text"));
@@ -3682,6 +3685,8 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       const options = li.querySelector<HTMLElement>(".tl-ask-options")!;
       const receipt = li.querySelector<HTMLElement>(".tl-receipt")!;
       const ask = post.ask;
+      // Open, and its call not in the log yet: what Claude wrote before it is in its terminal alone.
+      setHidden(li.querySelector<HTMLElement>(".tl-ask-unwritten")!, post.unwritten !== true || ask?.status !== "open");
       // Without the ask itself (its record is gone), the event's words alone.
       if (ask === undefined) {
         setText(title, text);

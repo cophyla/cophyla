@@ -443,6 +443,70 @@ describe("default view model", () => {
     expect(posts[6]).toMatchObject({ kind: "user", text: "and the signup page", receipt: { state: "queued", asPeer: false } });
   });
 
+  test("a reply its log had late goes where it was written, above the question, its answer and the message after; a row recorded twice shows once", () => {
+    const s = ready();
+    apply(s, { type: "session.state", params: session("sess_a", 100) });
+    open(s, "sess_a");
+    const question = "Deploy now or tonight?";
+    const events: [SessionEvent["kind"], unknown, number][] = [
+      ["user_turn", { text: "ship it", source: "typed" }, 1000],
+      ["status", { status: "busy" }, 1001],
+      // the question, from its hook, while the log has not the words before it yet
+      ["ask", { ask: "ask_1", phase: "opened", tool: "AskUserQuestion", title: question }, 5000],
+      ["status", { status: "needs_input", ask: "ask_1" }, 5000],
+      ["ask", { ask: "ask_1", phase: "answered", answer: { option: "Tonight" } }, 9000],
+      ["status", { status: "busy" }, 9000],
+      // the log written once it was answered: the words and the call, timed when they were written
+      ["assistant_text", { text: "Before I push, one decision is yours." }, 4000],
+      ["tool_call", { tool: "AskUserQuestion", id: "q1", args: { questions: [{ question }] } }, 4500],
+      ["tool_result", { tool: "AskUserQuestion", id: "q1", result: "Tonight" }, 9001],
+      ["assistant_text", { text: "Tonight it is." }, 9100],
+      ["status", { status: "idle" }, 9200],
+      ["user_turn", { text: "thanks", source: "typed" }, 9300],
+      // a reply the log wrote while the user's next message came in
+      ["assistant_text", { text: "Scheduled for 17:00." }, 9150],
+      // the same rows read again, as a reopened session's were
+      ["assistant_text", { text: "Before I push, one decision is yours." }, 4000],
+      ["tool_call", { tool: "AskUserQuestion", id: "q1", args: { questions: [{ question }] } }, 4500],
+    ];
+    events.forEach(([kind, payload, at], i) => apply(s, { type: "session.event", params: event("sess_a", i + 1, kind, payload, at) }));
+    const rows = selectTimeline(s, s.sessions.get("sess_a")!);
+    expect(rows.map((r) => r.key)).toEqual(["e1", "e2", "e7", "e8", "e3", "e4", "e5", "e6", "e9", "e10", "e13", "e11", "e12"]);
+    const posts = timelinePosts(rows);
+    expect(posts.map((p) => p.kind)).toEqual(["user", "turn", "ask", "turn", "user"]);
+    const before = posts[1] as Extract<TimelinePost, { kind: "turn" }>;
+    expect(before.parts.map((p) => (p.kind === "text" ? p.text : p.kind === "steps" ? p.steps.map((st) => `${st.tool}:${st.result ? "done" : "open"}`).join(",") : p.kind))).toEqual(["Before I push, one decision is yours.", "AskUserQuestion:done"]);
+    expect((posts[3] as Extract<TimelinePost, { kind: "turn" }>).parts.map((p) => (p.kind === "text" ? p.text : p.kind))).toEqual(["Tonight it is.", "Scheduled for 17:00."]);
+    expect(posts[4]).toMatchObject({ kind: "user", text: "thanks" });
+    // the question's call is in the log now: nothing to say about it
+    expect((posts[2] as Extract<TimelinePost, { kind: "ask" }>).unwritten).toBeUndefined();
+  });
+
+  test("a question of Claude's whose call is not in the log yet is marked, the words before it being in its terminal alone; once the call is in, it is not", () => {
+    const ev = (seq: number, kind: SessionEvent["kind"], payload: unknown, at = 1000 + seq) => ({ kind: "event" as const, key: `e${seq}`, event: { seq, at, kind, payload } as unknown as SessionEvent });
+    const question = 'Push the "thank-you" email tonight?\nOr wait?';
+    const asked = [ev(1, "user_turn", { text: "go", source: "typed" }), ev(2, "ask", { ask: "ask_1", phase: "opened", tool: "AskUserQuestion", title: question })];
+    expect((timelinePosts(asked)[1] as Extract<TimelinePost, { kind: "ask" }>).unwritten).toBe(true);
+    // its call in, whole or cut short as a long call's is, as an object or as the text the node keeps
+    for (const args of [{ questions: [{ question, header: "Email" }] }, JSON.stringify({ questions: [{ question, header: "Email" }] }).slice(0, 60)]) {
+      const posts = timelinePosts([asked[0]!, ev(3, "tool_call", { tool: "AskUserQuestion", id: "q1", args }, 1500), asked[1]!]);
+      expect((posts.find((p) => p.kind === "ask") as Extract<TimelinePost, { kind: "ask" }>).unwritten).toBeUndefined();
+    }
+    // a call of two questions: the second's post is the first's call's too, and a call cut short
+    // before the question it asked still answers for the question asked by then
+    const second = ev(5, "ask", { ask: "ask_3", phase: "opened", tool: "AskUserQuestion", title: "And the receipts?", question: 2, of: 2 }, 3000);
+    const twice = timelinePosts([asked[0]!, ev(3, "tool_call", { tool: "AskUserQuestion", id: "q1", args: '{"questions":[{"question":"Something else entirely, long enough to be cut sh…' }, 1500), asked[1]!, ev(4, "ask", { ask: "ask_1", phase: "answered" }, 2500), second]);
+    expect(twice.filter((p) => p.kind === "ask").map((p) => (p as Extract<TimelinePost, { kind: "ask" }>).unwritten)).toEqual([undefined, undefined]);
+    // neither in the log: both marked
+    const neither = timelinePosts([asked[0]!, asked[1]!, ev(4, "ask", { ask: "ask_1", phase: "answered" }, 2500), second]);
+    expect(neither.filter((p) => p.kind === "ask").map((p) => (p as Extract<TimelinePost, { kind: "ask" }>).unwritten)).toEqual([true, true]);
+    // one question asked and answered before, its call in: the next one's call is not, and it is marked
+    const again = timelinePosts([asked[0]!, ev(3, "tool_call", { tool: "AskUserQuestion", id: "q1", args: { questions: [{ question }] } }, 1500), asked[1]!, ev(4, "ask", { ask: "ask_1", phase: "answered" }, 2500), ev(6, "ask", { ask: "ask_4", phase: "opened", tool: "AskUserQuestion", title: "Which day?" }, 4000)]);
+    expect(again.filter((p) => p.kind === "ask").map((p) => (p as Extract<TimelinePost, { kind: "ask" }>).unwritten)).toEqual([undefined, true]);
+    // a permission's ask is no question of Claude's: never marked
+    expect((timelinePosts([ev(1, "ask", { ask: "ask_2", phase: "opened", tool: "Bash", title: "Run npm test?" })])[0] as Extract<TimelinePost, { kind: "ask" }>).unwritten).toBeUndefined();
+  });
+
   test("a sub-agent is a Task or Agent call: its type, task and prompt; its report comes back on its own call", () => {
     expect(subagentOf({ tool: "Task", args: { subagent_type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" } })).toEqual({ type: "Explore", description: "Find the stylesheet", prompt: "Where is the css?" });
     expect(subagentOf({ tool: "Agent", args: {} })).toEqual({ type: "general-purpose", description: "a sub-agent", prompt: "" });

@@ -2213,7 +2213,7 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
   const rows: TimelineRow[] = [];
   const receipted = new Set<string>();
   const piped = card.session.harness === "claude" && card.session.native.transport === "pipe";
-  const events = [...card.events.values()].sort((a, b) => a.seq - b.seq);
+  const events = inPlace([...card.events.values()].sort((a, b) => a.seq - b.seq));
   for (const event of events) {
     const row: TimelineRow = { kind: "event", key: `e${event.seq}`, event };
     if (event.kind === "ask") {
@@ -2245,6 +2245,48 @@ export function selectTimeline(state: ViewState, card: SessionCard): TimelineRow
   const pending = [...card.sends.values()].filter((s) => !receipted.has(s.ref)).sort((a, b) => a.at - b.at);
   for (const send of pending) rows.push({ kind: "send", key: `s${send.ref}`, send });
   return rows;
+}
+
+/**
+ * Events in the order they happened, from events in the order they were recorded. A session's
+ * words and calls come from its log, which Claude Code writes late at times: what it wrote
+ * before a question only once the question is answered, and what it wrote before a long tool
+ * call only once the call's input is done. Such a reply or call goes back among what was
+ * recorded while it waited, where its time puts it: above the question, the answer and the
+ * message after. And a row recorded twice, the same log row read again (its kind, its time and
+ * its words or its call's id all one), is shown once.
+ */
+export function inPlace(events: readonly SessionEvent[]): SessionEvent[] {
+  const out: SessionEvent[] = [];
+  const seen = new Set<string>();
+  for (const e of events) {
+    const key = rowKey(e);
+    if (key !== undefined) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    let i = out.length;
+    if (e.kind === "assistant_text" || e.kind === "tool_call") while (i > 0 && out[i - 1]!.at > e.at) i--;
+    out.splice(i, 0, e);
+  }
+  return out;
+}
+
+/** What makes an event the same log row as another: its kind, time and words, or its call's id; none for one that is not a log row's. */
+function rowKey(e: SessionEvent): string | undefined {
+  const p = (e.payload ?? {}) as { text?: unknown; id?: unknown; type?: unknown };
+  switch (e.kind) {
+    case "assistant_text":
+    case "user_turn":
+      return typeof p.text === "string" ? `${e.kind}|${e.at}|${p.text}` : undefined;
+    case "tool_call":
+    case "tool_result":
+      return typeof p.id === "string" && p.id !== "" ? `${e.kind}|${p.id}` : undefined;
+    case "notification":
+      return p.type === "queued" && typeof p.text === "string" ? `queued|${e.at}|${p.text}` : undefined;
+    default:
+      return undefined;
+  }
 }
 
 /** A tool an agent's turn called, and what came back once it did. */
@@ -2459,14 +2501,19 @@ export type TimelinePost =
   | { kind: "user"; key: string; at: number; text: string; receipt?: { state: PendingSend["state"]; asPeer: boolean }; lead?: string }
   | { kind: "agent"; key: string; at: number; text: string; who: string; harness?: string }
   | { kind: "turn"; key: string; at: number; parts: TurnPart[] }
-  | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown }
+  | { kind: "ask"; key: string; at: number; ask?: Ask; payload: unknown; unwritten?: boolean }
   | { kind: "note"; key: string; at: number; text: string; call?: string };
+
+/** How long after a question opened the call that asked it may be timed, by the clocks of its log and its hook. */
+const ASK_CALL_SLACK_MS = 2000;
 
 export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly SubagentRun[] } = {}): TimelinePost[] {
   const posts: TimelinePost[] = [];
   let turn: Extract<TimelinePost, { kind: "turn" }> | undefined;
-  // the calls of the turn without their result yet, by id, and by tool for a harness that names none
-  let open = new Map<string, TimelineStep>();
+  // The calls without their result yet: by id, wherever their result comes (a call its log had
+  // late goes above a question or a note its result comes after), and the turn's by tool for a
+  // harness that names none.
+  const open = new Map<string, TimelineStep>();
   let waiting: TimelineStep[] = [];
   // Every background task's notice, read first: one can land before the call it ends (a sub-agent
   // done in a moment), and where hooks run each comes twice (the prompt hook's turn, the queue's row).
@@ -2560,9 +2607,11 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
   };
   // one post per ask, where it was asked: its later phases are the same ask
   const asked = new Map<string, Extract<TimelinePost, { kind: "ask" }>>();
+  // Claude's questions, and the calls that asked them as the log has them
+  const questions: Extract<TimelinePost, { kind: "ask" }>[] = [];
+  const askCalls: { at: number; text: string; taken?: boolean }[] = [];
   const end = () => {
     turn = undefined;
-    open = new Map();
     waiting = [];
   };
   const add = (post: TimelinePost) => {
@@ -2605,6 +2654,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         break;
       }
       case "tool_call": {
+        if (p["tool"] === "AskUserQuestion") askCalls.push({ at: e.at, text: typeof p["args"] === "string" ? p["args"] : JSON.stringify(p["args"] ?? {}) });
         const t = into(row.key, e.at);
         const last = t.parts.at(-1);
         const id = typeof p["id"] === "string" ? p["id"] : undefined;
@@ -2671,6 +2721,7 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
           break;
         }
         const post: Extract<TimelinePost, { kind: "ask" }> = { kind: "ask", key: row.key, at: e.at, ...(row.ask ? { ask: row.ask } : {}), payload: e.payload };
+        if (p["tool"] === "AskUserQuestion") questions.push(post);
         // It ends the turn's card, but not its calls: the asking tool's result, and any other
         // call's, still finds its call in the card before, rather than a card of its own.
         turn = undefined;
@@ -2712,6 +2763,25 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         add({ kind: "note", key: row.key, at: e.at, text: `Session ended${p["reason"] ? ` (${String(p["reason"])})` : ""}` });
         break;
     }
+  }
+  // A question of Claude's whose call is not in the log yet: what Claude wrote just before it
+  // is not either, and shows in its terminal alone until the log has it (`inPlace`). Each call
+  // asked one question post, and a call of several questions the ones after its first too: a
+  // call is the question's that its input names (when the node kept that much of it), else the
+  // first one left that was written by the time the question opened.
+  let first: boolean | undefined;
+  for (const post of [...questions].sort((a, b) => a.at - b.at)) {
+    const p = (post.payload ?? {}) as { title?: unknown; question?: unknown };
+    if (typeof p.question === "number" && p.question > 1 && first !== undefined) {
+      if (!first) post.unwritten = true;
+      continue;
+    }
+    const title = typeof p.title === "string" ? p.title.trim() : (post.ask?.title.trim() ?? "");
+    const spelled = JSON.stringify(title).slice(1, -1).slice(0, 80);
+    const call = (title !== "" ? askCalls.find((c) => !c.taken && c.text.includes(spelled)) : undefined) ?? askCalls.find((c) => !c.taken && c.at <= post.at + ASK_CALL_SLACK_MS);
+    if (call) call.taken = true;
+    else post.unwritten = true;
+    first = call !== undefined;
   }
   return posts;
 }

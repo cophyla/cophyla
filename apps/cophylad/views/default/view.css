@@ -2012,6 +2012,14 @@ button:disabled {
   border-left-color: var(--moss);
 }
 
+/* An open question of Claude's whose call is not in its log yet: what it wrote before is in its terminal. */
+.tl-ask-unwritten {
+  margin: 0 0 4px;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
 /* Where the user's message stands, while that is not plainly delivered; a leader's, who sent it. */
 .tl-receipt {
   margin: 4px 0 0;
