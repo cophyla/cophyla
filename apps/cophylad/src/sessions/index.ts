@@ -141,6 +141,8 @@ export interface SessionsDeps {
   typeWaits?: { noPromptMs?: number; heldMs?: number };
   /** How long a hook's tool result waits for its call to be recorded first; a test shortens it. */
   resultHoldMs?: number;
+  /** The most one read of a transcript takes in (`MAX_READ`); a test makes it small. */
+  tailPiece?: number;
   /** Prices a session's tokens when the harness states no cost of its own; undefined for a model with no price. */
   pricer?: (model: string, tokens: { in: number; out: number; cacheRead?: number; cacheWrite?: number }) => number | undefined;
   /** Ends a stopped session's process; `process.kill` unless a test records it. */
@@ -1075,12 +1077,18 @@ export class Sessions implements SessionHost {
     const recorded = this.deps.store.sessions.tail(rec.session.id);
     // The same file by another way to it (a link two profiles share) was recorded to there too.
     const same = recorded !== undefined && (recorded.path === path || sameFile(recorded.path, path));
-    rec.tail = new Tail(path, { replayBytes: REPLAY_BYTES, ...(recorded && same ? { recordedTo: recorded.offset } : {}) });
+    rec.tail = new Tail(path, { replayBytes: REPLAY_BYTES, ...(this.deps.tailPiece !== undefined ? { maxRead: this.deps.tailPiece } : {}), ...(recorded && same ? { recordedTo: recorded.offset } : {}) });
     return rec.tail;
   }
 
+  /**
+   * Keeps how far the transcript is recorded. A tail opened on a long file reads up to its mark
+   * in pieces, recording none of them; the mark stays where recording starts until the reading
+   * passes it, so a tail opened again in between (a reopen, a resume) does not take a piece's
+   * end for the mark and record again what is past it.
+   */
   tailed(rec: SessionRecord): void {
-    if (rec.tail) this.deps.store.sessions.setTail(rec.session.id, rec.tail.path, rec.tail.consumed);
+    if (rec.tail) this.deps.store.sessions.setTail(rec.session.id, rec.tail.path, Math.max(rec.tail.consumed, rec.tail.recordFrom));
   }
 
   viewMark(rec: SessionRecord): ViewMark | undefined {

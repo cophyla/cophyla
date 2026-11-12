@@ -8,7 +8,8 @@
 // unknown one are refused, and so is a second reopen while the first runs. A reopen under
 // another profile copies the conversation and its sub-agents' folder into that profile's
 // `projects/`, or copies nothing where the two share it by a link, and the session comes back
-// under that profile, reading on from the copy with nothing recorded twice; a profile that is
+// under that profile, reading on from the copy with nothing recorded twice, a conversation read
+// in many pieces too; a profile that is
 // not there, one of another harness, and a Codex session moved are refused. The brain ends a
 // session of the user's on the machine's own once the gate let it. The store's list leaves
 // out the chat's own session and the ends that were none of a conversation.
@@ -133,10 +134,12 @@ beforeAll(async () => {
   ];
   mini = await miniSessions(
     `[sessions]\ndiscover = false\ninstall_hooks = false\npoll_ms = 100000\n\n${PROFILES.map(([harness, name, dir]) => `[[profiles]]\nharness = "${harness}"\nname = "${name}"\nconfig_dir = ${tomlString(dir)}\n`).join("\n")}\n[acp]\nspawn_timeout_ms = 5000\n`,
-    (host, log) => [new ClaudeAdapter({ host, log, isAlive: (pid) => alive.has(pid), inject: async () => undefined, sharedSettings: join(profileDir, "no-such-shared-settings.json") })],
+    // priced, so an ended session's transcript is read on for a while as the daemon's is
+    (host, log) => [new ClaudeAdapter({ host, log, isAlive: (pid) => alive.has(pid), inject: async () => undefined, price: () => 0.001, sharedSettings: join(profileDir, "no-such-shared-settings.json") })],
     {
       acp: (config) => ({ config: config.acp, env: {} }),
-      deps: { tether, env: { PATH: "x" }, isAlive: (pid) => alive.has(pid), kill: () => undefined, home: scratch },
+      // A transcript is read in pieces of 64 KB, as one past 64 MB is on the machine.
+      deps: { tether, env: { PATH: "x" }, isAlive: (pid) => alive.has(pid), kill: () => undefined, home: scratch, tailPiece: 64 * 1024 },
     },
   );
   workspace = mini.workspaces.fromSession(cwd).id;
@@ -231,7 +234,12 @@ describe("closed sessions", () => {
 const profileNamed = (name: string) => mini.profiles.list().find((p) => p.name === name)!;
 
 /** The user turns recorded on a session's timeline. */
-const turns = (id: string) => mini.store.sessionEvents.history(id, { limit: 200 }).filter((e) => e.kind === "user_turn").length;
+const turns = (id: string) => mini.store.sessionEvents.history(id, { limit: 5000 }).filter((e) => e.kind === "user_turn").length;
+
+/** The replies recorded on a session's timeline. */
+const replies = (id: string) => mini.store.sessionEvents.history(id, { limit: 5000 }).filter((e) => e.kind === "assistant_text").length;
+
+const NL = String.fromCharCode(10);
 
 /** A line the resumed conversation adds, as Claude appends it. */
 function goOn(path: string, sessionId: string): void {
@@ -284,6 +292,41 @@ describe("reopened under another profile", () => {
     await waitFor(() => turns(s.session.id) === 2);
     await mini.sessions.tick();
     expect(turns(s.session.id)).toBe(2);
+  });
+
+  test("a long conversation, stopped under a profile that shares it by a link and reopened under the first, records nothing twice", async () => {
+    // Started under the profile whose projects folder is a link to the first's, as an account's is on the machine.
+    const pid = nextPid++;
+    const fs = fake.add({ argv: ["claude"], cwd }, pid);
+    alive.add(pid);
+    const viaLink = transcriptPathFor(sharedDir, cwd, "conv-long");
+    mkdirSync(dirname(viaLink), { recursive: true });
+    writeFileSync(viaLink, JSON.stringify({ type: "user", sessionId: "conv-long", message: { role: "user", content: "hello" } }) + NL);
+    writeRegistry(join(sharedDir, "sessions"), { pid, sessionId: "conv-long", cwd, status: "idle" });
+    await waitFor(() => tether.byPid(pid));
+    await mini.sessions.tick();
+    const id = (await waitFor(() => mini.sessions.find("claude", "conv-long"))).session.id;
+    // Then some 500 KB of replies, each recorded as it comes: past the 256 KB a tail with no mark
+    // records again, and eight pieces long.
+    const rows: string[] = [];
+    for (let i = 0; i < 400; i++) rows.push(JSON.stringify({ type: "assistant", sessionId: "conv-long", timestamp: new Date(Date.UTC(2026, 10, 7, 9, 0, i)).toISOString(), message: { id: `msg_${i}`, model: "claude-sonnet-4-5", role: "assistant", content: [{ type: "text", text: `reply ${i} ${"x".repeat(1200)}` }], usage: { input_tokens: 10, output_tokens: 5 } } }));
+    appendFileSync(viaLink, rows.join(NL) + NL);
+    for (let i = 0; i < 12; i++) await mini.sessions.tick();
+    expect(replies(id)).toBe(400);
+    await mini.sessions.stopSession(id, { as: "user" });
+    // its process gone with its terminal
+    alive.delete(pid);
+    await mini.sessions.tick();
+    // The daemon's poll comes while the reopen waits for the CLI, as it does on the machine.
+    const reopening = mini.sessions.reopen(id, { profiles: mini.profiles, profile: profileNamed("fake").id });
+    await mini.sessions.tick();
+    const back = await reopening;
+    expect(back.transcript?.path).toBe(transcriptPathFor(profileDir, cwd, "conv-long"));
+    goOn(viaLink, "conv-long");
+    // read back to its end a piece a poll, then on
+    for (let i = 0; i < 30 && turns(id) < 2; i++) await mini.sessions.tick();
+    expect(turns(id)).toBe(2);
+    expect(replies(id)).toBe(400);
   });
 
   test("a profile not there, one of another harness, and a Codex session moved are refused, and nothing is copied", async () => {
