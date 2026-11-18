@@ -12374,3 +12374,555 @@ button:disabled {
   border-radius: 50%;
   background: var(--green);
 }
+
+/* --- notes agents left the user (notify_user) ---------------------------------------------- */
+
+/* The bell, before ⋮ in the rail's top row and at the right of a phone's bar: the count of open
+   notes on it, purple, amber while one waits for the user's answer. */
+.notes-bell {
+  position: relative;
+  display: flex;
+  flex: 0 0 26px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.notes-bell:hover,
+.notes-bell[aria-expanded="true"] {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.notes-bell[aria-expanded="true"] {
+  border-color: var(--line-strong);
+}
+
+.notes-bell[data-open="1"] {
+  color: var(--cophyla-ink);
+}
+
+.notes-bell-icon {
+  width: 15px;
+  height: 15px;
+}
+
+.notes-bell-count {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 15px;
+  height: 15px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--cophyla);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 15px;
+  text-align: center;
+}
+
+.notes-bell[data-waits="1"] .notes-bell-count {
+  background: var(--amber);
+  color: var(--paper);
+}
+
+.railbar-bell {
+  flex: 0 0 32px;
+  height: 30px;
+  margin-left: auto;
+}
+
+/* The list the bell drops, over the view at its top left. */
+.notes-panel {
+  position: fixed;
+  top: 44px;
+  left: 8px;
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  width: min(440px, calc(100vw - 16px));
+  max-height: min(72vh, calc(100vh - 60px));
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--card);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.notes-panel[hidden] {
+  display: none;
+}
+
+.notes-panel-head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  padding: 8px 8px 6px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.notes-panel-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.notes-panel-close {
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.notes-panel-close:hover {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.notes-panel-off {
+  margin: 8px 14px 0;
+  color: var(--amber);
+  font-size: 12.5px;
+}
+
+.notes-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 4px 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.notes-empty {
+  margin: 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.notes-empty[hidden] {
+  display: none;
+}
+
+.note-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.note-row:last-child {
+  border-bottom: 0;
+}
+
+.note-row[data-open="1"] {
+  box-shadow: inset 3px 0 var(--cophyla);
+}
+
+.note-row[data-open="1"][data-waits="1"] {
+  box-shadow: inset 3px 0 var(--amber);
+}
+
+.note-row[data-open="0"] {
+  opacity: 0.72;
+}
+
+.note-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note-session {
+  min-width: 0;
+  overflow: hidden;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--raised);
+  color: var(--ink);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-badge {
+  flex: 0 0 auto;
+}
+
+.note-badge[data-state="waiting"] {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.note-badge[data-state="new"] {
+  color: var(--cophyla-ink);
+}
+
+.note-time {
+  flex: 0 0 auto;
+  margin-left: auto;
+  color: var(--faint);
+}
+
+.note-title {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font-weight: 600;
+  text-align: left;
+}
+
+.note-title:hover:enabled {
+  color: var(--cophyla-ink);
+  text-decoration: underline;
+}
+
+.note-detail {
+  max-height: 160px;
+  overflow-y: auto;
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.note-detail > :first-child {
+  margin-top: 0;
+}
+
+.note-detail > :last-child {
+  margin-bottom: 0;
+}
+
+.note-answer {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+.note-reply {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.note-reply[hidden] {
+  display: none;
+}
+
+.note-reply-text {
+  flex: 1 1 200px;
+  min-height: 34px;
+  max-height: 120px;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--well);
+  resize: vertical;
+}
+
+.note-reply-text:focus {
+  border-color: var(--cophyla);
+  outline: none;
+}
+
+.note-reply-send {
+  height: 32px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--cophyla);
+  color: #fff;
+  font-weight: 600;
+}
+
+.note-reply-send:disabled {
+  opacity: 0.5;
+}
+
+.note-reply-failed {
+  flex: 0 0 100%;
+  margin: 0;
+  color: var(--rust);
+  font-size: 12px;
+}
+
+.note-actions {
+  display: flex;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.note-actions button {
+  padding: 2px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.note-actions button:hover:enabled {
+  border-color: var(--cophyla);
+  color: var(--ink);
+}
+
+.note-actions button[hidden] {
+  display: none;
+}
+
+.notes-panel-foot {
+  display: flex;
+  flex: 0 0 auto;
+  justify-content: flex-end;
+  padding: 6px 10px;
+  border-top: 1px solid var(--line);
+}
+
+.notes-panel-foot[hidden] {
+  display: none;
+}
+
+.notes-clear {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notes-clear:hover {
+  color: var(--ink);
+}
+
+/* A session's open notes under its header, after the tracker's asks. */
+.notes-strip {
+  flex: 0 0 100%;
+  margin: 4px 0 0;
+  padding: 6px 0 0;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.notes-strip[hidden] {
+  display: none;
+}
+
+.notes-strip-fold {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--cophyla-ink);
+  font-size: 12px;
+}
+
+.notes-strip[data-waits="1"] .notes-strip-fold {
+  color: var(--amber);
+}
+
+.notes-strip-fold:hover {
+  color: var(--ink);
+}
+
+.notes-strip-glyph::before {
+  content: "▾";
+  display: inline-block;
+  transition: transform 0.12s;
+}
+
+.notes-strip[data-folded="true"] .notes-strip-glyph::before {
+  transform: rotate(-90deg);
+}
+
+.notes-strip-list {
+  max-height: min(24vh, 150px);
+  margin: 4px 0 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.notes-strip-list[hidden] {
+  display: none;
+}
+
+.notes-strip-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 26px;
+}
+
+.notes-strip-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.notes-strip-title:hover {
+  color: var(--cophyla-ink);
+  text-decoration: underline;
+}
+
+.notes-strip-badge {
+  flex: 0 0 auto;
+  color: var(--amber);
+  font-size: 12px;
+}
+
+.notes-strip-dismiss {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--faint);
+}
+
+.notes-strip-dismiss:hover {
+  background: var(--raised);
+  color: var(--ink);
+}
+
+/* A note in the timeline, where the agent left it: a card of its own. */
+.tl-notify {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cophyla) 9%, var(--well));
+}
+
+.tl-notify[data-state="waiting"],
+.tl-notify[data-state="asked"] {
+  border-color: color-mix(in srgb, var(--amber) 60%, var(--line));
+  background: color-mix(in srgb, var(--amber) 8%, var(--well));
+}
+
+.tl-notify[data-state="refused"] {
+  border-color: var(--line);
+  background: var(--well);
+  opacity: 0.75;
+}
+
+.tl-notify-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cophyla-ink);
+  font-size: 12px;
+}
+
+.tl-notify[data-state="waiting"] .tl-notify-head,
+.tl-notify[data-state="asked"] .tl-notify-head {
+  color: var(--amber);
+}
+
+.tl-notify-head .notes-bell-icon {
+  width: 13px;
+  height: 13px;
+}
+
+.tl-notify-word {
+  font-weight: 600;
+}
+
+.tl-notify-state {
+  margin-left: auto;
+  color: var(--muted);
+}
+
+.tl-notify[data-state="waiting"] .tl-notify-state {
+  color: var(--amber);
+  font-weight: 600;
+}
+
+.tl-notify-title {
+  margin-top: 4px;
+  font-weight: 600;
+}
+
+.tl-notify-detail {
+  margin-top: 4px;
+  font-size: 13.5px;
+}
+
+.tl-notify-detail > :first-child {
+  margin-top: 0;
+}
+
+.tl-notify-detail > :last-child {
+  margin-bottom: 0;
+}
+
+.tl-notify-answer {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  font-style: italic;
+}
+
+.tl-notify[data-flash="1"] {
+  outline: 2px solid var(--cophyla);
+  outline-offset: 2px;
+}
+
+/* A tab shown far back: the bar at the foot of what is loaded. */
+.window-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 12px auto;
+  padding: 6px 12px;
+  border: 1px dashed var(--line-strong);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.window-bar[hidden] {
+  display: none;
+}
+
+.window-latest {
+  padding: 3px 10px;
+  border: 1px solid var(--cophyla);
+  border-radius: 6px;
+  background: var(--cophyla-wash);
+  color: var(--ink);
+  font-size: 12.5px;
+}
+
+.window-latest:hover {
+  background: color-mix(in srgb, var(--cophyla) 30%, transparent);
+}

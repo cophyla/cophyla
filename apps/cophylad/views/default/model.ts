@@ -29,8 +29,9 @@
 // of their sessions as the user, each with the sessions it leads or all of them.
 // Types come from the protocol package; nothing else does, so the file runs in the frame as is.
 
-import type { Tracked, TrackerState } from "@cophyla/protocol";
+import type { Note, NotesState, Tracked, TrackerState } from "@cophyla/protocol";
 import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, Team, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare, TeamOffer } from "@cophyla/protocol";
+import { applyNote, isNotifyCall } from "./notemodel.ts";
 import { applyTalk } from "./talkmodel.ts";
 import { applyTrack } from "./trackmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
@@ -156,7 +157,30 @@ export interface SessionCard {
   sends: Map<string, PendingSend>;
   /** It finished its work (went idle) while its tab was not open, and the tab has not been opened since. */
   unseen: boolean;
+  /**
+   * The tab shows a stretch far back in its history, opened at a point (a note's): what streams
+   * meanwhile is held, not drawn, and newer events come a page at a time as the user scrolls
+   * down, until a page meets what streams and the tab is at its newest again.
+   */
+  window?: CardWindow;
 }
+
+/** A tab showing a stretch of its history away from its newest (`SessionCard.window`). */
+export interface CardWindow {
+  /** The seq it was opened at. */
+  at: number;
+  /** What streamed meanwhile, oldest first, at most `WINDOW_HELD` (the oldest go first: a page forward reads them again). */
+  held: SessionEvent[];
+  /** The stretch around `at` is on its way. */
+  opening: boolean;
+  /** A page of newer events is on its way. */
+  loading: boolean;
+}
+
+/** The most events a windowed tab holds of what streams meanwhile. */
+export const WINDOW_HELD = 2000;
+/** How many events a window opens with, around its point. */
+export const WINDOW_PAGE = 100;
 
 /**
  * What the explorer shows of a folder a session works in: the folder as its node spells it,
@@ -285,6 +309,12 @@ export interface ViewState {
   trackOn?: boolean;
   /** The tracker's settings and health, from `tracker.get` and `tracker.state`. */
   tracker?: TrackerState;
+  /** The notes agents left the user, by id, from `note.list` and `note.state`: kept through a disconnect, until the next list replaces them. */
+  notes: Map<string, Note>;
+  /** The node keeps notes: `note.list` answered. Refused by an older node or app (false), or not asked yet, no bell shows. */
+  notesOn?: boolean;
+  /** Whether agents may leave notes, from `notes.get` and `notes.state`. */
+  notesSetting?: NotesState;
   /** The leaders, by speaker (`chat` or a session's id), from `lead.list` and `lead.state`, while connected. */
   leaders: Map<string, Leader>;
   /** The node keeps leaders: `lead.list` answered. Refused by an older node or app (false), or not asked yet, no lead control shows. */
@@ -428,6 +458,21 @@ export type Action =
   | { type: "tracker"; tracker?: TrackerState }
   /** The tracker's settings or health changed. */
   | { type: "tracker.state"; params: TrackerState }
+  /** `note.list`'s answer; none when the node or the app refused it, being older than notes. */
+  | { type: "notes"; notes?: Note[] }
+  /** A note, new or changed, or dismissed (its last word). */
+  | { type: "note.state"; params: Note }
+  /** `notes.get`'s answer; none when it was refused. */
+  | { type: "notes.setting"; setting?: NotesState }
+  /** Whether agents may leave notes changed. */
+  | { type: "notes.state"; params: NotesState }
+  /** A tab opens at a point far back in its history: what it showed goes, and what streams is held. */
+  | { type: "window.opening"; session: string; at: number }
+  /** The stretch around the point came (`opened` the tab's count when it was asked for). */
+  | { type: "window.opened"; session: string; opened: number; at: number; events: SessionEvent[]; limit: number }
+  | { type: "window.loading"; session: string }
+  /** A page of newer events came, asked around `newest`: one short of what was asked meets what streams. */
+  | { type: "window.page"; session: string; opened: number; newest: number; events: SessionEvent[]; limit: number }
   /** `lead.list`'s answer; none when the node or the app refused it, being older than leaders. */
   | { type: "leaders"; leaders?: Leader[] }
   /** The leaders, every one, as one was made, changed or went. */
@@ -532,6 +577,7 @@ export function initialState(): ViewState {
     talks: new Map(),
     talkPages: new Map(),
     tracked: new Map(),
+    notes: new Map(),
     focus: new Map(),
     leaders: new Map(),
     teammates: new Map(),
@@ -749,7 +795,7 @@ function addEvent(c: SessionCard, e: SessionEvent): void {
  * a page is on its way, which would land below a gap. How many it let go.
  */
 export function trimTimeline(c: SessionCard, keep = TIMELINE_KEEP, slack = TIMELINE_SLACK): number {
-  if (!c.open || c.loading || c.events.size <= keep + slack) return 0;
+  if (!c.open || c.loading || c.window !== undefined || c.events.size <= keep + slack) return 0;
   const seqs = [...c.events.keys()].sort((a, b) => a - b);
   const drop = seqs.length - keep;
   for (let i = 0; i < drop; i++) c.events.delete(seqs[i]!);
@@ -758,9 +804,55 @@ export function trimTimeline(c: SessionCard, keep = TIMELINE_KEEP, slack = TIMEL
   return drop;
 }
 
+/** An event streamed while a tab shows a window: held, the oldest let go past `WINDOW_HELD`. */
+function hold(w: CardWindow, e: SessionEvent): void {
+  w.held.push(e);
+  if (w.held.length > WINDOW_HELD) w.held.splice(0, w.held.length - WINDOW_HELD);
+}
+
+/** A window's newest page met what streams: what was held is in, and the tab is at its newest again. */
+function meetLive(c: SessionCard): void {
+  const held = c.window?.held ?? [];
+  delete c.window;
+  for (const e of held) addEvent(c, e);
+}
+
+/** The newest event a tab holds; undefined while it holds none. */
+export function newestSeq(c: Pick<SessionCard, "events">): number | undefined {
+  let newest: number | undefined;
+  for (const seq of c.events.keys()) if (newest === undefined || seq > newest) newest = seq;
+  return newest;
+}
+
+/**
+ * How a point in a tab's history is reached (`showAt`): `here` when the tab holds it, `back`
+ * when it is a page back from the oldest it holds (one `session.history {before}` of `limit`
+ * fetches the gap), else `window`: the tab opens around it.
+ */
+export function reachOf(c: Pick<SessionCard, "events" | "oldestSeq" | "exhausted" | "window">, seq: number, near = REACH_BACK): { how: "here" } | { how: "back"; before: number; limit: number } | { how: "window" } {
+  if (c.events.size === 0 || c.oldestSeq === undefined || c.window?.opening) return { how: "window" };
+  // a window holds what is between its oldest and its newest; the tab at its newest, all after its oldest
+  const newest = newestSeq(c)!;
+  if (c.window && seq > newest) return { how: "window" };
+  if (seq >= c.oldestSeq || c.exhausted) return { how: "here" };
+  if (c.oldestSeq - seq <= near) return { how: "back", before: c.oldestSeq, limit: c.oldestSeq - seq + 20 };
+  return { how: "window" };
+}
+
+/** How far back from the oldest a tab holds a point is fetched in one page, rather than opened as a window. */
+export const REACH_BACK = 600;
+
+/** The page of newer events a windowed tab asks for: around the newest it holds, twice a page, so the half after it is new. */
+export function forwardParams(c: Pick<SessionCard, "events" | "window">, page: number): { around: number; limit: number } | undefined {
+  if (!c.window || c.window.opening || c.window.loading) return undefined;
+  const newest = newestSeq(c);
+  if (newest === undefined) return undefined;
+  return { around: newest, limit: page * 2 };
+}
+
 /** Folds one action in. Mutates and returns `state`; the renderer diffs the DOM. */
 export function apply(state: ViewState, action: Action): ViewState {
-  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action) || applyTrack(state, action)) return state;
+  if (applyTeam(state, action) || applyLead(state, action) || applyTalk(state, action) || applyTrack(state, action) || applyNote(state, action)) return state;
   switch (action.type) {
     case "host.ready": {
       const p = action.params;
@@ -838,6 +930,11 @@ export function apply(state: ViewState, action: Action): ViewState {
       const c = state.sessions.get(e.session);
       // One still on its way when its tab closed has nowhere to go.
       if (!c || !c.open) return state;
+      // Shown far back: held until the window meets what streams.
+      if (c.window) {
+        hold(c.window, e);
+        return state;
+      }
       addEvent(c, e);
       return state;
     }
@@ -874,6 +971,7 @@ export function apply(state: ViewState, action: Action): ViewState {
         // from what streams and loads from here, so no stretch of it is missing unsaid.
         c.events.clear();
         delete c.oldestSeq;
+        delete c.window;
         c.exhausted = false;
         c.loading = false;
         c.sends.clear();
@@ -901,6 +999,46 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "timeline.trim": {
       const c = state.sessions.get(action.session);
       if (c) trimTimeline(c);
+      return state;
+    }
+    case "window.opening": {
+      const c = state.sessions.get(action.session);
+      if (!c || !c.open) return state;
+      // A page asked for under what it showed is dropped: the window starts the count again.
+      c.opened++;
+      c.events.clear();
+      delete c.oldestSeq;
+      c.exhausted = false;
+      c.loading = false;
+      c.window = { at: action.at, held: c.window?.held ?? [], opening: true, loading: false };
+      return state;
+    }
+    case "window.opened": {
+      const c = state.sessions.get(action.session);
+      if (!c || !c.open || c.opened !== action.opened || !c.window) return state;
+      c.window.opening = false;
+      for (const e of action.events) addEvent(c, e);
+      const half = Math.max(1, Math.floor(action.limit / 2));
+      const older = action.events.filter((e) => e.seq <= action.at).length;
+      // fewer before it than asked for: the session's start is in it
+      if (older < half) c.exhausted = true;
+      // and fewer after it: its newest too, and the window is no window
+      if (action.events.length - older < action.limit - older) meetLive(c);
+      return state;
+    }
+    case "window.loading": {
+      const c = state.sessions.get(action.session);
+      if (c?.window) c.window.loading = true;
+      return state;
+    }
+    case "window.page": {
+      const c = state.sessions.get(action.session);
+      if (!c || !c.open || c.opened !== action.opened || !c.window) return state;
+      c.window.loading = false;
+      const older = action.events.filter((e) => e.seq <= action.newest).length;
+      const newer = action.events.filter((e) => e.seq > action.newest);
+      for (const e of newer) addEvent(c, e);
+      if (newer.length < action.limit - older) meetLive(c);
       return state;
     }
     case "draft": {
@@ -1223,6 +1361,12 @@ export function apply(state: ViewState, action: Action): ViewState {
     case "tracker.state":
       // folded by applyTrack, above
       return state;
+    case "notes":
+    case "note.state":
+    case "notes.setting":
+    case "notes.state":
+      // folded by applyNote, above
+      return state;
     case "error":
       state.errors.push(action.message);
       state.errorsSeen++;
@@ -1285,6 +1429,14 @@ export function chatDraw(action: Action): ChatDraw {
     case "tracked.state":
     case "tracker":
     case "tracker.state":
+    case "notes":
+    case "note.state":
+    case "notes.setting":
+    case "notes.state":
+    case "window.opening":
+    case "window.opened":
+    case "window.loading":
+    case "window.page":
       return "none";
     case "chat.delta":
     case "chat.retract":
@@ -2327,7 +2479,9 @@ export type TurnPart =
   | { kind: "text"; key: string; text: string }
   | { kind: "steps"; key: string; steps: TimelineStep[] }
   | { kind: "agent"; key: string; step: TimelineStep }
-  | { kind: "agents"; key: string; steps: TimelineStep[] };
+  | { kind: "agents"; key: string; steps: TimelineStep[] }
+  /** A note the agent left its user (`notify_user`): its own card, never folded into the steps. */
+  | { kind: "notify"; key: string; step: TimelineStep; seq: number };
 
 /**
  * A call's arguments as fields. A long call is kept as its JSON text cut short with `…`: the
@@ -2660,8 +2814,10 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         const id = typeof p["id"] === "string" ? p["id"] : undefined;
         const step: TimelineStep = { key: row.key, ...(id !== undefined ? { id } : {}), tool: String(p["tool"] ?? "tool"), args: p["args"], ...(p["truncated"] ? { truncated: true } : {}) };
         const agent = subagentOf(step) !== undefined;
+        // A note for the user stands on its own, where it was left, as its own card.
+        if (isNotifyCall(step.tool)) t.parts.push({ kind: "notify", key: row.key, step, seq: e.seq });
         // A second agent started right after another: the two (and any after) are one group, under a key of its own.
-        if (agent && last?.kind === "agent") t.parts.splice(-1, 1, { kind: "agents", key: `g${last.key}`, steps: [last.step, step] });
+        else if (agent && last?.kind === "agent") t.parts.splice(-1, 1, { kind: "agents", key: `g${last.key}`, steps: [last.step, step] });
         else if (agent && last?.kind === "agents") last.steps.push(step);
         else if (agent) t.parts.push({ kind: "agent", key: row.key, step });
         else if (last?.kind === "steps") last.steps.push(step);

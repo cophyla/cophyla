@@ -89,6 +89,9 @@ import type { LeadPop } from "./leadview.ts";
 import { createModeCount, createTalkPane, renderTalkPane, updateModeCount } from "./talkview.ts";
 import type { TalkUi } from "./talkview.ts";
 import { tabAsks } from "./trackmodel.ts";
+import { openNotesOf } from "./notemodel.ts";
+import { createBell, createNotesPanel, createNotesStrip, createNotifyCard, updateBell, updateNotesPanel, updateNotesStrip, updateNotifyCard } from "./noteview.ts";
+import type { NoteUi } from "./noteview.ts";
 import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
 import type { TrackUi } from "./trackview.ts";
 import type { PaneMode } from "./model.ts";
@@ -130,6 +133,8 @@ export interface UiState {
   talk: TalkUi;
   /** The tracker's strips: which are folded, and the answer open in one. */
   track: TrackUi;
+  /** The notes: whether the bell's list is down, the strips folded, replies on their way. */
+  notes: NoteUi;
   /**
    * The view the user last chose, the chat or a terminal: each session's pane and the chat's pane
    * open on it until they choose again (`tabChoice`, `chatMode`). Unset until they first choose:
@@ -756,7 +761,8 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
         ? `waiting on ${agents === 1 ? "a sub-agent" : `${agents} sub-agents`}`
         : TONE_WORD[tone];
   const asks = tabAsks(state, s.id, ui.track.seen.get(s.id));
-  setData(icon, "unread", asks?.unread ? "1" : "");
+  const notes = openNotesOf(state, s.id);
+  setData(icon, "unread", asks?.unread || notes.length > 0 ? "1" : "");
   const count = tab.querySelector<HTMLElement>(".tab-asks")!;
   setHidden(count, asks === undefined);
   let askWords = "";
@@ -767,7 +773,8 @@ function updateTab(tab: HTMLElement, card: SessionCard, state: ViewState, ui: Ui
     askWords = `${asks.answered} of ${asks.total} ask${asks.total === 1 ? "" : "s"} answered${asks.unread ? ", an answer not read yet" : ""}`;
     count.setAttribute("aria-label", askWords);
   }
-  const words = `${s.harness}${where}, ${toneWord}${asks?.unread ? ", an answer to read" : ""}`;
+  const noteWords = notes.length === 0 ? "" : notes.length === 1 ? ", a note for you" : `, ${notes.length} notes for you`;
+  const words = `${s.harness}${where}, ${toneWord}${asks?.unread ? ", an answer to read" : ""}${noteWords}`;
   icon.setAttribute("aria-label", words);
   setText(tab.querySelector(".tab-title")!, sessionLabel(s));
   const ws = workspaceName(state, s);
@@ -2123,7 +2130,8 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     places.setAttribute("role", "listbox");
     places.setAttribute("aria-label", "Places");
     menu.append(filter, el("p", "new-terminal-loading", "Loading workspaces…"), el("p", "new-terminal-note"), places, createFolderPicker());
-    top.append(chat, speaker, newTerminal, more, moreMenu, menu);
+    // The notes agents left the user, before ⋮: how many are open, and a press drops their list.
+    top.append(chat, speaker, newTerminal, createBell("rail-bell"), more, moreMenu, menu);
     const list = el("div", "tab-sessions");
     // The bare terminals under a heading of their own, which folds them like a folder's, by machine when there are several.
     const terminals = el("div", "tab-group terminals-group");
@@ -2183,6 +2191,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   const chatLeads = updateTabLead(chat, state, "chat");
   chat.title = chatLeads ? `Cophyla Chat\n${chatLeads}` : "";
   renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
+  updateBell(root.querySelector<HTMLButtonElement>(".rail-bell")!, state, ui);
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
   root.querySelector<HTMLElement>(".rail-split")!.setAttribute("aria-valuenow", split);
@@ -3078,8 +3087,9 @@ function renderRailbar(root: HTMLElement, state: ViewState, ui: UiState, shown: 
     toggle.setAttribute("aria-label", "Sessions and machines");
     toggle.title = "Sessions and machines";
     toggle.append(el("span", "menu-mark"));
-    root.append(toggle, el("span", "railbar-title"));
+    root.append(toggle, el("span", "railbar-title"), createBell("railbar-bell"));
   }
+  updateBell(root.querySelector<HTMLButtonElement>(".railbar-bell")!, state, ui);
   toggle.setAttribute("aria-expanded", shown ? "true" : "false");
   const card = ui.selected !== undefined ? state.sessions.get(ui.selected) : undefined;
   const bare = ui.terminal !== undefined ? state.terminals.get(ui.terminal) : undefined;
@@ -3342,12 +3352,16 @@ function createPane(): HTMLElement {
   // The other people's agents this session is joined to, when it is: a press opens its Connect panel.
   const links = actionButton("session-links", "", "session-connect-show");
   // Beside them, what it leads while it leads, and the leaders that speak to it.
-  head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect(), createTrackStrip());
+  head.append(fold, chip, links, createLeaderChip(), createLedChip(), el("span", "session-intent"), el("span", "session-workspace"), el("span", "session-cwd"), el("span", "session-stats"), actions, copied, createSessionFocus(), createHeadConnect(), createTrackStrip(), createNotesStrip());
   const body = el("div", "session-body");
   const earlier = el("button", "earlier", "Load history");
   earlier.type = "button";
   earlier.dataset["action"] = "earlier";
-  body.append(earlier, el("ol", "timeline"), createWorking());
+  // Shown far back (a note opened there): newer messages come as the user scrolls down, or Jump to latest.
+  const later = el("div", "window-bar");
+  later.hidden = true;
+  later.append(el("span", "window-bar-words"), actionButton("window-latest", "Jump to latest", "window-latest"));
+  body.append(earlier, el("ol", "timeline"), later, createWorking());
   root.append(head, body, createTalkPane());
   return root;
 }
@@ -3397,7 +3411,9 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   updateLeadChips(head, s, state);
   updateLeadControl(node.querySelector<HTMLElement>(".session-actions > .lead-control")!, s.id, state, ui);
   updateTrackToggle(node.querySelector<HTMLButtonElement>(".tracked-toggle")!, s.id, state);
-  updateTrackStrip(node.querySelector<HTMLElement>(".tracked")!, s.id, state, ui, (seq) => card.open && card.events.has(seq));
+  // Show in chat goes to an answer however far back it is (`showAt`): offered while the tab is open.
+  updateTrackStrip(node.querySelector<HTMLElement>(".tracked")!, s.id, state, ui, () => card.open);
+  updateNotesStrip(node.querySelector<HTMLElement>(".notes-strip")!, s.id, state, ui);
   const chip = node.querySelector<HTMLElement>(".chip")!;
   setData(chip, "session", s.id);
   // The window the session runs in, raised; a session in tether that no window shows, or a
@@ -3444,7 +3460,15 @@ function updatePane(node: HTMLElement, card: SessionCard, state: ViewState, ui: 
   const cardKey = `session:${s.id}`;
   const posts = timelinePosts(selectTimeline(state, card), { ...(card.session.subagents ? { subagents: card.session.subagents } : {}) });
   shownPosts.set(s.id, posts);
-  reconcile(timeline, posts, (p) => p.key, createTimelinePost, (li, post) => updateTimelinePost(li, post, s, cardKey, ui));
+  reconcile(timeline, posts, (p) => p.key, createTimelinePost, (li, post) => updateTimelinePost(li, post, s, cardKey, ui, state));
+  setData(node, "window", card.window ? "1" : "");
+  const later = node.querySelector<HTMLElement>(".window-bar")!;
+  setHidden(later, !card.window || card.window.opening);
+  if (card.window) {
+    setText(later.querySelector(".window-bar-words")!, card.window.loading ? "Loading newer messages…" : "Newer messages");
+    setData(later.querySelector<HTMLElement>(".window-latest")!, "session", s.id);
+    later.querySelector<HTMLElement>(".window-latest")!.title = "Show the session's newest messages";
+  }
   updateWorking(node.querySelector<HTMLElement>(".tl-working")!, s, posts);
 }
 
@@ -3641,7 +3665,7 @@ function createTimelinePost(post: TimelinePost): HTMLElement {
   return li;
 }
 
-function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, cardKey: string, ui: UiState): void {
+function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, cardKey: string, ui: UiState, state: ViewState): void {
   if (post.kind === "note") {
     setText(li, post.text);
     li.title = post.call !== undefined ? `${clock(post.at)} · show its card` : clock(post.at);
@@ -3712,7 +3736,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       setData(icon!, "harness", s.harness);
       setData(icon!, "tone", "active");
       setText(who, HARNESS_NAMES[s.harness] ?? s.harness);
-      reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui, s));
+      reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui, s, state));
       return;
   }
 }
@@ -3721,6 +3745,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
 function createTurnPart(part: TurnPart): HTMLElement {
   if (part.kind === "text") return el("div", "tl-text");
   if (part.kind === "agent") return createAgentCard();
+  if (part.kind === "notify") return createNotifyCard();
   if (part.kind === "agents") {
     const root = el("section", "tl-agents");
     const head = el("div", "tl-agents-head");
@@ -3735,9 +3760,13 @@ function createTurnPart(part: TurnPart): HTMLElement {
   return root;
 }
 
-function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: UiState, s: Session): void {
+function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: UiState, s: Session, state: ViewState): void {
   if (part.kind === "text") {
     renderText(node, part.text, true);
+    return;
+  }
+  if (part.kind === "notify") {
+    updateNotifyCard(node, part.step, part.seq, s.id, state);
     return;
   }
   if (part.kind === "agent") {
@@ -4971,6 +5000,12 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   setData(roots.app, "menu", state.hostMenu ? "host" : "view");
   renderRailbar(roots.railbar, state, ui, opts.railShown ?? false);
   renderTabs(roots.tabs, state, ui);
+  let notesPanel = roots.app.querySelector<HTMLElement>(":scope > .notes-panel");
+  if (!notesPanel) {
+    notesPanel = createNotesPanel();
+    roots.app.append(notesPanel);
+  }
+  updateNotesPanel(notesPanel, state, ui);
   renderFileMenu(roots.app, state, ui);
   setHidden(roots.chat, ui.selected !== undefined || ui.terminal !== undefined || ui.group !== undefined);
   renderChatHead(roots.chat, state, ui);
@@ -4995,7 +5030,8 @@ export function render(roots: Roots, state: ViewState, ui: UiState, opts: Render
   // A pane just switched to opens at its newest; one that stayed keeps the user's place.
   const after = activePane(roots);
   if (!after) return;
+  const windowed = after.classList.contains("session") && after.dataset["window"] === "1";
   if (after !== before) after.scrollTop = after.scrollHeight;
   else if (opts.anchor) after.scrollTop = topBefore + (after.scrollHeight - heightBefore);
-  else if (atBottom) after.scrollTop = after.scrollHeight;
+  else if (atBottom && !windowed) after.scrollTop = after.scrollHeight;
 }

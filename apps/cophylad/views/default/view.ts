@@ -69,6 +69,7 @@ import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profi
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
 import { keptChoices, wantsEarlier } from "./model.ts";
+import { forwardParams, historyPage as pageSize, reachOf, WINDOW_PAGE } from "./model.ts";
 import { fullRel, isFullPath, pathNode } from "./model.ts";
 import { spelledPath } from "./spaced.ts";
 import type { Names, Spelled } from "./spaced.ts";
@@ -99,6 +100,8 @@ import { TalkControl } from "./talkctl.ts";
 import { newTalkUi } from "./talkview.ts";
 import { TrackControl } from "./trackctl.ts";
 import { newTrackUi } from "./trackview.ts";
+import { NoteControl } from "./notectl.ts";
+import { newNoteUi } from "./noteview.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -133,6 +136,7 @@ const ui: UiState = {
   team: newTeamUi(),
   talk: newTalkUi(),
   track: newTrackUi(),
+  notes: newNoteUi(),
 };
 // A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
 // over them, beside Devices: index.html has neither, so they are made here.
@@ -195,11 +199,19 @@ const track = new TrackControl({
   roots,
   dispatch: (action) => dispatch(action),
   draw: () => draw(),
-  showInChat: (session, seq) => showInChat(session, seq),
+  showInChat: (session, seq) => void showAt(session, seq),
   savePrefs: (key, value) => {
     prefs = { ...prefs, [key]: value };
     void rpc.request("host.savePrefs", { prefs }).catch(() => {});
   },
+});
+const notes = new NoteControl({
+  rpc,
+  state,
+  ui,
+  dispatch: (action) => dispatch(action),
+  draw: () => draw(),
+  showAt: (session, seq) => void showAt(session, seq),
 });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(terminalWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
@@ -240,6 +252,8 @@ function draw(opts: RenderOptions = {}): void {
   talks.afterDraw();
   track.afterDraw();
   pageBack();
+  pageForward();
+  revealWaiting();
   spellSoon();
 }
 
@@ -449,6 +463,12 @@ rpc.onNotification((n) => {
     case "host.menu":
       toggleRail();
       return;
+    case "host.reveal": {
+      // A note's toast pressed on the desktop: the note, where it was left in its session.
+      const r = (n.params ?? {}) as { session?: unknown; seq?: unknown; note?: unknown };
+      if (typeof r.session === "string" && typeof r.seq === "number" && Number.isInteger(r.seq)) reveal({ session: r.session, seq: r.seq, ...(typeof r.note === "string" ? { note: r.note } : {}) });
+      return;
+    }
     case "host.streamClosed": {
       const stream = (n.params as { stream?: unknown } | undefined)?.stream;
       if (typeof stream !== "string") return;
@@ -496,6 +516,7 @@ rpc.onNotification((n) => {
         lead.connected();
         talks.connected();
         track.connected();
+        notes.connected();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -547,6 +568,7 @@ rpc.onNotification((n) => {
         lead.again();
         talks.again();
         track.again();
+        notes.again();
       }
       // A machine back since the profiles were asked for (as every other one is a moment after
       // this node restarted), or a harness signed in or out there: its profiles, and the usage
@@ -699,6 +721,10 @@ rpc.onNotification((n) => {
     case "tracked.state":
     case "tracker.state":
       track.notification(n.method, n.params);
+      return;
+    case "note.state":
+    case "notes.state":
+      notes.notification(n.method, n.params);
       return;
     default:
       return;
@@ -2386,6 +2412,8 @@ function cancelVoice(): void {
 async function send(session: string, text: string): Promise<void> {
   const trimmed = text.trim();
   if (!trimmed) return;
+  // shown far back: the newest comes first, where what is sent lands
+  if (state.sessions.get(session)?.window) await latest(session);
   try {
     const r = await rpc.request<{ status: "queued" | "held"; ref: string }>("session.send", { id: session, text: trimmed });
     dispatch({ type: "send.result", session, ref: r.ref, text: trimmed, at: Date.now(), status: r.status });
@@ -2470,19 +2498,50 @@ const FLASH_MS = 1500;
  * A sub-agent's card in the selected session's timeline, opened, brought into view and outlined a
  * moment: from its row in the agents panel, or from the line its end left at the bottom.
  */
+/** Each tab's newest page while it is on its way: `showAt` waits for it before it says how far back a point is. */
+const firstPages = new Map<string, Promise<void>>();
+/** Counts the points gone to: one asked for later takes over from one still loading. */
+let showing = 0;
+
 /**
- * A tracked ask's answer, brought into view in its session's chat: the chat shown if its
- * terminal or Messages showed, and the message (or, where a turn's texts are drawn as one, the
- * text it is part of) scrolled to and outlined a moment.
+ * Goes to a point in a session's chat (a note, an ask's answer), however far back: its tab
+ * selected and its chat shown (its terminal or Messages showed), then the point scrolled to and
+ * outlined a moment, with the steps around it unfolded. One the tab holds is there; one within
+ * `REACH_BACK` of the oldest it holds comes in one page; one further back opens the tab as a
+ * window around it, which pages on both ways (`pageForward`) until Jump to latest.
  */
-function showInChat(session: string, seq: number): void {
-  if (ui.selected !== session) return;
+async function showAt(session: string, seq: number): Promise<void> {
+  if (!state.sessions.has(session)) return;
+  const token = ++showing;
+  if (ui.selected !== session || ui.terminal !== undefined || ui.group !== undefined || ui.devices !== undefined) select(session);
   const pane = (): HTMLElement | null => roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(session)}"]`);
   if (pane()?.dataset["mode"] !== "timeline") {
     // as pressing Timeline does
     chooseView("chat", session);
     draw();
   }
+  // away from the newest: nothing paged in for it is let go meanwhile
+  const shown = pane();
+  if (shown) atEnd.set(shown, false);
+  await firstPages.get(session);
+  await untilSettled(session);
+  if (token !== showing || ui.selected !== session) return;
+  const card = state.sessions.get(session);
+  if (!card?.open) return;
+  const reach = reachOf(card, seq);
+  if (reach.how === "back") await loadBack(session, reach.before, reach.limit);
+  else if (reach.how === "window") await openWindow(session, seq);
+  if (token !== showing || ui.selected !== session) return;
+  scrollToSeq(pane, seq);
+}
+
+/** Waits a moment for a page of the tab's on its way to land, so a point is judged against what it holds. */
+async function untilSettled(session: string): Promise<void> {
+  for (let i = 0; i < 100 && state.sessions.get(session)?.loading; i++) await new Promise((r) => setTimeout(r, 50));
+}
+
+/** The point, scrolled to and outlined, once drawn: the card at it or the nearest before it, the steps that hold it unfolded. */
+function scrollToSeq(pane: () => HTMLElement | null, seq: number): void {
   requestAnimationFrame(() => {
     const timeline = pane()?.querySelector<HTMLElement>(".timeline");
     if (!timeline) return;
@@ -2496,10 +2555,121 @@ function showInChat(session: string, seq: number): void {
       }
     }
     if (!best) return;
+    for (let d = best.parentElement?.closest<HTMLDetailsElement>("details"); d; d = d.parentElement?.closest<HTMLDetailsElement>("details")) d.open = true;
     best.scrollIntoView({ block: "center" });
     best.dataset["flash"] = "1";
     setTimeout(() => delete best!.dataset["flash"], FLASH_MS);
   });
+}
+
+/** One page back from the oldest event a tab holds, as long as the gap to a point: `showAt`'s near case. */
+async function loadBack(session: string, before: number, limit: number): Promise<void> {
+  const card = state.sessions.get(session);
+  if (!card?.open) return;
+  const opened = card.opened;
+  dispatch({ type: "history.loading", session });
+  try {
+    await watching;
+    const { events } = await rpc.request<{ events: SessionEvent[] }>("session.history", { id: session, before, limit });
+    dispatch({ type: "history", session, opened, events, limit }, { anchor: true });
+  } catch (e) {
+    dispatch({ type: "history", session, opened, events: [], limit: 0 });
+    fail("earlier", e);
+  }
+}
+
+/** A tab opened as a window around a point far back: what it showed goes, and what streams is held meanwhile. */
+async function openWindow(session: string, seq: number): Promise<void> {
+  const card = state.sessions.get(session);
+  if (!card?.open) return;
+  dispatch({ type: "window.opening", session, at: seq });
+  const opened = card.opened;
+  try {
+    await watching;
+    const { events } = await rpc.request<{ events: SessionEvent[] }>("session.history", { id: session, around: seq, limit: WINDOW_PAGE });
+    dispatch({ type: "window.opened", session, opened, at: seq, events, limit: WINDOW_PAGE });
+  } catch (e) {
+    fail("open", e);
+    // back at the newest, as the tab would open
+    if (ui.selected === session && state.sessions.get(session)?.opened === opened) {
+      openTab();
+      draw();
+    }
+  }
+}
+
+/** When a windowed tab's last page forward failed: the timeline waits a moment before it asks again. */
+const laterFailed = new Map<string, number>();
+
+/**
+ * Pages a windowed tab forward while the user is within about a screen of its foot, after every
+ * draw and on every scroll, as `pageBack` pages back at its top.
+ */
+function pageForward(): void {
+  const pane = activePane(roots);
+  const id = pane?.dataset["session"];
+  if (!pane || id === undefined || !pane.classList.contains("session") || pane.dataset["mode"] !== "timeline" || !state.connected) return;
+  const card = state.sessions.get(id);
+  if (!card?.window || Date.now() - (laterFailed.get(id) ?? 0) < EARLIER_RETRY_MS) return;
+  if (pane.clientHeight === 0 || pane.scrollHeight - pane.scrollTop - pane.clientHeight > Math.max(300, pane.clientHeight)) return;
+  void loadLater(id);
+}
+
+async function loadLater(session: string): Promise<void> {
+  const card = state.sessions.get(session);
+  if (!card) return;
+  const params = forwardParams(card, pageSize(state));
+  if (!params) return;
+  const opened = card.opened;
+  dispatch({ type: "window.loading", session });
+  try {
+    const { events } = await rpc.request<{ events: SessionEvent[] }>("session.history", { id: session, ...params });
+    laterFailed.delete(session);
+    dispatch({ type: "window.page", session, opened, newest: params.around, events, limit: params.limit });
+  } catch (e) {
+    laterFailed.set(session, Date.now());
+    dispatch({ type: "window.page", session, opened, newest: params.around, events: [], limit: 0 });
+    fail("later", e);
+  }
+}
+
+/** Jump to latest: a windowed tab opens again at its newest, as when it is picked. */
+async function latest(session: string): Promise<void> {
+  if (ui.selected !== session) return;
+  openTab();
+  draw();
+  await firstPages.get(session);
+  const pane = roots.sessions.querySelector<HTMLElement>(`.session[data-session="${CSS.escape(session)}"]`);
+  if (!pane) return;
+  requestAnimationFrame(() => {
+    pane.scrollTop = pane.scrollHeight;
+    atEnd.set(pane, true);
+  });
+}
+
+/** A point the host asked for (a note's toast) whose session the view does not know yet: gone to once it does, for a while. */
+let revealing: { session: string; seq: number; note?: string; until: number } | undefined;
+const REVEAL_WAIT_MS = 15_000;
+
+function reveal(r: { session: string; seq: number; note?: string }): void {
+  if (state.sessions.has(r.session)) {
+    revealing = undefined;
+    notes.open(r.note, r.session, r.seq);
+    return;
+  }
+  revealing = { ...r, until: Date.now() + REVEAL_WAIT_MS };
+}
+
+function revealWaiting(): void {
+  const r = revealing;
+  if (!r) return;
+  if (Date.now() > r.until) {
+    revealing = undefined;
+    return;
+  }
+  if (!state.sessions.has(r.session)) return;
+  revealing = undefined;
+  queueMicrotask(() => notes.open(r.note, r.session, r.seq));
 }
 
 function showAgentCard(call: string): void {
@@ -4023,7 +4193,7 @@ function openTab(): void {
   ui.fileMenu = undefined;
   dispatch({ type: "tab.open", session: ui.selected });
   watch();
-  if (ui.selected !== undefined && state.connected) void loadEarlier(ui.selected);
+  if (ui.selected !== undefined && state.connected) firstPages.set(ui.selected, loadEarlier(ui.selected));
   // An agent's files show as its tab opens, read afresh.
   refreshExplorer();
 }
@@ -4087,14 +4257,18 @@ document.addEventListener("click", (ev) => {
     ui.railMenu = undefined;
     draw();
   }
+  notes.outside(ev.target as Element | null);
   if (ui.fileMenu && !(ev.target as Element | null)?.closest(".file-menu")) closeFileMenu();
   team.outside(ev.target as Element | null);
   lead.outside(ev.target as Element | null);
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
   // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list; then a Messages pane's.
-  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target)) return;
+  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target) || notes.click(target)) return;
   switch (target.dataset["action"]) {
+    case "window-latest":
+      if (target.dataset["session"]) void latest(target.dataset["session"]);
+      return;
     case "answer": {
       const form = target.closest<HTMLFormElement>("form.ask-form");
       if (form && target.dataset["ask"] && target.dataset["option"]) void answer(target.dataset["ask"], form, target.dataset["option"]);
@@ -4724,7 +4898,7 @@ document.addEventListener("click", (ev) => {
 
 document.addEventListener("submit", (ev) => {
   const form = ev.target as HTMLFormElement;
-  if (team.submit(form)) {
+  if (team.submit(form) || notes.submit(form)) {
     ev.preventDefault();
     return;
   }
@@ -4832,6 +5006,11 @@ document.addEventListener("keydown", (ev) => {
   team.keydown(ev);
 });
 
+// In a note's reply box, Enter sends and Shift+Enter starts a new line.
+document.addEventListener("keydown", (ev) => {
+  notes.keydown(ev, enterSends);
+});
+
 // In the chat's input or a session's, Enter sends and Shift+Enter starts a new line.
 document.addEventListener("keydown", (ev) => {
   const input = ev.target as HTMLElement | null;
@@ -4928,6 +5107,9 @@ document.addEventListener("keydown", (ev) => {
     ui.railMenu = undefined;
     draw();
     roots.tabs.querySelector<HTMLButtonElement>(".rail-more")?.focus();
+  } else if (notes.escape()) {
+    // the bell's list, the focus back on its bell
+    ev.preventDefault();
   } else if (lead.escape()) {
     // Lead's list, the focus back on its Lead
     ev.preventDefault();
@@ -5071,7 +5253,10 @@ roots.stream.addEventListener("scroll", () => {
 document.addEventListener(
   "scroll",
   (ev) => {
-    if (ev.target instanceof HTMLElement && ev.target.classList.contains("session")) pageBack();
+    if (ev.target instanceof HTMLElement && ev.target.classList.contains("session")) {
+      pageBack();
+      pageForward();
+    }
   },
   true,
 );
@@ -5090,7 +5275,8 @@ document.addEventListener(
     if (pane instanceof HTMLElement && (pane === roots.stream || pane.classList.contains("session"))) {
       if (keptAt.get(pane) === pane.scrollTop) return;
       keptAt.delete(pane);
-      const end = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8;
+      // a window far back is never at the newest, however far down it is scrolled
+      const end = pane.scrollHeight - pane.scrollTop - pane.clientHeight < 8 && pane.dataset["window"] !== "1";
       // Back at the newest after paging far up: what was paged in is let go again.
       if (end && !atEnd.get(pane) && pane.dataset["session"] !== undefined) dispatch({ type: "timeline.trim", session: pane.dataset["session"] });
       atEnd.set(pane, end);
@@ -5100,7 +5286,7 @@ document.addEventListener(
 );
 const keepEnd = new ResizeObserver(() => {
   const pane = activePane(roots);
-  if (!pane || pane.clientHeight === 0 || !(atEnd.get(pane) ?? true)) return;
+  if (!pane || pane.clientHeight === 0 || !(atEnd.get(pane) ?? true) || pane.dataset["window"] === "1") return;
   pane.scrollTop = pane.scrollHeight;
   keptAt.set(pane, pane.scrollTop);
 });
