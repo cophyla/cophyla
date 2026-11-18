@@ -39,22 +39,22 @@ import type { Judge, JudgeAsk } from "./judge.ts";
 /**
  * The sources of a user turn that can be the user's own words: typed, sent from an app, given
  * to a busy Codex, met by its hook. Never another agent's (`agent`, `peer`), a leader's (an
- * agent speaking as the user), or the brain's.
+ * agent speaking as the user), or the brain's. Notes take the same rule for what answers one.
  */
-const USERS = new Set(["typed", "sent", "queued", "hook"]);
+export const USERS = new Set(["typed", "sent", "queued", "hook"]);
 /**
  * A user turn cophylad typed or gave (it carries the send's `ref`) is the user's own only when
  * the send came from one of their apps (`noteSent`): a script or a tool sends the same way. Its
  * turn can be read before the send's answer is back: it waits this long for it.
  */
-const SENT_WAIT_MS = 15_000;
+export const SENT_WAIT_MS = 15_000;
 /** How long a send of the user's is remembered: a held one (focus) is typed up to two hours later. */
 const SENT_KEEP_MS = 3 * 60 * 60_000;
 const SENT_MAX = 2000;
 /** A user turn that is no request: a slash command, or a notice the harness wrote in the user's place. */
-const NOT_ASKED = /^\s*(\/|<task-notification|<command-|<local-command|<bash-|<user-prompt-submit-hook|\[Request interrupted)/;
+export const NOT_ASKED = /^\s*(\/|<task-notification|<command-|<local-command|<bash-|<user-prompt-submit-hook|\[Request interrupted)/;
 /** A user turn the harness wrote to go on with the turn before: a background job's or a sub-agent's notice. */
-const NOTICE = /^\s*(<task-notification|<local-command|<user-prompt-submit-hook)/;
+export const NOTICE = /^\s*(<task-notification|<local-command|<user-prompt-submit-hook)/;
 /** The same words met twice this soon (a hook and the transcript) are one message. */
 const SAME_PROMPT_MS = 60_000;
 

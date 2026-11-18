@@ -29,7 +29,8 @@
 // A tool's answer is text, and for `read_group` the photos of the posts it shows too, as MCP
 // image content the harness hands its model. `send_file` reaches another person's agent through
 // the files module (`peerfiles/`), and `get_file` copies a file posted in a group to the agent's
-// own machine.
+// own machine. `notify_user` leaves the user a note (`notes/`), kept by the primary as the
+// groups are: a secondary's sessions leave theirs through it, with the harness's id for the call.
 
 import { posix, win32 } from "node:path";
 import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
@@ -42,6 +43,8 @@ import type { Gate } from "../gate/index.ts";
 import type { Leaders } from "../leaders/index.ts";
 import type { Reports } from "../leaders/reports.ts";
 import type { Logger } from "../log.ts";
+import { noteAnswerText, noteArgs } from "../notes/index.ts";
+import type { Notes } from "../notes/index.ts";
 import type { SendOptions } from "../sessions/index.ts";
 import { leadCommand } from "../sessions/lead.ts";
 import { reasonOf, sizeText } from "../transfers/index.ts";
@@ -126,6 +129,8 @@ export interface AgentMessagesDeps {
   reports?: () => Reports | undefined;
   /** The agents' conversations, which every message carried here goes into; on the node that routes. */
   talk?: () => TalkLog | undefined;
+  /** The notes agents leave the user (`notify_user`), on the node that routes. */
+  notes?: () => Notes | undefined;
   /** How long a tool call waits for what it started before it answers and tells the outcome later. */
   toolWaitMs?: number;
   now?: () => number;
@@ -199,7 +204,7 @@ export interface SendParams {
 
 /** The connection tools, which a secondary's sessions call through the primary. */
 const CONNECTION_TOOLS = new Set(["create_invite", "accept_invite", "end_connection"]);
-/** The group tools and focus, which live on the primary too. */
+/** The group tools, focus and notes, which live on the primary too. */
 const GROUP_TOOL_NAMES = new Set<string>(GROUP_TOOLS);
 
 /** A send's text as the audit row and an ask keep it. */
@@ -342,7 +347,7 @@ export class AgentMessages {
     if (name === "answer_ask") return this.answerTool(caller, args);
     if (GROUP_TOOL_NAMES.has(name)) {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
-      return this.groupTool(caller, mode, name as GroupToolName, args);
+      return this.groupTool(caller, mode, name as GroupToolName, args, name === "notify_user" ? callIdOf(meta) : undefined);
     }
     try {
       if (name === "list_agents") {
@@ -388,13 +393,13 @@ export class AgentMessages {
     return (this.deps.now ?? Date.now)();
   }
 
-  /** One of the group tools or `focus`, on the primary's groups, here or through the link; the photos a read shows, read where they are kept. */
-  private async groupTool(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<CallAnswer> {
+  /** One of the group tools, `focus` or `notify_user`, on the primary's, here or through the link; the photos a read shows, read where they are kept. */
+  private async groupTool(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json, call?: string): Promise<CallAnswer> {
     try {
       const routes = this.deps.cluster.routes();
       const r: ToolAnswer & { isError?: boolean } = routes
-        ? await this.groupToolHere(caller, mode, tool, args)
-        : nodeLinkRequests["group.tool"].result.parse(await this.upward("group.tool", { caller: caller.id, mode, tool, args }, tool === "get_file" || tool === "post_group" ? FILE_UPWARD_MS : UPWARD_MS));
+        ? await this.groupToolHere(caller, mode, tool, args, call)
+        : nodeLinkRequests["group.tool"].result.parse(await this.upward("group.tool", { caller: caller.id, mode, tool, args, ...(call ? { call } : {}) }, tool === "get_file" || tool === "post_group" ? FILE_UPWARD_MS : UPWARD_MS));
       if (!r.photos?.length) return { text: r.text, ...(r.isError ? { isError: true } : {}) };
       const images = await this.photosFor(caller, r.photos, routes);
       return { text: r.text, ...(images.length > 0 ? { images } : {}), ...(r.isError ? { isError: true } : {}) };
@@ -403,8 +408,9 @@ export class AgentMessages {
     }
   }
 
-  private async groupToolHere(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json): Promise<ToolAnswer> {
+  private async groupToolHere(caller: Session, mode: AgentMode, tool: GroupToolName, args: Json, call?: string): Promise<ToolAnswer> {
     if (tool === "focus") return { text: await this.focusTool(caller, args) };
+    if (tool === "notify_user") return { text: await this.notifyTool(caller, args, call) };
     if (tool === "get_file") return { text: await this.getFile(caller, mode, args) };
     const groups = this.deps.groups?.();
     if (!groups) throw new RpcError("unavailable", "group chats are off on this machine");
@@ -505,6 +511,18 @@ export class AgentMessages {
     return this.waitOrLater(caller, work, () =>
       asking ? `Waiting for your user to allow copying ${label}. You will be told by a message from cophyla how it went.` : `Copying ${label} from #${found.groupName} to this machine. You will be told by a message from cophyla when it lands.`,
     );
+  }
+
+  /** `notify_user`: a note for the user, at this point in the caller's session. */
+  private async notifyTool(caller: Session, args: Json, call?: string): Promise<string> {
+    const notes = this.deps.notes?.();
+    if (!notes) throw new RpcError("unavailable", "notes are off on this machine");
+    const a = noteArgs(args);
+    const note = await this.deps.gate.run(
+      { principal: { kind: "harness", session: caller.id }, action: "agent.notify", args: { title: a.title, needs_answer: a.needsAnswer, urgent: a.urgent }, sessionKey: caller.id },
+      () => notes.add(caller.id, a, call),
+    );
+    return noteAnswerText(note);
   }
 
   /** `focus`: taken for an hour or two, or ended. */
@@ -1260,7 +1278,7 @@ export class AgentMessages {
       // a post tells other agents, as a message does: the machine's access must let its sessions start one
       if (p.tool === "post_group" && !mayMessage(grant.access, "initiate")) return { text: "Not posted: this machine's access lets its sessions start no conversations with other agents.", isError: true };
       try {
-        const r = await this.groupToolHere(caller, p.mode, p.tool, p.args);
+        const r = await this.groupToolHere(caller, p.mode, p.tool, p.args, p.call);
         return { text: r.text, ...(r.photos?.length ? { photos: r.photos } : {}) };
       } catch (e) {
         return { text: groupRefusal(e), isError: true };
@@ -1367,6 +1385,19 @@ function statusText(a: SendAnswer, to: string, now: number): string {
         ? `Held for ${to} (${a.id}): it is in focus until ${clockTime(a.focus.until)}, ${minutesLeft(a.focus.until, now)} from now, or until its turn ends (${a.focus.reason}). It gets your message then; its answer, if any, comes to you as a <cophyla-message>. Do not wait for it in a loop.`
         : `Held for ${to} (${a.id}): it is in focus, and gets your message when it comes out.`;
   }
+}
+
+/**
+ * The harness's id for a tool call, from the call's `_meta`, when it gives one: Claude Code's
+ * tool-use id, which its transcript's row for the call carries too.
+ */
+export function callIdOf(meta: Json | undefined): string | undefined {
+  if (!meta) return undefined;
+  for (const key of ["claudecode/toolUseId", "toolUseId", "tool_use_id", "callId", "call_id"]) {
+    const v = meta[key];
+    if (typeof v === "string" && v !== "" && v.length <= 200) return v;
+  }
+  return undefined;
 }
 
 /** The group tools and focus, as the model is told they were refused. */

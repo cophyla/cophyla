@@ -14,7 +14,7 @@ import { identify, senderBypasses } from "../src/agentmsg/caller.ts";
 import type { CallerLookup } from "../src/agentmsg/caller.ts";
 import { directory, eligible, resolve, slug } from "../src/agentmsg/directory.ts";
 import { envelope, readEnvelope } from "../src/agentmsg/envelope.ts";
-import { AgentMessages } from "../src/agentmsg/index.ts";
+import { AgentMessages, callIdOf } from "../src/agentmsg/index.ts";
 import type { AgentCluster, AgentMessagesConfig, AgentSessions } from "../src/agentmsg/index.ts";
 import { Limits } from "../src/agentmsg/limits.ts";
 import { TalkLog } from "../src/agentmsg/talk.ts";
@@ -25,6 +25,7 @@ import { Audit } from "../src/gate/audit.ts";
 import { Gate } from "../src/gate/index.ts";
 import { Policy } from "../src/gate/policy.ts";
 import { silentLogger } from "../src/log.ts";
+import { Notes } from "../src/notes/index.ts";
 import type { SendOptions } from "../src/sessions/index.ts";
 import { unpasted } from "../src/sessions/injections.ts";
 import { Store } from "../src/store/index.ts";
@@ -253,7 +254,7 @@ interface Rig {
   talk?: TalkLog;
 }
 
-function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean; notes?: (session: string) => string | undefined; primary?: (method: string, params: unknown) => Promise<unknown>; talk?: boolean; leads?: (caller: string, target: string) => boolean }): Rig {
+function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?: NodeRecord[]; bypass?: Record<string, boolean>; accepts?: Record<string, boolean>; held?: Set<string>; linked?: Set<string>; grants?: Record<string, Access>; routes?: boolean; notes?: (session: string) => string | undefined; primary?: (method: string, params: unknown) => Promise<unknown>; talk?: boolean; leads?: (caller: string, target: string) => boolean; noteBook?: Notes }): Rig {
   const config = Config.parse(Bun.TOML.parse(opts.toml ?? ""));
   const store = new Store(":memory:");
   store.migrate();
@@ -305,7 +306,7 @@ function rig(opts: { toml?: string; local: Session[]; mirror?: Session[]; nodes?
   const talk = opts.talk ? new TalkLog({ store, bus, log: silentLogger }) : undefined;
   const leads = opts.leads;
   const leaders = leads ? () => ({ route: (caller: string, target: Session) => (leads(caller, target.id) ? { lead: true } : undefined) }) as never : undefined;
-  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test", ...(groups ? { groups } : {}), ...(talk ? { talk: () => talk } : {}), ...(leaders ? { leaders } : {}) });
+  const router = new AgentMessages({ config: cfg, self: () => ({ id: DESK, name: "Desk" }), sessions, cluster, gate, log: silentLogger, version: "test", ...(groups ? { groups } : {}), ...(talk ? { talk: () => talk } : {}), ...(leaders ? { leaders } : {}), ...(opts.noteBook ? { notes: () => opts.noteBook } : {}) });
   const call: Rig["call"] = async (caller, tool, args, meta) => {
     const answer = (await router.mcp({ harness: caller.harness, ...(caller.native.pid ? { ppid: caller.native.pid } : {}) }, { jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: tool, arguments: args, ...(meta ? { _meta: meta } : {}) } })) as { result: { content: { text: string }[]; isError?: boolean } };
     return { text: answer.result.content[0]!.text, ...(answer.result.isError ? { isError: true } : {}) };
@@ -325,7 +326,7 @@ describe("the router", () => {
     expect(init.result).toMatchObject({ protocolVersion: "2025-11-25", serverInfo: { name: "cophyla-agents" }, capabilities: { tools: {} } });
     expect(init.result.instructions).toContain("never the user's");
     const list = (await r.router.mcp({}, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask"]);
+    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user"]);
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: 2, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 2, result: {} });
     expect(await r.router.mcp({}, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: "d", method: "server/discover" })).toEqual({ jsonrpc: "2.0", id: "d", error: { code: -32601, message: "method not found: server/discover" } });
@@ -475,6 +476,48 @@ describe("the router", () => {
       throw new Error("timed out");
     } });
     expect(await silent.router.promptNote(here)).toBeUndefined();
+  });
+
+  test("notify_user leaves the user a note at the caller's session, with the harness's id for the call; a secondary's goes through the primary", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    const theirs = sess("claude", "/home/me/app", { node: LAPTOP });
+    const bookStore = new Store(":memory:");
+    bookStore.migrate();
+    const book = new Notes({ store: bookStore, bus: new Bus(), log: silentLogger, routes: () => true });
+    const full: Access = { scopes: ["sessions:read", "sessions:write"], messages: "send" };
+    const primary = rig({ local: [me], mirror: [theirs], nodes: [node(LAPTOP, "Laptop")], grants: { grt_full: full }, noteBook: book });
+    const left = await primary.call(me, "notify_user", { title: "Deploy to staging or wait for the review?", detail: "Staging is free until 14:00.", needs_answer: true }, { "claudecode/toolUseId": "toolu_01A" });
+    expect(left).toEqual({ text: "Your user has the note, waiting for their answer: it comes as their next message to you." });
+    expect(book.list()).toEqual([expect.objectContaining({ session: me.id, call: "toolu_01A", title: "Deploy to staging or wait for the review?", detail: "Staging is free until 14:00.", needsAnswer: true, urgent: false })]);
+    expect(primary.store.audit.list({ limit: 20 }).filter((e) => e.action === "agent.notify").map((e) => e.decision)).toEqual(["allow"]);
+    // the agent is told why one is refused
+    expect(await primary.call(me, "notify_user", { title: "x".repeat(90) })).toEqual({ text: "Not done: the title is 90 characters, and takes at most 80: keep it to one short line and put the rest in detail.", isError: true });
+    expect(await primary.call(me, "notify_user", { title: "Deploy to staging or wait for the review?" })).toMatchObject({ isError: true, text: expect.stringContaining("so it was not left again") });
+    // a secondary's session: its call goes up with the call's id, and the primary leaves it
+    const up: { method: string; params: Record<string, unknown> }[] = [];
+    const here = sess("claude", "/home/me/app", { node: LAPTOP, native: { id: "c-here", pid: 4200, transport: "pipe" } });
+    const secondary = rig({ local: [here], routes: false, primary: async (method, params) => {
+      if (method !== "group.tool") return {};
+      up.push({ method, params: params as Record<string, unknown> });
+      return { text: "Your user has the note." };
+    } });
+    expect(await secondary.call(here, "notify_user", { title: "Tests pass on Linux" }, { "claudecode/toolUseId": "toolu_02B" })).toEqual({ text: "Your user has the note." });
+    expect(up).toEqual([{ method: "group.tool", params: { caller: here.id, mode: "prompting", tool: "notify_user", args: { title: "Tests pass on Linux" }, call: "toolu_02B" } }]);
+    const there = (await primary.router.upwardRequest({ id: LAPTOP, grant: "grt_full" }, "group.tool", { caller: theirs.id, mode: "prompting", tool: "notify_user", args: { title: "Tests pass on Linux", urgent: true }, call: "toolu_02B" })) as { text: string };
+    expect(there).toEqual({ text: "Your user has the note." });
+    expect(book.list().find((n) => n.session === theirs.id)).toMatchObject({ call: "toolu_02B", urgent: true });
+    // a machine without the notes refuses it
+    const bare = rig({ local: [me] });
+    expect(await bare.call(me, "notify_user", { title: "Done" })).toEqual({ text: "Not done: notes are off on this machine.", isError: true });
+    book.stop();
+  });
+
+  test("a harness's id for a call is read from its _meta: Claude Code's tool-use id, or a plain call id", () => {
+    expect(callIdOf({ "claudecode/toolUseId": "toolu_1" })).toBe("toolu_1");
+    expect(callIdOf({ callId: "call_2" })).toBe("call_2");
+    expect(callIdOf({ threadId: "t" })).toBeUndefined();
+    expect(callIdOf(undefined)).toBeUndefined();
+    expect(callIdOf({ toolUseId: "x".repeat(300) })).toBeUndefined();
   });
 
   test("a secondary's request is refused for a session it does not hold, and as far as its grant's messaging says", async () => {

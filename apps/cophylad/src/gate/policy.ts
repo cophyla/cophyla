@@ -100,6 +100,9 @@ export const BUILTIN_RULES: Readonly<Record<string, Decision>> = {
   "harness:group.post": "allow",
   "harness:group.ack": "allow",
   "harness:agent.focus": "allow",
+  // An agent leaving its user a note (`notify_user`): words for the user alone, which the user
+  // can switch off in Settings.
+  "harness:agent.notify": "allow",
   "harness:teammate.send": "allow",
   // An agent sending a file or a folder to another of the user's machines (`send_file`, and
   // `get_file` into a folder it names), or to another person's agent (`peer.file.send`), and an

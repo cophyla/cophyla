@@ -128,6 +128,8 @@ import { Tracker } from "./tracker/index.ts";
 import { ClaudeJudge } from "./tracker/judge.ts";
 import { trackerMethods } from "./tracker/methods.ts";
 import { usersApp } from "./tracker/apps.ts";
+import { Notes } from "./notes/index.ts";
+import { notesMethods } from "./notes/methods.ts";
 import { openSource } from "./transfers/source.ts";
 import { HOOK_JSON_FILENAME } from "./sessions/shim.ts";
 import type { AgentInstall } from "./sessions/model.ts";
@@ -336,6 +338,8 @@ export interface Daemon {
   /** The leaders: the sessions, and the chat, that speak to a group of the user's sessions as the user. */
   leaders: Leaders;
   tracker: Tracker;
+  /** The notes agents leave the user (`notify_user`). */
+  notes: Notes;
   /** What a session a leader messaged does next, told to the leader. */
   reports: Reports;
   /** The user's teammates: other Cophyla users whose agents reach theirs in the folders shared. */
@@ -1323,6 +1327,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     leaders: () => (routesHere() ? leadersLive : undefined),
     reports: () => (routesHere() ? reportsLive : undefined),
     talk: () => talkHere(),
+    notes: () => (routesHere() ? notesLive : undefined),
     files: () => agentFiles,
     asks,
     ...(opts.transfers?.toolWaitMs !== undefined ? { toolWaitMs: opts.transfers.toolWaitMs } : {}),
@@ -1643,6 +1648,15 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     busyEveryMs: config.tracker.busy_every_ms,
   });
   trackerLive.start();
+  // Notes: what agents leave the user to read (`notify_user`), each opening at its point in the session; kept by the primary.
+  const notesLive: Notes = new Notes({
+    store,
+    bus,
+    log: log.child("notes"),
+    routes: routesHere,
+    history: (id, o) => sessions.history(id, o),
+  });
+  notesLive.start();
   // Group chats: posts by the user's agents, the user, and teammates and theirs; kept by the primary.
   const groupMedia = new GroupMedia(p.data, log.child("groups"));
   const groupsLive: Groups = new Groups({
@@ -1985,16 +1999,21 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     ...terminalMethods({ ...(terminalRows && terminalStreams ? { rows: terminalRows, streams: terminalStreams } : {}), files, folders }),
     ...transferMethods({ transfers: () => transfers, nodeId: identity.id, ...(revealer ? { revealer } : {}) }),
     ...trackerMethods({ tracker: () => (routesHere() ? trackerLive : undefined) }),
+    ...notesMethods({ notes: () => (routesHere() ? notesLive : undefined) }),
   }, forwardHost);
   // What one of the user's own apps sent a session (the desktop app, the phone, a browser), by
-  // its ref, to the tracker: a script's or a tool's send through cophylad is typed the same way,
-  // and only the user's own words are asks. Here, past the forwarding, so it is every machine's.
+  // its ref, to the tracker and the notes: a script's or a tool's send through cophylad is typed
+  // the same way, and only the user's own words are asks or answer a note. Here, past the
+  // forwarding, so it is every machine's.
   const sendMethod = methods["session.send"]!;
   methods["session.send"] = {
     ...sendMethod,
     handler: async (p, ctx) => {
       const r = await sendMethod.handler(p, ctx);
-      if (r.ref !== undefined && usersApp(ctx)) trackerLive.noteSent(p.id, r.ref);
+      if (r.ref !== undefined && usersApp(ctx)) {
+        trackerLive.noteSent(p.id, r.ref);
+        notesLive.noteSent(p.id, r.ref);
+      }
       return r;
     },
   };
@@ -2321,6 +2340,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
     groups: groupsLive,
     leaders: leadersLive,
     tracker: trackerLive,
+    notes: notesLive,
     reports: reportsLive,
     teammates: teammatesLive,
     teams: teamsRun,
@@ -2385,6 +2405,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       reportsLive.stop();
       leadersLive.stop();
       trackerLive.stop();
+      notesLive.stop();
       focusLive.stop();
       await cloud.stop();
       metrics.dispose();

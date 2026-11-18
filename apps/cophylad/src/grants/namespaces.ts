@@ -84,6 +84,14 @@ export const TALK_SESSIONS_NS = "talk.sessions";
 export const TRACKER_KV_NS = "tracker";
 export const TRACKER_SETTINGS_NS = "tracker.settings";
 
+/**
+ * Notes (see `notes/`): what agents left the user to read, one key each by id, and whether
+ * agents may leave them under `notes.settings`. Replicated to the backups; never the brain's,
+ * never in the cloud backup, since they hold what agents wrote for the user.
+ */
+export const NOTES_KV_NS = "notes";
+export const NOTES_SETTINGS_NS = "notes.settings";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -108,4 +116,6 @@ export const RESERVED_KV_NS: readonly string[] = [
   TALK_SESSIONS_NS,
   TRACKER_KV_NS,
   TRACKER_SETTINGS_NS,
+  NOTES_KV_NS,
+  NOTES_SETTINGS_NS,
 ];
