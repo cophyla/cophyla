@@ -231,6 +231,13 @@ export const actions = {
   "tracked.mark": { risk: "write" },
   "tracker.get": { risk: "read" },
   "tracker.set": { risk: "write" },
+  // Notes: the app's requests (`note.*`, `notes.*`), and an agent leaving the user one (`notify_user`, `agent.notify`).
+  "note.list": { risk: "read" },
+  "note.mark": { risk: "write" },
+  "note.dismiss": { risk: "write" },
+  "notes.get": { risk: "read" },
+  "notes.set": { risk: "write" },
+  "agent.notify": { risk: "write" },
   // An agent's focus: taken or ended by the agent (`agent.focus`), ended by the user (`focus.end`).
   "focus.list": { risk: "read" },
   "focus.end": { risk: "write" },

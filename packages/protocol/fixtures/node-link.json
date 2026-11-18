@@ -215,9 +215,10 @@
       "params": [
         { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "tool": "read_group", "args": {} },
         { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "post_group", "args": { "group": "release", "text": "@bob/web merged", "expects_reply": false } },
-        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "tool": "get_file", "args": { "group": "release", "file": "gfile_01ARZ3NDEKTSV4RRFFQ69G5GF1" } }
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "prompting", "tool": "get_file", "args": { "group": "release", "file": "gfile_01ARZ3NDEKTSV4RRFFQ69G5GF1" } },
+        { "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", "mode": "bypass", "tool": "notify_user", "args": { "title": "Deploy to staging or wait for the review?", "needs_answer": true }, "call": "toolu_01A2B3C4D5E6F7G8H9" }
       ],
-      "results": [{ "text": "#release: 2 unread, 1 tags you." }, { "text": "Not posted: @web names no member of #release.", "isError": true }, { "text": "#release: 1 unread.", "photos": [{ "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "photo": "gph_01ARZ3NDEKTSV4RRFFQ69G5PH1", "type": "image/jpeg" }] }]
+      "results": [{ "text": "#release: 2 unread, 1 tags you." }, { "text": "Your user has the note, waiting for their answer: it comes as their next message to you." }, { "text": "Not posted: @web names no member of #release.", "isError": true }, { "text": "#release: 1 unread.", "photos": [{ "group": "grp_01ARZ3NDEKTSV4RRFFQ69G5GR1", "photo": "gph_01ARZ3NDEKTSV4RRFFQ69G5PH1", "type": "image/jpeg" }] }]
     },
     "group.note": {
       "params": [{ "caller": "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1" }],

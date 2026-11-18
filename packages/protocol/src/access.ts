@@ -353,6 +353,12 @@ export const requestFilters = {
   "tracked.mark": { names: "global" },
   "tracker.get": { names: "global" },
   "tracker.set": { names: "global" },
+  // a note is about its session: limited access lists the ones of the sessions it reaches, and changes none
+  "note.list": { names: "open", result: (r, keep) => ({ ...r, notes: r.notes.filter((n) => keep({ session: n.session })) }) },
+  "note.mark": { names: "global" },
+  "note.dismiss": { names: "global" },
+  "notes.get": { names: "global" },
+  "notes.set": { names: "global" },
   "focus.list": { names: "global" },
   "focus.end": { names: "global" },
   // a leader speaks as the user to sessions anywhere: the whole account's
@@ -448,6 +454,8 @@ export const notificationFilters = {
   "talk.state": "global",
   "tracked.state": (p) => ({ session: p.session }),
   "tracker.state": "global",
+  "note.state": (p) => ({ session: p.session }),
+  "notes.state": "global",
   "focus.state": "global",
   "lead.state": "global",
   "teammate.state": "global",

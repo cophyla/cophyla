@@ -26,6 +26,7 @@ import {
   ThreadId,
   Timestamp,
   TrackedId,
+  NoteId,
   TransferId,
   WorkspaceId,
 } from "./ids.ts";
@@ -1134,6 +1135,58 @@ export const TrackerState = z.object({
   health: TrackerHealth.optional(),
 });
 export type TrackerState = z.infer<typeof TrackerState>;
+
+// ---------------------------------------------------------------------------------------
+// Notes
+
+/** The longest a note's title may be: one line, read alone in a list. */
+export const NOTE_TITLE_MAX = 80;
+/** The longest a note's detail may be: a few lines of markdown. */
+export const NOTE_DETAIL_MAX = 1000;
+/** How much of the user's answer a note keeps. */
+export const NOTE_ANSWER_MAX = 300;
+
+/** The user's message that answered a note: its event in the session (`seq`), and its start. */
+export const NoteAnswer = z.object({
+  at: Timestamp,
+  seq: z.number().int().nonnegative(),
+  text: z.string().max(NOTE_ANSWER_MAX),
+});
+export type NoteAnswer = z.infer<typeof NoteAnswer>;
+
+/**
+ * Something an agent left the user to read (`notify_user`), so it is not lost in its output: the
+ * session and the point in it the note opens at (`seq`: the agent's tool call once it is
+ * written, `call` its id), what it says, whether it waits for the user's answer and whether it
+ * is urgent. `read` when the user read it; `answered` by the user's next message to that session
+ * when it waits for one; `dismissed` is the last word about it. Open while it waits for an answer
+ * not given yet, or else is not read, and is not dismissed.
+ */
+export const Note = z.object({
+  id: NoteId,
+  session: SessionId,
+  seq: z.number().int().nonnegative(),
+  call: z.string().max(200).optional(),
+  title: z.string().min(1).max(NOTE_TITLE_MAX),
+  detail: z.string().max(NOTE_DETAIL_MAX).optional(),
+  needsAnswer: z.boolean(),
+  urgent: z.boolean(),
+  at: Timestamp,
+  read: Timestamp.optional(),
+  answered: NoteAnswer.optional(),
+  dismissed: z.boolean().optional(),
+});
+export type Note = z.infer<typeof Note>;
+
+/** Whether a note is open: waiting for an answer not given yet, or else not read, and not dismissed. */
+export function noteOpen(n: Pick<Note, "needsAnswer" | "read" | "answered" | "dismissed">): boolean {
+  if (n.dismissed) return false;
+  return n.needsAnswer ? !n.answered : n.read === undefined;
+}
+
+/** Whether agents may leave the user notes (`notify_user`): on unless the user switched it off. */
+export const NotesState = z.object({ on: z.boolean() });
+export type NotesState = z.infer<typeof NotesState>;
 
 // ---------------------------------------------------------------------------------------
 // Transfer

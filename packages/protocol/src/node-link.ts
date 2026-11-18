@@ -383,12 +383,13 @@ export const nodeLinkRequests = {
   },
   /**
    * Secondary → primary: one of the group chat tools (`read_group`, `search_group`, `post_group`,
-   * `ack_post`, `get_file`) or `focus`, called by `caller`, a live session of the secondary's. Groups and
-   * focus live on the primary; the answer is the text the model reads, and the photos it is
-   * shown, which the secondary reads with `group.photo`.
+   * `ack_post`, `get_file`), `focus` or `notify_user`, called by `caller`, a live session of the
+   * secondary's. Groups, focus and notes live on the primary; the answer is the text the model
+   * reads, and the photos it is shown, which the secondary reads with `group.photo`. `call` is the
+   * harness's id for the tool call when it gave one, which places a note at that call.
    */
   "group.tool": {
-    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "search_group", "post_group", "ack_post", "get_file", "focus"]), args: z.record(z.string(), z.unknown()) }),
+    params: z.object({ caller: SessionId, mode: AgentMode, tool: z.enum(["read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "notify_user"]), args: z.record(z.string(), z.unknown()), call: z.string().max(200).optional() }),
     result: z.object({ text: z.string(), isError: z.boolean().optional(), photos: z.array(z.object({ group: GroupId, photo: GroupPhotoId, type: GroupPhotoType })).max(8).optional() }),
   },
   /**

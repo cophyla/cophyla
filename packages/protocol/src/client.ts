@@ -59,6 +59,8 @@ import {
   Tracked,
   TrackedStatus,
   TrackerState,
+  Note,
+  NotesState,
   Task,
   Teammate,
   TeammateShare,
@@ -79,7 +81,7 @@ import {
   Workspace,
 } from "./entities.ts";
 import { DialogKey, DialogView } from "./entities.ts";
-import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TrackedId, TransferId, UploadId, WorkspaceId } from "./ids.ts";
+import { AskId, ClientId, ConnectionId, ControllerId, GrantRef, GroupFileId, GroupId, GroupPostId, ListenerId, MessageId, NodeId, ProfileId, SessionId, TaskId, TeammateConnectionId, TeammateId, TeamId, TeamInviteId, ThreadId, Timestamp, TrackedId, NoteId, TransferId, UploadId, WorkspaceId } from "./ids.ts";
 import { FILE_PIECE_BASE64, GroupPhotoRef, PeerSource, PhotoPiece } from "./peer-files.ts";
 import { CLOSED_MAX, GIT_LOG_MAX, GitState, LlmMessage, SendResult, TaskCreate, TaskFilter, TaskPatch, TimeRange, TurnProgress } from "./capability.ts";
 import { Secret } from "./invite.ts";
@@ -1379,6 +1381,19 @@ export const clientRequests = {
     }),
     result: TrackerState,
   },
+  /** The notes agents left the user that are not dismissed, every session's, oldest first. */
+  "note.list": { params: Empty, result: z.object({ notes: z.array(Note) }) },
+  /**
+   * Marks a note by hand: read (`read`, false for not read), answered (`answered`; false opens
+   * one that waits for an answer again). Answers the note as it is now.
+   */
+  "note.mark": { params: z.object({ id: NoteId, read: z.boolean().optional(), answered: z.boolean().optional() }), result: z.object({ note: Note }) },
+  /** Dismisses notes: each goes from every list, told once more as `dismissed`. An id already gone is passed over. */
+  "note.dismiss": { params: z.object({ ids: z.array(NoteId).min(1).max(500) }), result: Empty },
+  /** Whether agents may leave the user notes. */
+  "notes.get": { params: Empty, result: NotesState },
+  /** Lets agents leave the user notes, or stops them (`notify_user` is refused while off). Answers the setting as it is now. */
+  "notes.set": { params: z.object({ on: z.boolean() }), result: NotesState },
   /** The agents in focus now, on every machine, with until when and why. */
   "focus.list": { params: Empty, result: z.object({ focus: z.array(z.object({ session: SessionId, focus: Focus })) }) },
   /** Ends an agent's focus: what was held for it reaches it now. */
@@ -1796,6 +1811,10 @@ export const clientNotifications = {
   "tracked.state": Tracked,
   /** The tracker's settings and health, whenever either changes. */
   "tracker.state": TrackerState,
+  /** A note an agent left the user, when it is left, placed at its tool call, read, answered or reopened, and once more when it is dismissed (`dismissed`, the last word about it). */
+  "note.state": Note,
+  /** Whether agents may leave the user notes, whenever it changes. */
+  "notes.state": NotesState,
   /** An agent took focus, or came out of it (no `focus`). */
   "focus.state": z.object({ session: SessionId, focus: Focus.optional() }),
   /** The leaders, every one, whenever one is made, changes or goes. */

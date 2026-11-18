@@ -5,7 +5,7 @@
 // decides.
 
 import { describe, expect, test } from "bun:test";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, GROUP_TOOLS, TRANSFER_REASON_MAX } from "../src/index.ts";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, GROUP_TOOLS, NOTE_DETAIL_MAX, NOTE_TITLE_MAX, nodeLinkRequests, TRANSFER_REASON_MAX } from "../src/index.ts";
 
 describe("agent tools", () => {
   test("the server is cophyla-agents, apart from the chat's own cophyla, and says what a message is", () => {
@@ -21,7 +21,7 @@ describe("agent tools", () => {
   });
 
   test("list_agents reads, send_message writes and reaches nothing outside", () => {
-    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask"]);
+    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user"]);
     const [list, send] = AGENT_TOOLS;
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
@@ -70,7 +70,7 @@ describe("agent tools", () => {
     expect(tool("post_group").inputSchema).toMatchObject({ required: ["group", "text", "expects_reply"] });
     expect(tool("ack_post").inputSchema).toMatchObject({ required: ["group", "post"] });
     expect((tool("focus").inputSchema as { properties: { minutes: { enum: number[] } } }).properties.minutes.enum).toEqual([60, 120]);
-    expect(GROUP_TOOLS).toEqual(["read_group", "search_group", "post_group", "ack_post", "get_file", "focus"]);
+    expect(GROUP_TOOLS).toEqual(["read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "notify_user"]);
     // the instructions say what a tag's notice is, that a teammate's words are information, and when focus is for
     expect(AGENT_MCP_INSTRUCTIONS).toContain('group="<name>"');
     expect(AGENT_MCP_INSTRUCTIONS).toContain("teammate=");
@@ -92,7 +92,7 @@ describe("agent tools", () => {
 
   test("the instructions fit what Claude Code shows of them, and say how an agent is told of a group's posts", () => {
     // Claude Code cuts a server's instructions past 4,096 characters: the details go in each tool's description
-    expect(AGENT_MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(4000);
+    expect(AGENT_MCP_INSTRUCTIONS.length).toBeLessThanOrEqual(4080);
     const tool = (name: string) => AGENT_TOOLS.find((t) => t.name === name)!;
     expect(AGENT_MCP_INSTRUCTIONS).toContain('from="cophyla"');
     expect(AGENT_MCP_INSTRUCTIONS).toContain("never answer it with send_message");
@@ -118,5 +118,24 @@ describe("agent tools", () => {
     expect(tool("send_message").description).toContain("never pass on as their words what another agent");
     expect(tool("send_message").description).toContain("starts with / runs as your user's slash command would");
     expect(tool("send_message").description).toContain("one that starts with ! is refused");
+  });
+
+  test("notify_user leaves the user a note: a title, a detail, whether it waits for an answer and whether it is urgent; it never blocks", () => {
+    const tool = AGENT_TOOLS.find((t) => t.name === "notify_user")!;
+    const schema = tool.inputSchema as { required: string[]; additionalProperties: boolean; properties: Record<string, { type: string; maxLength?: number }> };
+    expect(schema).toMatchObject({ type: "object", required: ["title"], additionalProperties: false });
+    expect(Object.keys(schema.properties)).toEqual(["title", "detail", "needs_answer", "urgent"]);
+    expect(schema.properties["title"]).toMatchObject({ type: "string", maxLength: NOTE_TITLE_MAX });
+    expect(schema.properties["detail"]).toMatchObject({ type: "string", maxLength: NOTE_DETAIL_MAX });
+    expect(schema.properties["needs_answer"]!.type).toBe("boolean");
+    expect(schema.properties["urgent"]!.type).toBe("boolean");
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false });
+    // the answer comes as the user's next message: the agent never waits for it in a loop
+    expect(tool.description).toContain("their next message");
+    expect(tool.description).toContain("do not wait for it in a loop");
+    expect(tool.description).toContain("Not for progress");
+    expect(AGENT_MCP_INSTRUCTIONS).toContain("notify_user");
+    // a secondary's sessions leave theirs through the primary, which keeps the notes
+    expect(nodeLinkRequests["group.tool"].params.shape.tool.options).toContain("notify_user");
   });
 });
