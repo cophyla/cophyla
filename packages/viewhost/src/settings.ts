@@ -8,7 +8,8 @@
 //   with `session.setScope` as each change is made): its accounts, each ticked unless left off,
 //   "Tether (Cophyla) started sessions only", and the allowed and hidden folders (`scope.ts`);
 //   and under Asks, whether the tracker follows what the user asks every agent (`tracker.get`,
-//   set with `tracker.set`), each agent's own Track switch in its header over it.
+//   set with `tracker.set`), each agent's own Track switch in its header over it; and under
+//   Notes, whether agents may leave the user notes (`notes.get`, set with `notes.set`).
 // - Accounts: per machine and harness, the usual account (Automatic, naming the profile
 //   cophylad picks and why, or one the user picks), and for each profile its name, sign-in
 //   state and how much of its limits it has used (`profile.limits`), and for a Claude profile
@@ -45,7 +46,7 @@
 // `SettingsModel` are DOM-free; the panel draws them with `ui.ts`. Its look is `settings.css`,
 // which each host page links.
 
-import type { TrackerState } from "@cophyla/protocol";
+import type { NotesState, TrackerState } from "@cophyla/protocol";
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 import { DEFAULT_RECORDING_SECONDS } from "@cophyla/protocol";
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
@@ -774,6 +775,10 @@ export class SettingsModel {
   tracker?: TrackerState | null;
   trackerBusy = false;
   trackerNote = "";
+  /** Whether agents may leave notes, once read; `null` from a node or a primary that has no notes. */
+  notesSetting?: NotesState | null;
+  notesBusy = false;
+  notesNote = "";
   readonly removing = new Set<string>();
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
@@ -819,6 +824,31 @@ export class SettingsModel {
       this.tracker = null;
     }
     this.changed();
+  }
+
+  async loadNotes(): Promise<void> {
+    try {
+      this.notesSetting = await this.request<NotesState>("notes.get", {});
+    } catch {
+      this.notesSetting = null;
+    }
+    this.changed();
+  }
+
+  /** Lets agents leave notes, or stops them. */
+  async setNotes(on: boolean): Promise<void> {
+    if (!this.notesSetting || this.notesSetting.on === on) return;
+    this.notesBusy = true;
+    this.changed();
+    try {
+      this.notesSetting = await this.request<NotesState>("notes.set", { on });
+      this.notesNote = "";
+    } catch (e) {
+      this.notesNote = `It could not be changed: ${message(e)}`;
+    } finally {
+      this.notesBusy = false;
+      this.changed();
+    }
   }
 
   /** The tracker on for every agent, or off but for those switched on in their headers. */
@@ -1347,6 +1377,29 @@ function trackerGroup(model: SettingsModel): HTMLElement | undefined {
   ]);
 }
 
+/** What the notes' row says, DOM-free: its switch, and what on and off mean. */
+export function notesRow(n: NotesState, opts: { busy?: boolean; note?: string } = {}): { on: boolean; help: string; note?: string; busy: boolean } {
+  const help = n.on
+    ? "An agent leaves you a note when it has something you should read or a question for you. The bell over your sessions counts them, and each opens where the agent left it in its chat."
+    : "Agents leave you no notes: one that tries is told they are off, and says it in its reply instead.";
+  return { on: n.on, help, ...(opts.note ? { note: opts.note } : {}), busy: opts.busy === true };
+}
+
+function notesGroup(model: SettingsModel): HTMLElement | undefined {
+  const n = model.notesSetting;
+  if (!n) return undefined;
+  const r = notesRow(n, { busy: model.notesBusy, note: model.notesNote });
+  return group("Notes", [
+    row({
+      label: "Agents can leave you notes",
+      help: r.help,
+      for: controlId("notes-on"),
+      control: switchInput("notes-on", "Agents can leave you notes", r.on, (on) => void model.setNotes(on), r.busy),
+      ...(r.note ? { note: r.note } : {}),
+    }),
+  ]);
+}
+
 /** The layer itself: opened by `host.settings`, a side list of pages and the page picked, drawn from a `SettingsModel` and a `ScopeModel`. */
 export class SettingsPanel {
   private deps: SettingsPanelDeps;
@@ -1456,6 +1509,7 @@ export class SettingsPanel {
     void model.loadListeners();
     void model.loadChat();
     void model.loadTracker();
+    void model.loadNotes();
     void scope.load();
     if (this.page === "usage") void usage.load();
   }
@@ -1593,16 +1647,17 @@ export class SettingsPanel {
   private sessionsPage(model: SettingsModel): HTMLElement[] {
     const scope = this.scope;
     if (!scope) return [];
-    const asks = trackerGroup(model);
-    if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note), ...(asks ? [asks] : [])];
+    // after the sessions' own: Asks, then Notes
+    const extra = [trackerGroup(model), notesGroup(model)].filter((g): g is HTMLElement => g !== undefined);
+    if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note), ...extra];
     const machines = scope.machines();
     const m = machines.find((x) => x.node === this.machine) ?? machines[0];
-    if (!m) return asks ? [asks] : [];
+    if (!m) return extra;
     return [
       ...[this.machinePicker(machines, m.node)].filter((x): x is HTMLElement => x !== undefined),
       ...scopeControls(m, { model: scope, drafts: this.folderDrafts, redraw: () => this.render() }),
       el("p", "host-settings-page-foot", m.busy ? "Saving…" : "Sessions Cophyla starts itself are always connected. Changes apply at once."),
-      ...(asks ? [asks] : []),
+      ...extra,
     ];
   }
 

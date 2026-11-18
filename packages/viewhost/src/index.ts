@@ -3,7 +3,8 @@
 // `SnapshotCache` keeps the daemon's picture for whatever view mounts; a `Bridge` narrows one
 // view to its manifest's scopes over postMessage; a `ViewHost` loads the default view into a
 // sandboxed frame and reloads it when it changes; a `ViewChooser` is the host's view picker
-// over it and a `SettingsPanel` its settings; an `AskNotifier` toasts asks. DOM-free except
+// over it and a `SettingsPanel` its settings; an `AskNotifier` toasts asks, a `MentionNotifier`
+// tags of the user, and a `NoteNotifier` the notes agents leave them. DOM-free except
 // `ViewHost`, which owns the frame, and `ViewChooser` and `SettingsPanel`, which draw.
 
 export * from "./connection.ts";
@@ -14,5 +15,6 @@ export * from "./chooser.ts";
 export * from "./settings.ts";
 export * from "./notify.ts";
 export * from "./mentions.ts";
+export * from "./notes.ts";
 export * from "./updates.ts";
 export * from "./place.ts";

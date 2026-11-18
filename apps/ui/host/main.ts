@@ -16,7 +16,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ViewContent } from "@cophyla/protocol";
-import { AskNotifier, checkWords, Connection, MentionNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
+import { AskNotifier, checkWords, Connection, MentionNotifier, NoteNotifier, SnapshotCache, UpdateChecker, ViewHost } from "@cophyla/viewhost";
 import type { Activated, LinkSnapshot, TauriIo } from "@cophyla/viewhost";
 import { StreamWindows } from "./open.ts";
 import { DesktopVoice } from "./voice.ts";
@@ -118,6 +118,14 @@ const mentions = new MentionNotifier({
   idleMs: async () => (await io.invoke<number | null>("user_idle_ms")) ?? undefined,
 });
 
+// a note an agent left the user that waits for an answer or is urgent: toasted likewise, and a click opens it
+const notes = new NoteNotifier({
+  notify: (toast) => io.invoke<void>("notify_ask", { ask: toast }),
+  dismiss: (id) => io.invoke<void>("dismiss_ask", { ask: id }),
+  onError: (m) => note(m),
+  idleMs: async () => (await io.invoke<number | null>("user_idle_ms")) ?? undefined,
+});
+
 let lastNote = "";
 let loaded = false;
 
@@ -173,6 +181,7 @@ conn.onFrame((frame) => {
     cache.upsert(frame);
     notifier.onNotification(frame);
     mentions.onNotification(frame);
+    notes.onNotification(frame);
     updates.onNotification(frame);
     if (frame.method === "session.state") renderTitle();
     if (frame.method === "view.changed") viewhost.onChanged((frame.params as { id: string }).id);
@@ -218,6 +227,11 @@ conn.onState((s) => {
 });
 
 void io.listen<Activated>("ask:activated", (a) => void notifier.onActivated(a));
+// A toast's body clicked (the shell showed the window): a note's goes to where it was left.
+void io.listen<{ id: string }>("toast:opened", (e) => {
+  const at = notes.revealOf(e.id);
+  if (at) viewhost.reveal(at);
+});
 void io.listen<{ stream: string }>("stream:closed", (e) => streams.closed(e.stream));
 // The tray's Check for updates: the node reads the feed now, and what it found is told.
 void io.listen("tray:check-updates", () => {

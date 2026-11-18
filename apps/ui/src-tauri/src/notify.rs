@@ -1,7 +1,9 @@
 // OS notifications for asks, with the ask's options as buttons: a button answers the ask
-// through the host page, the body shows the window. An ask that takes several options at
+// through the host page, the body shows the window and tells the host page which toast it was
+// (`toast:opened`, so a note's toast opens the note). An ask that takes several options at
 // once gets no buttons, only the body: one button is one answer. Action ids are
-// `"<ask>|<option>"` on every platform, so `parse_action` is the one reader. While the
+// `"<ask>|<option>"` on every platform, so `parse_action` is the one reader; the body's is
+// `"open:<id>"` (`open_id`, read by `parse_open`). While the
 // window has the focus its asks are on screen, so none is shown, and when it gets the focus
 // every one still up is taken down (`clear`). An ask settled anywhere takes its own down
 // (`dismiss`).
@@ -33,6 +35,8 @@ pub const AUMID: &str = "com.fareaststudios.cophyla.desktop";
 #[cfg_attr(target_os = "macos", allow(dead_code))]
 pub const DISPLAY_NAME: &str = "Cophyla";
 pub const EVENT_ACTIVATED: &str = "ask:activated";
+/// The body of a toast was clicked: which toast, for the host page.
+pub const EVENT_OPENED: &str = "toast:opened";
 
 /// How many option buttons a notification carries: what each platform shows at once.
 #[cfg(windows)]
@@ -66,6 +70,25 @@ pub struct NotifyAsk {
 pub struct Activated {
     pub ask: String,
     pub option: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Opened {
+    pub id: String,
+}
+
+/// The body's action id: `"open:<id>"`, which carries no `|` and so is never a button's.
+pub fn open_id(id: &str) -> String {
+    format!("open:{id}")
+}
+
+/// The toast a body's action id names; none for a button's or for a body that names none.
+pub fn parse_open(action: &str) -> Option<String> {
+    let id = action.strip_prefix("open:")?;
+    if id.is_empty() || action.contains('|') {
+        return None;
+    }
+    Some(id.to_string())
 }
 
 /// The action id of one option button: `"<ask>|<option>"`.
@@ -107,7 +130,8 @@ pub fn window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
     app.get_window(crate::cophylad::HOST_LABEL).and_then(|w| w.is_focused().ok()).unwrap_or(false)
 }
 
-/// What an activation does: a button answers the ask through the host page, anything else shows the window.
+/// What an activation does: a button answers the ask through the host page, anything else
+/// shows the window, and a body that names its toast tells the host page which it was.
 fn activated<R: Runtime>(app: &AppHandle<R>, action: Option<&str>) {
     use tauri::{Emitter, Manager};
     match action.and_then(parse_action) {
@@ -122,6 +146,9 @@ fn activated<R: Runtime>(app: &AppHandle<R>, action: Option<&str>) {
                 let _ = w.set_focus();
             }
             crate::memory::sync(app);
+            if let Some(id) = action.and_then(parse_open) {
+                let _ = app.emit_to(crate::cophylad::HOST_LABEL, EVENT_OPENED, Opened { id });
+            }
         }
     }
 }
@@ -183,6 +210,8 @@ mod platform {
         let root = doc.CreateElement(h!("toast"))?;
         root.SetAttribute(h!("scenario"), h!("reminder"))?;
         root.SetAttribute(h!("duration"), h!("long"))?;
+        // the body's click names the toast
+        root.SetAttribute(h!("launch"), &HSTRING::from(open_id(&ask.id)))?;
         let visual = doc.CreateElement(h!("visual"))?;
         let binding = doc.CreateElement(h!("binding"))?;
         binding.SetAttribute(h!("template"), h!("ToastGeneric"))?;
@@ -304,9 +333,10 @@ mod platform {
         n.action("default", "Open");
         let handle = n.show().map_err(|e| format!("notification failed: {e}"))?;
         let app = app.clone();
+        let body = open_id(&ask.id);
         let on_action = move |action: &str| match action {
             "__closed" => {}
-            "default" | "" => activated(&app, None),
+            "default" | "" => activated(&app, Some(&body)),
             other => activated(&app, Some(other)),
         };
         // The wait blocks until the user acts or the notification goes away: its own thread.
@@ -342,6 +372,7 @@ mod platform {
         let (stop, stopped) = futures_channel::oneshot::channel::<()>();
         shown().push((ask.id.clone(), Up { id: id.clone(), stop }));
         let app = app.clone();
+        let body = open_id(&ask.id);
         // The response comes through the backend's delegate on the main thread; this thread
         // waits for it or for the stop, whichever is first.
         let wait = move || {
@@ -352,7 +383,7 @@ mod platform {
             shown().retain(|(_, up)| up.id != id);
             match answered {
                 Some(r) if r.is_dismiss_action() || r.is_timed_out() => {}
-                Some(r) if r.is_default_action() => activated(&app, None),
+                Some(r) if r.is_default_action() => activated(&app, Some(&body)),
                 Some(r) => activated(&app, Some(&r.action_identifier)),
                 None => {}
             }
@@ -429,6 +460,19 @@ mod tests {
         assert!(parse_action("default").is_none());
         assert!(parse_action("|allow").is_none());
         assert!(parse_action("ask_x|").is_none());
+    }
+
+    #[test]
+    fn a_body_names_its_toast_and_is_never_a_button() {
+        let id = open_id("note:nte_01ARZ3NDEKTSV4RRFFQ69G5NT1");
+        assert_eq!(id, "open:note:nte_01ARZ3NDEKTSV4RRFFQ69G5NT1");
+        assert!(parse_action(&id).is_none());
+        assert_eq!(parse_open(&id).as_deref(), Some("note:nte_01ARZ3NDEKTSV4RRFFQ69G5NT1"));
+        assert_eq!(parse_open(&open_id("ask_01ARZ3NDEKTSV4RRFFQ69G5FB5")).as_deref(), Some("ask_01ARZ3NDEKTSV4RRFFQ69G5FB5"));
+        assert!(parse_open("open:").is_none());
+        assert!(parse_open("default").is_none());
+        assert!(parse_open("ask_1|allow").is_none());
+        assert!(parse_open("open:ask_1|allow").is_none());
     }
 
     #[test]

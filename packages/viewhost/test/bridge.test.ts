@@ -457,6 +457,18 @@ describe("bridge", () => {
     expect(without.toView).toHaveLength(2);
   });
 
+  test("a toast's point in a session goes to a view that reads sessions, and to none other", () => {
+    const reads = make();
+    reads.bridge.ready(HELLO);
+    reads.bridge.reveal({ session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", seq: 212, note: "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1" });
+    expect(reads.toView.at(-1)).toEqual({ jsonrpc: "2.0", method: "host.reveal", params: { session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", seq: 212, note: "nte_01ARZ3NDEKTSV4RRFFQ69G5NT1" } });
+    const blind = make({ ...MANIFEST, scopes: ["chat"] });
+    blind.bridge.ready(HELLO);
+    const before = blind.toView.length;
+    blind.bridge.reveal({ session: "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1", seq: 212 });
+    expect(blind.toView).toHaveLength(before);
+  });
+
   test("a wide window with a pointer on a computer says desk in host.ready; any other host leaves it out", () => {
     const toView: RpcMessage[] = [];
     const bridge = new Bridge({ manifest: MANIFEST, clientScopes: CLIENT.scopes, instance: 1, desk: true }, { toCophylad: () => {}, toView: (f) => toView.push(f) });

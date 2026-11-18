@@ -23,7 +23,8 @@
 // and `host.ready` hands it back as `prefs`. The host tells the view
 // things of its own as notifications, never scoped: `host.ready` and `host.state`, and
 // `host.menu` when the host has a menu button of its own (`menu` in `host.ready`) and it was
-// pressed. `talk` in `host.ready` says the host has a microphone and no talk button of its
+// pressed, and `host.reveal` with a session and a point in it (a note's, whose toast the user
+// clicked) for a view that reads sessions to show. `talk` in `host.ready` says the host has a microphone and no talk button of its
 // own, so a view with the voice scope may draw one that holds `voice.ptt`; such a host says
 // `host.mic` whenever its microphone goes off or comes back, with why it is off, so the view
 // can say so beside the button (and again after `host.ready` while it is off). A host with a
@@ -399,6 +400,11 @@ export class Bridge {
   /** The host's menu button was pressed: what it shows or hides is the view's. */
   menu(): void {
     if (this.hasMenu) this.io.toView(notification("host.menu", {}));
+  }
+
+  /** The user clicked a toast for a point in a session (a note's): a view that reads sessions goes to it. */
+  reveal(at: { session: string; seq: number; note?: string }): void {
+    if (this.scopes.includes("sessions:read")) this.io.toView(notification("host.reveal", at));
   }
 
   /** The host's microphone went off, or came back: a view that draws the talk button is told. */

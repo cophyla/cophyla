@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, notesRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -881,5 +881,39 @@ describe("the Sessions page's Asks", () => {
     refuse = true;
     await m.loadTracker();
     expect(m.tracker).toBeNull();
+  });
+});
+
+describe("the Sessions page's Notes", () => {
+  test("the switch says what on and off mean, and says when it could not be changed", () => {
+    const on = notesRow({ on: true });
+    expect(on).toMatchObject({ on: true, busy: false });
+    expect(on.help).toContain("The bell over your sessions counts them");
+    expect(on.note).toBeUndefined();
+    expect(notesRow({ on: false }).help).toContain("one that tries is told they are off");
+    expect(notesRow({ on: true }, { note: "It could not be changed: offline", busy: true })).toMatchObject({ note: "It could not be changed: offline", busy: true });
+  });
+
+  test("the model reads the switch, changes it, and has none from a node without notes", async () => {
+    const calls: [string, unknown][] = [];
+    let refuse = false;
+    const request = async <T,>(method: string, params: unknown): Promise<T> => {
+      calls.push([method, params]);
+      if (refuse) throw new Error("unknown method notes.get");
+      if (method === "notes.get") return { on: true } as T;
+      if (method === "notes.set") return { on: (params as { on: boolean }).on } as T;
+      throw new Error(`unexpected ${method}`);
+    };
+    const m = new SettingsModel(request as never, () => {});
+    await m.loadNotes();
+    expect(m.notesSetting).toEqual({ on: true });
+    await m.setNotes(false);
+    expect(m.notesSetting).toEqual({ on: false });
+    expect(calls.at(-1)).toEqual(["notes.set", { on: false }]);
+    await m.setNotes(false);
+    expect(calls).toHaveLength(2);
+    refuse = true;
+    await m.loadNotes();
+    expect(m.notesSetting).toBeNull();
   });
 });

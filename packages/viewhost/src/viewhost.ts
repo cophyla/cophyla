@@ -344,6 +344,11 @@ export class ViewHost {
     this.mounted?.bridge.menu();
   }
 
+  /** A toast for a point in a session was clicked (a note's): the mounted view goes to it. */
+  reveal(at: { session: string; seq: number; note?: string }): void {
+    this.mounted?.bridge.reveal(at);
+  }
+
   /** The host's microphone started or stopped recording an utterance: the mounted view is told, and one mounted later. */
   recording(active: boolean): void {
     this.recordingNow = active;
