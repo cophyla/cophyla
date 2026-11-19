@@ -66,7 +66,7 @@ import { busyWords, talkLook } from "./dictation.ts";
 import type { TalkBusy } from "./dictation.ts";
 import { renderText, setLinkedText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, speakerButton, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { stepScale } from "./model.ts";
@@ -2053,18 +2053,6 @@ function renderPairing(root: HTMLElement, state: ViewState): void {
   setText(panel.querySelector(".pair-left")!, words.expired ? "that code has run out" : `good for ${words.left}`);
 }
 
-/** The speaker beside the chat's tab: hidden until the node says, then dim, lit, playing or struck through. */
-function renderSpeaker(button: HTMLButtonElement, state: ViewState): void {
-  const b = speakerButton(state);
-  setHidden(button, b === undefined);
-  if (!b) return;
-  setData(button, "look", b.look);
-  button.title = b.title;
-  button.setAttribute("aria-label", b.title);
-  button.setAttribute("aria-pressed", b.look === "hushed" ? "true" : "false");
-  button.disabled = b.disabled;
-}
-
 function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   let chat = root.querySelector<HTMLButtonElement>(".tab.chat");
   if (!chat) {
@@ -2078,9 +2066,6 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     dot.setAttribute("role", "img");
     // After its name, a crown while the chat leads.
     chat.append(el("span", "tab-title", "Cophyla Chat"), createTabLead(), el("span", "pulse"), dot);
-    // Between the two, once the node says whether the next reply is read out: the speaker, which silences it.
-    const speaker = actionButton("speak-next", "", "hush");
-    speaker.append(speakerIcon());
     const more = actionButton("rail-more", "", "rail-more");
     more.setAttribute("aria-haspopup", "menu");
     more.setAttribute("aria-label", "More");
@@ -2131,7 +2116,7 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
     places.setAttribute("aria-label", "Places");
     menu.append(filter, el("p", "new-terminal-loading", "Loading workspaces…"), el("p", "new-terminal-note"), places, createFolderPicker());
     // The notes agents left the user, before ⋮: how many are open, and a press drops their list.
-    top.append(chat, speaker, newTerminal, createBell("rail-bell"), more, moreMenu, menu);
+    top.append(chat, newTerminal, createBell("rail-bell"), more, moreMenu, menu);
     const list = el("div", "tab-sessions");
     // The bare terminals under a heading of their own, which folds them like a folder's, by machine when there are several.
     const terminals = el("div", "tab-group terminals-group");
@@ -2190,7 +2175,6 @@ function renderTabs(root: HTMLElement, state: ViewState, ui: UiState): void {
   chat.setAttribute("aria-current", ui.selected === undefined && ui.terminal === undefined && ui.group === undefined ? "true" : "false");
   const chatLeads = updateTabLead(chat, state, "chat");
   chat.title = chatLeads ? `Cophyla Chat\n${chatLeads}` : "";
-  renderSpeaker(root.querySelector<HTMLButtonElement>(".speak-next")!, state);
   updateBell(root.querySelector<HTMLButtonElement>(".rail-bell")!, state, ui);
   const split = String(ui.railSplit);
   if (root.style.getPropertyValue("--rail-split") !== split) root.style.setProperty("--rail-split", split);
@@ -4389,31 +4373,6 @@ function ensureEarlier(stream: HTMLElement, state: ViewState): void {
   setData(earlier, "action", button.action);
   earlier.disabled = button.disabled;
   setText(earlier, button.label);
-}
-
-/** A loudspeaker with its waves, and the line that strikes it through when what was to be read out is hushed; in the button's own colour. */
-function speakerIcon(): SVGSVGElement {
-  const svg = document.createElementNS(SVG_NS, "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  svg.setAttribute("focusable", "false");
-  const parts: [string, string][] = [
-    ["body", "M4 9.5h3.5L12 6v12l-4.5-3.5H4z"],
-    ["waves", "M15.5 9a4.2 4.2 0 0 1 0 6M18 6.5a7.8 7.8 0 0 1 0 11"],
-    ["strike", "M4.5 4.5l15 15"],
-  ];
-  for (const [name, d] of parts) {
-    const path = document.createElementNS(SVG_NS, "path");
-    path.setAttribute("class", name);
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "currentColor");
-    path.setAttribute("stroke-width", "1.8");
-    path.setAttribute("stroke-linecap", "round");
-    path.setAttribute("stroke-linejoin", "round");
-    svg.append(path);
-  }
-  return svg;
 }
 
 /** Lines drawn in the button's own colour. */

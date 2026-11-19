@@ -4307,35 +4307,6 @@ export function voiceBusy(state: ViewState): boolean {
   return state.voice !== undefined || state.setup !== undefined;
 }
 
-/** The speaker beside the chat's tab, as it looks: nothing to read out, the next reply read out, one being read now, or what was pending hushed. */
-export type SpeakerLook = "dim" | "lit" | "playing" | "hushed";
-
-export interface SpeakerButton {
-  look: SpeakerLook;
-  /** Its tooltip, which names where the reply is read out. */
-  title: string;
-  /** What a press sends: `voice.hush {on}`. */
-  on: boolean;
-  disabled: boolean;
-}
-
-/**
- * The speaker button, from the node's `voice.next`: hidden until the node says, since an older
- * node never will. A press stops what is being read out, silences what is pending, or, once
- * silenced, reads it out after all; with nothing to read out, it turns speech on here, for
- * what is pending and the next reply.
- */
-export function speakerButton(state: ViewState): SpeakerButton | undefined {
-  const next = state.next;
-  if (!next || !state.scopes.includes("voice")) return undefined;
-  const disabled = !state.connected;
-  const where = next.target !== undefined && next.target === state.client?.id ? "here" : next.name !== undefined ? `on ${next.name}` : "";
-  if (state.voice?.state === "speaking") return { look: "playing", title: "Reading a reply out: press to stop", on: true, disabled };
-  if (next.hushed) return { look: "hushed", title: "Replies are shown, not read out: press to read them out again", on: false, disabled };
-  if (next.speak) return { look: "lit", title: `The next reply will be read out${where ? ` ${where}` : ""}: press to show it only`, on: true, disabled };
-  return { look: "dim", title: "Nothing is waiting to be read out: press to hear the next reply here", on: false, disabled };
-}
-
 /**
  * This view's own utterance is being heard or transcribed, however it began (the wake word, the
  * talk key or the talk button), so Escape can take it back. Another client's is not this one's to drop.

@@ -17,7 +17,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { Ask, AuditEntry, Client, ClientSession as Session, ClientThread as Thread, Controller, Message, MetricsSample, Node, RemoteState, Scope, SessionEvent, Task, Terminal, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, TIMELINE_KEEP, TIMELINE_SLACK, trimTimeline, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, speakerButton, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
+import { agoWords, chatScaleFrom, answerParams, answerWords, apply, chatDraw, widerChatDraw, askEventText, AUDIT_KEEP, bytesWords, chatButton, controllerWords, costWords, countWords, earlierButton, EARLIER_EDGE_PX, wantsEarlier, TIMELINE_KEEP, TIMELINE_SLACK, trimTimeline, enterSends, initialState, inTether, inviteWords, keyOf, linkWords, historyPage, HISTORY_PAGE, PHONE_HISTORY_PAGE, loginWords, messageText, namedController, pairingWords, paneMode, tabChoice, parseComposer, percentWords, pinnedAsks, remoteWords, promoteOffer, renamable, restartable, restartWords, selectAccount, selectBackup, selectControllers, selectNodes, selectRemote, selectSpend, selectStream, selectGroups, groupHeading, placeKey, limitWords, limitLevel, spendTitle, durationWords, FONT_DRIVE, FONT_MIN, followFont, fontScale, pastRepaint, SCALES, scaleFont, stepScale, clipboardWrite, repeatsTracking, SHIFT_ENTER, TOUCH_SLOP, dragAxis, dragScroll, dragSteps, flingSpeed, RECENT_WORKSPACES, RECENT_PER_MACHINE, MATCHES_PER_MACHINE, recentWorkspaces, folderName, parentFolder, typedFolder, placeMatches, placeRows, quickPlace, quickTitle, lastPlace, selectTerminalTabs, terminalGroups, terminalMachines, spawnParams, homePlace, folderPlace, selectTimeline, sessionLabel, sessionTerminal, stoppable, tabTone, taskActions, terminalLabel, terminalMark, terminalPlace, terminalTabLabel, triggerWords, unheardWords, viewerWords, remoteNote, shareWords, remoteViewStep, remotePlace, samePlace, fitPlace, remoteHere, tabNode, remoteViewWidth, REMOTE_VIEW_WIDTH, voiceBusy, voiceCancellable, voiceDot, voiceWords, micOff, watchParams, connectWords, directWords, selectDirect, dropText, dropTexts, explorerKey, explorerNote, fileHome, filesErrorWords, FOLDERS_PER_ASK, gitLine, joinPath, openFolders, selectFileRows, sessionWho, sourceRoot, viewedPath, viewingKey, revealBlocked, revealLabel, heardText, timeLeft, stoppedWords, countdownFrom, spendFrom, untilTomorrow } from "../views/default/model.ts";
 import type { Action, HostReady, SessionGroup, ViewState } from "../views/default/model.ts";
 import { selectWaitingAgents, waitingLabel } from "../views/default/model.ts";
 import { folderMeta, fullRel, isFullPath, pathNode } from "../views/default/model.ts";
@@ -1655,31 +1655,6 @@ describe("default view: voice and the phones", () => {
     apply(state, { type: "controllers", controllers });
     return state;
   }
-
-  test("the speaker: hidden until the node says, then dim, lit naming where, pulsing while it reads, struck once hushed; gone with the line", () => {
-    const state = paired();
-    expect(speakerButton(state)).toBeUndefined();
-    // Dim, a press turns speech on here.
-    apply(state, { type: "voice.next", params: { speak: false } });
-    expect(speakerButton(state)).toEqual({ look: "dim", title: "Nothing is waiting to be read out: press to hear the next reply here", on: false, disabled: false });
-    apply(state, { type: "voice.next", params: { speak: true, target: "cli_phone", name: "Pixel" } });
-    expect(speakerButton(state)).toMatchObject({ look: "lit", on: true, title: "The next reply will be read out on Pixel: press to show it only" });
-    apply(state, { type: "voice.next", params: { speak: true, target: CLIENT.id, name: "desk" } });
-    expect(speakerButton(state)?.title).toBe("The next reply will be read out here: press to show it only");
-    // While a reply is read, a press stops it, whatever is pending.
-    apply(state, { type: "voice.state", params: { state: "speaking", client: "cli_phone" } });
-    expect(speakerButton(state)).toMatchObject({ look: "playing", on: true });
-    apply(state, { type: "voice.state", params: { state: "idle", client: "cli_phone" } });
-    // Hushed, a press reads it out again.
-    apply(state, { type: "voice.next", params: { speak: false, hushed: true } });
-    expect(speakerButton(state)).toMatchObject({ look: "hushed", on: false });
-    apply(state, { type: "host.state", params: { connected: false } });
-    expect(speakerButton(state)).toBeUndefined();
-    // A view without voice has no speaker.
-    const quiet = ready();
-    apply(quiet, { type: "voice.next", params: { speak: true } });
-    expect(speakerButton(quiet)).toBeUndefined();
-  });
 
   test("a conversation is kept with the phone it is on, and cleared when it goes idle", () => {
     const state = paired(controller("ctl_1", "Pixel", { connected: true }));

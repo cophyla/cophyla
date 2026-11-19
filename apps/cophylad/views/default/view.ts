@@ -32,10 +32,9 @@
 // utterance (`host.recording`), however it began, its wave shows just over the input
 // (`host.levels`, waves.ts), and over a terminal's foot where there is no input. What the node
 // has heard of this view's utterance shows at the chat's end as it grows (`voice.partial`), and
-// the voice row counts down the last seconds before the utterance's limit. The speaker beside
-// the chat's tab says whether the next reply is read out (`voice.next`) and silences it
-// (`voice.hush`); for where replies are read out, the view tells the node whether it is in front
-// and shown, and that the user acts in it (`voice.presence`). At the start of the chat's
+// the voice row counts down the last seconds before the utterance's limit. For where replies are
+// read out, the view tells the node whether it is in front and shown, and that the user acts in
+// it (`voice.presence`). At the start of the chat's
 // composer, while the node shows it (`[brain] show_context`, asked with `brain.context {check}`
 // on every connect), Context lays what the chat's session is told, and how full its context
 // is, over the conversation alone (contextview.ts). The chat runs in an agent session of the
@@ -64,7 +63,7 @@
 // invite is on show or still open, since no notification says one was used.
 
 import type { AssistantState, BrowserInvite, ClientResult, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
-import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, speakerButton, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
+import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profilesStale } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
 import { doorErrorWords, doorReopenStep } from "./model.ts";
@@ -2077,15 +2076,6 @@ window.addEventListener("blur", () => presence({ focused: false }));
 document.addEventListener("visibilitychange", () => presence({ visible: document.visibilityState === "visible" }));
 document.addEventListener("pointerdown", acted, true);
 document.addEventListener("keydown", acted, true);
-
-/** The speaker: stops what is read out, silences what is pending, or reads it out again. */
-async function hushNext(on: boolean): Promise<void> {
-  try {
-    dispatch({ type: "voice.next", params: await rpc.request<VoiceNext>("voice.hush", { on }) });
-  } catch (e) {
-    fail("speaker", e);
-  }
-}
 
 /** The last `session.watch` sent, settled once the node has it. */
 let watching: Promise<void> = Promise.resolve();
@@ -4319,11 +4309,6 @@ document.addEventListener("click", (ev) => {
       if (target.dataset["session"]) ui.kill = { session: target.dataset["session"], phase: "asking" };
       draw();
       return;
-    case "hush": {
-      const b = speakerButton(state);
-      if (b && !b.disabled) void hushNext(b.on);
-      return;
-    }
     case "session-kill-confirm":
       if (target.dataset["session"] && ui.kill?.phase === "asking") void killSession(target.dataset["session"]);
       return;
