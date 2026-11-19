@@ -251,6 +251,7 @@ function draw(opts: RenderOptions = {}): void {
   team.afterDraw();
   talks.afterDraw();
   track.afterDraw();
+  notes.afterDraw();
   pageBack();
   pageForward();
   revealWaiting();
@@ -5062,7 +5063,12 @@ document.addEventListener("visibilitychange", () => {
   team.syncRead();
   talks.syncRead();
   track.afterDraw();
+  notes.afterDraw();
 });
+// A chat in front of the user reads its notes: the user is at it while the view has the focus or
+// they touch, click, scroll or type in it (notectl.ts).
+window.addEventListener("focus", () => notes.afterDraw());
+for (const type of ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"]) document.addEventListener(type, () => notes.input(), { capture: true, passive: true });
 
 // The focus follows a sequence of asks only while the user stays in the pinned prompts.
 document.addEventListener("focusin", (ev) => {

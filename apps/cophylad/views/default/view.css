@@ -12926,3 +12926,41 @@ button:disabled {
 .window-latest:hover {
   background: color-mix(in srgb, var(--cophyla) 30%, transparent);
 }
+
+/* The strip's line: the fold, and Dismiss finished at its right. A note read or answered stays
+   listed, quieter, until it is dismissed. */
+.notes-strip-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.notes-strip-clear {
+  margin-left: auto;
+  padding: 0 4px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.notes-strip-clear:hover {
+  color: var(--ink);
+}
+
+.notes-strip-clear[hidden] {
+  display: none;
+}
+
+.notes-strip:not([data-open="1"]) .notes-strip-fold {
+  color: var(--muted);
+}
+
+.notes-strip-item[data-open="0"] .notes-strip-title {
+  color: var(--muted);
+}
+
+.notes-strip-item[data-open="0"] .notes-strip-badge {
+  color: var(--faint);
+}

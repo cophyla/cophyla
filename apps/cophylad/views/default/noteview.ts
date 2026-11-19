@@ -13,7 +13,7 @@ import type { Note } from "@cophyla/protocol";
 import { renderText } from "./markdown.ts";
 import type { TimelineStep, ViewState } from "./model.ts";
 import { callArgs, sessionLabel } from "./model.ts";
-import { bellNotes, bellWords, callNote, finishedNotes, noteAtCall, noteIsOpen, notesSummary, noteStateWords, noteWaits, openNoteCount, openNotesOf } from "./notemodel.ts";
+import { bellNotes, bellWords, callNote, finishedNotes, noteAtCall, noteIsOpen, notesOf, notesSummary, noteStateWords, noteWaits, openNoteCount } from "./notemodel.ts";
 import { actionButton, clock, el, reconcile, setData, setHidden, setText } from "./render.ts";
 import type { UiState } from "./render.ts";
 
@@ -194,15 +194,21 @@ export function createNotesStrip(): HTMLElement {
   const strip = el("section", "notes-strip");
   strip.setAttribute("aria-label", "Notes from this agent");
   strip.hidden = true;
+  const bar = el("div", "notes-strip-bar");
   const fold = actionButton("notes-strip-fold", "", "notes-fold");
   fold.append(el("span", "notes-strip-glyph"), el("span", "notes-strip-summary"));
-  strip.append(fold, el("ol", "notes-strip-list"));
+  bar.append(fold, actionButton("notes-strip-clear", "Dismiss finished", "notes-dismiss-finished"));
+  strip.append(bar, el("ol", "notes-strip-list"));
   return strip;
 }
 
-/** A session's open notes under its header: a line with how many, which folds the list of them away. */
+/**
+ * A session's notes under its header, read ones too until they are dismissed, so each is one
+ * press from its chat: a line with how many and how many wait for the user, which folds the list
+ * away, and Dismiss finished.
+ */
 export function updateNotesStrip(strip: HTMLElement, session: string, state: ViewState, ui: UiState): void {
-  const list = openNotesOf(state, session);
+  const list = notesOf(state, session);
   setHidden(strip, list.length === 0);
   const ol = strip.querySelector<HTMLElement>(".notes-strip-list")!;
   if (list.length === 0) {
@@ -212,23 +218,30 @@ export function updateNotesStrip(strip: HTMLElement, session: string, state: Vie
   const folded = ui.notes.folded.has(session);
   setData(strip, "folded", String(folded));
   setData(strip, "waits", list.some(noteWaits) ? "1" : "");
+  setData(strip, "open", list.some(noteIsOpen) ? "1" : "");
   const fold = strip.querySelector<HTMLButtonElement>(".notes-strip-fold")!;
   setData(fold, "session", session);
   fold.setAttribute("aria-expanded", String(!folded));
   fold.title = folded ? "Show the notes" : "Fold the notes away";
   setText(fold.querySelector(".notes-strip-summary")!, notesSummary(list));
+  const write = state.scopes.includes("sessions:write");
+  const finished = list.filter((n) => !noteIsOpen(n)).length;
+  const clear = strip.querySelector<HTMLButtonElement>(".notes-strip-clear")!;
+  setData(clear, "session", session);
+  setHidden(clear, finished === 0 || !write);
+  clear.title = `Take the ${finished === 1 ? "note you read or answered" : `${finished} notes you read or answered`} off this list`;
   setHidden(ol, folded);
   if (folded) return;
-  const write = state.scopes.includes("sessions:write");
   reconcile(ol, list, (n) => n.id, createStripRow, (li, n) => {
     setData(li, "waits", noteWaits(n) ? "1" : "");
+    setData(li, "open", noteIsOpen(n) ? "1" : "0");
     const b = li.querySelector<HTMLButtonElement>(".notes-strip-title")!;
     setText(b, n.title);
     setData(b, "id", n.id);
     setData(b, "session", n.session);
     setData(b, "seq", String(n.seq));
     b.title = `${noteStateWords(n)} · ${clock(n.at)}\nOpen it where it was left`;
-    setText(li.querySelector(".notes-strip-badge")!, noteWaits(n) ? "waiting for you" : "");
+    setText(li.querySelector(".notes-strip-badge")!, noteWaits(n) ? "waiting for you" : n.answered ? "answered" : "");
     const x = li.querySelector<HTMLButtonElement>(".notes-strip-dismiss")!;
     setData(x, "id", n.id);
     setHidden(x, !write);

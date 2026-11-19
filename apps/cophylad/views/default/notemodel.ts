@@ -57,15 +57,30 @@ export function openNoteCount(state: Pick<ViewState, "notes" | "notesOn">): numb
   return n;
 }
 
-/** A session's open notes, oldest first: its strip, and the dot on its tab. */
+/** A session's open notes, oldest first: the dot on its tab. */
 export function openNotesOf(state: Pick<ViewState, "notes" | "notesOn">, session: string): Note[] {
   if (state.notesOn !== true) return [];
   return [...state.notes.values()].filter((n) => n.session === session && noteIsOpen(n)).sort((a, b) => a.at - b.at || (a.id < b.id ? -1 : 1));
 }
 
-/** The notes that are finished (read, or answered), which "Dismiss finished" takes off the list. */
-export function finishedNotes(state: Pick<ViewState, "notes">): Note[] {
-  return [...state.notes.values()].filter((n) => !noteIsOpen(n));
+/**
+ * A session's notes for its strip, read ones too until dismissed, so each stays one press away at
+ * the top of its chat: the open ones first, each part newest first.
+ */
+export function notesOf(state: Pick<ViewState, "notes" | "notesOn">, session: string): Note[] {
+  if (state.notesOn !== true) return [];
+  return bellNotes({ notes: new Map([...state.notes].filter(([, n]) => n.session === session)) });
+}
+
+/** A session's notes not read yet, which its chat shown to someone at it reads. */
+export function unreadNotesOf(state: Pick<ViewState, "notes" | "notesOn">, session: string): Note[] {
+  if (state.notesOn !== true) return [];
+  return [...state.notes.values()].filter((n) => n.session === session && n.read === undefined && !n.dismissed);
+}
+
+/** The notes that are finished (read, or answered), which "Dismiss finished" takes off the list: every session's, or one's. */
+export function finishedNotes(state: Pick<ViewState, "notes">, session?: string): Note[] {
+  return [...state.notes.values()].filter((n) => !noteIsOpen(n) && (session === undefined || n.session === session));
 }
 
 /** The note a `notify_user` call in a session's timeline carries: by the call's id, else at its seq. */

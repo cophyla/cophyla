@@ -9,7 +9,7 @@ import { ACCESS_PRESETS } from "@cophyla/protocol";
 import type { Client, Note, Session, SessionEvent } from "@cophyla/protocol";
 import { apply, chatDraw, forwardParams, initialState, newestSeq, reachOf, REACH_BACK, selectTimeline, timelinePosts, trimTimeline, WINDOW_HELD } from "../views/default/model.ts";
 import type { HostReady, TimelinePost, ViewState } from "../views/default/model.ts";
-import { bellNotes, bellWords, callNote, finishedNotes, isNotifyCall, noteAtCall, noteIsOpen, notesSummary, noteStateWords, noteWaits, openNoteCount, openNotesOf } from "../views/default/notemodel.ts";
+import { bellNotes, bellWords, callNote, finishedNotes, isNotifyCall, noteAtCall, noteIsOpen, notesOf, notesSummary, noteStateWords, noteWaits, openNoteCount, openNotesOf, unreadNotesOf } from "../views/default/notemodel.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const A = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3";
@@ -88,6 +88,34 @@ describe("the notes as the node says them", () => {
     expect(notesSummary(openNotesOf(s, A))).toBe("2 notes · 1 waiting for you");
     expect(notesSummary([fyi])).toBe("1 note");
     expect([fyi, waits, read, answered].map(noteStateWords)).toEqual(["new", "waiting for you", "read", "answered"]);
+  });
+
+  test("a session's strip keeps its read notes until dismissed, the open on top; its chat shown reads the ones not read yet", () => {
+    const s = connected();
+    const fyi = note({ at: 100 });
+    const waits = note({ at: 200, needsAnswer: true });
+    const read = note({ at: 300, read: 310 });
+    const answered = note({ at: 400, needsAnswer: true, read: 405, answered: { at: 410, seq: 99, text: "yes" } });
+    const other = note({ at: 500, session: B });
+    apply(s, { type: "notes", notes: [fyi, waits, read, answered, other] });
+    // the strip: every note of the session, open ones first, newest first in each
+    expect(notesOf(s, A).map((x) => x.id)).toEqual([waits.id, fyi.id, answered.id, read.id]);
+    expect(notesOf(s, B).map((x) => x.id)).toEqual([other.id]);
+    // what showing A's chat reads: what of A's is not read yet, a waiting note too (it stays open)
+    expect(unreadNotesOf(s, A).map((x) => x.id).sort()).toEqual([fyi.id, waits.id].sort());
+    apply(s, { type: "note.state", params: { ...fyi, read: 600 } });
+    apply(s, { type: "note.state", params: { ...waits, read: 600 } });
+    expect(unreadNotesOf(s, A)).toEqual([]);
+    // read, the FYI is off the dot and the bell; the waiting one stays until answered; both stay in the strip
+    expect(openNotesOf(s, A).map((x) => x.id)).toEqual([waits.id]);
+    expect(notesOf(s, A)).toHaveLength(4);
+    // Dismiss finished in A's strip takes A's alone
+    expect(finishedNotes(s, A).map((x) => x.id).sort()).toEqual([fyi.id, read.id, answered.id].sort());
+    expect(finishedNotes(s, B)).toEqual([]);
+    // no notes kept by the node: no strip
+    apply(s, { type: "notes" });
+    expect(notesOf(s, A)).toEqual([]);
+    expect(unreadNotesOf(s, A)).toEqual([]);
   });
 
   test("a notify_user call finds its note by the call's id, else at its seq; its own words stand in for a note not known here", () => {

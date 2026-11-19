@@ -8,13 +8,24 @@
 // A reply goes to the session as `session.send` itself, never through the session's own send
 // box, whose answer clears that box's draft: the node marks the note answered once the user's
 // turn lands in the session.
+//
+// A session's chat in front of the user reads its notes: once its tab shows in a window in
+// sight and the user is at it (the frame has the focus, or they touched, clicked, scrolled or
+// typed in the view within `PRESENT_MS`), each of its notes not read yet is marked read. The bell
+// and the tab's dot lose them; the strip at the top of the chat keeps them until dismissed. A
+// note that waits for an answer stays open until it is answered.
 
 import type { Note, NotesState } from "@cophyla/protocol";
 import type { Action, ViewState } from "./model.ts";
 import type { UiState } from "./render.ts";
 import type { HostRpc } from "./rpc.ts";
 import { ViewRpcError } from "./rpc.ts";
-import { finishedNotes } from "./notemodel.ts";
+import { finishedNotes, unreadNotesOf } from "./notemodel.ts";
+
+/** How long after the user's last input in the view they count as at it, for reading a chat's notes. */
+export const PRESENT_MS = 60_000;
+/** How long a note whose marking failed waits before it is marked again. */
+const RETRY_MS = 30_000;
 
 export interface NoteDeps {
   rpc: HostRpc;
@@ -29,9 +40,42 @@ export interface NoteDeps {
 export class NoteControl {
   private d: NoteDeps;
   private refused = false;
+  /** When the user last touched, clicked, scrolled or typed in the view. */
+  private lastInput = 0;
+  /** Notes being marked read, or whose marking failed, with when it was tried. */
+  private marking = new Map<string, number>();
 
   constructor(deps: NoteDeps) {
     this.d = deps;
+  }
+
+  /**
+   * After a draw: the selected session's chat in sight of a user at it reads its notes not read
+   * yet. A note marked a moment ago, or whose marking failed lately, is left for now.
+   */
+  afterDraw(): void {
+    const { ui, state } = this.d;
+    const session = ui.selected;
+    if (session === undefined || ui.devices !== undefined || ui.terminal !== undefined || ui.group !== undefined) return;
+    if (document.visibilityState !== "visible" || !state.scopes.includes("sessions:write") || !state.sessions.has(session)) return;
+    const now = Date.now();
+    if (!document.hasFocus() && now - this.lastInput > PRESENT_MS) return;
+    for (const n of unreadNotesOf(state, session)) {
+      const tried = this.marking.get(n.id);
+      if (tried !== undefined && now - tried < RETRY_MS) continue;
+      this.marking.set(n.id, now);
+      void this.mark(n.id, { read: true }).then((ok) => {
+        if (ok) this.marking.delete(n.id);
+      });
+    }
+  }
+
+  /** The user touched, clicked, scrolled or typed in the view: they are at it, and the chat in front of them reads its notes. */
+  input(): void {
+    const now = Date.now();
+    const was = this.lastInput;
+    this.lastInput = now;
+    if (now - was > 1000) this.afterDraw();
   }
 
   /** The line is up: the notes and the switch, asked for afresh. */
@@ -125,7 +169,8 @@ export class NoteControl {
         if (data["id"]) void this.dismiss([data["id"]]);
         return true;
       case "notes-dismiss-finished": {
-        const ids = finishedNotes(this.d.state).map((n) => n.id);
+        // from a session's strip, that session's; from the bell's list, every one
+        const ids = finishedNotes(this.d.state, data["session"]).map((n) => n.id);
         if (ids.length > 0) void this.dismiss(ids);
         return true;
       }
@@ -194,14 +239,17 @@ export class NoteControl {
     }
   }
 
-  private async mark(id: string, p: { read?: boolean; answered?: boolean }): Promise<void> {
+  /** Marks a note; true once the node took it, or it is gone. */
+  private async mark(id: string, p: { read?: boolean; answered?: boolean }): Promise<boolean> {
     try {
       const { note } = await this.d.rpc.request<{ note: Note }>("note.mark", { id, ...p });
       this.d.dispatch({ type: "note.state", params: note });
+      return true;
     } catch (e) {
       // gone meanwhile (dismissed on another device): nothing to mark
-      if (e instanceof ViewRpcError && e.code === "not_found") return;
+      if (e instanceof ViewRpcError && e.code === "not_found") return true;
       this.fail("note", e);
+      return false;
     }
   }
 
