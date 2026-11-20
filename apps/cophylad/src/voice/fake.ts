@@ -61,6 +61,8 @@ export class FakeEngines implements EngineFactory {
   aborted = 0;
   /** Set per test to make a stage fail to load. */
   failStage?: "wake" | "stt" | "tts";
+  /** Set per test to make each synthesis fail with this error after `after` of its sentences (none by default). */
+  failSpeech?: { error: Error; after?: number };
   /** Set per test to hold a stage in `loading` until the promise settles. */
   hold: Partial<Record<"wake" | "stt" | "tts", Promise<unknown>>> = {};
   /** The heads the fake wake model has, for the app to pick from; the configured ones when unset. */
@@ -247,9 +249,13 @@ export class FakeEngines implements EngineFactory {
         const samples = Math.max(1, Math.round((OUT_RATE * engine.opts.msPerSentence) / 1000));
         return {
           async *[Symbol.asyncIterator]() {
+            let made = 0;
             for (const _ of sentences.length > 0 ? sentences : [text]) {
               // A real engine takes time per sentence, which is what makes a barge-in cut one short.
               if (engine.opts.synthDelayMs > 0) await Bun.sleep(engine.opts.synthDelayMs);
+              // An engine that fails, as an online voice does when it stalls, after the sentences it made.
+              if (engine.failSpeech && made >= (engine.failSpeech.after ?? 0)) throw engine.failSpeech.error;
+              made++;
               if (opts.signal?.aborted) {
                 engine.aborted++;
                 return;

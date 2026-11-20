@@ -46,6 +46,7 @@
 import type { VoiceState, VoiceStopped, VoiceUnheard } from "@cophyla/protocol";
 import type { Logger } from "../log.ts";
 import { sayNames } from "./compose.ts";
+import { speechFailure } from "./failure.ts";
 import type { SttEngine, SttFailed, SttStream, TtsEngine, VadEngine, WakeEngine } from "./engines.ts";
 import { FRAME, IN_RATE, OUT_RATE } from "./engines.ts";
 
@@ -81,14 +82,19 @@ export interface StateDetail {
   unheard?: VoiceUnheard;
   limit?: number;
   stopped?: VoiceStopped;
+  /** With the `idle` after a line the engine failed: why, in the user's words (`speechFailure`). */
+  failed?: string;
 }
 
 export interface ConversationHandlers {
   /**
    * `unheard` comes with the `idle` that ends an utterance the button held with nothing sent,
    * `limit` with `listening` when the recogniser has one, `stopped` with a `transcribing` a stop forced.
+   * `failed` comes with the `idle` after a line the engine could not speak.
    */
   state(state: VoiceState, detail?: StateDetail): void;
+  /** A line's first audio has gone to the client: it is heard from now. Not a change of state. */
+  sounding?(): void;
   /** The words so far, while the utterance is heard and transcribed; `dictating` while the press dictates them. */
   partial(text: string, dictating?: boolean): void;
   /** The utterance's transcript; `overtaken` when another utterance began while it was transcribed. */
@@ -186,6 +192,8 @@ export class Conversation {
   private disposed = false;
   /** The synthesis in flight, so a barge-in can cut it. */
   private speech?: AbortController;
+  /** Why the last line spoken failed, said with the `idle` that follows it. */
+  private failure?: string;
   /** The lines still to speak, oldest first, and whether one is being spoken from them. */
   private lines: Line[] = [];
   private draining = false;
@@ -226,6 +234,11 @@ export class Conversation {
   private setState(next: VoiceState, detail?: StateDetail): void {
     if (this.state === next) return;
     this.state = next;
+    // A line the engine failed is said with the idle after it, once.
+    if (next === "idle" && this.failure !== undefined) {
+      detail = { ...detail, failed: this.failure };
+      this.failure = undefined;
+    }
     this.deps.on.state(next, detail);
     // An utterance is over: the lines that waited for it are spoken, once the state has settled.
     if (this.lines.length > 0 && !this.draining && !this.heard()) queueMicrotask(() => void this.drain());
@@ -665,6 +678,7 @@ export class Conversation {
     this.speech = controller;
     const reply = ++this.replies;
     this.stamp("speak");
+    this.failure = undefined;
     this.setState("speaking");
     const rate = engine.sampleRate || OUT_RATE;
     let sent = 0;
@@ -673,6 +687,8 @@ export class Conversation {
         for await (const chunk of engine.synth(sayNames(text), { signal: controller.signal })) {
           if (controller.signal.aborted || this.disposed) break;
           this.stamp("firstChunk");
+          // The line is heard from now: an app waiting on it shows it playing.
+          if (sent === 0 && chunk.length > 0 && this.state === "speaking") this.deps.on.sounding?.();
           for (let off = 0; off < chunk.length; off += OUT_FRAME) {
             const slice = chunk.subarray(off, Math.min(off + OUT_FRAME, chunk.length));
             this.deps.on.audio(slice, rate, { reply, ...(asked ? { asked: true as const } : {}) });
@@ -682,7 +698,10 @@ export class Conversation {
           this.playsUntil = Math.max(this.playsUntil, this.now()) + (chunk.length / rate) * 1000;
         }
       } catch (e) {
-        if (!controller.signal.aborted) this.deps.log?.warn("speech failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
+        if (!controller.signal.aborted) {
+          this.deps.log?.warn("speech failed", { client: this.client, error: e instanceof Error ? e.message : String(e) });
+          this.failure = speechFailure(e, sent > 0);
+        }
       }
     })();
     // A line cut short gives way at once, not when its engine next yields.

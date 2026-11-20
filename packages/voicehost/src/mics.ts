@@ -1,5 +1,6 @@
-// Which microphone the host listens on. The user may pick one (the desktop's Settings) or
-// leave it to the system's default. A pick is kept by the id the web view gave the device and
+// Which microphone the host listens on, and which speaker it plays on. The user may pick one of
+// each (the desktop's Settings) or leave it to the system's default. A speaker is kept and
+// found exactly as a microphone is, from the web view's `audiooutput` devices. A pick is kept by the id the web view gave the device and
 // by its name, since the id can move while the name stays. A pick that is not connected falls
 // back to the default until it is. The default is followed as it moves: when the system makes
 // another device its default (a headset plugged in, a dongle pulled), the host moves with it.
@@ -47,12 +48,21 @@ export interface DeviceLister {
  */
 const ALIASES = new Set(["default", "communications", ""]);
 
-export async function listMics(media: DeviceLister): Promise<MicList> {
-  const inputs = (await media.enumerateDevices()).filter((d) => d.kind === "audioinput");
+export function listMics(media: DeviceLister): Promise<MicList> {
+  return listDevices(media, "audioinput", "A microphone");
+}
+
+/** The speakers there are, and which of them the system's default is, as for the microphones. */
+export function listSpeakers(media: DeviceLister): Promise<MicList> {
+  return listDevices(media, "audiooutput", "A speaker");
+}
+
+async function listDevices(media: DeviceLister, kind: "audioinput" | "audiooutput", unnamed: string): Promise<MicList> {
+  const found = (await media.enumerateDevices()).filter((d) => d.kind === kind);
   const list: MicList = {
-    devices: inputs.filter((d) => !ALIASES.has(d.deviceId)).map((d) => ({ id: d.deviceId, label: d.label || "A microphone", groupId: d.groupId })),
+    devices: found.filter((d) => !ALIASES.has(d.deviceId)).map((d) => ({ id: d.deviceId, label: d.label || unnamed, groupId: d.groupId })),
   };
-  const def = inputs.find((d) => d.deviceId === "default");
+  const def = found.find((d) => d.deviceId === "default");
   if (def) {
     if (def.label) list.defaultLabel = def.label.replace(/^Default - /, "");
     if (def.groupId) list.defaultGroup = def.groupId;

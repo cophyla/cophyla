@@ -101,7 +101,8 @@ import { TrackControl } from "./trackctl.ts";
 import { newTrackUi } from "./trackview.ts";
 import { NoteControl } from "./notectl.ts";
 import { newNoteUi } from "./noteview.ts";
-import { ListenControl, newListenUi, paintListens } from "./listen.ts";
+import { paintListens } from "./listen.ts";
+import { ListenControl, newListenUi } from "./listenctl.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);

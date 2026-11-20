@@ -93,7 +93,7 @@ import { openNotesOf } from "./notemodel.ts";
 import { createBell, createNotesPanel, createNotesStrip, createNotifyCard, updateBell, updateNotesPanel, updateNotesStrip, updateNotifyCard } from "./noteview.ts";
 import type { NoteUi } from "./noteview.ts";
 import { createListen, createVoiceCard, listenIn, updateListen, updateVoiceCard } from "./listen.ts";
-import type { ListenUi } from "./listen.ts";
+import type { ListenUi } from "./listenctl.ts";
 import { turnText } from "./listenmodel.ts";
 import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
 import type { TrackUi } from "./trackview.ts";

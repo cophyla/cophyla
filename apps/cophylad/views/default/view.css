@@ -13016,3 +13016,45 @@ button:disabled {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+/* why the message was not read out, just before its Listen: it takes the free space, the button follows it */
+.listen-note {
+  margin-left: auto;
+  color: var(--amber);
+  font-size: 11.5px;
+  line-height: 1.35;
+  text-align: right;
+}
+
+.listen-note[hidden] {
+  display: none;
+}
+
+.listen-note:not([hidden]) + .listen {
+  margin-left: 6px;
+}
+
+.listen[data-phase="failed"] {
+  border-color: color-mix(in srgb, var(--amber) 55%, var(--line));
+  color: var(--amber);
+}
+
+/* on a phone, why it was not read out takes a line of its own under the head */
+@media (max-width: 640px) {
+  .message-head:has(> .listen-note:not([hidden])),
+  .tl-voice-head:has(> .listen-note:not([hidden])),
+  .tl-notify-head:has(> .listen-note:not([hidden])) {
+    flex-wrap: wrap;
+  }
+
+  .listen-note {
+    order: 1;
+    flex-basis: 100%;
+    margin-left: 0;
+    text-align: left;
+  }
+
+  .listen-note:not([hidden]) + .listen {
+    margin-left: auto;
+  }
+}

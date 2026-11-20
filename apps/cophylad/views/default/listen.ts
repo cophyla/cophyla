@@ -2,10 +2,12 @@
 // its chat, on a note it left, on each of Cophyla Chat's replies, and on an agent's voice
 // message (`voice_reply`), which is a card of its own. A press asks the node to read that
 // message out on this device (`voice.preview {read}`), said for the ear and in the voice set in
-// Settings; the button is Stop while it plays, which ends it (`voice.preview {stop}`), and is
-// Listen again once it is over (`voice.state` idle for this client). Pressed again, it plays
-// again, from the audio the node kept. Another message's Listen takes the place of the one
-// playing. Nothing plays unless pressed.
+// Settings. The button says it is getting it ready until the node says the first audio has left
+// (`voice.state` speaking, `sounding`): an online voice takes seconds to answer. Then it is Stop,
+// which ends it (`voice.preview {stop}`), and Listen again once it is over (`voice.state` idle for
+// this client). When the voice could not read it, the idle says why (`failed`), and the words
+// show beside the button for a while. Pressed again, it plays again, from the audio the node
+// kept. Another message's Listen takes the place of the one playing. Nothing plays unless pressed.
 //
 // The buttons show only where this device can hear: an app that plays audio (its hello's
 // `audio.out`) and a view with the voice scope. Each is drawn with its message; what it says,
@@ -13,34 +15,10 @@
 // reply already drawn is not drawn again.
 
 import type { TimelineStep, ViewState } from "./model.ts";
-import { canListen, READ_MAX, voiceText } from "./listenmodel.ts";
-import type { HostRpc } from "./rpc.ts";
+import { canListen, voiceText } from "./listenmodel.ts";
+import { remember } from "./listenctl.ts";
 import { actionButton, el, setData, setHidden, setText } from "./render.ts";
 import type { UiState } from "./render.ts";
-
-/** What this device reads out now. */
-export interface ListenUi {
-  /** The message, by its button's key. */
-  key?: string;
-  /** Asked for and not answered yet, or playing. */
-  phase?: "starting" | "playing";
-}
-
-export function newListenUi(): ListenUi {
-  return {};
-}
-
-/** How many messages' words are kept for their buttons. */
-const KEPT = 400;
-
-// The words each button reads, by its key, kept as the buttons are drawn: the newest last.
-const texts = new Map<string, string>();
-
-function remember(key: string, text: string): void {
-  texts.delete(key);
-  texts.set(key, text);
-  if (texts.size > KEPT) texts.delete(texts.keys().next().value!);
-}
 
 // --- the button ----------------------------------------------------------------------------------
 
@@ -65,18 +43,34 @@ export function updateListen(b: HTMLButtonElement, key: string, text: string, st
   paintListen(b, state, ui);
 }
 
-/** Shown or not, and Listen or Stop, as things stand now. */
+/** Shown or not; Listen, getting it ready, Stop, or not read out; as things stand now. */
 function paintListen(b: HTMLButtonElement, state: ViewState, ui: UiState): void {
   const shown = canListen(state) && b.dataset["empty"] !== "1" && b.dataset["key"] !== undefined;
   setHidden(b, !shown);
+  const key = b.dataset["key"];
+  const failed = shown && ui.listen.failed !== undefined && ui.listen.failed.key === key ? ui.listen.failed.words : undefined;
+  paintNote(b, failed);
   if (!shown) return;
-  const phase = ui.listen.key === b.dataset["key"] ? ui.listen.phase : undefined;
-  setData(b, "phase", phase ?? "");
-  setText(b.querySelector(".listen-word")!, phase ? "Stop" : "Listen");
-  const words = phase ? "Stop reading it out" : "Listen to it, read out here";
+  const phase = ui.listen.key === key ? ui.listen.phase : undefined;
+  setData(b, "phase", phase ?? (failed !== undefined ? "failed" : ""));
+  setText(b.querySelector(".listen-word")!, phase === "playing" ? "Stop" : phase === "starting" ? "Getting it ready…" : failed !== undefined ? "Not read out" : "Listen");
+  const words = phase === "playing" ? "Stop reading it out" : phase === "starting" ? "Getting it ready: press to stop" : failed ?? "Listen to it, read out here";
   b.title = words;
   b.setAttribute("aria-label", words);
   b.setAttribute("aria-pressed", String(phase !== undefined));
+}
+
+/** Why the message was not read out, just before its button; none when it was. */
+function paintNote(b: HTMLButtonElement, words: string | undefined): void {
+  let note = b.previousElementSibling as HTMLElement | null;
+  if (!note?.classList.contains("listen-note")) {
+    if (words === undefined) return;
+    note = el("span", "listen-note");
+    note.setAttribute("role", "status");
+    b.before(note);
+  }
+  setHidden(note, words === undefined);
+  setText(note, words ?? "");
 }
 
 /** Every Listen on the page, painted as things stand now: after each draw. */
@@ -102,85 +96,4 @@ export function updateVoiceCard(node: HTMLElement, step: TimelineStep, key: stri
   setText(node.querySelector(".tl-voice-state")!, refused ? "not sent" : "");
   setText(node.querySelector(".tl-voice-text")!, text);
   updateListen(node.querySelector<HTMLButtonElement>(".tl-voice-head > .listen")!, key, refused ? "" : text, state, ui);
-}
-
-// --- the presses ---------------------------------------------------------------------------------
-
-export interface ListenDeps {
-  rpc: HostRpc;
-  state: ViewState;
-  ui: UiState;
-  draw: () => void;
-  fail: (what: string, e: unknown) => void;
-}
-
-export class ListenControl {
-  private d: ListenDeps;
-
-  constructor(deps: ListenDeps) {
-    this.d = deps;
-  }
-
-  /** A press on a Listen button; false for any other. */
-  click(target: HTMLElement): boolean {
-    if (target.dataset["action"] !== "listen") return false;
-    const key = target.dataset["key"];
-    if (!key) return true;
-    const l = this.d.ui.listen;
-    if (l.key === key && l.phase !== undefined) void this.stop();
-    else void this.play(key);
-    return true;
-  }
-
-  /** What this device hears changed: once what it was reading is over, its button is Listen again. */
-  voiceState(p: { state: string; client?: string }): void {
-    const l = this.d.ui.listen;
-    if (l.phase !== "playing") return;
-    if (p.client !== undefined && p.client !== this.d.state.client?.id) return;
-    if (p.state === "speaking") return;
-    this.done();
-    this.d.draw();
-  }
-
-  /** The line went: whatever was playing on it is over. */
-  disconnected(): void {
-    this.done();
-  }
-
-  private async play(key: string): Promise<void> {
-    const text = texts.get(key);
-    if (!text) return;
-    const l = this.d.ui.listen;
-    l.key = key;
-    l.phase = "starting";
-    this.d.draw();
-    try {
-      await this.d.rpc.request("voice.preview", { text: text.slice(0, READ_MAX), read: true });
-      // Asked: it plays, in place of what played before, until the node says this device is idle.
-      if (l.key === key && l.phase === "starting") {
-        l.phase = "playing";
-        this.d.draw();
-      }
-    } catch (e) {
-      if (l.key === key) this.done();
-      this.d.fail("listen", e);
-      this.d.draw();
-    }
-  }
-
-  private async stop(): Promise<void> {
-    this.done();
-    this.d.draw();
-    try {
-      await this.d.rpc.request("voice.preview", { stop: true });
-    } catch (e) {
-      this.d.fail("stop", e);
-    }
-  }
-
-  private done(): void {
-    const l = this.d.ui.listen;
-    delete l.key;
-    delete l.phase;
-  }
 }

@@ -13,6 +13,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Client, Message, RpcNotification, VoiceSettings, VoiceState, VoiceUnheard, WakewordMode } from "@cophyla/protocol";
+import { RpcError } from "@cophyla/protocol";
 import type { Daemon } from "../src/daemon.ts";
 import { ClientRegistry } from "../src/api/clients.ts";
 import { Bus } from "../src/bus.ts";
@@ -1312,6 +1313,38 @@ describe("the speech engine picked in the app", () => {
     expect(await phone.call("voice.preview", { read: true })).toMatchObject({ error: { data: { code: "invalid" } } });
     expect(await ui.call("voice.preview", { text: md, read: true })).toMatchObject({ error: { data: { code: "invalid" } } });
   }, 20_000);
+
+  test("a reading says when it is heard, and why when it is not: after none of it, or partway", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT, msPerSentence: 50 });
+    const { d, phone } = await start({ engines });
+    const said = (n: { method: string; params?: unknown }) => n.method === "voice.state" ? (n.params as { state: string; sounding?: boolean; failed?: string }) : undefined;
+    const states = () => phone.notifications.map(said).filter((p) => p !== undefined);
+    // heard: speaking, then speaking again once its first audio has left, then idle with nothing failed
+    await phone.request("voice.preview", { text: "One. Two.", read: true });
+    await waitFor(() => states().at(-1)?.state === "idle", 10_000);
+    expect(states().map((s) => `${s.state}${s.sounding ? "+sounding" : ""}${s.failed ? "+failed" : ""}`)).toEqual(["speaking", "speaking+sounding", "idle"]);
+    // the voice did not answer: no sound, and the idle says why
+    let from = states().length;
+    const kept = d.voice.heard.size;
+    engines.failSpeech = { error: new RpcError("timeout", "deepinfra: speech stalled past 30000 ms") };
+    await phone.request("voice.preview", { text: "Uno. Dos.", read: true });
+    await waitFor(() => states().at(-1)?.state === "idle", 10_000);
+    expect(states().slice(from)).toEqual([expect.objectContaining({ state: "speaking" }), expect.objectContaining({ state: "idle", failed: "Not read out: the online voice did not answer in time." })]);
+    // nothing of it is kept, so the next listen asks the voice again
+    expect(d.voice.heard.size).toBe(kept);
+    // partway: some was heard first
+    from = states().length;
+    engines.failSpeech = { error: new Error("the model crashed"), after: 1 };
+    await phone.request("voice.preview", { text: "Three. Four.", read: true });
+    await waitFor(() => states().at(-1)?.state === "idle", 10_000);
+    expect(states().slice(from).map((s) => s.failed ?? (s.sounding ? "sounding" : s.state))).toEqual(["speaking", "sounding", "Stopped partway: the voice could not read it."]);
+    // the next one that speaks says nothing failed
+    engines.failSpeech = undefined;
+    from = states().length;
+    await phone.request("voice.preview", { text: "Five.", read: true });
+    await waitFor(() => states().at(-1)?.state === "idle", 10_000);
+    expect(states().slice(from).some((s) => s.failed !== undefined)).toBe(false);
+  }, 30_000);
 
   test("stop ends what the client hears now, and a reading cut short is made again next time", async () => {
     const engines = new FakeEngines({ transcript: TRANSCRIPT, synthDelayMs: 150 });

@@ -14,7 +14,7 @@
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, notesRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, speakerOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, notesRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -823,6 +823,15 @@ describe("the microphone row", () => {
     const { options, value } = micOptions({ ...base, mics: [brio], micChoice: usb });
     expect(options.at(-1)).toEqual({ value: "usb-1", label: `${usb.label} (not connected)` });
     expect(value).toBe("usb-1");
+  });
+
+  test("the speaker row's choices are made as the microphone's, from the speakers", () => {
+    const rt = { id: "rt-1", label: "Speakers (Realtek(R) Audio)" };
+    const hdmi = { id: "hdmi-1", label: "Speakers (HDMI)" };
+    const { options, value } = speakerOptions({ ...base, mics: [usb], speakers: [rt, hdmi], defaultSpeaker: rt.label, speakerChoice: hdmi });
+    expect(options).toEqual([{ value: "", label: `System default (${rt.label})` }, { value: "rt-1", label: rt.label }, { value: "hdmi-1", label: hdmi.label }]);
+    expect(value).toBe("hdmi-1");
+    expect(speakerOptions({ ...base, speakers: [rt], speakerChoice: hdmi }).options.at(-1)).toEqual({ value: "hdmi-1", label: `${hdmi.label} (not connected)` });
   });
 });
 

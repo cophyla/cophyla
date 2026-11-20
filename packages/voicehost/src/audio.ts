@@ -27,7 +27,7 @@
 
 import { playCue } from "./cues.ts";
 import type { CueKind } from "./cues.ts";
-import { listMics, resolveMic } from "./mics.ts";
+import { listMics, listSpeakers, resolveMic } from "./mics.ts";
 import type { MicChoice, MicInUse, MicList } from "./mics.ts";
 import { decodeChunk, toFloat } from "./pcm.ts";
 import { SpeechDecoder } from "./opus.ts";
@@ -272,6 +272,9 @@ export interface AudioDeps {
   onNote?: (message: string) => void;
 }
 
+/** An `AudioContext` that can play on a device of its own: Chromium's `setSinkId`, `""` for the system's default. */
+type SinkContext = AudioContext & { setSinkId?: (sinkId: string) => Promise<void> };
+
 export class Audio {
   private deps: AudioDeps;
   private ctx?: AudioContext;
@@ -285,6 +288,12 @@ export class Audio {
   choice?: MicChoice;
   /** The pick's name, when capture last started on the default because it was not connected. */
   missing?: string;
+  /** The speaker the user picked; the system's default when none. */
+  speaker?: MicChoice;
+  /** The speaker pick's name, while speech plays on the default because it is not connected. */
+  speakerMissing?: string;
+  /** The device speech plays on now, by the web view's id; `""` is the system's default. */
+  private sink = "";
   private playback?: PlaybackQueue;
   private decoder?: SpeechDecoder;
   private opening?: Promise<void>;
@@ -378,6 +387,38 @@ export class Audio {
     const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
     if (!media?.enumerateDevices) return { devices: [] };
     return listMics(media);
+  }
+
+  /** Whether this web view can play on a speaker other than the system's default (`AudioContext.setSinkId`). */
+  static get canPickSpeaker(): boolean {
+    return typeof AudioContext !== "undefined" && typeof (AudioContext.prototype as SinkContext).setSinkId === "function";
+  }
+
+  /** The speakers the web view lists; none where it cannot list them or cannot play on one. */
+  async speakers(): Promise<MicList> {
+    const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
+    if (!media?.enumerateDevices || !Audio.canPickSpeaker) return { devices: [] };
+    return listSpeakers(media);
+  }
+
+  /**
+   * Speech and cues play on the pick when it is connected, else on the system's default; once
+   * the speaker's context is up. Called when the pick changes and whenever devices come and go.
+   */
+  async routeSpeaker(list: MicList): Promise<void> {
+    const want = resolveMic(this.speaker, list);
+    if (want.missing !== undefined) this.speakerMissing = want.missing;
+    else delete this.speakerMissing;
+    const sink = want.id ?? "";
+    const out = this.out as SinkContext | undefined;
+    if (!out?.setSinkId || sink === this.sink) return;
+    try {
+      await out.setSinkId(sink);
+      this.sink = sink;
+      this.deps.onNote?.(`speaker: ${sink === "" ? "the system's default" : (list.devices.find((d) => d.id === sink)?.label ?? sink)}`);
+    } catch (e) {
+      this.deps.onNote?.(`speaker: could not play on it: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   /** Asks for the microphone and starts the worklet, or stops both; idempotent, and each call waits for the one before. */
@@ -493,6 +534,7 @@ export class Audio {
     this.decoder?.close();
     this.decoder = undefined;
     await Promise.all([this.ctx?.close().catch(() => {}), this.out?.close().catch(() => {})]);
+    this.sink = "";
     this.ctx = undefined;
     this.out = undefined;
     this.playback = undefined;

@@ -138,6 +138,8 @@ export interface VoiceHostOptions {
   workletUrl?: string;
   /** The microphone the user picked; the system's default when absent. */
   mic?: MicChoice;
+  /** The speaker the user picked; the system's default when absent. */
+  speaker?: MicChoice;
   /** Something the host shows moved. */
   onChange?: () => void;
   /** Recording an utterance started or stopped; the cue for it is already playing. */
@@ -174,6 +176,15 @@ export interface VoiceView {
   /** The microphones there are, and the system's default by name, once the web view listed them. */
   mics: MicDevice[];
   defaultMic?: string;
+  /** This web view can play on a speaker of the user's choosing. */
+  canPickSpeaker: boolean;
+  /** The speaker picked; the system's default when absent. */
+  speakerChoice?: MicChoice;
+  /** Why speech plays on the default rather than the pick: it is not connected. */
+  speakerNote?: string;
+  /** The speakers there are, and the system's default by name, once the web view listed them. */
+  speakers: MicDevice[];
+  defaultSpeaker?: string;
   /** Why the node last refused the button or a heard word (nothing to transcribe with, voice off). */
   refused?: string;
 }
@@ -197,6 +208,7 @@ export class VoiceHost {
   private micError?: string;
   private micNote?: string;
   private mics: MicList = { devices: [] };
+  private speakerList: MicList = { devices: [] };
   private devicesTimer?: ReturnType<typeof setTimeout>;
   private refused?: string;
   private heads: WakeHeadMode[] = [];
@@ -243,6 +255,7 @@ export class VoiceHost {
       ...(opts.workletUrl ? { workletUrl: opts.workletUrl } : {}),
     });
     if (opts.mic) this.audio.choice = opts.mic;
+    if (opts.speaker) this.audio.speaker = opts.speaker;
     // A device plugged in or pulled: the list follows, and so may the microphone.
     const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
     media?.addEventListener?.("devicechange", () => {
@@ -281,6 +294,11 @@ export class VoiceHost {
       ...(this.audio.choice ? { micChoice: this.audio.choice } : {}),
       mics: this.mics.devices,
       ...(this.mics.defaultLabel !== undefined ? { defaultMic: this.mics.defaultLabel } : {}),
+      canPickSpeaker: Audio.canPickSpeaker,
+      ...(this.audio.speaker ? { speakerChoice: this.audio.speaker } : {}),
+      ...(this.audio.speakerMissing !== undefined ? { speakerNote: `${this.audio.speakerMissing} is not connected: speech plays on the system's default until it is.` } : {}),
+      speakers: this.speakerList.devices,
+      ...(this.speakerList.defaultLabel !== undefined ? { defaultSpeaker: this.speakerList.defaultLabel } : {}),
       ...(this.refused !== undefined ? { refused: this.refused } : {}),
     };
   }
@@ -320,6 +338,8 @@ export class VoiceHost {
     await this.audio.open();
     // A speaker muted before the audio started stays muted.
     if (this.audio.queue) this.audio.queue.muted = this.muted;
+    // Speech plays on the speaker picked from the start, microphone or not.
+    void this.listSpeakers();
     try {
       await this.audio.mic(true);
       delete this.micError;
@@ -334,6 +354,8 @@ export class VoiceHost {
     this.loadDetector();
     this.refresh();
     void this.listMics();
+    // With the microphone allowed, the web view names its speakers and gives their ids.
+    void this.listSpeakers();
   }
 
   /** Opens only the audio context, for a host that races it against a timer before asking for the microphone. */
@@ -524,6 +546,29 @@ export class VoiceHost {
     await this.micAgain();
   }
 
+  /**
+   * The speaker to play on, or none for the system's default; kept by the host. Speech moves
+   * to it at once, and plays on the default while it is not connected.
+   */
+  async setSpeaker(choice: MicChoice | undefined): Promise<void> {
+    if (choice) this.audio.speaker = choice;
+    else delete this.audio.speaker;
+    await this.listSpeakers();
+  }
+
+  /** Lists the speakers again, and plays on the pick when it is there: for a host that shows them, and whenever devices move. */
+  listSpeakers(): Promise<MicList> {
+    return this.audio.speakers().then(
+      async (list) => {
+        this.speakerList = list;
+        await this.audio.routeSpeaker(list);
+        this.changed();
+        return list;
+      },
+      () => this.speakerList,
+    );
+  }
+
   /** Lists the microphones again, for a host that shows them. */
   listMics(): Promise<MicList> {
     return this.audio.microphones().then(
@@ -583,6 +628,8 @@ export class VoiceHost {
    * capture moves back to the pick once it is connected again, or to the default when that moved.
    */
   private async devicesMoved(): Promise<void> {
+    // The speaker follows first: a pick plugged back in, or gone, moves speech whatever the microphone does.
+    await this.listSpeakers();
     const list = await this.listMics();
     if (this.away || this.watching) return;
     if (!this.audioReady) {

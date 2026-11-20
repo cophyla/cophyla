@@ -6,7 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import type { LinkSnapshot } from "@cophyla/viewhost";
 import type { VoiceView } from "@cophyla/voicehost";
-import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, MAC_TALK_KEY, MIC_KEY, readMic, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
+import { DEFAULT_TALK_KEY, DesktopVoice, LISTEN_KEY, MAC_TALK_KEY, MIC_KEY, SPEAKER_KEY, readMic, SPEAK_KEY, statusWords, TALK_KEY } from "../host/voice.ts";
 
 class MapStore {
   readonly map = new Map<string, string>();
@@ -55,7 +55,7 @@ function fixture(opts: { stored?: Record<string, string>; refuseKey?: string; ma
   return { voice, store, requests, invoked, handlers };
 }
 
-const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, recording: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"], mics: [] };
+const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, recording: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"], mics: [], canPickSpeaker: false, speakers: [] };
 
 describe("the desktop app's voice", () => {
   test("the hello says a microphone, a speaker, the codecs this web view speaks, played acks, and that it plays what was asked for while muted", async () => {
@@ -111,6 +111,21 @@ describe("the desktop app's voice", () => {
     ptt({ down: false });
     await Bun.sleep(0);
     expect(requests.filter((r) => r.method === "voice.ptt").map((r) => r.params)).toEqual([{ active: true }, { active: false }]);
+  });
+
+  test("the speaker picked is kept as its id and name, starts the next launch, and is offered only where the web view can play on one", async () => {
+    const hdmi = { id: "hdmi-1", label: "Speakers (HDMI Audio)" };
+    const { voice, store } = fixture({ stored: { [SPEAKER_KEY]: JSON.stringify(hdmi) } });
+    expect(voice.host.view.speakerChoice).toEqual(hdmi);
+    // Bun has no AudioContext: no speaker to pick, so Settings shows no Speaker row.
+    expect(voice.host.view.canPickSpeaker).toBe(false);
+    expect(voice.state().speakers).toBeUndefined();
+    // An id the list does not hold is not a pick; the default is kept as none.
+    await voice.setSpeaker("gone");
+    expect(store.map.get(SPEAKER_KEY)).toBe(JSON.stringify(hdmi));
+    await voice.setSpeaker("");
+    expect(store.map.get(SPEAKER_KEY)).toBe("");
+    expect(voice.host.view.speakerChoice).toBeUndefined();
   });
 
   test("the microphone picked is kept as its id and name, starts the next launch, and the default is kept as none", async () => {

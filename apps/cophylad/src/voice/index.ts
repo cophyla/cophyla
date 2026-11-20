@@ -794,6 +794,7 @@ export class Voice {
             ...(detail?.unheard ? { unheard: detail.unheard } : {}),
             ...(detail?.limit !== undefined ? { limit: detail.limit } : {}),
             ...(detail?.stopped ? { stopped: detail.stopped } : {}),
+            ...(detail?.failed !== undefined ? { failed: detail.failed } : {}),
           });
           this.holdSpeech();
         },
@@ -818,6 +819,8 @@ export class Voice {
           this.deps.clients.send(client.id, "voice.dictated", { client: client.id, text });
         },
         speaking: (active) => this.deps.activity.speaking(client, active),
+        // The app shows what it asked for as playing once it is heard, not when the line begins.
+        sounding: () => this.deps.bus.emit("voice.state", { state: "speaking", client: client.id, sounding: true }),
         // Speech goes to the one controller whose utterance produced it.
         audio: (pcm, rate, frame) => this.sendSpeech(client, pcm, rate, frame),
       },

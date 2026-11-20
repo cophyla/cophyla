@@ -37,6 +37,7 @@ import { IN_RATE, OUT_RATE, sttFailed } from "./engines.ts";
 import { geminiLive } from "./gemini-live.ts";
 import type { LiveConnect } from "./gemini-live.ts";
 import { liveStt } from "./live.ts";
+import { speechPieces } from "./pieces.ts";
 import { WavStream } from "./wav-stream.ts";
 
 /** The most audio one utterance may carry online: the longest a recording may be set to last. */
@@ -573,7 +574,20 @@ export function onlineLiveStt(deps: OnlineDeps): SttEngine {
   });
 }
 
-/** Speech over `[providers] tts`, Kokoro's voices counted from the first. */
+/**
+ * How many pieces past the one playing are asked for at once. An online voice answers each
+ * request whole, after seconds that hardly depend on its length, so the pieces after the first
+ * are on their way while it plays.
+ */
+export const ONLINE_AHEAD = 2;
+
+/**
+ * Speech over `[providers] tts`, Kokoro's voices counted from the first. A line goes in the
+ * pieces a local engine speaks it in (`speechPieces`): the first is short, so it is heard after
+ * one short request, and no request is ever the whole of a long message, which an online voice
+ * may not finish in time. The pieces after it are asked for while it plays, `ONLINE_AHEAD` at a
+ * time, and played in order; a piece no route can speak ends the line there.
+ */
 export function onlineTts(deps: OnlineDeps): TtsEngine {
   let chosen: number | undefined;
   const voiceName = () => KOKORO_VOICES[Math.max(0, Math.min(KOKORO_VOICES.length - 1, chosen ?? 0))]!;
@@ -590,31 +604,94 @@ export function onlineTts(deps: OnlineDeps): TtsEngine {
     async *synth(text, opts = {}) {
       if (!text.trim()) return;
       const voice = voiceName();
-      const refusals: string[] = [];
-      for (const route of deps.ttsRoutes()) {
-        let spoke = false;
-        try {
-          let lines: AsyncIterable<Int16Array>;
-          if (route === "server") {
-            if (!deps.server) throw new RpcError("unavailable", "no account on this node", { provider: "server" });
-            lines = deps.server.speak(text, voice, opts.signal);
-          } else if (route === "byok:deepinfra") lines = deepinfraSpeak(text, voice, deps.deepinfra, opts.signal);
-          else throw new RpcError("unavailable", `${route} does not speak`, { provider: route });
-          for await (const chunk of lines) {
-            spoke = true;
-            yield chunk;
-          }
-          return;
-        } catch (e) {
-          if (opts.signal?.aborted) return;
-          const err = asRpc(route, e);
-          // Once a route has spoken, another would say the line again from its start.
-          if (spoke || !passesOn(route, err)) throw err;
-          refusals.push(`${route}: ${err.message}`);
+      const pieces = speechPieces(text);
+      // The pieces asked for ahead are let go when the line is cut, or ends early.
+      const stop = new AbortController();
+      const cut = () => stop.abort();
+      opts.signal?.addEventListener("abort", cut, { once: true });
+      if (opts.signal?.aborted) return;
+      const asked: Fetched[] = [];
+      const ask = (i: number) => {
+        if (i < pieces.length && !asked[i]) asked[i] = new Fetched(speakPiece(deps, pieces[i]!, voice, stop.signal));
+      };
+      try {
+        for (let i = 0; i < pieces.length; i++) {
+          for (let k = i; k <= i + ONLINE_AHEAD; k++) ask(k);
+          yield* asked[i]!.chunks();
+          if (stop.signal.aborted) return;
         }
+      } finally {
+        opts.signal?.removeEventListener("abort", cut);
+        stop.abort();
       }
-      throw new RpcError("unavailable", `no speech route could speak: ${refusals.join("; ")}`, { routes: refusals });
     },
     close: () => {},
   };
+}
+
+/** One piece through the routes in order: the first that speaks it is the answer. */
+async function* speakPiece(deps: OnlineDeps, text: string, voice: string, signal: AbortSignal): AsyncIterable<Int16Array> {
+  const refusals: string[] = [];
+  const codes: string[] = [];
+  for (const route of deps.ttsRoutes()) {
+    let spoke = false;
+    try {
+      let lines: AsyncIterable<Int16Array>;
+      if (route === "server") {
+        if (!deps.server) throw new RpcError("unavailable", "no account on this node", { provider: "server" });
+        lines = deps.server.speak(text, voice, signal);
+      } else if (route === "byok:deepinfra") lines = deepinfraSpeak(text, voice, deps.deepinfra, signal);
+      else throw new RpcError("unavailable", `${route} does not speak`, { provider: route });
+      for await (const chunk of lines) {
+        spoke = true;
+        yield chunk;
+      }
+      return;
+    } catch (e) {
+      if (signal.aborted) return;
+      const err = asRpc(route, e);
+      // Once a route has spoken, another would say the piece again from its start.
+      if (spoke || !passesOn(route, err)) throw err;
+      refusals.push(`${route}: ${err.message}`);
+      codes.push(err.code);
+    }
+  }
+  throw new RpcError("unavailable", `no speech route could speak: ${refusals.join("; ")}`, { routes: refusals, codes });
+}
+
+/** A piece asked for ahead: its audio kept as it comes, to be played when its turn comes. */
+class Fetched {
+  private got: Int16Array[] = [];
+  private ended = false;
+  private failed: { error: unknown } | undefined;
+  private wake: (() => void) | undefined;
+
+  constructor(source: AsyncIterable<Int16Array>) {
+    void (async () => {
+      try {
+        for await (const chunk of source) {
+          this.got.push(chunk);
+          this.wake?.();
+        }
+      } catch (e) {
+        this.failed = { error: e };
+      } finally {
+        this.ended = true;
+        this.wake?.();
+      }
+    })();
+  }
+
+  /** Its audio, as it has come and as it comes; the piece's failure once what came before it is played. */
+  async *chunks(): AsyncIterable<Int16Array> {
+    for (;;) {
+      while (this.got.length > 0) yield this.got.shift()!;
+      if (this.ended) {
+        if (this.failed) throw this.failed.error;
+        return;
+      }
+      await new Promise<void>((resolve) => (this.wake = resolve));
+      this.wake = undefined;
+    }
+  }
 }

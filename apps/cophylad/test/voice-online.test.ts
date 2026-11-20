@@ -10,7 +10,9 @@ import { RpcError } from "@cophyla/protocol";
 import { silentLogger } from "../src/log.ts";
 import type { SttStream } from "../src/voice/engines.ts";
 import type { OnlineDeps } from "../src/voice/online.ts";
-import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, onlineStt, onlineTts, PIECE_SECONDS, RATE_RETRY_MAX_S, rateLimited, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
+import { CLEAN_MODEL, deepinfraSpeak, geminiSmartTranscribe, geminiTranscribe, interactionText, KOKORO_VOICES, MAX_SECONDS, ONLINE_AHEAD, onlineStt, onlineTts, PIECE_SECONDS, RATE_RETRY_MAX_S, rateLimited, routesFor, splitAtQuiet, transcribeLong, wavOf } from "../src/voice/online.ts";
+import { speechPieces } from "../src/voice/pieces.ts";
+import { speechFailure } from "../src/voice/failure.ts";
 
 type Call = { url: string; init: RequestInit };
 
@@ -439,6 +441,83 @@ describe("Kokoro online", () => {
     expect(f.calls).toHaveLength(0);
   });
 
+  /** DeepInfra alone, each piece answered after `ms(i)` with samples that all say which piece they are (i + 1). */
+  function piecewise(ms: (i: number) => number, fail?: (i: number) => boolean) {
+    const inputs: string[] = [];
+    const signals: AbortSignal[] = [];
+    let open = 0;
+    let most = 0;
+    const f = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const i = inputs.length;
+      inputs.push(JSON.parse(String(init?.body)).input);
+      if (init?.signal) signals.push(init.signal);
+      open++;
+      most = Math.max(most, open);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timer = setTimeout(resolve, ms(i));
+          init?.signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(new DOMException("aborted", "AbortError"));
+          });
+        });
+        if (fail?.(i)) return new Response("the model is down", { status: 500 });
+        return streamedWav(new Int16Array(2400).fill(i + 1), 24000, 4096);
+      } finally {
+        open--;
+      }
+    }) as unknown as typeof fetch;
+    const engine = onlineTts(deps({ ttsRoutes: () => ["byok:deepinfra"], deepinfra: { ...deps().deepinfra, fetch: f } }));
+    return { engine, inputs, signals, most: () => most };
+  }
+
+  const LONG = Array.from({ length: 14 }, (_, i) => `This is sentence number ${i + 1} of a long message that an agent wrote for the screen.`).join(" ");
+
+  test("a long line is asked for in pieces, the first short, those after it while it plays, and played in order", async () => {
+    // the first pieces answer last: the order heard is still the line's
+    const p = piecewise((i) => (i < 3 ? 60 - i * 20 : 5));
+    const heard: number[] = [];
+    for await (const c of p.engine.synth(LONG)) heard.push(c[0]!);
+    const pieces = speechPieces(LONG);
+    expect(pieces.length).toBeGreaterThan(ONLINE_AHEAD + 2);
+    expect(p.inputs).toEqual(pieces);
+    expect(p.inputs[0]!.length).toBeLessThanOrEqual(90);
+    expect(p.most()).toBe(ONLINE_AHEAD + 1);
+    // every piece's samples, in the pieces' order
+    const order = heard.filter((v, i) => i === 0 || v !== heard[i - 1]);
+    expect(order).toEqual(pieces.map((_, i) => i + 1));
+  });
+
+  test("cut short, the pieces asked for ahead are let go and no more are asked for", async () => {
+    const p = piecewise(() => 30);
+    const cut = new AbortController();
+    const heard: number[] = [];
+    for await (const c of p.engine.synth(LONG, { signal: cut.signal })) {
+      heard.push(c[0]!);
+      cut.abort();
+    }
+    expect(heard[0]).toBe(1);
+    await Bun.sleep(80);
+    expect(p.inputs.length).toBe(ONLINE_AHEAD + 1);
+    // the first had answered; the ones still on their way are let go
+    expect(p.signals.slice(1).every((s) => s.aborted)).toBe(true);
+  });
+
+  test("a piece no route can speak ends the line after the ones before it played, with each route's code", async () => {
+    const p = piecewise(() => 5, (i) => i === 1);
+    const heard: number[] = [];
+    let error: unknown;
+    try {
+      for await (const c of p.engine.synth(LONG)) heard.push(c[0]!);
+    } catch (e) {
+      error = e;
+    }
+    expect(new Set(heard)).toEqual(new Set([1]));
+    expect(error).toBeInstanceOf(RpcError);
+    expect((error as RpcError).error.data).toMatchObject({ codes: ["unavailable"] });
+    expect(speechFailure(error, heard.length > 0)).toBe("Stopped partway: the voice could not read it.");
+  });
+
   test("with no route that can speak, the line fails with every route's reason", async () => {
     const engine = onlineTts(deps({ ttsRoutes: () => ["byok:deepinfra"], deepinfra: { ...deps().deepinfra, apiKey: () => undefined } }));
     await expect(
@@ -540,5 +619,17 @@ describe("transcription under a rate limit", () => {
     await expect(transcribeLong(pcm, async () => Promise.reject(limit("x")))).rejects.toMatchObject({ code: "quota_exceeded" });
     let n = 0;
     await expect(transcribeLong(pcm, async () => Promise.reject(n++ === 0 ? new RpcError("unavailable", "down") : limit("x")))).rejects.toMatchObject({ code: "unavailable" });
+  });
+});
+
+describe("why a line was not read out, in the user's words", () => {
+  test("a stall, a refused key, a limit, no voice set up, or plainly a failure; partway or not at all", () => {
+    const routes = (codes: string[], message: string) => new RpcError("unavailable", `no speech route could speak: ${message}`, { codes });
+    expect(speechFailure(routes(["unavailable", "timeout"], "server: hosted speech is not configured; byok:deepinfra: deepinfra: speech stalled past 30000 ms"), false)).toBe("Not read out: the online voice did not answer in time.");
+    expect(speechFailure(new RpcError("timeout", "deepinfra: speech stalled past 30000 ms"), true)).toBe("Stopped partway: the online voice did not answer in time.");
+    expect(speechFailure(routes(["unavailable"], "byok:deepinfra: deepinfra: the key was refused: Unauthorized"), false)).toBe("Not read out: the online voice refused its key.");
+    expect(speechFailure(routes(["quota_exceeded"], "byok:deepinfra: deepinfra: too many requests"), false)).toBe("Not read out: the online voice is over its limit, try again in a moment.");
+    expect(speechFailure(routes(["unavailable", "unavailable"], "server: hosted speech is not configured; byok:deepinfra: no DeepInfra API key: set [providers.deepinfra] api_key or DEEPINFRA_API_KEY"), false)).toBe("Not read out: no online voice is set up; add a DeepInfra key in Settings, Voice, or pick a voice on this machine.");
+    expect(speechFailure(new Error("onnx runtime crashed"), false)).toBe("Not read out: the voice could not read it.");
   });
 });

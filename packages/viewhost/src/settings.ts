@@ -1211,6 +1211,14 @@ export interface VoiceSettingsState {
   mics?: { id: string; label: string }[];
   /** The system's default microphone, by name, when the host can say. */
   defaultMic?: string;
+  /** The speaker picked; the system's default when absent. Only from a host that can play on one of the user's choosing. */
+  speakerChoice?: { id: string; label: string };
+  /** The speakers there are to pick from, once the host listed them. */
+  speakers?: { id: string; label: string }[];
+  /** The system's default speaker, by name, when the host can say. */
+  defaultSpeaker?: string;
+  /** Why speech plays on another than the one picked: it is not connected. */
+  speakerNote?: string;
 }
 
 /**
@@ -1218,9 +1226,17 @@ export interface VoiceSettingsState {
  * each device. A pick that is not connected stays listed, marked, so what was picked still shows.
  */
 export function micOptions(v: VoiceSettingsState): { options: { value: string; label: string }[]; value: string } {
-  const options = [{ value: "", label: v.defaultMic ? `System default (${v.defaultMic})` : "System default" }];
-  for (const m of v.mics ?? []) options.push({ value: m.id, label: m.label });
-  const choice = v.micChoice;
+  return deviceOptions(v.micChoice, v.mics, v.defaultMic);
+}
+
+/** The Speaker row's choices, as the Microphone row's. */
+export function speakerOptions(v: VoiceSettingsState): { options: { value: string; label: string }[]; value: string } {
+  return deviceOptions(v.speakerChoice, v.speakers, v.defaultSpeaker);
+}
+
+function deviceOptions(choice: { id: string; label: string } | undefined, devices: { id: string; label: string }[] | undefined, defaultLabel: string | undefined): { options: { value: string; label: string }[]; value: string } {
+  const options = [{ value: "", label: defaultLabel ? `System default (${defaultLabel})` : "System default" }];
+  for (const d of devices ?? []) options.push({ value: d.id, label: d.label });
   if (!choice) return { options, value: "" };
   const listed = options.find((o) => o.value !== "" && o.value === choice.id) ?? options.find((o) => o.value !== "" && o.label === choice.label);
   if (listed) return { options, value: listed.value };
@@ -1241,7 +1257,9 @@ export interface VoiceSettings {
   retry(): Promise<void>;
   /** Listens on the microphone with this id from `mics`, or on the system's default for `""`. */
   setMic?(id: string): Promise<void>;
-  /** Lists the microphones again: the section is open, and devices may have come and gone. */
+  /** Plays on the speaker with this id from `speakers`, or on the system's default for `""`. Absent where the host cannot choose (a phone, whose system routes its audio). */
+  setSpeaker?(id: string): Promise<void>;
+  /** Lists the microphones and speakers again: the section is open, and devices may have come and gone. */
   listMics?(): void;
 }
 
@@ -1784,13 +1802,18 @@ export class SettingsPanel {
       mic.title = v.mic ? `Listening on ${v.mic}` : "No microphone is on";
       rows.push(row({ label: "Microphone", ...(v.micNote ? { help: v.micNote } : {}), for: controlId("voice:mic"), control: mic }));
     }
+    if (voice.setSpeaker && v.speakers !== undefined) {
+      const { options, value } = speakerOptions(v);
+      const speaker = select("voice:speaker", "Speaker", value, options, (id) => void voice.setSpeaker?.(id).catch(() => {}));
+      rows.push(row({ label: "Speaker", help: v.speakerNote ?? "Where replies and Listen play.", for: controlId("voice:speaker"), control: speaker }));
+    }
     rows.push(
       row({ label: `Listen for ${words}`, help: "Cophyla starts listening when it hears one.", for: controlId("voice:listen"), control: switchInput("voice:listen", `Listen for ${words}`, v.listening, (on) => voice.setListening(on)) }),
-      row({ label: "Speak replies", help: "Answers to what you say aloud are read out.", for: controlId("voice:speak"), control: switchInput("voice:speak", "Speak replies", v.speak, (on) => voice.setSpeak(on)) }),
+      row({ label: "Speak replies", help: "Answers to what you say aloud are read out. Listen plays either way.", for: controlId("voice:speak"), control: switchInput("voice:speak", "Speak replies", v.speak, (on) => voice.setSpeak(on)) }),
     );
     // The talk key is held outside the window, which only a host with a shell can arrange.
     if (setTalkKey) rows.push(this.talkKey(setTalkKey, v));
-    return group("Microphone", rows);
+    return group(voice.setSpeaker && v.speakers !== undefined ? "Microphone and speaker" : "Microphone", rows);
   }
 
   /** The talk key: what is held, and Set. */

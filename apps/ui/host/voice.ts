@@ -19,6 +19,8 @@ export const SPEAK_KEY = "cophyla.voice.speak";
 export const TALK_KEY = "cophyla.voice.talkKey";
 /** The microphone picked, as `{ id, label }`; the system's default when absent. */
 export const MIC_KEY = "cophyla.voice.mic";
+/** The speaker picked in Settings, `{id, label}` as JSON; the system's default when absent. */
+export const SPEAKER_KEY = "cophyla.voice.speaker";
 /** The talk key unless the user chose another. */
 export const DEFAULT_TALK_KEY = "Ctrl+Alt+Space";
 /** A Mac's: Control+Option+Space is macOS's own "Select next source in Input menu". */
@@ -78,12 +80,14 @@ export class DesktopVoice implements VoiceSettings {
   constructor(deps: DesktopVoiceDeps) {
     this.deps = deps;
     const mic = readMic(this.read(MIC_KEY));
+    const speaker = readMic(this.read(SPEAKER_KEY));
     this.host = new VoiceHost({
       link: deps.link,
       // The files are the app's own, served from its own assets.
       wake: { verify: false },
       listening: this.read(LISTEN_KEY) !== "off",
       ...(mic ? { mic } : {}),
+      ...(speaker ? { speaker } : {}),
       onChange: () => this.changed(),
       ...(deps.onRecording ? { onRecording: deps.onRecording } : {}),
       ...(deps.onLevels ? { onLevels: deps.onLevels } : {}),
@@ -159,6 +163,14 @@ export class DesktopVoice implements VoiceSettings {
       ...(v.micNote ? { micNote: v.micNote } : {}),
       ...(v.micChoice ? { micChoice: v.micChoice } : {}),
       mics: v.mics.map((m) => ({ id: m.id, label: m.label })),
+      ...(v.canPickSpeaker
+        ? {
+            speakers: v.speakers.map((s) => ({ id: s.id, label: s.label })),
+            ...(v.speakerChoice ? { speakerChoice: v.speakerChoice } : {}),
+            ...(v.defaultSpeaker !== undefined ? { defaultSpeaker: v.defaultSpeaker } : {}),
+            ...(v.speakerNote !== undefined ? { speakerNote: v.speakerNote } : {}),
+          }
+        : {}),
       ...(v.defaultMic ? { defaultMic: v.defaultMic } : {}),
     };
   }
@@ -201,8 +213,19 @@ export class DesktopVoice implements VoiceSettings {
     await this.host.setMic(choice);
   }
 
+  /** Plays on a speaker from the list, or on the system's default for `""`; kept for the next launch. */
+  async setSpeaker(id: string): Promise<void> {
+    const device = id === "" ? undefined : this.host.view.speakers.find((s) => s.id === id);
+    const choice: MicChoice | undefined = device ? { id: device.id, label: device.label } : undefined;
+    // An id no longer listed keeps the pick as it was.
+    if (id !== "" && !choice) return;
+    this.write(SPEAKER_KEY, choice ? JSON.stringify(choice) : "");
+    await this.host.setSpeaker(choice);
+  }
+
   listMics(): void {
     void this.host.listMics();
+    void this.host.listSpeakers();
   }
 
   private changed(): void {

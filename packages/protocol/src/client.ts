@@ -1726,6 +1726,9 @@ export const clientNotifications = {
    * `unheard` says why an utterance the button held ended with nothing sent. `limit` comes with
    * `listening`: the seconds the utterance may last. `stopped` comes with the `transcribing` a
    * stop forced while the user was still speaking: the limit or the allowance was reached.
+   * `sounding` comes with a `speaking` said again once a line's first audio has gone to the
+   * client, and `failed` with the `idle` after a line the voice could not speak: why, in the
+   * user's words, for the app to show where it was asked for.
    */
   "voice.state": z.object({
     state: VoiceState,
@@ -1733,6 +1736,8 @@ export const clientNotifications = {
     unheard: VoiceUnheard.optional(),
     limit: z.number().positive().optional(),
     stopped: VoiceStopped.optional(),
+    sounding: z.literal(true).optional(),
+    failed: z.string().max(300).optional(),
   }),
   /**
    * The words heard so far of this client's utterance, to that client alone, as they grow.

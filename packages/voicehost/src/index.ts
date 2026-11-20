@@ -2,7 +2,7 @@ export { Audio, IN_RATE, OUT_RATE, PlaybackQueue, TARGET_DOWN_MS, TARGET_LAN_MS,
 export type { AudioDeps, AudioInfo, LinkVia, PlaybackOptions, PlayStats, SpeechFrame, Timers } from "./audio.ts";
 export { Chunker, FRAME, toInt16 } from "./chunk.ts";
 export { detectCodecs, MicEncoder, SpeechDecoder } from "./opus.ts";
-export { listMics, micMisplaced, micWords, resolveMic } from "./mics.ts";
+export { listMics, listSpeakers, micMisplaced, micWords, resolveMic } from "./mics.ts";
 export type { DeviceLister, MicChoice, MicDevice, MicInUse, MicList } from "./mics.ts";
 export { decodeChunk, encodeChunk, toFloat } from "./pcm.ts";
 export { SHED_BYTES, Uplink } from "./uplink.ts";

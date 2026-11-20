@@ -7,9 +7,9 @@
 import { describe, expect, test } from "bun:test";
 import { Chunker, FRAME, toInt16 } from "../src/chunk.ts";
 import { decodeChunk, encodeChunk, toFloat } from "../src/pcm.ts";
-import { PlaybackQueue, TARGET_LAN_MS, TARGET_RELAY_MS, TARGET_UP_MS } from "../src/audio.ts";
+import { Audio, PlaybackQueue, TARGET_LAN_MS, TARGET_RELAY_MS, TARGET_UP_MS } from "../src/audio.ts";
 import type { PlayStats, Timers } from "../src/audio.ts";
-import { listMics, micMisplaced, micWords, resolveMic } from "../src/mics.ts";
+import { listMics, listSpeakers, micMisplaced, micWords, resolveMic } from "../src/mics.ts";
 import { detectCodecs, SpeechDecoder } from "../src/opus.ts";
 import { SHED_BYTES, Uplink } from "../src/uplink.ts";
 import { BUNDLED_FILES, BUNDLED_HEADS } from "../src/wake/bundled.ts";
@@ -629,6 +629,44 @@ describe("the microphone", () => {
       ]),
     );
     expect(list).toEqual({ devices: [usb, brio], defaultLabel: usb.label, defaultGroup: "g-usb" });
+  });
+
+  test("the speakers are listed as the microphones are, from the web view's outputs alone", async () => {
+    const list = await listSpeakers({
+      enumerateDevices: async () => [
+        { kind: "audioinput", deviceId: usb.id, label: usb.label, groupId: usb.groupId },
+        { kind: "audiooutput", deviceId: "default", label: "Default - Speakers (Realtek(R) Audio)", groupId: "g-rt" },
+        { kind: "audiooutput", deviceId: "communications", label: "Communications - Headphones (Jabra)", groupId: "g-jabra" },
+        { kind: "audiooutput", deviceId: "rt-1", label: "Speakers (Realtek(R) Audio)", groupId: "g-rt" },
+        { kind: "audiooutput", deviceId: "jabra-1", label: "", groupId: "g-jabra" },
+      ],
+    });
+    expect(list).toEqual({ devices: [{ id: "rt-1", label: "Speakers (Realtek(R) Audio)", groupId: "g-rt" }, { id: "jabra-1", label: "A speaker", groupId: "g-jabra" }], defaultLabel: "Speakers (Realtek(R) Audio)", defaultGroup: "g-rt" });
+  });
+
+  test("speech plays on the speaker picked while it is connected, on the default while it is not, and moves only when that changes", async () => {
+    const audio = new Audio({ onFrame: () => {} });
+    const sinks: string[] = [];
+    // the speaker's context as Chromium has it, with setSinkId
+    (audio as unknown as { out: unknown }).out = { setSinkId: async (id: string) => void sinks.push(id) };
+    const hdmi = { id: "hdmi-1", label: "Speakers (HDMI)", groupId: "g-hdmi" };
+    const rt = { id: "rt-1", label: "Speakers (Realtek)", groupId: "g-rt" };
+    // no pick: the default, which it already plays on
+    await audio.routeSpeaker({ devices: [hdmi, rt] });
+    expect(sinks).toEqual([]);
+    audio.speaker = { id: "hdmi-1", label: hdmi.label };
+    await audio.routeSpeaker({ devices: [hdmi, rt] });
+    await audio.routeSpeaker({ devices: [hdmi, rt] });
+    expect(sinks).toEqual(["hdmi-1"]);
+    expect(audio.speakerMissing).toBeUndefined();
+    // unplugged: the default, and the pick's name kept to say so
+    await audio.routeSpeaker({ devices: [rt] });
+    expect(sinks).toEqual(["hdmi-1", ""]);
+    expect(audio.speakerMissing).toBe(hdmi.label);
+    // plugged back in under a new id: found by its name
+    await audio.routeSpeaker({ devices: [{ ...hdmi, id: "hdmi-2" }, rt] });
+    expect(sinks).toEqual(["hdmi-1", "", "hdmi-2"]);
+    expect(audio.speakerMissing).toBeUndefined();
   });
 
   test("a device with no name yet (before the microphone was allowed) is still listed", async () => {
