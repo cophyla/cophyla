@@ -205,6 +205,19 @@
         "additionalProperties": false
       },
       "annotations": { "title": "Notify your user", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
+    },
+    {
+      "name": "voice_reply",
+      "description": "Sends your user a voice message: Cophyla reads this text out loud to them when they press play.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "text": { "type": "string", "maxLength": 3000, "description": "What is read out loud to your user, at most 3,000 characters (about three minutes)." }
+        },
+        "required": ["text"],
+        "additionalProperties": false
+      },
+      "annotations": { "title": "Send a voice message", "readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false }
     }
   ]
 }

@@ -281,7 +281,7 @@
       "params": [{ "engine": "piper" }],
       "results": [{ "enabled": true, "tts": "piper", "source": "app", "speed": 1, "stage": { "status": "uninstalled", "engine": "piper" }, "stt": "server", "sttSource": "app", "sttStage": { "status": "ready", "engine": "server" }, "engines": [], "installing": { "engine": "piper", "step": "runtime", "progress": 0 } }]
     },
-    "voice.preview": { "params": [{}, { "text": "This is how I sound." }], "results": [{}] },
+    "voice.preview": { "params": [{}, { "text": "This is how I sound." }, { "text": "## Done\n\nThe migration moved **3 tables**; see `C:\\work\\api\\migrations\\0042.sql`.", "read": true }, { "stop": true }], "results": [{}, { "chars": 64 }] },
     "voice.hush": { "params": [{ "on": true }, { "on": false }], "results": [{ "speak": false, "hushed": true }, { "speak": true, "target": "cli_01ARZ3NDEKTSV4RRFFQ69G5FB8", "name": "desktop" }] },
     "view.list": { "params": [{}], "results": [{ "views": [{ "id": "default", "name": "Chat", "entry": "index.html", "default": true, "source": "builtin" }] }] },
     "view.get": { "params": [{ "id": "default" }], "results": [{ "id": "default", "version": "1", "files": [{ "path": "index.html", "mime": "text/html", "text": "<!doctype html>" }, { "path": "icon.png", "mime": "image/png", "base64": "iVBORw0KGgo=" }] }] },

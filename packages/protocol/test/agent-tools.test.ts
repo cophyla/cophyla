@@ -5,7 +5,7 @@
 // decides.
 
 import { describe, expect, test } from "bun:test";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, GROUP_TOOLS, NOTE_DETAIL_MAX, NOTE_TITLE_MAX, nodeLinkRequests, TRANSFER_REASON_MAX } from "../src/index.ts";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, GROUP_TOOLS, NOTE_DETAIL_MAX, NOTE_TITLE_MAX, nodeLinkRequests, TRANSFER_REASON_MAX, VOICE_REPLY_MAX } from "../src/index.ts";
 
 describe("agent tools", () => {
   test("the server is cophyla-agents, apart from the chat's own cophyla, and says what a message is", () => {
@@ -21,7 +21,7 @@ describe("agent tools", () => {
   });
 
   test("list_agents reads, send_message writes and reaches nothing outside", () => {
-    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user"]);
+    expect(AGENT_TOOLS.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user", "voice_reply"]);
     const [list, send] = AGENT_TOOLS;
     expect(list!.annotations).toMatchObject({ readOnlyHint: true, openWorldHint: false });
     expect(send!.annotations).toMatchObject({ destructiveHint: false, openWorldHint: false });
@@ -137,5 +137,16 @@ describe("agent tools", () => {
     expect(AGENT_MCP_INSTRUCTIONS).toContain("notify_user");
     // a secondary's sessions leave theirs through the primary, which keeps the notes
     expect(nodeLinkRequests["group.tool"].params.shape.tool.options).toContain("notify_user");
+  });
+  test("voice_reply sends the user a voice message: one text, read out loud when they press play", () => {
+    const tool = AGENT_TOOLS.find((t) => t.name === "voice_reply")!;
+    const schema = tool.inputSchema as { required: string[]; additionalProperties: boolean; properties: Record<string, { type: string; maxLength?: number }> };
+    expect(schema).toMatchObject({ type: "object", required: ["text"], additionalProperties: false });
+    expect(Object.keys(schema.properties)).toEqual(["text"]);
+    expect(schema.properties["text"]).toMatchObject({ type: "string", maxLength: VOICE_REPLY_MAX });
+    expect(tool.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
+    expect(tool.description).toBe("Sends your user a voice message: Cophyla reads this text out loud to them when they press play.");
+    // the node answers it: it is no group tool, and goes nowhere upward
+    expect(GROUP_TOOLS as readonly string[]).not.toContain("voice_reply");
   });
 });

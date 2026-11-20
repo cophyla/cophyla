@@ -271,7 +271,7 @@ impl Link {
     }
 
     /// The host page's audio for the next hello: `in` and `out` as booleans, `codecs` as the
-    /// names cophylad knows and `played` as a boolean, anything else dropped.
+    /// names cophylad knows, `played` and `asked` as booleans, anything else dropped.
     pub fn set_audio(&self, audio: &Value) {
         let flag = |key: &str| audio.get(key).and_then(Value::as_bool).unwrap_or(false);
         let mut clean = json!({ "in": flag("in"), "out": flag("out") });
@@ -283,6 +283,9 @@ impl Link {
         }
         if flag("played") {
             clean["played"] = Value::Bool(true);
+        }
+        if flag("asked") {
+            clean["asked"] = Value::Bool(true);
         }
         if let Ok(mut a) = self.audio.lock() {
             *a = clean;

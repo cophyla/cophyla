@@ -63,6 +63,8 @@ import type { Logger } from "../log.ts";
 import type { Sidecars } from "../sidecars/index.ts";
 import type { ClientRegistry } from "../api/clients.ts";
 import { composeSpeech } from "./compose.ts";
+import { forTheEar } from "./ear.ts";
+import { HeardCache, heardKey, throughCache } from "./heard.ts";
 import type { SpeechNames } from "./compose.ts";
 import { Conversation } from "./conversation.ts";
 import { OpusDecoder, OpusEncoder, opusRate } from "./opus.ts";
@@ -194,6 +196,8 @@ export class Voice {
   private sttEngine?: SttEngine;
   private ttsEngine?: TtsEngine;
   private conversations = new Map<string, Conversation>();
+  /** What messages read out sounded like, so a second listen plays at once (`heard.ts`). */
+  readonly heard = new HeardCache();
   private codecs = new Map<string, Codecs>();
   /** The controllers that detect the wake word themselves: the node runs none over their frames. */
   private phoneWake = new Set<string>();
@@ -715,13 +719,37 @@ export class Voice {
 
   /** `voice.preview`: a line to this client in the voice set now. Refused when nothing can speak it to this client. */
   preview(client: Client, text?: string): void {
+    void this.speakingTo(client).speak(text ?? PREVIEW_LINE, { interrupt: true });
+  }
+
+  /**
+   * `voice.preview {read}`: a message read out to this client, said for the ear (`ear.ts`), in
+   * place of what it was hearing; what was made for the same words before plays from the
+   * cache. How many characters are read; refused when nothing in it can be said.
+   */
+  read(client: Client, text: string): { chars: number } {
+    const conversation = this.speakingTo(client);
+    const said = forTheEar(text);
+    if (!said) throw new RpcError("invalid", "there is nothing in it to read out");
+    const speed = this.speed();
+    void conversation.speak(said, { interrupt: true, asked: true, engine: (engine) => throughCache(engine, heardKey(engine.name, this.ttsEngine?.voice, speed, said), this.heard) });
+    return { chars: said.length };
+  }
+
+  /** `voice.preview {stop}`: what this client hears ends now: a message read out, a reply, anything. */
+  stopReading(client: Client): void {
+    this.conversations.get(client.id)?.hush();
+  }
+
+  /** The conversation that speaks to `client`, refused when nothing can speak to it now. */
+  private speakingTo(client: Client): Conversation {
     if (!this.config.enabled) throw new RpcError("unavailable", "voice is off on this node");
     if (!client.audio.out) throw new RpcError("invalid", "this client cannot play audio");
     const stage = this.stages.tts;
     if (stage.status !== "ready" && !(stage.status === "unavailable" && this.ttsEngine)) throw new RpcError("unavailable", `speech is ${stage.status}${stage.reason ? `: ${stage.reason}` : ""}`);
     const conversation = this.conversation(client);
     if (!conversation) throw new RpcError("unavailable", "voice is stopping");
-    void conversation.speak(text ?? PREVIEW_LINE, { interrupt: true });
+    return conversation;
   }
 
   /** A step of an engine bootstrap, on its way to every client with the voice scope. */
@@ -820,7 +848,7 @@ export class Voice {
   }
 
   /** A slice of a reply to its controller, in Opus when it takes it and the rate allows, numbered within the reply. */
-  private sendSpeech(client: Client, pcm: Int16Array, rate: number, frame: { reply: number; end?: true }): void {
+  private sendSpeech(client: Client, pcm: Int16Array, rate: number, frame: { reply: number; end?: true; asked?: true }): void {
     const c = this.codecsOf(client.id);
     if (frame.reply !== c.reply) {
       c.reply = frame.reply;
@@ -849,6 +877,7 @@ export class Voice {
       seq: c.seq++,
       reply: frame.reply,
       ...(frame.end ? { end: true as const } : {}),
+      ...(frame.asked ? { asked: true as const } : {}),
     });
   }
 

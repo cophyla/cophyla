@@ -1265,6 +1265,75 @@ describe("the speech engine picked in the app", () => {
     expect(audioFrames(ui)).toEqual([]);
   }, 20_000);
 
+  test("a message read out: said for the ear, to the client that asked; the same words a second time play from the cache; its words stay out of the audit", async () => {
+    const { d, ui, phone, engines } = await start();
+    const ends = () => phone.notifications.filter((n) => n.method === "voice.audio" && (n.params as { end?: boolean }).end).length;
+    const samples = (from: number) => audioFrames(phone).slice(from).reduce((n, chunk) => n + Buffer.from(chunk, "base64").length / 2, 0);
+    const md = "## Done\n\nMoved **3 tables**; see `C:\\work\\api\\0042.sql`.\n```sql\nselect 1;\n```";
+    const said = "Done. Moved 3 tables; see 0042.sql. A code block.";
+    let before = audioFrames(phone).length;
+    expect(await phone.request<{ chars?: number }>("voice.preview", { text: md, read: true })).toEqual({ chars: said.length });
+    await waitFor(() => ends() === 1, 10_000);
+    expect(engines.spoken.at(-1)).toBe(said);
+    // its frames say the user asked to hear it, so an app plays them even with its speaker muted
+    expect(phone.notifications.filter((n) => n.method === "voice.audio").every((n) => (n.params as { asked?: boolean }).asked === true)).toBe(true);
+    const first = samples(before);
+    expect(first).toBeGreaterThan(0);
+    expect(d.voice.heard).toMatchObject({ hits: 0, misses: 1 });
+    // again: the same audio, and no engine made it
+    const made = engines.spoken.length;
+    before = audioFrames(phone).length;
+    await phone.request("voice.preview", { text: md, read: true });
+    await waitFor(() => ends() === 2, 10_000);
+    expect(engines.spoken.length).toBe(made);
+    expect(samples(before)).toBe(first);
+    expect(d.voice.heard).toMatchObject({ hits: 1, misses: 1 });
+    // the audit keeps that a message was read, and how long, never what it said
+    const rows = d.store.audit.list({ limit: 50 }).filter((e) => e.action === "voice.preview");
+    expect(rows.map((r) => r.args)).toContainEqual({ read: true, chars: md.length });
+    expect(JSON.stringify(rows.map((r) => r.args))).not.toContain("tables");
+    // an app from before whose speaker is muted is told so, and hears nothing; one that plays what was asked for while muted is read to
+    const today = await TestClient.connect(d.api.url);
+    await today.hello(d.token, { kind: "controller", name: "Pixel 9", audio: { in: true, out: true, asked: true } });
+    today.signal("voice.presence", { speaker: false });
+    await sleep(100);
+    expect(await today.request<{ chars?: number }>("voice.preview", { text: md, read: true })).toEqual({ chars: said.length });
+    await today.request("voice.preview", { stop: true });
+    today.close();
+    phone.signal("voice.presence", { speaker: false });
+    await waitFor(async () => "error" in (await phone.call("voice.preview", { text: md, read: true })), 10_000);
+    expect(await phone.call("voice.preview", { text: md, read: true })).toMatchObject({ error: { data: { code: "invalid" }, message: expect.stringContaining("Speak replies") } });
+    phone.signal("voice.presence", { speaker: true });
+    await waitFor(async () => !("error" in (await phone.call("voice.preview", { text: md, read: true }))), 10_000);
+    await phone.request("voice.preview", { stop: true });
+    // nothing to say, a preview line too long, read without text, and a client with no speaker: refused
+    expect(await phone.call("voice.preview", { text: "   ", read: true })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await phone.call("voice.preview", { text: "x".repeat(501) })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await phone.call("voice.preview", { read: true })).toMatchObject({ error: { data: { code: "invalid" } } });
+    expect(await ui.call("voice.preview", { text: md, read: true })).toMatchObject({ error: { data: { code: "invalid" } } });
+  }, 20_000);
+
+  test("stop ends what the client hears now, and a reading cut short is made again next time", async () => {
+    const engines = new FakeEngines({ transcript: TRANSCRIPT, synthDelayMs: 150 });
+    const { d, phone } = await start({ engines });
+    const text = Array.from({ length: 12 }, (_, i) => `Line ${i} of the report.`).join("\n");
+    await phone.request("voice.preview", { text, read: true });
+    await waitFor(() => states(phone).at(-1) === "speaking", 10_000);
+    await waitFor(() => audioFrames(phone).length > 0, 10_000);
+    expect(await phone.request<object>("voice.preview", { stop: true })).toEqual({});
+    await waitFor(() => states(phone).at(-1) === "idle", 10_000);
+    const heard = audioFrames(phone).length;
+    await sleep(500);
+    expect(audioFrames(phone).length).toBe(heard);
+    expect(engines.aborted).toBeGreaterThan(0);
+    // nothing kept of it: the next listen makes it again
+    expect(d.voice.heard.size).toBe(0);
+    await phone.request("voice.preview", { text, read: true });
+    await waitFor(() => d.voice.heard.misses === 2, 10_000);
+    // a stop with nothing to hear is no error
+    expect(await phone.request<object>("voice.preview", { stop: true })).toEqual({});
+  }, 20_000);
+
   test("the speed is every engine's, from the next line, at the engine's own pace kept as none", async () => {
     const { d, ui, phone } = await start({ engines: new FakeEngines({ transcript: TRANSCRIPT, msPerSentence: 500 }) });
     const ends = () => phone.notifications.filter((n) => n.method === "voice.audio" && (n.params as { end?: boolean }).end).length;

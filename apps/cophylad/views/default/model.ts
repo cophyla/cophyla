@@ -32,6 +32,7 @@
 import type { Note, NotesState, Tracked, TrackerState } from "@cophyla/protocol";
 import type { Focus, Group, GroupCandidate, GroupFile, GroupMember, GroupMemberRef, GroupNotify, GroupPhoto, GroupPost, GroupPostFrom, Leader, LeaderSpeaker, SessionStatus, SubagentRun, TalkMessage, TalkSummary, Team, TeamAgent, TeamClosedAgent, Teammate, TeammateConnection, TeammatePlace, TeammateShare, TeamOffer } from "@cophyla/protocol";
 import { applyNote, isNotifyCall } from "./notemodel.ts";
+import { isVoiceCall } from "./listenmodel.ts";
 import { applyTalk } from "./talkmodel.ts";
 import { applyTrack } from "./trackmodel.ts";
 import type { TalkPage } from "./talkmodel.ts";
@@ -2481,7 +2482,9 @@ export type TurnPart =
   | { kind: "agent"; key: string; step: TimelineStep }
   | { kind: "agents"; key: string; steps: TimelineStep[] }
   /** A note the agent left its user (`notify_user`): its own card, never folded into the steps. */
-  | { kind: "notify"; key: string; step: TimelineStep; seq: number };
+  | { kind: "notify"; key: string; step: TimelineStep; seq: number }
+  /** A voice message the agent left its user (`voice_reply`): its own card, to play. */
+  | { kind: "voice"; key: string; step: TimelineStep };
 
 /**
  * A call's arguments as fields. A long call is kept as its JSON text cut short with `…`: the
@@ -2816,6 +2819,8 @@ export function timelinePosts(rows: TimelineRow[], opts: { subagents?: readonly 
         const agent = subagentOf(step) !== undefined;
         // A note for the user stands on its own, where it was left, as its own card.
         if (isNotifyCall(step.tool)) t.parts.push({ kind: "notify", key: row.key, step, seq: e.seq });
+        // So is a voice message.
+        else if (isVoiceCall(step.tool)) t.parts.push({ kind: "voice", key: row.key, step });
         // A second agent started right after another: the two (and any after) are one group, under a key of its own.
         else if (agent && last?.kind === "agent") t.parts.splice(-1, 1, { kind: "agents", key: `g${last.key}`, steps: [last.step, step] });
         else if (agent && last?.kind === "agents") last.steps.push(step);

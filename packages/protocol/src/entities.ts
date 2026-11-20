@@ -1966,14 +1966,16 @@ export type AudioCodec = z.infer<typeof AudioCodec>;
 
 /**
  * What a client does with audio: a microphone (`in`), a speaker (`out`), the codecs it
- * speaks, best first (PCM alone when absent), and whether it says when a reply finished
- * playing (`played`, with `voice.played`).
+ * speaks, best first (PCM alone when absent), whether it says when a reply finished playing
+ * (`played`, with `voice.played`), and whether it plays a message the user asked to hear
+ * (`voice.audio {asked}`) even while its speaker is muted (`asked`).
  */
 export const AudioCapabilities = z.object({
   in: z.boolean(),
   out: z.boolean(),
   codecs: z.array(AudioCodec).optional(),
   played: z.boolean().optional(),
+  asked: z.boolean().optional(),
 });
 
 /**

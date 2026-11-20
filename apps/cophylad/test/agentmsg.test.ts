@@ -326,7 +326,7 @@ describe("the router", () => {
     expect(init.result).toMatchObject({ protocolVersion: "2025-11-25", serverInfo: { name: "cophyla-agents" }, capabilities: { tools: {} } });
     expect(init.result.instructions).toContain("never the user's");
     const list = (await r.router.mcp({}, { jsonrpc: "2.0", id: 1, method: "tools/list" })) as { result: { tools: { name: string }[] } };
-    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user"]);
+    expect(list.result.tools.map((t) => t.name)).toEqual(["list_agents", "send_message", "send_file", "create_invite", "accept_invite", "end_connection", "read_group", "search_group", "post_group", "ack_post", "get_file", "focus", "answer_ask", "notify_user", "voice_reply"]);
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: 2, method: "ping" })).toEqual({ jsonrpc: "2.0", id: 2, result: {} });
     expect(await r.router.mcp({}, { jsonrpc: "2.0", method: "notifications/initialized" })).toBeUndefined();
     expect(await r.router.mcp({}, { jsonrpc: "2.0", id: "d", method: "server/discover" })).toEqual({ jsonrpc: "2.0", id: "d", error: { code: -32601, message: "method not found: server/discover" } });
@@ -510,6 +510,15 @@ describe("the router", () => {
     const bare = rig({ local: [me] });
     expect(await bare.call(me, "notify_user", { title: "Done" })).toEqual({ text: "Not done: notes are off on this machine.", isError: true });
     book.stop();
+  });
+
+  test("voice_reply is answered where the session runs, keeps nothing, and says why a text will not do", async () => {
+    const me = sess("claude", "C:/work/web", { native: { id: "c-me", pid: 4100, transport: "pipe" } });
+    // no notes, no groups, not the primary: the node answers it itself
+    const r = rig({ local: [me], routes: false });
+    expect(await r.call(me, "voice_reply", { text: "The migration is done. Three tables moved; orders stayed where it was." })).toEqual({ text: "Your user has your voice message: they play it in Cophyla when they want." });
+    expect(await r.call(me, "voice_reply", { text: "  " })).toEqual({ text: "Not done: voice_reply needs text: what is read out loud to your user.", isError: true });
+    expect(await r.call(me, "voice_reply", { text: "x".repeat(3001) })).toEqual({ text: "Not done: the text is 3,001 characters, and takes at most 3,000: say less, and leave the rest to your written answer.", isError: true });
   });
 
   test("a harness's id for a call is read from its _meta: Claude Code's tool-use id, or a plain call id", () => {

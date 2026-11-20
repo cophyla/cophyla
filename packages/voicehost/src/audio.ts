@@ -137,12 +137,12 @@ export class PlaybackQueue {
     return r;
   }
 
-  /** A slice of speech at `rate`, for reply `reply` when the node numbers them. */
-  enqueue(pcm: Int16Array | Float32Array, rate = OUT_RATE, reply = UNNUMBERED): void {
+  /** A slice of speech at `rate`, for reply `reply` when the node numbers them; `asked` plays even while muted (a message the user asked to hear). */
+  enqueue(pcm: Int16Array | Float32Array, rate = OUT_RATE, reply = UNNUMBERED, asked = false): void {
     if (pcm.length === 0) return;
     const r = this.reply(reply);
     r.frames++;
-    if (this.muted) return;
+    if (this.muted && !asked) return;
     const buffer = this.ctx.createBuffer(1, pcm.length, rate);
     buffer.getChannelData(0).set(pcm instanceof Float32Array ? pcm : toFloat(pcm));
     const now = this.ctx.currentTime;
@@ -256,6 +256,8 @@ export interface SpeechFrame {
   rate?: number;
   reply?: number;
   end?: boolean;
+  /** The user asked to hear it: played even while muted. */
+  asked?: boolean;
 }
 
 export interface AudioDeps {
@@ -460,7 +462,7 @@ export class Audio {
       void this.decoder.decode(frame.chunk, rate).then(
         (d) => {
           if (!current()) return;
-          queue.enqueue(d.samples, d.rate, reply);
+          queue.enqueue(d.samples, d.rate, reply, frame.asked === true);
           if (frame.end) queue.end(reply);
         },
         () => {
@@ -471,7 +473,7 @@ export class Audio {
       return;
     }
     this.counts.pcm++;
-    queue.enqueue(decodeChunk(frame.chunk), rate, reply);
+    queue.enqueue(decodeChunk(frame.chunk), rate, reply, frame.asked === true);
     if (frame.end) queue.end(reply);
   }
 

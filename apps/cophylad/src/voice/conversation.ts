@@ -98,7 +98,7 @@ export interface ConversationHandlers {
   /** The edges of the user speaking, for `user.activity`. */
   speaking(active: boolean): void;
   /** A slice of speech for reply `reply`; the reply's last call says `end` and may carry no samples. */
-  audio(pcm: Int16Array, sampleRate: number, frame: { reply: number; end?: true }): void;
+  audio(pcm: Int16Array, sampleRate: number, frame: { reply: number; end?: true; asked?: true }): void;
 }
 
 /** How a reply played on the phone, from its `voice.played`. */
@@ -116,6 +116,10 @@ type Stamp = "speechEnd" | "sttFinal" | "reply" | "speak" | "firstChunk" | "synt
 interface Line {
   text: string;
   done: () => void;
+  /** What speaks this line instead of the engine as it is: the engine through a cache, for a message read out. */
+  engine?: (engine: TtsEngine) => TtsEngine;
+  /** The user asked to hear it: its frames say so, and play where replies are muted. */
+  asked?: boolean;
 }
 
 export interface ConversationDeps {
@@ -608,9 +612,11 @@ export class Conversation {
 
   /**
    * Speaks a line once the lines before it have been; settles when it has been sent, or
-   * dropped. `interrupt` drops the lines waiting and cuts the one being made instead.
+   * dropped. `interrupt` drops the lines waiting and cuts the one being made instead. `engine`
+   * speaks it through a wrapper of the engine (a cache of what it made before); `asked` marks
+   * its frames as asked for by the user.
    */
-  speak(text: string, opts: { interrupt?: boolean } = {}): Promise<void> {
+  speak(text: string, opts: { interrupt?: boolean; engine?: (engine: TtsEngine) => TtsEngine; asked?: boolean } = {}): Promise<void> {
     if (this.disposed || !text.trim()) return Promise.resolve();
     if (!this.deps.tts?.()) {
       // Nothing can speak: the turn is over as far as the phone is concerned.
@@ -622,7 +628,7 @@ export class Conversation {
       this.stopSpeech();
     }
     return new Promise((done) => {
-      this.lines.push({ text, done });
+      this.lines.push({ text, done, ...(opts.engine ? { engine: opts.engine } : {}), ...(opts.asked ? { asked: true } : {}) });
       void this.drain();
     });
   }
@@ -636,7 +642,7 @@ export class Conversation {
         const line = this.lines.shift();
         if (!line) break;
         try {
-          await this.speakLine(line.text);
+          await this.speakLine(line.text, line.engine, line.asked === true);
         } finally {
           line.done();
         }
@@ -647,8 +653,9 @@ export class Conversation {
   }
 
   /** One line, as its own numbered reply; returns once its end is sent, or at once when it is cut. */
-  private async speakLine(text: string): Promise<void> {
-    const engine = this.deps.tts?.();
+  private async speakLine(text: string, wrap?: (engine: TtsEngine) => TtsEngine, asked = false): Promise<void> {
+    const own = this.deps.tts?.();
+    const engine = own && wrap ? wrap(own) : own;
     if (!engine) {
       if (this.state === "thinking") this.setState("idle");
       return;
@@ -668,7 +675,7 @@ export class Conversation {
           this.stamp("firstChunk");
           for (let off = 0; off < chunk.length; off += OUT_FRAME) {
             const slice = chunk.subarray(off, Math.min(off + OUT_FRAME, chunk.length));
-            this.deps.on.audio(slice, rate, { reply });
+            this.deps.on.audio(slice, rate, { reply, ...(asked ? { asked: true as const } : {}) });
             sent += slice.length;
           }
           // a chunk cannot start playing before it leaves: a slow first sentence moves the end out with it
@@ -689,7 +696,7 @@ export class Conversation {
     // `speaking` is held until the audio already sent has played: the phone says so, or,
     // for one that cannot, the node estimates it and the state follows the estimate.
     this.awaiting = this.deps.acksPlayed ? reply : undefined;
-    this.deps.on.audio(new Int16Array(0), rate, { reply, end: true });
+    this.deps.on.audio(new Int16Array(0), rate, { reply, end: true, ...(asked ? { asked: true as const } : {}) });
     this.holdUntilPlayed();
   }
 

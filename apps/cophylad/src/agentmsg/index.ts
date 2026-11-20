@@ -31,9 +31,11 @@
 // the files module (`peerfiles/`), and `get_file` copies a file posted in a group to the agent's
 // own machine. `notify_user` leaves the user a note (`notes/`), kept by the primary as the
 // groups are: a secondary's sessions leave theirs through it, with the harness's id for the call.
+// `voice_reply` is answered by the node the session runs on and keeps nothing: the voice message
+// is the call itself, which the session's log holds and the app draws as a card to play.
 
 import { posix, win32 } from "node:path";
-import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError } from "@cophyla/protocol";
+import { AGENT_MCP_INSTRUCTIONS, AGENT_MCP_SERVER, AGENT_TOOLS, AgentMessageId, ASK_TEXT_OPTION, AskId, GROUP_TOOLS, mayMessage, newId, nodeLinkRequests, RpcError, VOICE_REPLY_MAX } from "@cophyla/protocol";
 import type { Access, AgentListing, AgentMode, AgentRef, Ask, AskOption, ConnectionListing, Focus, GroupToolName, MachineListing, NodeRecord, PeerSource, Session, TalkParty, TalkStatus, TeammateListing, Transfer, TransferBy, TransferConfirm } from "@cophyla/protocol";
 import { Connections } from "../connections/index.ts";
 import type { Groups, PhotoRef, ToolAnswer } from "../groups/index.ts";
@@ -302,7 +304,7 @@ export class AgentMessages {
 
   /** A tool call, as the model reads its answer. */
   private async call(name: string, args: Json, meta: Json | undefined, evidence: Evidence): Promise<CallAnswer> {
-    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && name !== "answer_ask" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
+    if (name !== "list_agents" && name !== "send_message" && name !== "send_file" && name !== "answer_ask" && name !== "voice_reply" && !CONNECTION_TOOLS.has(name) && !GROUP_TOOL_NAMES.has(name)) return { text: `cophyla-agents has no tool ${name}`, isError: true };
     if (!this.deps.config().enabled) return { text: "Agent messaging is off on this machine ([agent_messages] enabled = false); nothing was sent.", isError: true };
     const who = identify(evidence, meta, this.deps.sessions);
     if ("error" in who) {
@@ -345,6 +347,7 @@ export class AgentMessages {
       return this.fileTool(caller, mode, args);
     }
     if (name === "answer_ask") return this.answerTool(caller, args);
+    if (name === "voice_reply") return voiceReply(args);
     if (GROUP_TOOL_NAMES.has(name)) {
       const mode: AgentMode = senderBypasses(meta, this.deps.sessions.bypasses(caller.id)) ? "bypass" : "prompting";
       return this.groupTool(caller, mode, name as GroupToolName, args, name === "notify_user" ? callIdOf(meta) : undefined);
@@ -1385,6 +1388,17 @@ function statusText(a: SendAnswer, to: string, now: number): string {
         ? `Held for ${to} (${a.id}): it is in focus until ${clockTime(a.focus.until)}, ${minutesLeft(a.focus.until, now)} from now, or until its turn ends (${a.focus.reason}). It gets your message then; its answer, if any, comes to you as a <cophyla-message>. Do not wait for it in a loop.`
         : `Held for ${to} (${a.id}): it is in focus, and gets your message when it comes out.`;
   }
+}
+
+/**
+ * `voice_reply`: the words checked, nothing kept. The session's log has the call, which the app
+ * shows as a voice message the user plays when they want.
+ */
+export function voiceReply(args: Json): CallAnswer {
+  const text = typeof args["text"] === "string" ? args["text"].trim() : "";
+  if (!text) return { text: "Not done: voice_reply needs text: what is read out loud to your user.", isError: true };
+  if (text.length > VOICE_REPLY_MAX) return { text: `Not done: the text is ${text.length.toLocaleString("en-US")} characters, and takes at most ${VOICE_REPLY_MAX.toLocaleString("en-US")}: say less, and leave the rest to your written answer.`, isError: true };
+  return { text: "Your user has your voice message: they play it in Cophyla when they want." };
 }
 
 /**

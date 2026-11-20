@@ -12896,3 +12896,123 @@ button:disabled {
 .notes-strip-item[data-open="0"] .notes-strip-badge {
   color: var(--faint);
 }
+
+/* Listen: on an agent's turn, a note, a chat reply and a voice message; a press reads it out
+   on this device, and it is Stop while it plays (listen.ts) */
+.listen {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 18px;
+  cursor: pointer;
+}
+
+.listen[hidden] {
+  display: none;
+}
+
+.listen:hover:enabled {
+  border-color: color-mix(in srgb, var(--cophyla) 55%, var(--line));
+  color: var(--ink);
+}
+
+.listen-mark {
+  width: 0;
+  height: 0;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  border-left: 7px solid currentColor;
+}
+
+.listen[data-phase="starting"],
+.listen[data-phase="playing"] {
+  border-color: color-mix(in srgb, var(--cophyla) 55%, transparent);
+  background: var(--cophyla-wash);
+  color: var(--cophyla-ink);
+}
+
+.listen[data-phase="starting"] .listen-mark,
+.listen[data-phase="playing"] .listen-mark {
+  width: 8px;
+  height: 8px;
+  border: 0;
+  border-radius: 1px;
+  background: currentColor;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .listen[data-phase="starting"] .listen-mark {
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+}
+
+/* on a phone, room for a thumb */
+@media (max-width: 640px) {
+  .listen {
+    padding: 4px 11px;
+  }
+}
+
+.message-head > .listen {
+  align-self: center;
+}
+
+.tl-notify-head > .listen {
+  color: var(--muted);
+}
+
+/* an agent's voice message: what it said, written out, to play */
+.tl-voice {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid color-mix(in srgb, var(--cophyla) 55%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--cophyla) 9%, var(--well));
+}
+
+.tl-voice[data-state="refused"] {
+  border-color: var(--line);
+  background: var(--well);
+  opacity: 0.75;
+}
+
+.tl-voice-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--cophyla-ink);
+  font-size: 12px;
+}
+
+.tl-voice-mark {
+  width: 13px;
+  height: 11px;
+  background:
+    linear-gradient(currentColor, currentColor) 0 50% / 2px 5px no-repeat,
+    linear-gradient(currentColor, currentColor) 4px 50% / 2px 11px no-repeat,
+    linear-gradient(currentColor, currentColor) 8px 50% / 2px 7px no-repeat,
+    linear-gradient(currentColor, currentColor) 12px 50% / 1px 3px no-repeat;
+}
+
+.tl-voice-word {
+  font-weight: 600;
+}
+
+.tl-voice-state {
+  color: var(--muted);
+}
+
+.tl-voice-text {
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

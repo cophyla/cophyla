@@ -66,7 +66,7 @@ import { busyWords, talkLook } from "./dictation.ts";
 import type { TalkBusy } from "./dictation.ts";
 import { renderText, setLinkedText } from "./markdown.ts";
 import { qrModules, qrPath } from "./qr.ts";
-import { accessWords, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
+import { accessWords, messageText, accountWords, answerParams, hereNode, answerWords, askEventText, BROWSER_ENDS, bytesWords, canRestartChat, chatButton, chatHead, chatMode, chipTitle, tabChoice, connectTitle, controllerWords, endWords, explorerKey, explorerNote, GRANT_ENDS, gitLine, keyWords, minterWords, selectBrowsers, selectLan, selectPhones, groupHeading, issuedWords, limitChoices, joinAsksDoor, membershipOffer, micOff, nodeGrantWords, PHONE_PRESETS, selectFileRows, selectPendingInvites, countWords, earlierButton, inTether, inviteWords, keyOf, linkWords, loginWords, pairingWords, paneMode, percentWords, profileName, promoteOffer, remoteHere, renamable, restartable, restartWords, selectAccount, selectControllers, selectGroups, selectNodes, selectRemote, selectSpend, selectStream, selectTerminalTabs, tabNode, terminalGroups, terminalMachines, placeRows, quickPlace, quickTitle, selectTimeline, sessionLabel, placeKey, viewingKey, joinPath, revealBlocked, revealLabel, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sessionWho, shortEmail, spendTitle, stoppable, tabTone, taskActions, terminalMark, terminalTabLabel, triggerWords, viewerTab, voiceBusy, voiceDot, voiceWords, workspaceName, heardText , tokenWords } from "./model.ts";
 import type { AccountBar, AgentsCard, AskDraft, BackupRow, ChatDraw, DirectLine, DirectRow, FileRow, NodeBar, NodeCard, OwnerRow, PendingSend, RemoteCard, RemoteView, SessionCard, SessionGroup, SpendRow, StreamItem, Streaming, TaskAction, TerminalGroup, TerminalMachine, LastPlace, MachinePlaces, PlaceRow, ViewerDock, ViewerFile, ViewState, HeardWords } from "./model.ts";
 import { selectAgents, selectWaitingAgents, waitingAgent, waitingLabel } from "./model.ts";
 import { stepScale } from "./model.ts";
@@ -92,6 +92,9 @@ import { tabAsks } from "./trackmodel.ts";
 import { openNotesOf } from "./notemodel.ts";
 import { createBell, createNotesPanel, createNotesStrip, createNotifyCard, updateBell, updateNotesPanel, updateNotesStrip, updateNotifyCard } from "./noteview.ts";
 import type { NoteUi } from "./noteview.ts";
+import { createListen, createVoiceCard, listenIn, updateListen, updateVoiceCard } from "./listen.ts";
+import type { ListenUi } from "./listen.ts";
+import { turnText } from "./listenmodel.ts";
 import { createTrackStrip, createTrackToggle, updateTrackStrip, updateTrackToggle } from "./trackview.ts";
 import type { TrackUi } from "./trackview.ts";
 import type { PaneMode } from "./model.ts";
@@ -133,6 +136,8 @@ export interface UiState {
   talk: TalkUi;
   /** The tracker's strips: which are folded, and the answer open in one. */
   track: TrackUi;
+  /** The message this device reads out now (listen.ts). */
+  listen: ListenUi;
   /** The notes: whether the bell's list is down, the strips folded, replies on their way. */
   notes: NoteUi;
   /**
@@ -3639,6 +3644,8 @@ function createTimelinePost(post: TimelinePost): HTMLElement {
     head.append(icon);
   }
   head.append(el("span", "message-who"), el("time", "message-time"));
+  // A turn's words can be listened to, from its head.
+  if (post.kind === "turn") head.append(createListen());
   // An ask is drawn as the terminal draws its dialog: its title, its detail, its options with the one chosen marked, and where it stands.
   if (post.kind === "ask") {
     li.append(head, el("p", "tl-ask-unwritten", ASK_UNWRITTEN), el("div", "tl-ask-title"), el("pre", "tl-ask-detail"), el("ol", "tl-ask-options"), el("p", "tl-receipt"));
@@ -3721,6 +3728,7 @@ function updateTimelinePost(li: HTMLElement, post: TimelinePost, s: Session, car
       setData(icon!, "tone", "active");
       setText(who, HARNESS_NAMES[s.harness] ?? s.harness);
       reconcile(li.querySelector<HTMLElement>(".tl-parts")!, post.parts, (p) => p.key, createTurnPart, (n, p) => updateTurnPart(n, p, cardKey, ui, s, state));
+      updateListen(li.querySelector<HTMLButtonElement>(".message-head > .listen")!, `${s.id}/${post.key}`, turnText(post), state, ui);
       return;
   }
 }
@@ -3730,6 +3738,7 @@ function createTurnPart(part: TurnPart): HTMLElement {
   if (part.kind === "text") return el("div", "tl-text");
   if (part.kind === "agent") return createAgentCard();
   if (part.kind === "notify") return createNotifyCard();
+  if (part.kind === "voice") return createVoiceCard();
   if (part.kind === "agents") {
     const root = el("section", "tl-agents");
     const head = el("div", "tl-agents-head");
@@ -3750,7 +3759,11 @@ function updateTurnPart(node: HTMLElement, part: TurnPart, cardKey: string, ui: 
     return;
   }
   if (part.kind === "notify") {
-    updateNotifyCard(node, part.step, part.seq, s.id, state);
+    updateNotifyCard(node, part.step, part.seq, s.id, state, ui);
+    return;
+  }
+  if (part.kind === "voice") {
+    updateVoiceCard(node, part.step, `${s.id}/${part.key}`, state, ui);
     return;
   }
   if (part.kind === "agent") {
@@ -4069,7 +4082,7 @@ function updateThread(node: HTMLElement, thread: Thread, state: ViewState): void
 function createMessage(): HTMLElement {
   const root = el("article", "message");
   const head = el("header", "message-head");
-  head.append(el("span", "message-who"), el("span", "message-time"));
+  head.append(el("span", "message-who"), el("span", "message-time"), createListen());
   root.append(head, createSteps(), el("div", "message-body"));
   return root;
 }
@@ -4109,7 +4122,7 @@ function updateSteps(node: HTMLElement, steps: TurnStep[] | undefined): void {
 
 const ROLE_WORD: Record<Message["role"], string> = { user: "you", orchestrator: "Cophyla", system: "system" };
 
-function updateMessage(node: HTMLElement, message: Message, state: ViewState): void {
+function updateMessage(node: HTMLElement, message: Message, state: ViewState, ui: UiState): void {
   // A reply that streamed keeps its element under the same key: it stops being a stream here.
   if (node.classList.contains("streaming")) {
     node.classList.remove("streaming");
@@ -4122,6 +4135,8 @@ function updateMessage(node: HTMLElement, message: Message, state: ViewState): v
   setText(node.querySelector(".message-time")!, clock(message.at));
   updateSteps(node, message.steps);
   renderBlocks(node.querySelector<HTMLElement>(".message-body")!, message.content, state, message.role !== "user");
+  // A reply can be listened to; the user's own words not.
+  updateListen(listenIn(node.querySelector<HTMLElement>(".message-head")!), `chat/${message.id}`, message.role === "orchestrator" ? messageText(message.content) : "", state, ui);
 }
 
 /** A reply while it streams: a message's element with a pulse for the time, so the final message can take it over. */
@@ -4294,7 +4309,7 @@ function updateItem(node: HTMLElement, item: StreamItem, state: ViewState, ui: U
     case "thread":
       return updateThread(node, item.thread, state);
     case "message":
-      return updateMessage(node, item.message, state);
+      return updateMessage(node, item.message, state, ui);
     case "streaming":
       return updateStreaming(node, item.streaming, state);
     case "progress":

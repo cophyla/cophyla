@@ -1957,7 +1957,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
       serving: () => lan?.serving ?? false,
       push: { register: (id, device) => push.register(id, device), unregister: (id) => push.unregister(id) },
     }),
-    ...voiceMethods({ voice, speech: deliver }),
+    ...voiceMethods({ voice, speech: deliver, speakerOn: (id) => presence.speakerOn(id) }),
     ...metricsMethods({ metrics, ledger, nodeId: identity.id }),
     ...remoteMethods({ remote, pipes, door: doorManager }),
     ...accountMethods({ cloud, keys }),

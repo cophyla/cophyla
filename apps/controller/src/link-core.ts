@@ -551,7 +551,7 @@ export class LinkCore implements TauriIo {
     // the client this credential was last answered as: a node that kept it takes it up again,
     // and one still live on the connection the link moves off when the hello says it moves
     const resume = this.client !== undefined ? { resume: this.client, ...(move ? { move: true } : {}) } : {};
-    return { token: credential.token, kind: "controller", name: credential.name, audio: { in: true, out: true, codecs: this.codecs, played: true }, ...(this.opts.helloExtra ?? {}), ...resume };
+    return { token: credential.token, kind: "controller", name: credential.name, audio: { in: true, out: true, codecs: this.codecs, played: true, asked: true }, ...(this.opts.helloExtra ?? {}), ...resume };
   }
 
   private sayHello(): void {

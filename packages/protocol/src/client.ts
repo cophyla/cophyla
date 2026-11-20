@@ -89,6 +89,11 @@ import { TeamAgent, TeamClosedAgent } from "./team.ts";
 
 const Empty = z.object({});
 
+/** The longest line `voice.preview` speaks to try a voice out. */
+export const VOICE_PREVIEW_MAX = 500;
+/** The longest message `voice.preview {read}` takes; what is said of it is cut shorter. */
+export const VOICE_READ_MAX = 100_000;
+
 export const ViewFile = z.object({
   path: z.string(),
   mime: z.string(),
@@ -884,8 +889,19 @@ export const clientRequests = {
    * and the stage that uses the engine loads once it is in. `conflict` while another installs.
    */
   "voice.install": { params: z.object({ engine: z.string().min(1).max(64) }), result: VoiceSettings },
-  /** A line spoken to this client in the voice set now, for trying one out; a sample line when no text is given. */
-  "voice.preview": { params: z.object({ text: z.string().min(1).max(500).optional() }), result: Empty },
+  /**
+   * Speaks to this client in the voice set now. Bare, a line for trying the voice out (a sample
+   * line when no text is given, at most `VOICE_PREVIEW_MAX`). With `read`, a message read out:
+   * what is written for the eye is said for the ear (markdown's marks dropped, a code block
+   * named rather than read, a path said by its file's name, a link by its words), it takes the
+   * place of what this client was hearing, and the answer says how many characters will be
+   * read. With `stop`, what this client hears ends now. Its own request rather than a new one,
+   * so the apps already out pass it on.
+   */
+  "voice.preview": {
+    params: z.object({ text: z.string().min(1).max(VOICE_READ_MAX).optional(), read: z.literal(true).optional(), stop: z.literal(true).optional() }),
+    result: z.object({ chars: z.number().int().nonnegative().optional() }),
+  },
   /**
    * The speaker button. `on` stops what is being read out now and silences every reply and
    * result that was to be, until the next request asks again; `off` reads them out again, and
@@ -1750,6 +1766,8 @@ export const clientNotifications = {
     seq: z.number().int().nonnegative().optional(),
     reply: z.number().int().nonnegative().optional(),
     end: z.literal(true).optional(),
+    /** A message the user asked to hear (`voice.preview {read}`): played even where replies are muted. */
+    asked: z.literal(true).optional(),
   }),
   /** Whether the next reply or result is to be read out, and where; whenever that changes. */
   "voice.next": VoiceNext,

@@ -101,6 +101,7 @@ import { TrackControl } from "./trackctl.ts";
 import { newTrackUi } from "./trackview.ts";
 import { NoteControl } from "./notectl.ts";
 import { newNoteUi } from "./noteview.ts";
+import { ListenControl, newListenUi, paintListens } from "./listen.ts";
 
 const rpc = new HostRpc();
 const webview = webView2(window);
@@ -136,6 +137,7 @@ const ui: UiState = {
   talk: newTalkUi(),
   track: newTrackUi(),
   notes: newNoteUi(),
+  listen: newListenUi(),
 };
 // A group chat's pane, beside the sessions' in the panes, and New group's form or Teammates
 // over them, beside Devices: index.html has neither, so they are made here.
@@ -212,6 +214,7 @@ const notes = new NoteControl({
   draw: () => draw(),
   showAt: (session, seq) => void showAt(session, seq),
 });
+const listen = new ListenControl({ rpc, state, ui, draw: () => draw(), fail: (what, e) => fail(what, e) });
 const terminal = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(terminalWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(terminalWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(terminalWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
 // The dialog a session's terminal shows, drawn in its chat where the user answers it (`syncDialog`).
 const dialog = new TerminalView(rpc, () => draw(), { canOpen: (path) => withWritten(dialogWritten(), (at) => canOpenPath(path, at)) ?? false, open: (path) => withWritten(dialogWritten(), (at) => openPath(path, at)), spell: (path) => withWritten(dialogWritten(), (at) => spellPath(path, at)) ?? Promise.resolve(undefined) });
@@ -251,6 +254,7 @@ function draw(opts: RenderOptions = {}): void {
   talks.afterDraw();
   track.afterDraw();
   notes.afterDraw();
+  paintListens(document, state, ui);
   pageBack();
   pageForward();
   revealWaiting();
@@ -524,6 +528,7 @@ rpc.onNotification((n) => {
       } else {
         typing(false);
         dictationGone();
+        listen.disconnected();
         waves.show(false);
         tickVoice();
         stopPairingClock();
@@ -618,6 +623,7 @@ rpc.onNotification((n) => {
         if (p.state === "transcribing") transcribing();
       }
       dispatch({ type: "voice.state", params: p });
+      listen.voiceState(p);
       // Why a press came to nothing shows for a while, then the row goes back to what it was.
       if (p.unheard !== undefined) {
         const at = Date.now();
@@ -4255,7 +4261,7 @@ document.addEventListener("click", (ev) => {
   const target = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-action]");
   if (!target || (target as HTMLButtonElement).disabled) return;
   // Group chats' and teammates' own, and the share form's folder picker; then Lead and its list; then a Messages pane's.
-  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target) || notes.click(target)) return;
+  if (team.click(target) || lead.click(target) || talks.click(target) || track.click(target) || notes.click(target) || listen.click(target)) return;
   switch (target.dataset["action"]) {
     case "window-latest":
       if (target.dataset["session"]) void latest(target.dataset["session"]);

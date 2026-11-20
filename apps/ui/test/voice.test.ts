@@ -58,10 +58,10 @@ function fixture(opts: { stored?: Record<string, string>; refuseKey?: string; ma
 const VIEW: VoiceView = { audioReady: true, wake: "phone", pending: false, talking: false, recording: false, listening: true, muted: false, watching: false, phrases: ["Cophyla", "Hey Phyla"], mics: [] };
 
 describe("the desktop app's voice", () => {
-  test("the hello says a microphone, a speaker, the codecs this web view speaks and played acks", async () => {
+  test("the hello says a microphone, a speaker, the codecs this web view speaks, played acks, and that it plays what was asked for while muted", async () => {
     const { voice } = fixture();
     // Bun has no WebCodecs: PCM alone.
-    expect(await voice.helloAudio()).toEqual({ in: true, out: true, codecs: ["pcm"], played: true });
+    expect(await voice.helloAudio()).toEqual({ in: true, out: true, codecs: ["pcm"], played: true, asked: true });
   });
 
   test("listening and speaking start from what was kept, and are kept when changed", () => {

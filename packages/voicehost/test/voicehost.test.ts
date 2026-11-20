@@ -277,6 +277,17 @@ describe("playback", () => {
     expect(played.map((p) => p.reply)).toEqual([1]);
   });
 
+  test("muted, a message the user asked to hear still plays", () => {
+    const { q, sources, played, finish } = queue();
+    q.muted = true;
+    q.enqueue(slice(), 24000, 2, true);
+    q.enqueue(slice(), 24000, 2, true);
+    q.end(2);
+    expect(sources.length).toBeGreaterThan(0);
+    finish();
+    expect(played.map((p) => p.reply)).toEqual([2]);
+  });
+
   test("a node that does not number its replies is played and never reported", () => {
     const { q, sources, played, finish } = queue();
     q.enqueue(slice());

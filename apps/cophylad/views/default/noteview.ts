@@ -16,6 +16,7 @@ import { callArgs, sessionLabel } from "./model.ts";
 import { bellNotes, bellWords, callNote, finishedNotes, noteAtCall, noteIsOpen, notesOf, notesSummary, noteStateWords, noteWaits, openNoteCount } from "./notemodel.ts";
 import { actionButton, clock, el, reconcile, setData, setHidden, setText } from "./render.ts";
 import type { UiState } from "./render.ts";
+import { createListen, updateListen } from "./listen.ts";
 
 /** The notes' part of the view's own state. */
 export interface NoteUi {
@@ -261,13 +262,13 @@ function createStripRow(): HTMLElement {
 export function createNotifyCard(): HTMLElement {
   const root = el("section", "tl-notify");
   const head = el("div", "tl-notify-head");
-  head.append(bellIcon(), el("span", "tl-notify-word", "Note for you"), el("span", "tl-notify-state"));
+  head.append(bellIcon(), el("span", "tl-notify-word", "Note for you"), el("span", "tl-notify-state"), createListen());
   root.append(head, el("div", "tl-notify-title"), el("div", "tl-notify-detail"), el("p", "tl-notify-answer"));
   return root;
 }
 
 /** A `notify_user` call, drawn as the note it left: from the note as the node keeps it, else from the call's own words. */
-export function updateNotifyCard(node: HTMLElement, step: TimelineStep, seq: number, session: string, state: Pick<ViewState, "notes">): void {
+export function updateNotifyCard(node: HTMLElement, step: TimelineStep, seq: number, session: string, state: ViewState, ui: UiState): void {
   const note = noteAtCall(state, session, { ...(step.id !== undefined ? { id: step.id } : {}), seq });
   const from = note ?? callNote(callArgs(step.args));
   setData(node, "id", note?.id ?? "");
@@ -286,6 +287,7 @@ export function updateNotifyCard(node: HTMLElement, step: TimelineStep, seq: num
   const said = refused ? resultWords(step.result?.value) : answered ? (answered.text ? `You answered: ${answered.text}` : "Marked answered") : "";
   setText(answer, said);
   setHidden(answer, said === "");
+  updateListen(node.querySelector<HTMLButtonElement>(".tl-notify-head > .listen")!, `${session}/n${seq}`, refused ? "" : [from.title, from.detail ?? ""].join("\n\n"), state, ui);
 }
 
 /** Why the node refused a note, as the agent was told. */

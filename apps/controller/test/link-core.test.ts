@@ -146,7 +146,7 @@ describe("pairing", () => {
     await tick();
     expect(readCredential(storage)).toEqual({ token: "tok", controller: "ctl_1", name: "Pixel", lan: ["wss://node.test/ws/client"], relay: ACCESS });
     const hello = d.last((f) => f["method"] === "hello")!;
-    expect(hello["params"]).toMatchObject({ token: "tok", kind: "controller", audio: { in: true, out: true, codecs: ["pcm"], played: true } });
+    expect(hello["params"]).toMatchObject({ token: "tok", kind: "controller", audio: { in: true, out: true, codecs: ["pcm"], played: true, asked: true } });
     d.deliver(helloOk(String(hello["id"])));
     expect(states.at(-1)).toBe("connected");
     expect(core.snapshot.via).toBe("lan");

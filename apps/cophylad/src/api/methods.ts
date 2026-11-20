@@ -9,7 +9,7 @@
 // `session.mode`; `brain.context`, what the chat's own session is told and what the platform's own calls in its conversation have cost, behind `[brain] show_context`;
 // the chat's own session as the settings show and set it (`assistant.state`, `assistant.configure`, `assistant.restart`).
 
-import { AssistantPreview, RpcError, sessionModeRisk } from "@cophyla/protocol";
+import { AssistantPreview, RpcError, sessionModeRisk, VOICE_PREVIEW_MAX } from "@cophyla/protocol";
 import { checkScope } from "../sessions/scope.ts";
 import type { AssistantState, BrainContext, Client, ClientParams, ClientRequestName, ClientResult, ClientSignalName, ConversationSpend, FolderPick, Node, Principal, RelayAccess, RiskClass, TicketViewer } from "@cophyla/protocol";
 import type { z } from "zod";
@@ -583,6 +583,8 @@ export interface VoiceDeps {
   voice: Voice;
   /** Where replies are read out; absent, or stopped off the primary, the button has nothing to hush. */
   speech?: Pick<Delivery, "hush" | "presence">;
+  /** Whether a client's speaker is on, as it says (`voice.presence {speaker}`): a muted one hears nothing read out. */
+  speakerOn?: (client: string) => boolean;
 }
 
 /** Push-to-talk: the button on the controller, held and released, or let go taking back what was said; and the wake word, when the phone hears it itself. */
@@ -621,7 +623,20 @@ export function voiceMethods(deps: VoiceDeps): MethodTable {
     },
     "voice.install": { target: (p) => p.engine, handler: (p) => deps.voice.install(p.engine) },
     "voice.preview": {
+      // a message read out is the user's own reading: its words stay out of the audit row
+      redact: (p) => (p.read || p.stop ? { ...(p.read ? { read: true, chars: p.text?.length ?? 0 } : {}), ...(p.stop ? { stop: true } : {}) } : p),
       handler: (p, ctx) => {
+        if (p.stop) {
+          deps.voice.stopReading(ctx.client);
+          return {};
+        }
+        if (p.read) {
+          if (!p.text) throw new RpcError("invalid", "read needs the text to read out");
+          // An app from before plays nothing while muted: the user is told where it is turned back on. Today's plays it anyway.
+          if (ctx.client.audio.asked !== true && deps.speakerOn && !deps.speakerOn(ctx.client.id)) throw new RpcError("invalid", "this app's speaker is off: turn on Speak replies in Settings, Voice, to listen here");
+          return deps.voice.read(ctx.client, p.text);
+        }
+        if (p.text !== undefined && p.text.length > VOICE_PREVIEW_MAX) throw new RpcError("invalid", `a preview line takes at most ${VOICE_PREVIEW_MAX} characters`);
         deps.voice.preview(ctx.client, p.text);
         return {};
       },

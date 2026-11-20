@@ -59,12 +59,13 @@ export interface DesktopVoiceDeps {
   mac?: boolean;
 }
 
-/** The hello's `audio`: a microphone and a speaker, the codecs this web view speaks, and `voice.played` acks. */
+/** The hello's `audio`: a microphone and a speaker, the codecs this web view speaks, `voice.played` acks, and a message asked for played while muted. */
 export interface HelloAudio {
   in: boolean;
   out: boolean;
   codecs: string[];
   played: boolean;
+  asked: boolean;
 }
 
 export class DesktopVoice implements VoiceSettings {
@@ -95,7 +96,7 @@ export class DesktopVoice implements VoiceSettings {
   async helloAudio(): Promise<HelloAudio> {
     const late = new Promise<void>((resolve) => setTimeout(resolve, CODECS_MS));
     await Promise.race([this.host.codecsKnown.then(() => undefined), late]);
-    return { in: true, out: true, codecs: this.host.codecs, played: true };
+    return { in: true, out: true, codecs: this.host.codecs, played: true, asked: true };
   }
 
   /**
