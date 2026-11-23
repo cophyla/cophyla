@@ -1727,6 +1727,7 @@ export async function startDaemon(opts: DaemonOptions = {}): Promise<Daemon> {
   // Web tabs beside agents' chats, opened by the desktop app on this machine.
   const webTabs = new WebTabs({
     bus,
+    store,
     refuse: (session) => {
       const s = sessions.get(session);
       if (!s) return `no session ${session}`;

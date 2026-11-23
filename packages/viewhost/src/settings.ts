@@ -8,8 +8,10 @@
 //   with `session.setScope` as each change is made): its accounts, each ticked unless left off,
 //   "Tether (Cophyla) started sessions only", and the allowed and hidden folders (`scope.ts`);
 //   and under Asks, whether the tracker follows what the user asks every agent (`tracker.get`,
-//   set with `tracker.set`), each agent's own Track switch in its header over it; and under
-//   Notes, whether agents may leave the user notes (`notes.get`, set with `notes.set`).
+//   set with `tracker.set`), each agent's own Track switch in its header over it; under
+//   Notes, whether agents may leave the user notes (`notes.get`, set with `notes.set`); and
+//   under Web tabs, on a host that opens them (the desktop app), where a link in an agent's
+//   chat opens (`webtabs.get`, set with `webtabs.set`).
 // - Accounts: per machine and harness, the usual account (Automatic, naming the profile
 //   cophylad picks and why, or one the user picks), and for each profile its name, sign-in
 //   state and how much of its limits it has used (`profile.limits`), and for a Claude profile
@@ -46,7 +48,7 @@
 // `SettingsModel` are DOM-free; the panel draws them with `ui.ts`. Its look is `settings.css`,
 // which each host page links.
 
-import type { NotesState, TrackerState } from "@cophyla/protocol";
+import type { NotesState, TrackerState, WebTabsLinks, WebTabsSettings } from "@cophyla/protocol";
 import type { AssistantHarness, AssistantState, HarnessProfile, LaunchMode, Listener, ListenerKind, Node, ProfileLimits, ProviderKeyName, ProviderKeys, ProviderKeyState, SpeechLicence, SttEngineId, TtsEngineId, VoiceRoute, VoiceSettings as SpeechSettings } from "@cophyla/protocol";
 import { DEFAULT_RECORDING_SECONDS } from "@cophyla/protocol";
 import { HARNESS_NAMES, ScopeModel, scopeControls } from "./scope.ts";
@@ -779,15 +781,22 @@ export class SettingsModel {
   notesSetting?: NotesState | null;
   notesBusy = false;
   notesNote = "";
+  /** Where links in an agent's chat open, once read; `null` on a host that opens no web tabs, or from a node that keeps no such setting. */
+  webTabs?: WebTabsSettings | null;
+  webTabsBusy = false;
+  webTabsNote = "";
   readonly removing = new Set<string>();
   private speechTimer?: ReturnType<typeof setTimeout>;
   private disposed = false;
   private request: SettingsRequest;
   private changed: () => void;
+  /** The host opens web tabs beside agents' chats (the desktop app): only there do links open in one. */
+  private hostWebTabs: boolean;
 
-  constructor(request: SettingsRequest, changed: () => void) {
+  constructor(request: SettingsRequest, changed: () => void, opts: { webTabs?: boolean } = {}) {
     this.request = request;
     this.changed = changed;
+    this.hostWebTabs = opts.webTabs === true;
   }
 
   sections(now = Date.now(), time?: (at: number, now: number) => string): MachineSection[] {
@@ -849,6 +858,42 @@ export class SettingsModel {
       this.notesBusy = false;
       this.changed();
     }
+  }
+
+  /** Where links in an agent's chat open; nothing is asked on a host that opens no web tabs. */
+  async loadWebTabs(): Promise<void> {
+    if (!this.hostWebTabs) {
+      this.webTabs = null;
+      this.changed();
+      return;
+    }
+    try {
+      this.webTabs = await this.request<WebTabsSettings>("webtabs.get", {});
+    } catch {
+      this.webTabs = null;
+    }
+    this.changed();
+  }
+
+  /** Links in an agent's chat open in a web tab beside it, for localhost links or every link, or in the user's browser. */
+  async setWebLinks(links: WebTabsLinks): Promise<void> {
+    if (!this.webTabs || this.webTabs.links === links) return;
+    this.webTabsBusy = true;
+    this.changed();
+    try {
+      this.webTabs = await this.request<WebTabsSettings>("webtabs.set", { links });
+      this.webTabsNote = "";
+    } catch (e) {
+      this.webTabsNote = `It could not be changed: ${message(e)}`;
+    } finally {
+      this.webTabsBusy = false;
+      this.changed();
+    }
+  }
+
+  /** The web tabs' row; none on a host that opens no web tabs, nor until the node has said. */
+  webLinksRow(): WebLinksRow | undefined {
+    return this.hostWebTabs && this.webTabs ? webLinksRow(this.webTabs, { busy: this.webTabsBusy, note: this.webTabsNote }) : undefined;
   }
 
   /** The tracker on for every agent, or off but for those switched on in their headers. */
@@ -1315,6 +1360,8 @@ export interface SettingsPanelDeps {
   device?: DeviceSettings;
   /** Checking for a new Cophyla by hand, on a host that can: the Updates page. */
   updates?: UpdateChecker;
+  /** The host opens web tabs beside agents' chats (the desktop app): the Sessions page says where links in them open. */
+  webTabs?: boolean;
   /** Where the layer goes; the page's body when absent. */
   root?: HTMLElement;
   /** Where the focus goes once the layer closes: the view's frame. */
@@ -1418,6 +1465,51 @@ function notesGroup(model: SettingsModel): HTMLElement | undefined {
   ]);
 }
 
+/** Where a link in an agent's chat may open, as the Web tabs row offers it. */
+export const WEB_LINKS_CHOICES: readonly { value: WebTabsLinks; label: string }[] = [
+  { value: "localhost", label: "A web tab beside it, for localhost links" },
+  { value: "all", label: "A web tab beside it, for every link" },
+  { value: "browser", label: "Your browser" },
+];
+
+export interface WebLinksRow {
+  value: WebTabsLinks;
+  options: { value: WebTabsLinks; label: string }[];
+  help: string;
+  note?: string;
+  busy: boolean;
+}
+
+/** What the web tabs' row says, DOM-free: the choice made, the three there are, and what it means. */
+export function webLinksRow(s: WebTabsSettings, opts: { busy?: boolean; note?: string } = {}): WebLinksRow {
+  const elsewhere = " Links anywhere else, as in Chat or an agent on another machine, open in your browser.";
+  const help =
+    s.links === "localhost"
+      ? `A link to a page on this machine, such as localhost:3000, opens in a web tab beside the agent's chat; other links open in your browser.${elsewhere}`
+      : s.links === "all"
+        ? `Every web link opens in a web tab beside the agent's chat.${elsewhere}`
+        : "Every link opens in your browser.";
+  return { value: s.links, options: [...WEB_LINKS_CHOICES], help, ...(opts.note ? { note: opts.note } : {}), busy: opts.busy === true };
+}
+
+function webTabsGroup(model: SettingsModel): HTMLElement | undefined {
+  const r = model.webLinksRow();
+  if (!r) return undefined;
+  const label = "Links in an agent's chat open in";
+  return group("Web tabs", [
+    row({
+      label,
+      help: r.help,
+      for: controlId("webtabs-links"),
+      control: select("webtabs-links", label, r.value, r.options, (v) => {
+        const picked = r.options.find((o) => o.value === v);
+        if (picked) void model.setWebLinks(picked.value);
+      }, r.busy),
+      ...(r.note ? { note: r.note } : {}),
+    }),
+  ]);
+}
+
 /** The layer itself: opened by `host.settings`, a side list of pages and the page picked, drawn from a `SettingsModel` and a `ScopeModel`. */
 export class SettingsPanel {
   private deps: SettingsPanelDeps;
@@ -1500,9 +1592,13 @@ export class SettingsPanel {
     layer.append(card);
     (this.deps.root ?? document.body).append(layer);
     this.layer = layer;
-    const model = new SettingsModel(this.deps.request, () => {
-      if (this.model === model) this.render();
-    });
+    const model = new SettingsModel(
+      this.deps.request,
+      () => {
+        if (this.model === model) this.render();
+      },
+      { webTabs: this.deps.webTabs === true },
+    );
     this.model = model;
     const scope = new ScopeModel(this.deps.request, () => {
       if (this.scope === scope) this.render();
@@ -1528,6 +1624,7 @@ export class SettingsPanel {
     void model.loadChat();
     void model.loadTracker();
     void model.loadNotes();
+    if (this.deps.webTabs) void model.loadWebTabs();
     void scope.load();
     if (this.page === "usage") void usage.load();
   }
@@ -1665,8 +1762,8 @@ export class SettingsPanel {
   private sessionsPage(model: SettingsModel): HTMLElement[] {
     const scope = this.scope;
     if (!scope) return [];
-    // after the sessions' own: Asks, then Notes
-    const extra = [trackerGroup(model), notesGroup(model)].filter((g): g is HTMLElement => g !== undefined);
+    // after the sessions' own: Asks, Notes, then Web tabs where the host opens them
+    const extra = [trackerGroup(model), notesGroup(model), webTabsGroup(model)].filter((g): g is HTMLElement => g !== undefined);
     if (scope.note) return [el("p", scope.note === "Loading…" ? "host-settings-page-note is-quiet" : "host-settings-page-note", scope.note), ...extra];
     const machines = scope.machines();
     const m = machines.find((x) => x.node === this.machine) ?? machines[0];

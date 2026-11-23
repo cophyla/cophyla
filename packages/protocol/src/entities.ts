@@ -1204,6 +1204,19 @@ export const WebTab = z.object({
 });
 export type WebTab = z.infer<typeof WebTab>;
 
+/**
+ * Where a web link clicked in an agent's chat opens, in the desktop app that opens web tabs:
+ * `localhost` in a web tab beside the chat for a page on the agent's machine (localhost, a name
+ * under it, 127.x.x.x, [::1], 0.0.0.0) and in the user's browser for the rest, `all` in a web
+ * tab for every http and https link, `browser` in the user's browser for every one.
+ */
+export const WebTabsLinks = z.enum(["localhost", "all", "browser"]);
+export type WebTabsLinks = z.infer<typeof WebTabsLinks>;
+
+/** The web tabs' settings on a machine: where links in its agents' chats open (`localhost` unless the user picked another). */
+export const WebTabsSettings = z.object({ links: WebTabsLinks });
+export type WebTabsSettings = z.infer<typeof WebTabsSettings>;
+
 /** Whether a note is open: waiting for an answer not given yet, or else not read, and not dismissed. */
 export function noteOpen(n: Pick<Note, "needsAnswer" | "read" | "answered" | "dismissed">): boolean {
   if (n.dismissed) return false;

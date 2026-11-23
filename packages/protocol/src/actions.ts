@@ -246,6 +246,9 @@ export const actions = {
   "webtab.open": { risk: "write" },
   "webtab.close": { risk: "write" },
   "webtab.report": { risk: "read" },
+  // Where a link in an agent's chat opens: a web tab beside it, or the user's browser.
+  "webtabs.get": { risk: "read" },
+  "webtabs.set": { risk: "write" },
   "note.mark": { risk: "write" },
   "note.dismiss": { risk: "write" },
   "notes.get": { risk: "read" },

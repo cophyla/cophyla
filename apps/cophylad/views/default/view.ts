@@ -62,7 +62,7 @@
 // `grant.list`, asked again after anything that changes them and every few seconds while an
 // invite is on show or still open, since no notification says one was used.
 
-import type { AssistantState, BrowserInvite, ClientResult, WebTab, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
+import type { AssistantState, BrowserInvite, ClientResult, WebTab, WebTabsSettings, Connection, ContentBlock, Controller, FolderPick, GitState, Grant, GrantRole, HarnessProfile, InviteOffer, LanState, Message, MetricsSample, Node as CophylaNode, RemoteState, ClientSession as Session, SessionEvent, SpendTotals, Task, Terminal, ClientThread as Thread, Transfer, TransferConfirm, TurnProgress, VoiceState, VoiceStopped, VoiceUnheard, ClientWorkspace as Workspace } from "@cophyla/protocol";
 import { CHAT_PAGE, answerParams, apply, connectionFailure, browserInviteParams, chatDraw, connectEmbeds, widerChatDraw, connectWords, REMOTE_VIEW_WIDTH, remoteHere, remoteViewStep, remoteViewWidth, tabNode, shareWords, dropText, dropTexts, enterSends, explorerKey, fileHome, filesErrorWords, HISTORY_PAGE, initialState, joinAsksDoor, joinPath, joinPaths, listedKind, historyPage, nodeGrant, nodeInviteParams, openFolders, paneMode, parseComposer, phoneInviteParams, tabChoice, spawnParams, folderPlace, lastPlace, quickPlace, relativeFile, relUnder, dialogNative, dialogPanelFor, dialogTerminal, dockAsks, sessionTerminal, sourceRoot, spendFrom, stepScale, underListedFolder, VIEWER_WIDTH, viewedPath, viewerTab, viewerWidth, untilTomorrow, VOICE_NOTE_MS, voiceCancellable, watchParams, countdownFrom } from "./model.ts";
 import { selectUpdateNote, selectSpend, costWords, tokenWords, limitWords, profilesStale } from "./model.ts";
 import { downloadsIn, machineName, transferEnded } from "./model.ts";
@@ -85,7 +85,7 @@ import type { ViewerTarget } from "./fileview.ts";
 import { RemotePanel } from "./remoteview.ts";
 import type { RemoteCover } from "./remoteview.ts";
 import { WebPanel } from "./webtabview.ts";
-import { activeTab, foldWebTab, resetWebTabs, sessionTabs, webShown, webTabsUi } from "./webtabmodel.ts";
+import { activeTab, foldWebLinks, foldWebTab, linkOpensInTab, resetWebTabs, sessionTabs, webShown, webTabsUi } from "./webtabmodel.ts";
 import { HostRpc, ViewRpcError } from "./rpc.ts";
 import { copyText, TerminalView } from "./terminal.ts";
 import { Waves } from "./waves.ts";
@@ -550,6 +550,7 @@ rpc.onNotification((n) => {
         track.connected();
         notes.connected();
         void loadWebTabs();
+        void loadWebLinks();
         // The node forgot the watch with the line, or holds one from a view this frame
         // replaced: the tab shown opens afresh, and the watch is said again.
         openTab();
@@ -772,6 +773,9 @@ rpc.onNotification((n) => {
       draw();
       return;
     }
+    case "webtabs.state":
+      foldWebLinks(ui.web, n.params as WebTabsSettings);
+      return;
     default:
       return;
   }
@@ -3472,16 +3476,44 @@ function pathLinkOpens(node: HTMLElement): boolean {
   return opens;
 }
 
-/** A link in a message was clicked: a web page opens in the browser, a path in the viewer or Files, unless the click was a drag that selected its words. */
+/**
+ * A link in a message was clicked: a web page opens in the browser, or in a web tab beside the
+ * agent's chat it was clicked in where the user said links open there; a path opens in the
+ * viewer or Files. Nothing opens when the click was a drag that selected the link's words.
+ */
 function followLink(node: HTMLElement): void {
   if (!(getSelection()?.isCollapsed ?? true)) return;
   if (node.dataset["action"] === "link") {
     const url = node.dataset["href"] ?? "";
-    if (/^https?:\/\//i.test(url)) rpc.request("host.openLink", { url }).catch((e: unknown) => console.warn(`the link did not open: ${e instanceof Error ? e.message : String(e)}`));
+    if (!/^https?:\/\//i.test(url)) return;
+    const session = linkTabSession(node);
+    // a tab that did not open (the app is closing, the session ended) leaves the page to the browser
+    if (session !== undefined && linkOpensInTab(url, ui.web.links)) {
+      void openWebTab(session, url, true).then((opened) => {
+        if (!opened) openInBrowser(url);
+      });
+    } else openInBrowser(url);
     return;
   }
   const at = linkWritten(node);
   if (at !== undefined && pathLinkOpens(node)) openPath(linkedPath(node), at);
+}
+
+/** A web page in the user's browser, through the host. */
+function openInBrowser(url: string): void {
+  rpc.request("host.openLink", { url }).catch((e: unknown) => console.warn(`the link did not open: ${e instanceof Error ? e.message : String(e)}`));
+}
+
+/**
+ * The session whose chat a link was clicked in, when a web tab beside it may open: in the
+ * desktop app that opens them, in the pane of a session on this machine. None in the chat with
+ * Cophyla, a group's, or an agent's on another machine, whose localhost is not this one.
+ */
+function linkTabSession(node: HTMLElement): string | undefined {
+  if (!state.hostWebTabs || !state.scopes.includes("sessions:write")) return undefined;
+  const id = node.closest<HTMLElement>(".session[data-session]")?.dataset["session"];
+  const card = id !== undefined ? state.sessions.get(id) : undefined;
+  return card !== undefined && card.session.node === state.node ? card.session.id : undefined;
 }
 
 // A path in a message is a link where the view can open it: it says so as the mouse comes onto it.
@@ -3647,14 +3679,29 @@ async function loadWebTabs(): Promise<void> {
   }
 }
 
-/** Opens a web tab beside a session's chat: a blank one, whose address the user types. */
-async function openWebTab(session: string, url?: string): Promise<void> {
+/** Where a link clicked in an agent's chat opens, as the node keeps it, once connected. */
+async function loadWebLinks(): Promise<void> {
+  if (!state.hostWebTabs || !state.scopes.includes("sessions:read")) return;
+  try {
+    foldWebLinks(ui.web, (await rpc.request("webtabs.get", {})) as WebTabsSettings);
+  } catch {
+    // refused, or a node that cannot say: what was known stands, else the default (localhost links in a tab)
+  }
+}
+
+/**
+ * Opens a web tab beside a session's chat: a blank one, whose address the user types, or a page.
+ * Whether it opened; why not is said unless `quiet`, when the caller has somewhere else to open it.
+ */
+async function openWebTab(session: string, url?: string, quiet = false): Promise<boolean> {
   try {
     const r = (await rpc.request("webtab.open", { session, ...(url ? { url } : {}) })) as { tab: WebTab };
     foldWebTab(ui.web, r.tab);
     draw();
+    return true;
   } catch (e) {
-    fail("The web tab did not open", e);
+    if (!quiet) fail("The web tab did not open", e);
+    return false;
   }
 }
 

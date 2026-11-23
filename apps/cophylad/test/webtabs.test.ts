@@ -1,14 +1,19 @@
 // Web tabs (webtabs/index.ts, token.ts, endpoint.ts, methods.ts): the tabs kept per session, the
 // desktop app that opens them and alone reports them, an agent's tab waiting for the app, the
-// sealed endpoint a started session's Playwright is given, and the protocol's tables for them.
+// sealed endpoint a started session's Playwright is given, where a link in an agent's chat opens
+// (its default, kept across a restart, told on the bus) and the protocol's tables for them.
 
 import { describe, expect, test } from "bun:test";
-import { actionDefinition, notificationFilters, notificationScope, requestFilters, requestScopes, RpcError } from "@cophyla/protocol";
-import type { ClientId, SessionId, WebTab } from "@cophyla/protocol";
+import { actionDefinition, clientRequests, notificationFilters, notificationScope, requestFilters, requestScopes, RpcError } from "@cophyla/protocol";
+import type { ClientId, SessionId, WebTab, WebTabsSettings } from "@cophyla/protocol";
 import { Bus } from "../src/bus.ts";
+import { BACKUP_EXCLUDED_KV_NS } from "../src/cloud/backup.ts";
+import { RESERVED_KV_NS, WEBTABS_SETTINGS_NS } from "../src/grants/namespaces.ts";
 import { silentLogger } from "../src/log.ts";
+import { EXCLUDED_KV_NS } from "../src/nodes/replication.ts";
+import { Store } from "../src/store/index.ts";
 import { agentEndpoint } from "../src/webtabs/endpoint.ts";
-import { TABS_PER_SESSION, WebTabs, webTabUrl } from "../src/webtabs/index.ts";
+import { DEFAULT_WEBTABS_SETTINGS, TABS_PER_SESSION, WebTabs, webTabUrl } from "../src/webtabs/index.ts";
 import { webTabsMethods } from "../src/webtabs/methods.ts";
 import { cdpEndpoint, cdpToken, readCdpToken } from "../src/webtabs/token.ts";
 
@@ -18,18 +23,23 @@ const ELSEWHERE = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB3" as SessionId;
 const APP = "cli_01ARZ3NDEKTSV4RRFFQ69G5AP1" as ClientId;
 const OTHER = "cli_01ARZ3NDEKTSV4RRFFQ69G5AP2" as ClientId;
 
-function kit(o: { targetWaitMs?: number } = {}) {
+function kit(o: { targetWaitMs?: number; store?: Store } = {}) {
   const bus = new Bus();
   const told: WebTab[] = [];
+  const settings: WebTabsSettings[] = [];
   bus.on("webtab.state", (t) => told.push(t));
+  bus.on("webtabs.state", (s) => settings.push(s));
+  const store = o.store ?? new Store(":memory:");
+  if (!o.store) store.migrate();
   const tabs = new WebTabs({
     bus,
+    store,
     refuse: (s) => (s === ELSEWHERE ? "a web tab opens on the machine the agent runs on" : undefined),
     machine: () => "Desk",
     log: silentLogger,
     ...(o.targetWaitMs !== undefined ? { targetWaitMs: o.targetWaitMs } : {}),
   });
-  return { tabs, told };
+  return { tabs, told, settings, store };
 }
 
 const code = (f: () => unknown): string | undefined => {
@@ -240,7 +250,73 @@ describe("an agent's Playwright before its proxy starts", () => {
   });
 });
 
+describe("where a link in an agent's chat opens", () => {
+  test("localhost links in a tab beside the chat until the user picks", () => {
+    const { tabs, settings } = kit();
+    expect(DEFAULT_WEBTABS_SETTINGS).toEqual({ links: "localhost" });
+    expect(tabs.settings()).toEqual({ links: "localhost" });
+    // what is answered is a copy: changing it changes nothing here
+    (tabs.settings() as { links: string }).links = "all";
+    expect(tabs.settings()).toEqual({ links: "localhost" });
+    expect(settings).toEqual([]);
+  });
+
+  test("a pick is kept, told once to every client, and the same pick again tells nothing", () => {
+    const { tabs, settings, store } = kit();
+    expect(tabs.configure({ links: "all" })).toEqual({ links: "all" });
+    expect(tabs.settings()).toEqual({ links: "all" });
+    expect(store.kv.get(WEBTABS_SETTINGS_NS, "settings")).toEqual({ links: "all" });
+    expect(settings).toEqual([{ links: "all" }]);
+    expect(tabs.configure({ links: "all" })).toEqual({ links: "all" });
+    expect(settings).toHaveLength(1);
+    tabs.configure({ links: "browser" });
+    expect(settings).toEqual([{ links: "all" }, { links: "browser" }]);
+  });
+
+  test("kept across a restart; a row this version cannot read leaves the default", () => {
+    const store = new Store(":memory:");
+    store.migrate();
+    kit({ store }).tabs.configure({ links: "browser" });
+    const again = kit({ store });
+    expect(again.tabs.settings()).toEqual({ links: "browser" });
+    expect(again.settings).toEqual([]);
+    store.kv.put(WEBTABS_SETTINGS_NS, "settings", { links: "chrome" });
+    expect(kit({ store }).tabs.settings()).toEqual({ links: "localhost" });
+    store.kv.put(WEBTABS_SETTINGS_NS, "settings", "all");
+    expect(kit({ store }).tabs.settings()).toEqual({ links: "localhost" });
+  });
+
+  test("the row is the daemon's own: never the brain's, carried to the backups, never in the cloud backup", () => {
+    expect(RESERVED_KV_NS).toContain(WEBTABS_SETTINGS_NS);
+    expect(EXCLUDED_KV_NS).not.toContain(WEBTABS_SETTINGS_NS);
+    expect(BACKUP_EXCLUDED_KV_NS).toContain(WEBTABS_SETTINGS_NS);
+  });
+});
+
 describe("the methods and the protocol's tables", () => {
+  test("where links open, read and set", async () => {
+    const { tabs, settings } = kit();
+    const m = webTabsMethods({ tabs });
+    const ctx = { client: { id: OTHER } } as never;
+    expect(await m["webtabs.get"]!.handler({}, ctx)).toEqual({ links: "localhost" });
+    expect(await m["webtabs.set"]!.handler({ links: "all" }, ctx)).toEqual({ links: "all" });
+    expect(await m["webtabs.get"]!.handler({}, ctx)).toEqual({ links: "all" });
+    expect(settings).toEqual([{ links: "all" }]);
+  });
+
+  test("where links open: reading needs sessions:read, setting sessions:write, and limited access does neither", () => {
+    for (const name of ["webtabs.get", "webtabs.set"] as const) {
+      expect(clientRequests[name]).toBeDefined();
+      expect(requestScopes[name]).toBe(name === "webtabs.get" ? "sessions:read" : "sessions:write");
+      expect(actionDefinition(name)?.risk).toBe(name === "webtabs.get" ? "read" : "write");
+      expect(requestFilters[name].names).toBe("global");
+    }
+    expect(notificationScope("webtabs.state")).toBe("sessions:read");
+    expect(notificationFilters["webtabs.state"]).toBe("global");
+    expect(clientRequests["webtabs.set"].params.safeParse({ links: "chrome" }).success).toBe(false);
+    expect(clientRequests["webtabs.set"].params.safeParse({}).success).toBe(false);
+  });
+
   test("list, open and close; report only from the app", () => {
     const { tabs } = kit();
     tabs.hostConnected(APP);

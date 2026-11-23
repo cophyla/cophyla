@@ -1,9 +1,10 @@
 // Web tabs in the view, without the page: the tabs the node says are open beside agents' chats
 // (`webtab.list`, `webtab.state`), which one of a session's shows, whether the user put the
-// session's panel away, and what an address typed in the bar opens. A tab an agent opens, or the
-// user, shows at once and brings the session's panel back.
+// session's panel away, what an address typed in the bar opens, and whether a link clicked in an
+// agent's chat opens in a tab beside it (`webtabs.get`, `webtabs.state`). A tab an agent opens, or
+// the user, shows at once and brings the session's panel back.
 
-import type { WebTab } from "@cophyla/protocol";
+import type { WebTab, WebTabsLinks } from "@cophyla/protocol";
 
 export interface WebTabsUi {
   /** The open tabs, by id, in the order they opened. */
@@ -12,10 +13,52 @@ export interface WebTabsUi {
   active: Map<string, string>;
   /** Sessions whose panel the user put away while it has tabs. */
   away: Set<string>;
+  /** Where a link clicked in an agent's chat opens, as the node keeps it: localhost links in a tab beside it until the node says. */
+  links: WebTabsLinks;
 }
 
 export function webTabsUi(): WebTabsUi {
-  return { tabs: new Map(), active: new Map(), away: new Set() };
+  return { tabs: new Map(), active: new Map(), away: new Set(), links: "localhost" };
+}
+
+/** What the node says of where links open; a value this view does not know leaves it as it was. */
+export function foldWebLinks(ui: WebTabsUi, s: { links?: unknown } | undefined): void {
+  const links = s?.links;
+  if (links === "localhost" || links === "all" || links === "browser") ui.links = links;
+}
+
+/** An http or https address with no credentials in it, parsed; anything else is none. */
+function webUrl(url: string): URL | undefined {
+  try {
+    const u = new URL(url);
+    return (u.protocol === "http:" || u.protocol === "https:") && u.hostname !== "" && u.username === "" && u.password === "" ? u : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether a host is the machine itself: localhost or a name under it, 127.x.x.x, [::1] or 0.0.0.0. */
+function localHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/\.$/, "");
+  return h === "localhost" || h.endsWith(".localhost") || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h) || h === "[::1]" || h === "::1" || h === "0.0.0.0";
+}
+
+/** Whether an address is a page on the machine itself, over http or https, on any port. */
+export function isLocalUrl(url: string): boolean {
+  const u = webUrl(url);
+  return u !== undefined && localHost(u.hostname);
+}
+
+/**
+ * Whether a link clicked in an agent's chat opens in a web tab beside it, by where the user said
+ * links open: `localhost` a page on the machine, `all` any http or https page, `browser` none.
+ * Whether the host opens web tabs at all, and for that session, is the caller's to know.
+ */
+export function linkOpensInTab(url: string, links: WebTabsLinks): boolean {
+  if (links === "browser") return false;
+  const u = webUrl(url);
+  if (!u) return false;
+  return links === "all" || localHost(u.hostname);
 }
 
 /** A session's open tabs, oldest first. */

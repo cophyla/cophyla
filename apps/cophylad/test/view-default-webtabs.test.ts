@@ -1,10 +1,10 @@
 // The default view's web tabs without the page (webtabmodel.ts): what the node says of tabs folded
-// in, which tab of a session shows, the panel put away and brought back by a new tab, and what
-// an address typed in the bar opens.
+// in, which tab of a session shows, the panel put away and brought back by a new tab, what an
+// address typed in the bar opens, and whether a link clicked in an agent's chat opens in a tab.
 
 import { describe, expect, test } from "bun:test";
 import type { WebTab } from "@cophyla/protocol";
-import { activeTab, addressUrl, foldWebTab, resetWebTabs, sessionTabs, tabLabel, webShown, webTabsUi } from "../views/default/webtabmodel.ts";
+import { activeTab, addressUrl, foldWebLinks, foldWebTab, isLocalUrl, linkOpensInTab, resetWebTabs, sessionTabs, tabLabel, webShown, webTabsUi } from "../views/default/webtabmodel.ts";
 
 const S1 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB1";
 const S2 = "sess_01ARZ3NDEKTSV4RRFFQ69G5FB2";
@@ -82,5 +82,63 @@ describe("web tabs in the view", () => {
     expect(tabLabel(tab(S1, { title: "  My app " }))).toBe("My app");
     expect(tabLabel(tab(S1, { url: "http://localhost:3000/", title: "about:blank" }))).toBe("localhost:3000");
     expect(tabLabel(tab(S1))).toBe("New tab");
+  });
+});
+
+describe("a link clicked in an agent's chat", () => {
+  test("a page on the machine itself is a local one, over http or https, on any port", () => {
+    for (const yes of [
+      "http://localhost:3000/",
+      "https://localhost/",
+      "http://LOCALHOST:8080/a?b=1#c",
+      "http://localhost./",
+      "http://app.localhost:5173/",
+      "http://127.0.0.1:8000/",
+      "http://127.1.2.3/",
+      "http://[::1]:5173/",
+      "http://0.0.0.0:4000/",
+    ]) expect(isLocalUrl(yes)).toBe(true);
+    for (const no of [
+      "https://example.com/",
+      "http://localhost.example.com/",
+      "http://mylocalhost/",
+      "http://128.0.0.1/",
+      "http://192.168.1.10:3000/",
+      "http://[::2]/",
+      "http://u:p@localhost:3000/",
+      "ftp://localhost/",
+      "file:///C:/x.html",
+      "localhost:3000",
+      "",
+    ]) expect(isLocalUrl(no)).toBe(false);
+  });
+
+  test("where it opens follows the setting: localhost links, every link, or none in a tab", () => {
+    const local = "http://localhost:5173/";
+    const away = "https://example.com/docs";
+    expect(linkOpensInTab(local, "localhost")).toBe(true);
+    expect(linkOpensInTab(away, "localhost")).toBe(false);
+    expect(linkOpensInTab(local, "all")).toBe(true);
+    expect(linkOpensInTab(away, "all")).toBe(true);
+    expect(linkOpensInTab(local, "browser")).toBe(false);
+    expect(linkOpensInTab(away, "browser")).toBe(false);
+    // what no web tab could open goes to the browser whatever the setting
+    for (const links of ["localhost", "all"] as const) for (const no of ["mailto:a@b.c", "javascript:alert(1)", "http://u:p@localhost/", "not a url"]) expect(linkOpensInTab(no, links)).toBe(false);
+  });
+
+  test("the setting starts at localhost links and follows what the node says; a value this view does not know is passed over", () => {
+    const ui = webTabsUi();
+    expect(ui.links).toBe("localhost");
+    foldWebLinks(ui, { links: "all" });
+    expect(ui.links).toBe("all");
+    foldWebLinks(ui, { links: "chrome" });
+    foldWebLinks(ui, {});
+    foldWebLinks(ui, undefined);
+    expect(ui.links).toBe("all");
+    foldWebLinks(ui, { links: "browser" });
+    expect(ui.links).toBe("browser");
+    // the whole list of tabs again after a connect leaves it alone
+    resetWebTabs(ui, []);
+    expect(ui.links).toBe("browser");
   });
 });

@@ -21,7 +21,8 @@
 // what it laid there must go under the page's own layers (`onOverlay`, while the picker or
 // the settings are open) and when it must go altogether (`onUnmount`: the view was replaced,
 // or reloaded itself), and tells the view a stream is gone with `streamClosed`; one that opens
-// web tabs beside agents' chats (`webTabs`, answering `host.webtab`) hears the same of them. A host that is
+// web tabs beside agents' chats (`webTabs`, answering `host.webtab`) hears the same of them, and its
+// settings say where a link in an agent's chat opens. A host that is
 // a wide window on a computer without being the desktop app says so (`desk`), and the view is
 // told in its `host.ready`; one that is a paired device of its own shows itself in the settings
 // (`device`). Before the first view mounts, a node whose user has not yet said which of their
@@ -218,6 +219,7 @@ export class ViewHost {
       ...(deps.device ? { device: deps.device } : {}),
       ...(deps.updates ? { updates: deps.updates } : {}),
       ...(deps.openLink ? { openLink: deps.openLink } : {}),
+      ...(deps.webTabs ? { webTabs: true } : {}),
     });
     this.setup = new SetupPanel({ request: (method, params) => deps.conn.request(method, params) });
     // A view that draws the talk button hears when the microphone behind it goes off.

@@ -459,6 +459,7 @@ export function startApi(deps: ApiDeps, opts: ListenerOptions = {}): ApiServer {
           deps.bus.on("note.state", (note) => broadcast("note.state", note)),
           deps.bus.on("notes.state", (state) => broadcast("notes.state", state)),
           deps.bus.on("webtab.state", (tab) => broadcast("webtab.state", tab)),
+          deps.bus.on("webtabs.state", (settings) => broadcast("webtabs.state", settings)),
           deps.bus.on("workspace.state", (workspace) => registry.broadcastWorkspace(workspace)),
           deps.bus.on("chat.message", (message) => broadcast("chat.message", { message })),
           deps.bus.on("chat.delta", (delta) => broadcast("chat.delta", delta)),

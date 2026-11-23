@@ -6,11 +6,17 @@
 // That app is the client whose hello said `webTabs` on loopback: with none there is nowhere to
 // open a tab, and when it goes every tab goes with it, since its browser held them. Only sessions
 // of this machine have tabs for now: an agent elsewhere would want its own machine's localhost.
+// Where a link clicked in an agent's chat opens is this machine's setting (`webtabs.get`,
+// `webtabs.set`): a tab beside the chat for localhost links, the default, or for every link, or
+// the user's browser. The view decides by it; it is kept in kv under `webtabs.settings` and told
+// as `webtabs.state`.
 
-import { newId, RpcError } from "@cophyla/protocol";
-import type { ClientId, SessionId, WebTab, WebTabId } from "@cophyla/protocol";
+import { newId, RpcError, WebTabsSettings } from "@cophyla/protocol";
+import type { ClientId, SessionId, WebTab, WebTabId, WebTabsLinks } from "@cophyla/protocol";
 import type { Bus } from "../bus.ts";
+import { WEBTABS_SETTINGS_NS } from "../grants/namespaces.ts";
 import type { Logger } from "../log.ts";
+import type { Store } from "../store/index.ts";
 import type { TabsForProxy } from "./cdp.ts";
 
 /** The most tabs one session keeps open, and all sessions together. */
@@ -18,6 +24,9 @@ export const TABS_PER_SESSION = 12;
 export const TABS_MAX = 40;
 /** How long an agent's new tab waits for the desktop app to open it. */
 export const TARGET_WAIT_MS = 15_000;
+/** Where links in an agent's chat open until the user picks: localhost links in a tab beside it, the rest in their browser. */
+export const DEFAULT_WEBTABS_SETTINGS: WebTabsSettings = { links: "localhost" };
+const SETTINGS_KEY = "settings";
 
 /** What a page may be: http or https, or the blank page. */
 export function webTabUrl(raw: string | undefined): string {
@@ -36,6 +45,8 @@ export function webTabUrl(raw: string | undefined): string {
 
 export interface WebTabsDeps {
   bus: Pick<Bus, "emit">;
+  /** Where the settings are kept. */
+  store: Pick<Store, "kv">;
   /** Why a session cannot have a tab here, or undefined when it can: it runs on this machine. */
   refuse: (session: SessionId) => string | undefined;
   /** This machine's name, for what the user is told. */
@@ -66,13 +77,32 @@ export class WebTabs implements TabsForProxy {
   private debugPort?: number;
   private waiting = new Map<WebTabId, Waiter[]>();
   private watchers = new Set<(tab: WebTab) => void>();
+  private prefs: WebTabsSettings;
 
   constructor(deps: WebTabsDeps) {
     this.deps = deps;
+    // a row this version cannot read (a value from a later one, say) leaves the default
+    const kept = WebTabsSettings.safeParse(deps.store.kv.get(WEBTABS_SETTINGS_NS, SETTINGS_KEY));
+    this.prefs = kept.success ? kept.data : { ...DEFAULT_WEBTABS_SETTINGS };
   }
 
   private now(): number {
     return this.deps.now?.() ?? Date.now();
+  }
+
+  /** Where a link clicked in an agent's chat opens. */
+  settings(): WebTabsSettings {
+    return { ...this.prefs };
+  }
+
+  /** Sets where a link in an agent's chat opens: kept, and told to every client when it changed. */
+  configure(p: { links: WebTabsLinks }): WebTabsSettings {
+    if (p.links !== this.prefs.links) {
+      this.prefs = { ...this.prefs, links: p.links };
+      this.deps.store.kv.put(WEBTABS_SETTINGS_NS, SETTINGS_KEY, this.prefs, this.now());
+      this.deps.bus.emit("webtabs.state", this.settings());
+    }
+    return this.settings();
   }
 
   /** The desktop app that opens the tabs connected (its hello said `webTabs`). */

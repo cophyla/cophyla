@@ -11,7 +11,8 @@
 // `remote.state`; `cloud` raises `entitlement.updated` and `account.state`; the terminal rows
 // raise `terminal.state`; `transfers` raises `transfer.state`; `listeners` raises `listener.fired` and `listener.removed`;
 // `leaders` raises `lead.state`; the agents' conversations raise `talk.said` and `talk.state`; the
-// tracker raises `tracked.state` and `tracker.state`; the notes raise `note.state` and `notes.state`. The
+// tracker raises `tracked.state` and `tracker.state`; the notes raise `note.state` and `notes.state`; the web
+// tabs raise `webtab.state` and `webtabs.state`. The
 // api forwards the client-protocol ones to connected clients; the event stream turns the
 // rest into capability events. The machine's events and each workspace node's are kept
 // apart (`Bus`).
@@ -103,6 +104,8 @@ export interface BusEvents {
   "notes.state": ClientNotificationParams<"notes.state">;
   /** A web tab beside an agent's chat opened, moved or loaded; `closed` its last row. */
   "webtab.state": ClientNotificationParams<"webtab.state">;
+  /** Where a link in an agent's chat opens changed. */
+  "webtabs.state": ClientNotificationParams<"webtabs.state">;
   "workspace.state": Workspace;
   "chat.message": Message;
   "chat.delta": ClientNotificationParams<"chat.delta">;

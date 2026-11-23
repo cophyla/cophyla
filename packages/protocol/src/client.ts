@@ -62,6 +62,8 @@ import {
   Note,
   WebTab,
   WEB_TAB_URL_MAX,
+  WebTabsLinks,
+  WebTabsSettings,
   NotesState,
   Task,
   Teammate,
@@ -1496,6 +1498,10 @@ export const clientRequests = {
     }),
     result: Empty,
   },
+  /** Where a web link clicked in the chat of an agent on this machine opens: a web tab beside it, or the user's browser. */
+  "webtabs.get": { params: Empty, result: WebTabsSettings },
+  /** Sets where a web link clicked in an agent's chat opens. Answers the settings as they are now. */
+  "webtabs.set": { params: z.object({ links: WebTabsLinks }), result: WebTabsSettings },
   /** Lets agents leave the user notes, or stops them (`notify_user` is refused while off). Answers the setting as it is now. */
   "notes.set": { params: z.object({ on: z.boolean() }), result: NotesState },
   /** The agents in focus now, on every machine, with until when and why. */
@@ -1928,6 +1934,8 @@ export const clientNotifications = {
   "note.state": Note,
   /** A web tab beside an agent's chat, when it opens, moves to another page or loads, and once more when it closes (`closed`, the last word about it). */
   "webtab.state": WebTab,
+  /** Where a web link clicked in an agent's chat opens, whenever it changes. */
+  "webtabs.state": WebTabsSettings,
   /** Whether agents may leave the user notes, whenever it changes. */
   "notes.state": NotesState,
   /** An agent took focus, or came out of it (no `focus`). */

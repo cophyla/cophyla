@@ -10,11 +10,12 @@
 // line, a Remove, and a node with none. Last, the chat: where the session it runs in stands,
 // the harness and the account it runs on with what Automatic picked, what a pick and a
 // restart send, and a node from before the chat ran in a session. And the host itself, where it
-// is a paired device of its own: when its access ends, in words.
+// is a paired device of its own: when its access ends, in words. On the Sessions page, the
+// switches for asks and notes, and where a link in an agent's chat opens, on a host with web tabs only.
 
 import { describe, expect, test } from "bun:test";
 import type { AssistantState, HarnessProfile, Listener, Node, VoiceSettings } from "@cophyla/protocol";
-import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, speakerOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, notesRow, usageText, usualKey, wakeRow } from "../src/settings.ts";
+import { chatRow, CLEAN_HELP, deviceEnds, durationWords, joinFlags, keyRows, launchKey, listenerLine, megabytes, micOptions, speakerOptions, RECORDING_LIMITS, ROUTE_CHOICES, SettingsModel, settingsRows, SPEECH_POLL_MS, SPEECH_SPEEDS, speechRow, splitFlags, sttRow, trackerRow, notesRow, usageText, usualKey, WEB_LINKS_CHOICES, webLinksRow, wakeRow } from "../src/settings.ts";
 
 const DESK = "node_01ARZ3NDEKTSV4RRFFQ69G5FAV";
 const LAPTOP = "node_01ARZ3NDEKTSV4RRFFQ69G5FAW";
@@ -924,5 +925,84 @@ describe("the Sessions page's Notes", () => {
     refuse = true;
     await m.loadNotes();
     expect(m.notesSetting).toBeNull();
+  });
+});
+
+describe("the Sessions page's Web tabs", () => {
+  test("the row offers the three places in plain words, and says what the one picked means", () => {
+    expect(WEB_LINKS_CHOICES).toEqual([
+      { value: "localhost", label: "A web tab beside it, for localhost links" },
+      { value: "all", label: "A web tab beside it, for every link" },
+      { value: "browser", label: "Your browser" },
+    ]);
+    const local = webLinksRow({ links: "localhost" });
+    expect(local).toMatchObject({ value: "localhost", options: WEB_LINKS_CHOICES, busy: false });
+    expect(local.help).toContain("such as localhost:3000, opens in a web tab beside the agent's chat; other links open in your browser.");
+    expect(local.help).toContain("as in Chat or an agent on another machine, open in your browser.");
+    expect(local.note).toBeUndefined();
+    expect(webLinksRow({ links: "all" }).help).toStartWith("Every web link opens in a web tab beside the agent's chat.");
+    expect(webLinksRow({ links: "browser" }).help).toBe("Every link opens in your browser.");
+    expect(webLinksRow({ links: "all" }, { note: "It could not be changed: offline", busy: true })).toMatchObject({ value: "all", note: "It could not be changed: offline", busy: true });
+  });
+
+  test("the model reads the setting, changes it, and has no row from a node without it", async () => {
+    const calls: [string, unknown][] = [];
+    let refuse = false;
+    let fail = false;
+    const request = async <T,>(method: string, params: unknown): Promise<T> => {
+      calls.push([method, params]);
+      if (refuse) throw new Error("unknown method webtabs.get");
+      if (method === "webtabs.get") return { links: "localhost" } as T;
+      if (method === "webtabs.set") {
+        if (fail) throw new Error("offline");
+        return { links: (params as { links: string }).links } as T;
+      }
+      throw new Error(`unexpected ${method}`);
+    };
+    let drawn = 0;
+    const m = new SettingsModel(request as never, () => drawn++, { webTabs: true });
+    expect(m.webLinksRow()).toBeUndefined();
+    await m.loadWebTabs();
+    expect(m.webTabs).toEqual({ links: "localhost" });
+    expect(m.webLinksRow()?.value).toBe("localhost");
+    await m.setWebLinks("all");
+    expect(m.webTabs).toEqual({ links: "all" });
+    expect(calls.at(-1)).toEqual(["webtabs.set", { links: "all" }]);
+    expect(m.webLinksRow()).toMatchObject({ value: "all", busy: false });
+    // the same pick again sends nothing
+    await m.setWebLinks("all");
+    expect(calls).toHaveLength(2);
+    // one that fails keeps the setting as it was, and says why beside it
+    fail = true;
+    await m.setWebLinks("browser");
+    expect(m.webTabs).toEqual({ links: "all" });
+    expect(m.webLinksRow()).toMatchObject({ value: "all", note: "It could not be changed: offline", busy: false });
+    fail = false;
+    await m.setWebLinks("browser");
+    expect(m.webLinksRow()?.note).toBeUndefined();
+    expect(drawn).toBeGreaterThan(0);
+    refuse = true;
+    await m.loadWebTabs();
+    expect(m.webTabs).toBeNull();
+    expect(m.webLinksRow()).toBeUndefined();
+  });
+
+  test("a host that opens no web tabs asks nothing and shows no row", async () => {
+    const calls: string[] = [];
+    const request = async <T,>(method: string): Promise<T> => {
+      calls.push(method);
+      return { links: "all" } as T;
+    };
+    for (const m of [new SettingsModel(request as never, () => {}), new SettingsModel(request as never, () => {}, { webTabs: false })]) {
+      await m.loadWebTabs();
+      expect(m.webTabs).toBeNull();
+      expect(m.webLinksRow()).toBeUndefined();
+      await m.setWebLinks("browser");
+    }
+    expect(calls).toEqual([]);
+    // even a setting put there by hand draws no row where the host has no web tabs
+    const m = new SettingsModel(request as never, () => {});
+    m.webTabs = { links: "all" };
+    expect(m.webLinksRow()).toBeUndefined();
   });
 });

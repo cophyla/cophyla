@@ -92,6 +92,13 @@ export const TRACKER_SETTINGS_NS = "tracker.settings";
 export const NOTES_KV_NS = "notes";
 export const NOTES_SETTINGS_NS = "notes.settings";
 
+/**
+ * Web tabs (see `webtabs/`): where a link in an agent's chat opens, a web tab beside it or the
+ * user's browser, under `webtabs.settings`. The tabs themselves are never kept. Replicated to
+ * the backups; never the brain's, never in the cloud backup, as the notes' switch.
+ */
+export const WEBTABS_SETTINGS_NS = "webtabs.settings";
+
 /** The namespaces no store request of the brain may read or write. */
 export const RESERVED_KV_NS: readonly string[] = [
   GRANTS_NS,
@@ -118,4 +125,5 @@ export const RESERVED_KV_NS: readonly string[] = [
   TRACKER_SETTINGS_NS,
   NOTES_KV_NS,
   NOTES_SETTINGS_NS,
+  WEBTABS_SETTINGS_NS,
 ];
