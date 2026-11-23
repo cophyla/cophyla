@@ -239,4 +239,60 @@ describe("the spend backfill", () => {
     expect(await backfill.run()).toEqual({ read: 0, skipped: 2, failed: 0 });
     expect(ledger.filling).toBe(false);
   });
+
+  // Bun on Windows never frees a terminated worker, so a worker a run grew the daemon by about 80 MB an hour.
+  const backfillWith = (makeWorker: () => Worker) => {
+    const store = new Store(":memory:");
+    store.migrate();
+    const ledger = new SpendLedger({ store, price, retentionDays: 3650 });
+    return new SpendBackfill({ ledger, store, claudeDirs: () => [claudeDir], session: () => undefined, prices: [], retentionDays: 3650, delayMs: 0, makeWorker });
+  };
+
+  test("one worker reads for every run; a new one only once the backfill stopped", async () => {
+    let made = 0;
+    const backfill = backfillWith(() => {
+      made++;
+      return new Worker(new URL("../src/usage/backfill-worker.ts", import.meta.url).href);
+    });
+    await backfill.run();
+    await backfill.run();
+    await backfill.run();
+    expect(made).toBe(1);
+    backfill.stop();
+    await backfill.run();
+    expect(made).toBe(2);
+    backfill.stop();
+  });
+
+  /** A stand-in worker: it answers each request as `answer` says. */
+  const fakeWorker = (answer: "end" | "error" | "break", counts: { terminated: number }) => {
+    const w = {
+      onmessage: null as ((ev: MessageEvent<BackfillMessage>) => void) | null,
+      onerror: null as ((ev: ErrorEvent) => void) | null,
+      postMessage() {
+        setTimeout(() => {
+          if (answer === "break") w.onerror?.({ message: "the worker fell over" } as ErrorEvent);
+          else w.onmessage?.({ data: answer === "end" ? { kind: "end", read: 0, skipped: 0, failed: 0 } : { kind: "error", message: "a transcript would not read" } } as MessageEvent<BackfillMessage>);
+        }, 1);
+      },
+      terminate() {
+        counts.terminated++;
+      },
+    };
+    return w as unknown as Worker;
+  };
+
+  test("a worker that broke is ended and a fresh one reads the next run; one that caught its error is kept", async () => {
+    const counts = { terminated: 0 };
+    // the first worker breaks; the one made after it reports an error it caught, every time
+    const kinds: ("error" | "break")[] = ["break", "error"];
+    let made = 0;
+    const backfill = backfillWith(() => fakeWorker(kinds[made++]!, counts));
+    await expect(backfill.run()).rejects.toThrow("the worker fell over");
+    expect(counts.terminated).toBe(1);
+    await expect(backfill.run()).rejects.toThrow("a transcript would not read");
+    await expect(backfill.run()).rejects.toThrow("a transcript would not read");
+    expect(made).toBe(2);
+    expect(counts.terminated).toBe(1);
+  });
 });
