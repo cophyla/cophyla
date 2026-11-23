@@ -1,6 +1,23 @@
 {
-  "generatedAt": 1795162858433,
+  "generatedAt": 1795444333567,
   "releases": [
+    {
+      "component": "brain",
+      "name": "brain-0.19.0-macos-arm64",
+      "version": "0.19.0",
+      "channel": "stable",
+      "os": "macos",
+      "arch": "arm64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/brain-v0.19.0/brain-0.19.0-macos-arm64",
+      "size": 64687552,
+      "sha256": "fbcee5fea993fcff0b74640aed32fe606e543792d1d18ed138a723a5f97b3dd2",
+      "signature": "ed25519:zqDxGd5z7A26l1xHvJhoCx4jrZV+awkDL8UfiX8RM71vZBdtLfI6REPpz7F0ONaBOMfZeyvxtMj+m0wEiSkwDQ==",
+      "publishedAt": 1795442694696
+    },
     {
       "component": "model",
       "name": "vad-silero",
@@ -22,6 +39,23 @@
       "sha256": "a4dd69ea520954f6be0c22a7693866a2078bca8f568b98669f6a6edb40b19ad7",
       "signature": "ed25519:C92Nu+1XziZIzyZkJnCvyfA0J5GPqJtS1huBlHFCY3O0CNONHUpa5LL0H6TNhEafql2RS8Rd7PQQTc7BsiHLBA==",
       "publishedAt": 1791285528651
+    },
+    {
+      "component": "platform",
+      "name": "platform-0.30.0-macos-arm64.tar.gz",
+      "version": "0.30.0",
+      "channel": "stable",
+      "os": "macos",
+      "arch": "arm64",
+      "protocol": {
+        "min": 1,
+        "max": 1
+      },
+      "url": "https://github.com/cophyla/cophyla/releases/download/platform-v0.30.0/platform-0.30.0-macos-arm64.tar.gz",
+      "size": 100933110,
+      "sha256": "a72c48bafa0490a3475adffb9e3be704d2d599d5fdda704af0c3b4b015bd1edf",
+      "signature": "ed25519:5siWVuoi0MhyqvO6dH/Fhbdc5pqc83H1VbIH5WtIzqtVo8qPmLMq64+Sq827Cve1hlhahjgTWdAJqrDir7fRBA==",
+      "publishedAt": 1795442760285
     },
     {
       "component": "platform",
