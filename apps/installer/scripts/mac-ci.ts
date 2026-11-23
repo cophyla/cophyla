@@ -26,8 +26,9 @@ const POLL_MS = 30_000;
 const version = platformVersion();
 const out = values.out ?? OUT;
 const brain = values.brain!;
-const ref = values.ref ?? (await capture(["git", "rev-parse", "HEAD"])).trim();
-if (!/^[0-9a-f]{7,40}$|^platform-v/.test(ref)) fail(`--ref ${ref} is not a commit or a platform tag`);
+// the workflow's checkout takes a commit by its whole id: a short one is looked for as a branch or tag
+const ref = (await capture(["git", "rev-parse", `${values.ref ?? "HEAD"}^{commit}`])).trim();
+if (!/^[0-9a-f]{40}$/.test(ref)) fail(`--ref ${values.ref} is not a commit here`);
 
 /** A command's output; a failure ends this script with what it said. */
 async function capture(cmd: string[]): Promise<string> {
