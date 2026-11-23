@@ -1,0 +1,190 @@
+# The macOS (Apple silicon) pieces of a platform release, built on GitHub's Mac so a release needs
+# no Mac of the user's. The release key never leaves the desk that signs, so a release takes two
+# runs with the signing between them; apps/installer/scripts/mac-ci.ts drives both from there:
+#   1. `-f step=platform`: the platform tree at `ref` staged and packed, ad hoc signed, as the
+#      artifact `platform` (platform-<v>-macos-arm64.tar.gz). The desk signs its entry
+#      (sign-release.ts --target macos-arm64).
+#   2. `-f step=installer -f platform_run=<run 1> -f entry=<that signed entry>`: run 1's very
+#      archive unpacked as the staged tree, the entry beside it once it is checked to name that
+#      archive and to carry the release key's signature, the published macOS brain, and the DMG
+#      built over them as the artifact `installer`, checked without installing anything.
+# Without an Apple Developer ID everything is signed ad hoc and nothing is notarized. Finder's
+# layout of the DMG's window is skipped (CI=true): nobody is there to let a script drive Finder.
+name: macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      step:
+        description: platform (stage and pack the platform) or installer (the DMG over a signed archive)
+        required: true
+        type: choice
+        options: [platform, installer]
+      version:
+        description: The platform version, as the tree at ref says it
+        required: true
+      ref:
+        description: The commit or tag to build
+        required: true
+      platform_run:
+        description: For installer, the run of step platform whose archive the desk signed
+        required: false
+        default: ""
+      entry:
+        description: For installer, that archive's signed release entry (JSON)
+        required: false
+        default: ""
+      brain:
+        description: The published brain version the DMG carries
+        required: false
+        default: 0.19.0
+
+jobs:
+  platform:
+    if: inputs.step == 'platform'
+    runs-on: macos-latest
+    timeout-minutes: 75
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+
+      # the Bun the platform ships: staging copies the runtime the script runs on
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            apps/ui/src-tauri
+            apps/net
+            apps/mcp
+
+      - run: bun install --frozen-lockfile
+
+      - name: the tree is this version
+        run: bun run apps/installer/scripts/version.ts --check && grep -q "\"version\": \"$VERSION\"" apps/cophylad/package.json
+
+      # the embedding model and the rest the platform ships, pinned by hash in the script
+      - uses: actions/cache@v4
+        with:
+          path: apps/cophylad/models
+          key: models-${{ hashFiles('apps/cophylad/scripts/fetch-models.ts') }}
+      - run: bun run apps/cophylad/scripts/fetch-models.ts
+
+      - run: bun run apps/installer/scripts/stage-platform.ts --version "$VERSION"
+      - run: bun run apps/installer/scripts/pack-platform.ts --version "$VERSION"
+
+      - name: the archive
+        run: |
+          f="apps/installer/stage/out/platform-$VERSION-macos-arm64.tar.gz"
+          test -f "$f"
+          ls -l "$f"
+          shasum -a 256 "$f"
+          codesign -v --deep --strict "apps/installer/stage/versions/$VERSION/Cophyla.app"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: platform
+          path: apps/installer/stage/out/platform-${{ inputs.version }}-macos-arm64.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  installer:
+    if: inputs.step == 'installer'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ inputs.version }}
+      BRAIN: ${{ inputs.brain }}
+      ENTRY: ${{ inputs.entry }}
+      PLATFORM_RUN: ${{ inputs.platform_run }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+          submodules: true
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.14
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/installer/src-tauri
+
+      - run: bun install --frozen-lockfile
+
+      - name: run 1's archive, checked against the signed entry, as the staged tree
+        run: |
+          test -n "$PLATFORM_RUN" || { echo "step installer needs platform_run"; exit 1; }
+          test -n "$ENTRY" || { echo "step installer needs entry"; exit 1; }
+          gh run download "$PLATFORM_RUN" --repo "$GITHUB_REPOSITORY" --name platform --dir dl
+          f="dl/platform-$VERSION-macos-arm64.tar.gz"
+          export SUM=$(shasum -a 256 "$f" | cut -d' ' -f1)
+          printf '%s' "$ENTRY" > entry.json
+          cat > check-entry.ts <<'TS'
+          import { verifyRelease } from "./apps/cophylad/src/update/verify.ts";
+          import { RELEASE_KEYS } from "./apps/cophylad/src/update/keys.ts";
+          const e = JSON.parse(await Bun.file("entry.json").text());
+          const want = { component: "platform", version: process.env.VERSION, os: "macos", arch: "arm64", sha256: process.env.SUM };
+          for (const [k, v] of Object.entries(want)) if (e[k] !== v) { console.error(`the entry's ${k} is ${e[k]}, not ${v}`); process.exit(1); }
+          if (!verifyRelease(e, RELEASE_KEYS)) { console.error("the entry does not carry the release key's signature"); process.exit(1); }
+          console.log(`entry: platform ${e.version} macos-arm64, sha256 ${e.sha256.slice(0, 16)}…, signed`);
+          TS
+          bun run check-entry.ts
+          d="apps/installer/stage/versions/$VERSION"
+          mkdir -p "$d"
+          tar -xzf "$f" -C "$d"
+          cp entry.json "$d/release.json"
+          printf '%s\n' "$VERSION" > apps/installer/stage/current
+          codesign -v --deep --strict "$d/Cophyla.app"
+
+      - name: the published macOS brain
+        run: |
+          gh release download "brain-v$BRAIN" --repo "$GITHUB_REPOSITORY" --pattern "brain-$BRAIN-macos-arm64*" --dir brain-dl
+          mkdir brain-seed
+          cp "brain-dl/brain-$BRAIN-macos-arm64" brain-seed/brain
+          cp "brain-dl/brain-$BRAIN-macos-arm64.release.json" brain-seed/release.json
+          chmod 755 brain-seed/brain
+          bun run apps/installer/scripts/stage-brain.ts --from brain-seed
+
+      - name: the DMG
+        env:
+          CI: "true"
+        run: bun run apps/installer/scripts/build-installer.ts
+
+      - name: checked without installing
+        run: |
+          dmg="apps/installer/stage/out/Cophyla_${VERSION}_aarch64.dmg"
+          ls -l "$dmg"
+          shasum -a 256 "$dmg"
+          hdiutil verify "$dmg"
+          mnt="$RUNNER_TEMP/cophyla-dmg"
+          mkdir -p "$mnt"
+          # the DMG carries the licence, which attaching asks to agree to
+          yes | PAGER=cat hdiutil attach -nobrowse -readonly -noautoopen -mountpoint "$mnt" "$dmg" > /dev/null
+          app="$mnt/Cophyla.app"
+          codesign -v --deep --strict "$app"
+          seed="$app/Contents/Resources/seed"
+          test "$(tr -d '[:space:]' < "$seed/current")" = "$VERSION"
+          grep -q "\"$(jq -r .sha256 entry.json)\"" "$seed/versions/$VERSION/release.json"
+          grep -q "\"version\": *\"$BRAIN\"" "$seed/brain/release.json"
+          ls "$app/Contents/MacOS"
+          hdiutil detach "$mnt"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: apps/installer/stage/out/Cophyla_${{ inputs.version }}_aarch64.dmg
+          if-no-files-found: error
+          retention-days: 14
